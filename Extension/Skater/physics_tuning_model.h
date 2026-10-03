@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace dingosdk::physics_tuning {
@@ -16,6 +17,7 @@ struct Field {
     std::uint16_t offset{}, size{};
     bool real{}; // float32: must stay finite
     bool flag{}; // boolean: 0 or 1
+    std::string name; // the game's name for it, dotted through its groups: "PhysicsPush.MaxPushableSpeed"
 };
 // A FloatCurve's points, laid out as the game keeps them (curve_point_size bytes each).
 struct Curve {

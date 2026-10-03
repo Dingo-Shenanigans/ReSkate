@@ -104,6 +104,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/physics_tuning.cpp
     Extension/Multiplayer/Remote/remote_collision.cpp
     Extension/Skater/physics_tuning_model.cpp
+    Extension/Skater/physics_presets.cpp
     Extension/Skater/offboard_flight.cpp
     Extension/Skater/camera_observer.cpp
     Extension/Boot/offline_boot.cpp

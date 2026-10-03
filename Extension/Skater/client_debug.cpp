@@ -1,6 +1,7 @@
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
+#include "physics_tuning.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -848,6 +849,8 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     model.forward_velocity_updates = debug.forward_velocity_updates;
     model.up_velocity_speed = debug.up_velocity_speed;
     model.up_velocity_updates = debug.up_velocity_updates;
+    // The Skater > Physics menu's edits of the game's physics tuning (same client thread).
+    physics_tuning::live::tick(base, model.skater_identity);
     return model;
 }
 bool restore_client_debug(std::uintptr_t base, std::uintptr_t client, bool camera_phase_observed) {

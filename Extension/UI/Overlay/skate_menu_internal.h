@@ -55,4 +55,6 @@ void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
 void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
+// The SKATER page's PHYSICS tab (skate_menu_physics.cpp): sliders for the game's skate physics tuning.
+void physics_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks);
 }

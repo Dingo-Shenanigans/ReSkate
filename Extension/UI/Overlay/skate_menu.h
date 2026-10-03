@@ -76,6 +76,11 @@ struct SkateMenu {
     int bus_stop_map = 0;
     int challenge_type = 0;
     std::array<char, 128> challenge_search{};
+    // Skater > Physics: the search box, the preset name being typed, and the slider range
+    // (0: around the game's own value, 1: from zero to three times it).
+    std::array<char, 96> physics_search{};
+    std::array<char, 48> physics_preset_name{};
+    int physics_range = 0;
     bool score_dirty = false;
     std::int64_t score_edit = 0, score_cap_edit = 1;
     int score_level_edit = 1;

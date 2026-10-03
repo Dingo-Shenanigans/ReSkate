@@ -35,7 +35,8 @@ std::uint16_t value_size(ebx::FieldType type) noexcept {
     }
 }
 // Every plain value and curve pointer of `type` placed at `start`, nested structures included.
-void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::uint32_t start, Model &model, int depth) {
+void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::uint32_t start, Model &model, int depth,
+          const std::string &prefix) {
     if (depth > 16) throw std::runtime_error("the tuning's types nest too deeply");
     for (std::size_t i = 0; i < type.fieldCount; ++i) {
         const auto index = static_cast<std::size_t>(type.fieldIndex) + i;
@@ -45,7 +46,7 @@ void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::u
         if (kind == ebx::FieldType::inherited || (kind == ebx::FieldType::structure && field.category() != ebx::FieldCategory::array)) {
             if (field.classRef >= document.types.size()) throw std::runtime_error("a tuning structure type is missing");
             walk(document, document.types[field.classRef], kind == ebx::FieldType::inherited ? start : start + field.dataOffset,
-                 model, depth + 1);
+                 model, depth + 1, kind == ebx::FieldType::inherited ? prefix : prefix + field.name + ".");
             continue;
         }
         if (field.category() == ebx::FieldCategory::array) continue;
@@ -58,7 +59,7 @@ void walk(const ebx::Document &document, const ebx::TypeDescriptor &type, std::u
         const auto size = value_size(kind);
         if (!size || offset + size > asset_size) continue;
         model.fields.push_back({static_cast<std::uint16_t>(offset), size, kind == ebx::FieldType::float32,
-                                kind == ebx::FieldType::boolean});
+                                kind == ebx::FieldType::boolean, prefix + field.name});
     }
 }
 template<class T> T at(std::span<const std::byte> bytes, std::size_t position) {
@@ -176,7 +177,7 @@ Model read_game_tuning(const std::filesystem::path &game_root) {
     Model model;
     model.image.resize(asset_size);
     std::memcpy(model.image.data(), root->rawImage.data(), asset_size);
-    walk(document, document.types[static_cast<std::size_t>(root->descriptor)], 0, model, 0);
+    walk(document, document.types[static_cast<std::size_t>(root->descriptor)], 0, model, 0, {});
     std::ranges::sort(model.fields, {}, &Field::offset);
     for (std::size_t i = 1; i < model.fields.size(); ++i)
         if (model.fields[i].offset < model.fields[i - 1].offset + model.fields[i - 1].size)

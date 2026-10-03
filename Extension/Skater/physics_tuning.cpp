@@ -1,4 +1,5 @@
 #include "physics_tuning.h"
+#include "physics_presets.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
@@ -6,12 +7,17 @@
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/physics_tuning.h"
 #include <windows.h>
+#include <ShlObj.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace dingosdk::physics_tuning {
 namespace {
@@ -298,4 +304,245 @@ void release(std::uintptr_t base) noexcept {
 }
 
 std::string status() { return state().status; }
+namespace live {
+namespace {
+constexpr std::uint64_t idle_after_ms = 2000; // the menu is not drawing
+constexpr std::uint64_t poll_ms = 100;
+constexpr std::size_t max_requests = 8192;
+constexpr float max_magnitude = 1e6f;
+
+struct Live {
+    std::mutex mutex; // guards everything up to `reset_requested`
+    std::shared_ptr<const std::vector<Param>> params;
+    std::vector<float> values;
+    std::vector<std::string> presets;
+    std::string status = "Reading the game's physics tuning...";
+    bool ready{}, locked{}, presets_loaded{};
+    std::size_t changed{};
+    std::uint64_t viewed{};
+    std::vector<std::pair<std::uint16_t, float>> requests;
+    bool reset_requested{};
+    // The client thread's alone.
+    std::map<std::uint16_t, float> desired; // offset -> value, including ones set back to the game's
+    std::uintptr_t asset{}, block{};
+    std::uint64_t next{};
+};
+Live &ui() { static auto *value = new Live; return *value; }
+
+float read_value(std::span<const std::uint8_t> image, const Field &field) noexcept {
+    if (field.flag) return image[field.offset] ? 1.0f : 0.0f;
+    float value;
+    std::memcpy(&value, image.data() + field.offset, sizeof(value));
+    return value;
+}
+float read_value(std::span<const std::uint8_t> image, const Param &param) noexcept {
+    if (param.flag) return image[param.offset] ? 1.0f : 0.0f;
+    float value;
+    std::memcpy(&value, image.data() + param.offset, sizeof(value));
+    return value;
+}
+std::shared_ptr<const std::vector<Param>> make_params(const Model &m) {
+    auto result = std::make_shared<std::vector<Param>>();
+    for (const auto &field : m.fields) {
+        if (!(field.real || field.flag) || field.name.empty() || std::size_t{field.offset} + field.size > m.image.size()) continue;
+        Param param;
+        param.path = field.name;
+        const auto dot = field.name.find('.');
+        param.group = dot == std::string::npos ? "Other" : field.name.substr(0, dot);
+        param.name = dot == std::string::npos ? field.name : field.name.substr(dot + 1);
+        param.offset = field.offset;
+        param.flag = field.flag;
+        param.game = read_value(m.image, field);
+        if (std::isfinite(param.game)) result->push_back(std::move(param));
+    }
+    return result;
+}
+const std::filesystem::path &presets_directory() {
+    static const std::filesystem::path directory = [] {
+        std::filesystem::path result;
+        PWSTR local{};
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, nullptr, &local)))
+            result = std::filesystem::path(local) / L"ReSkate" / L"physics_presets";
+        CoTaskMemFree(local);
+        return result;
+    }();
+    return directory;
+}
+void refresh_presets() {
+    auto &l = ui();
+    auto names = presets_directory().empty() ? std::vector<std::string>{} : presets::list(presets_directory());
+    std::lock_guard lock(l.mutex);
+    l.presets = std::move(names);
+    l.presets_loaded = true;
+}
+bool usable(const Snapshot &s) noexcept {
+    return s.ready && !s.locked && s.params && s.values.size() == s.params->size();
+}
+} // namespace
+
+Snapshot snapshot() {
+    auto &l = ui();
+    bool load_names{};
+    {
+        std::lock_guard lock(l.mutex);
+        l.viewed = GetTickCount64();
+        load_names = !l.presets_loaded;
+    }
+    if (load_names) refresh_presets();
+    std::lock_guard lock(l.mutex);
+    return {l.ready, l.locked, l.status, l.params, l.values, l.presets, l.changed};
+}
+
+void set(std::uint16_t offset, float value) {
+    auto &l = ui();
+    std::lock_guard lock(l.mutex);
+    if (!l.requests.empty() && l.requests.back().first == offset) l.requests.back().second = value;
+    else if (l.requests.size() < max_requests) l.requests.emplace_back(offset, value);
+}
+
+void reset_all() {
+    auto &l = ui();
+    std::lock_guard lock(l.mutex);
+    l.requests.clear();
+    l.reset_requested = true;
+}
+
+bool save_preset(std::string_view name) {
+    if (presets_directory().empty() || !presets::valid_name(name)) return false;
+    const auto s = snapshot();
+    if (!usable(s)) return false;
+    presets::Values values;
+    for (std::size_t i = 0; i < s.params->size(); ++i) {
+        const auto &param = (*s.params)[i];
+        if (s.values[i] != param.game) values[param.path] = s.values[i];
+    }
+    if (!presets::save(presets_directory(), name, values)) return false;
+    refresh_presets();
+    return true;
+}
+
+bool load_preset(std::string_view name) {
+    if (presets_directory().empty()) return false;
+    const auto loaded = presets::load(presets_directory(), name);
+    if (!loaded) return false;
+    const auto s = snapshot();
+    if (!usable(s)) return false;
+    for (std::size_t i = 0; i < s.params->size(); ++i) {
+        const auto &param = (*s.params)[i];
+        const auto found = loaded->find(param.path);
+        float target = found != loaded->end() ? found->second : param.game;
+        if (param.flag) target = target >= 0.5f ? 1.0f : 0.0f;
+        if (target != s.values[i]) set(param.offset, target);
+    }
+    return true;
+}
+
+bool delete_preset(std::string_view name) {
+    if (presets_directory().empty() || !presets::remove(presets_directory(), name)) return false;
+    refresh_presets();
+    return true;
+}
+
+void tick(std::uintptr_t base, std::uintptr_t entity) noexcept {
+    try {
+        auto &l = ui();
+        const auto now = GetTickCount64();
+        std::vector<std::pair<std::uint16_t, float>> requests;
+        bool reset{}, viewed{};
+        {
+            std::lock_guard lock(l.mutex);
+            requests.swap(l.requests);
+            reset = std::exchange(l.reset_requested, false);
+            viewed = now - l.viewed < idle_after_ms;
+        }
+        const bool pending = !requests.empty() || reset;
+        // Nothing is looking at the values and nothing is being kept: cost nothing.
+        if (!pending && !viewed && l.desired.empty()) return;
+        if (!pending && now < l.next) return;
+        l.next = now + poll_ms;
+        prepare();
+        const auto unavailable = [&](std::string text) {
+            std::lock_guard lock(l.mutex);
+            l.ready = l.locked = false;
+            l.status = std::move(text);
+        };
+        if (!base || !contracts_match(base)) {
+            unavailable("Physics tuning is unavailable: this game build's tuning code is not the known one.");
+            return;
+        }
+        std::string error;
+        const auto m = model(&error);
+        if (!m) {
+            unavailable(error.empty() ? "Reading the game's physics tuning..." : "Physics tuning is unavailable: " + error + ".");
+            return;
+        }
+        {
+            std::lock_guard lock(l.mutex);
+            if (!l.params) l.params = make_params(*m);
+        }
+        const auto asset = live_asset(base);
+        if (!asset) {
+            unavailable("Waiting for the game's physics tuning. Load into a world first.");
+            return;
+        }
+        std::vector<std::uint8_t> image(asset_size);
+        if (!memory::peek_bytes(asset, image.data(), image.size())) {
+            unavailable("The game's physics tuning could not be read.");
+            return;
+        }
+        const auto find = [&](std::uint16_t offset) -> const Field * {
+            const auto it = std::ranges::lower_bound(m->fields, offset, {}, &Field::offset);
+            return it != m->fields.end() && it->offset == offset && (it->real || it->flag) ? &*it : nullptr;
+        };
+        // A host's tuning is enforced on this guest: stand aside (the menu says so).
+        const bool locked = state().seen;
+        bool wrote{};
+        if (!locked) {
+            if (reset)
+                for (auto &[offset, value] : l.desired)
+                    if (const auto *field = find(offset)) value = read_value(m->image, *field);
+            for (const auto &[offset, requested] : requests) {
+                const auto *field = find(offset);
+                if (!field || !std::isfinite(requested) || std::fabs(requested) > max_magnitude) continue;
+                l.desired[offset] = field->flag ? (requested >= 0.5f ? 1.0f : 0.0f) : requested;
+            }
+            // A level load brings a new copy of the asset: ours go back onto it below.
+            if (asset != l.asset) { l.asset = asset; l.block = 0; }
+            for (const auto &[offset, value] : l.desired) {
+                const auto *field = find(offset);
+                if (!field || read_value(image, *field) == value) continue;
+                std::array<std::uint8_t, 4> bytes{};
+                if (field->flag) bytes[0] = static_cast<std::uint8_t>(value != 0.0f ? 1 : 0);
+                else std::memcpy(bytes.data(), &value, sizeof(value));
+                if (!write_bytes(asset + offset, bytes.data(), field->size)) {
+                    unavailable("The game's physics tuning could not be written.");
+                    return;
+                }
+                std::memcpy(image.data() + offset, bytes.data(), field->size);
+                wrote = true;
+            }
+            // The skater keeps a cached copy of about 60 of the values: refresh it after a change
+            // and when it is a new one (a respawn).
+            const auto block = skater_block(base, entity);
+            if (block && (wrote || (!l.desired.empty() && block != l.block)) && refresh(base, block)) l.block = block;
+            // Back at the game's own value everywhere: nothing left to keep.
+            std::erase_if(l.desired, [&](const auto &kept) {
+                const auto *field = find(kept.first);
+                return field && kept.second == read_value(m->image, *field) && read_value(image, *field) == kept.second;
+            });
+        }
+        std::lock_guard lock(l.mutex);
+        l.ready = true;
+        l.locked = locked;
+        l.status.clear();
+        const auto &params = *l.params;
+        l.values.resize(params.size());
+        l.changed = 0;
+        for (std::size_t i = 0; i < params.size(); ++i) {
+            l.values[i] = read_value(image, params[i]);
+            if (l.values[i] != params[i].game) ++l.changed;
+        }
+    } catch (...) {}
+}
+} // namespace live
 } // namespace dingosdk::physics_tuning

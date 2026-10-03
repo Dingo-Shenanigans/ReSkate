@@ -133,11 +133,12 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
 }
 
 void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.skater_tab, {"CAMERA", "MOVEMENT"}, "skater-tabs");
+    category_tabs(menu, menu.skater_tab, {"CAMERA", "MOVEMENT", "PHYSICS"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
     ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)));
     if (menu.skater_tab == 0) camera_controls(menu, model, callbacks);
-    else movement_controls(menu, model, callbacks);
+    else if (menu.skater_tab == 1) movement_controls(menu, model, callbacks);
+    else physics_controls(menu, model, callbacks);
     ImGui::EndChild();
     ImGui::PopID();
 }
