@@ -114,7 +114,8 @@ std::optional<Root> mod_root(const std::vector<std::string>& files) {
 // are not a package's).
 bool carried(const Root& root, const std::vector<std::string>& files, const std::string& file) {
     if (root.folder.empty() || file.find('/') != std::string::npos || !one_of(package_files, file)) return false;
-    return std::any_of(files.begin(), files.end(), [](const std::string& top) { return lower(top) == "manifest.json"; });
+    return std::any_of(files.begin(), files.end(), [](const std::string& top) { return lower(top) == "manifest.json"; }) &&
+           std::any_of(files.begin(), files.end(), [&](const std::string& top) { return lower(top) == lower(file); });
 }
 
 // Where a file of the source goes inside the mod, if anywhere. Carried package

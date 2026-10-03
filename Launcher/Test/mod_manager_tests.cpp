@@ -243,6 +243,25 @@ int main() {
               "Package files at the top follow the mod in and replace its own copies");
         check(!fs::exists(store / L"DesertSprings" / L"DesertSprings"), "The wrapper folder is not kept");
 
+        // A package only replaces the nested metadata files it actually supplies.
+        const std::vector<std::pair<std::string, std::string>> partial_package{
+            {"manifest.json", manifest}, {"rEaDmE.md", "package readme"},
+            {"Partial/layout.toc", "toc"}, {"Partial/manifest.json", R"({"name":"Old"})"},
+            {"Partial/README.md", "old readme"}, {"Partial/icon.png", "nested icon"},
+            {"Partial/CHANGELOG.md", "nested changelog"}};
+        make_zip(sources / L"partial.zip", partial_package);
+        const auto folder_package = sources / L"partial-folder";
+        for (const auto& [name, data] : partial_package) write(folder_package / name, data);
+        for (const auto& source : {sources / L"partial.zip", folder_package}) {
+            check(install(store, source, true) == "Partial", "Partial packages install from zips and folders");
+            check(read(store / L"Partial" / L"manifest.json") == manifest &&
+                      read(store / L"Partial" / L"README.md") == "package readme",
+                  "Present package files replace nested copies regardless of filename case");
+            check(read(store / L"Partial" / L"icon.png") == "nested icon" &&
+                      read(store / L"Partial" / L"CHANGELOG.md") == "nested changelog",
+                  "Nested metadata survives when the package has no replacement");
+        }
+
         // What the launcher's Thunderstore installs ask for.
         launcher_mods::InstallOptions options;
         options.folder = "Zee-Desert_Springs";
