@@ -237,6 +237,22 @@ void note_local_wipeout(const Owner& owner) noexcept {
         }
     hall_of_meat::Bail bail;
     if (!hall_of_meat::observe_wipeout(bones, &bail)) return; // the ragdoll's follow-up step
+    // One contact-region dump per session, taken at a wipeout: the semantics
+    // of the exported vectors (+0x60..0xa8) are read from live values then.
+    static std::atomic<bool> contacts_dumped{};
+    if (!contacts_dumped.exchange(true) && contacts) {
+        logging::write(logging::Level::info, logging::Channel::skater,
+            "HallOfMeat contacts dump begin");
+        for (std::uintptr_t row = 0; row < 0x100; row += 16) {
+            std::array<float, 4> vector{};
+            if (!read(contacts + row, vector)) continue;
+            logging::log(logging::Level::info, logging::Channel::skater,
+                "contacts +{:04x}: {:12.4f} {:12.4f} {:12.4f} {:12.4f}",
+                row, vector[0], vector[1], vector[2], vector[3]);
+        }
+        logging::write(logging::Level::info, logging::Channel::skater,
+            "HallOfMeat contacts dump end");
+    }
     unsigned mask = 0;
     for (std::size_t index = 0; index < bail.bone_contacts.size(); ++index)
         if (bail.bone_contacts[index]) mask |= 1u << index;

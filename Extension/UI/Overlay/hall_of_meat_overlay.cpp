@@ -70,9 +70,22 @@ void draw_hall_of_meat_skeleton() {
     register_contacts(snapshot, now);
 
     std::array<ImVec2, skater_pose::skeleton_joints> screen{};
+    // Unused/gear joints sit at stale or scattered positions; anything far
+    // from the character is not part of the visible body and its edges read
+    // as random lines. Cull by distance to the character's placement.
+    constexpr float max_body_distance = 2.5f;
+    const auto body_distance = [&snapshot, &origin](const std::array<float, 3>& position) {
+        const Vec3 delta{position[0] - origin[0] - (snapshot.origin[0] - origin[0]),
+            position[1] - origin[1] - (snapshot.origin[1] - origin[1]),
+            position[2] - origin[2] - (snapshot.origin[2] - origin[2])};
+        return std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+    };
     for (unsigned index = 0; index < skater_pose::skeleton_joints; ++index) {
         const auto& joint = snapshot.joints[index];
-        if (!joint.valid) { screen[index] = ImVec2(-1, -1); continue; }
+        if (!joint.valid || body_distance(joint.position) > max_body_distance) {
+            screen[index] = ImVec2(-1, -1);
+            continue;
+        }
         const Vec3 delta{joint.position[0] - origin[0], joint.position[1] - origin[1],
             joint.position[2] - origin[2]};
         const float depth = -(delta[0] * back[0] + delta[1] * back[1] + delta[2] * back[2]);
@@ -92,6 +105,11 @@ void draw_hall_of_meat_skeleton() {
         const auto& a = screen[parent];
         const auto& b = screen[index];
         if (a.x < 0 || b.x < 0) continue;
+        const auto& pa = snapshot.joints[parent].position;
+        const auto& pb = snapshot.joints[index].position;
+        const float length = std::sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) +
+            (pa[2] - pb[2]) * (pa[2] - pb[2]));
+        if (length > 0.8f) continue; // no anatomical bone spans further on a human
         ImU32 colour = IM_COL32(120, 220, 255, 90);
         const auto hit = bone_states.find(index);
         if (hit != bone_states.end()) {
