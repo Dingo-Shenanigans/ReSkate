@@ -38,8 +38,4 @@ bool observe_wipeout(bool body_contact, Bail* recorded = nullptr) noexcept;
 std::vector<Bail> recent();
 // The menu's Clear button: drop the history and any pending causes.
 void forget() noexcept;
-// The console's record dump (`homdump`): while on, every bail's raw contact
-// records are hex-dumped to the log, for mapping the per-bone layout.
-void set_dump(bool on) noexcept;
-bool dumping() noexcept;
 }

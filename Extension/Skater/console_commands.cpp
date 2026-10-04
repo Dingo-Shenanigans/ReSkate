@@ -1,7 +1,6 @@
 #include "Extension/Console/commands.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
-#include "hall_of_meat.h"
 #include <format>
 namespace dingosdk::console {
 void register_movement_commands(Commands &registry) {
@@ -164,17 +163,6 @@ void register_movement_commands(Commands &registry) {
         out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
     };
     registry.add(std::move(up_bind));
-    // Hall of Meat's record dump: hex-dumps each bail's raw contact records to
-    // the log, for mapping the per-bone layout (see no_bail.cpp).
-    auto homdump = variable("homdump", "Dump each wipeout's contact records to the log (Hall of Meat mapping)",
-        Group::movement, argument("0|1", Type::boolean));
-    homdump.aliases = {"hom"};
-    homdump.inspect = [](const Model &) { return boolean_state(true, hall_of_meat::dumping()); };
-    homdump.run = [](const Model &, const Values &args, const Output &) {
-        hall_of_meat::set_dump(std::get<bool>(args[0]));
-    };
-    homdump.reset = [](const Model &, const Output &) { hall_of_meat::set_dump(false); };
-    registry.add(std::move(homdump));
 }
 void register_ai_commands(Commands &registry) {
     const auto ready = [](const Model &m) {
