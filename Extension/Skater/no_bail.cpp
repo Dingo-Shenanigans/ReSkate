@@ -240,6 +240,7 @@ void note_local_wipeout(const Owner& owner) noexcept {
     // One contact-region dump per session, taken at a wipeout: the semantics
     // of the exported vectors (+0x60..0xa8) are read from live values then.
     static std::atomic<bool> contacts_dumped{};
+    static std::atomic<bool> collision_dumped{};
     if (!contacts_dumped.exchange(true) && contacts) {
         logging::write(logging::Level::info, logging::Channel::skater,
             "HallOfMeat contacts dump begin");
@@ -252,6 +253,37 @@ void note_local_wipeout(const Owner& owner) noexcept {
         }
         logging::write(logging::Level::info, logging::Channel::skater,
             "HallOfMeat contacts dump end");
+    }
+    // The collision struct (core+0x2f10 -> +0x1040) holds the per-bone flags
+    // (base 0x10f8 = physics bone 0, verified by the feet check writing bone
+    // 15's flag) and the impact accumulators. One dump per session, at the
+    // wipeout, pins the flag-to-bone semantics for the panel and the colours.
+    if (!collision_dumped.exchange(true)) {
+        std::uintptr_t holder2{}, collision{};
+        if (read(owner.core + 0x2f10, holder2) && holder2 > 0x10000 &&
+            read(holder2 + 0x1040, collision) && collision > 0x10000) {
+            logging::write(logging::Level::info, logging::Channel::skater,
+                "HallOfMeat collision dump begin");
+            for (std::uintptr_t row = 0; row < 0x2a0; row += 16) {
+            std::array<float, 4> vector{};
+            if (!read(collision + row, vector)) continue;
+            logging::log(logging::Level::info, logging::Channel::skater,
+                "collision +{:04x}: {:12.4f} {:12.4f} {:12.4f} {:12.4f}",
+                row, vector[0], vector[1], vector[2], vector[3]);
+        }
+        for (std::uintptr_t row = 0x10e0; row < 0x1130; row += 16) {
+                std::array<float, 4> vector{};
+                if (!read(collision + row, vector)) continue;
+                logging::log(logging::Level::info, logging::Channel::skater,
+                    "collision +{:04x}: {:12.4f} {:12.4f} {:12.4f} {:12.4f}",
+                    row, vector[0], vector[1], vector[2], vector[3]);
+            }
+            logging::write(logging::Level::info, logging::Channel::skater,
+                "HallOfMeat collision dump end");
+        } else {
+            logging::write(logging::Level::info, logging::Channel::skater,
+                "HallOfMeat collision struct unreachable");
+        }
     }
     unsigned mask = 0;
     for (std::size_t index = 0; index < bail.bone_contacts.size(); ++index)
