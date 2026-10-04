@@ -221,6 +221,49 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     LastError error;
     return filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
 }
+// The record dump (`homdump`): hex-dump the regions that hold the bail's
+// causes and contact records, so the per-bone layout can be mapped from a few
+// differently shaped crashes. Two snapshots per bail: the wipeout step, and a
+// late one after the ragdoll has settled -- records keep accumulating during
+// it. All reads are guarded; a failed read just leaves zeros in its row.
+struct DumpState {
+    std::atomic<bool> late_pending{};
+    std::uint64_t bail_at{};
+};
+DumpState& dump_state() { static auto* value = new DumpState; return *value; }
+constexpr std::uintptr_t late_dump_after_ms = 2000;
+void dump_region(const char* what, std::uintptr_t base, unsigned from, unsigned to) noexcept {
+    if (!base) return;
+    constexpr char digits[] = "0123456789abcdef";
+    for (unsigned at = from; at < to; at += 16) {
+        unsigned char row[16]{};
+        const unsigned count = at + 16 <= to ? 16 : to - at;
+        for (unsigned index = 0; index < count; ++index) (void)read(base + at + index, row[index]);
+        char line[120]{};
+        std::size_t out = 0;
+        const auto append = [&](char ch) noexcept { if (out + 1 < sizeof line) line[out++] = ch; };
+        while (*what) append(*what++);
+        append(' '); append('+');
+        for (int shift = 11; shift >= 0; shift -= 4) append(digits[(at >> shift) & 0xf]);
+        append(':');
+        for (unsigned index = 0; index < count; ++index) {
+            append(' ');
+            append(digits[row[index] >> 4]);
+            append(digits[row[index] & 0xf]);
+        }
+        line[out] = '\0';
+        logging::write(logging::Level::info, logging::Channel::skater, line);
+    }
+}
+void dump_bail_contacts(const Owner& owner, const char* phase) noexcept {
+    logging::log(logging::Level::info, logging::Channel::skater,
+        "Hall of Meat record dump, {}:", phase);
+    dump_region("causes", owner.causes, 0x20, 0xe8);      // cause bytes, magnitudes, count
+    const auto contacts = pointer(pointer(owner.core, 0x3b8), 0x30);
+    dump_region("contacts", contacts, 0x2a0, 0x300);      // the recent-contact latch at +0x2c3
+    dump_region("contacts", contacts, 0xfa0, 0x1100);     // body-contact byte, per-bone record window
+    dump_region("context", owner.context, 0x13c4, 0x13d8); // the wipeout/animation request words
+}
 // The wipeout step: hand Hall of Meat the causes recorded around it and the
 // sensitive body-contact report (contacts+0xfb8, published per bail), then
 // announce it. The overlay notice is safe from any game thread.
@@ -229,11 +272,18 @@ void note_local_wipeout(const Owner& owner) noexcept {
     const auto contacts = pointer(pointer(owner.core, 0x3b8), 0x30);
     std::uint8_t flag{};
     if (contacts && read(contacts + body_contact_output_offset, flag) && flag <= 1) contact = flag != 0;
+    auto& dump = dump_state();
+    dump.late_pending.store(false, std::memory_order_release);
     hall_of_meat::Bail bail;
     if (!hall_of_meat::observe_wipeout(contact, &bail)) return; // the ragdoll's follow-up step
     logging::log(logging::Level::info, logging::Channel::skater,
         "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}{})",
         bail.impact_count, bail.magnitude, bail.body_contact ? ", body contact" : "");
+    if (hall_of_meat::dumping()) {
+        dump_bail_contacts(owner, "wipeout step");
+        dump.bail_at = GetTickCount64();
+        dump.late_pending.store(true, std::memory_order_release);
+    }
     char text[96];
     std::snprintf(text, sizeof(text), "Wipeout recorded at impact %.1f%s",
         bail.magnitude, bail.body_contact ? " with body contact" : "");
@@ -252,6 +302,18 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
         }
     }
     protection().skeleton_original(rig, seconds, wipeout);
+    // The late half of a record dump: once the ragdoll has settled, catch the
+    // accumulated per-bone records from this skater's rig.
+    auto& dump = dump_state();
+    if (dump.late_pending.load(std::memory_order_acquire) && hall_of_meat::dumping() &&
+        GetTickCount64() - dump.bail_at >= late_dump_after_ms) {
+        Owner owner;
+        if (observed_owner(rig, &Owner::rig, &owner)) {
+            LastError error;
+            dump.late_pending.store(false, std::memory_order_release);
+            dump_bail_contacts(owner, "late snapshot (+2s)");
+        }
+    }
 }
 bool clear_contact_output(std::uintptr_t contacts) noexcept {
     if (contacts < 0x10000 || contacts > highest - body_contact_output_offset) return false;

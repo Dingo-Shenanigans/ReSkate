@@ -1,5 +1,6 @@
 #include "hall_of_meat.h"
 #include <Windows.h>
+#include <atomic>
 #include <cmath>
 #include <mutex>
 
@@ -99,4 +100,11 @@ void forget() noexcept {
     s.bail_open = false;
     ReleaseSRWLockExclusive(&s.lock);
 }
+
+namespace {
+std::atomic<bool> dump_armed{};
+}
+
+void set_dump(bool on) noexcept { dump_armed.store(on, std::memory_order_release); }
+bool dumping() noexcept { return dump_armed.load(std::memory_order_acquire); }
 }
