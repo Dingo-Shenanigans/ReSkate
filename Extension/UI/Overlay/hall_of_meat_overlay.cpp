@@ -6,28 +6,49 @@
 
 #include <array>
 #include <cmath>
+#include <unordered_map>
 
-// The local skater's skeleton, drawn over the world: the verified joint chain
-// (root -> neck -> head) as a line, joints as dots, and a short red glow after
-// a wipeout. Projection follows the nametag overlay (live camera, focal from
-// the vertical field of view).
+// The local skater's skeleton, drawn over the world: every composed joint as a
+// line to its parent, coloured by contact history — cyan untouched, yellow
+// freshly hit, red where the same bone kept taking impacts (the current
+// stand-in for "broken"). Projection follows the nametag overlay (live camera,
+// focal from the vertical field of view).
 namespace dingosdk::overlay::detail {
 namespace {
 using Vec3 = std::array<float, 3>;
 // The snapshot stays half a second; older ones mean the tick stopped publishing.
 constexpr std::uint64_t snapshot_max_age_ms = 500;
+constexpr float hit_radius = 0.35f;   // a contact point marks joints within this range
+constexpr float hit_fade_seconds = 5.0f;
+constexpr int hits_until_broken = 2;   // same joint again inside the fade window -> red
+constexpr float broken_seconds = 60.0f;
 
-ImVec2 project(const std::array<float, 3>& position, const std::array<float, 16>& camera,
-               float focal, const ImVec2& centre) {
-    const Vec3 origin{camera[12], camera[13], camera[14]};
-    const Vec3 right{camera[0], camera[1], camera[2]}, up{camera[4], camera[5], camera[6]},
-        back{camera[8], camera[9], camera[10]};
-    const Vec3 delta{position[0] - origin[0], position[1] - origin[1], position[2] - origin[2]};
-    const float depth = -(delta[0] * back[0] + delta[1] * back[1] + delta[2] * back[2]);
-    const float side = delta[0] * right[0] + delta[1] * right[1] + delta[2] * right[2];
-    const float height = delta[0] * up[0] + delta[1] * up[1] + delta[2] * up[2];
-    if (depth <= 0.1f) return ImVec2(-1, -1);
-    return ImVec2(centre.x + side * focal / depth, centre.y - height * focal / depth);
+struct BoneState {
+    double last_hit = 0;   // ImGui::GetTime() of the newest contact
+    int hits = 0;
+    bool broken = false;   // sticks until the hit history cools down
+};
+std::unordered_map<unsigned, BoneState> bone_states;
+
+// Contacts light up the joints closest to them; called from the draw pass with
+// the frame's composed positions.
+void register_contacts(const skater_pose::Snapshot& snapshot, double now) {
+    if (!snapshot.contacts_valid) return;
+    for (const auto& contact : snapshot.contacts) {
+        if (contact[0] == 0 && contact[1] == 0 && contact[2] == 0) continue;
+        for (unsigned index = 0; index < skater_pose::skeleton_joints; ++index) {
+            const auto& joint = snapshot.joints[index];
+            if (!joint.valid) continue;
+            const float dx = joint.position[0] - contact[0], dy = joint.position[1] - contact[1],
+                dz = joint.position[2] - contact[2];
+            if (dx * dx + dy * dy + dz * dz > hit_radius * hit_radius) continue;
+            auto& bone = bone_states[index];
+            if (now - bone.last_hit < hit_fade_seconds) ++bone.hits;
+            else bone.hits = 1;
+            bone.last_hit = now;
+            bone.broken = bone.hits >= hits_until_broken;
+        }
+    }
 }
 }
 
@@ -41,33 +62,70 @@ void draw_hall_of_meat_skeleton() {
     const float focal = display.y / (2.0f * std::tan(view->vertical_fov * 3.14159265f / 360.0f));
     const ImVec2 centre(display.x * 0.5f, display.y * 0.5f);
     auto* draw = ImGui::GetBackgroundDrawList();
+    const Vec3 origin{view->world[12], view->world[13], view->world[14]};
+    const Vec3 right{view->world[0], view->world[1], view->world[2]},
+        up{view->world[4], view->world[5], view->world[6]},
+        back{view->world[8], view->world[9], view->world[10]};
+    const auto now = ImGui::GetTime();
+    register_contacts(snapshot, now);
 
-    std::array<ImVec2, skater_pose::head_chain.size()> screen{};
-    std::size_t visible = 0;
-    for (std::size_t index = 0; index < skater_pose::head_chain.size(); ++index) {
-        screen[index] = project(snapshot.chain[index], view->world, focal, centre);
-        if (screen[index].x >= 0) ++visible;
+    std::array<ImVec2, skater_pose::skeleton_joints> screen{};
+    for (unsigned index = 0; index < skater_pose::skeleton_joints; ++index) {
+        const auto& joint = snapshot.joints[index];
+        if (!joint.valid) { screen[index] = ImVec2(-1, -1); continue; }
+        const Vec3 delta{joint.position[0] - origin[0], joint.position[1] - origin[1],
+            joint.position[2] - origin[2]};
+        const float depth = -(delta[0] * back[0] + delta[1] * back[1] + delta[2] * back[2]);
+        if (depth <= 0.1f) { screen[index] = ImVec2(-1, -1); continue; }
+        const float side = delta[0] * right[0] + delta[1] * right[1] + delta[2] * right[2];
+        const float height = delta[0] * up[0] + delta[1] * up[1] + delta[2] * up[2];
+        screen[index] = ImVec2(centre.x + side * focal / depth, centre.y - height * focal / depth);
     }
-    if (!visible) return;
-    // Until the skeleton definition's parent array is mapped, only the two
-    // verified points are drawn: the character placement (joint 1) and the
-    // composed head. The chain's middle joints are animation controllers, not
-    // anatomy, and drawing them read as a random line.
-    constexpr std::size_t origin_index = 1, head_index = skater_pose::head_chain.size() - 1;
-    constexpr ImU32 bone_colour = IM_COL32(120, 220, 255, 150);
-    const auto& origin_point = screen[origin_index];
-    const auto& head_point = screen[head_index];
-    if (origin_point.x >= 0 && head_point.x >= 0) draw->AddLine(origin_point, head_point, bone_colour, 2.0f);
-    if (origin_point.x >= 0) draw->AddCircleFilled(origin_point, 3.0f, bone_colour);
-    if (head_point.x >= 0) draw->AddCircleFilled(head_point, 4.0f, bone_colour);
+
+    // Contact history decays; bones that stopped being hit leave the set again.
+    std::erase_if(bone_states, [now](const auto& entry) {
+        return !entry.second.broken && now - entry.second.last_hit > hit_fade_seconds;
+    });
+
+    for (unsigned index = 1; index < skater_pose::skeleton_joints; ++index) {
+        const auto parent = skater_pose::skeleton_parents[index];
+        const auto& a = screen[parent];
+        const auto& b = screen[index];
+        if (a.x < 0 || b.x < 0) continue;
+        ImU32 colour = IM_COL32(120, 220, 255, 90);
+        const auto hit = bone_states.find(index);
+        if (hit != bone_states.end()) {
+            if (hit->second.broken) colour = IM_COL32(255, 30, 30, 220);
+            else {
+                const float age = static_cast<float>(now - hit->second.last_hit);
+                const float alpha = 1 - age / hit_fade_seconds;
+                colour = IM_COL32(255, 220, 40, static_cast<int>(220 * alpha));
+            }
+        }
+        draw->AddLine(a, b, colour, 2.0f);
+    }
+    for (unsigned index = 0; index < skater_pose::skeleton_joints; ++index) {
+        if (screen[index].x < 0) continue;
+        ImU32 colour = IM_COL32(120, 220, 255, 110);
+        const auto hit = bone_states.find(index);
+        if (hit != bone_states.end()) {
+            if (hit->second.broken) colour = IM_COL32(255, 30, 30, 230);
+            else {
+                const float age = static_cast<float>(now - hit->second.last_hit);
+                colour = IM_COL32(255, 220, 40, static_cast<int>(230 * (1 - age / hit_fade_seconds)));
+            }
+        }
+        draw->AddCircleFilled(screen[index], 2.5f, colour);
+    }
 
     // Short red glow at the character while a fresh wipeout is on record.
     const auto bails = dingosdk::hall_of_meat::recent();
     if (!bails.empty()) {
         const auto since = static_cast<float>((GetTickCount64() - bails.front().at) / 1000ULL);
         if (since < 2.5f) {
-            if (head_point.x >= 0)
-                draw->AddCircleFilled(head_point, 14.0f + since * 10.0f,
+            const auto& head = screen[skater_pose::head_joint];
+            if (head.x >= 0)
+                draw->AddCircleFilled(head, 14.0f + since * 10.0f,
                     IM_COL32(255, 40, 40, static_cast<int>(120 * (1 - since / 2.5f))));
         }
     }
