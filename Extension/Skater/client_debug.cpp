@@ -506,7 +506,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
             debug.noclip_velocity.expires), "No Bail is unavailable for the current skater.");
         debug.no_bail = true;
         mark_debug_changed(debug);
-        debug.status = "No Bail enabled. Prevents new wipeouts and runouts; recover first if already bailed.";
+        debug.status = "No Bail: forced on board (ground/air only). Enable while riding; toggle off to dismount.";
         return;
     }
     if (request.action == overlay::DebugAction::set_game_ui_hidden) {

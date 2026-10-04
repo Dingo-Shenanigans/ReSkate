@@ -20,6 +20,9 @@ using PublishAnimation = void (*)(std::uintptr_t);
 using ResetCauses = void (*)(std::uintptr_t);
 using RecoveryPredicate = bool (*)(std::uintptr_t);
 using RigUpdate = void (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+using ChangeState = void (*)(std::uintptr_t, std::uint32_t);
+using ImportAnimation = void (*)(std::uintptr_t);
+using PhysicsOnBoard = bool (*)(std::uintptr_t);
 constexpr std::uintptr_t highest = memory::highest_user_address;
 // The hooks re-resolve the local skater's ownership (some 35 fields) on every
 // protected physics step: guarded same-process copies, not a system call each.
@@ -41,6 +44,7 @@ struct Owner {
 struct Lease {
     Owner owner;
     std::uint64_t manual_until{}, flight_until{};
+    std::uint32_t board_state{ground_physics_state};
     bool active(std::uint64_t now) const noexcept {
         return now < manual_until || now < flight_until;
     }
@@ -60,6 +64,9 @@ struct Protection {
     ResetCauses reset_causes{};
     RecoveryPredicate recovery_original{};
     RigUpdate rig_original{};
+    ChangeState change_original{};
+    ImportAnimation import_original{};
+    PhysicsOnBoard on_board_original{};
     std::atomic<bool> ready{};
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
@@ -131,6 +138,38 @@ bool riding(const Owner& owner) noexcept {
     return (state >= 100 && state < 300) || (state >= 400 && state < 500) ||
            (state >= 600 && state < 700);
 }
+bool basic_board_state(std::uint32_t state) noexcept { return state >= 100 && state < 300; }
+bool forced_board(std::uintptr_t object, std::uintptr_t Owner::* member,
+    Owner* owner = nullptr, std::uint32_t* state = nullptr) noexcept {
+    Owner current;
+    if (!protected_owner(object, member, &current)) return false;
+    auto& p = protection();
+    AcquireSRWLockShared(&p.lock);
+    const auto lease = p.lease;
+    ReleaseSRWLockShared(&p.lock);
+    // The strict prototype belongs to the menu toggle. Noclip's independent
+    // protection must still support flying on foot.
+    if (current != lease.owner || GetTickCount64() >= lease.manual_until) return false;
+    if (owner) *owner = current;
+    if (state) *state = lease.board_state;
+    return true;
+}
+std::uint32_t constrain_board_state(const Owner& owner, std::uint32_t requested) noexcept {
+    auto& p = protection();
+    AcquireSRWLockExclusive(&p.lock);
+    auto& lease = p.lease;
+    if (lease.owner != owner || GetTickCount64() >= lease.manual_until) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return requested;
+    }
+    // Ground and air are the only supported move families in this prototype.
+    // Retain the last riding state for EVERY other request, including voluntary
+    // dismount, runout, wipeout, grind, plants and sleep.
+    if (basic_board_state(requested)) lease.board_state = requested;
+    const auto chosen = lease.board_state;
+    ReleaseSRWLockExclusive(&p.lock);
+    return chosen;
+}
 bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
     const auto address = context + offset;
     if (context < 0x10000 || context > highest - offset - sizeof(LONG) ||
@@ -167,6 +206,8 @@ bool filter_requests(std::uintptr_t object, std::uintptr_t Owner::* member) noex
         !reset_pending_causes(owner.causes)) return false;
     // IsRunningOut is animation feedback, not an ordinary dismount request.
     // Keep dismount/mount flags intact, and let an existing runout recover.
+    if (forced_board(object, member))
+        return cancel_request(owner.context, animation_request_offset, runout_feedback_mask | dismount_request_mask);
     return !riding(owner) || cancel_request(owner.context, animation_request_offset, runout_feedback_mask);
 }
 bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t caller) noexcept {
@@ -209,7 +250,9 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     const bool filtered = filter_requests(selector, &Owner::selector);
     const auto next = protection().choose_original(selector, current);
     LastError error;
-    const auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    Owner owner;
+    if (forced_board(selector, &Owner::selector, &owner)) chosen = constrain_board_state(owner, next);
     auto& w = state_watch();
     if (selector == w.selector.load(std::memory_order_acquire) && GetTickCount64() < w.until.load(std::memory_order_acquire)) {
         if (const auto before = w.state.exchange(chosen, std::memory_order_acq_rel); before != chosen) {
@@ -222,6 +265,54 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
         }
     }
     return chosen;
+}
+void change_state(std::uintptr_t core, std::uint32_t requested) {
+    {
+        LastError error;
+        Owner owner;
+        if (forced_board(core, &Owner::core, &owner)) {
+            const auto chosen = constrain_board_state(owner, requested);
+            std::uint32_t current{};
+            // Do not exit and re-enter the same riding state for a rejected
+            // transition: native exit/entry resets timers and rig controls.
+            if (chosen != requested && read(owner.context + physics_state_offset, current) && current == chosen) return;
+            requested = chosen;
+        }
+    }
+    // Keep native exit/entry and its state object/category fields consistent.
+    // Never overwrite context state integers independently of the state object.
+    protection().change_original(core, requested);
+}
+bool physics_on_board(std::uintptr_t core) {
+    {
+        LastError error;
+        if (forced_board(core, &Owner::core)) return true;
+    }
+    return protection().on_board_original(core);
+}
+bool force_board_feedback(const Owner& owner) noexcept {
+    const auto animation = pointer(owner.core, rig_animation_offset);
+    if (!animation || ((owner.context + impact_request_offset) & (alignof(LONG) - 1))) return false;
+    __try {
+        _InterlockedExchange8(reinterpret_cast<volatile char*>(animation + animation_on_board_offset), 1);
+        _InterlockedOr(reinterpret_cast<volatile LONG*>(owner.context + impact_request_offset), animation_on_board_mask);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    return cancel_request(owner.context, animation_request_offset, dismount_request_mask | runout_feedback_mask);
+}
+void import_animation(std::uintptr_t core) {
+    {
+        LastError error;
+        Owner owner;
+        if (forced_board(core, &Owner::core, &owner)) (void)force_board_feedback(owner);
+    }
+    protection().import_original(core);
+    // Animation and collision feedback may raise requests during the import.
+    LastError error;
+    Owner owner;
+    if (forced_board(core, &Owner::core, &owner)) {
+        (void)force_board_feedback(owner);
+        (void)filter_requests(core, &Owner::core);
+    }
 }
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
@@ -236,7 +327,8 @@ bool recovery_predicate(std::uintptr_t core) {
         // Return false at the native runout decision itself. Clearing the cause
         // collector is insufficient: this predicate has air/grind paths which
         // do not require a cause. Never force it true (that requests a stumble).
-        if (protected_owner(core, &Owner::core, &owner) && riding(owner)) return false;
+        if (protected_owner(core, &Owner::core, &owner) &&
+            (forced_board(core, &Owner::core) || riding(owner))) return false;
     }
     return protection().recovery_original(core);
 }
@@ -258,7 +350,8 @@ void rig_update(std::uintptr_t rig, std::uintptr_t animation, std::uintptr_t con
         // import them or change the rig. The native routine retains this pointer,
         // so filter the owned input in place rather than passing a stack copy.
         if (protected_owner(rig, &Owner::rig, &owner) && context == owner.context &&
-            animation == pointer(owner.core, rig_animation_offset) && riding(owner))
+            animation == pointer(owner.core, rig_animation_offset) &&
+            (forced_board(rig, &Owner::rig) || riding(owner)))
             (void)clear_animation_failures(animation);
     }
     protection().rig_original(rig, animation, context, motion);
@@ -274,7 +367,8 @@ bool clear_failure_exports(std::uintptr_t output) noexcept {
 void filter_failure_animation(std::uintptr_t core) noexcept {
     LastError error;
     Owner owner;
-    if (!protected_owner(core, &Owner::core, &owner) || !riding(owner)) return;
+    if (!protected_owner(core, &Owner::core, &owner) ||
+        !(forced_board(core, &Owner::core) || riding(owner))) return;
     const auto output = pointer(pointer(core, 0x3b8), 0x38);
     // Apply after native publication as well: its sub-publishers can produce
     // independent failure outputs during the call. Ordinary dismount, board
@@ -328,7 +422,8 @@ bool compatible(std::uintptr_t base) noexcept {
     if (!read(base + reset_bail_causes_rva, reset_code) || reset_code != reset_bail_causes_code) return false;
     for (const auto& contract : {record_bail_cause_contract, choose_physics_state_contract,
             bail_animation_caller_contract, bail_state_caller_contract, bail_skeleton_contract, bail_publish_contract,
-            recovery_predicate_contract, rig_update_contract, rig_update_caller_contract}) {
+            recovery_predicate_contract, rig_update_contract, rig_update_caller_contract,
+            change_physics_state_contract, import_animation_contract, physics_on_board_contract}) {
         std::array<unsigned char, 32> actual{};
         if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
     }
@@ -341,6 +436,10 @@ bool compatible(std::uintptr_t base) noexcept {
         if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
     }
     for (const auto& contract : animation_failure_contracts) {
+        std::array<unsigned char, 32> actual{};
+        if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
+    }
+    for (const auto& contract : force_board_contracts) {
         std::array<unsigned char, 32> actual{};
         if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
     }
@@ -372,11 +471,16 @@ bool start_no_bail(std::uintptr_t base) noexcept {
             reinterpret_cast<void*>(base + bail_skeleton_contract.rva),
             reinterpret_cast<void*>(base + bail_publish_contract.rva),
             reinterpret_cast<void*>(base + recovery_predicate_contract.rva),
-            reinterpret_cast<void*>(base + rig_update_contract.rva)};
+            reinterpret_cast<void*>(base + rig_update_contract.rva),
+            reinterpret_cast<void*>(base + change_physics_state_contract.rva),
+            reinterpret_cast<void*>(base + import_animation_contract.rva),
+            reinterpret_cast<void*>(base + physics_on_board_contract.rva)};
         const std::array replacements{
             reinterpret_cast<void*>(&record_cause), reinterpret_cast<void*>(&choose_state),
             reinterpret_cast<void*>(&skeleton_response), reinterpret_cast<void*>(&publish_animation),
-            reinterpret_cast<void*>(&recovery_predicate), reinterpret_cast<void*>(&rig_update)};
+            reinterpret_cast<void*>(&recovery_predicate), reinterpret_cast<void*>(&rig_update),
+            reinterpret_cast<void*>(&change_state), reinterpret_cast<void*>(&import_animation),
+            reinterpret_cast<void*>(&physics_on_board)};
         std::array<void*, targets.size()> originals{};
         auto status = HookOk;
         std::size_t prepared{};
@@ -393,6 +497,9 @@ bool start_no_bail(std::uintptr_t base) noexcept {
             p.publish_original = reinterpret_cast<PublishAnimation>(originals[3]);
             p.recovery_original = reinterpret_cast<RecoveryPredicate>(originals[4]);
             p.rig_original = reinterpret_cast<RigUpdate>(originals[5]);
+            p.change_original = reinterpret_cast<ChangeState>(originals[6]);
+            p.import_original = reinterpret_cast<ImportAnimation>(originals[7]);
+            p.on_board_original = reinterpret_cast<PhysicsOnBoard>(originals[8]);
             for (auto target : targets) {
                 status = hook_enable(target);
                 if (status != HookOk) break;
@@ -400,7 +507,7 @@ bool start_no_bail(std::uintptr_t base) noexcept {
             if (status == HookOk) {
                 p.ready.store(true, std::memory_order_release);
                 logging::write(logging::Level::info, logging::Channel::skater,
-                    "No Bail ready: physics causes, animation wipeouts and runouts filtered for the local skater; noclip is protected.");
+                    "No Bail ready: strict on-board prototype (ground/air only); toggle off to dismount. Noclip has independent bail protection.");
                 return true;
             }
         }
@@ -424,7 +531,15 @@ bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
         next.manual_until = manual ? now + 500 : 0;
         next.flight_until = flying ? flight_expires : 0;
     }
+    std::uint32_t initial_state{};
+    if (available && manual && read(next.owner.context + physics_state_offset, initial_state) && basic_board_state(initial_state))
+        next.board_state = initial_state;
     AcquireSRWLockExclusive(&p.lock);
+    if (available && manual) {
+        if (p.lease.owner == next.owner && p.lease.manual_until > GetTickCount64()) {
+            next.board_state = p.lease.board_state;
+        }
+    }
     p.lease = available ? next : Lease{};
     ReleaseSRWLockExclusive(&p.lock);
     return available;

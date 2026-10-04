@@ -107,10 +107,10 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     if (!debug.noclip_available && !debug.noclip) note(debug.noclip_unavailable.c_str());
     bool no_bail = debug.no_bail;
     const char* bail_help = debug.noclip && debug.no_bail_active
-        ? "Protection is automatic during noclip. Enable this to keep it when flight ends."
+        ? "Noclip has automatic bail protection. This toggle forces ground/air riding; enable while on board."
         : debug.no_bail && !debug.no_bail_active
         ? "Enabled; waiting for an active local skater."
-        : "Prevent new wipeouts and runouts. Recover from any current bail before enabling.";
+        : "Force on board (ground/air only). Enable while riding; turn off to dismount or use grinds/plants.";
     if (toggle_row(menu, "No Bail", bail_help, no_bail,
             (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_no_bail, no_bail});

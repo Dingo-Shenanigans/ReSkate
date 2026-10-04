@@ -6,6 +6,8 @@ bool start_no_bail(std::uintptr_t image_base) noexcept;
 bool no_bail_available() noexcept;
 // Publish from the validated local client tick. Returns owner availability even
 // when both controls are off. Manual protection expires if ticks stop arriving.
+// Prototype: manual No Bail forces ground/air riding; enable while already on
+// the board and disable before dismounting or using grind/plant states.
 bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
     bool flying, std::uint64_t flight_expires) noexcept;
 void clear_no_bail() noexcept;

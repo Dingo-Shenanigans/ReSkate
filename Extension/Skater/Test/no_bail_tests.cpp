@@ -22,6 +22,9 @@ struct Buffer {
     template<class T> T get(std::size_t offset) { T value{}; std::memcpy(&value, bytes.data() + offset, sizeof(value)); return value; }
 };
 unsigned assertions{}, recovery_calls{}, rig_calls{}, publish_calls{}, resets{};
+unsigned change_calls{}, import_calls{}, on_board_calls{};
+std::uint32_t changed_state{};
+std::uint8_t imported_board_seen{};
 std::uint32_t next_state{};
 std::uint8_t rig_wipeout_seen{}, rig_other_seen{};
 LONG rig_flags_seen{};
@@ -51,6 +54,25 @@ void native_publish(std::uintptr_t core) {
         *reinterpret_cast<std::uint8_t*>(output + offset) = 1;
 }
 void native_skeleton(std::uintptr_t, float, bool wipeout) { skeleton_wipeout_seen = wipeout; }
+void native_change(std::uintptr_t core, std::uint32_t requested) {
+    ++change_calls;
+    changed_state = requested;
+    const auto context = pointer(core, 0x3c0);
+    *reinterpret_cast<std::uint32_t*>(context + physics_state_offset) = requested;
+    *reinterpret_cast<std::uint32_t*>(context + 0x1418) = (requested / 100) * 100;
+}
+bool native_on_board(std::uintptr_t) { ++on_board_calls; return false; }
+void native_import(std::uintptr_t core) {
+    ++import_calls;
+    const auto animation = pointer(core, rig_animation_offset);
+    const auto context = pointer(core, 0x3c0);
+    imported_board_seen = *reinterpret_cast<std::uint8_t*>(animation + animation_on_board_offset);
+    // Model feedback changing while native import runs. The callback must
+    // restore the invariant after importing, and preserve unrelated flags.
+    *reinterpret_cast<std::uint8_t*>(animation + animation_on_board_offset) = 0;
+    *reinterpret_cast<LONG*>(context + impact_request_offset) &= ~animation_on_board_mask;
+    *reinterpret_cast<LONG*>(context + animation_request_offset) |= dismount_request_mask | runout_feedback_mask;
+}
 
 struct Fixture {
     void* image{};
@@ -108,6 +130,9 @@ struct Fixture {
         p.choose_original = native_choose;
         p.skeleton_original = native_skeleton;
         p.reset_causes = native_reset;
+        p.change_original = native_change;
+        p.import_original = native_import;
+        p.on_board_original = native_on_board;
         p.ready.store(true);
         state(100);
     }
@@ -145,6 +170,13 @@ int main() {
         check(rig_wipeout_seen == 1 && rig_flags_seen == 0x31, "Disabled mode must preserve rig failure inputs");
         publish_animation(f.core.address());
         check(f.output.get<std::uint8_t>(0x9e) == 1, "Disabled mode must preserve native runout publication");
+        check(!physics_on_board(f.core.address()), "Disabled on-board query stays native");
+        change_state(f.core.address(), offboard_physics_state);
+        check(changed_state == offboard_physics_state, "Disabled mode forwards offboard state entry");
+        f.state(100);
+        import_animation(f.core.address());
+        check(imported_board_seen == 0 && f.animation.get<std::uint8_t>(animation_on_board_offset) == 0,
+            "Disabled mode must preserve offboard animation feedback");
 
         f.manual();
         for (const auto state : {100U, 200U, 201U, 400U, 406U, 600U, 603U}) {
@@ -158,10 +190,14 @@ int main() {
             for (auto offset : animation_failure_output_offsets)
                 check(f.output.get<std::uint8_t>(offset) == 0, "Late native failure publication must be filtered");
             check(f.output.get<std::uint8_t>(0x89) == 0x5a, "Keep unrelated animation exports");
-            check(f.context.get<LONG>(animation_request_offset) == 0x180, "Keep ordinary dismount/mount requests");
+            check(f.context.get<LONG>(animation_request_offset) == mount_request_mask, "Strict mode blocks dismount while preserving mount");
             check(f.context.get<LONG>(impact_request_offset) == 0x400, "Keep unrelated physics flags");
             check(f.causes.get<std::uint32_t>(0xe0) == 0, "Clear inline causes before consumption");
         }
+        // Automatic noclip protection remains the existing recovery-friendly
+        // mode. Manual No Bail now intentionally blocks leaving the board.
+        f.manual(false);
+        check(update_no_bail(f.client.address(), f.entity.address(), false, true, GetTickCount64() + 500), "Flight owner resolves for recovery tests");
         for (const auto state : {300U, 500U, 504U, 700U}) {
             f.state(state);
             f.failures();
@@ -172,10 +208,11 @@ int main() {
             check(f.output.get<std::uint8_t>(0x9e) == 1, "Keep existing recovery exports");
         }
         f.state(100);
+        f.manual();
         next_state = wipeout_physics_state;
         check(choose_state(f.selector.address(), 100) == 100, "Block direct physics wipeout before offboard remapping");
         next_state = offboard_physics_state;
-        check(choose_state(f.selector.address(), 100) == offboard_physics_state, "Allow voluntary dismount");
+        check(choose_state(f.selector.address(), 100) == 100, "Strict mode blocks voluntary dismount");
         skeleton_response(f.rig.address(), 0.016f, true);
         check(!skeleton_wipeout_seen, "Block post-update skeleton wipeout requests");
 
@@ -204,6 +241,65 @@ int main() {
         f.manual();
         clear_no_bail();
         check(recovery_predicate(f.core.address()), "Turning the toggle off restores native behavior");
+
+        f.state(200);
+        f.manual();
+        check(physics_on_board(f.core.address()), "Strict mode reports PhysicsOnBoard to animation");
+        for (const auto request : {0U, 300U, 400U, 406U, 500U, 501U, 504U, 600U, 603U, 700U, 702U, 0xffffffffU}) {
+            next_state = request;
+            check(choose_state(f.selector.address(), 200) == 200, "Every non-riding selector result must retain the board state");
+            const auto before = change_calls;
+            change_state(f.core.address(), request);
+            check(change_calls == before && f.context.get<std::uint32_t>(physics_state_offset) == 200,
+                "Reject direct state entry without exiting/re-entering the current riding state");
+        }
+        next_state = 100;
+        check(choose_state(f.selector.address(), 200) == 100, "Strict mode permits native air-to-ground selection");
+        change_state(f.core.address(), 100);
+        check(changed_state == 100 && f.context.get<std::uint32_t>(0x1418) == 100,
+            "Allowed native entry keeps state and category consistent");
+        change_state(f.core.address(), 201);
+        check(changed_state == 201, "Strict mode permits native ground-to-air entry");
+        f.state(504); // A stale/current offboard value must not release the lease.
+        f.manual();
+        next_state = 504;
+        check(choose_state(f.selector.address(), 504) == 201, "Lease renewal retains the last riding state after forced offboard feedback");
+        change_state(f.core.address(), 504);
+        check(changed_state == 201 && f.context.get<std::uint32_t>(physics_state_offset) == 201,
+            "Unexpected offboard entry must use native entry to restore riding");
+        f.failures();
+        import_animation(f.core.address());
+        check(imported_board_seen == 1 && f.animation.get<std::uint8_t>(animation_on_board_offset) == 1,
+            "Enforce on-board animation feedback before and after import");
+        check(f.context.get<LONG>(impact_request_offset) == (animation_on_board_mask | 0x400),
+            "On-board physics feedback preserves unrelated flags");
+        check(f.context.get<LONG>(animation_request_offset) == mount_request_mask,
+            "Late native dismount/runout feedback cannot release the board");
+        f.state(504);
+        check(!recovery_predicate(f.core.address()) && physics_on_board(f.core.address()),
+            "Unexpected offboard feedback cannot disable strict animation protection");
+        f.manual(false);
+        check(!physics_on_board(f.core.address()), "Toggle off restores the native on-board query");
+        change_state(f.core.address(), 504);
+        check(changed_state == 504, "Toggle off permits dismount immediately");
+        check(update_no_bail(f.client.address(), f.entity.address(), false, true, GetTickCount64() + 500), "Offboard flight owner resolves");
+        check(!physics_on_board(f.core.address()), "Flight-only protection must not force a walking skater onto the board");
+        next_state = 603;
+        check(choose_state(f.selector.address(), 504) == 603, "Flight-only protection must preserve plant state selection");
+        f.state(100);
+        f.manual();
+        protection().lease.manual_until = GetTickCount64();
+        check(!physics_on_board(f.core.address()), "Expired manual lease releases strict mode even when flight protection remains");
+        next_state = 504;
+        check(choose_state(f.selector.address(), 100) == 504, "Expired manual lease restores offboard selection");
+        f.manual();
+        f.player.set<std::uint8_t>(0x44, 1);
+        check(!physics_on_board(f.core.address()), "Remote ownership must not receive a forced on-board answer");
+        change_state(f.core.address(), 504);
+        check(changed_state == 504, "Invalidated ownership must forward state entry");
+        f.player.set<std::uint8_t>(0x44, 0);
+        clear_no_bail();
+        check(change_calls && import_calls && on_board_calls, "All strict-mode native relays were exercised");
         check(!clear_animation_failures(0) && !clear_failure_exports(0), "Invalid buffers must fail without an access violation");
         check(recovery_calls && rig_calls && publish_calls && resets, "All native relays were exercised");
         std::cout << "No Bail: " << assertions << " assertions passed\n";
