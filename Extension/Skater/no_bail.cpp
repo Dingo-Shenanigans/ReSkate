@@ -237,9 +237,12 @@ void note_local_wipeout(const Owner& owner) noexcept {
         }
     hall_of_meat::Bail bail;
     if (!hall_of_meat::observe_wipeout(bones, &bail)) return; // the ragdoll's follow-up step
+    unsigned mask = 0;
+    for (std::size_t index = 0; index < bail.bone_contacts.size(); ++index)
+        if (bail.bone_contacts[index]) mask |= 1u << index;
     logging::log(logging::Level::info, logging::Channel::skater,
-        "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}, body contact {})",
-        bail.impact_count, bail.magnitude, bail.body_contact ? "yes" : "no");
+        "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}, body contact {}, bone mask 0x{:04x})",
+        bail.impact_count, bail.magnitude, bail.body_contact ? "yes" : "no", mask);
     char text[96];
     std::snprintf(text, sizeof(text), "Wipeout at impact %.1f, %u bone contact(s)",
         bail.magnitude, static_cast<unsigned>(std::count(bones.begin(), bones.end(), 1)));
