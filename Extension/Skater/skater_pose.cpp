@@ -56,25 +56,6 @@ bool child(const Joint& parent, std::uintptr_t buffer, std::uint16_t index, Join
     return true;
 }
 
-// The five recent body-contact world positions the game exports
-// (contacts+0x60..0xa8); a near-zero vector means the slot is empty.
-void read_contacts(std::uintptr_t component, Snapshot& out) noexcept {
-    std::uintptr_t core{}, link{}, contacts{};
-    if (!read(component + 0x70, &core, 8) || core < 0x10000) return;
-    if (!read(core + 0x3b8, &link, 8) || link < 0x10000) return;
-    if (!read(link + 0x30, &contacts, 8) || contacts < 0x10000) return;
-    std::size_t filled = 0;
-    for (const std::uintptr_t offset : {0x60u, 0x70u, 0x80u, 0x90u, 0xa0u}) {
-        std::array<float, 4> vector{};
-        if (!read(contacts + offset, vector.data(), sizeof(vector))) continue;
-        const bool finite = std::isfinite(vector[0]) && std::isfinite(vector[1]) && std::isfinite(vector[2]);
-        if (!finite || (std::abs(vector[0]) + std::abs(vector[1]) + std::abs(vector[2]) < 0.001f)) continue;
-        if (filled < out.contacts.size()) out.contacts[filled] = {vector[0], vector[1], vector[2]};
-        ++filled;
-    }
-    out.contacts_valid = filled > 0;
-}
-
 struct State {
     SRWLOCK lock = SRWLOCK_INIT;
     Snapshot snapshot;
@@ -160,7 +141,6 @@ bool capture(std::uintptr_t base, std::uintptr_t entity, Snapshot& out) noexcept
     if (!std::isfinite(snapshot.origin[0]) || !std::isfinite(snapshot.origin[1]) ||
         !std::isfinite(snapshot.origin[2]))
         return false;
-    read_contacts(component, snapshot);
     snapshot.valid = true;
     snapshot.at = GetTickCount64();
     {

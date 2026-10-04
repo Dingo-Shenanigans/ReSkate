@@ -61,8 +61,6 @@ struct WorldJoint {
 struct Snapshot {
     bool valid{};
     std::array<WorldJoint, skeleton_joints> joints{}; // all joints, world space
-    std::array<std::array<float, 3>, 5> contacts{};   // recent body-contact positions
-    bool contacts_valid{};
     std::array<float, 3> origin{};                    // the character's placement (joint 1)
     std::uint64_t at{};                               // GetTickCount64() of the capture
 };
