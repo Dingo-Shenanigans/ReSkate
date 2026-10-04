@@ -235,72 +235,51 @@ void note_local_wipeout(const Owner& owner) noexcept {
             std::uint8_t flag{};
             if (read(contacts + first_bone_flag + index, flag) && flag <= 1) bones[index] = flag;
         }
+    // The collision struct (rig+0x2f10 -> +0x1040, verified live 2026-10-04:
+    // reached from the rig, records live at a wipeout) holds the body impacts:
+    // twenty 0x20-byte records, physics bone id at record+0x10, position at +0.
+    std::array<hall_of_meat::BoneHit, hall_of_meat::max_bone_hits> bone_hit_data{};
+    std::size_t bone_hit_count = 0;
+    std::uintptr_t holder2{}, collision{};
+    std::uint32_t record_count = 0;
+    if (read(owner.rig + 0x2f10, holder2) && holder2 > 0x10000 &&
+        read(holder2 + 0x1040, collision) && collision > 0x10000 &&
+        read(collision + 0x110c, record_count) && record_count <= 0x14) {
+        for (std::uint32_t index = 0; index < record_count; ++index) {
+            const std::uintptr_t record = collision + 0x10 + index * 0x20;
+            std::uint32_t bone_id = 0;
+            if (!read(record + 0x10, bone_id) || bone_id > 29) continue;
+            hall_of_meat::BoneHit hit{};
+            hit.bone_id = bone_id;
+            std::array<float, 3> position{};
+            if (read(record, position) && std::isfinite(position[0]) && std::isfinite(position[1]) &&
+                std::isfinite(position[2]) &&
+                std::abs(position[0]) + std::abs(position[1]) + std::abs(position[2]) > 0.001f) {
+                hit.position = position;
+                hit.has_position = true;
+            }
+            bone_hit_data[bone_hit_count++] = hit;
+        }
+    }
     hall_of_meat::Bail bail;
-    if (!hall_of_meat::observe_wipeout(bones, &bail)) return; // the ragdoll's follow-up step
-    // One contact-region dump per session, taken at a wipeout: the semantics
-    // of the exported vectors (+0x60..0xa8) are read from live values then.
-    static std::atomic<bool> contacts_dumped{};
-    static std::atomic<bool> collision_dumped{};
-    if (!contacts_dumped.exchange(true) && contacts) {
-        logging::write(logging::Level::info, logging::Channel::skater,
-            "HallOfMeat contacts dump begin");
-        for (std::uintptr_t row = 0; row < 0x100; row += 16) {
-            std::array<float, 4> vector{};
-            if (!read(contacts + row, vector)) continue;
-            logging::log(logging::Level::info, logging::Channel::skater,
-                "contacts +{:04x}: {:12.4f} {:12.4f} {:12.4f} {:12.4f}",
-                row, vector[0], vector[1], vector[2], vector[3]);
-        }
-        logging::write(logging::Level::info, logging::Channel::skater,
-            "HallOfMeat contacts dump end");
-    }
-    // The collision struct (core+0x2f10 -> +0x1040) holds the per-bone flags
-    // (base 0x10f8 = physics bone 0, verified by the feet check writing bone
-    // 15's flag) and the impact accumulators. One dump per session, at the
-    // wipeout, pins the flag-to-bone semantics for the panel and the colours.
-    if (!collision_dumped.exchange(true)) {
-        // Which base owns the collision link? Log every candidate's pointers and
-    // the flag byte the chain ends at; the base whose flag byte matches the
-    // sensitive-body mask bit is the one the overlay reads afterwards.
-    static std::atomic<bool> probed{};
-    if (!probed.exchange(true)) {
-        const std::uintptr_t bases[]{owner.core, owner.entity, owner.component,
-            owner.rig, owner.player, owner.selector, owner.causes, owner.context};
-        for (const auto candidate : bases) {
-            if (candidate < 0x10000) continue;
-            std::uintptr_t holder2{};
-            if (!read(candidate + 0x2f10, holder2)) {
-                logging::log(logging::Level::info, logging::Channel::skater,
-                    "HallOfMeat probe base {:#x}: +2f10 unreadable", candidate);
-                continue;
-            }
-            std::uintptr_t collision{};
-            if (holder2 < 0x10000 || !read(holder2 + 0x1040, collision)) {
-                logging::log(logging::Level::info, logging::Channel::skater,
-                    "HallOfMeat probe base {:#x}: holder {:#x}, +1040 unreadable",
-                    candidate, holder2);
-                continue;
-            }
-            std::uint8_t flag{};
-            const bool flag_read = collision > 0x10000 && read(collision + 0x10fe, flag);
-            std::uint32_t record_count{};
-            const bool count_read = collision > 0x10000 && read(collision + 0x110c, record_count);
-            logging::log(logging::Level::info, logging::Channel::skater,
-                "HallOfMeat probe base {:#x}: holder {:#x}, collision {:#x}, flag+10fe {} ({}), records {} ({})",
-                candidate, holder2, collision, flag, flag_read ? "read" : "unread",
-                count_read ? (int)record_count : -1, count_read ? "read" : "unread");
-        }
-    }
-    }
+    if (!hall_of_meat::observe_wipeout(bones, bone_hit_count > 0 ? bone_hit_data.data() : nullptr,
+        bone_hit_count, &bail)) return; // the ragdoll's follow-up step
     unsigned mask = 0;
     for (std::size_t index = 0; index < bail.bone_contacts.size(); ++index)
         if (bail.bone_contacts[index]) mask |= 1u << index;
+    std::string hits_text;
+    for (std::size_t index = 0; index < bail.bone_hit_count; ++index) {
+        hits_text += std::string(index ? ", " : " ") +
+            hall_of_meat::physics_bone_name(bail.bone_hits[index].bone_id);
+    }
     logging::log(logging::Level::info, logging::Channel::skater,
         "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}, body contact {}, bone mask 0x{:04x})",
         bail.impact_count, bail.magnitude, bail.body_contact ? "yes" : "no", mask);
-    char text[96];
-    std::snprintf(text, sizeof(text), "Wipeout at impact %.1f, %u bone contact(s)",
-        bail.magnitude, static_cast<unsigned>(std::count(bones.begin(), bones.end(), 1)));
+    logging::log(logging::Level::info, logging::Channel::skater,
+        "Hall of Meat: body hits:{}", hits_text.empty() ? " (none recorded)" : hits_text.c_str());
+    char text[160];
+    std::snprintf(text, sizeof(text), "Wipeout! Hit:%s",
+        hits_text.empty() ? " body" : hits_text.c_str());
     overlay::notify(overlay::NoticeLevel::info, "Hall of Meat", text);
 }
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {

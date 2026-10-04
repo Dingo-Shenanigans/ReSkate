@@ -64,17 +64,14 @@ void meat_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callb
         const auto& last = bails.front();
         info(menu, "Last bail", ago(last.at));
         info(menu, "Total impact", std::format("{:.1f}", last.magnitude));
-        // The game's fourteen per-bone contact flags. Which index is which
-        // bone is still unmapped (K1..K14), so they read as numbered chips
-        // until the calibration run names them.
-        field(menu, "Bone contacts");
-        for (std::size_t index = 0; index < last.bone_contacts.size(); ++index) {
-            if (index) ImGui::SameLine();
-            const bool hit = last.bone_contacts[index] != 0;
-            ImGui::PushStyleColor(ImGuiCol_Text,
-                hit ? ImVec4(1.f, .25f, .25f, 1.f) : ImVec4(.45f, .45f, .5f, 1.f));
-            ImGui::TextUnformatted((std::string(hit ? "K" : "k") + std::to_string(index + 1)).c_str());
-            ImGui::PopStyleColor();
+        if (last.bone_hit_count > 0) {
+            field(menu, "Bones hit");
+            std::string bones;
+            for (std::size_t index = 0; index < last.bone_hit_count; ++index) {
+                bones += (index ? std::string(", ") : std::string()) +
+                    dingosdk::hall_of_meat::physics_bone_name(last.bone_hits[index].bone_id);
+            }
+            note(bones.c_str());
         }
         for (std::size_t index = 0; index < last.impact_count; ++index)
             info(menu, std::format("Cause {}", index + 1).c_str(),
