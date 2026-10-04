@@ -516,6 +516,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         draw_perf_window();
     }
     draw_nametags();
+    draw_hall_of_meat_skeleton();
     draw_game_text();
     draw_skate_hud();
     draw_perf_hud();
