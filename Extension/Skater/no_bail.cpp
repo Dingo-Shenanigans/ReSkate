@@ -259,9 +259,23 @@ void note_local_wipeout(const Owner& owner) noexcept {
     // 15's flag) and the impact accumulators. One dump per session, at the
     // wipeout, pins the flag-to-bone semantics for the panel and the colours.
     if (!collision_dumped.exchange(true)) {
+        // The base that holds the collision link is not pinned down yet
+        // (the animation side walks it from its own component); probe them all.
+        const std::uintptr_t bases[]{owner.core, owner.entity, owner.component,
+            owner.rig, owner.player, owner.selector};
         std::uintptr_t holder2{}, collision{};
-        if (read(owner.core + 0x2f10, holder2) && holder2 > 0x10000 &&
-            read(holder2 + 0x1040, collision) && collision > 0x10000) {
+        for (const auto candidate : bases) {
+            if (candidate < 0x10000 || !read(candidate + 0x2f10, holder2) || holder2 < 0x10000 ||
+                !read(holder2 + 0x1040, collision) || collision < 0x10000)
+                continue;
+            std::uint32_t record_count{};
+            if (!read(collision + 0x110c, record_count) || record_count > 0x14) continue;
+            logging::log(logging::Level::info, logging::Channel::skater,
+                "HallOfMeat collision struct via base {:#x} at {:#x}",
+                candidate, collision);
+            break;
+        }
+        if (collision > 0x10000) {
             logging::write(logging::Level::info, logging::Channel::skater,
                 "HallOfMeat collision dump begin");
             for (std::uintptr_t row = 0; row < 0x2a0; row += 16) {
