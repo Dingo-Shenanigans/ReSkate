@@ -600,10 +600,12 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         for (const auto& document : editDocuments) pointers.push_back(&document);
                         fb::ebx::MergeSummary summary;
                         auto combined = fb::ebx::merge_documents(baseDocument, pointers, &summary);
-                        if (!summary.instances && !summary.arrayEntries) continue;
+                        if (!summary.instances && !summary.arrayEntries && !summary.rootReplacements) continue;
                         rebuilt = fb::ebx::write_document(combined);
                         what = std::to_string(summary.instances) + " instance(s), " +
                                std::to_string(summary.arrayEntries) + " list entries";
+                        if (summary.rootReplacements)
+                            what += ", changed in place";
                     }
                     const auto placement = store.write(state.manifestChunk, manifestArchive,
                                                        fb::encode_cas(rebuilt, {gameRoot}));

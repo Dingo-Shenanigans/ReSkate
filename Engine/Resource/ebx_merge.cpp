@@ -294,6 +294,42 @@ Document merge_documents(const Document& base, const std::span<const Document* c
     const auto* baseRoot = base.root();
     if (!baseRoot || !baseRoot->object) throw std::runtime_error("EBX base has no root object");
 
+    // A lone edit has no other edit to disagree with, so its in-place changes
+    // are as safe to honour as its additions: the root is replaced with the
+    // edit's root instead of only receiving appended entries. Anything the
+    // root points at is carried like an appended entry would carry it. With
+    // two or more edits this stays off, because two edits to one value cannot
+    // both be honoured.
+    if (edits.size() == 1 && edits[0]) {
+        const auto* edit = edits[0];
+        const auto* editRoot = edit->root();
+        if (!editRoot || !editRoot->object) throw std::runtime_error("EBX edit has no root object");
+        detail::Carrier mapper(*edit, result);
+        MergeSummary totals;
+        auto& root = *const_cast<InstanceRecord*>(result.root());
+        root.object = mapper.object(*editRoot->object);
+        ++totals.rootReplacements;
+
+        // An instance an edit added but never linked from the root still has to
+        // exist, or the asset it belongs to goes missing.
+        for (const auto& instance : edit->instances) {
+            // Internal instances are only carried when something the edit added
+            // points at them, which the root replacement above has already done.
+            if (!instance.exported) continue;
+            bool known{};
+            for (const auto& existing : result.instances)
+                if (existing.exported && existing.instanceGuid == instance.instanceGuid) { known = true; break; }
+            if (known) continue;
+            static_cast<void>(mapper.instance(
+                static_cast<std::size_t>(&instance - edit->instances.data())));
+        }
+        totals.instances += mapper.instances;
+        totals.renumbered += mapper.renumbered;
+        detail::sort_instances(result);
+        if (summary) *summary = totals;
+        return result;
+    }
+
     // Snapshot how long each root array started out, so every edit is measured
     // against the base rather than against the edits applied before it.
     std::map<std::string, std::size_t, std::less<>> baseLengths;
