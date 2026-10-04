@@ -101,10 +101,38 @@ public:
     void shift(fb::CasIdentifier& location, std::uint32_t& offset,
                const ArchivePlacement* placement) const;
 
+    [[nodiscard]] const fs::path& output() const noexcept { return output_; }
+
 private:
     fs::path output_;
     std::map<std::wstring, std::uint64_t> offsets_;
 };
+
+// Reverses CasStore::shift. Returns false when the placement has no block in that archive.
+bool unshift(const ArchivePlacement& placement, std::string_view directory, std::uint16_t& archive,
+             std::uint32_t& offset);
+
+// Where one contributor's copy of an asset lives, so conflicting copies can be
+// fetched and combined later.
+struct Contribution {
+    fs::path root;
+    fb::BundleFileInfo file;   // where to read the copy: its own archive, or the patch
+    fb::Sha1 sha1;
+    std::vector<std::byte> resourceMeta;
+    bool base{};
+};
+
+// The location to read a copy from: the patch if this merge wrote the copy, else the copy's own folder.
+struct ReadBack {
+    fs::path root;
+    fb::BundleFileInfo file;
+};
+ReadBack read_back(const fs::path& contributor, const fs::path& output, fb::BundleFileInfo file, bool written,
+                   const ArchivePlacement* placement, const std::string* directory);
+
+// Returns the copies that differ from the base copy, lowest priority first. Identical copies
+// count once, at the last one, so the highest-priority copy still wins a tie.
+std::vector<const Contribution*> distinct_edits(const std::vector<Contribution>& history, const Contribution& base);
 
 using ArchiveUse = std::set<std::pair<std::uint32_t, std::uint16_t>>;
 

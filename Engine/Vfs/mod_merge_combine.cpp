@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 namespace dingosdk::mods::detail {
@@ -32,16 +33,7 @@ struct Asset {
     fb::BundleAsset asset;
     fb::BundleFileInfo file;
     bool base{};
-};
-
-// Where one contributor's copy of an asset lives, so conflicting copies can be
-// fetched and combined later.
-struct Contribution {
-    fs::path root;
-    fb::BundleFileInfo file;   // still pointing at the archive it came from
-    fb::Sha1 sha1;
-    std::vector<std::byte> resourceMeta;
-    bool base{};
+    std::size_t regionIndex{};
 };
 
 // Region files run parallel to the manifest's ebx, then resources, then chunks.
@@ -54,7 +46,7 @@ std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundl
             const auto index = first + result.size();
             if (index >= region.files.size())
                 throw std::runtime_error("Bundle region has fewer files than its manifest lists");
-            result.push_back({asset, region.files[index]});
+            result.push_back({asset, region.files[index], false, index});
         }
     };
     take(manifest.ebx);
@@ -111,6 +103,17 @@ void build_manifest(const std::vector<Asset>& assets, std::span<const std::byte>
 }
 
 } // namespace
+
+std::vector<const Contribution*> distinct_edits(const std::vector<Contribution>& history, const Contribution& base) {
+    std::vector<const Contribution*> edits;
+    std::set<std::pair<fb::Sha1, std::vector<std::byte>>> seen;
+    for (auto contribution = history.rbegin(); contribution != history.rend(); ++contribution) {
+        if (contribution->base || contribution->sha1 == base.sha1) continue;
+        if (seen.emplace(contribution->sha1, contribution->resourceMeta).second) edits.push_back(&*contribution);
+    }
+    std::reverse(edits.begin(), edits.end());
+    return edits;
+}
 
 // One superbundle, combined across every mod that ships it. `used` collects the
 // patch archives the result actually references, keyed by install chunk, so the
@@ -387,20 +390,13 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             auto id = asset_key(entry.asset);
             if (entry.asset.kind == fb::AssetKind::ebx ||
                 entry.asset.kind == fb::AssetKind::resource) {
-                // The contributor's own copy still sits at its original offset in
-                // its own folder, which is where a later merge reads it from.
-                auto unshifted = entry.file;
-                if (placement && unshifted.location.patch) {
-                    for (const auto& [origin, spot] : placement->at) {
-                        if (spot.archive != unshifted.location.archive ||
-                            origin.first != store.directory(unshifted.location.installChunk)) continue;
-                        unshifted.location.archive = origin.second;
-                        unshifted.offset = static_cast<std::uint32_t>(unshifted.offset - spot.offset);
-                        break;
-                    }
-                }
+                // If this merge wrote the copy, read it from the patch. Otherwise, read it
+                // from its original offset in its own folder.
+                const auto written = renumbered.contains(entry.regionIndex) || overridden.contains(entry.regionIndex);
+                auto source = read_back(root, store.output(), entry.file, written, placement,
+                                        store.find_directory(entry.file.location.installChunk));
                 state.history[id].push_back(
-                    {root, unshifted, entry.asset.sha1, entry.asset.resourceMeta, isBase});
+                    {std::move(source.root), source.file, entry.asset.sha1, entry.asset.resourceMeta, isBase});
             }
             if (isBase) state.baseSha.insert_or_assign(id, entry.asset.sha1);
             const auto at = state.seen.find(id);
@@ -466,10 +462,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 if (!baseCopy) continue;
                 // Both mods rebuild the whole bundle, so only the assets whose
                 // content actually moved away from the base are contested.
-                std::vector<const Contribution*> edits;
-                for (const auto& contribution : found->second)
-                    if (!contribution.base && contribution.sha1 != baseCopy->sha1)
-                        edits.push_back(&contribution);
+                const auto edits = distinct_edits(found->second, *baseCopy);
                 if (edits.size() < 2) continue;
                 try {
                     // A placement that is not a patch one still lives in the

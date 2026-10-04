@@ -42,6 +42,10 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS)
     add_executable(dingosdk_mod_scoring_tests Engine/Vfs/Test/mod_scoring_tests.cpp)
     target_link_libraries(dingosdk_mod_scoring_tests PRIVATE dingosdk_mods)
     add_test(NAME mod_scoring COMMAND dingosdk_mod_scoring_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    add_executable(dingosdk_mod_merge_combine_tests Engine/Vfs/Test/mod_merge_combine_tests.cpp)
+    target_link_libraries(dingosdk_mod_merge_combine_tests PRIVATE dingosdk_mods)
+    target_include_directories(dingosdk_mod_merge_combine_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME mod_merge_combine COMMAND dingosdk_mod_merge_combine_tests)
 endif()
 
 # Launcher fonts (OFL / Apache, licences beside them) and the background photo,

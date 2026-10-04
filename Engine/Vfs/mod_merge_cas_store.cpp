@@ -7,6 +7,30 @@
 
 namespace dingosdk::mods::detail {
 
+bool unshift(const ArchivePlacement& placement, std::string_view directory, std::uint16_t& archive,
+             std::uint32_t& offset) {
+    const ArchivePlacement::Spot* best{};
+    std::uint16_t origin{};
+    for (const auto& [key, spot] : placement.at) {
+        if (key.first != directory || spot.archive != archive || spot.offset > offset) continue;
+        // When two blocks start at the same offset, the earlier block is empty. The merge appends
+        // archives in name order, which is index order for zero-padded names, so use the later block.
+        if (!best || spot.offset >= best->offset) { best = &spot; origin = key.second; }
+    }
+    if (!best) return false;
+    archive = origin;
+    offset = static_cast<std::uint32_t>(offset - best->offset);
+    return true;
+}
+
+ReadBack read_back(const fs::path& contributor, const fs::path& output, fb::BundleFileInfo file, bool written,
+                   const ArchivePlacement* placement, const std::string* directory) {
+    if (written) return {output, file};
+    if (placement && directory && file.location.patch)
+        unshift(*placement, *directory, file.location.archive, file.offset);
+    return {contributor, file};
+}
+
 CasStore::CasStore(fs::path baseRoot, fs::path output, const native_db::Node& layout)
     : GameArchives(std::move(baseRoot), layout), output_(std::move(output)) {}
 
