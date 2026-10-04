@@ -259,45 +259,38 @@ void note_local_wipeout(const Owner& owner) noexcept {
     // 15's flag) and the impact accumulators. One dump per session, at the
     // wipeout, pins the flag-to-bone semantics for the panel and the colours.
     if (!collision_dumped.exchange(true)) {
-        // The base that holds the collision link is not pinned down yet
-        // (the animation side walks it from its own component); probe them all.
+        // Which base owns the collision link? Log every candidate's pointers and
+    // the flag byte the chain ends at; the base whose flag byte matches the
+    // sensitive-body mask bit is the one the overlay reads afterwards.
+    static std::atomic<bool> probed{};
+    if (!probed.exchange(true)) {
         const std::uintptr_t bases[]{owner.core, owner.entity, owner.component,
-            owner.rig, owner.player, owner.selector};
-        std::uintptr_t holder2{}, collision{};
+            owner.rig, owner.player, owner.selector, owner.causes, owner.context};
         for (const auto candidate : bases) {
-            if (candidate < 0x10000 || !read(candidate + 0x2f10, holder2) || holder2 < 0x10000 ||
-                !read(holder2 + 0x1040, collision) || collision < 0x10000)
-                continue;
-            std::uint32_t record_count{};
-            if (!read(collision + 0x110c, record_count) || record_count > 0x14) continue;
-            logging::log(logging::Level::info, logging::Channel::skater,
-                "HallOfMeat collision struct via base {:#x} at {:#x}",
-                candidate, collision);
-            break;
-        }
-        if (collision > 0x10000) {
-            logging::write(logging::Level::info, logging::Channel::skater,
-                "HallOfMeat collision dump begin");
-            for (std::uintptr_t row = 0; row < 0x2a0; row += 16) {
-            std::array<float, 4> vector{};
-            if (!read(collision + row, vector)) continue;
-            logging::log(logging::Level::info, logging::Channel::skater,
-                "collision +{:04x}: {:12.4f} {:12.4f} {:12.4f} {:12.4f}",
-                row, vector[0], vector[1], vector[2], vector[3]);
-        }
-        for (std::uintptr_t row = 0x10e0; row < 0x1130; row += 16) {
-                std::array<float, 4> vector{};
-                if (!read(collision + row, vector)) continue;
+            if (candidate < 0x10000) continue;
+            std::uintptr_t holder2{};
+            if (!read(candidate + 0x2f10, holder2)) {
                 logging::log(logging::Level::info, logging::Channel::skater,
-                    "collision +{:04x}: {:12.4f} {:12.4f} {:12.4f} {:12.4f}",
-                    row, vector[0], vector[1], vector[2], vector[3]);
+                    "HallOfMeat probe base {:#x}: +2f10 unreadable", candidate);
+                continue;
             }
-            logging::write(logging::Level::info, logging::Channel::skater,
-                "HallOfMeat collision dump end");
-        } else {
-            logging::write(logging::Level::info, logging::Channel::skater,
-                "HallOfMeat collision struct unreachable");
+            std::uintptr_t collision{};
+            if (holder2 < 0x10000 || !read(holder2 + 0x1040, collision)) {
+                logging::log(logging::Level::info, logging::Channel::skater,
+                    "HallOfMeat probe base {:#x}: holder {:#x}, +1040 unreadable",
+                    candidate, holder2);
+                continue;
+            }
+            std::uint8_t flag{};
+            const bool flag_read = collision > 0x10000 && read(collision + 0x10fe, flag);
+            std::uint32_t record_count{};
+            const bool count_read = collision > 0x10000 && read(collision + 0x110c, record_count);
+            logging::log(logging::Level::info, logging::Channel::skater,
+                "HallOfMeat probe base {:#x}: holder {:#x}, collision {:#x}, flag+10fe {} ({}), records {} ({})",
+                candidate, holder2, collision, flag, flag_read ? "read" : "unread",
+                count_read ? (int)record_count : -1, count_read ? "read" : "unread");
         }
+    }
     }
     unsigned mask = 0;
     for (std::size_t index = 0; index < bail.bone_contacts.size(); ++index)
