@@ -18,6 +18,8 @@ using ChooseState = std::uint32_t (*)(std::uintptr_t, std::uint32_t);
 using SkeletonResponse = void (*)(std::uintptr_t, float, bool);
 using PublishAnimation = void (*)(std::uintptr_t);
 using ResetCauses = void (*)(std::uintptr_t);
+using RecoveryPredicate = bool (*)(std::uintptr_t);
+using RigUpdate = void (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
 constexpr std::uintptr_t highest = memory::highest_user_address;
 // The hooks re-resolve the local skater's ownership (some 35 fields) on every
 // protected physics step: guarded same-process copies, not a system call each.
@@ -56,6 +58,8 @@ struct Protection {
     SkeletonResponse skeleton_original{};
     PublishAnimation publish_original{};
     ResetCauses reset_causes{};
+    RecoveryPredicate recovery_original{};
+    RigUpdate rig_original{};
     std::atomic<bool> ready{};
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
@@ -119,6 +123,14 @@ bool protected_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owne
     if (owner) *owner = current;
     return true;
 }
+bool riding(const Owner& owner) noexcept {
+    std::uint32_t state{};
+    if (!read(owner.context + physics_state_offset, state)) return false;
+    // Include plant tricks, whose animation can also enter a runout. Existing
+    // offboard and wipeout states must keep their native recovery behavior.
+    return (state >= 100 && state < 300) || (state >= 400 && state < 500) ||
+           (state >= 600 && state < 700);
+}
 bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
     const auto address = context + offset;
     if (context < 0x10000 || context > highest - offset - sizeof(LONG) ||
@@ -151,8 +163,11 @@ bool filter_requests(std::uintptr_t object, std::uintptr_t Owner::* member) noex
     // Native collision/landing checks also write the collector inline. Reset
     // it at each consumer, after those writes, before either animation's bail
     // or recover/runout query. Filtering record_cause alone misses this path.
-    return protected_owner(object, member, &owner) && cancel_wipeout_requests(owner.context) &&
-        reset_pending_causes(owner.causes);
+    if (!protected_owner(object, member, &owner) || !cancel_wipeout_requests(owner.context) ||
+        !reset_pending_causes(owner.causes)) return false;
+    // IsRunningOut is animation feedback, not an ordinary dismount request.
+    // Keep dismount/mount flags intact, and let an existing runout recover.
+    return !riding(owner) || cancel_request(owner.context, animation_request_offset, runout_feedback_mask);
 }
 bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t caller) noexcept {
     LastError error;
@@ -167,8 +182,6 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const bool protect = suppress_cause(causes, reason, caller);
-    // Do not force the native recovery/stumble predicate (recovery_predicate). Its
-    // result is also exported to animation at +0x9e, even without a collision.
     // Stop new causes before they reach either the wipeout or runout decision;
     // the native per-step reset still owns clearing the collector's history.
     if (!protect) protection().cause_original(causes, reason, magnitude);
@@ -216,6 +229,58 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
     protection().skeleton_original(rig, seconds, wipeout);
 }
+bool recovery_predicate(std::uintptr_t core) {
+    {
+        LastError error;
+        Owner owner;
+        // Return false at the native runout decision itself. Clearing the cause
+        // collector is insufficient: this predicate has air/grind paths which
+        // do not require a cause. Never force it true (that requests a stumble).
+        if (protected_owner(core, &Owner::core, &owner) && riding(owner)) return false;
+    }
+    return protection().recovery_original(core);
+}
+bool clear_animation_failures(std::uintptr_t animation) noexcept {
+    if (animation < 0x10000 || animation > highest - rig_failure_flags_offset - sizeof(LONG) ||
+        ((animation + rig_failure_flags_offset) & (alignof(LONG) - 1)) != 0) return false;
+    __try {
+        _InterlockedExchange8(reinterpret_cast<volatile char*>(animation + rig_wipeout_offset), 0);
+        _InterlockedAnd(reinterpret_cast<volatile LONG*>(animation + rig_failure_flags_offset), ~rig_wipeout_request_mask);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+void rig_update(std::uintptr_t rig, std::uintptr_t animation, std::uintptr_t context, std::uintptr_t motion) {
+    {
+        LastError error;
+        Owner owner;
+        // Animation feeds the rig before the physics selector and post-update
+        // skeleton hook. Sanitize its failure inputs before native code can
+        // import them or change the rig. The native routine retains this pointer,
+        // so filter the owned input in place rather than passing a stack copy.
+        if (protected_owner(rig, &Owner::rig, &owner) && context == owner.context &&
+            animation == pointer(owner.core, rig_animation_offset) && riding(owner))
+            (void)clear_animation_failures(animation);
+    }
+    protection().rig_original(rig, animation, context, motion);
+}
+bool clear_failure_exports(std::uintptr_t output) noexcept {
+    if (output < 0x10000 || output > highest - animation_runout_output_offset) return false;
+    __try {
+        for (const auto offset : animation_failure_output_offsets)
+            _InterlockedExchange8(reinterpret_cast<volatile char*>(output + offset), 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+void filter_failure_animation(std::uintptr_t core) noexcept {
+    LastError error;
+    Owner owner;
+    if (!protected_owner(core, &Owner::core, &owner) || !riding(owner)) return;
+    const auto output = pointer(pointer(core, 0x3b8), 0x38);
+    // Apply after native publication as well: its sub-publishers can produce
+    // independent failure outputs during the call. Ordinary dismount, board
+    // contact and movement outputs remain native.
+    (void)clear_failure_exports(output);
+}
 bool clear_contact_output(std::uintptr_t contacts) noexcept {
     if (contacts < 0x10000 || contacts > highest - body_contact_output_offset) return false;
     __try {
@@ -244,11 +309,12 @@ void filter_contact_animation(std::uintptr_t core) noexcept {
 void publish_animation(std::uintptr_t core) {
     // Animation also reads requests without consulting the cause collector.
     // Clear flags and pending causes before native publication, including
-    // its early recovery query and cause export. Leave the native query result
-    // unchanged: forcing it true used to put the skater into a stumbling state.
+    // its early recovery query and cause export. The recovery hook denies new
+    // runouts while riding; it never forces a recovery/stumble request true.
     (void)filter_requests(core, &Owner::core);
     protection().publish_original(core);
     filter_contact_animation(core);
+    filter_failure_animation(core);
 }
 bool compatible(std::uintptr_t base) noexcept {
     if (base < 0x10000 || base > highest - supported_build::game_image_size) return false;
@@ -261,7 +327,8 @@ bool compatible(std::uintptr_t base) noexcept {
     std::array<unsigned char, reset_bail_causes_code.size()> reset_code{};
     if (!read(base + reset_bail_causes_rva, reset_code) || reset_code != reset_bail_causes_code) return false;
     for (const auto& contract : {record_bail_cause_contract, choose_physics_state_contract,
-            bail_animation_caller_contract, bail_state_caller_contract, bail_skeleton_contract, bail_publish_contract}) {
+            bail_animation_caller_contract, bail_state_caller_contract, bail_skeleton_contract, bail_publish_contract,
+            recovery_predicate_contract, rig_update_contract, rig_update_caller_contract}) {
         std::array<unsigned char, 32> actual{};
         if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
     }
@@ -270,6 +337,10 @@ bool compatible(std::uintptr_t base) noexcept {
         if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
     }
     for (const auto& contract : body_contact_contracts) {
+        std::array<unsigned char, 32> actual{};
+        if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
+    }
+    for (const auto& contract : animation_failure_contracts) {
         std::array<unsigned char, 32> actual{};
         if (!read(base + contract.rva, actual) || actual != contract.bytes) return false;
     }
@@ -299,11 +370,14 @@ bool start_no_bail(std::uintptr_t base) noexcept {
             reinterpret_cast<void*>(base + record_bail_cause_contract.rva),
             reinterpret_cast<void*>(base + choose_physics_state_contract.rva),
             reinterpret_cast<void*>(base + bail_skeleton_contract.rva),
-            reinterpret_cast<void*>(base + bail_publish_contract.rva)};
+            reinterpret_cast<void*>(base + bail_publish_contract.rva),
+            reinterpret_cast<void*>(base + recovery_predicate_contract.rva),
+            reinterpret_cast<void*>(base + rig_update_contract.rva)};
         const std::array replacements{
             reinterpret_cast<void*>(&record_cause), reinterpret_cast<void*>(&choose_state),
-            reinterpret_cast<void*>(&skeleton_response), reinterpret_cast<void*>(&publish_animation)};
-        std::array<void*, 4> originals{};
+            reinterpret_cast<void*>(&skeleton_response), reinterpret_cast<void*>(&publish_animation),
+            reinterpret_cast<void*>(&recovery_predicate), reinterpret_cast<void*>(&rig_update)};
+        std::array<void*, targets.size()> originals{};
         auto status = HookOk;
         std::size_t prepared{};
         for (; prepared < targets.size(); ++prepared) {
@@ -317,6 +391,8 @@ bool start_no_bail(std::uintptr_t base) noexcept {
             p.choose_original = reinterpret_cast<ChooseState>(originals[1]);
             p.skeleton_original = reinterpret_cast<SkeletonResponse>(originals[2]);
             p.publish_original = reinterpret_cast<PublishAnimation>(originals[3]);
+            p.recovery_original = reinterpret_cast<RecoveryPredicate>(originals[4]);
+            p.rig_original = reinterpret_cast<RigUpdate>(originals[5]);
             for (auto target : targets) {
                 status = hook_enable(target);
                 if (status != HookOk) break;
@@ -324,7 +400,7 @@ bool start_no_bail(std::uintptr_t base) noexcept {
             if (status == HookOk) {
                 p.ready.store(true, std::memory_order_release);
                 logging::write(logging::Level::info, logging::Channel::skater,
-                    "No Bail ready: collision and landing causes filtered before physics/animation consume them; noclip is protected.");
+                    "No Bail ready: physics causes, animation wipeouts and runouts filtered for the local skater; noclip is protected.");
                 return true;
             }
         }

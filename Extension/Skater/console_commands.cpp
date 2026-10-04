@@ -16,7 +16,7 @@ void register_movement_commands(Commands &registry) {
     const Setting settings[]{
         {"noclip", "debug.noclip", "Fly the local skater through the world", Debug::set_noclip,
          &overlay::DebugModel::noclip, &overlay::DebugModel::noclip_available},
-        {"nobail", "debug.no_bail", "Prevent wipeouts; also activated automatically during noclip", Debug::set_no_bail,
+        {"nobail", "debug.no_bail", "Prevent wipeouts and runouts; also activated automatically during noclip", Debug::set_no_bail,
          &overlay::DebugModel::no_bail, &overlay::DebugModel::no_bail_available},
         {"freecam", "debug.freecam", "Move the camera independently of the skater", Debug::set_free_camera,
          &overlay::DebugModel::free_camera, &overlay::DebugModel::camera_available},
