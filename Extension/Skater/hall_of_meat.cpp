@@ -35,10 +35,12 @@ void prune(State& s, std::uint64_t now) noexcept {
     s.pending_count = kept;
 }
 
-void record(State& s, std::uint64_t now, bool body_contact) noexcept {
+void record(State& s, std::uint64_t now, const std::array<std::uint8_t, bone_contact_count>& bones) noexcept {
     Bail bail;
     bail.at = now;
-    bail.body_contact = body_contact;
+    bail.bone_contacts = bones;
+    for (const auto flag : bones)
+        if (flag) bail.body_contact = true;
     for (std::size_t index = 0; index < s.pending_count; ++index)
         bail.magnitude += s.pending[index].magnitude;
     bail.impact_count = s.pending_count < bail.impacts.size() ? s.pending_count : bail.impacts.size();
@@ -67,7 +69,7 @@ void observe_cause(std::int32_t reason, float magnitude) noexcept {
     ReleaseSRWLockExclusive(&s.lock);
 }
 
-bool observe_wipeout(bool body_contact, Bail* recorded) noexcept {
+bool observe_wipeout(const std::array<std::uint8_t, bone_contact_count>& bone_contacts, Bail* recorded) noexcept {
     auto& s = state();
     const auto now = GetTickCount64();
     bool opened{};
@@ -75,7 +77,7 @@ bool observe_wipeout(bool body_contact, Bail* recorded) noexcept {
     AcquireSRWLockExclusive(&s.lock);
     if (!s.bail_open || now - s.last_bail >= bail_debounce_ms) {
         prune(s, now);
-        record(s, now, body_contact);
+        record(s, now, bone_contacts);
         bail = s.history[0];
         opened = true;
     }

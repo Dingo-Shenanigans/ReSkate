@@ -8,6 +8,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <intrin.h>
@@ -222,21 +223,26 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     return filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
 }
 // The wipeout step: hand Hall of Meat the causes recorded around it and the
-// sensitive body-contact report (contacts+0xfb8, published per bail), then
-// announce it. The overlay notice is safe from any game thread.
+// per-bone contact report (contacts+0xfb0..0xfbd, fourteen configured body
+// bones; the sensitive-body flag at +0xfb8 sits among them), then announce
+// it. The overlay notice is safe from any game thread.
 void note_local_wipeout(const Owner& owner) noexcept {
-    bool contact{};
+    std::array<std::uint8_t, hall_of_meat::bone_contact_count> bones{};
+    constexpr std::uintptr_t first_bone_flag = body_contact_output_offset - 8;
     const auto contacts = pointer(pointer(owner.core, 0x3b8), 0x30);
-    std::uint8_t flag{};
-    if (contacts && read(contacts + body_contact_output_offset, flag) && flag <= 1) contact = flag != 0;
+    if (contacts)
+        for (std::size_t index = 0; index < bones.size(); ++index) {
+            std::uint8_t flag{};
+            if (read(contacts + first_bone_flag + index, flag) && flag <= 1) bones[index] = flag;
+        }
     hall_of_meat::Bail bail;
-    if (!hall_of_meat::observe_wipeout(contact, &bail)) return; // the ragdoll's follow-up step
+    if (!hall_of_meat::observe_wipeout(bones, &bail)) return; // the ragdoll's follow-up step
     logging::log(logging::Level::info, logging::Channel::skater,
-        "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}{})",
-        bail.impact_count, bail.magnitude, bail.body_contact ? ", body contact" : "");
+        "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}, body contact {})",
+        bail.impact_count, bail.magnitude, bail.body_contact ? "yes" : "no");
     char text[96];
-    std::snprintf(text, sizeof(text), "Wipeout recorded at impact %.1f%s",
-        bail.magnitude, bail.body_contact ? " with body contact" : "");
+    std::snprintf(text, sizeof(text), "Wipeout at impact %.1f, %u bone contact(s)",
+        bail.magnitude, static_cast<unsigned>(std::count(bones.begin(), bones.end(), 1)));
     overlay::notify(overlay::NoticeLevel::info, "Hall of Meat", text);
 }
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
