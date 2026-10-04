@@ -95,57 +95,35 @@ void draw_hall_of_meat_skeleton() {
         screen[index] = ImVec2(centre.x + side * focal / depth, centre.y - height * focal / depth);
     }
 
-    // Contact history decays; bones that stopped being hit leave the set again.
-    std::erase_if(bone_states, [now](const auto& entry) {
-        return !entry.second.broken && now - entry.second.last_hit > hit_fade_seconds;
-    });
-
-    for (unsigned index = 1; index < skater_pose::skeleton_joints; ++index) {
-        const auto parent = skater_pose::skeleton_parents[index];
-        const auto& a = screen[parent];
-        const auto& b = screen[index];
-        if (a.x < 0 || b.x < 0) continue;
-        const auto& pa = snapshot.joints[parent].position;
-        const auto& pb = snapshot.joints[index].position;
-        const float length = std::sqrt((pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) +
-            (pa[2] - pb[2]) * (pa[2] - pb[2]));
-        if (length > 0.8f) continue; // no anatomical bone spans further on a human
-        ImU32 colour = IM_COL32(120, 220, 255, 90);
-        const auto hit = bone_states.find(index);
-        if (hit != bone_states.end()) {
-            if (hit->second.broken) colour = IM_COL32(255, 30, 30, 220);
-            else {
-                const float age = static_cast<float>(now - hit->second.last_hit);
-                const float alpha = 1 - age / hit_fade_seconds;
-                colour = IM_COL32(255, 220, 40, static_cast<int>(220 * alpha));
-            }
-        }
-        draw->AddLine(a, b, colour, 2.0f);
+    // The verified spine: placement -> neck -> head. The parent array covers
+    // all 395 joints, but the resource names only the physics subset, so
+    // drawing every parent edge included control and gear joints; the body
+    // reads as dots, the spine as a line.
+    constexpr std::array<std::uint16_t, 6> spine_chain{1, 7, 42, 43, 44, 45};
+    constexpr ImU32 bone_colour = IM_COL32(120, 220, 255, 170);
+    ImVec2 previous{-1, -1};
+    for (auto joint_index : spine_chain) {
+        const auto& at = screen[joint_index];
+        if (previous.x >= 0 && at.x >= 0) draw->AddLine(previous, at, bone_colour, 3.0f);
+        if (at.x >= 0) draw->AddCircleFilled(at, 4.0f, bone_colour);
+        previous = at;
     }
+
+    // Whole-body hit flash: yellow fading over the five seconds after a bail.
+    const auto bails = dingosdk::hall_of_meat::recent();
+    float since_bail = 1e9f;
+    if (!bails.empty())
+        since_bail = static_cast<float>((GetTickCount64() - bails.front().at) / 1000ULL);
+    const float flash = since_bail < hit_fade_seconds ? 1 - since_bail / hit_fade_seconds : 0;
+    const ImU32 joint_colour = flash > 0
+        ? IM_COL32(255, static_cast<int>(220 * flash + 35 * (1 - flash)), static_cast<int>(40 * flash + 220 * (1 - flash)),
+              static_cast<int>(170 * flash + 110 * (1 - flash)))
+        : IM_COL32(120, 220, 255, 110);
     for (unsigned index = 0; index < skater_pose::skeleton_joints; ++index) {
         if (screen[index].x < 0) continue;
-        ImU32 colour = IM_COL32(120, 220, 255, 110);
-        const auto hit = bone_states.find(index);
-        if (hit != bone_states.end()) {
-            if (hit->second.broken) colour = IM_COL32(255, 30, 30, 230);
-            else {
-                const float age = static_cast<float>(now - hit->second.last_hit);
-                colour = IM_COL32(255, 220, 40, static_cast<int>(230 * (1 - age / hit_fade_seconds)));
-            }
-        }
-        draw->AddCircleFilled(screen[index], 2.5f, colour);
+        draw->AddCircleFilled(screen[index], 2.5f, joint_colour);
     }
 
-    // Short red glow at the character while a fresh wipeout is on record.
-    const auto bails = dingosdk::hall_of_meat::recent();
-    if (!bails.empty()) {
-        const auto since = static_cast<float>((GetTickCount64() - bails.front().at) / 1000ULL);
-        if (since < 2.5f) {
-            const auto& head = screen[skater_pose::head_joint];
-            if (head.x >= 0)
-                draw->AddCircleFilled(head, 14.0f + since * 10.0f,
-                    IM_COL32(255, 40, 40, static_cast<int>(120 * (1 - since / 2.5f))));
-        }
-    }
+    // Red pulse at the head for the first moments of a fresh wipeout.
 }
 }
