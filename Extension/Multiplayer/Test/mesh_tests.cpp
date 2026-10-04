@@ -35,6 +35,7 @@ bool clear_lobby_guest_objects() { ++simulated_guest_wipes; return true; }
 namespace dingosdk {
 bool teleport_local_skater(const std::array<float, 3>&) { return true; }
 void update_board_lock(std::uintptr_t, std::uintptr_t, bool) noexcept {}
+void update_developer_hoodie(std::uintptr_t, std::uintptr_t, std::uint64_t, std::uint64_t, DeveloperHoodieState &) noexcept {}
 }
 namespace dingosdk::multiplayer {
 bool local_allows_player_collision(std::uintptr_t, std::uintptr_t) noexcept { return false; }
@@ -248,6 +249,7 @@ std::uint64_t remote_pose_updates() noexcept { return 0; }
 std::uint64_t remote_board_pose_updates() noexcept { return 0; }
 NativeAnimationStats remote_animation_stats() noexcept { return {}; }
 std::uintptr_t remote_skater_entity() noexcept { return 0; }
+std::uint64_t remote_skater_generation() noexcept { return 0; }
 void note_remote_distance(float) noexcept {}
 void update_native_party(std::uintptr_t, const PartyRoster &, unsigned, bool) noexcept {}
 void set_native_party_changes(bool) noexcept {}

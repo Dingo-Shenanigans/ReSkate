@@ -109,6 +109,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_multiplayer_lobby_tests
         Extension/Multiplayer/Test/lobby_tests.cpp Extension/Multiplayer/Steam/steam_lobbies.cpp
         Extension/Multiplayer/Net/protocol.cpp)
+    target_link_libraries(dingosdk_multiplayer_lobby_tests PRIVATE dingosdk_word_filter)
     add_test(NAME multiplayer_lobbies COMMAND dingosdk_multiplayer_lobby_tests)
     add_executable(dingosdk_multiplayer_mesh_tests
         Extension/Multiplayer/Test/mesh_tests.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
