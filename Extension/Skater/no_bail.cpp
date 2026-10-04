@@ -41,7 +41,7 @@ struct Owner {
 };
 struct Lease {
     Owner owner;
-    std::uint64_t manual_until{}, flight_until{};
+    std::uint64_t manual_until{}, flight_until{}, refreshed_at{};
     bool active(std::uint64_t now) const noexcept {
         return now < manual_until || now < flight_until;
     }
@@ -99,6 +99,27 @@ bool resolve(std::uintptr_t client, std::uintptr_t entity, Owner& o) noexcept {
         return false;
     o.client = client;
     o.entity = entity;
+    return true;
+}
+// The hooks also serve Hall of Meat, which observes the local skater with or
+// without an active protection lease: same ownership validation as
+// protected_owner, minus the lease's expiry requirement. Mid-ragdoll the
+// client's state can leave the resolver's on-board pair, so a lease refreshed
+// this tick still owns the object it names -- a respawn or level change makes
+// new objects, whose addresses no longer match the retained owner anyway.
+bool observed_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owner* owner = nullptr) noexcept {
+    auto& p = protection();
+    if (!p.ready.load(std::memory_order_acquire)) return false;
+    AcquireSRWLockShared(&p.lock);
+    const auto lease = p.lease;
+    ReleaseSRWLockShared(&p.lock);
+    if (object != lease.owner.*member || GetTickCount64() - lease.refreshed_at > 500) return false;
+    Owner current;
+    if (!resolve(lease.owner.client, lease.owner.entity, current) || current != lease.owner) {
+        if (owner) *owner = lease.owner;
+        return true;
+    }
+    if (owner) *owner = current;
     return true;
 }
 bool protected_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owner* owner = nullptr) noexcept {
@@ -164,7 +185,10 @@ void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     // Hall of Meat keeps the local skater's impact feed. The collector holds
     // every skater's causes, so ownership decides which are ours to show.
-    if (protected_owner(causes, &Owner::causes)) hall_of_meat::observe_cause(reason, magnitude);
+    {
+        LastError error;
+        if (observed_owner(causes, &Owner::causes)) hall_of_meat::observe_cause(reason, magnitude);
+    }
     const bool protect = suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
@@ -207,6 +231,9 @@ void note_local_wipeout(const Owner& owner) noexcept {
     if (contacts && read(contacts + body_contact_output_offset, flag) && flag <= 1) contact = flag != 0;
     hall_of_meat::Bail bail;
     if (!hall_of_meat::observe_wipeout(contact, &bail)) return; // the ragdoll's follow-up step
+    logging::log(logging::Level::info, logging::Channel::skater,
+        "Hall of Meat: wipeout recorded ({} cause(s), impact {:.1f}{})",
+        bail.impact_count, bail.magnitude, bail.body_contact ? ", body contact" : "");
     char text[96];
     std::snprintf(text, sizeof(text), "Wipeout recorded at impact %.1f%s",
         bail.magnitude, bail.body_contact ? " with body contact" : "");
@@ -219,7 +246,7 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // A filtered wipeout never happened, so it feeds no injuries.
     if (wipeout) {
         Owner owner;
-        if (protected_owner(rig, &Owner::rig, &owner)) {
+        if (observed_owner(rig, &Owner::rig, &owner)) {
             LastError error;
             note_local_wipeout(owner);
         }
@@ -357,6 +384,7 @@ bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
         const auto now = GetTickCount64();
         next.manual_until = manual ? now + 500 : 0;
         next.flight_until = flying ? flight_expires : 0;
+        next.refreshed_at = now;
     }
     AcquireSRWLockExclusive(&p.lock);
     p.lease = available ? next : Lease{};
