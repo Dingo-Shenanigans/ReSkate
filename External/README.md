@@ -12,6 +12,7 @@
 | bcdec | `80859ed3b7afb1c527a2a99d70c61457bea72d0c` | MIT or Unlicense | [iOrange/bcdec](https://github.com/iOrange/bcdec/tree/80859ed3b7afb1c527a2a99d70c61457bea72d0c) |
 | LZ4 | `1.10.0` | BSD-2-Clause | [lz4/lz4](https://github.com/lz4/lz4/releases/tag/v1.10.0) |
 | Zstandard | `1.5.7` | BSD-3-Clause (dual-licensed with GPLv2; used under BSD) | [facebook/zstd](https://github.com/facebook/zstd/releases/tag/v1.5.7) |
+| OpenXR headers (`include/openxr`) | `release-1.1.63` | Apache 2.0 | [KhronosGroup/OpenXR-SDK](https://github.com/KhronosGroup/OpenXR-SDK/tree/release-1.1.63) |
 | Montserrat font | `fonts/Montserrat-*.ttf` | SIL Open Font License 1.1 | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) |
 | Permanent Marker font | `fonts/PermanentMarker-Regular.ttf` | Apache 2.0 | [Google Fonts](https://fonts.google.com/specimen/Permanent+Marker) |
 
@@ -76,3 +77,8 @@ zlib compatibility, stdio and timestamp APIs are disabled. Extraction writes onl
 the expected file to a fixed temporary path, bounds its size, and checks the
 uncompressed SHA-256 before replacing the cache. Keep `miniz/LICENSE.txt` with
 binary packages. Builds do not fetch the library.
+
+OpenXR: only the API headers are vendored. The VR module loads `openxr_loader.dll`
+(the Khronos loader, Apache 2.0) at run time from beside `ReSkate.dll`; release
+packages take it from the matching `openxr_loader_windows-1.1.63.zip` in
+[OpenXR-SDK-Source releases](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/tag/release-1.1.63).
