@@ -1,4 +1,5 @@
 #include "no_bail.h"
+#include "hall_of_meat.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -6,7 +7,9 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Extension/UI/Overlay/overlay.h"
 #include <atomic>
+#include <cstdio>
 #include <intrin.h>
 
 namespace dingosdk {
@@ -159,6 +162,9 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
 }
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    // Hall of Meat keeps the local skater's impact feed. The collector holds
+    // every skater's causes, so ownership decides which are ours to show.
+    if (protected_owner(causes, &Owner::causes)) hall_of_meat::observe_cause(reason, magnitude);
     const bool protect = suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
@@ -191,10 +197,33 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     LastError error;
     return filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
 }
+// The wipeout step: hand Hall of Meat the causes recorded around it and the
+// sensitive body-contact report (contacts+0xfb8, published per bail), then
+// announce it. The overlay notice is safe from any game thread.
+void note_local_wipeout(const Owner& owner) noexcept {
+    bool contact{};
+    const auto contacts = pointer(pointer(owner.core, 0x3b8), 0x30);
+    std::uint8_t flag{};
+    if (contacts && read(contacts + body_contact_output_offset, flag) && flag <= 1) contact = flag != 0;
+    hall_of_meat::Bail bail;
+    if (!hall_of_meat::observe_wipeout(contact, &bail)) return; // the ragdoll's follow-up step
+    char text[96];
+    std::snprintf(text, sizeof(text), "Wipeout recorded at impact %.1f%s",
+        bail.magnitude, bail.body_contact ? " with body contact" : "");
+    overlay::notify(overlay::NoticeLevel::info, "Hall of Meat", text);
+}
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
+    // A filtered wipeout never happened, so it feeds no injuries.
+    if (wipeout) {
+        Owner owner;
+        if (protected_owner(rig, &Owner::rig, &owner)) {
+            LastError error;
+            note_local_wipeout(owner);
+        }
+    }
     protection().skeleton_original(rig, seconds, wipeout);
 }
 bool clear_contact_output(std::uintptr_t contacts) noexcept {
