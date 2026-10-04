@@ -137,6 +137,11 @@ jobs:
         run: |
           set -eux
           asset="ReSkateServer-Linux-${VERSION}.zip"
+          # The artifact round-trip drops Unix permissions, so the binary comes
+          # back non-executable. Restore the modes the README's ./ReSkateServer
+          # and ./setup-linux-server-libs.sh need before zipping.
+          chmod 0755 package/ReSkateServer package/setup-linux-server-libs.sh
+          chmod 0644 package/*.so
           # Zip the contents rather than the folder, so the archive unpacks
           # straight into a server directory the way the README's
           # "unzip ... -d reskate-server" instructions expect.
