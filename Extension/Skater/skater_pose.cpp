@@ -5,8 +5,16 @@
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 
 #include <Windows.h>
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <functional>
+#include <format>
 #include <mutex>
+#include <string>
+#include <vector>
+
+#include "Engine/Core/Log/logging.h"
 
 namespace dingosdk::skater_pose {
 namespace {
@@ -53,6 +61,44 @@ struct State {
     Snapshot snapshot;
 };
 State& state() { static auto* value = new State; return *value; }
+
+// One-time dump of the skeleton definition and resource: the parent array and
+// bone tables the pose evaluation walks are in here, and mapping them from a
+// live capture fixes the overlay's joint set without guessing. Rows of ints,
+// marked for offline parsing in the log.
+void dump_skeleton_definition(const std::function<bool(std::uintptr_t, void*, std::size_t)>& read,
+    std::uintptr_t holder) {
+    std::uintptr_t rig{};
+    if (!read(holder + 0x78, &rig, 8) || rig < 0x10000) return;
+    std::uintptr_t definition{};
+    if (!read(rig + 0x18, &definition, 8) || definition < 0x10000) return;
+    std::uintptr_t resource{};
+    if (!read(definition + 0x1a0, &resource, 8) || resource < 0x10000) return;
+    std::uint32_t count{};
+    if (!read(resource + 0xc, &count, 4) || count > 512) return;
+    logging::log(logging::Level::info, logging::Channel::skater,
+        "HallOfMeat skeleton dump begin (definition {:#x}, resource {:#x}, {} bones)",
+        definition, resource, count);
+    auto dump_ints = [&](const char* what, std::uintptr_t at, std::size_t bytes) {
+        std::vector<std::int32_t> values(bytes / 4, 0);
+        if (!read(at, values.data(), values.size() * 4)) {
+            logging::log(logging::Level::warning, logging::Channel::skater,
+                "HallOfMeat skeleton dump: {} unreadable", what);
+            return;
+        }
+        for (std::size_t row = 0; row < values.size(); row += 8) {
+            std::string line = std::format("{} +{:04x}:", what, row);
+            for (std::size_t i = row; i < std::min(row + 8, values.size()); ++i)
+                line += std::format(" {:11d}", values[i]);
+            logging::write(logging::Level::info, logging::Channel::skater, line);
+        }
+    };
+    dump_ints("def", definition, 0x80);
+    dump_ints("res", resource, 0x1000);
+    logging::write(logging::Level::info, logging::Channel::skater,
+        "HallOfMeat skeleton dump end");
+}
+
 }
 
 bool capture(std::uintptr_t base, std::uintptr_t entity, Snapshot& out) noexcept {
@@ -74,6 +120,13 @@ bool capture(std::uintptr_t base, std::uintptr_t entity, Snapshot& out) noexcept
         return false;
     }
     if (!pose.buffer || pose.count != skeleton_joints) return false;
+    static std::atomic<bool> dumped{};
+    if (!dumped.exchange(true)) {
+        dump_skeleton_definition(
+            [](std::uintptr_t address, void* destination, std::size_t size) {
+                return read(address, destination, size);
+            }, holder);
+    }
     Snapshot snapshot;
     Joint joint;
     for (std::size_t index = 0; index < head_chain.size(); ++index) {
