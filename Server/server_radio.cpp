@@ -412,10 +412,11 @@ std::string Radio::status() const {
     if (!s.active) return "The radio is off (" + tools + "). Radio folder: " + s.folder.string();
     const auto seconds = s.frames * frame_us / 1000000;
     const auto kbps = seconds ? s.bytes * 8 / 1000 / seconds : 0;
-    return "Radio: " + (s.playing_title.empty() ? std::string("starting") : "playing " + s.playing_title) + " from " +
-           s.source + " | " + std::to_string(seconds) + " s out, " + std::to_string(kbps) + " kbps, " +
-           std::to_string(s.queue.size() * frame_us / 1000) + " ms buffered (" + tools +
-           ") | not sent to players yet: the game needs radio support first";
+    // One short line each: an admin reads this in chat, where a long line is cut off.
+    return "Radio: " + (s.playing_title.empty() ? std::string("starting") : "playing " + s.playing_title) + "\nFrom " +
+           s.source + "\n" + std::to_string(seconds) + " s out, " + std::to_string(kbps) + " kbps, " +
+           std::to_string(s.queue.size() * frame_us / 1000) + " ms buffered (" + tools + ")" +
+           "\nNot sent to players yet: the game needs radio support first.";
 }
 Radio::Output Radio::poll(std::uint64_t now) noexcept {
     Output out;
