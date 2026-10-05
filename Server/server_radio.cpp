@@ -296,8 +296,11 @@ std::size_t read_some(const Child &child, char *buffer, std::size_t size) {
         if (errno != EINTR) return 0;
     }
 }
+// SIGKILL, like the job object on Windows: ffmpeg handles one SIGTERM only between reads, so in
+// the middle of a reconnect it would keep stop or play (which wait for the worker) on the server's
+// main loop for seconds. Its output is thrown away anyway.
 void terminate(const Child &child) {
-    if (child.pid > 0) ::kill(-child.pid, SIGTERM);
+    if (child.pid > 0) ::kill(-child.pid, SIGKILL);
 }
 int wait_for(const Child &child) {
     close(child.out);
@@ -439,6 +442,13 @@ struct Radio::State {
 
     // Decodes one entry with ffmpeg and encodes it. Returns how many frames it queued.
     std::size_t play(const Entry &entry, bool remote) {
+        // Numbered before yt-dlp resolves it: a skip meanwhile ends the song that is playing, never
+        // this one's yt-dlp.
+        std::uint32_t track{};
+        {
+            std::lock_guard lock(mutex);
+            track = worker_track = next_track++;
+        }
         std::string input = entry.input;
         if (remote && ytdlp) {
             // The page's audio stream: the best audio-only format, or whatever it has.
@@ -446,21 +456,28 @@ struct Radio::State {
             input = std::string(trim(line_of(direct)));
             if (!web_url(input)) return 0;
         }
-        std::uint32_t track{};
-        {
-            std::lock_guard lock(mutex);
-            track = worker_track = next_track++;
-        }
         int error{};
         auto *encoder = opus_encoder_create(radio_rate, radio_channels, OPUS_APPLICATION_AUDIO, &error);
         if (!encoder || error != OPUS_OK) return 0;
         opus_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate));
+        std::vector<std::string> args{"ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"};
+        // A source read at playback pace keeps its connection open for the whole song, and YouTube's
+        // servers drop such connections after a minute or two: resume at the same byte (a Range
+        // request) rather than ending the song there. 15 s without a byte counts as a dropped
+        // connection too, so a silent one is resumed (or, on a live stream that cannot resume, ends)
+        // instead of hanging the radio. A network that stays down still ends the song after a few
+        // seconds of retries. Not reconnect_at_eof (it waits out the backoff at every real end),
+        // reconnect_streamed (it restarts a source that cannot seek from its first byte) or
+        // reconnect_on_network_error (ffmpeg 4.4 and later only, and it multiplies the retries).
+        // HLS segments only get the timeout: ffmpeg does not pass the rest on to them.
+        if (remote)
+            args.insert(args.end(), {"-reconnect", "1", "-reconnect_delay_max", "5", "-rw_timeout", "15000000"});
         // Remote sources may not reach local files, local ones may not reach the network.
+        args.insert(args.end(), {"-protocol_whitelist", remote ? "http,https,tcp,tls,crypto,hls" : "file", "-i",
+                                 remote ? input : "file:" + input, "-vn", "-ac", "2", "-ar", std::to_string(radio_rate),
+                                 "-f", "s16le", "pipe:1"});
         Child tool;
-        const bool running = spawn({"ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist",
-                                    remote ? "http,https,tcp,tls,crypto,hls" : "file", "-i", remote ? input : "file:" + input,
-                                    "-vn", "-ac", "2", "-ar", std::to_string(radio_rate), "-f", "s16le", "pipe:1"},
-                                   tool);
+        const bool running = spawn(args, tool);
         std::size_t queued{};
         if (running) {
             constexpr auto samples = radio_frame_samples * radio_channels;
@@ -506,16 +523,10 @@ struct Radio::State {
             notice("Radio: nothing to play at " + input + (remote && !ytdlp ? " (pages and playlists need yt-dlp installed)" : "") + ".");
         for (const auto &entry : list) {
             if (cancelled()) return;
-            if (!play(entry, remote) && !cancelled()) {
-                bool skipped_this{};
-                {
-                    std::lock_guard lock(mutex);
-                    skipped_this = worker_track <= skipped;
-                }
-                if (!skipped_this)
-                    notice("Radio: could not play " + entry.title +
-                           (remote && !ytdlp ? " (a page like YouTube needs yt-dlp on the server)." : "."));
-            }
+            // A skip only ends a song that has already queued frames, so no frames at all is a failure.
+            if (!play(entry, remote) && !cancelled())
+                notice("Radio: could not play " + entry.title +
+                       (remote && !ytdlp ? " (a page like YouTube needs yt-dlp on the server)." : "."));
         }
         std::lock_guard lock(mutex);
         worker_done = true;
@@ -561,8 +572,11 @@ std::string Radio::skip() {
     auto &s = *state_;
     std::lock_guard lock(s.mutex);
     if (!s.active) return "Nothing is playing.";
-    // Only what is playing now: the next song may already be buffering.
-    s.skipped = std::max(s.skipped, s.playing_track);
+    // Only a song of this session that is playing now: while the first one is still being looked
+    // up, or the next one after a skip, there is nothing to skip (and the tool at work belongs to
+    // what comes next). The next song may already be buffering.
+    if (s.playing_track <= s.skipped) return "Nothing to skip yet.";
+    s.skipped = s.playing_track;
     std::erase_if(s.queue, [&](const State::Item &item) { return item.track <= s.skipped; });
     if (s.worker_track <= s.skipped) terminate(s.child);
     s.room.notify_all();
