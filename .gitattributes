@@ -14,3 +14,5 @@ External/steam_networking/** -text
 External/steam_networking/** whitespace=-blank-at-eol
 
 External/miniz/** -text
+
+External/opus/** -text

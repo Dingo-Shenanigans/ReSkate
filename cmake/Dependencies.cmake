@@ -44,3 +44,14 @@ add_library(dingosdk_sqlite STATIC External/sqlite/sqlite3.c)
 target_include_directories(dingosdk_sqlite SYSTEM PUBLIC External/sqlite)
 target_compile_definitions(dingosdk_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0 SQLITE_DEFAULT_MEMSTATUS=0)
 set_target_properties(dingosdk_sqlite PROPERTIES FOLDER "Dependencies")
+# Opus, floating-point build: the server radio encodes it and the runtime will decode it. Only the
+# codec (sources.txt holds the CELT, SILK and Opus lists of its .mk files); the optional
+# neural-network features (DRED, OSCE, deep PLC) are left out.
+file(STRINGS External/opus/sources.txt opus_sources)
+list(TRANSFORM opus_sources PREPEND External/opus/)
+add_library(dingosdk_opus STATIC ${opus_sources})
+target_include_directories(dingosdk_opus SYSTEM PUBLIC External/opus/include)
+target_include_directories(dingosdk_opus PRIVATE External/opus External/opus/celt External/opus/silk External/opus/silk/float)
+target_compile_definitions(dingosdk_opus PRIVATE OPUS_BUILD USE_ALLOCA
+    $<$<NOT:$<C_COMPILER_ID:MSVC>>:HAVE_LRINTF> $<$<NOT:$<C_COMPILER_ID:MSVC>>:HAVE_LRINT>)
+set_target_properties(dingosdk_opus PROPERTIES FOLDER "Dependencies")

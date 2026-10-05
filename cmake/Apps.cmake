@@ -177,10 +177,7 @@ if(WIN32)
     dingosdk_version_info(dingosdk_server "ReSkate dedicated server" "ReSkateServer.exe" VFT_APP)
 else()
     find_package(OpenSSL REQUIRED)
-    # The radio (Server/server_radio.cpp) encodes Opus; Linux only for now, from the system's libopus.
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
     target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-        dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto PkgConfig::OPUS dl pthread)
+        dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dingosdk_opus dl pthread)
     set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")
 endif()
