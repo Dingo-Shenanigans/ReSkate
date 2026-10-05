@@ -607,6 +607,7 @@ void send_local(Session &s, const NativeFrame &local, std::uint64_t now, std::ui
         // The player's choices to go without their tag or their animated items travel with their
         // outfit, so a change is sent like one and reaches players who join later.
         if (appearance) {
+            outfit_for_others(appearance->skater);
             appearance->hide_tag = !own_tag_shown();
             appearance->hide_items = !own_items_shown();
             appearance->marks = developer_hoodie_detail::own_styles.load();

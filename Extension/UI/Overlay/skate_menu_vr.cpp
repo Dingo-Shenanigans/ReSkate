@@ -1,5 +1,6 @@
 #include "skate_menu_internal.h"
 #include "Extension/VR/vr.h"
+#include "Extension/VR/vr_costume.h"
 
 #include <algorithm>
 #include <format>
@@ -100,12 +101,24 @@ void vr_controls(SkateMenu& menu, const Model& model) {
             "##vr-view", options.view_mode, {"First person", "Third person"}))
         changed = true;
     if (first) {
-        if (tiles(menu, "You see (board)", "How much of your skater you see on the board (the rest is hidden so it does not "
-                "clip the camera).", "##vr-hide", options.hide_body, {"Neck down", "Shoulders down", "Arms and legs", "Legs only"}))
-            changed = true;
-        if (tiles(menu, "You see (on foot)", "How much of your skater you see on foot. The hands carry the board here, so a "
-                "choice with arms looks best.", "##vr-hide-foot", options.hide_body_foot,
-                {"Neck down", "Shoulders down", "Arms and legs", "Legs only"}))
+        // Feet only needs the FeetOnly mod (its costume): offered when installed or already chosen.
+        const bool feet = vr::feet_only_installed() || options.hide_body == Limits::hide_feet_only ||
+            options.hide_body_foot == Limits::hide_feet_only;
+        const char* feet_tip = feet ? " Feet only: your skater wears the FeetOnly mod's costume while VR runs, so only the "
+            "shoes show (the flip & bail view and grabs show the whole skater; your saved outfit does not change)." : "";
+        const auto board_tip = std::format("How much of your skater you see on the board (the rest is hidden so it does not "
+            "clip the camera).{}", feet_tip);
+        const auto foot_tip = std::format("How much of your skater you see on foot. The hands carry the board here, so a "
+            "choice with arms looks best.{}", feet_tip);
+        const auto seen = [&](const char* label, const std::string& tip, const char* id, int& value) {
+            return feet ? tiles(menu, label, tip.c_str(), id, value,
+                              {"Neck down", "Shoulders down", "Arms and legs", "Legs only", "Feet only"})
+                        : tiles(menu, label, tip.c_str(), id, value, {"Neck down", "Shoulders down", "Arms and legs", "Legs only"});
+        };
+        if (seen("You see (board)", board_tip, "##vr-hide", options.hide_body)) changed = true;
+        if (seen("You see (on foot)", foot_tip, "##vr-hide-foot", options.hide_body_foot)) changed = true;
+        if (feet && toggle_row(menu, "Others see your outfit", "Feet only: other players see your skater in your saved "
+                "outfit; the costume is only in your view.", options.others_see_outfit))
             changed = true;
         // One seat on the board and one on foot; the view blends between them in about half a second.
         const auto seat = [&](const char* title, const char* when, float& forward, float& side, float& up) {

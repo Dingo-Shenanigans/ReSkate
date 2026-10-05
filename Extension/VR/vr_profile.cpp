@@ -23,6 +23,7 @@ constexpr const char* seat_forward = "VR.SeatForward";
 constexpr const char* fov_correction = "VR.FovCorrection";
 constexpr const char* seat_up = "VR.SeatUp";
 constexpr const char* seat_side = "VR.SeatSide";
+constexpr const char* others_see_outfit = "VR.OthersSeeOutfit";
 constexpr const char* seat_forward_foot = "VR.SeatForwardFoot";
 constexpr const char* seat_up_foot = "VR.SeatUpFoot";
 constexpr const char* seat_side_foot = "VR.SeatSideFoot";
@@ -91,6 +92,7 @@ const std::array fields{
     Field{.key = key::fov_correction, .real = &Settings::fov_correction},
     Field{.key = key::seat_up, .real = &Settings::seat_up},
     Field{.key = key::seat_side, .real = &Settings::seat_side},
+    Field{.key = key::others_see_outfit, .flag = &Settings::others_see_outfit},
     Field{.key = key::seat_forward_foot, .real = &Settings::seat_forward_foot},
     Field{.key = key::seat_up_foot, .real = &Settings::seat_up_foot},
     Field{.key = key::seat_side_foot, .real = &Settings::seat_side_foot},

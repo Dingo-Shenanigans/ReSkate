@@ -157,9 +157,13 @@ void register_vr_commands(Commands& registry) {
         Limits::third_distance_min, Limits::third_distance_max);
     real(registry, "vr.third_height", "Third person: metres above the skater's head", &Settings::third_height,
         Limits::third_height_min, Limits::third_height_max);
-    whole(registry, "vr.hide_body", "Hide in first person on the board: 0 head, 1 neck and head, 2 torso (arms kept), 3 waist up",
+    whole(registry, "vr.hide_body", "Hide in first person on the board: 0 head, 1 neck and head, 2 torso (arms kept), 3 waist up, "
+        "4 all but the feet (FeetOnly mod)",
         &Settings::hide_body, 0, Limits::hide_body_max);
-    whole(registry, "vr.hide_body_foot", "Hide in first person on foot: 0 head, 1 neck and head, 2 torso (arms kept), 3 waist up",
+    flag(registry, "vr.others_see_outfit", "Feet only: other players see your saved outfit, not the costume",
+        &Settings::others_see_outfit);
+    whole(registry, "vr.hide_body_foot", "Hide in first person on foot: 0 head, 1 neck and head, 2 torso (arms kept), 3 waist up, "
+        "4 all but the feet (FeetOnly mod)",
         &Settings::hide_body_foot, 0, Limits::hide_body_max);
     whole(registry, "vr.frame_lag", "Presents between a camera frame and its image (fixes swapped eyes)", &Settings::frame_lag, 0,
         Limits::frame_lag_max);

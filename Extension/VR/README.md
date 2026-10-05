@@ -79,6 +79,12 @@ skater looks like a small figure in a model world). Your own settings can be sav
 - **You see (board) / You see (on foot)**: how much of your skater first person shows (neck down,
   shoulders down, arms and legs, or legs only). By default legs only on the board and shoulders down on
   foot, where the hands carry the board.
+- **Feet only** (a fifth choice in both rows, with NxRoot's FeetOnly costume mod
+  installed): while VR runs, your skater wears the mod's costume, so only the shoes show. Third person,
+  the flip & bail view and grabs show the whole skater, and your saved outfit comes back when VR stops; it
+  is never changed. **Others see your outfit** (on by default) sends other players your saved outfit
+  instead of the costume. A hidden copy of your skater, 50 m below, wears your clothes so switching back
+  to the whole skater is quick (about 30 ms instead of 0.5–0.8 s of reloading).
 - **Camera offset on the board / on foot**: forward, sideways and height of the camera from the skater's
   eyes, set separately for riding (airs and grinds count) and on foot; the view moves between them in
   about half a second.
@@ -123,7 +129,8 @@ a DualShock 4 or DualSense through DirectInput).
 | `vr.theater_distance`, `vr.theater_width` | Flat screen |
 | `vr.auto_first_person` | Take over the camera |
 | `vr.walk_where_you_look`, `vr.turn_style`, `vr.look_turn`, `vr.turn_speed` | On-foot view and right-stick turns |
-| `vr.hide_body`, `vr.hide_body_foot` | What first person hides on the board and on foot |
+| `vr.hide_body`, `vr.hide_body_foot` | What first person hides on the board and on foot (4: feet only, FeetOnly mod) |
+| `vr.others_see_outfit` | Feet only: other players see your saved outfit |
 | `vr.chat_in_vr`, `vr.chat_on_hand` | Chat on its own panel in VR; on the left controller |
 | `vr.chat_view_size`, `vr.chat_view_x`, `vr.chat_view_y` | The chat panel in the view: width and offset, in metres |
 | `vr.grab_view`, `vr.grab_body` | Grabs: outside view, or the whole body in first person |
@@ -145,6 +152,7 @@ Settings are saved in the local profile under `ReSkate.VR.*`.
 | `vr_blit.cpp` | Back buffer → swapchain copy (D3D12, shader compiled at run time; comfort vignette) |
 | `vr_depth.cpp`, `vr_stereo.cpp` | Scene depth copy and the depth stereo pass |
 | `vr_input.cpp` | Headset controllers (OpenXR actions) as XInput pad 0; the left hand's pose for the chat panel |
+| `vr_costume.cpp` | Feet only: the FeetOnly costume on the local skater and the hidden clothes keeper (runtime target) |
 | `vr_gamepad.cpp` | Right sticks the game's hook does not see (XInput slots, DirectInput Sony pads) |
 | `vr_console.cpp`, `vr_profile.cpp` | Console commands and saved settings (runtime target) |
 | `Extension/UI/Overlay/skate_menu_vr.cpp` | The SKATER > VR menu tab |
@@ -161,15 +169,20 @@ Changes to existing files are kept small:
   in, and passes right-stick values to `vr::`.
 - `client_first_person.cpp` also reads the skater's physics state (as No Bail does) and shows the whole
   skater during the flip & bail view.
+- `client_tick.cpp`: runs `vr::tick_costume` on the client update.
+- `native_cosmetics.{h,cpp}` and `session_send.cpp`: a generic hook for the outfit other players are sent
+  (`set_outfit_for_others`), used by Feet only (`mesh_tests.cpp` has its stub).
 - `overlay_render.cpp`, `chat_overlay.cpp`, `overlay.cpp`: while VR wants the chat panel, the chat's draw
   lists render into a texture of their own (a second draw on the overlay's command list) instead of the
   game image, and an open chat alone does not switch the headset to the flat screen.
-- Console registration, the menu tab, and CMake (`cmake/VR.cmake`).
+- Console registration, the menu tab, and CMake (`cmake/VR.cmake`, `cmake/Runtime.cmake`).
 
 ## Known limitations
 
 - The game's HUD and the menus are part of the game image, so they sit at screen depth (the chat has
   its own panel).
+- Feet only needs the FeetOnly mod. The hidden clothes keeper uses the last remote-player slot (slots
+  fill from the first, so sessions never reach it).
 - The game moves its camera about 60 times a second. Depth stereo builds both eyes from each frame and
   the headset reprojects in between; with Alternate eyes each eye updates at about 30 Hz.
 - Depth stereo sees one view: gaps behind near objects (between board and body) are filled in, and the

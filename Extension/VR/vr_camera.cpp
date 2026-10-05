@@ -200,6 +200,9 @@ bool wants_first_person(bool first_person_on) noexcept {
     }
 }
 bool whole_body_view() noexcept { return body_showing.load(std::memory_order_relaxed); }
+std::atomic<bool> last_on_board{true};
+void note_on_board(bool on_board) noexcept { last_on_board.store(on_board, std::memory_order_relaxed); }
+bool on_board_view() noexcept { return last_on_board.load(std::memory_order_relaxed); }
 void observe_gamepad(std::uint32_t user, std::int16_t right_x, std::uint8_t trigger) noexcept {
     if (user >= pad_right_x.size()) return;
     pad_right_x[user].store(right_x, std::memory_order_relaxed);

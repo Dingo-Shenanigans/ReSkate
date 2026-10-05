@@ -132,7 +132,7 @@ void first_person_hide_head(std::uintptr_t base, std::uintptr_t component, bool 
     // On foot its own setting: the hands carry the board there, and with the arms folded
     // into the waist (Waist up) the carried board jitters inside it.
     const int hide = vr_options.enabled
-        ? std::clamp(on_board ? vr_options.hide_body : vr_options.hide_body_foot, 0, vr::Limits::hide_body_max) : 0;
+        ? std::clamp(on_board ? vr_options.hide_body : vr_options.hide_body_foot, 0, 3) : 0; // 4 (feet only): the costume
     first_person_keep_arms(pose.buffer, vr_options.enabled && vr_options.view_mode == 0 && hide == 2 && !bail_view);
     // VR third person and the bail camera show the whole skater.
     const bool show_all = vr_options.enabled && (vr_options.view_mode == 1 || bail_view);
@@ -359,8 +359,9 @@ void first_person_on_animation(std::uintptr_t component) noexcept {
             arm.latest = {head, origin, now, chest, on_board, physics_state, board};
             ++arm.captures;
         }
-        first_person_hide_head(arm.watched_base.load(std::memory_order_acquire), component,
-            on_board || (physics_state >= 100 && physics_state < 500)); // riding, air and grinds count as on the board
+        const bool riding = on_board || (physics_state >= 100 && physics_state < 500); // riding, air and grinds count
+        vr::note_on_board(riding);
+        first_person_hide_head(arm.watched_base.load(std::memory_order_acquire), component, riding);
     } catch (const std::exception& error) {
         // The tick keeps publishing and reports why; logged too (testing the legs-only hide).
         static double logged = -100;

@@ -116,9 +116,12 @@ struct Settings {
     // foot (hide_body_foot): 0 the head, 1 the neck and head (no collar or hood across
     // the view), 2 the upper torso, neck and head with the arms kept (the shoulders move
     // to the chest centre; in multiplayer other players see the arms scaled up), 3
-    // everything above the waist, arms included.
+    // everything above the waist, arms included, 4 all but the feet: the FeetOnly mod's
+    // costume (vr_costume.cpp; without the mod it falls back to 3).
     int hide_body = 3;
     int hide_body_foot = 1;
+    // Feet only: other players still see the saved outfit (the costume is only for this view).
+    bool others_see_outfit = true;
     // Seat position relative to the skater's eyes, in metres (forward is positive), level
     // along the view's heading, on the board; the *_foot set applies on foot, and the view
     // blends between them in about half a second.
@@ -139,7 +142,7 @@ struct Limits {
     static constexpr float seat_min = -0.5f, seat_max = 0.5f;
     static constexpr float seat_forward_min = -1.5f; // far back, for bodies that stay visible
     static constexpr int frame_lag_max = 4;
-    static constexpr int hide_body_max = 3;
+    static constexpr int hide_body_max = 4, hide_feet_only = 4;
     static constexpr int view_mode_max = 1, stereo_mode_max = 2, look_turn_max = 90;
     static constexpr float comfort_vignette_max = 1.0f;
     static constexpr float smooth_turn_speed_min = 30.0f, smooth_turn_speed_max = 360.0f;
@@ -257,6 +260,10 @@ struct PadPeek {
 PadPeek xinput_peek() noexcept;
 // First person shows the whole skater now (the flip & bail view, grabs).
 bool whole_body_view() noexcept;
+// Whether first person last saw the skater on the board (riding, air and grinds count),
+// which picks hide_body or hide_body_foot.
+void note_on_board(bool on_board) noexcept;
+bool on_board_view() noexcept;
 
 // Engine thread (debug tick): true when first person should be turned on for VR (at most
 // once a second while it is off and the headset runs with auto_first_person).
