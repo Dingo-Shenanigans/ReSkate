@@ -50,13 +50,13 @@ struct Editing {
     bool screen{}; // drawn as the editor screen, which never poses the player's skater
     // Shows a timeline time on the stand-in if it is shown, else as a preview on the player's skater.
     void hold(float time) const {
-        menu.style_time = time;
+        menu.styling.time = time;
         if (standing_in) {
             if (const auto set = editor_controls().hold) set(time);
         } else if (!replay.editor && !screen) quiet(callbacks, std::format("style preview {} {:.3f}", trick, time));
     }
     [[nodiscard]] float playhead() const {
-        return replaying ? replay.time : previewing ? model.style.preview_time : menu.style_time;
+        return replaying ? replay.time : previewing ? model.style.preview_time : menu.styling.time;
     }
 };
 Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
@@ -64,30 +64,30 @@ Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     const auto feed = playhead_feed.load();
     Editing e{menu, model, callbacks, feed ? feed() : style::Playhead{}};
     // Outside the editor screen, a replay on screen selects its trick.
-    if (!model.debug.style_editor && e.replay.trick && e.replay.trick != menu.style_replay_trick) menu.style_trick = e.replay.trick;
-    menu.style_replay_trick = e.replay.trick;
-    menu.style_trick = std::clamp(menu.style_trick, 1, static_cast<int>(style::flip_trick_names.size()) - 1);
-    e.trick_id = static_cast<std::uint8_t>(menu.style_trick);
+    if (!model.debug.style_editor && e.replay.trick && e.replay.trick != menu.styling.replay_trick) menu.styling.trick = e.replay.trick;
+    menu.styling.replay_trick = e.replay.trick;
+    menu.styling.trick = std::clamp(menu.styling.trick, 1, static_cast<int>(style::flip_trick_names.size()) - 1);
+    e.trick_id = static_cast<std::uint8_t>(menu.styling.trick);
     e.trick = style::flip_trick_names[e.trick_id];
     const auto found = model.style.times.find(e.trick_id);
     e.times = found != model.style.times.end() ? found->second : std::vector<float>{};
-    if (menu.style_pending_key >= 0 && ImGui::GetTime() < menu.style_pending_until) {
-        if (static_cast<int>(e.times.size()) > menu.style_pending_key) menu.style_key = std::exchange(menu.style_pending_key, -1);
-    } else menu.style_pending_key = -1;
-    menu.style_key = e.times.empty() ? -1 : std::clamp(menu.style_key, 0, static_cast<int>(e.times.size()) - 1);
+    if (menu.styling.pending_key >= 0 && ImGui::GetTime() < menu.styling.pending_until) {
+        if (static_cast<int>(e.times.size()) > menu.styling.pending_key) menu.styling.key = std::exchange(menu.styling.pending_key, -1);
+    } else menu.styling.pending_key = -1;
+    menu.styling.key = e.times.empty() ? -1 : std::clamp(menu.styling.key, 0, static_cast<int>(e.times.size()) - 1);
     e.now = ImGui::GetTime();
     e.previewing = model.style.preview == e.trick_id;
     e.replaying = e.replay.trick == e.trick_id;
     e.standing_in = e.replaying && e.replay.editor;
     // Once: the model shows the preview until the game has stopped it.
-    if (e.replay.editor && model.style.preview && e.now >= menu.style_preview_off_sent + 0.5) {
-        menu.style_preview_off_sent = e.now;
+    if (e.replay.editor && model.style.preview && e.now >= menu.styling.preview_off_sent + 0.5) {
+        menu.styling.preview_off_sent = e.now;
         quiet(callbacks, "style preview off");
     }
     // A dragged keyframe shows at the mouse position until the game confirms the move.
-    if (menu.style_drag_key >= 0 && menu.style_drag_key < static_cast<int>(e.times.size()) && e.now < menu.style_drag_until)
-        e.times[static_cast<std::size_t>(menu.style_drag_key)] = menu.style_drag_time;
-    if (e.replaying) menu.style_time = e.replay.time;
+    if (menu.styling.drag_key >= 0 && menu.styling.drag_key < static_cast<int>(e.times.size()) && e.now < menu.styling.drag_until)
+        e.times[static_cast<std::size_t>(menu.styling.drag_key)] = menu.styling.drag_time;
+    if (e.replaying) menu.styling.time = e.replay.time;
     return e;
 }
 void trick_picker(Editing& e) {
@@ -109,9 +109,9 @@ void trick_picker(Editing& e) {
             if (nollie(i) != wanted) continue;
             const bool edited = std::ranges::any_of(e.model.style.rotations, [&](const auto& r) { return r.target.trick && r.target.id == i; });
             const auto label = std::format("{}{}", style::flip_trick_titles[i], edited ? "  *" : "");
-            if (ImGui::Selectable(label.c_str(), i == menu.style_trick) && i != menu.style_trick) {
-                menu.style_trick = i;
-                menu.style_key = 0;
+            if (ImGui::Selectable(label.c_str(), i == menu.styling.trick) && i != menu.styling.trick) {
+                menu.styling.trick = i;
+                menu.styling.key = 0;
                 // The stand-in follows the selected trick.
                 if (e.replay.editor || e.screen) send_console(menu, e.callbacks, std::format("style editor show {}", style::flip_trick_names[i]));
                 else if (e.model.style.preview) send_console(menu, e.callbacks, std::format("style preview {} play", style::flip_trick_names[i]));
@@ -155,56 +155,56 @@ void timeline(Editing& e, float height) {
         if (std::abs(pointer - x) <= radius * 1.5f &&
             (nearest < 0 || std::abs(pointer - x) < std::abs(pointer - x_of(e.times[static_cast<std::size_t>(nearest)]))))
             nearest = i;
-        const ImU32 colour = i == menu.style_key ? selected_colour : key_colour;
+        const ImU32 colour = i == menu.styling.key ? selected_colour : key_colour;
         draw->AddQuadFilled(ImVec2(x, middle - radius), ImVec2(x + radius, middle), ImVec2(x, middle + radius), ImVec2(x - radius, middle), colour);
     }
-    const float shown = active && menu.style_drag_key < 0 ? pointer : x_of(e.playhead());
+    const float shown = active && menu.styling.drag_key < 0 ? pointer : x_of(e.playhead());
     draw->AddLine(ImVec2(shown, origin.y + label - px(3)), ImVec2(shown, origin.y + label + height + px(3)), playhead_colour, px(2));
     if (ImGui::IsItemActivated()) {
         // A click on a keyframe selects it for a drag. A click elsewhere moves the playhead.
-        menu.style_drag_key = hovered ? nearest : -1;
+        menu.styling.drag_key = hovered ? nearest : -1;
         if (nearest >= 0) {
-            menu.style_key = nearest;
+            menu.styling.key = nearest;
             e.hold(e.times[static_cast<std::size_t>(nearest)]);
         } else e.hold(mouse);
-    } else if (active && menu.style_drag_key >= 0 && ImGui::GetIO().MouseDragMaxDistanceSqr[0] > px(3) * px(3)) {
-        menu.style_drag_time = mouse;
-        menu.style_drag_until = e.now + 0.75;
-        if (e.now >= menu.style_edit_sent + 0.08) {
-            menu.style_edit_sent = e.now;
-            quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.style_drag_key, mouse));
+    } else if (active && menu.styling.drag_key >= 0 && ImGui::GetIO().MouseDragMaxDistanceSqr[0] > px(3) * px(3)) {
+        menu.styling.drag_time = mouse;
+        menu.styling.drag_until = e.now + 0.75;
+        if (e.now >= menu.styling.edit_sent + 0.08) {
+            menu.styling.edit_sent = e.now;
+            quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.styling.drag_key, mouse));
             e.hold(mouse);
         }
-    } else if (active && menu.style_drag_key < 0) {
+    } else if (active && menu.styling.drag_key < 0) {
         e.hold(mouse);
     }
-    if (ImGui::IsItemDeactivated() && menu.style_drag_key >= 0 && e.now < menu.style_drag_until) {
-        quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.style_drag_key, menu.style_drag_time));
-        e.hold(menu.style_drag_time);
+    if (ImGui::IsItemDeactivated() && menu.styling.drag_key >= 0 && e.now < menu.styling.drag_until) {
+        quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.styling.drag_key, menu.styling.drag_time));
+        e.hold(menu.styling.drag_time);
     }
     if (hovered && !active) ImGui::SetTooltip(nearest >= 0 ? "Drag to move this keyframe" : "Click to show this moment");
 }
 void add_keyframe(Editing& e) {
-    send_console(e.menu, e.callbacks, std::format("style key add {} {:.3f}", e.trick, e.menu.style_time));
-    e.menu.style_pending_key = static_cast<int>(e.times.size());
-    e.menu.style_pending_until = e.now + 1.5;
+    send_console(e.menu, e.callbacks, std::format("style key add {} {:.3f}", e.trick, e.menu.styling.time));
+    e.menu.styling.pending_key = static_cast<int>(e.times.size());
+    e.menu.styling.pending_until = e.now + 1.5;
 }
 void delete_keyframe(Editing& e) {
-    send_console(e.menu, e.callbacks, std::format("style key delete {} {}", e.trick, e.menu.style_key));
-    e.menu.style_key = std::max(0, e.menu.style_key - 1);
+    send_console(e.menu, e.callbacks, std::format("style key delete {} {}", e.trick, e.menu.styling.key));
+    e.menu.styling.key = std::max(0, e.menu.styling.key - 1);
 }
 // Three sliders for each joint of the selected keyframe.
 void joints(Editing& e) {
     auto& menu = e.menu;
-    if (menu.style_key < 0 || menu.style_key >= static_cast<int>(e.times.size())) return;
-    const Target target{true, e.trick_id, static_cast<std::uint8_t>(menu.style_key)};
+    if (menu.styling.key < 0 || menu.styling.key >= static_cast<int>(e.times.size())) return;
+    const Target target{true, e.trick_id, static_cast<std::uint8_t>(menu.styling.key)};
     const float at = e.times[target.key];
     for (int joint = 0; joint < static_cast<int>(style::editable_joints.size()); ++joint) {
         ImGui::PushID(joint);
         field(menu, style::editable_joints[joint].data());
         // A dragged slider shows its own value until the game confirms it.
-        const bool mine = menu.style_edit_joint == joint && menu.style_edit_target == target && e.now < menu.style_edit_until;
-        auto degrees = mine ? menu.style_edit : saved(e.model, target, joint);
+        const bool mine = menu.styling.edit_joint == joint && menu.styling.edit_target == target && e.now < menu.styling.edit_until;
+        auto degrees = mine ? menu.styling.edit : saved(e.model, target, joint);
         const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
         const float width = (ImGui::GetContentRegionAvail().x - reset - ImGui::GetStyle().ItemSpacing.x * 3) / 3;
         bool changed{}, released{};
@@ -227,13 +227,13 @@ void joints(Editing& e) {
             if (e.standing_in ? e.replay.playing || std::abs(e.replay.time - at) > 0.05f
                               : !e.previewing || e.model.style.preview_playing || std::abs(e.model.style.preview_time - at) > 0.01f)
                 e.hold(at);
-            menu.style_edit = degrees;
-            menu.style_edit_joint = joint;
-            menu.style_edit_target = target;
-            menu.style_edit_until = e.now + 0.75;
+            menu.styling.edit = degrees;
+            menu.styling.edit_joint = joint;
+            menu.styling.edit_target = target;
+            menu.styling.edit_until = e.now + 0.75;
             // Send during the drag, but not faster than the game accepts commands.
-            if (released || e.now >= menu.style_edit_sent + 0.08) {
-                menu.style_edit_sent = e.now;
+            if (released || e.now >= menu.styling.edit_sent + 0.08) {
+                menu.styling.edit_sent = e.now;
                 quiet(e.callbacks, std::format("style joint {} {} {:.1f} {:.1f} {:.1f} {}", e.trick, style::editable_joints[joint], degrees[0],
                                                degrees[1], degrees[2], target.key));
             }
@@ -263,29 +263,29 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         ImGui::EndCombo();
     }
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##style-preset-name", "Name for a new preset", menu.style_preset_name.data(), menu.style_preset_name.size());
-    const std::string name(menu.style_preset_name.data());
+    ImGui::InputTextWithHint("##style-preset-name", "Name for a new preset", menu.styling.preset_name.data(), menu.styling.preset_name.size());
+    const std::string name(menu.styling.preset_name.data());
     // The name is the file name: letters, digits, '-' and '_'.
     const bool valid = style::preset_name(name) && std::ranges::none_of(style.presets, [&](const std::string& p) { return style::same_preset(p, name); });
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
     ImGui::BeginDisabled(!valid);
     if (ImGui::Button("New empty preset", ImVec2(half, 0))) {
         send_console(menu, callbacks, "style preset new " + name);
-        menu.style_preset_name = {};
+        menu.styling.preset_name = {};
     }
     ImGui::SameLine();
     if (ImGui::Button("Save a copy", ImVec2(half, 0))) {
         send_console(menu, callbacks, "style preset copy " + name);
-        menu.style_preset_name = {};
+        menu.styling.preset_name = {};
     }
     ImGui::EndDisabled();
     if (!name.empty() && !valid) note("Use letters, digits, '-' and '_', and a name that no preset has.");
     if (!manage) return;
     // The second click within three seconds deletes.
-    const bool armed = ImGui::GetTime() < menu.style_delete_until;
+    const bool armed = ImGui::GetTime() < menu.styling.delete_until;
     if (ImGui::Button(armed ? "Click again to delete" : "Delete this preset", ImVec2(half, 0))) {
         if (armed) send_console(menu, callbacks, "style preset delete " + style.preset);
-        menu.style_delete_until = armed ? 0.0 : ImGui::GetTime() + 3.0;
+        menu.styling.delete_until = armed ? 0.0 : ImGui::GetTime() + 3.0;
     }
     ImGui::SameLine();
     if (ImGui::Button("Open the presets folder", ImVec2(half, 0))) send_console(menu, callbacks, "style preset folder");
@@ -293,8 +293,8 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
 void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested) {
     auto& io = ImGui::GetIO();
     // After the screen opens again, ask for the selected trick again.
-    if (ImGui::GetTime() > menu.style_drawn_at + 1.0) menu.style_asked.clear();
-    menu.style_drawn_at = ImGui::GetTime();
+    if (ImGui::GetTime() > menu.styling.drawn_at + 1.0) menu.styling.asked.clear();
+    menu.styling.drawn_at = ImGui::GetTime();
     menu::set_scale(std::clamp(model.menu_scale, min_menu_scale, max_menu_scale));
     const auto restore_font_scale = io.FontGlobalScale;
     io.FontGlobalScale = std::clamp(model.menu_scale, min_menu_scale, max_menu_scale);
@@ -311,7 +311,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
     e.screen = true;
     // The screen draws one or two more frames after close, and must not ask for its trick again.
     const auto close = [&] {
-        menu.style_closing_until = ImGui::GetTime() + 3.0;
+        menu.styling.closing_until = ImGui::GetTime() + 3.0;
         send_console(menu, callbacks, "style editor close");
     };
     const float side = std::min(px(400), io.DisplaySize.x * 0.34f), bottom = px(176);
@@ -335,9 +335,9 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         const bool has_clip = (model.style.clips >> e.trick_id & 1) != 0;
         if (!e.standing_in) {
             // A selected trick is shown. A trick without a clip is first fetched from Skatepedia.
-            if (e.now >= menu.style_closing_until && model.debug.style_editor && (menu.style_asked != e.trick || e.now > menu.style_asked_at + 20.0)) {
-                menu.style_asked = e.trick;
-                menu.style_asked_at = e.now;
+            if (e.now >= menu.styling.closing_until && model.debug.style_editor && (menu.styling.asked != e.trick || e.now > menu.styling.asked_at + 20.0)) {
+                menu.styling.asked = e.trick;
+                menu.styling.asked_at = e.now;
                 send_console(menu, callbacks, "style editor show " + e.trick);
             }
             if (!has_clip) {
@@ -346,8 +346,8 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
             }
         }
         if (!model.style.editor_note.empty()) ImGui::TextDisabled("%s", model.style.editor_note.c_str());
-        if (menu.style_key >= 0) {
-            section(menu, std::format("KEYFRAME {} OF {}", menu.style_key + 1, e.times.size()).c_str());
+        if (menu.styling.key >= 0) {
+            section(menu, std::format("KEYFRAME {} OF {}", menu.styling.key + 1, e.times.size()).c_str());
             ImGui::BeginChild("##style-editor-joints", ImVec2(0, 0));
             joints(e);
             ImGui::EndChild();
@@ -374,7 +374,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         };
         const auto select_at = [&](float at) {
             for (int i = 0; i < static_cast<int>(e.times.size()); ++i)
-                if (std::abs(e.times[static_cast<std::size_t>(i)] - at) < 0.001f) menu.style_key = i;
+                if (std::abs(e.times[static_cast<std::size_t>(i)] - at) < 0.001f) menu.styling.key = i;
             e.hold(at);
         };
         const auto toggle = [&] {
@@ -403,7 +403,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         if (ImGui::Button("Add keyframe")) add_keyframe(e);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(menu.style_key < 0);
+        ImGui::BeginDisabled(menu.styling.key < 0);
         if (ImGui::Button("Delete keyframe")) delete_keyframe(e);
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -428,14 +428,14 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         const bool lifting = ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0);
         const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0) || lifting;
         const float zoom = -io.MouseWheel * (io.KeyShift ? 0.1f : 0.35f);
-        if (dragging) menu.style_orbit[0] -= io.MouseDelta.x * 0.008f;
-        if (lifting) menu.style_orbit[3] += io.MouseDelta.y * 0.004f;
-        else if (dragging) menu.style_orbit[1] += io.MouseDelta.y * 0.006f;
-        menu.style_orbit[2] += zoom;
+        if (dragging) menu.styling.orbit[0] -= io.MouseDelta.x * 0.008f;
+        if (lifting) menu.styling.orbit[3] += io.MouseDelta.y * 0.004f;
+        else if (dragging) menu.styling.orbit[1] += io.MouseDelta.y * 0.006f;
+        menu.styling.orbit[2] += zoom;
     }
-    if (const auto orbit = editor_controls().orbit; orbit && menu.style_orbit != std::array<float, 4>{}) {
-        orbit(menu.style_orbit[0], menu.style_orbit[1], menu.style_orbit[2], menu.style_orbit[3]);
-        menu.style_orbit = {};
+    if (const auto orbit = editor_controls().orbit; orbit && menu.styling.orbit != std::array<float, 4>{}) {
+        orbit(menu.styling.orbit[0], menu.styling.orbit[1], menu.styling.orbit[2], menu.styling.orbit[3]);
+        menu.styling.orbit = {};
     }
     if (exit_requested || (!typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) close();
     ImGui::PopStyleColor(colours);

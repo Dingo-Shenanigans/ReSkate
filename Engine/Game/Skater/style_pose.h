@@ -325,16 +325,22 @@ public:
         // Playback moves one frame at a time, so search near the last match first.
         const std::size_t around = std::min(last_, frames_.size());
         search(around > 120 ? around - 120 : 0, std::min(frames_.size(), around + 120));
-        if (least > tolerance) search(0, frames_.size());
+        // After a full search that found nothing, only every 8th call searches all frames: a skater that is no replay costs little.
+        if (least > tolerance && (!unmatched_ || ++skipped_ % 8 == 0)) {
+            search(0, frames_.size());
+            unmatched_ = least > tolerance;
+        }
         if (distance) *distance = least;
         if (best >= frames_.size() || least > tolerance) return nullptr;
         last_ = best;
+        unmatched_ = false;
         return &frames_[best];
     }
 
 private:
     std::deque<TakeFrame> frames_;
-    std::size_t last_{};
+    std::size_t last_{}, skipped_{};
+    bool unmatched_{};
 };
 // The rotations that change a frame shown with `before` into a frame shown with `now`.
 inline void restyle(const std::vector<JointDelta> &before, const std::vector<JointDelta> &now, std::vector<JointDelta> &out) {

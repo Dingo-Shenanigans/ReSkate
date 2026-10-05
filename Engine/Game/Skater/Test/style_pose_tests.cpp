@@ -139,6 +139,9 @@ int main() {
     check(found && found->trick == 2 && found->time == 1.5f && distance < Takes::tolerance, "a replayed pose finds the frame that showed it");
     check(takes.find(shown_at(3.0f)) && takes.find(shown_at(3.0f))->time == 0.15f, "also after a jump to another part of the replay");
     check(!takes.find(shown_at(-70.0f)), "a pose no recorded frame showed is not matched");
+    int calls{};
+    while (calls < 8 && !takes.find(shown_at(55.0f))) ++calls;
+    check(calls < 8, "after a miss, a replay far from the last match is still found within 8 calls");
     std::vector<JointDelta> change;
     restyle({{5, bent}}, {{5, turned}, {6, bent}}, change);
     check(change.size() == 2 && near(normalized(multiply(bent, change[0].rotation)), turned) && change[1].joint == 6 && near(change[1].rotation, bent),
