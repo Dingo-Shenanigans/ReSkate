@@ -275,6 +275,30 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
     ImGui::EndDisabled();
     end_card();
 
+    // A dedicated server's radio: whether this player hears it, and how loud.
+    if (menu.radio_pending && (*menu.radio_pending == mp.radio.settings || ImGui::GetTime() >= menu.radio_pending_until))
+        menu.radio_pending.reset();
+    auto radio = menu.radio_pending.value_or(mp.radio.settings);
+    bool radio_changed{};
+    begin_card(menu, "radio", "SERVER RADIO", "Only changes what you hear");
+    radio_changed |= toggle_row(menu, "Server radio", "Hear the music a dedicated server plays with its radio command.",
+                                radio.enabled);
+    ImGui::BeginDisabled(!radio.enabled);
+    field(menu, "Radio volume");
+    radio_changed |= ImGui::SliderFloat("##radio-volume", &radio.volume, 0.f, max_voice_volume, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    if (mp.radio.playing) {
+        tag(menu, "ON AIR", skate_theme::good);
+        ImGui::SameLine();
+    }
+    note(mp.radio.status.c_str());
+    end_card();
+    if (radio_changed && send_private(menu, "radio-listen", std::to_string(radio.enabled ? 1 : 0) + " " + std::to_string(radio.volume),
+                                      unused, false)) {
+        menu.radio_pending = radio;
+        menu.radio_pending_until = ImGui::GetTime() + 2;
+    }
+
     if (changed) {
         if (send_private(menu, "voice", std::to_string(value.enabled) + " " + std::to_string(value.proximity) + " " +
             std::to_string(value.push_to_talk) + " " + std::to_string(value.distance) + " " + std::to_string(value.volume) + " " +

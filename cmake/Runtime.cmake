@@ -32,6 +32,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Remote/native_cosmetics.cpp
     Extension/Multiplayer/Remote/native_audio.cpp
     Extension/Multiplayer/Voice/voice_chat.cpp
+    Extension/Multiplayer/Voice/radio_player.cpp
     Extension/Multiplayer/Voice/native_voice.cpp
     Extension/Multiplayer/Hud/native_player_ui.cpp
     Extension/Multiplayer/Hud/native_party.cpp

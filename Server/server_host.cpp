@@ -199,7 +199,8 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
     struct Encoded { Packet packet; std::vector<std::uint8_t> raw, wire; };
     std::array<Encoded, 3> encoded;
     const bool gameplay = packet.kind == PacketKind::pose || packet.kind == PacketKind::audio ||
-                          packet.kind == PacketKind::voice || packet.kind == PacketKind::cosmetics;
+                          packet.kind == PacketKind::voice || packet.kind == PacketKind::cosmetics ||
+                          packet.kind == PacketKind::radio;
     for (auto &[id, guest] : guests_) {
         auto &p = *guest;
         if (!p.handshaken || id == except || (gameplay && !p.world_ready)) continue;
@@ -828,11 +829,17 @@ void Host::tick(std::uint64_t now) {
         log_("Everyone has loaded " + map_name() + ".");
     }
     sync_objects();
-    // The radio's frames are only counted until the game can play them: sending a packet kind
-    // today's clients cannot decode would drop them. Its notices already reach chat.
-    for (const auto &notice : radio_.poll(now_).notices) {
+    // The radio: its notices go to chat, its frames to everyone in the world, unreliable and
+    // fresh like voice (a late frame is worth nothing).
+    auto radio = radio_.poll(now_);
+    for (const auto &notice : radio.notices) {
         log_("[radio] " + notice);
         send_chat(notice);
+    }
+    for (const auto &batch : radio.batches) {
+        auto p = packet(PacketKind::radio, now_);
+        p.radio = encode_radio_batch(batch);
+        broadcast(p, false, true);
     }
     activity_.tick(now_);
     if (std::exchange(vote_recount_, false)) check_vote(false);

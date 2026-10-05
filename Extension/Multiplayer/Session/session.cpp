@@ -70,6 +70,7 @@ void reset_peer(Session &s, std::size_t slot) {
 }
 void stop(Session &s, std::string reason) {
     s.voice.reset();
+    s.radio.reset();
     s.voice_policy = {};
     s.tps = multiplayer_default_tps;
     s.object_placement = ObjectPlacement::everyone;
@@ -160,6 +161,7 @@ void stop(Session &s, std::string reason) {
 // admission, password challenges and stable member slots intact.
 void clear_world(Session &s, std::uint64_t now) {
     s.voice.reset();
+    s.radio.reset();
     clear_remote_network_objects();
     s.object_owners_valid = false;
     s.local_objects = {}; s.next_object_update = 0;

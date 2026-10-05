@@ -1,7 +1,9 @@
 #include "Extension/Multiplayer/Steam/steam_server_browser.h"
 #include "Server/steam_server.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Extension/Multiplayer/Net/radio_frames.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
+#include "Extension/Multiplayer/Steam/steam_transport.h"
 #include "Extension/Throwdowns/throwdown_wire.h"
 #include <chrono>
 #include <cmath>
@@ -619,6 +621,25 @@ void throwdown_codec() {
     check(reject(p), "An overlong throwdown packet was encoded");
     p.throwdown = message; p.source = 0;
     check(reject(p), "A throwdown packet without a sender was encoded");
+
+    // A dedicated server's radio: one batch of Opus frames, checked on both ends.
+    constexpr std::uint64_t server = 90194313216ULL | (1ULL << 56) | (4ULL << 52);
+    Packet radio;
+    radio.kind = PacketKind::radio; radio.session = 9; radio.epoch = 10; radio.map = 11; radio.source = server;
+    radio.radio = encode_radio_batch({3, 120, {std::vector<std::uint8_t>(240, 5), std::vector<std::uint8_t>(max_radio_frame, 6)}});
+    const auto radio_back = decode_wire(encode_wire(radio));
+    check(radio_back && radio_back->kind == PacketKind::radio && radio_back->radio == radio.radio && radio_back->source == server,
+          "Radio packet failed to round-trip");
+    check(traffic_lane(PacketKind::radio) == TrafficLane::voice, "Radio does not travel on the voice lane");
+    radio.radio.push_back(0);
+    check(reject(radio), "A radio packet with a broken batch was encoded");
+    auto radio_bytes = encode(radio_back ? *radio_back : radio);
+    radio_bytes.push_back(0);
+    radio_bytes[8] = static_cast<std::uint8_t>(radio_bytes.size() - packet_header_size);
+    radio_bytes[9] = static_cast<std::uint8_t>((radio_bytes.size() - packet_header_size) >> 8);
+    check(!decode(radio_bytes), "A radio packet with trailing bytes was decoded");
+    radio.radio.clear();
+    check(reject(radio), "An empty radio packet was encoded");
 
     for (const auto kind : {ThrowdownMessage::Kind::close, ThrowdownMessage::Kind::join, ThrowdownMessage::Kind::leave}) {
         ThrowdownMessage m; m.kind = kind; m.leader = leader; m.id = 5;

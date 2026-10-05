@@ -109,7 +109,7 @@ class Host {
     SteamTransport &transport_;
     Log log_;
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
-    Radio radio_;          // `radio play ...`: frames are produced, not yet sent (server_radio.h)
+    Radio radio_;          // `radio play ...`: its frames go to everyone in the world (server_radio.h)
     // The running player vote (server_votes.cpp), and when each player may start another.
     struct Vote {
         VoteKind kind{};

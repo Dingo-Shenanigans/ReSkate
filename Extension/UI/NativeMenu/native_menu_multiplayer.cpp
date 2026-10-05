@@ -114,6 +114,17 @@ void process_actions(const Context& context, const MultiplayerModel& model) {
                 s.voice_pending_until = GetTickCount64() + 2000;
                 s.feedback.clear();
             } else s.feedback = "Couldn't apply that change. Try again.";
+        } else if (cmd == "radio-set") {
+            if (s.radio_pending && GetTickCount64() >= s.radio_pending_until) s.radio_pending.reset();
+            auto value = s.radio_pending.value_or(model.radio.settings);
+            if (request.argument == "enabled") value.enabled = !value.enabled;
+            else if (request.argument == "volume") value.volume = next_step(value.volume, voice_volumes);
+            else continue;
+            if (queue_command("radio-listen", std::to_string(value.enabled ? 1 : 0) + " " + std::to_string(value.volume), {})) {
+                s.radio_pending = value;
+                s.radio_pending_until = GetTickCount64() + 2000;
+                s.feedback.clear();
+            } else s.feedback = "Couldn't apply that change. Try again.";
         } else if (cmd == "voice-player-volume") {
             const auto player = std::find_if(model.voice.players.begin(), model.voice.players.end(),
                 [&](const auto& entry) { return std::to_string(entry.id) == request.argument; });
@@ -301,6 +312,13 @@ void render_section(const Context& context, const MultiplayerModel& model, Secti
         add_button(context, side, "voice-volume", "Listening volume: " + volume_label(value.volume), "voice-set", "volume", false, 136.f);
         add_button(context, side, "voice-microphone", "Microphone volume: " + volume_label(value.microphone),
             "voice-set", "microphone", false, 136.f);
+        if (s.radio_pending && (*s.radio_pending == model.radio.settings || GetTickCount64() >= s.radio_pending_until))
+            s.radio_pending.reset();
+        const auto radio = s.radio_pending.value_or(model.radio.settings);
+        add_button(context, side, "radio-enabled", std::string("Server radio: ") + (radio.enabled ? "On" : "Off"),
+            "radio-set", "enabled", false, 136.f);
+        add_button(context, side, "radio-volume", "Radio volume: " + volume_label(radio.volume),
+            radio.enabled ? "radio-set" : "", "volume", false, 136.f);
         if (model.hosting)
             add_button(context, side, "voice-allow", std::string("Lobby voice: ") + (model.voice.allowed ? "Allowed" : "Disabled"),
                 "voice-allow", model.voice.allowed ? "off" : "on", false, 136.f);

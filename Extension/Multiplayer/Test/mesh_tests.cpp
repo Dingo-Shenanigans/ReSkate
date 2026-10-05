@@ -83,6 +83,13 @@ void VoiceChat::reset() {}
 void VoiceChat::process_native(std::uintptr_t) noexcept {}
 void VoiceChat::receive(const Packet&) {}
 std::vector<VoiceData> VoiceChat::take_capture() { return {}; }
+struct RadioPlayer::Impl {};
+RadioPlayer::RadioPlayer() = default;
+RadioPlayer::~RadioPlayer() = default;
+void RadioPlayer::configure(RadioSettings) {}
+RadioModel RadioPlayer::model() const { return {}; }
+void RadioPlayer::receive(std::uint64_t, std::span<const std::uint8_t>) {}
+void RadioPlayer::reset() {}
 }
 
 namespace dingosdk::multiplayer {

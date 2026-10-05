@@ -7,8 +7,8 @@
 #include <vector>
 
 // A dedicated server's radio (Server/server_radio.h): 48 kHz stereo Opus in 20 ms frames, a few
-// to a batch. Not a PacketKind yet: today's clients drop a peer whose packet they cannot decode,
-// so batches only go out once the client plays them and the protocol version moves with it.
+// to a batch. Each batch travels as one PacketKind::radio (protocol 43) and the game plays it
+// (Extension/Multiplayer/Voice/radio_player.h).
 namespace dingosdk::multiplayer {
 constexpr unsigned radio_rate = 48000, radio_channels = 2;
 constexpr unsigned radio_frame_samples = 960; // per channel: 20 ms

@@ -116,6 +116,7 @@ struct MultiplayerBan {
 };
 struct MultiplayerModel {
     VoiceModel voice;
+    RadioModel radio;
     std::vector<MultiplayerBan> bans;
     unsigned tps = multiplayer_default_tps;
     ObjectPlacement object_placement = ObjectPlacement::everyone;

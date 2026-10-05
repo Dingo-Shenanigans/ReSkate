@@ -139,6 +139,7 @@ void publish(Session &s, const NativeFrame *local) {
     load_bans(s);
     view.bans = s.bans;
     view.voice = s.voice.model();
+    view.radio = s.radio.model();
     view.voice.allowed = s.voice_policy.allowed && (s.mode != Mode::join || s.roster_sequence != 0);
     if (!view.voice.allowed) {
         view.voice.transmitting = view.voice.ready = false;

@@ -415,8 +415,7 @@ std::string Radio::status() const {
     // One short line each: an admin reads this in chat, where a long line is cut off.
     return "Radio: " + (s.playing_title.empty() ? std::string("starting") : "playing " + s.playing_title) + "\nFrom " +
            s.source + "\n" + std::to_string(seconds) + " s out, " + std::to_string(kbps) + " kbps, " +
-           std::to_string(s.queue.size() * frame_us / 1000) + " ms buffered (" + tools + ")" +
-           "\nNot sent to players yet: the game needs radio support first.";
+           std::to_string(s.queue.size() * frame_us / 1000) + " ms buffered (" + tools + ")";
 }
 Radio::Output Radio::poll(std::uint64_t now) noexcept {
     Output out;

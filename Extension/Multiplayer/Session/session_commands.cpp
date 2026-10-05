@@ -536,7 +536,7 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
          !own_mark_command(action) &&
-         action != "voice" && action != "voice-mute" &&
+         action != "voice" && action != "voice-mute" && action != "radio-listen" &&
          action != "voice-volume" && action != "voice-allow" && action != "voice-range" && action != "chat" && action != "ban" && action != "unban" &&
          action != "world-layer-sync" && action != "noclip-allow" && action != "nobail-allow" && action != "boosts-allow" &&
          action != "tuning-enforce" && action != "tp" &&
@@ -649,6 +649,22 @@ std::string command(std::string_view action, std::string_view argument, std::str
             s.voice.configure(value);
             publish(s);
             return value.enabled ? (value.open_mic ? "Open microphone enabled." : "Push-to-talk voice enabled.") : "Voice chat disabled.";
+        }
+        // How this player hears a dedicated server's radio: "<on 0|1> <volume>".
+        if (action == "radio-listen") {
+            RadioSettings value;
+            int enabled{};
+            const auto space = argument.find(' ');
+            const auto first = argument.substr(0, space), second = space == std::string_view::npos ? std::string_view{} : argument.substr(space + 1);
+            const auto on = std::from_chars(first.data(), first.data() + first.size(), enabled);
+            const auto volume = std::from_chars(second.data(), second.data() + second.size(), value.volume);
+            if (on.ec != std::errc{} || on.ptr != first.data() + first.size() || (enabled != 0 && enabled != 1) ||
+                volume.ec != std::errc{} || volume.ptr != second.data() + second.size()) return "Invalid radio settings.";
+            value.enabled = enabled != 0;
+            if (!value.valid()) return "Invalid radio volume.";
+            s.radio.configure(value);
+            publish(s);
+            return value.enabled ? "Server radio on." : "Server radio muted.";
         }
         if (action == "tp") return teleport_self(s, argument);
         if (action == "tpall" || action == "tphere") return teleport_players(s, action, argument);
