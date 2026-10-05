@@ -222,9 +222,10 @@ struct Radio::State {
         std::vector<Entry> result;
         if (web_url(input)) {
             if (!ytdlp) return {{input, input}};
-            // One line per video ("<url>\t<title>"): a playlist lists them all, a page lists itself.
-            const auto listing = capture({"yt-dlp", "--ignore-config", "--no-warnings", "--flat-playlist", "--print",
-                                          "%(url)s\t%(title)s", "--", input});
+            // One line per video ("<url>\t<title>"): a playlist lists them all (the first 500 of a
+            // channel), a page lists itself. A single video has no flat "url", only its page's.
+            const auto listing = capture({"yt-dlp", "--ignore-config", "--no-warnings", "--flat-playlist", "--playlist-end",
+                                          "500", "--print", "%(webpage_url,url)s\t%(title)s", "--", input});
             for (std::string_view rest = listing; !rest.empty();) {
                 const auto end = rest.find('\n');
                 const auto line = rest.substr(0, end);
