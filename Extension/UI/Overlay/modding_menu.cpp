@@ -153,8 +153,13 @@ void draw_installed_mods(SkateMenu& menu) {
         if (excluded(mod.name)) {
             status = "NOT LOADED";
             colour = skate_theme::danger;
-            hover = "Not loaded: it could not be merged cleanly, so none of it is used.\n\n"
-                    "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.";
+            const bool copying = std::ranges::any_of(launch.excluded, [&](const mods::Mod& left) {
+                return _stricmp(left.name.c_str(), mod.name.c_str()) == 0 && mods::copies_store_items(left.problems);
+            });
+            hover = copying ? "Not loaded: it adds copies of items the game's store sells, which ReSkate does not "
+                              "unlock, so none of it is used.\n\nA version of the mod without them would load."
+                            : "Not loaded: it could not be merged cleanly, so none of it is used.\n\n"
+                              "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.";
         } else if (entry.enabled && effect) {
             status = "LOADED";
             colour = skate_theme::good;

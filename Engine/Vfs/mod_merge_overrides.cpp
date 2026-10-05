@@ -78,6 +78,30 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                                 imported.insert(reference.fileGuid);
                         } catch (const std::exception&) {}
                     }
+                    // Maps carry stock SkaterLoader too. Replacing it only in the game's
+                    // bundles loses custom cosmetic material targets on a map transition.
+                    // Other resource types retain their own table/dependency merge rules.
+                    std::map<std::string, const fb::BundleAsset*, std::less<>> gameScripts;
+                    for (const auto& asset : gameListing->manifest.resources)
+                        if (asset.resourceType == luaScriptResourceType) gameScripts.emplace(lower(asset.name), &asset);
+                    for (std::size_t index = 0; index < modListing->manifest.resources.size(); ++index) {
+                        const auto& asset = modListing->manifest.resources[index];
+                        if (asset.resourceType != luaScriptResourceType) continue;
+                        const auto name = lower(asset.name);
+                        const auto originalScript = gameScripts.find(name);
+                        if (originalScript == gameScripts.end() || originalScript->second->sha1 == asset.sha1 ||
+                            originalScript->second->resourceId != asset.resourceId) continue;
+                        auto& versions = out.scripts[name];
+                        if (versions.contains(originalScript->second->sha1)) continue;
+                        const auto at = modListing->first + modListing->manifest.ebx.size() + index;
+                        if (at >= modListing->files.size()) continue;
+                        const auto& file = modListing->files[at];
+                        versions.emplace(originalScript->second->sha1,
+                            AssetOverride{mod->name, asset.sha1, asset.originalSize,
+                                store.read(file.location.patch ? mod->directory : baseRoot,
+                                           file.location, file.offset, file.size), asset});
+                        ++changed;
+                    }
                     // Resources the mod adds, kept to go with an added EBX of the same name
                     // (a wave's sound-bank resource registers the wave with the audio system).
                     std::set<std::string, std::less<>> shippedResources;

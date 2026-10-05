@@ -187,7 +187,9 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             const auto& previous = exclusions.at(result.mods[i].name);
             if (sdk.empty() || previous.sdk != sdk) continue; // a new ReSkate may merge it now
             result.notes.push_back("Leaving out " + result.mods[i].name +
-                ": it could not be merged cleanly before and its files have not changed since");
+                (copies_store_items(found->second)
+                     ? ": it adds copies of store items and its files have not changed since"
+                     : ": it could not be merged cleanly before and its files have not changed since"));
             leave_out(i, found->second, previous.fingerprint);
         }
         // A mod made for another game build ships that build's layout and full
@@ -233,7 +235,9 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
                     const auto found = merge.problems.find(result.mods[i].name);
                     if (found == merge.problems.end() || found->second.empty()) continue;
                     result.notes.push_back("Leaving out " + result.mods[i].name +
-                        ": it could not be merged cleanly; merging the other mods again without it");
+                        (copies_store_items(found->second)
+                             ? ": it adds copies of store items; merging the other mods without it"
+                             : ": it could not be merged cleanly; merging the other mods again without it"));
                     leave_out(i, found->second, mod_fingerprint(result.mods[i].directory));
                     removed = true;
                 }
@@ -264,6 +268,12 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             }
             if (!mod.problems.empty() && mod.problems.front().starts_with("made for game build ")) {
                 result.warnings.push_back("Mod " + mod.name + " was not loaded: it was " + mod.problems.front() +
+                    (mod.levels.empty() ? std::string{} : " (its maps are not listed: " + join(mod.levels, ", ") + ")") + ".");
+                continue;
+            }
+            if (copies_store_items(mod.problems)) {
+                result.warnings.push_back("Mod " + mod.name + " was not loaded: it " + mod.problems.front() +
+                    ". ReSkate does not unlock store items, so a mod that adds them again is left out whole" +
                     (mod.levels.empty() ? std::string{} : " (its maps are not listed: " + join(mod.levels, ", ") + ")") + ".");
                 continue;
             }

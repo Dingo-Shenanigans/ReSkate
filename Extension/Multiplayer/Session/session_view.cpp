@@ -531,8 +531,10 @@ std::pair<std::uint32_t, std::string> mark_role(IdentityList list) {
     default: return {nametag_homie, "Homie"};
     }
 }
-// The colour and tag a player gets, in chat and on their nametag.
-std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t sender, bool local) {
+// The colour and tag a player gets, in chat and on their nametag. `marks` off leaves out who
+// the backend says they are: for a chat line that is not known to be theirs (chat proofs,
+// session_receive.cpp).
+std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t sender, bool local, bool marks) {
     if (!sender) return {};
     const bool dedicated = dedicated_host(s);
     if (dedicated && sender == s.host_id) return {nametag_admin, {}}; // the server itself
@@ -540,7 +542,7 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     const bool vouched = local || (peer && steam_vouched(s, *peer));
     // Who the backend says a player is comes before what they are in this lobby, unless they
     // have turned their tag off (the Special page), which their appearance tells everyone.
-    if (vouched && (local ? own_tag_shown() : shows_tag(*peer)))
+    if (marks && vouched && (local ? own_tag_shown() : shows_tag(*peer)))
         if (const auto mark = identity_mark(sender)) return mark_role(*mark);
     if (dedicated && (local ? s.server_admin : peer && peer->member.admin)) return {nametag_admin, "Admin"};
     if (!dedicated && (local ? s.mode == Mode::host : sender == s.host_id)) return {nametag_host, "Host"};
@@ -550,9 +552,9 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     }
     return {nametag_white, {}};
 }
-void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local) {
+void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local, bool marks) {
     if (name.empty()) name = sender ? "Player" : "ReSkate";
-    auto [color, tag] = player_role(s, sender, local);
+    auto [color, tag] = player_role(s, sender, local, marks);
     s.chat.push_back({++s.chat_sequence, sender, std::move(name), std::move(text), local, color, std::move(tag)});
     while (s.chat.size() > multiplayer_chat_history) s.chat.pop_front();
     publish_chat(s);

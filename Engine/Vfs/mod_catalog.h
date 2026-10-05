@@ -31,7 +31,8 @@ struct Catalog {
     std::vector<std::string> notes;
     // Enabled mods left out entirely because they could not be merged cleanly
     // (their problems say why). A partly merged mod would list maps that never
-    // finish loading, so a mod either merges whole or not at all.
+    // finish loading, so a mod either merges whole or not at all. A mod that
+    // adds copies of store items is here too (mods::copies_store_items).
     std::vector<Mod> excluded;
     // Mods left out, one line each, for the warning log.
     std::vector<std::string> warnings;

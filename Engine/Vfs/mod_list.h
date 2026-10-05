@@ -68,6 +68,14 @@ struct Exclusion {
     std::string sdk;                   // the ReSkate.dll that left it out; a new one retries
     std::vector<std::string> problems; // why, most important first
 };
+// A mod can also be left out with nothing wrong with its files: it adds copies
+// of items the game's store sells, which ReSkate does not unlock, so it is not
+// loaded at all (Engine/Vfs/mod_store_copies.h). Its first problem then begins
+// with this, and reinstalling or rebuilding it changes nothing.
+inline constexpr std::string_view store_copies_problem = "adds copies of store items";
+[[nodiscard]] inline bool copies_store_items(const std::vector<std::string>& problems) noexcept {
+    return !problems.empty() && problems.front().starts_with(store_copies_problem);
+}
 // Names, sizes and write times of every file in the mod folder.
 std::string mod_fingerprint(const std::filesystem::path& directory);
 std::map<std::string, Exclusion, std::less<>> read_exclusions(const std::filesystem::path& mods_root) noexcept;

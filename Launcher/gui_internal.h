@@ -199,6 +199,9 @@ struct ModProblem {
     std::string name;      // folder under Mods/, so it can be switched off
     std::string title;
     std::string reason;
+    // Nothing is wrong with its files: it adds copies of store items, which
+    // ReSkate does not unlock (mods::copies_store_items).
+    bool store_copies{};
 };
 
 struct State {

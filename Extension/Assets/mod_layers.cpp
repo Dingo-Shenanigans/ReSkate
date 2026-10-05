@@ -241,9 +241,20 @@ bool start_mod_layers(std::uintptr_t base, std::string& error) {
     // is worse, and used to say so only in the log. Name those too; the
     // outdated ones have their own notice above.
     {
-        std::vector<const mods::Mod*> dropped;
+        // A mod that adds copies of store items is whole; it is left out for what it adds.
+        std::vector<const mods::Mod*> dropped, copying;
         for (const auto& mod : catalog.excluded)
-            if (mod.outdated.empty()) dropped.push_back(&mod);
+            if (mod.outdated.empty()) (mods::copies_store_items(mod.problems) ? copying : dropped).push_back(&mod);
+        if (!copying.empty()) {
+            std::string names;
+            for (const auto* mod : copying)
+                names += (names.empty() ? "" : ", ") + (mod->title.empty() ? mod->name : mod->title);
+            const bool one = copying.size() == 1;
+            overlay::notify(overlay::NoticeLevel::warning,
+                one ? "A mod was not loaded" : std::to_string(copying.size()) + " mods were not loaded",
+                names + (one ? " adds" : " add") + " copies of items the game's store sells. ReSkate does not "
+                "unlock store items, so none of " + (one ? "its" : "their") + " content is loaded.");
+        }
         if (!dropped.empty()) {
             std::string names;
             for (const auto* mod : dropped)

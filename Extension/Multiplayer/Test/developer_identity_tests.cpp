@@ -148,6 +148,12 @@ void items() {
     check(still.on && !still.rainbow && item_color(still, 0) == material_color({0, 255, 0}) && item_color(still, 0)[1] > .7f &&
               item_color(still, 777) == item_color(still, 0) && item_color(still, 1500) == item_color(still, 0),
           "A solid colour is not the colour picked, or does not stand still");
+    // A player on no list gets nothing, whatever style their packets carry: the styles only
+    // shape what a list already gives.
+    for (const auto mode : {MarkMode::standard, MarkMode::gradient, MarkMode::solid})
+        for (const std::uint8_t speed : {std::uint8_t{0}, std::uint8_t{2}})
+            check(!item_animation(std::nullopt, {mode, {255, 0, 0}, {0, 0, 255}, speed}).on,
+                  "A player on no list got colours by asking for them");
     for (const auto mode : {MarkMode::standard, MarkMode::gradient, MarkMode::solid})
         check(!item_animation(L::content_creator, {mode, {}, {}, 0}).rainbow && !item_animation(L::homie, {mode, {}, {}, 0}).rainbow,
               "A style gave the rainbow to someone who is not a developer");

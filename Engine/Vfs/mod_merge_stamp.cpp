@@ -45,9 +45,10 @@ fs::path sdk_module() {
 } // namespace
 
 std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mod*>& mods,
-                              const std::map<const Mod*, RelativeFiles>& modFiles) {
+                              const std::map<const Mod*, RelativeFiles>& modFiles, bool storeKnown) {
     std::string inputs = stamp_header;
     inputs += '\n';
+    inputs += storeKnown ? "store known\n" : "store unknown\n";
     const auto describe = [&](std::string_view label, const fs::path& path) {
         inputs += label;
         std::error_code error;

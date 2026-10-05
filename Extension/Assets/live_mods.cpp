@@ -342,7 +342,8 @@ void apply_now() {
     // As at launch (mods::load_catalog): a mod that cannot be merged cleanly is left out and the
     // others merged again without it, so applying mods now never loads one a restart would not.
     mods::MergeReport report;
-    std::string left_out;
+    // Left out because they could not be merged, and because they add copies of store items.
+    std::string left_out, left_out_copying;
     for (int round = 0;; ++round) {
         report = mods::merge_mods(catalog, {}, {.live = true});
         if (!report.issue.empty()) break;
@@ -354,10 +355,17 @@ void apply_now() {
                 report.issue = catalog.mods[i].name + " still could not be merged cleanly; restart the game to load the others";
                 break;
             }
-            logging::log(logging::Level::warning, logging::Channel::assets,
-                         "Live mods: leaving out {}: it could not be merged cleanly ({} problem(s), first: {})",
-                         catalog.mods[i].name, found->second.size(), found->second.front());
-            left_out += (left_out.empty() ? "" : ", ") + catalog.mods[i].name;
+            if (mods::copies_store_items(found->second)) {
+                logging::log(logging::Level::warning, logging::Channel::assets,
+                             "Live mods: leaving out {}: it {}. ReSkate does not unlock store items.",
+                             catalog.mods[i].name, found->second.front());
+                left_out_copying += (left_out_copying.empty() ? "" : ", ") + catalog.mods[i].name;
+            } else {
+                logging::log(logging::Level::warning, logging::Channel::assets,
+                             "Live mods: leaving out {}: it could not be merged cleanly ({} problem(s), first: {})",
+                             catalog.mods[i].name, found->second.size(), found->second.front());
+                left_out += (left_out.empty() ? "" : ", ") + catalog.mods[i].name;
+            }
             auto mod = std::move(catalog.mods[i]);
             catalog.mods.erase(catalog.mods.begin() + static_cast<std::ptrdiff_t>(i));
             mod.problems = found->second;
@@ -374,6 +382,10 @@ void apply_now() {
     if (!left_out.empty())
         overlay::notify(overlay::NoticeLevel::warning, "Left out " + left_out,
                         "It could not be merged cleanly. The other mods were applied without it.");
+    if (!left_out_copying.empty())
+        overlay::notify(overlay::NoticeLevel::warning, "Left out " + left_out_copying,
+                        "It adds copies of items the game's store sells, which ReSkate does not unlock. "
+                        "The other mods were applied without it.");
     // A mod switched on now can change how tricks score from the next level load on.
     if (const auto scoring = mods::check_scoring(catalog); scoring.fingerprint) {
         const bool already = mods::scoring_state().fingerprint != 0;
@@ -435,6 +447,8 @@ void apply_now() {
         for (const auto &mod : catalog.mods) applied->push_back(mod.name);
     }
     if (!left_out.empty()) problem += (problem.empty() ? "left out " : "; left out ") + left_out + ", which could not be merged cleanly";
+    if (!left_out_copying.empty())
+        problem += (problem.empty() ? "left out " : "; left out ") + left_out_copying + ", which adds copies of store items";
     const auto elapsed = static_cast<double>(GetTickCount64() - started) / 1000.0;
     set_status("applied " + std::to_string(catalog.mods.size()) + " mod(s) in " + std::to_string(elapsed).substr(0, 4) + "s; " +
                    (needed ? "reloading the level"

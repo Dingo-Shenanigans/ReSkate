@@ -547,10 +547,21 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
             "mods.json could not be read (%s), so the game loads no mods. Any change here rewrites it.",
             panel.list.issue.c_str());
-    std::vector<std::string> dropped;
-    for (const auto& entry : entries)
-        if (entry.enabled && panel.list.excluded.contains(entry.mod.name) && entry.mod.outdated.empty())
-            dropped.push_back(entry.mod.title);
+    std::vector<std::string> dropped, copying;
+    for (const auto& entry : entries) {
+        if (!entry.enabled || !entry.mod.outdated.empty()) continue;
+        if (const auto left = panel.list.excluded.find(entry.mod.name); left != panel.list.excluded.end())
+            (mods::copies_store_items(left->second) ? copying : dropped).push_back(entry.mod.title);
+    }
+    if (!copying.empty()) {
+        std::string names;
+        for (const auto& title : copying) names += (names.empty() ? "" : ", ") + title;
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+            copying.size() == 1 ? "%s did not load: it adds copies of items the game's store sells, which ReSkate "
+                                  "does not unlock."
+                                : "%s did not load: they add copies of items the game's store sells, which ReSkate "
+                                  "does not unlock.", names.c_str());
+    }
     if (!dropped.empty()) {
         std::string names;
         for (const auto& title : dropped) names += (names.empty() ? "" : ", ") + title;
@@ -677,9 +688,14 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
             "Outdated: this mod does not load. It was made for another version of Skate (%s). Get an updated "
             "version, or rebuild it with the latest ReSkate Studio.", mod.outdated.c_str());
     if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end()) {
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
-            "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
-            "mod folder, or rebuild it with a current ReSkate Studio.");
+        if (mods::copies_store_items(missing->second))
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+                "Not loaded: this mod adds copies of items the game's store sells. ReSkate does not unlock store "
+                "items, so none of the mod is used. A version without them would load.");
+        else
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+                "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
+                "mod folder, or rebuild it with a current ReSkate Studio.");
         if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
     }
     field(fonts, "AUTHOR", mod.author);
@@ -834,16 +850,27 @@ void start_install(ModsPanel& panel, const fs::path& source, bool replace) {
 void mods_broken_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel,
                         const std::vector<ModProblem>& problems) {
     const bool one = problems.size() == 1;
+    // Mods that add copies of store items are whole, and stay out however they are reinstalled.
+    const bool copies = std::all_of(problems.begin(), problems.end(),
+        [](const ModProblem& problem) { return problem.store_copies; });
     const float rows = static_cast<float>(problems.size()) * S(52);
     const auto frame = begin_panel("##mods_broken_panel", size,
         ImVec2(S(620), std::min(size.y - S(80), S(300) + rows)));
-    panel_title(fonts, one ? "A MOD COULD NOT BE MERGED" : "MODS COULD NOT BE MERGED");
+    panel_title(fonts, copies ? (one ? "A MOD COPIES STORE ITEMS" : "MODS COPY STORE ITEMS")
+                              : (one ? "A MOD COULD NOT BE MERGED" : "MODS COULD NOT BE MERGED"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled(one
-        ? "This mod cannot be combined with the game's files, so none of its content would load. Skate would "
-          "start without it and never say why."
-        : "These mods cannot be combined with the game's files, so none of their content would load. Skate would "
-          "start without them and never say why.");
+    if (copies)
+        ImGui::TextDisabled(one
+            ? "This mod adds copies of items the game's store sells. ReSkate does not unlock store items, so the "
+              "mod is left out and none of its content loads."
+            : "These mods add copies of items the game's store sells. ReSkate does not unlock store items, so they "
+              "are left out and none of their content loads.");
+    else
+        ImGui::TextDisabled(one
+            ? "This mod cannot be combined with the game's files, so none of its content would load. Skate would "
+              "start without it and never say why."
+            : "These mods cannot be combined with the game's files, so none of their content would load. Skate would "
+              "start without them and never say why.");
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
 
@@ -864,7 +891,8 @@ void mods_broken_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui&
     ImGui::EndChild();
     ImGui::Spacing();
     ImGui::PushFont(fonts.caption);
-    ImGui::TextDisabled("Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.");
+    ImGui::TextDisabled(copies ? "Switch it off or remove it. A version of the mod without the store items would load."
+                               : "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.");
     ImGui::PopFont();
 
     ImGui::SetCursorPosY(frame.y - S(24) - ImGui::GetFrameHeight());
