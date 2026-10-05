@@ -340,7 +340,9 @@ struct Radio::State {
                     std::lock_guard lock(mutex);
                     skipped_this = worker_track <= skipped;
                 }
-                if (!skipped_this) notice("Radio: could not play " + entry.title + ".");
+                if (!skipped_this)
+                    notice("Radio: could not play " + entry.title +
+                           (remote && !ytdlp ? " (a page like YouTube needs yt-dlp on the server)." : "."));
             }
         }
         std::lock_guard lock(mutex);
