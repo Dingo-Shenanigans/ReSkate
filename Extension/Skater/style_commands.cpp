@@ -22,6 +22,8 @@ void register_style_commands(Commands &registry) {
                         style_layer::sharing);
     share.reset = [](const Model &, const Output &) { style_layer::request_share(true); };
     registry.add(std::move(share));
+    registry.add(on_off("style editor session", "Not tested yet: let the style editor open in a multiplayer session. Off again at the next start",
+                        style_layer::request_session_test, style_layer::session_test));
     registry.add(on_off("style restyle", "Show replayed flip tricks with your current style (1) or as you skated them (0)",
                         style_layer::request_restyle, style_layer::restyling));
     auto state = argument("target");
@@ -177,7 +179,8 @@ void register_style_commands(Commands &registry) {
     auto open = action("style editor open", "Open the style editor screen. Select the trick to edit there", Group::gameplay);
     open.run = [](const Model &m, const Values &, const Output &out) {
         // It hides other skaters and uses the game's menu: not in a session.
-        if (m.multiplayer.active) return out("Leave the multiplayer session first. The style editor is for solo play.");
+        if (m.multiplayer.active && !style_layer::session_test())
+            return out("Leave the multiplayer session first. The style editor is not tested in a session yet (to test it: style editor session 1).");
         if (!m.style.enabled) style_layer::request_enabled(true);
         style_stage::open([] {
             style_editor::request_open();

@@ -14,6 +14,7 @@ void check(bool ok, const char *what) {
     }
 }
 struct Calls {
+    bool session_test{};
     bool enabled{}, share{true}, restyle{true}, cleared{}, reloaded{};
     std::optional<dingosdk::style::Target> cleared_target;
     std::string editor;
@@ -32,6 +33,8 @@ namespace dingosdk::style_layer {
 void request_enabled(bool enabled) { calls.enabled = enabled; }
 void request_share(bool share) { calls.share = share; }
 void request_restyle(bool restyle) { calls.restyle = restyle; }
+void request_session_test(bool allowed) { calls.session_test = allowed; }
+bool session_test() noexcept { return calls.session_test; }
 bool restyling() noexcept { return calls.restyle; }
 bool request_joint(style::Target target, std::string_view joint, float x, float y, float z, std::string &error) {
     if (joint == "Reference") {

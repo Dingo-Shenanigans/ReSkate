@@ -474,6 +474,7 @@ void fill(style::StyleModel &model) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     model.clips = s.on_disk;
+    model.editor_session_test = style_layer::session_test();
     model.editor_note = s.note;
 }
 std::string status() {
@@ -619,7 +620,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             remove(base, s);
             return;
         }
-        if (multiplayer::other_remote_skaters(stand_in_slot)) {
+        // Solo only, until the editor is tested with other players in the session.
+        if (multiplayer::other_remote_skaters(stand_in_slot) && !style_layer::session_test()) {
             remove(base, s);
             s.shown.reset();
             s.detail = "the stand-in is for solo play. Leave the session first";

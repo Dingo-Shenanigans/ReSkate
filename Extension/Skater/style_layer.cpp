@@ -77,6 +77,7 @@ Settings &settings() { static auto *value = new Settings; return *value; }
 struct Live {
     std::atomic<std::uintptr_t> base{}, component{}, context{}, holder{}, trick_selection{};
     std::atomic<bool> active{}, share{true};
+    std::atomic<bool> session_test{}; // the editor may run in a session: not tested yet
     std::atomic<std::shared_ptr<const Snapshot>> snapshot;
     // The render thread and the client thread share the pose bookkeeping below.
     std::mutex pose_mutex;
@@ -367,7 +368,7 @@ void preview_other(std::uintptr_t holder) noexcept {
     if (recording) learn(holder);
     const auto kind = other_kind(holder);
     // Skatepedia's skater shows that the stage exists. It stays visible while it is recorded.
-    if (kind) clear_from_stage(holder, kind == 1, !recording && GetTickCount64() < l.clear_stage.load(std::memory_order_relaxed) && solo());
+    if (kind) clear_from_stage(holder, kind == 1, !recording && GetTickCount64() < l.clear_stage.load(std::memory_order_relaxed) && (solo() || session_test()));
     if (kind != 1) return;
     // During a recording, Skatepedia's skater shows the game's own animation.
     const bool learning = GetTickCount64() < l.learn_until.load(std::memory_order_relaxed) + 300;
@@ -919,6 +920,8 @@ std::vector<std::uint8_t> collect_learned() {
     return std::exchange(l.learned_done, {});
 }
 void request_learn() { live().learn_until.store(GetTickCount64() + 8000, std::memory_order_release); }
+void request_session_test(bool allowed) { live().session_test.store(allowed, std::memory_order_release); }
+bool session_test() noexcept { return live().session_test.load(std::memory_order_acquire); }
 void request_restyle(bool on) { live().restyle.store(on, std::memory_order_release); }
 bool restyling() noexcept { return live().restyle.load(std::memory_order_acquire); }
 style::Playhead replay_playhead() noexcept {
