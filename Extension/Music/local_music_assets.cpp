@@ -1,5 +1,6 @@
 #include "Extension/Customization/local_customization_runtime.h"
 #include "local_music_assets.h"
+#include "music_artwork.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/local_music.h"
@@ -30,7 +31,8 @@ bool music_asset_type(std::uintptr_t asset, std::uintptr_t vtable_rva) {
     return asset && read(asset, vtable) && vtable == local_runtime().base + vtable_rva;
 }
 
-// reskate-music.json in each enabled mod: {"schema":1,"playlists":[{"name":..,"songs":["artist - title",..]}]}.
+// reskate-music.json in each enabled mod: {"schema":1,"playlists":[{"name":..,
+// "songs":["artist - title",..]}]}.
 // Read on every call: it only runs while the music page waits for its catalog. A bad
 // file is logged and skipped; its songs still play from the master playlist.
 std::vector<mods::MusicPlaylist> mod_music_playlists() {
@@ -42,6 +44,10 @@ std::vector<mods::MusicPlaylist> mod_music_playlists() {
         try {
             std::ifstream in(path, std::ios::binary);
             auto playlists = mods::parse_music_playlists(mod.name, std::string((std::istreambuf_iterator<char>(in)), {}));
+            for (auto& playlist : playlists) {
+                if (!playlist.artwork.empty()) playlist.artwork = mod_music_artwork_url(mod.directory, playlist.artwork);
+                for (auto& [id, artwork] : playlist.song_artwork) artwork = mod_music_artwork_url(mod.directory, artwork);
+            }
             std::move(playlists.begin(), playlists.end(), std::back_inserter(result));
         } catch (const std::exception& failure) {
             dingosdk::logging::event(dingosdk::logging::Channel::music,
@@ -171,7 +177,12 @@ bool read_music_catalog(MusicCatalog& result) {
     // a name and the ids of songs the mod adds, which carry no station tag of their own.
     for (const auto& playlist : mod_music_playlists()) {
         ++mod_playlists;
-        merge(playlist.id, playlist.name, {}, playlist.songs);
+        merge(playlist.id, playlist.name, playlist.artwork, playlist.songs);
+        for (const auto& [id, artwork] : playlist.song_artwork)
+            if (const auto found = index.find(id); found != index.end() && !artwork.empty() && snapshot.songs[found->second].artwork.empty()) {
+                snapshot.songs[found->second].artwork = artwork;
+                ++song_artwork;
+            }
     }
     for (auto it = playlists.begin(); it != playlists.end();)
         it = it->second.empty() ? playlists.erase(it) : std::next(it);
@@ -187,11 +198,13 @@ bool read_music_catalog(MusicCatalog& result) {
     }
     // Registry order is bucket order, not authored ordering. Use stable IDs for
     // deterministic UI order; do not claim this is the original service order.
+    // Authored mod playlists keep their defined track positioning.
     std::sort(snapshot.songs.begin(), snapshot.songs.end(), [](const auto& a, const auto& b) {
         return a.id < b.id;
     });
     for (auto& [id, songs] : playlists) {
-        std::sort(songs.begin(), songs.end());
+        if (!id.starts_with("mod:"))
+            std::sort(songs.begin(), songs.end());
         MusicPlaylist row;
         row.id = id;
         row.songs = std::move(songs);

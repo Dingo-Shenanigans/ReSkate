@@ -80,8 +80,11 @@ struct PlacementRecord {
 PlacementRecord read_placements(const fs::path& file);
 void write_placements(const fs::path& file, const PlacementRecord& record);
 
+// `storeKnown`: the content cache that says what the game's store sells is
+// installed, so the mods were checked for copies of store items; a patch built
+// without it is built again once it is there.
 std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mod*>& mods,
-                              const std::map<const Mod*, RelativeFiles>& modFiles);
+                              const std::map<const Mod*, RelativeFiles>& modFiles, bool storeKnown);
 inline constexpr wchar_t stamp_file[] = L"reskate-merge.stamp";
 std::optional<MergeReport> previous_merge(const fs::path& output, const std::string& fingerprint);
 void write_stamp(const fs::path& output, const std::string& fingerprint, const MergeReport& report);
@@ -174,7 +177,11 @@ struct AssetOverride {
     fb::Sha1 sha1;                    // the mod's version
     std::uint64_t originalSize{};
     std::vector<std::byte> encoded;   // its payload, as stored in cas
+    // Present for a Lua resource replacement: its identity and metadata must
+    // travel with the script bytes, including source and bytecode sizes.
+    std::optional<fb::BundleAsset> resource;
 };
+inline constexpr std::uint32_t luaScriptResourceType = 0xEC383B87;
 // An EBX asset a mod added to one of the game's bundles, or a resource it added
 // under the same name as such an asset (a wave's sound-bank). Maps carry their own
 // copy of a bundle like bam_coregameassets, and that copy loads instead of the
@@ -192,6 +199,8 @@ struct AssetAddition {
 struct AssetOverrides {
     // By lower-case asset name, then the game's sha1 the change replaces.
     std::map<std::string, std::map<fb::Sha1, AssetOverride>, std::less<>> changed;
+    // Separate from EBX: a script's EBX wrapper can have the same asset name.
+    std::map<std::string, std::map<fb::Sha1, AssetOverride>, std::less<>> scripts;
     // By lower-case bundle name, in priority order.
     std::map<std::string, std::vector<AssetAddition>, std::less<>> added;
     // By mod folder name: TOC chunks the mod adds that its carried additions name
@@ -200,11 +209,11 @@ struct AssetOverrides {
     // the mod's own archives; the merge shifts them to where those archives landed.
     std::map<std::string, std::vector<fb::TocChunk>, std::less<>> chunks;
 
-    [[nodiscard]] bool empty() const noexcept { return changed.empty() && added.empty(); }
+    [[nodiscard]] bool empty() const noexcept { return changed.empty() && scripts.empty() && added.empty(); }
 };
 
 // The changes and additions asset mods (mods that add no levels) make to the
-// game's own EBX, the highest-priority mod's version winning. Never throws: an
+// game's own EBX and Lua scripts, the highest-priority mod's version winning. Never throws: an
 // unreadable mod is noted and simply changes nothing elsewhere.
 AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                                        const std::map<const Mod*, RelativeFiles>& modFiles,

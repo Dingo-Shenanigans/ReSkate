@@ -11,6 +11,7 @@
 //          wave the song names, the wave's sound-bank resource, and an asset nothing names.
 #include "Engine/Resource/binary_bundle.h"
 #include "Engine/Resource/cas_codec.h"
+#include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/native_db.h"
@@ -353,6 +354,34 @@ void same_name_from_two_mods(bool different) {
     expect(noted(report, std::string("map: ") + bundle_name + ": 3 asset(s) added by other mods, e.g. test/song"),
            label + ": the map's copy still receives the first mod's three\n" + describe(report));
 }
+
+// Two music mods both change test/playlist to add their own songs. Both mods' songs,
+// waves and resources must be carried into the map's copy of the bundle, not just the first mod's.
+void two_music_mods_both_carried_into_maps_copy(int baseline) {
+    Fixture fixture("two-music-mods");
+    const auto song1 = guid(10), wave1 = guid(11);
+    const auto song2 = guid(20), wave2 = guid(21);
+    fixture.add("music1", false, shared_toc, {},
+                {{"test/playlist", 1, ebx_document(guid(1), {song1})},
+                 {"test/other", 0, ebx_document(guid(2), {})},
+                 {"test/song1", 0, ebx_document(song1, {wave1})},
+                 {"test/wave1", 0, ebx_document(wave1, {})}},
+                {{"test/wave1", {std::byte{1}}}});
+    fixture.add("music2", false, shared_toc, {},
+                {{"test/playlist", 2, ebx_document(guid(1), {song2})},
+                 {"test/other", 0, ebx_document(guid(2), {})},
+                 {"test/song2", 0, ebx_document(song2, {wave2})},
+                 {"test/wave2", 0, ebx_document(wave2, {})}},
+                {{"test/wave2", {std::byte{2}}}});
+    fixture.add("map", true, map_toc, {map_superbundle}, game_copy());
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.issue.empty() && report.built, "two music mods: the merge builds the patch\n" + describe(report));
+    expect(noted(report, std::string("map: ") + bundle_name + ": 6 asset(s) added by other mods, e.g. test/song1"),
+           "two music mods: the map's copy receives all six assets from both mods\n" + describe(report));
+    const auto files = fixture.merged_files(map_toc);
+    expect(files == baseline + 6, "two music mods: the map's copy gained 6 files (3 per music mod): " +
+           std::to_string(files) + " vs " + std::to_string(baseline + 6));
+}
 } // namespace
 
 int main() try {
@@ -363,6 +392,7 @@ int main() try {
     copy_in_the_adders_toc_is_left_alone();
     same_name_from_two_mods(true);
     same_name_from_two_mods(false);
+    two_music_mods_both_carried_into_maps_copy(baseline);
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

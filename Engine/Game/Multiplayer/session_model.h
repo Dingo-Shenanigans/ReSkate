@@ -11,6 +11,7 @@
 #include <vector>
 
 namespace dingosdk {
+constexpr unsigned max_map_rotation = 1440; // minutes a server's rotation keeps one map, at most
 struct MultiplayerLobby {
     std::uint64_t id{}, owner{};
     std::string name, map, code;
@@ -140,6 +141,9 @@ struct MultiplayerModel {
     unsigned server_ban_total{};
     // For its admins: the levels (assets) the dedicated server can switch to.
     std::vector<std::string> server_maps;
+    std::vector<std::string> server_map_pool; // in rotation order; empty: every map
+    unsigned server_map_rotation{};           // minutes per map (0: off)
+    bool server_map_votes{};                  // players may vote for a map
     MultiplayerHostPreferences saved_host;
     bool force_world_layers{};
     std::uint64_t host_id{};

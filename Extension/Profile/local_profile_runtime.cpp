@@ -5,6 +5,7 @@
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Music/local_music_ui.h"
+#include "Extension/Music/local_music_shelf.h"
 #include "Extension/News/local_news_runtime.h"
 #include "Extension/Objects/local_buildkit_labels.h"
 #include "Extension/Objects/local_buildkit_limits.h"
@@ -325,6 +326,7 @@ void update_local_customization() noexcept {
     try { update_object_categories(); }
     catch (...) { dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_object_categories_failed\",\"operation\":\"update\"}"); }
     update_music_catalog();
+    update_music_shelf();
     try {
         if (cosmetic_runtime().update_thread == GetCurrentThreadId() && !cosmetic_runtime().items.empty())
             update_player_card();
@@ -523,8 +525,15 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         hook(news_list_contract, &news_list_hook, news_runtime().functions.list);
         hook(news_subscribe_contract, &news_subscribe_hook, news_runtime().functions.subscribe);
         hook(object_subscribe_contract, &object_categories_hook, object_runtime().functions.subscribe);
-        if (music_ready)
+        if (music_ready) {
             hook(music_ui_initialize_contract, &music_ui_initialize_hook, music_ui_runtime().functions.initialize);
+            std::array<unsigned char, 32> construct_bytes{};
+            if (read(base + music_model_construct_contract.rva, construct_bytes) &&
+                construct_bytes == music_model_construct_contract.bytes)
+                hook(music_model_construct_contract, &music_model_construct_hook, music_model_construct_original);
+            else dingosdk::logging::event(dingosdk::logging::Channel::music,
+                "{\"event\":\"music_model_construct_contract_mismatch\"}");
+        }
         hook(buildkit_text_exists_contract, &buildkit_text_exists, buildkit_text_functions().exists);
         hook(buildkit_text_translate_contract, &buildkit_text_translate, buildkit_text_functions().translate);
         hook(buildkit_grabber_settings_contract, &buildkit_grabber_settings_hook, buildkit_limits_runtime().grabber_settings);

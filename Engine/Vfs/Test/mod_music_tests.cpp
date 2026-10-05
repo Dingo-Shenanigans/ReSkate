@@ -55,6 +55,20 @@ int main() try {
         check(parse_music_playlists("mod", many + "]}").size() == 64, "at most 64 playlists");
     }
     check(parse_music_playlists("mod", R"({"schema":1,"playlists":[]})").empty(), "no playlists is fine");
+    {
+        const auto lists = parse_music_playlists("mod", R"({"schema":1,"playlists":[
+            {"name":"Mix","artwork":"artwork/playlist.png","songs":["A - One","B - Two"]}],
+            "song_artwork":{"A - One":"artwork/track.png","B - Two":"../outside.png","Unlisted":"artwork/other.png"}})");
+        check(lists[0].artwork == "artwork/playlist.png", "playlist cover is read");
+        check(lists[0].song_artwork.size() == 1 && lists[0].song_artwork.at("A - One") == "artwork/track.png",
+              "song covers are limited to members and safe paths");
+        for (const auto* path : {"../cover.png", "/cover.png", "C:/cover.png", "a\\cover.png", "a/../cover.png",
+                                "a//cover.png", "a/./cover.png", "cover.png:stream", "a%2fb.png", "cover.jpg"})
+            check(!dingosdk::mods::music_artwork_path(path), std::string("unsafe artwork path: ") + path);
+        const auto bad = parse_music_playlists("mod", R"({"schema":1,"playlists":[
+            {"name":"Mix","artwork":42,"songs":["A - One"]}],"song_artwork":[]})");
+        check(bad[0].artwork.empty() && bad[0].songs.size() == 1, "bad optional artwork does not discard music");
+    }
     check(refused(R"({"schema":2,"playlists":[]})"), "another schema version is refused");
     check(refused(R"({"playlists":[]})"), "a missing schema is refused");
     check(refused(R"({"schema":1})"), "missing playlists is refused");

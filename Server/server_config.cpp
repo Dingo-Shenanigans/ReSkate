@@ -16,6 +16,10 @@ Json to_json(const ServerConfig &c) {
     auto root = Json::object();
     root["name"] = c.name;
     root["map"] = c.map;
+    auto pool = Json::array();
+    for (const auto &map : c.map_pool) pool.push_back(map);
+    root["map_pool"] = std::move(pool);
+    root["map_rotation_minutes"] = c.map_rotation;
     root["max_players"] = c.max_players;
     root["password"] = c.password;
     root["welcome"] = c.welcome;
@@ -111,6 +115,10 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     if (!root.is_object()) throw std::runtime_error("The server config must be a JSON object.");
     c.name = root.value("name", c.name);
     c.map = root.value("map", c.map);
+    if (root.contains("map_pool") && root.at("map_pool").is_array())
+        for (const auto &map : root.at("map_pool"))
+            if (map.is_string() && !map.string().empty()) c.map_pool.push_back(map.string());
+    c.map_rotation = std::min(root.value("map_rotation_minutes", c.map_rotation), max_map_rotation);
     c.max_players = root.value("max_players", c.max_players);
     c.password = root.value("password", c.password);
     c.welcome = root.value("welcome", c.welcome);
@@ -226,6 +234,10 @@ std::string config_error(const ServerConfig &c) {
     if (c.map.empty() || !valid_map_destination(map_destination(c.map)))
         return "map \"" + c.map + "\" is not a known map. Use a name like \"San Vansterdam\", or put the map's mod "
                "folder in Mods next to the server.";
+    for (const auto &map : c.map_pool)
+        if (!find_level(map) || !valid_map_destination(map_destination(map)))
+            return "map_pool: \"" + map + "\" is not a single known map. Use names like \"Isle of Grom\", or put the "
+                   "map's mod folder in Mods next to the server.";
     if (c.max_players < 1 || c.max_players + 1 > max_players)
         return "max_players must be 1 to " + std::to_string(max_players - 1) + ".";
     if (c.password.size() > 64) return "password must be at most 64 characters.";
@@ -332,5 +344,33 @@ std::string map_setting(std::string_view map) {
 std::string map_label(std::string_view map) {
     if (const auto *level = find_level(map)) return level->name;
     return world_level_name(world_destination_asset(map_destination(map)));
+}
+std::vector<const ServerLevel *> pool_levels(const ServerConfig &config) {
+    std::vector<const ServerLevel *> pool;
+    const auto add = [&](const ServerLevel *level) {
+        if (level && multiplayer::valid_map_destination(map_destination(level->asset)) &&
+            std::find(pool.begin(), pool.end(), level) == pool.end())
+            pool.push_back(level);
+    };
+    if (config.map_pool.empty())
+        for (const auto &level : level_list()) add(&level);
+    for (const auto &map : config.map_pool) add(find_level(map));
+    return pool;
+}
+bool in_map_pool(const ServerConfig &config, std::string_view map) {
+    if (config.map_pool.empty()) return true;
+    const auto pool = pool_levels(config);
+    const auto *level = find_level(map);
+    return level && std::find(pool.begin(), pool.end(), level) != pool.end();
+}
+const ServerLevel *next_pool_map(const ServerConfig &config, std::string_view map) {
+    const auto pool = pool_levels(config);
+    const auto *current = find_level(map);
+    const auto at = static_cast<std::size_t>(std::find(pool.begin(), pool.end(), current) - pool.begin());
+    for (std::size_t step = 1; step <= pool.size(); ++step) {
+        const auto *next = at == pool.size() ? pool[step - 1] : pool[(at + step) % pool.size()];
+        if (next != current) return next;
+    }
+    return nullptr;
 }
 } // namespace dingosdk::server

@@ -1,6 +1,9 @@
 #include "mod_merge.h"
 
+#include "content_cache.h"
+#include "content_catalogs.h"
 #include "mod_merge_internal.h"
+#include "mod_store_copies.h"
 #include "native_db.h"
 
 #include <algorithm>
@@ -29,6 +32,21 @@ constexpr std::string_view root_level = "win32/levels/game/dingolevel_root/dingo
 // installed while the game runs has a mounted copy to replace in memory
 // (Extension/Assets/live_mods.cpp) and one disabled can be swapped back out.
 constexpr std::array<std::string_view, 2> launch_superbundles{"Win32/globals.toc", "Win32/items.toc"};
+
+// Each enabled mod that adds copies of items the game's store sells
+// (mod_store_copies.h) gets a problem; true when any does. The problem says no
+// more than that the mod could not be merged: what was found is not for the
+// mod's author to read. The catalogue is only read once a mod turns out to add
+// an item at all.
+bool store_copy_problems(const Catalog& catalog, MergeReport& report) {
+    std::optional<content_cache::Catalogs> store;
+    const auto found = check_store_copies(catalog, [&store](const std::string& key) {
+        if (!store) store = content_cache::read_catalogs(content_cache::directory());
+        return store->reserved(key);
+    }, &report.notes);
+    for (const auto& source : found.mods) report.problems[source.mod].emplace_back(store_copies_problem);
+    return !found.mods.empty();
+}
 } // namespace
 
 MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, const MergeOptions& options) noexcept {
@@ -45,16 +63,23 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         std::map<const Mod*, RelativeFiles> modFiles;
         for (const auto* mod : mods) modFiles[mod] = scan(mod->directory);
 
+        // What the store sells comes from the content cache, which the launcher installs.
+        const bool storeKnown = content_cache::installed();
         // Disabled mods count too: their archives and map registration are placed at launch.
-        auto fingerprint = merge_fingerprint(catalog, mods, modFiles);
+        auto fingerprint = merge_fingerprint(catalog, mods, modFiles, storeKnown);
         for (const auto& mod : catalog.inactive)
             fingerprint += "\ninactive " + mod.name + " " + mod_fingerprint(mod.directory);
         if (options.live) {
             fs::remove(output / stamp_file, error);
-        } else {
-            if (auto previous = previous_merge(output, fingerprint)) return std::move(*previous);
-            fs::remove_all(output, error);
+        } else if (auto previous = previous_merge(output, fingerprint)) {
+            return std::move(*previous);
         }
+        // A mod that adds copies of store items is not loaded at all. Found before
+        // anything is built: the caller merges again without it, as it does for a
+        // mod that cannot be merged, and the patch on disk stays for that merge to
+        // reuse or replace.
+        if (storeKnown && store_copy_problems(catalog, report)) return report;
+        if (!options.live) fs::remove_all(output, error);
 
         // Progress: each mod's archives, each superbundle, then the layout.
         std::set<std::string> distinctTocs;

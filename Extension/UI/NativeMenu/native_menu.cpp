@@ -24,6 +24,8 @@ constexpr std::array<unsigned, page_count> page_slots{0, 1};
 // The Store item taken out of the pause menu, its index there, and that menu.
 struct RemovedStore { std::vector<std::byte> item; unsigned index{}; Address core{}; };
 RemovedStore removed_store;
+// When insert() last left a copy of that Store item last in the menu (0: not there); trim_store drops it.
+std::uint64_t store_last_since{};
 thread_local State* current_state{};
 std::uint32_t menu_key() { return our_key + state().slot * 0x100; }
 std::mutex callbacks_mutex;
@@ -301,12 +303,23 @@ void insert(const Context& context) {
     require(count + missing.size() <= 16, "Native pause menu has no room for ReSkate tabs.");
     // Take the Store item out. Pause-menu detection needs at least five items in the stack, so
     // only together with ours.
+    bool store_last{};
     if (const auto store = find_tab(context, list, count, store_tab_label);
         store && !missing.empty() && count - 1 + missing.size() >= 5) {
         const auto at = values.begin() + static_cast<std::ptrdiff_t>(*store) * stride;
         removed_store = {std::vector<std::byte>(at, at + stride), *store, s.core.handle};
         values.erase(at, at + stride);
         --count;
+        // The game has already opened the page at its selected index, which it keeps
+        // from the player's last visit, before ours were back. Taking the Store out
+        // changes the tab at that index if it is the Store's or later, and the stack
+        // then shows the new tab's page only if its length changes too: online the
+        // Multiplayer tab makes it longer, but offline Custom Stuff just takes the
+        // Store's place, and the old page stays up, blank, with Back dead. Then keep
+        // a copy of the Store item last for now, so the length changes, and drop it
+        // once the stack has seen that (trim_store).
+        const auto selected = read<int>(context.address(context.path(s.core, {content, 0x18f8355b})));
+        store_last = missing.size() == 1 && selected >= static_cast<int>(*store);
     }
     for (const auto slot : missing) {
         auto& owned = page_state(slot);
@@ -314,6 +327,11 @@ void insert(const Context& context) {
         require(memory::read_bytes(context.address(owned.menu_item), values.data() + old_size, stride),
                 "Native menu item is unavailable.");
         ++count;
+    }
+    if (store_last) {
+        values.insert(values.end(), removed_store.item.begin(), removed_store.item.end());
+        ++count;
+        store_last_since = GetTickCount64();
     }
     context.array(list, values, count);
     // The menu was reopened (our tabs had gone): refresh every page's Back.
@@ -329,6 +347,31 @@ void insert(const Context& context) {
     }
     // StackTabs observes Content.Items and creates its focus bindings. Existing
     // tab models, identities and callbacks remain in their original order.
+}
+// The copy is the item last in the stack with the removed Store's key.
+bool is_store_copy(std::span<const std::byte> item) {
+    return removed_store.item.size() == item.size() &&
+        std::equal(item.begin() + 0x568, item.begin() + 0x56c, removed_store.item.begin() + 0x568);
+}
+// Drops the Store copy insert() left last, a few frames after the stack saw it there.
+void trim_store(const Context& context, Value menu) {
+    if (!store_last_since || GetTickCount64() < store_last_since + 50) return;
+    const auto list = context.path(menu, {content, items});
+    unsigned count{}, stride{};
+    auto values = context.array(list, 16, count, stride);
+    store_last_since = 0;
+    // Not there: the game rebuilt its tabs, the Store back in place, as the menu reopened.
+    if (stride != stack_item.size || count < 6 || !is_store_copy(std::span(values).last(stride))) return;
+    const auto target = context.path(menu, {content, 0x18f8355b});
+    const auto selected = read<int>(context.address(target));
+    if (selected == static_cast<int>(count - 1)) {
+        context.set(target, static_cast<int>(count - 2));
+        context.set(context.path(menu, {content, 0x55511280}), static_cast<int>(count - 2));
+    }
+    values.resize(values.size() - stride);
+    context.array(list, values, count - 1);
+    logging::printf(logging::Level::info, logging::Channel::ui,
+        "Pause menu reopened on tab %d with a Store copy last for a moment.", selected);
 }
 Value owned_style(const Context& context, const char* name, Schema schema) {
     const auto found = state().assets.find(name);
@@ -558,6 +601,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             if (!active.model.handle) s.next_scan = now + 250;
         }
         if (!active.model.handle) return;
+        trim_store(context, active.model);
         if (!s.slot) {
             restore_last_tab(context, active.model);
             hide_top_bar_currency(context, active.model);
@@ -632,6 +676,9 @@ bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
                 bool ours{};
                 for (unsigned i = 0; i < count; ++i) {
                     const auto first = values.data() + i * stride;
+                    // A Store copy insert() left last: the Store goes back to its own index below.
+                    if (removed_store.core == s.core.handle && i + 1 == count &&
+                        is_store_copy(std::span(first, stride))) continue;
                     std::uint32_t key{}; std::memcpy(&key, first + key_offset, sizeof(key));
                     if (key >= our_key && key < our_key + page_count * 0x100 && (key - our_key) % 0x100 == 0) {
                         ours = true;

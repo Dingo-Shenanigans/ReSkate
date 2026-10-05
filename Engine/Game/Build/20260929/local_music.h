@@ -2,6 +2,7 @@
 #include "Engine/Game/Build/fingerprint.h"
 #include "engine.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace dingosdk::game::build::v20260929::local_music {
@@ -49,4 +50,20 @@ inline constexpr std::array<Fingerprint, 7> music_ui_contracts{{
     {context_insert, {0x40,0x53,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x83,0xec,0x38,0x49,0x8b,0xf9,0x49,0x8b,0xd8,0x48,0x8b,0xf2,0x4c,0x8b,0xf9,0x33,0xed,0x48}},
     {complete_delegate, {0x48,0x83,0xec,0x28,0x48,0x8b,0x11,0x48,0x8b,0x0a,0x48,0x8b,0x41,0x40,0x48,0x85,0xc0,0x74,0x0d,0x80,0x79,0x68,0x00,0x75,0x07,0xff,0xd0,0x48,0x83,0xc4,0x28,0xc3}}
 }};
+// Playlist lookup crash guard. The shipped loop loads a song entry (rcx), masks it with
+// `and rcx, -5` and tests a flag at [rcx+0x14]; an unresolved or NULL entry makes that
+// dereference fault and crashes the game. The 13-byte patch replaces the leading 5-byte
+// `mov eax, 0` with a 2-byte `xor eax, eax`, a 2-byte `jrcxz` that jumps past the whole
+// dereference when rcx is zero, and a padding `nop`, so the untouched tail stays aligned.
+inline constexpr std::uintptr_t playlist_lookup_safety_rva = 0x14f80c7;
+inline constexpr std::array<unsigned char, 13> playlist_lookup_safety_contract{
+    0xb8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xe1, 0xfb, 0x66, 0x85, 0x71, 0x14};
+inline constexpr std::array<unsigned char, 13> playlist_lookup_patch_bytes{
+    0x31, 0xc0, 0x48, 0x83, 0xe1, 0xfb, 0xe3, 0x29, 0x66, 0x85, 0x71, 0x14, 0x90};
+// The jrcxz sits at +6 (after the 2-byte xor and 4-byte and) and ends at +8; its +0x29
+// displacement lands on the loop increment (`inc r9d; add r8, 4`) instead of the fault.
+inline constexpr std::size_t playlist_lookup_jump_next = 8;
+inline constexpr std::size_t playlist_lookup_jump_displacement = 0x29;
+inline constexpr std::uintptr_t playlist_lookup_jump_target =
+    playlist_lookup_safety_rva + playlist_lookup_jump_next + playlist_lookup_jump_displacement;
 }

@@ -77,6 +77,73 @@ void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
     note(rates.c_str());
     end_card();
 }
+void map_pool_settings(SkateMenu &menu, const Model &model) { // the server's own maps, not this PC's
+    const auto &mp = model.multiplayer;
+    if (!mp.server_admin || mp.server_maps.empty()) return;
+    std::array<char, 65> unused{};
+    const auto server = [&](const std::string &command) { return send_private(menu, "server", command, unused, false); };
+    const auto &pool = mp.server_map_pool;
+    const auto pooled = pool.empty() ? mp.server_maps.size() : pool.size();
+    const auto count = std::to_string(pooled) + " of " + std::to_string(mp.server_maps.size()) + " maps";
+    begin_card(menu, "map-pool", "MAP POOL", count.c_str());
+    note("The maps players can vote for, in the order the rotation goes through them. These are the server's own "
+         "maps: its retail maps and the custom maps in its Mods folder.");
+    bool votes = mp.server_map_votes;
+    if (toggle_row(menu, "Player map votes", "Players start a vote with /vote map <map>.", votes))
+        server(votes ? "votes map on" : "votes map off");
+    ImGui::Dummy(ImVec2(0, px(2)));
+
+    const auto now = ImGui::GetTime();
+    std::erase_if(menu.map_pool_pending, [&](const auto &item) {
+        const bool listed = pool.empty() || std::find(pool.begin(), pool.end(), item.first) != pool.end();
+        return listed == item.second.first || now >= item.second.second;
+    });
+    const auto folded = [](std::string_view text) {
+        std::string result(text);
+        for (auto &c : result) c = c == '\\' ? '/' : c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c;
+        return result;
+    };
+    for (const auto &asset : mp.server_maps) {
+        const auto at = std::find(pool.begin(), pool.end(), asset);
+        bool listed = pool.empty() || at != pool.end();
+        if (const auto pending = menu.map_pool_pending.find(asset); pending != menu.map_pool_pending.end())
+            listed = pending->second.first;
+        auto label = map_label(model, asset);
+        if (at != pool.end()) label = std::to_string(at - pool.begin() + 1) + ".  " + label;
+        const bool installed = std::any_of(model.levels.begin(), model.levels.end(),
+                                           [&](const auto &level) { return folded(level.asset) == folded(asset); });
+        const auto hint = std::string(installed ? "" : "Not installed on this PC: you need its map mod to load it. ") +
+                          (listed ? "Untick to take it out of votes and the rotation." : "Tick to add it to the end of the rotation.");
+        const bool last = listed && pooled == 1; // the pool keeps at least one map
+        ImGui::PushID(asset.c_str());
+        if (toggle_row(menu, label.c_str(), last ? "The pool needs at least one map." : hint.c_str(), listed, !last, "ONLY") &&
+            server(std::string(listed ? "map-pool add " : "map-pool remove ") + asset))
+            menu.map_pool_pending[asset] = {listed, now + 2};
+        ImGui::PopID();
+    }
+    if (!pool.empty() && ImGui::Button("Use every map", ImVec2(-FLT_MIN, 0))) server("map-pool clear");
+    note(pool.empty() ? "Every map is in the pool. Untick maps to leave them out."
+                      : "Ticked maps join the end of the rotation; the numbers are its order.");
+    ImGui::Dummy(ImVec2(0, px(2)));
+
+    field(menu, "Rotation", "Minutes on each map before the server moves to the next map in the pool. 0 turns it off.");
+    int minutes = menu.map_rotation_pending.value_or(static_cast<int>(mp.server_map_rotation));
+    ImGui::DragInt("##map-rotation", &minutes, .25f, 0, static_cast<int>(max_map_rotation), minutes ? "Every %d min" : "Off",
+                   ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemActive()) menu.map_rotation_pending = minutes;
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        server(minutes ? "rotation " + std::to_string(minutes) : std::string("rotation off"));
+        menu.map_rotation_until = now + 2;
+    }
+    if (!ImGui::IsItemActive() && menu.map_rotation_pending &&
+        (*menu.map_rotation_pending == static_cast<int>(mp.server_map_rotation) || now >= menu.map_rotation_until))
+        menu.map_rotation_pending.reset();
+    note(mp.server_map_rotation ? "Set to 0 to turn the auto rotation off. Players get a minute's warning; the clock "
+                                  "waits while nobody is on, and starts over whenever the map changes."
+                                : "Auto rotation is off (0). Drag above 0 to change the map on a timer; until then it "
+                                  "changes only by a vote or an admin.");
+    end_card();
+}
 } // namespace
 
 void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
@@ -523,6 +590,7 @@ void session_page(SkateMenu &menu, const Model &model) {
         }
         end_card();
     }
+    map_pool_settings(menu, model);
 
     begin_card(menu, "host-options", mp.dedicated ? "SERVER OPTIONS" : "HOST OPTIONS", set_by(mp));
     std::array<char, 65> unused{};

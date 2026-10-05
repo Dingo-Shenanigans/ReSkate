@@ -191,6 +191,9 @@ struct Input {
             }
             for (ssize_t i = 0; i < count; ++i) {
                 if (buffer[i] == '\n') {
+                    // CRLF input (a script saved on Windows, a panel or telnet): without
+                    // this, "quit\r" is an unknown command and the server keeps running.
+                    if (!pending.empty() && pending.back() == '\r') pending.pop_back();
                     std::lock_guard lock(mutex);
                     lines.push_back(pending);
                     pending.clear();
@@ -312,10 +315,17 @@ int run(int argc, char **argv, bool skip_update) {
     for (const auto &problem : load_levels(here / "Mods")) write_log("Mods: skipped " + problem);
     if (levels().size() > 6) write_log("Mods: " + std::to_string(levels().size() - 6) + " custom map(s).");
     // Older configs name the map by its full destination; keep the plain name instead.
+    bool renamed{};
     if (const auto setting = map_setting(config.map); setting != config.map && !setting.empty()) {
         config.map = setting;
-        try { save_config(config); } catch (...) {}
+        renamed = true;
     }
+    for (auto &map : config.map_pool) // short pool names ("isle") are saved in full
+        if (const auto *level = find_level(map); level && level->name != map) {
+            map = level->name;
+            renamed = true;
+        }
+    if (renamed) try { save_config(config); } catch (...) {}
     if (const auto error = config_error(config); !error.empty()) {
         write_log("Config problem: " + error);
         return 1;

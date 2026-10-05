@@ -12,7 +12,9 @@ Restart=always
 RestartSec=5
 # Server uses restart_for_update internally; V1 Linux has self-update off,
 # so any non-zero exit still restarts here.
-StandardOutput=append:/opt/reskate-server/ReSkateServer.log
+# The server already appends every line to ReSkateServer.log next to itself;
+# appending stdout there too wrote each line twice. The journal keeps the console copy.
+StandardOutput=journal
 StandardError=inherit
 
 [Install]

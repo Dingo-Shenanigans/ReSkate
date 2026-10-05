@@ -3,6 +3,7 @@
 #include "Extension/Multiplayer/Hud/native_indicators.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "party_book.h"
+#include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
@@ -75,6 +76,8 @@ void stop(Session &s, std::string reason) {
     s.server_bans.clear();
     s.server_ban_total = 0;
     s.server_maps.clear();
+    s.server_map_pool.clear();
+    s.server_map_rotation = 0;
     set_lobby_object_placement_allowed(true);
     s.guest_noclip = s.guest_no_bail = s.guest_boosts = true;
     s.enforce_tuning = true;
@@ -127,6 +130,7 @@ void stop(Session &s, std::string reason) {
     s.awaiting_map = s.join_map_authorized = s.map_load_submitted = false;
     s.join_started = s.last_map_request = s.last_map_load_check = 0;
     s.join_destination.clear();
+    s.map_label.clear();
     s.world = 1;
     s.travelling = false;
     s.host_world_ready = true;
@@ -545,6 +549,7 @@ MultiplayerModel model() {
     std::lock_guard lock(s.mutex);
     return s.view;
 }
+std::string take_leave_notice() { return std::exchange(session().leave_notice, {}); }
 MultiplayerChat chat() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
@@ -637,6 +642,14 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
         s.last_map_load_check = now;
         std::string detail;
         const auto result = loader(s.join_destination, s.map_load_submitted, detail);
+        if (result == MapLoadResult::missing) {
+            const auto name = s.map_label.empty() ? world_level_name(world_destination_asset(s.join_destination)) : s.map_label;
+            const char *who = dedicated_host(s) ? "server" : "host";
+            s.leave_notice = (s.travelling ? std::string("The ") + who + " moved to " : std::string("The ") + who + " is on ") +
+                             name + ", which is not installed on this PC. Install its map mod and join again.";
+            stop(s, s.leave_notice);
+            return false;
+        }
         if (result == MapLoadResult::failed) {
             stop(s, detail.empty() ? "The host's map could not be loaded." : std::move(detail));
             return false;

@@ -77,7 +77,7 @@ dingosdk::multiplayer::MapLoadResult load_multiplayer_map(std::string_view desti
     }
     if (!root || !root->native_registered || (!sub_asset.empty() && !sub)) {
         detail = "The host's map is not installed or registered on this PC. Install the same map and join again.";
-        return Result::failed;
+        return Result::missing;
     }
     if (submitted) {
         detail = "The host's map did not finish loading. " + r.load_result;

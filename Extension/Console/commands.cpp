@@ -47,7 +47,7 @@ void register_console_commands(Commands &registry) {
                 "and Tab to complete names and "
                 "arguments.");
             out("Groups: Movement, Gameplay, World, Graphics, Progression, Objects, "
-                "Engine, Developer, Console.");
+                "Engine, Console.");
             return;
         }
         const auto &name = std::get<std::string>(args[0]);

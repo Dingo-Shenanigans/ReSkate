@@ -720,8 +720,107 @@ void role_checks() {
     const auto said = std::find_if(host.chat.begin(), host.chat.end(), [](const auto &line) { return line.text == "new video is up"; });
     check(said != host.chat.end() && said->color == nametag_creator && said->tag == "Creator",
           "A content creator's chat line does not carry their role");
+
+    // None of it can be claimed. A badge goes to a Steam identity this PC is itself connected to:
+    // a guest knows another guest only from the host's roster until Steam connects the two, and
+    // a roster alone, which a host fills as it likes, gives nobody a badge.
+    const Role developer{nametag_developer, "Dev"};
+    auto *seen = find_peer(first, id(second));
+    check(seen && seen->direct_ready && player_role(first, id(second), false) == developer &&
+              player_role(third, id(second), false) == developer,
+          "Guests connected to a developer do not see them as one");
+    seen->direct_ready = false;
+    check(!steam_vouched(first, *seen) && player_role(first, id(second), false) == Role{nametag_white, {}},
+          "A guest took a developer's identity from the host's roster alone");
+    seen->direct_ready = true;
+    // In chat a guest's badge rests on their own copy of the line, sent straight to the players
+    // Steam connects them to: the host passes lines on, and could pass on anything under
+    // anyone's name.
+    const auto line_of = [](const Session &s, std::string_view text) {
+        const auto line = std::find_if(s.chat.begin(), s.chat.end(), [&](const auto &v) { return v.text == text; });
+        return line == s.chat.end() ? nullptr : &*line;
+    };
+    check(send_chat(second, "patch notes are out").empty(), "A developer's chat was refused");
+    sim.run(6);
+    const auto *real = line_of(third, "patch notes are out"), *at_host = line_of(host, "patch notes are out");
+    check(real && real->tag == "Dev" && real->color == nametag_developer && at_host && at_host->tag == "Dev",
+          "A developer's own line lost its badge on the way, or waited");
+    check(std::count_if(third.chat.begin(), third.chat.end(), [](const auto &v) { return v.text == "patch notes are out"; }) == 1,
+          "A line and its sender's own copy of it were both shown");
+    // A line the host makes up under a developer's name waits for their copy, then shows as
+    // any other player's would.
+    auto lie = packet(host, PacketKind::chat, sim.now);
+    lie.source = id(second), lie.epoch = second.epoch;
+    lie.text = "send me your password";
+    check(send_packet(host, id(third), lie, true, false), "The made-up line could not be sent");
+    sim.run(4);
+    check(!line_of(third, "send me your password"), "A line without its sender's copy did not wait for it");
+    sim.run(20);
+    const auto *made_up = line_of(third, "send me your password");
+    check(made_up && made_up->tag.empty() && made_up->color == nametag_white, "A line the host made up carries a developer's badge");
+    // So does one from a build that sends no copy; the host, who has it from the developer
+    // themselves, shows the badge.
+    auto old = packet(second, PacketKind::chat, sim.now);
+    old.text = "from an older build";
+    check(send_packet(second, id(host), old, true, false), "The older build's line could not be sent");
+    sim.run(30);
+    const auto *bare = line_of(third, "from an older build"), *first_hand = line_of(host, "from an older build");
+    check(bare && bare->tag.empty() && first_hand && first_hand->tag == "Dev",
+          "A line with no copy from its sender shows a badge to a guest, or lost it at the host");
+    // The other lists' badges travel the same way, guest to guest.
+    check(send_chat(third, "clip is on my channel").empty(), "A content creator's chat was refused");
+    sim.run(6);
+    const auto *clip = line_of(first, "clip is on my channel");
+    check(clip && clip->color == nametag_creator && clip->tag == "Creator", "A content creator's own line lost its badge");
+    // A player on no list stays plain whatever their own packets ask for: the styles only shape
+    // what a list already gives.
+    simulated_identities.erase({id(first), L::content_creator});
+    auto wish = packet(first, PacketKind::cosmetics, sim.now);
+    wish.appearance = look;
+    wish.appearance.marks.fill({MarkMode::gradient, {255, 0, 0}, {0, 0, 255}, 2});
+    first.cosmetic_packet = encode_wire(wish);
+    broadcast(first, wish, true, false, sim.now);
+    sim.run(20);
+    const auto *wisher = find_peer(host, id(first));
+    check(wisher && wisher->appearance.value() && wisher->appearance.value()->marks[0].mode == MarkMode::gradient &&
+              !identity_mark(id(first)) && player_role(host, id(first), false) == Role{nametag_white, {}} &&
+              player_role(third, id(first), false) == Role{nametag_white, {}},
+          "A player on no list got a badge by sending styles");
+    // And their chat is as it always was: shown as it arrives, with no copy sent or waited for.
+    check(send_chat(first, "anyone at the plaza").empty(), "A guest's chat was refused");
+    sim.run(3);
+    const auto *ordinary = line_of(third, "anyone at the plaza");
+    const auto *said_to = find_peer(third, id(first));
+    check(ordinary && ordinary->tag.empty() && ordinary->color == nametag_white && said_to && said_to->chat_proofs.empty() &&
+              said_to->chat_waiting.empty(),
+          "An ordinary player's line was held up, or a copy of it was kept");
+    // Nor can anyone name someone else as the sender. What does not come over that player's own
+    // Steam connection is refused, and whoever sent it is out of the session.
+    const auto heard = [](const Session &s) {
+        return std::any_of(s.chat.begin(), s.chat.end(), [](const auto &line) { return line.text == "free decks at my link"; });
+    };
+    auto forged = packet(first, PacketKind::chat, sim.now);
+    forged.source = id(second), forged.epoch = second.epoch;
+    forged.text = "free decks at my link";
+    check(send_packet(first, id(host), forged, true, false) && send_packet(first, id(third), forged, true, false),
+          "The forged chat line could not be sent");
+    sim.run(20);
+    check(!heard(host) && !heard(second) && !heard(third), "A guest spoke as a developer");
+    check(!find_peer(host, id(first)) && !find_peer(third, id(first)), "A guest who forged a sender stayed in the session");
+    // The same for how a developer looks: a guest cannot hide or restyle their tag and items.
+    auto costume = packet(third, PacketKind::cosmetics, sim.now);
+    costume.source = id(second), costume.epoch = second.epoch;
+    costume.sequence += 1000;
+    costume.appearance = look;
+    costume.appearance.hide_tag = costume.appearance.hide_items = true;
+    check(send_packet(third, id(host), costume, true, false), "The forged outfit could not be sent");
+    sim.run(20);
+    const auto *theirs = find_peer(host, id(second));
+    check(player_role(host, id(second), false) == developer && theirs && shows_tag(*theirs) && shows_items(*theirs) &&
+              !find_peer(host, id(third)),
+          "A guest changed how a developer shows, or stayed in the session after trying");
     simulated_identities.clear();
-    std::cout << "Roles: lobby roles, homie, content creator, developer first and chat lines passed.\n";
+    std::cout << "Roles: lobby roles, homie, content creator, developer first, chat lines and claimed identities passed.\n";
 }
 // The backend's bans hold in every session, and reach one that is running: a banned guest is
 // out and cannot come back, the others stay, and nobody stays with a banned host.
@@ -1155,7 +1254,7 @@ struct MapPair {
     static MapLoadResult loader(std::string_view, bool submitted, std::string &detail) {
         if (missing) {
             detail = "Map not installed.";
-            return MapLoadResult::failed;
+            return MapLoadResult::missing;
         }
         if (!submitted) ++loads;
         return submitted ? MapLoadResult::waiting : MapLoadResult::queued;
@@ -1266,8 +1365,9 @@ void map_checks() {
         MapPair pair;
         MapPair::missing = true;
         pair.run(20);
-        check(pair.guest.mode == Mode::off && pair.guest.status == "Map not installed.",
-              "Missing map did not end the pending join with its error");
+        const auto said = "The host is on Beach, which is not installed on this PC. Install its map mod and join again.";
+        check(pair.guest.mode == Mode::off && pair.guest.status == said && pair.guest.leave_notice == said,
+              "Missing map did not end the pending join naming the map");
     }
     {
         MapPair pair;

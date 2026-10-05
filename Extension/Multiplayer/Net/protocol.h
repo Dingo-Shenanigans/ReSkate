@@ -25,7 +25,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 41;
+constexpr std::uint16_t protocol_version = 42;
 constexpr std::size_t max_throwdown_message = 4096;
 // Packet::tuning: the host's SkatePhysicsTuning differences (Extension/Skater/physics_tuning.h).
 constexpr std::size_t max_physics_tuning = 16384;
@@ -110,6 +110,8 @@ constexpr std::size_t max_ban_rows = 256;
 constexpr std::size_t max_server_maps = 128, max_map_asset = 128;
 // A level asset as a server's map list carries it: printable ASCII, no '|'.
 bool valid_map_asset(std::string_view asset) noexcept;
+bool valid_map_pool(std::span<const std::uint16_t> pool, std::size_t maps) noexcept; // distinct indices below `maps`
+bool valid_map_label(std::string_view label) noexcept; // empty, or a name like a member's
 struct Transform {
     std::array<float, 3> position{};
     std::array<float, 4> rotation{0, 0, 0, 1};
@@ -187,6 +189,9 @@ struct Packet {
     std::vector<MultiplayerBan> bans;         // bans: newest first
     std::uint32_t ban_total{};                // bans: how many the server has in all
     std::vector<std::string> maps;            // maps: level assets
+    std::vector<std::uint16_t> map_pool;      // maps: the pool as indices into `maps`, rotation order (empty: every map)
+    std::uint16_t map_rotation{};             // maps: minutes per map (0: off)
+    std::string map_label;                    // map_offer, world_state: the map's name for people (may be empty)
     std::vector<std::uint8_t> throwdown;      // throwdown: one encoded message (1..max_throwdown_message bytes)
     std::array<float, 3> teleport{};          // teleport: where the receiver goes (world position)
     std::vector<std::uint8_t> tuning;         // physics_tuning: 0..max_physics_tuning bytes

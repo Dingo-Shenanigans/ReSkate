@@ -5,14 +5,14 @@
 namespace dingosdk::profile_runtime {
 struct MusicSong {
     std::string id, artist, title;
-    std::string artwork; // cdn:/ cover art from the content cache; empty when unknown
+    std::string artwork; // content-cache cdn:/ id or registered mod loopback URL; empty when unknown
     std::vector<std::string> playlists;
 };
 
 struct MusicPlaylist {
     std::string id;
     std::string name;    // display name from the content cache; empty for native groups
-    std::string artwork; // cdn:/ artwork id from the content cache; empty when unknown
+    std::string artwork; // content-cache cdn:/ id or registered mod loopback URL; empty when unknown
     std::vector<std::string> songs;
 };
 

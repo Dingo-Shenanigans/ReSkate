@@ -342,7 +342,7 @@ bool load_cosmetic_hook(const void* wrapper, void* destination) {
         for (std::size_t i = 0; i < saved->recipes.size(); ++i) {
             const auto& recipe = saved->recipes[i]; const auto& expected = defaults.recipes[i];
             if (recipe.template_key != expected.template_key || recipe.template_version != expected.template_version ||
-                recipe.scalar_bits.size() != expected.scalar_bits.size() || recipe.items.size() != expected.items.size())
+                recipe.scalar_bits.size() != expected.scalar_bits.size())
                 return cosmetic_diagnostic("load", "recipe_template_mismatch", id);
             std::map<std::uint32_t, std::uint32_t> slot_categories;
             if (!cosmetic_slot_categories(native[i].resource, slot_categories))
@@ -350,11 +350,23 @@ bool load_cosmetic_hook(const void* wrapper, void* destination) {
             words.emplace_back(recipe.scalar_bits.size());
             std::copy(recipe.scalar_bits.begin(), recipe.scalar_bits.end(), words.back().data());
             native[i].scalars = words.back().data();
-            item_arrays.emplace_back(recipe.items.size());
-            for (std::size_t j = 0; j < recipe.items.size(); ++j) {
-                const auto* slot = &recipe.items[j];
-                if (slot->slot != expected.items[j].slot) return cosmetic_diagnostic("load", "slot_mismatch", id);
-                if (!slot->asset.empty()) {
+            // The template says which slots there are and in what order; the saved
+            // outfit is matched to it slot by slot. A mod that adds slots to a
+            // template (a wheel slot per wheel on the board) changes that list
+            // under every outfit saved before it, and again when it is switched
+            // off: a slot the outfit has no item for starts on its default, and a
+            // saved slot the template no longer has is held, so the next save
+            // keeps it for when the slot is back.
+            std::map<std::uint32_t, const profile::CosmeticSlot*> saved_slots;
+            for (const auto& item : recipe.items) saved_slots.emplace(item.slot, &item);
+            std::size_t added{};
+            item_arrays.emplace_back(expected.items.size());
+            for (std::size_t j = 0; j < expected.items.size(); ++j) {
+                const auto match = saved_slots.find(expected.items[j].slot);
+                const auto* slot = match == saved_slots.end() ? &expected.items[j] : match->second;
+                if (match == saved_slots.end()) ++added;
+                else saved_slots.erase(match);
+                if (slot != &expected.items[j] && !slot->asset.empty()) {
                     // An item that is no longer installed (a removed mod, a catalog
                     // change) or no longer fits its slot falls back to the slot's
                     // default. Rejecting the whole outfit would also block every
@@ -379,8 +391,15 @@ bool load_cosmetic_hook(const void* wrapper, void* destination) {
                 }
                 words.emplace_back(slot->parameter_bits.size());
                 std::copy(slot->parameter_bits.begin(), slot->parameter_bits.end(), words.back().data());
-                item_arrays.back().data()[j] = {slot->asset.c_str(), words.back().data(), cosmetic_hash(slot->asset), slot->slot};
+                item_arrays.back().data()[j] = {slot->asset.c_str(), words.back().data(), cosmetic_hash(slot->asset),
+                    expected.items[j].slot};
             }
+            for (const auto& [hash, item] : saved_slots) held.push_back({i, *item, {}});
+            if (added || !saved_slots.empty())
+                dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::customization,
+                    "Saved outfit \"{}\": its slots differ from the game's (a mod that adds or removes slots): {} "
+                    "new slot(s) start on their default, {} saved slot(s) the game does not have now are kept.",
+                    id, added, saved_slots.size());
             native[i].items = item_arrays.back().data();
         }
         s.copy_cosmetic(destination, native.data(), native.data() + native.size());
@@ -423,9 +442,10 @@ void save_cosmetic_hook(std::uintptr_t manager, void* record, const char* raw_id
         if (value.recipes.size() == 1 && value.recipes.front().template_key == 2169419386U) {
             cosmetic_diagnostic("save", "card_is_not_skater_preset", id); return;
         }
-        // Keep items from costume mods that are not installed right now: a slot
-        // still showing the stand-in default saves the original item, while a
-        // slot the player changed saves the new choice and releases the hold.
+        // Keep items from costume mods that are not installed right now, and
+        // whole slots a mod added that is switched off: a slot still showing the
+        // stand-in default saves the original item, while a slot the player
+        // changed saves the new choice and releases the hold.
         if (const auto held = cosmetic_runtime().held_slots.find(id); held != cosmetic_runtime().held_slots.end()) {
             std::erase_if(held->second, [&](const CosmeticRuntime::HeldSlot& h) {
                 if (h.recipe >= value.recipes.size()) return true;
@@ -435,7 +455,10 @@ void save_cosmetic_hook(std::uintptr_t manager, void* record, const char* raw_id
                     item = h.saved;
                     return false;
                 }
-                return true;
+                // The game has no such slot now (the mod that added it is off):
+                // the saved item rides along until the slot is back.
+                value.recipes[h.recipe].items.push_back(h.saved);
+                return false;
             });
             if (held->second.empty()) cosmetic_runtime().held_slots.erase(held);
         }

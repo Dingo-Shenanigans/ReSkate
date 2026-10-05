@@ -35,7 +35,7 @@ int run() {
     const auto config = load_config(file, &added);
     const auto has = [&](std::string_view name) { return std::ranges::find(added, name) != added.end(); };
     check(has("enforce_tuning") && has("votes.seconds") && has("votes.kick") && has("score_check") && has("score_allow") &&
-              has("global_bans"),
+              has("global_bans") && has("map_pool") && has("map_rotation_minutes"),
           "New settings not reported");
     check(!has("name") && !has("tps") && !has("votes.map"), "Settings the file had reported as new");
     const auto written = text(file);
@@ -84,6 +84,38 @@ int run() {
     std::ofstream(file, std::ios::binary) << R"({"port": 65535, "query_port": 1})";
     const auto edges = load_config(file);
     check(edges.port == 65535 && edges.query_port == 1, "Ports at the ends of the range refused");
+
+    static_cast<void>(load_levels(folder / "Mods")); // no Mods folder: the retail maps only
+    ServerConfig pool;
+    check(pool_levels(pool).size() == levels().size() && in_map_pool(pool, "Stadium 2"),
+          "An empty pool does not allow every map");
+    pool.map_pool = {"Isle", "Isle of Grom", "San Vansterdam", "Stadium 1"};
+    check(pool_levels(pool).size() == 3, "Pool maps not resolved once each");
+    check(in_map_pool(pool, "San Vansterdam") && in_map_pool(pool, "Levels/Game/DingoLevel_SDM/DingoLevel_SDM_Int_001/DingoLevel_SDM_Int_001") &&
+              !in_map_pool(pool, "Super Ultra Mega Resort") && !in_map_pool(pool, "Nowhere"),
+          "Pool membership wrong");
+    const auto next = [&](std::string_view map) {
+        const auto *level = next_pool_map(pool, map);
+        return level ? level->name : std::string{};
+    };
+    check(next("Isle of Grom") == "San Vansterdam" && next("Stadium 1") == "Isle of Grom" &&
+              next("Super Ultra Mega Resort") == "Isle of Grom",
+          "Rotation does not follow the pool's order");
+    pool.map_pool = {"Isle of Grom"};
+    check(next("Isle of Grom").empty() && next("San Vansterdam") == "Isle of Grom", "A one-map pool rotated to itself");
+    check(config_error(pool).empty(), "A valid pool refused");
+    pool.map_pool = {"Isle of Grom", "Nowhere"};
+    check(!config_error(pool).empty(), "An unknown pool map accepted");
+    pool.map_pool = {"Isle of Grom", "Stadium 1"};
+    pool.map_rotation = 15;
+    pool.file = file;
+    save_config(pool);
+    const auto rotating = load_config(file);
+    check(rotating.map_pool == pool.map_pool && rotating.map_rotation == 15, "Map pool or rotation lost on save");
+    std::ofstream(file, std::ios::binary) << R"({"map_pool": ["Isle of Grom", 7, ""], "map_rotation_minutes": 5000})";
+    const auto odd_pool = load_config(file);
+    check(odd_pool.map_pool == std::vector<std::string>{"Isle of Grom"} && odd_pool.map_rotation == 1440,
+          "Bad pool entries kept, or rotation not capped");
 
     std::filesystem::remove_all(folder);
     if (failures) return 1;

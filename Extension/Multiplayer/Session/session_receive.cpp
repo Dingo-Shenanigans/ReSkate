@@ -60,6 +60,70 @@ void receive_cosmetics(Session &s, const NativeFrame &local, std::uint64_t now) 
         }
     }
 }
+// Chat proofs. A guest takes chat from the host alone, which passes every other guest's lines
+// on, and a host can pass on what it likes under any of its players' names. That is no worse
+// than a name on a line, until the line shows a badge of the backend's (Dev, Creator, Homie):
+// then it is a line a developer never wrote, with their badge on it. So such a guest also
+// sends each line straight to the players Steam connects them to (send_chat), and here a line
+// the host passed on as theirs shows their badge only when that copy says the same. One
+// without it waits a moment for it, then shows as any other player's would: from an older
+// build, a party line (which the host writes), or not theirs at all.
+constexpr std::uint64_t chat_proof_wait = 500000, chat_proof_life = 10000000;
+constexpr std::size_t chat_proofs_kept = 8;
+// Whether a line the host passed on as this player's would show a badge that rests on who
+// they are: another guest's, known to Steam, on one of the backend's lists and showing it.
+bool owes_proof(const Session &s, const Peer &sender) {
+    return s.mode == Mode::join && sender.member.id != s.host_id && steam_vouched(s, sender) && shows_tag(sender) &&
+           identity_mark(sender.member.id);
+}
+std::string chat_name(Session &s, const Peer &sender) {
+    return sender.member.name.empty() ? s.transport.name(sender.member.id) : sender.member.name;
+}
+// Shows the lines that have waited long enough (or all of them), without the badge.
+void release_chat(Session &s, Peer &sender, std::uint64_t now, bool all) {
+    auto &waiting = sender.chat_waiting;
+    auto line = waiting.begin();
+    for (; line != waiting.end() && (all || now < line->at || now - line->at >= chat_proof_wait); ++line)
+        add_chat(s, sender.member.id, chat_name(s, sender), std::move(line->text), false, false);
+    waiting.erase(waiting.begin(), line);
+}
+// The host's copy of a line: shown at once when the sender's own copy is here, else it waits.
+void relayed_chat(Session &s, Peer &sender, const Packet &p, std::uint64_t now) {
+    auto &proofs = sender.chat_proofs;
+    const auto proof = std::find_if(proofs.begin(), proofs.end(), [&](const auto &copy) {
+        return copy.sequence == p.sequence && copy.text == p.text && now >= copy.at && now - copy.at <= chat_proof_life;
+    });
+    const bool proven = proof != proofs.end();
+    if (proven) proofs.erase(proof);
+    // The sender's copies come in the order of their lines: with this one's here, or none
+    // owed for it, nothing is on its way for the lines before it.
+    if (proven || p.text.starts_with("[Party] ")) {
+        release_chat(s, sender, now, true);
+        add_chat(s, sender.member.id, chat_name(s, sender), p.text, false, proven);
+        return;
+    }
+    if (sender.chat_waiting.size() >= chat_proofs_kept) release_chat(s, sender, now, true);
+    sender.chat_waiting.push_back({p.sequence, p.text, now});
+}
+// The sender's own copy of a line, over their own connection. Never shown by itself.
+void proven_chat(Session &s, Peer &sender, const Packet &p, std::uint64_t now) {
+    if (!owes_proof(s, sender)) return;
+    auto &waiting = sender.chat_waiting;
+    const auto held = std::find_if(waiting.begin(), waiting.end(), [&](const auto &line) {
+        return line.sequence == p.sequence && line.text == p.text;
+    });
+    if (held != waiting.end()) {
+        for (auto line = waiting.begin(); line != held; ++line)
+            add_chat(s, sender.member.id, chat_name(s, sender), std::move(line->text), false, false);
+        add_chat(s, sender.member.id, chat_name(s, sender), std::move(held->text));
+        waiting.erase(waiting.begin(), held + 1);
+        return;
+    }
+    auto &proofs = sender.chat_proofs;
+    std::erase_if(proofs, [&](const auto &copy) { return now < copy.at || now - copy.at > chat_proof_life; });
+    if (proofs.size() >= chat_proofs_kept) proofs.erase(proofs.begin());
+    proofs.push_back({p.sequence, p.text, now});
+}
 // A hitch leaves a backlog of pose updates, all of which would be decoded in one frame.
 // Every pose delta references a reliable baseline, never another delta, so older deltas
 // of one stream in a batch can be dropped undecoded. Keep the newest ones playback may
@@ -157,6 +221,7 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
         if (old[i].id != next[i].id || old[i].epoch != next[i].epoch) {
             if (old[i].id && old[i].id != s.host_id)
                 s.transport.disconnect(old[i].id, "Player left or rejoined the host roster.");
+            release_chat(s, s.peers[i], now, true); // what they said just before leaving
             reset_peer(s, i);
             s.peers[i].last_packet = now;
         }
@@ -225,6 +290,8 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
     s.join_backoff.prune(now);
     trim_slots(s);
     if (world_playing(s, local)) s.local_root = local.pose.root;
+    for (auto &peer : active_peers(s))
+        if (!peer.chat_waiting.empty()) release_chat(s, peer, now, false);
     s.transport.poll();
     if (s.mode == Mode::join && s.transport.status().telemetry) {
         const auto &t = s.transport.status();
@@ -391,6 +458,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 s.travel_started = s.join_started = now;
                 s.join_destination.clear();
                 s.map_name.clear();
+                s.map_label.clear();
                 s.map = 0;
                 s.map_load_submitted = false;
                 s.last_map_load_check = 0;
@@ -402,6 +470,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             s.world_state_sequence = p.sequence;
             if (!p.destination.empty()) {
                 s.join_destination = s.map_name = p.destination;
+                s.map_label = p.map_label;
                 s.map = p.map;
             }
             s.host_world_ready = p.world_ready;
@@ -500,6 +569,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             link->password_challenge = p.challenge;
             link->map_authorized |= p.map_authorized;
             s.join_destination = p.destination;
+            s.map_label = p.map_label;
             s.world = p.world;
             s.join_map_authorized |= p.map_authorized;
             if (new_challenge)
@@ -682,6 +752,9 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         if (p.kind == PacketKind::maps) {
             if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
                 s.server_maps = p.maps;
+                s.server_map_pool.clear();
+                for (const auto entry : p.map_pool) s.server_map_pool.push_back(p.maps[entry]);
+                s.server_map_rotation = p.map_rotation;
                 publish(s);
                 publish_chat(s);
             }
@@ -719,8 +792,13 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         // only an authenticated sender, never the world.
         if (p.kind == PacketKind::chat) {
             auto *sender = find_peer(s, p.source);
-            if (direct_link || !sender || !sender->handshaken ||
-                !routed_source(p, sender->member, message.peer, s.mode == Mode::host, s.host_id))
+            if (!sender || !sender->handshaken) continue;
+            // Another guest's own copy of a line they said: proof of the host's, never a line.
+            if (direct_link) {
+                if (routed_source(p, sender->member, message.peer, false, s.host_id, true)) proven_chat(s, *sender, p, now);
+                continue;
+            }
+            if (!routed_source(p, sender->member, message.peer, s.mode == Mode::host, s.host_id))
                 continue;
             // A dedicated server speaks (welcome message, its console) as "Server".
             const bool server = dedicated_host(s) && sender->member.id == s.host_id;
@@ -732,8 +810,8 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 host_party_chat(s, sender->member.id, std::string_view(p.text).substr(3), now);
                 continue;
             }
-            add_chat(s, sender->member.id, server ? std::string("Server")
-                     : sender->member.name.empty() ? s.transport.name(sender->member.id) : sender->member.name, p.text);
+            if (owes_proof(s, *sender)) relayed_chat(s, *sender, p, now);
+            else add_chat(s, sender->member.id, server ? std::string("Server") : chat_name(s, *sender), p.text);
             if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
             continue;
         }

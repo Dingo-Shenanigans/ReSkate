@@ -5,7 +5,7 @@
 #include <cmath>
 
 // Player votes (map, kick, time of day) and the chat commands that run them. Each vote is
-// switched on and given its pass percentage in ReSkateServer.json ("votes").
+// switched on and given its pass percentage in ReSkateServer.json ("votes"); also the map pool and rotation.
 namespace dingosdk::server {
 namespace {
 constexpr std::array<std::string_view, 8> times{"default", "morning", "noon",       "afternoon",
@@ -67,14 +67,26 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (votes & server_vote_kick) text += "/vote kick <player>: start a vote to kick a player\n";
         if (votes & server_vote_time) text += "/vote tod <time>: vote for a time of day (morning, noon, night...)\n";
         if (votes) text += "/yes or /no: vote in the running vote\n";
+        if (config_.map_rotation) text += "The map changes every " + std::to_string(config_.map_rotation) + " min.\n";
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
-        if (is_admin(guest.member.id)) text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes\n";
-        return reply(guest, text.empty() ? "This server has no player votes. Type /tp <player> to teleport." : text);
+        if (is_admin(guest.member.id)) text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /msg, /msg-party, /msg-admins\n";
+        const std::string whisper = "/w <player> <message>: send a private message";
+        return reply(guest, (text.empty() ? "This server has no player votes. Type /tp <player> to teleport.\n" : text) + whisper);
     }
     if (verb == "party") return party_command(guest, rest);
     if (verb == "p") {
         if (!config_.parties) return reply(guest, "Parties are off on this server.");
         return party_chat(guest, rest);
+    }
+    if (verb == "w" || verb == "whisper" || verb == "tell") {
+        // A private message to one player, marked "[DM from ...]"; the sender sees an echo.
+        const auto [who, text] = split(rest);
+        if (text.empty()) return reply(guest, "/w <player> <message>, e.g. /w player hello");
+        auto *other = match_player(who);
+        if (!other) return reply(guest, "No single connected player matches \"" + std::string(who) + "\".");
+        if (other == &guest) return reply(guest, "You cannot message yourself.");
+        send_chat(dm_line(guest_name(guest), {}, text, multiplayer_chat_max_bytes), other);
+        return reply(guest, "[DM to " + guest_name(*other) + "] " + clean_chat_text(text));
     }
     if (verb == "yes" || verb == "y") return cast_vote(guest, true);
     if (verb == "no" || verb == "n") return cast_vote(guest, false);
@@ -117,8 +129,10 @@ void Host::start_vote(Guest &guest, VoteKind kind, std::string_view argument) {
     case VoteKind::map: {
         if (argument.empty()) return reply(guest, "/vote map <map>, e.g. /vote map grom");
         // Players vote between the server's own maps (/maps); a raw level path is admins only.
-        if (!find_level(argument) || !valid_map_destination(map_destination(argument)))
+        const auto *level = find_level(argument);
+        if (!level || !valid_map_destination(map_destination(argument)))
             return reply(guest, "No single map is called \"" + std::string(argument) + "\".");
+        if (!in_map_pool(config_, level->asset)) return reply(guest, level->name + " is not one of this server's maps.\n" + pool_text());
         if (map_hash(map_destination(argument)) == map_) return reply(guest, "The server is already on that map.");
         vote.value = std::string(argument);
         vote.label = "change the map to " + map_label(argument);
@@ -218,5 +232,48 @@ void Host::check_vote(bool expired) {
         }
         break;
     }
+}
+
+std::string Host::pool_text() const {
+    std::string text = config_.map_pool.empty() ? "Map pool: every map" : "Map pool:";
+    if (!config_.map_pool.empty())
+        for (const auto *level : pool_levels(config_)) text += "\n  " + level->name + (same_map(level->asset) ? "  (now)" : "");
+    return text;
+}
+std::string Host::rotation_text() const {
+    if (!config_.map_rotation) return "Map rotation is off.";
+    const auto every = "The map changes every " + std::to_string(config_.map_rotation) + " min";
+    const auto *next = next_pool_map(config_, config_.map);
+    if (!next) return every + ", but the map pool has no other map.";
+    if (!players()) return every + " while players are on. Next: " + next->name + ".";
+    const auto due = map_since_ + std::uint64_t{config_.map_rotation} * 60000000;
+    const auto left = due > now_ ? (due - now_ + 59999999) / 60000000 : 0;
+    return every + ". Next: " + next->name + " in about " + std::to_string(std::max<std::uint64_t>(left, 1)) + " min.";
+}
+void Host::resend_maps() {
+    for (auto &[id, guest] : guests_) guest->maps_sent = false;
+}
+void Host::tick_rotation() { // waits while nobody is on, and for a running map vote
+    if (!config_.map_rotation || !players()) {
+        map_since_ = now_;
+        rotation_warned_ = false;
+        return;
+    }
+    const auto due = map_since_ + std::uint64_t{config_.map_rotation} * 60000000;
+    if (now_ + 60000000 < due) return;
+    const auto *next = next_pool_map(config_, config_.map);
+    if (!next) {
+        map_since_ = now_;
+        return;
+    }
+    if (!rotation_warned_ && config_.map_rotation > 1) {
+        rotation_warned_ = true;
+        send_chat("Next map in 1 minute: " + next->name + ".");
+    }
+    if (now_ < due || (vote_ && vote_->kind == VoteKind::map)) return;
+    send_chat("Changing the map to " + next->name + ".");
+    log_("[rotation] Changing the map to " + next->name + ".");
+    change_map(next->name);
+    save();
 }
 } // namespace dingosdk::server

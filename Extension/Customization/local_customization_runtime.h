@@ -21,7 +21,9 @@ struct CosmeticRuntime {
     std::set<std::string> blocked_loadouts;
     // Saved outfit items that were not installed when their preset loaded (a
     // disabled or removed costume mod). The slot shows its default this session;
-    // saves keep the original item unless the player changes that slot.
+    // saves keep the original item unless the player changes that slot. Also
+    // saved slots the template did not have then (a mod that adds slots,
+    // switched off): those have no slot to show in, and saves carry them along.
     struct HeldSlot { std::size_t recipe{}; profile::CosmeticSlot saved; std::string fallback; };
     std::map<std::string, std::vector<HeldSlot>, std::less<>> held_slots;
     std::set<std::string> diagnostics;

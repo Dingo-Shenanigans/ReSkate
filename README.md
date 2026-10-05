@@ -86,6 +86,22 @@ The menu and console keys can be changed in the launcher's Settings.
   match no song are ignored, and a playlist with no matching songs is not shown. A file that does not follow
   this shape is skipped and logged. The songs themselves still have to be added by the mod.
 
+  Optional playlist and track covers are PNG files packaged inside the mod:
+
+  ```json
+  {
+    "schema": 1,
+    "playlists": [{"name": "My Playlist", "artwork": "artwork/playlist.png", "songs": ["Artist - Title"]}],
+    "song_artwork": {"Artist - Title": "artwork/track.png"}
+  }
+  ```
+
+  Artwork paths are relative to the mod folder and use forward slashes. Images must be PNGs, at most
+  2048x2048 and 4 MiB each. Missing or invalid covers are ignored without removing the playlist or song.
+  ReSkate serves registered image bytes through a process-local HTTP endpoint bound only to `127.0.0.1`
+  on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
+  routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
+
 Only install mods you trust. Mods change game data, and custom scripts can run code.
 
 ## Dedicated servers

@@ -194,6 +194,14 @@ std::string send_chat(Session &s, std::string_view typed) {
     message.text = text;
     broadcast(s, message, true, false, now);
     const auto local = s.transport.status().local_id;
+    // The host passes a guest's line on, and could pass on anything under anyone's name. So a
+    // guest whose line shows a badge of the backend's also sends it straight to every player
+    // Steam connects them to: the copy is not shown, it is what lets that player know the
+    // host's one is ours (chat proofs, session_receive.cpp). Older builds ignore it.
+    if (s.mode == Mode::join && own_tag_shown() && identity_mark(local))
+        for (const auto &peer : active_peers(s))
+            if (peer.handshaken && peer.direct_ready && peer.member.id != s.host_id)
+                send_packet(s, peer.member.id, message, true, false);
     add_chat(s, local, s.transport.name(local), std::move(text), true);
     return {};
 }

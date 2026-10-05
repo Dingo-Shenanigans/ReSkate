@@ -3,6 +3,7 @@
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "local_music_assets.h"
+#include "local_music_safety.h"
 #include "local_music_ui.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
@@ -12,6 +13,13 @@
 #include "Extension/Profile/runtime_internal.h"
 
 namespace dingosdk::profile_runtime {
+namespace {
+std::string music_artwork_url(std::string_view value) {
+    // Only URLs produced by the local artwork server bypass CDN resolution.
+    if (value.starts_with("http://127.0.0.1:")) return std::string(value);
+    return travel_artwork_url(value);
+}
+}
 // Runtime-only music UI hydration: read_music_catalog copies actual registered
 
 // MusicGraphAsset metadata/TagRefs. No generated catalog, guessed memberships,
@@ -42,6 +50,10 @@ bool initialize_music_functions(std::uintptr_t base) {
     if (!read(base + music::playlist_control_vtable, playlist) || !read(base + music::song_control_vtable, song) ||
         playlist != rebased(music::playlist_control_slots) ||
         song != rebased(music::song_control_slots)) return false;
+    // Guard the native playlist walk before any mod song can reach it. A failed
+    // install leaves music usable; the crash guard is a safety net, not a gate.
+    if (!install_playlist_lookup_safety(base))
+        logging::event(logging::Channel::music, "{\"event\":\"music_playlist_lookup_safety_failed\"}");
     auto& f = music_ui_runtime().functions;
     f.construct_playlist = reinterpret_cast<decltype(f.construct_playlist)>(base + music::construct_playlist);
     f.construct_song = reinterpret_cast<decltype(f.construct_song)>(base + music::construct_song);
@@ -117,14 +129,14 @@ std::string music_ui_wire(std::string_view id, std::string_view artist, std::str
         // The catalogue's display name when known; the raw id otherwise.
         cosmetic_wire_string(presentation, 10, name.empty() ? id : name);
         // Artwork: the catalogue's cdn:/ id, resolved to the CDN rendition.
-        if (const auto url = travel_artwork_url(artwork); !url.empty())
+        if (const auto url = music_artwork_url(artwork); !url.empty())
             cosmetic_wire_string(presentation, 11, url);
         cosmetic_wire_number(presentation, 12, 0);
     } else {
         cosmetic_wire_string(presentation, 10, artist);
         cosmetic_wire_string(presentation, 11, title);
         // Cover art: the content cache song record's cdn:/ id (its field 10.12), resolved like a playlist's.
-        if (const auto url = travel_artwork_url(artwork); !url.empty())
+        if (const auto url = music_artwork_url(artwork); !url.empty())
             cosmetic_wire_string(presentation, 12, url);
     }
     cosmetic_wire_string(body, 10, presentation);

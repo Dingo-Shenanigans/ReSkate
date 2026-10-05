@@ -80,8 +80,13 @@ void register_movement_commands(Commands &registry) {
         return State{m.debug.available, value_text(static_cast<double>(m.debug.free_camera_fov)),
                      "Waiting for local player controls.", {}, false};
     };
-    free_fov.run = [](const Model &, const Values &args, const Output &) {
-        request_debug(Debug::set_free_camera_fov, false, static_cast<float>(std::get<double>(args[0])));
+    free_fov.run = [](const Model &, const Values &args, const Output &out) {
+        const auto degrees = std::get<double>(args[0]);
+        if (degrees != 0 && degrees < 40) {
+            out("error: Use 0 or 40-120.");
+            return;
+        }
+        request_debug(Debug::set_free_camera_fov, false, static_cast<float>(degrees));
     };
     free_fov.reset = [](const Model &, const Output &) { request_debug(Debug::set_free_camera_fov, false, 0.0f); };
     registry.add(std::move(free_fov));

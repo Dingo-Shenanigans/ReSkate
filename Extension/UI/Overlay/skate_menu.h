@@ -27,6 +27,9 @@ struct SkateMenu {
     bool multiplayer_same_map_only = false;
     bool multiplayer_dedicated_only = false;
     std::array<char, 321> server_command{}; // an admin's command for the dedicated server
+    std::map<std::string, std::pair<bool, double>> map_pool_pending; // asset -> {ticked, until}, until the server agrees
+    std::optional<int> map_rotation_pending;                         // the rotation slider, likewise
+    double map_rotation_until{};
     bool ban_confirm_on_server{};           // the Ban popup bans from a dedicated server
     int multiplayer_lobby_sort = 0;
     float multiplayer_code_height = 0;  // what the join-by-code card took last frame

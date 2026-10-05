@@ -44,6 +44,16 @@ inline void cut_text(std::string &text, std::size_t limit) {
     while (cut && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
     text.resize(cut);
 }
+// A direct message as the recipient reads it: "[DM from <from>] text", or "[DM from <from> to <scope>] text" for
+// a group. The text is cut so the whole line fits `limit` bytes and the marker is never lost.
+inline std::string dm_line(std::string_view from, std::string_view scope, std::string_view text, std::size_t limit) {
+    std::string head = "[DM from " + std::string(from);
+    if (!scope.empty()) head += " to " + std::string(scope);
+    head += "] ";
+    std::string body(text);
+    cut_text(body, limit > head.size() ? limit - head.size() : 0);
+    return head + body;
+}
 // A command as the log shows it: the log is plain text, so a new password is left out.
 inline std::string loggable(std::string_view command) {
     const auto [verb, argument] = split(command);

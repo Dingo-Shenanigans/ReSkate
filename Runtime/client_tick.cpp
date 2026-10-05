@@ -998,6 +998,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/multiplayer");
             dingosdk::multiplayer::tick(r.base,client,multiplayer_ready,r.multiplayer_map,load_multiplayer_map);
+            if (auto notice = dingosdk::multiplayer::take_leave_notice(); !notice.empty())
+                dingosdk::overlay::notify(dingosdk::overlay::NoticeLevel::warning, "Map not installed", std::move(notice));
         }
         dingosdk::multiplayer::refresh_identity_lists();
         dingosdk::tick_local_developer_hoodie(r.base, client, multiplayer_ready);

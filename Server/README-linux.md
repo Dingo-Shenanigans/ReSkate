@@ -107,6 +107,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now reskate-server
 ```
 
+The server writes its own `ReSkateServer.log` next to the binary; the console
+output goes to the journal (`journalctl -u reskate-server -f`).
+
 ## Notes / limits (V1)
 
 - `auto_update` / `update` command: `updates_enabled()==false` on Linux.

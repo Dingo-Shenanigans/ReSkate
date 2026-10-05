@@ -82,4 +82,5 @@ void music_ui_initialize_hook(std::uint64_t all, std::uint64_t hidden, std::uint
     const std::uint32_t* handle, const void* callback);
 
 void update_music_catalog();
+
 }

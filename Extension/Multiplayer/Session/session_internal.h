@@ -110,6 +110,14 @@ struct Peer {
     OutfitBudget outfit_budget;
     SoundBudget sound_budget;
     ChatRate chat_rate;
+    // Chat proofs (session_receive.cpp): the copies of their lines this player sent us over
+    // their own Steam connection, and the lines the host passed on as theirs that wait for one.
+    struct ChatProof {
+        std::uint32_t sequence{};
+        std::string text;
+        std::uint64_t at{};
+    };
+    std::vector<ChatProof> chat_proofs, chat_waiting;
     ChatBudget throwdown_budget, party_budget;
     // Host: how the guest's mods change trick scoring, as they reported it (Engine/Vfs/mod_scoring.h):
     // nothing until the report arrives, 0 for the game's own. member.scoring is the verdict.
@@ -200,6 +208,10 @@ struct Session {
     std::vector<MultiplayerBan> server_bans;
     std::uint32_t server_ban_total{};
     std::vector<std::string> server_maps; // level assets the dedicated server allows
+    std::vector<std::string> server_map_pool; // admins: the pool's assets in rotation order (empty: every map)
+    unsigned server_map_rotation{};           // minutes per map (0: off)
+    std::string map_label;                    // the host's name for join_destination (may be empty)
+    std::string leave_notice;                 // take_leave_notice()
     std::uint64_t joined_public_lobby{};
     std::array<Peer, max_remote_players> peers;
     // Players take the lowest free slots, so every one sits below this mark
@@ -343,12 +355,13 @@ void save_bans(const Session &s);
 bool is_banned(Session &s, std::uint64_t id);
 // Re-reads friend_ids when the Steam social snapshot has changed.
 void refresh_friends(Session &s);
-void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local = false);
+// `marks`: whether the line may show the badge the backend gives its sender (player_role).
+void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local = false, bool marks = true);
 // The colour and badge of one of the backend's categories.
 std::pair<std::uint32_t, std::string> mark_role(IdentityList list);
 // A player's role colour and badge ("Dev", "Creator", "Homie", "Admin", "Host", "Friend" or none), shown in chat
 // and on their nametag. `local`: the local player.
-std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t id, bool local);
+std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t id, bool local, bool marks = true);
 // Sends one line from this player; returns why not when it cannot.
 std::string send_chat(Session &s, std::string_view typed);
 // A "/" command for a dedicated server (votes, and any server command for its admins): sent

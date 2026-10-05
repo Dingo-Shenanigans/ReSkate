@@ -356,7 +356,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
          })))
         throw std::invalid_argument("Invalid ban list");
     if (p.kind == PacketKind::maps &&
-        (!p.source || p.maps.size() > max_server_maps ||
+        (!p.source || p.maps.size() > max_server_maps || !valid_map_pool(p.map_pool, p.maps.size()) ||
+         p.map_rotation > max_map_rotation ||
          std::any_of(p.maps.begin(), p.maps.end(), [](const auto &asset) { return !valid_map_asset(asset); })))
         throw std::invalid_argument("Invalid server map list");
     if (p.kind == PacketKind::hello && !p.text.empty() && !valid_member_name(p.text))
@@ -366,6 +367,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
     if (p.kind == PacketKind::map_offer &&
         (!valid_map_destination(p.destination) || p.map != map_hash(p.destination)))
         throw std::invalid_argument("Invalid host map destination");
+    if ((p.kind == PacketKind::map_offer || p.kind == PacketKind::world_state) && !valid_map_label(p.map_label))
+        throw std::invalid_argument("Invalid map name");
     if (p.kind == PacketKind::world_state &&
         (p.destination.empty() ? (p.map != 0 || p.world_ready)
                                : (!valid_map_destination(p.destination) || p.map != map_hash(p.destination))))
@@ -408,6 +411,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.integer(p.map_authorized ? 1 : 0, 1);
             w.integer(p.destination.size(), 2);
             w.bytes.insert(w.bytes.end(), p.destination.begin(), p.destination.end());
+            w.integer(p.map_label.size(), 1);
+            w.bytes.insert(w.bytes.end(), p.map_label.begin(), p.map_label.end());
         }
         if (p.kind == PacketKind::hello) {
             w.integer(p.text.size(), 1);
@@ -418,6 +423,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.world_ready ? 1 : 0, 1);
         w.integer(p.destination.size(), 2);
         w.bytes.insert(w.bytes.end(), p.destination.begin(), p.destination.end());
+        w.integer(p.map_label.size(), 1);
+        w.bytes.insert(w.bytes.end(), p.map_label.begin(), p.map_label.end());
     } else if (p.kind == PacketKind::world_ready) {
         w.integer(p.world_ready ? 1 : 0, 1);
     } else if (p.kind == PacketKind::pose) {
@@ -515,6 +522,9 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.integer(asset.size(), 1);
             w.bytes.insert(w.bytes.end(), asset.begin(), asset.end());
         }
+        w.integer(p.map_pool.size(), 2);
+        for (const auto index : p.map_pool) w.integer(index, 2);
+        w.integer(p.map_rotation, 2);
     }
     if (p.kind == PacketKind::bans) {
         w.integer(p.ban_total, 4);
@@ -592,6 +602,13 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.bytes[8 + i] = static_cast<std::uint8_t>(actual_payload >> (8 * i));
     return std::move(w.bytes);
 }
+static bool read_map_label(Reader &r, std::span<const std::uint8_t> bytes, Packet &p) {
+    const auto length = r.integer(1);
+    if (length > max_member_name || length > bytes.size() - r.at) return false;
+    p.map_label.assign(reinterpret_cast<const char *>(bytes.data() + r.at), static_cast<std::size_t>(length));
+    r.at += static_cast<std::size_t>(length);
+    return valid_map_label(p.map_label);
+}
 std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
     try {
         if (bytes.size() < header_size || bytes.size() > max_packet)
@@ -630,7 +647,7 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 p.destination.assign(reinterpret_cast<const char *>(bytes.data() + r.at),
                                      static_cast<std::size_t>(length));
                 r.at += static_cast<std::size_t>(length);
-                if (!valid_map_destination(p.destination) || p.map != map_hash(p.destination))
+                if (!valid_map_destination(p.destination) || p.map != map_hash(p.destination) || !read_map_label(r, bytes, p))
                     return {};
             }
             if (p.kind == PacketKind::hello) {
@@ -655,6 +672,7 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 if (p.destination.empty() ? (p.map != 0 || p.world_ready)
                                           : (!valid_map_destination(p.destination) || p.map != map_hash(p.destination)))
                     return {};
+                if (!read_map_label(r, bytes, p)) return {};
             }
         } else if (p.kind == PacketKind::pose) {
             const auto skater = r.integer(2), board = r.integer(2);
@@ -789,6 +807,11 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 if (!valid_map_asset(asset)) return {};
                 p.maps.push_back(std::move(asset));
             }
+            const auto pooled = r.integer(2);
+            if (pooled > p.maps.size()) return {};
+            for (std::uint64_t i = 0; i < pooled; ++i) p.map_pool.push_back(static_cast<std::uint16_t>(r.integer(2)));
+            p.map_rotation = static_cast<std::uint16_t>(r.integer(2));
+            if (!valid_map_pool(p.map_pool, p.maps.size()) || p.map_rotation > max_map_rotation) return {};
         } else if (p.kind == PacketKind::bans) {
             p.ban_total = static_cast<std::uint32_t>(r.integer(4));
             const auto count = r.integer(2);
@@ -957,6 +980,15 @@ bool valid_member_name(std::string_view text) noexcept {
 bool valid_map_asset(std::string_view asset) noexcept {
     return !asset.empty() && asset.size() <= max_map_asset &&
            std::all_of(asset.begin(), asset.end(), [](char c) { return c > 32 && c < 127 && c != '|'; });
+}
+bool valid_map_label(std::string_view label) noexcept {
+    return label.empty() || (label.size() <= max_member_name && valid_member_name(label));
+}
+bool valid_map_pool(std::span<const std::uint16_t> pool, std::size_t maps) noexcept {
+    if (pool.size() > maps) return false;
+    for (std::size_t i = 0; i < pool.size(); ++i)
+        if (pool[i] >= maps || std::find(pool.begin(), pool.begin() + i, pool[i]) != pool.begin() + i) return false;
+    return true;
 }
 bool valid_admin_text(std::string_view text) noexcept {
     if (text.empty() || text.size() > max_admin_text) return false;

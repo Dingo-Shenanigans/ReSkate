@@ -174,7 +174,7 @@ bool same_file(const fs::path& first, const fs::path& second) {
 }
 
 std::wstring quote_argument(std::wstring_view value) {
-    if (value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) return std::wstring(value);
+    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) return std::wstring(value);
     std::wstring output(1, L'\"');
     std::size_t slashes{};
     for (const auto character : value) {

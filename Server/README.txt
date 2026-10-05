@@ -42,6 +42,14 @@ name               Shown in the browser (1-64 characters).
 map                The map everyone skates, named like the game's load command:
                    "San Vansterdam", "Isle of Grom", "Super Ultra Mega Resort",
                    "Stadium 1", or a custom map such as "bbcity" (see Custom maps).
+map_pool           The maps players may vote for and the rotation goes through,
+                   in order, e.g. ["San Vansterdam", "Isle of Grom", "bbcity"].
+                   Empty (the default) allows every map the server knows.
+                   Admins can still change to any map.
+map_rotation_minutes  Minutes on each map before the server moves to the next
+                   one in map_pool (default 0: off). Players get a minute's
+                   warning; the clock waits while nobody is on, and starts
+                   over whenever the map changes (by a vote or an admin too).
 max_players        1-249.
 password           Empty for anyone; otherwise players type it to join.
 welcome            A chat line sent to each player as they join.
@@ -53,6 +61,7 @@ global_bans        Turn away players the ReSkate team has banned from multiplaye
                    "bans" apply either way.
 votes              Player votes, each off until turned on:
                      "map": {"enabled": true, "percent": 60}   /vote map <map>
+                                                   (a map in map_pool)
                      "kick": {"enabled": true, "percent": 60}  /vote kick <player>
                      "time_of_day": {"enabled": true, "percent": 50}  /vote tod <time>
                                                    (needs world_layer_sync)
@@ -123,11 +132,19 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   status                        Name, map, players, code.
   players                       Connected players and their SteamID64s.
   say <text>                    Chat as the server (console only).
+  msg <player> <text>           Private message, shown to them as "[DM from <you>] ...".
+                                Name start (one word) or SteamID64.
+  msg-party <player> <text>     Message everyone in that player's party ("[DM from <you> to party]").
+  msg-admins <text>             Message every admin who is online ("[DM from <you> to admins]").
+                                Players can whisper each other with /w <player> <text> in chat.
   kick <player>                 Until the server restarts. Name start or SteamID64.
                                 Admins cannot kick or ban each other; the console can.
   ban <player or id> [name]     For good.   unban <id>   bans
   map <name>                    e.g. map San Vansterdam, map grom, map bbcity
   maps                          The maps this server knows.
+  map-pool [add|remove <map>|clear]   The maps players vote between and the
+                                rotation uses (see map_pool).
+  rotation [<minutes>|off]      Change the map on a timer (see map_rotation_minutes).
   name <text>   password <text|off>   welcome <text|off>   listed on|off
   tps 20|30|60|120   voice on|off   voice-range <m>
   distances <full> <half> <half-return> <low>
