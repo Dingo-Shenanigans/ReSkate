@@ -378,6 +378,7 @@ bool park(std::uintptr_t base, bool park) noexcept {
 }
 void open(std::function<void()> then) {
     auto &s = state();
+    style_layer::watch_stage();
     if (style_layer::stage_present() && current_entry) return then();
     // Our menus would take the key presses that are for the game.
     overlay::close_menus();
@@ -450,6 +451,7 @@ void tick(std::uintptr_t base, bool ready) noexcept {
                 }
                 return;
             }
+            if (s.then || s.way != Way::none || s.seek != Seek::none) style_layer::watch_stage();
             const bool on_stage = style_layer::stage_present();
             // On the stage, the highlighted entry's model is found before the editor opens.
             if (s.then && on_stage && s.way == Way::none && s.seek == Seek::none && !current_entry && !s.nudged) {

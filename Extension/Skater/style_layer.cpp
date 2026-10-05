@@ -117,8 +117,9 @@ struct Live {
         std::uint8_t kind{}; // 1: a skater. 2: a small rig such as a skateboard
     };
     std::atomic<std::uint64_t> clear_stage{}; // the time until which Skatepedia's skater and board stay hidden
+    std::atomic<std::uint64_t> stage_watch{};  // the time until which other rigs are checked for Skatepedia's stage
     std::atomic<std::uintptr_t> ignored_board{};
-    std::array<Seen, 16> seen;
+    std::array<Seen, 64> seen;
     std::vector<style::JointDelta> timeline;
     // Other skaters on the standard skeleton that show the preview or a restyle.
     struct Other {
@@ -374,7 +375,8 @@ void preview_other(std::uintptr_t holder) noexcept {
     if (recording) learn(holder);
     const auto kind = other_kind(holder);
     // Skatepedia's skater shows that the stage exists. It stays visible while it is recorded.
-    if (kind) clear_from_stage(holder, kind == 1, !recording && GetTickCount64() < l.clear_stage.load(std::memory_order_relaxed) && (solo() || session_test()));
+    // Only the editor needs the stage, so other rigs are not read for it at other times.
+    if (kind && (recording || GetTickCount64() < l.stage_watch.load(std::memory_order_relaxed))) clear_from_stage(holder, kind == 1, !recording && GetTickCount64() < l.clear_stage.load(std::memory_order_relaxed) && (solo() || session_test()));
     if (kind != 1) return;
     // During a recording, Skatepedia's skater shows the game's own animation.
     const bool learning = GetTickCount64() < l.learn_until.load(std::memory_order_relaxed) + 300;
@@ -930,6 +932,7 @@ void clear_demos() {
     l.demos = {};
 }
 void keep_stage_clear() noexcept { live().clear_stage.store(GetTickCount64() + 500, std::memory_order_relaxed); }
+void watch_stage() noexcept { live().stage_watch.store(GetTickCount64() + 2000, std::memory_order_relaxed); }
 Rig rig() {
     const auto snapshot = live().snapshot.load(std::memory_order_acquire);
     return snapshot ? snapshot->rig : Rig{};

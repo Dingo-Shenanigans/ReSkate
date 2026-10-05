@@ -10,8 +10,9 @@ namespace dingosdk::style_layer {
 void rotations_at(std::uint8_t trick, float time, std::vector<style::JointDelta> &out);
 // The layer does not change these poses: the stand-in and its board. 0 is none.
 void ignore_holder(std::uintptr_t holder, std::uintptr_t board = 0) noexcept;
-// True if Skatepedia's skater was on its stage in the last 500 ms.
+// True if Skatepedia's skater was on its stage in the last 500 ms. Always false unless watch_stage() was called in the last 2 s.
 [[nodiscard]] bool stage_present() noexcept;
+void watch_stage() noexcept;
 // The height at which Skatepedia's skater last stood, or `fallback`.
 [[nodiscard]] float stage_floor(float fallback) noexcept;
 // Adds one frame of a learned clip for the restyle of Skatepedia's skater. False until the skeleton is read.

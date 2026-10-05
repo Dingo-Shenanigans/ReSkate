@@ -29,7 +29,6 @@
 namespace dingosdk::style_editor {
 namespace {
 using style::Clip;
-using style::ClipFrame;
 // The stand-in uses the last remote-player slot. No session uses that slot in solo play.
 constexpr std::size_t stand_in_slot = multiplayer::max_remote_players - 1;
 // The loop blends the last pose into the first over this time.
@@ -569,6 +568,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             (void)style_layer::collect_learned();
             return;
         }
+        style_layer::watch_stage();
         const auto local = multiplayer::capture_local(base, client, true);
         if (!local.ready || local.pose.skater.size() < 2) return;
         const auto now = clock_ms();
