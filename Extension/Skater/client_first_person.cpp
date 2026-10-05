@@ -3,7 +3,13 @@
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/no_bail.h"
 #include "free_flight.h"
+#include "Extension/VR/vr.h"
+#include "Engine/Core/Log/logging.h"
+#include "Extension/UI/Overlay/overlay.h"
+#include <mutex>
+#include <algorithm>
 #include <cmath>
 
 namespace dingosdk::client_source::detail {
@@ -75,22 +81,91 @@ bool first_person_write(std::uintptr_t address, const void* in, std::size_t size
 // next update rewrites the whole pose, so nothing needs restoring. Poses sent
 // to other players keep the real scale (set_local_hidden_joint).
 constexpr std::uint16_t first_person_head_joint = 103;
-// The head joint's real scale, packed as three floats; read back when the
-// camera composes a pose whose head is already shrunk.
+// In VR the neck can be hidden with the head (vr::Settings::hide_body), so the
+// collar or hood does not cross the view. Joints in the head chain below the
+// neck cannot be hidden: the camera is composed from them.
+constexpr std::array<std::uint16_t, 4> first_person_hidden_joints{first_person_head_joint, 101, 45, 43};
+// With the upper spine (45) hidden, the shoulders under it are scaled back up by
+// the same factor so the arms keep their size (they attach at the spine joint).
+// Skeleton joints: 46 right shoulder, 275 left shoulder.
+constexpr std::array<std::uint16_t, 2> first_person_arm_roots{46, 275};
+constexpr float first_person_hidden_scale = 0.001f;
+// The hidden joint and its real scale, packed as three floats; read back when
+// the camera composes a pose whose joint is already shrunk.
+std::atomic<std::uint16_t> first_person_hidden_joint{first_person_head_joint};
 std::atomic<std::uint64_t> first_person_head_scale_xy{}, first_person_head_scale_z{};
-void first_person_hide_head(std::uintptr_t base, std::uintptr_t component) noexcept {
+// Keeps the arms at full size while the upper spine is hidden, and gives the
+// shoulders their real scale back once it is not.
+void first_person_keep_arms(std::uintptr_t buffer, bool active) noexcept {
+    static std::mutex mutex;
+    static std::array<std::array<float, 3>, first_person_arm_roots.size()> real{};
+    static std::array<bool, first_person_arm_roots.size()> raised{};
+    std::lock_guard lock(mutex);
+    for (std::size_t i = 0; i < first_person_arm_roots.size(); ++i) {
+        const auto address = buffer + first_person_arm_roots[i] * 0x30ULL;
+        if (!active) {
+            if (raised[i]) (void)first_person_write(address, real[i].data(), sizeof(real[i]));
+            raised[i] = false;
+            continue;
+        }
+        if (!raised[i]) {
+            std::array<float, 3> scale{};
+            if (!first_person_read(address, scale.data(), sizeof(scale))) continue;
+            bool usable = true;
+            for (const auto value : scale) usable = usable && std::isfinite(value) && value >= 0.05f && value <= 20.0f;
+            if (!usable) continue;
+            real[i] = scale;
+            raised[i] = true;
+        }
+        const std::array<float, 3> up{real[i][0] / first_person_hidden_scale, real[i][1] / first_person_hidden_scale,
+            real[i][2] / first_person_hidden_scale};
+        (void)first_person_write(address, up.data(), sizeof(up));
+    }
+}
+void first_person_hide_head(std::uintptr_t base, std::uintptr_t component, bool on_board) noexcept {
     std::uintptr_t holder{};
     if (!first_person_read(component + 0xa0, &holder, 8) || !holder) return;
     const auto pose = multiplayer::read_native_pose_layout(first_person_read, base, holder, 512);
     if (!pose.buffer || pose.count != first_person_skeleton_joints) return;
-    const auto scale_address = pose.buffer + first_person_head_joint * 0x30ULL;
+    const auto vr_options = vr::settings();
+    const bool bail_view = vr_options.enabled && vr::whole_body_view();
+    // On foot its own setting: the hands carry the board there, and with the arms folded
+    // into the waist (Waist up) the carried board jitters inside it.
+    const int hide = vr_options.enabled
+        ? std::clamp(on_board ? vr_options.hide_body : vr_options.hide_body_foot, 0, vr::Limits::hide_body_max) : 0;
+    first_person_keep_arms(pose.buffer, vr_options.enabled && vr_options.view_mode == 0 && hide == 2 && !bail_view);
+    // VR third person and the bail camera show the whole skater.
+    const bool show_all = vr_options.enabled && (vr_options.view_mode == 1 || bail_view);
+    const auto joint = first_person_hidden_joints[static_cast<std::size_t>(hide)];
+    // A shrunk scale stays in the pose (it is not rewritten every update), so a
+    // joint that should no longer be hidden gets its real scale back.
+    const auto previous = first_person_hidden_joint.load(std::memory_order_acquire);
+    if ((show_all || previous != joint) && first_person_head_scale_z.load(std::memory_order_acquire)) {
+        const auto address = pose.buffer + previous * 0x30ULL;
+        std::array<float, 3> current{};
+        if (first_person_read(address, current.data(), sizeof(current)) && current[0] < 0.05f && current[1] < 0.05f &&
+            current[2] < 0.05f) {
+            std::array<float, 3> real{};
+            const auto xy = first_person_head_scale_xy.load(std::memory_order_relaxed);
+            const auto z = first_person_head_scale_z.load(std::memory_order_relaxed);
+            std::memcpy(real.data(), &xy, 8);
+            std::memcpy(&real[2], &z, 4);
+            (void)first_person_write(address, real.data(), sizeof(real));
+        }
+    }
+    if (show_all) {
+        multiplayer::set_local_hidden_joint(0, 0, {1, 1, 1});
+        return;
+    }
+    const auto scale_address = pose.buffer + joint * 0x30ULL;
     std::array<float, 3> scale{};
     if (!first_person_read(scale_address, scale.data(), sizeof(scale))) return;
     for (const auto value : scale) if (!std::isfinite(value) || value < 0.05f || value > 20.0f) return; // Already hidden.
-    multiplayer::set_local_hidden_joint(component, first_person_head_joint, scale);
+    multiplayer::set_local_hidden_joint(component, joint, scale);
     std::uint64_t xy{}; std::memcpy(&xy, scale.data(), 8);
     std::uint32_t z{}; std::memcpy(&z, &scale[2], 4);
     first_person_head_scale_xy.store(xy, std::memory_order_relaxed);
+    first_person_hidden_joint.store(joint, std::memory_order_relaxed);
     first_person_head_scale_z.store(z, std::memory_order_release);
     constexpr std::array<float, 3> hidden{0.001f, 0.001f, 0.001f};
     (void)first_person_write(scale_address, hidden.data(), sizeof(hidden));
@@ -111,7 +186,8 @@ FirstPersonJoint first_person_child(const FirstPersonJoint& parent, std::uintptr
     std::array<float, 12> bone{}; // scale.xyzw | rotation.xyzw | position.xyzw; .w of scale/position is metadata
     source_require(first_person_read(buffer + index * 0x30ULL, bone.data(), sizeof(bone)), "Head pose is unreadable.");
     // First person shrinks the head it draws; compose with the real scale.
-    if (index == first_person_head_joint && bone[0] < 0.05f && bone[1] < 0.05f && bone[2] < 0.05f) {
+    if (index == first_person_hidden_joint.load(std::memory_order_acquire) && bone[0] < 0.05f && bone[1] < 0.05f &&
+        bone[2] < 0.05f) {
         const auto z = first_person_head_scale_z.load(std::memory_order_acquire);
         const auto xy = first_person_head_scale_xy.load(std::memory_order_relaxed);
         if (z) { std::memcpy(bone.data(), &xy, 8); std::memcpy(&bone[2], &z, 4); }
@@ -130,6 +206,37 @@ FirstPersonJoint first_person_child(const FirstPersonJoint& parent, std::uintptr
     return child;
 }
 }
+// Whether the local skater stands on the board: the board entity sits under the
+// skater origin (not carried at the hands, not left elsewhere). `board_matrix` receives the
+// board's world matrix when it is read.
+bool first_person_on_board(std::uintptr_t base, std::uintptr_t component, const first_person::Vec3& origin,
+    std::array<float, 16>* board_matrix = nullptr) noexcept {
+    try {
+        std::uintptr_t collection{}, entity{};
+        if (!first_person_read(component + 0x18, &collection, 8) || !collection || !first_person_read(collection, &entity, 8) ||
+            !entity)
+            return false;
+        const auto board = multiplayer::read_native_board(first_person_read, base, entity);
+        std::uintptr_t transforms{}, owner{};
+        if (!board.entity || !first_person_read(board.entity + 0x70, &transforms, 8) || !transforms ||
+            !first_person_read(transforms, &owner, 8) || owner != board.entity)
+            return false;
+        // Same layout as the multiplayer capture (root_matrix in native_skater.cpp).
+        std::uint8_t first{}, extra{};
+        if (!first_person_read(transforms + 9, &first, 1) || !first_person_read(transforms + 10, &extra, 1) || first > 128 ||
+            extra > 32)
+            return false;
+        std::array<float, 16> m{};
+        if (!first_person_read(transforms + 0x10 + (std::uintptr_t{first} + 2 * extra) * 0x20, m.data(), sizeof(m)))
+            return false;
+        const float dx = m[12] - origin[0], dy = m[13] - origin[1], dz = m[14] - origin[2];
+        const bool on = std::sqrt(dx * dx + dz * dz) < 0.6f && dy < -0.5f && dy > -1.6f;
+        if (board_matrix) *board_matrix = m;
+        return on;
+    } catch (...) {
+        return false;
+    }
+}
 // The local skater's animation component, from the verified player-bound skater.
 std::uintptr_t first_person_component(std::uintptr_t base, std::uintptr_t client) {
     overlay::DebugModel skater;
@@ -142,7 +249,8 @@ std::uintptr_t first_person_component(std::uintptr_t base, std::uintptr_t client
 }
 // Writes the head camera into the rows (right, up, backward, position) of a
 // native camera matrix, leaving each row's fourth lane as the camera had it.
-first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t component, std::array<float, 16>& matrix) {
+first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t component, std::array<float, 16>& matrix,
+    float* chest_heading) {
     std::uintptr_t holder{};
     source_require(first_person_read(component + 0xa0, &holder, 8) && holder, "Skater animation is unavailable.");
     const auto pose = multiplayer::read_native_pose_layout(first_person_read, base, holder, 512);
@@ -153,6 +261,14 @@ first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t 
     for (const auto joint : first_person_head_chain) {
         head = first_person_child(head, pose.buffer, joint);
         if (joint == 1) origin = head.position;
+        if (joint == 45 && chest_heading) {
+            // The upper spine, with the head's axes (forward is local +Y).
+            // Unknown (NaN) with the chest within 30 degrees of vertical (lying, flips): its
+            // horizontal direction is noise there.
+            const auto chest = first_person_rotate(head.rotation, {0, 1, 0});
+            *chest_heading = std::hypot(chest[0], chest[2]) > 0.5f ? std::atan2(-chest[0], -chest[2])
+                                                                   : std::numeric_limits<float>::quiet_NaN();
+        }
     }
     const auto face = first_person_child(head, pose.buffer, first_person_face);
     const auto right_eye = first_person_child(face, pose.buffer, first_person_right_eye).position;
@@ -201,11 +317,20 @@ void first_person_on_render(std::uintptr_t animation_interface) noexcept {
         if (have && source_flight_now() - latest.time < 0.02) {
             auto matrix = arm.matrix;
             for (const std::size_t i : {0u, 1u, 2u, 4u, 5u, 6u, 8u, 9u, 10u, 12u, 13u, 14u}) matrix[i] = latest.head[i];
+            // In VR the camera goes to this frame's eye from the raw head: the headset is
+            // the spring there, and the seat offset replaces the spring's offsets.
+            auto view = matrix;
             matrix = arm.spring.sample(matrix, arm.settings, latest.origin);
             source_require(valid_flight_transform(matrix), "First-person spring pose is invalid.");
-            arm.transform(arm.camera, &matrix);
+            // The skater origin (joint 1, the body the spring also pivots on) steadies VR against crouches.
+            // On the board: the board under the skater, or a riding state (100-499: rolling, air,
+            // grinds), since the board leaves the feet in tricks.
+            const bool riding = latest.on_board || (latest.physics_state >= 100 && latest.physics_state < 500);
+            const vr::BodyPose body{latest.origin, latest.chest_heading, riding, latest.physics_state, latest.board};
+            if (!vr::apply_camera(view, vr::CameraWriter::render, &body)) view = matrix;
+            arm.transform(arm.camera, &view);
             arm.matrix = matrix;
-            if (arm.fov > 0) (void)first_person_write_fov(arm.camera, arm.fov);
+            if (const float fov = vr::camera_fov(arm.fov); fov > 0) (void)first_person_write_fov(arm.camera, fov);
         }
     } catch (...) {}
     SetLastError(error);
@@ -218,14 +343,32 @@ void first_person_on_animation(std::uintptr_t component) noexcept {
     try {
         std::array<float, 16> head{};
         head[15] = 1;
-        const auto origin = first_person_head_matrix(arm.watched_base.load(std::memory_order_acquire), component, head);
+        const auto base = arm.watched_base.load(std::memory_order_acquire);
+        float chest = std::numeric_limits<float>::quiet_NaN();
+        const auto origin = first_person_head_matrix(base, component, head, &chest);
+        std::array<float, 16> board{};
+        const bool on_board = first_person_on_board(base, component, origin, &board);
+        // The skater's physics state (the same context No Bail checks): core +0x3c0, state +0x1414.
+        std::uint32_t physics_state = 0;
+        std::uintptr_t core{}, core_type{}, context{};
+        if (first_person_read(component + 0x70, &core, 8) && core && first_person_read(core, &core_type, 8) &&
+            core_type == base + addr::no_bail::bail_core_vtable && first_person_read(core + 0x3c0, &context, 8) && context)
+            (void)first_person_read(context + 0x1414, &physics_state, 4);
         {
             std::lock_guard lock(arm.snapshot_mutex);
-            arm.latest = {head, origin, now};
+            arm.latest = {head, origin, now, chest, on_board, physics_state, board};
             ++arm.captures;
         }
-        first_person_hide_head(arm.watched_base.load(std::memory_order_acquire), component);
-    } catch (...) {} // The tick keeps publishing and reports why.
+        first_person_hide_head(arm.watched_base.load(std::memory_order_acquire), component,
+            on_board || (physics_state >= 100 && physics_state < 500)); // riding, air and grinds count as on the board
+    } catch (const std::exception& error) {
+        // The tick keeps publishing and reports why; logged too (testing the legs-only hide).
+        static double logged = -100;
+        if (now - logged > 1.0) {
+            logged = now;
+            logging::log(logging::Level::warning, logging::Channel::graphics, "First person head pose: {}", error.what());
+        }
+    } catch (...) {}
     SetLastError(error);
 }
 }

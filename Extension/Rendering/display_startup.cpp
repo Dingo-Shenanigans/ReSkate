@@ -40,7 +40,7 @@ bool start_display_settings(std::uintptr_t base) {
         "\nWindow.Height=" + std::to_string(height) +
         "\nRenderDevice.FullscreenWidth=" + std::to_string(width) +
         "\nRenderDevice.FullscreenHeight=" + std::to_string(height) +
-        "\nWindow.AutoSize=false\nWindow.FullscreenAutoSize=false"
+        "\nWindow.AutoSize=false\nWindow.FullscreenAutoSize=false\nWindow.AllowWindowsLargerThanDesktop=true"
         "\nRenderDevice.FullscreenModeEnable=false\nRenderDevice.WindowedBorderless=false";
     std::string error;
     const bool ready = lua_startup::add_callback(base, &apply_display, error);

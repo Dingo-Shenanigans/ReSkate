@@ -2,9 +2,12 @@
 #include "overlay_internal.h"
 #include "input_capture.h"
 #include "held_input.h"
+#include "Extension/VR/vr.h"
 #include <atomic>
 #include <format>
+#include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <mutex>
@@ -309,12 +312,38 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    // VR controllers: pad 0 reports connected from the game's first poll (Frostbite polls only
+    // pads connected then); the controllers merge into it (buttons combined, the stronger stick
+    // and trigger).
+    const auto vr_pad = vr::controller_pad();
+    if (user == 0 && output && vr::controllers_connected()) {
+        if (result != ERROR_SUCCESS) *output = {};
+        result = ERROR_SUCCESS;
+    }
+    if (vr_pad.active && user == 0 && output && result == ERROR_SUCCESS) {
+        auto& g = output->Gamepad;
+        const auto stronger = [](SHORT& x, SHORT& y, std::int16_t vx, std::int16_t vy) {
+            if (std::abs(vx) + std::abs(vy) > std::abs(x) + std::abs(y)) { x = vx; y = vy; }
+        };
+        static XINPUT_GAMEPAD last{};
+        g.wButtons |= vr_pad.buttons;
+        g.bLeftTrigger = std::max(g.bLeftTrigger, vr_pad.left_trigger);
+        g.bRightTrigger = std::max(g.bRightTrigger, vr_pad.right_trigger);
+        stronger(g.sThumbLX, g.sThumbLY, vr_pad.left_x, vr_pad.left_y);
+        stronger(g.sThumbRX, g.sThumbRY, vr_pad.right_x, vr_pad.right_y);
+        static DWORD packet = 0;
+        if (std::memcmp(&g, &last, sizeof(g)) != 0) ++packet;
+        last = g;
+        output->dwPacketNumber += packet;
+    }
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
         // not change between opening the menu and its next controller poll.
         output->dwPacketNumber ^= 0x80000000u;
     }
+    if (output && result == ERROR_SUCCESS)
+        vr::observe_gamepad(user, output->Gamepad.sThumbRX, std::max(output->Gamepad.bLeftTrigger, output->Gamepad.bRightTrigger));
     return result;
 }
 template<std::size_t I>

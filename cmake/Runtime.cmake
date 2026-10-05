@@ -69,6 +69,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/named_settings.cpp
     Extension/World/console_commands.cpp
     Extension/Rendering/console_commands.cpp
+    Extension/VR/vr_console.cpp
+    Extension/VR/vr_profile.cpp
     Extension/Progression/console_commands.cpp
     Extension/Objects/console_commands.cpp
     Extension/Objects/ParkEditor/park_editor_commands.cpp

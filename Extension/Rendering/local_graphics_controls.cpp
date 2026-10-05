@@ -25,6 +25,21 @@ std::uint32_t graphics_video_mask(const GraphicsControls& choices) {
     return mask;
 }
 
+GraphicsControls graphics_effective_choices(const GraphicsRuntime& r) {
+    auto choices = r.model.choices;
+    if (r.vr_override) choices.effects[1] = choices.effects[2] = 0; // vignette, chromatic aberration
+    return choices;
+}
+
+void set_graphics_vr_override(bool active) noexcept {
+    auto& r = graphics_runtime();
+    std::lock_guard lock(r.mutex);
+    if (r.vr_override == active) return;
+    r.vr_override = active;
+    r.disabled_video_effects.store(graphics_video_mask(graphics_effective_choices(r)), std::memory_order_release);
+    r.last_update = 0; // Re-apply on the next update.
+}
+
 void graphics_video_setup(const std::uintptr_t* params, std::uintptr_t context, std::uintptr_t output) {
     auto& r = graphics_runtime();
     std::array<std::uintptr_t, 7> copy{};
@@ -129,7 +144,7 @@ bool graphics_settings_update() {
         if (!read(object + offsets[i], current) || current > 1) { ok = false; continue; }
         if (lease.owned && current != lease.applied) lease = {};
         if (!lease.owned) lease.original = current;
-        const int choice = r.model.choices.effects[i];
+        const int choice = graphics_effective_choices(r).effects[i];
         const auto wanted = choice < 0 ? lease.original : static_cast<std::uint8_t>(choice);
         if (current != wanted && (!graphics_settings_identity(object) || !graphics_write_byte(object + offsets[i], wanted))) {
             ok = false; continue;
@@ -152,7 +167,7 @@ bool graphics_filmic_update(GraphicsFilmic& n, unsigned field) {
     if (!read(n.component + offset, current) || current > 1 || !read(n.component + 0x5c, mask)) return false;
     if (lease.owned && current != lease.applied) lease = {};
     if (!lease.owned) { lease.original = current; lease.original_flag = (mask & bit) != 0; }
-    const int choice = r.model.choices.effects[index];
+    const int choice = graphics_effective_choices(r).effects[index];
     const auto desired = choice < 0 ? lease.original : static_cast<std::uint8_t>(choice);
     if (choice >= 0 ? !lease.owned || current != desired : lease.owned) {
         const EnvironmentChange change{hash, 0, &desired};
@@ -198,7 +213,7 @@ void start_graphics_controls() noexcept {
     std::vector<void*> created;
     try {
         r.model.choices = profile::graphics_controls(*local_runtime().store->shared_snapshot());
-        r.disabled_video_effects = graphics_video_mask(r.model.choices);
+        r.disabled_video_effects = graphics_video_mask(graphics_effective_choices(r));
         for (const auto& site : graphics_sites) {
             std::array<unsigned char, 32> bytes{};
             if (!read(base + site.rva, bytes) || bytes != site.bytes) throw std::runtime_error("Graphics fingerprint mismatch");

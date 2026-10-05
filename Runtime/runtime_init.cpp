@@ -38,6 +38,7 @@
 #include "Engine/Vfs/content_catalogs.h"
 #include "Engine/Vfs/world_layer_scan.h"
 #include "Engine/Game/World/world_layer_catalog.h"
+#include "Extension/VR/vr.h"
 #include <array>
 #include <filesystem>
 
@@ -190,6 +191,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::set_game_text_feed(dingosdk::multiplayer::skate_debug_text);
         dingosdk::overlay::set_skate_hud_feed(dingosdk::multiplayer::skate_hud);
         dingosdk::overlay::set_nametag_feed(dingosdk::multiplayer::custom_nametags);
+        // VR copies each presented frame into the headset (off until enabled).
+        dingosdk::overlay::set_present_observer(&dingosdk::vr::on_present, &dingosdk::vr::after_present);
+        // VR depth stereo finds the game's depth buffer from its D3D12 device.
+        dingosdk::vr::start_depth_probe();
         // Engine functions the profiler's stack sampler names in its reports.
         static constexpr dingosdk::profiler::Label engine_labels[]{
             {dingosdk::addr::profiler_labels::client_update, "Client game update (ReSkate tick hook)"},

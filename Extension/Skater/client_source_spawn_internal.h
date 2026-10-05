@@ -188,7 +188,15 @@ struct FirstPersonArm {
     // Head poses captured right after each animation update of `watched`, on
     // whichever thread ran it. Captures only read memory; the camera is always
     // written by the engine thread.
-    struct Snapshot { std::array<float, 16> head{}; first_person::Vec3 origin{}; double time{}; };
+    struct Snapshot {
+        std::array<float, 16> head{};
+        first_person::Vec3 origin{};
+        double time{};
+        float chest_heading = std::numeric_limits<float>::quiet_NaN();
+        bool on_board = false;
+        std::uint32_t physics_state = 0; // context +0x1414 (300 wipeout, 504 off board); 0 unknown
+        std::array<float, 16> board{};   // the board's world matrix while on it (rows right, up, backward, position)
+    };
     std::mutex snapshot_mutex;
     Snapshot latest;
     std::uint64_t captures{};
@@ -215,7 +223,8 @@ bool first_person_write_fov(std::uintptr_t camera, float fov) noexcept;
 void first_person_restore_fov(InteractiveDebug& debug) noexcept;
 void free_camera_restore_fov(InteractiveDebug& debug) noexcept;
 std::uintptr_t first_person_component(std::uintptr_t base, std::uintptr_t client);
-first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t component, std::array<float, 16>& matrix);
+first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t component, std::array<float, 16>& matrix,
+    float* chest_heading = nullptr);
 void first_person_on_render(std::uintptr_t animation_interface) noexcept;
 void first_person_on_animation(std::uintptr_t component) noexcept;
 

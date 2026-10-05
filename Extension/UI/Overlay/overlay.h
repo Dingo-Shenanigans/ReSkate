@@ -21,6 +21,9 @@
 #include <string>
 #include <vector>
 
+struct IDXGISwapChain3;
+struct ID3D12CommandQueue;
+
 namespace dingosdk::overlay {
 struct Level {
     std::string asset;
@@ -356,6 +359,15 @@ bool keyboard_shortcuts_allowed() noexcept;
 // draws. They take no input and never open the menu.
 enum class NoticeLevel { info, warning, error };
 void notify(NoticeLevel level, std::string title, std::string text = {}) noexcept;
+
+// Lets another component see each frame of the selected swapchain (the VR
+// module copies it into a headset). `before` runs on the presenting thread
+// after the overlay has drawn and before the game's Present, holding the
+// overlay's render lock; `after` runs once that Present returns, without the
+// lock, only when `before` ran. Either may be null; both must not throw.
+using PresentObserver = void (*)(IDXGISwapChain3* swapchain, ID3D12CommandQueue* queue) noexcept;
+using PresentCompletion = void (*)() noexcept;
+void set_present_observer(PresentObserver before, PresentCompletion after) noexcept;
 }
 
 // Call outside DllMain, before the game's first DXGI factory is created. No

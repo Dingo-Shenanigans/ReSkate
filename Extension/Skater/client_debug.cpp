@@ -10,6 +10,10 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/VR/vr.h"
+#include "Extension/VR/vr_profile.h"
+#include "Extension/Rendering/local_graphics_controls.h"
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -220,14 +224,19 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     // Runs after the native client update on the same engine thread. Publishing
     // our owned pose each tick also prevents native helper input from drifting it.
     debug.flight_ready = false; // An exceptional setter must not be retried automatically.
+    // In VR first person shows this frame's eye; the flight state keeps the head pose.
+    auto view = next;
+    if (debug.first_person) (void)vr::apply_camera(view, vr::CameraWriter::tick);
     SetLastError(error);
-    trial.camera_transform(camera.identity.camera, &next);
+    trial.camera_transform(camera.identity.camera, &view);
     debug.flight_matrix = next;
     debug.flight_ready = true;
     // Written every tick: the camera may refresh its FOV from its own settings.
-    if (debug.first_person && debug.first_person_fov > 0)
-        (void)first_person_write_fov(camera.identity.camera, debug.first_person_fov);
-    else if (!debug.first_person && debug.free_camera_fov > 0) {
+    if (debug.first_person) {
+        // VR sets its own FOV even when first person uses the game's (0).
+        if (const float fov = vr::camera_fov(debug.first_person_fov); fov > 0)
+            (void)first_person_write_fov(camera.identity.camera, fov);
+    } else if (debug.free_camera_fov > 0) {
         if (!debug.free_camera_saved_fov) {
             float current{};
             debug.free_camera_saved_fov = first_person_read(camera.identity.camera + camera_fov_offset, &current, 4) &&
@@ -680,6 +689,12 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         load_saved_debug(debug);
     }
     if (debug.save_pending && GetTickCount64() >= debug.save_due) save_debug(debug);
+    vr::profile_tick(); // Loads and saves the VR settings with the local profile.
+    {
+        // VR runs without the game's lens effects (they tear in stereo); saved choices stay.
+        const auto vr_options = vr::settings();
+        profile_runtime::set_graphics_vr_override(vr_options.enabled && vr_options.lens_effects_off && vr::status().running);
+    }
     if (debug.no_bail_restore && can_control && !debug.park_editor && GetTickCount64() >= debug.no_bail_restore_after) {
         debug.no_bail_restore = false;
         debug.no_bail = true; // the tick's update_no_bail applies it to the current skater
@@ -703,6 +718,13 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         debug.status = "The host turned off noclip in this session.";
     }
     const bool no_bail_allowed = session_no_bail_allowed();
+    // VR takes over the camera: first person, which carries the VR views, turns on by itself.
+    if (vr::wants_first_person(debug.first_person) && !request && can_control && camera_phase_observed) {
+        try {
+            debug_action(trial, client, can_control, camera_phase_observed, {overlay::DebugAction::set_first_person, true},
+                error.value);
+        } catch (...) {}
+    }
     if (request) {
         try { debug_action(trial, client, can_control, camera_phase_observed, *request, error.value); }
         catch (const SourceGuard& guard) { debug.status = guard.message; }
@@ -722,6 +744,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         model.ui_available = can_control;
         model.game_ui_hidden = !ui.draw;
     } catch (...) {}
+    vr::set_game_menu(multiplayer::sample_game_ui_state(base).in_menu);
     try {
         const auto camera = flight_camera ? *flight_camera : source_camera_snapshot(trial, client);
         const bool owned_view = camera.mode == 1 && camera.active == camera.identity.camera;
