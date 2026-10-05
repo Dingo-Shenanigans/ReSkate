@@ -1,7 +1,5 @@
 #include "gui_internal.h"
 
-#include "depot_output.h"
-
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/mod_catalog.h"
@@ -61,9 +59,6 @@ Settings load_settings(const fs::path& path) {
         settings.keep_open_after_launch = !json.value("close_on_launch", !settings.keep_open_after_launch);
         settings.updates = json.value("updates", settings.updates);
         settings.crash_reports = json.value("crash_reports", settings.crash_reports);
-        settings.steam_username = json.value("steam_username", std::string());
-        settings.steam_remember = json.value("steam_remember", settings.steam_remember);
-        settings.steam_prefer_code = json.value("steam_prefer_code", settings.steam_prefer_code);
     } catch (const std::exception& exception) {
         logging::log(logging::Level::warning, logging::Channel::launcher, "Ignoring launcher settings: {}", exception.what());
     }
@@ -85,9 +80,6 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["close_on_launch"] = !settings.keep_open_after_launch;
     json["updates"] = settings.updates;
     json["crash_reports"] = settings.crash_reports;
-    json["steam_username"] = settings.steam_username;
-    json["steam_remember"] = settings.steam_remember;
-    json["steam_prefer_code"] = settings.steam_prefer_code;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << json.dump(2) << '\n';
 }
@@ -126,7 +118,6 @@ Launcher::Launcher(const launcher_app::Session& session, std::vector<std::wstrin
 }
 
 Launcher::~Launcher() {
-    cancel();
     if (worker_.joinable()) worker_.join();
 }
 
@@ -154,7 +145,6 @@ template<class Task> void Launcher::start(Task task) {
     if (busy_) return;
     if (worker_.joinable()) worker_.join();
     busy_ = true;
-    cancel_ = false;
     worker_ = std::thread([this, task] {
         try { task(); }
         catch (const std::exception& exception) { fail(exception.what()); }
@@ -165,60 +155,13 @@ template<class Task> void Launcher::start(Task task) {
 void Launcher::check() { start([this] { run_check(); }); }
 void Launcher::apply_updates() { start([this] { run_updates(); }); }
 
-void Launcher::download(bool validate, bool qr, std::string password) {
-    {
-        std::lock_guard lock(mutex_);
-        wipe(password_);
-        password_ = std::move(password);
-        qr_login_ = qr;
-    }
-    start([this, validate] { run_download(validate); });
-}
-
 void Launcher::play() { start([this] { run_play(); }); }
-
-void Launcher::cancel() {
-    cancel_ = true;
-    answered_.notify_all();
-}
-
-void Launcher::answer(std::optional<std::string> value) {
-    std::lock_guard lock(mutex_);
-    if (answer_) wipe(*answer_);
-    answer_ = std::move(value);
-    if (!answer_) cancel_ = true;
-    has_answer_ = true;
-    answered_.notify_all();
-}
 
 void Launcher::restart() {
     auto arguments = arguments_;
     if (std::find(arguments.begin(), arguments.end(), L"--reskate-updated") == arguments.end())
         arguments.emplace_back(L"--reskate-updated");
     launcher_app::relaunch(session_.self, arguments);
-}
-
-void Launcher::wipe(std::string& value) {
-    SecureZeroMemory(value.data(), value.size());
-    value.clear();
-}
-
-std::optional<std::string> Launcher::prompt(const update::Prompt& prompt) {
-    std::unique_lock lock(mutex_);
-    // Use the password from the sign-in panel once; ask again only if Steam re-asks.
-    if (prompt.kind == update::PromptKind::password && !password_.empty()) {
-        auto password = std::move(password_);
-        password_.clear();
-        return password;
-    }
-    state_.prompt = prompt;
-    has_answer_ = false;
-    answered_.wait(lock, [this] { return has_answer_ || cancel_; });
-    state_.prompt.reset();
-    if (cancel_) return std::nullopt;
-    auto value = std::move(answer_);
-    answer_.reset();
-    return value;
 }
 
 fs::path Launcher::mods_data_root() const {
@@ -273,7 +216,6 @@ void Launcher::fail(const std::string& message) {
     state_.status = message;   // raw: the STATUS tile explains it and can copy it
     state_.detail.clear();
     state_.progress = -1;
-    state_.qr.clear();
 }
 
 std::optional<update::Config> Launcher::config() {
@@ -315,19 +257,11 @@ void Launcher::run_check() {
     if (!launcher_app::game_files_supported(session_.paths)) {
         std::error_code error;
         const bool installed = fs::is_regular_file(session_.paths.game, error);
-        if (!config) {
-            fail(installed ? "This Skate version is not supported, and the update server could not be reached."
-                           : "Skate is not installed here, and the update server could not be reached.");
-            return;
-        }
-        if (!launcher_app::config_matches_build(*config)) {
-            fail("This launcher is out of date. Download the latest ReSkate release.");
-            return;
-        }
-        if (installed) set(Phase::game_outdated, "Steam updated Skate",
-            "ReSkate needs the build below. Only the files that differ are downloaded.");
+        // Installation and build checks stay local; this launcher does not download Steam depots.
+        if (installed) set(Phase::game_outdated, "Skate files are not the supported build",
+            "Use an installed copy of the supported Skate build. Steam downloads are disabled in this launcher.");
         else set(Phase::game_missing, "Skate is not installed here",
-            "Download the build below from Steam, about 14 GB, with an account that owns skate.");
+            "Place ReSkateLauncher.exe and ReSkate.dll beside an existing Skate.exe, then check again.");
         return;
     }
     std::error_code error;
@@ -353,70 +287,6 @@ void Launcher::run_updates() {
         return;
     }
     run_check();
-}
-
-void Launcher::run_download(bool validate) {
-    const auto config = this->config();
-    if (!config) return run_check();
-    set(Phase::downloading, "Preparing Steam download", {}, 0);
-    const auto depot_downloader = update::ensure_depot_downloader(config->depot_downloader,
-        progress_for("DepotDownloader"));
-    set(Phase::downloading, "Connecting to Steam");
-    DepotOutput output;
-    update::SteamLogin login;
-    login.username = settings_.steam_username;
-    login.remember = settings_.steam_remember;
-    login.prefer_code = settings_.steam_prefer_code;
-    {
-        std::lock_guard lock(mutex_);
-        if (qr_login_) login.username.clear();
-    }
-    if (!login.username.empty()) set(Phase::downloading, "Signing in to Steam", login.username);
-    const auto code = update::run_depot_downloader(depot_downloader, config->game,
-        session_.paths.directory, validate, login, [&](std::string_view line) {
-            // DepotDownloader names the account it signs in ("Logging 'name' into Steam3"); the log
-            // travels with crash reports, so the name is left out.
-            std::string logged(line);
-            if (!login.username.empty())
-                for (auto at = logged.find(login.username); at != std::string::npos; at = logged.find(login.username, at + 8))
-                    logged.replace(at, login.username.size(), "<hidden>");
-            logging::write(logging::Level::debug, logging::Channel::launcher, logged);
-            output.feed(line);
-            std::lock_guard lock(mutex_);
-            if (line.find("Use the Steam Mobile App to confirm") != std::string_view::npos) {
-                state_.status = "Approve the sign-in in the Steam app";
-                state_.detail = "Open Steam on your phone and confirm. Waiting...";
-                return;
-            }
-            if (output.qr_update) {
-                state_.qr = *output.qr_update;
-                if (state_.qr.empty()) state_.status = "Signed in to Steam";
-            }
-            if (output.percent) {
-                state_.status = validate ? "Verifying Skate" : "Downloading Skate";
-                state_.detail = std::format("{:.1f}%  {}", *output.percent, output.file);
-                state_.progress = *output.percent / 100.0f;
-            } else if (state_.qr.empty() && !output.message.empty() && output.message != state_.detail) {
-                state_.detail = output.message;
-            }
-        }, [this](const update::Prompt& prompt) { return this->prompt(prompt); }, cancel_);
-    {
-        std::lock_guard lock(mutex_);
-        state_.qr.clear();
-        state_.prompt.reset();
-        wipe(password_);
-    }
-    if (cancel_) {
-        run_check();
-        std::lock_guard lock(mutex_);
-        state_.detail = "Download cancelled. It will resume where it stopped.";
-        return;
-    }
-    if (launcher_app::game_files_supported(session_.paths)) {
-        set(Phase::ready, "Ready to skate", "Skate build installed.");
-        return;
-    }
-    fail(std::format("The Steam download did not finish (exit code {}). {}", code, output.message));
 }
 
 // The merge the game does behind its splash, done here instead, so a mod that

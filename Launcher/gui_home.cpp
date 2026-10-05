@@ -253,8 +253,7 @@ void status_tile(const Fonts& fonts, const State& state, ImVec2 position, float 
     if (state.config) {
         const auto build = state.config->game.build_id.empty() ? state.config->game.manifest_id
                                                                : state.config->game.build_id;
-        const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated &&
-                             state.phase != Phase::downloading;
+        const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated;
         facts.push_back({game_ok ? Icon::check : Icon::warning, "skate. build " + build});
         if (update::binary_updates_enabled())
             facts.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
@@ -358,7 +357,6 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     const ImVec2 size = io.DisplaySize;
     const float time = static_cast<float>(ImGui::GetTime());
     const auto state = launcher.snapshot();
-    const bool qr_open = !state.qr.empty();
     // The Thunderstore listing loads in the background from the start, so the
     // MODS tile can say when installed mods have updates.
     collect_listing(mods_panel);
@@ -366,7 +364,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // A mod dropped on the window opens the Mods panel and installs it.
     {
         std::lock_guard lock(g_dropped_mutex);
-        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt && !mods_panel.installing) {
+        if (!g_dropped.empty() && !ui.settings && !mods_panel.installing) {
             ui.mods = true;
             mods_panel.tab = 0;
             if (!mods_panel.scanned) scan(mods_panel, launcher.session());
@@ -384,7 +382,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
             ui.steam_offline = !launcher.settings().offline && !launcher_app::steam_signed_in();
         }
     }
-    const bool modal = ui.settings || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
+    const bool modal = ui.settings || ui.mods ||
         ui.steam_offline || state.phase == Phase::mods_broken || ui.mods_update_prompt;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -424,12 +422,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     case Phase::checking: label = "CHECKING"; enabled = false; break;
     case Phase::update_available: label = "UPDATE"; detail = "New ReSkate files are ready"; break;
     case Phase::updating: label = "UPDATING"; enabled = false; break;
-    case Phase::game_missing: label = "INSTALL"; detail = "Download skate. from Steam"; break;
-    case Phase::game_outdated: label = "DOWNLOAD"; detail = "Get the supported build from Steam"; break;
-    case Phase::downloading:
-        label = "CANCEL"; enabled = true; secondary = true;
-        detail = state.progress >= 0 ? std::format("Downloading  {:.0f}%", state.progress * 100) : "Downloading";
-        break;
+    case Phase::game_missing:
+    case Phase::game_outdated: label = "CHECK AGAIN"; detail = "Check the installed game files"; break;
     case Phase::merging: label = "MODS"; enabled = false; detail = "Merging your mods before Skate starts"; break;
     case Phase::mods_broken: label = "PLAY"; enabled = false; detail = "Waiting on an answer about your mods"; break;
     case Phase::ready:
@@ -447,8 +441,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         switch (state.phase) {
         case Phase::update_available: launcher.apply_updates(); break;
         case Phase::game_missing:
-        case Phase::game_outdated: open_sign_in(launcher, ui, false); break;
-        case Phase::downloading: launcher.cancel(); break;
+        case Phase::game_outdated: launcher.check(); break;
         case Phase::ready:
             // Mods with updates waiting: ask first, once a session. Playing on
             // the old version is a choice, not a mistake, so it stays offered.
@@ -505,10 +498,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     g_drag_allowed = !modal && !ImGui::IsAnyItemHovered();
     ImGui::End();
 
-    if (state.prompt) prompt_window(launcher, fonts, size, *state.prompt, ui);
-    else if (qr_open) qr_window(launcher, fonts, size, state.qr);
-    else if (ui.sign_in) sign_in_window(launcher, fonts, size, ui);
-    else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
+    if (ui.settings) settings_window(launcher, fonts, size, ui, window);
     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
     else if (state.phase == Phase::mods_broken)
         mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);

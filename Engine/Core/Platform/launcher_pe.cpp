@@ -140,8 +140,8 @@ std::string rva_string(const MappedFile& file, const ParsedPe& pe, std::uint32_t
 
 // Opens a file to read all of it. A file that was written a moment ago (a download) is often
 // held by the antivirus scanning it, so a sharing violation is waited out for a few seconds.
-// A file that still cannot be opened is named along with the reason: with ReSkate.dll that is
-// nearly always an antivirus blocking it, and "cannot open file" told the player nothing.
+// A file that still cannot be opened is named along with the Windows error.
+// Only virus-specific errors establish that security software blocked it.
 Handle open_to_read(const fs::path& path) {
     DWORD error{};
     for (int attempt = 0; attempt < 50; ++attempt) {
@@ -158,22 +158,23 @@ Handle open_to_read(const fs::path& path) {
     switch (error) {
     case ERROR_VIRUS_INFECTED:
     case ERROR_VIRUS_DELETED:
-        message = "Your antivirus blocked " + name + ". Add the folder " + folder +
-                  " to its exclusions (in Windows Security: Virus & threat protection > Exclusions), then try again.";
+        message = "Your antivirus blocked " + name + ". Check the detection name in your antivirus history "
+                  "(Windows Security: Virus & threat protection > Protection history) and report it to the "
+                  "ReSkate developers for review. Keep antivirus protection enabled.";
         break;
     case ERROR_ACCESS_DENIED:
-        message = name + " cannot be read: access was denied. An antivirus is probably blocking it: add the folder " + folder +
-                  " to its exclusions, then try again.";
+        message = name + " cannot be read: access was denied. Check the file permissions and your antivirus history "
+                  "for a recorded detection. Keep antivirus protection enabled.";
         break;
     case ERROR_SHARING_VIOLATION:
     case ERROR_LOCK_VIOLATION:
-        message = name + " is in use by another program, usually an antivirus scan. Close Skate if it is running, wait a moment and try again; "
-                  "if it keeps happening, add the folder " + folder + " to your antivirus exclusions.";
+        message = name + " is in use by another program. Close Skate if it is running, wait for any file copy or "
+                  "antivirus scan to finish, then try again.";
         break;
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
-        message = name + " is missing from " + folder + ". If it was just downloaded, an antivirus removed it: add the folder to its "
-                  "exclusions, then try again.";
+        message = name + " is missing from " + folder + ". Check that the release was fully extracted and review "
+                  "your antivirus history for a recorded detection before restoring any quarantined file.";
         break;
     default:
         message = "Cannot read " + name + " in " + folder;

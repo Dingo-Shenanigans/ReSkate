@@ -407,7 +407,7 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
 
     int result = 0;
     {
-        // On the heap: crash dumps hold thread stacks, and both keep the Steam password while it is typed.
+        // Keep the launcher and UI state on the heap.
         const auto launcher_storage = std::make_unique<Launcher>(session, arguments);
         auto& launcher = *launcher_storage;
         launcher.check();
@@ -473,7 +473,6 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         }
         ShowWindow(window, SW_HIDE);
         if (game) CloseHandle(game);
-        launcher.cancel();
         // Closing the window with Settings still open must not lose changes.
         try { launcher.save(); } catch (...) {}
     }

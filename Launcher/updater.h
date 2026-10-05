@@ -2,7 +2,6 @@
 
 #include <Windows.h>
 
-#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -33,7 +32,6 @@ struct GameBuild {
 struct Config {
     RemoteFile launcher;
     RemoteFile runtime;
-    RemoteFile depot_downloader;
     GameBuild game;
     // The dedicated server's zip, and the SHA-256 of the ReSkateServer.exe inside
     // it: a server whose own exe differs is out of date. Empty when not published.
@@ -77,31 +75,5 @@ std::vector<std::string> install_archive(const std::filesystem::path& archive, c
 std::string archive_entry_sha256(const std::filesystem::path& archive, const char* name);
 // Deletes the *.update-old files a previous install_archive left behind.
 void remove_replaced_files(const std::filesystem::path& directory) noexcept;
-
-// Downloads and unpacks DepotDownloader under %LOCALAPPDATA%\ReSkate\tools.
-std::filesystem::path ensure_depot_downloader(const RemoteFile& file, const Progress& progress = {});
-// How DepotDownloader signs in to Steam. An empty username shows a QR code.
-struct SteamLogin {
-    std::string username;
-    bool remember{true};  // DepotDownloader keeps a login token, not the password
-    bool prefer_code{};   // ask for a Steam Guard code instead of app approval
-};
-
-enum class PromptKind { password, authenticator_code, email_code };
-struct Prompt {
-    PromptKind kind{};
-    std::string text;     // DepotDownloader's own wording, e.g. the masked email
-    bool retry{};         // Steam rejected the previous code
-};
-// Blocks until the user answers; nothing stops DepotDownloader.
-using PromptHandler = std::function<std::optional<std::string>(const Prompt&)>;
-
-// Runs DepotDownloader hidden and hands each stdout/stderr line to `on_line`.
-// Password and Steam Guard prompts go to `on_prompt`; answers are written to
-// its stdin, never its command line. Setting `cancel` terminates it.
-DWORD run_depot_downloader(const std::filesystem::path& depot_downloader, const GameBuild& game,
-                           const std::filesystem::path& directory, bool validate, const SteamLogin& login,
-                           const std::function<void(std::string_view line)>& on_line,
-                           const PromptHandler& on_prompt, const std::atomic<bool>& cancel);
 
 } // namespace dingosdk::launcher_update

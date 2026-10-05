@@ -29,22 +29,20 @@ the launcher, the runtime that loads into the game, and the dedicated server.
     launcher.
   - Most mod changes apply in game without a restart.
 - **Launcher.**
-  - Checks that you have the supported game build, and can download exactly that build with your Steam
-    account.
+  - Checks that you have the supported game build installed. Steam sign-in and depot downloads are
+    disabled in this source version.
   - Keeps ReSkate itself up to date.
 
 ## Getting started
 
 1. Download the latest `ReSkate-<version>.zip` from
    [Releases](https://github.com/Dingo-Shenanigans/ReSkate/releases).
-2. Extract `ReSkateLauncher.exe` and `ReSkate.dll` into either folder:
-   - **your skate. folder**, beside `Skate.exe` (Steam → skate. → Manage → Browse local files); or
-   - **an empty folder**, where the launcher installs the game for you (about 14 GB).
+2. Extract `ReSkateLauncher.exe` and `ReSkate.dll` into **your skate. folder**, beside `Skate.exe`
+   (Steam → skate. → Manage → Browse local files).
 3. Run `ReSkateLauncher.exe`.
    - It checks for ReSkate updates, then checks the game files against the supported build.
-   - If the game is missing, or Steam has updated it past the supported build, sign in when asked. You
-     can scan a QR code with the Steam app, or use your username and password with Steam Guard. It then
-     downloads only the files it needs.
+   - If the game is missing or does not match the supported build, use an existing installation of that
+     build and press **CHECK AGAIN**. This launcher does not connect to Steam to install or repair it.
 4. Press **PLAY**.
 
 ReSkate supports one game build at a time (Steam build `25414733`).
@@ -216,8 +214,8 @@ bytes they expect before touching them, so code from the wrong build is refused 
 ## Crash reports and privacy
 
 When the launcher or the game crashes, ReSkate uploads a minidump and that session's log to the
-project's Backtrace account, so crashes can be fixed. The log never contains your Steam password or
-login name.
+project's Backtrace account, so crashes can be fixed. This source version of the launcher does not
+ask for Steam credentials.
 
 To turn it off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
 environment variable `RESKATE_CRASH_REPORTING=0`.

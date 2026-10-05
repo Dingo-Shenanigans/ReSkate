@@ -18,11 +18,10 @@ inline bool mentions(std::string_view raw, std::string_view needle) {
     return raw.find(needle) != std::string_view::npos;
 }
 
-// Anti-virus and overlays are behind most injection failures, so they share
-// one piece of advice.
+// An attach failure alone does not establish that antivirus blocked the game.
 inline constexpr std::string_view attach_advice =
-    "Anti-virus software usually blocks this. Add your skate. folder as an exclusion, close overlays "
-    "(Discord, MSI Afterburner, RTSS), then press RETRY.";
+    "Check your antivirus history for a recorded detection and keep protection enabled. Close overlays "
+    "(Discord, MSI Afterburner, RTSS), then press RETRY. If it still fails, report the error and log to the ReSkate developers.";
 
 inline Problem explain(std::string_view raw) {
     // Most specific first: the later rules match whole families of failures.
@@ -40,10 +39,10 @@ inline Problem explain(std::string_view raw) {
                 "also have quarantined part of it."};
     if (mentions(raw, "Skate.exe is missing"))
         return {"Skate.exe is not in this folder",
-                "Run the launcher from your skate. folder, or press INSTALL to download the game here."};
+                "Put ReSkateLauncher.exe and ReSkate.dll beside an existing Skate.exe, then press RETRY."};
     if (mentions(raw, "steam_api64.dll is missing") || mentions(raw, "steam_api64"))
         return {"The original steam_api64.dll is missing",
-                "Verify the game files in Steam, or press DOWNLOAD to fetch the supported build again."};
+                "Restore the original steam_api64.dll from your supported Skate installation, then press RETRY."};
     if (mentions(raw, "This launcher is out of date"))
         return {"This launcher is out of date",
                 "Download the newest ReSkate release from GitHub and extract it over this folder."};
@@ -53,12 +52,7 @@ inline Problem explain(std::string_view raw) {
                 "turn on Offline mode in Settings and play without the check."};
     if (mentions(raw, "not supported"))
         return {"This copy of skate. is not the supported build",
-                "Press DOWNLOAD to get the supported build with your Steam account. Only the files that differ "
-                "are downloaded."};
-    if (mentions(raw, "Steam download did not finish"))
-        return {"The Steam download did not finish",
-                "Check that the account you signed in with owns skate. and that you have about 14 GB free, "
-                "then press DOWNLOAD again. Signing in again often clears it."};
+                "Use an installed copy of the supported Skate build. Steam downloads are disabled in this launcher."};
     if (mentions(raw, "installing the game content cache"))
         return {"Another ReSkate launcher is busy",
                 "It is installing the game data this build needs. Wait for it to finish, then press RETRY."};
@@ -75,12 +69,11 @@ inline Problem explain(std::string_view raw) {
         return {"Skate.exe is set to always run as administrator",
                 "ReSkate has to start Skate itself, and Windows does not let it start a program marked to "
                 "need administrator. Right-click Skate.exe, pick Properties, then Compatibility, and untick "
-                "\"Run this program as an administrator\". Starting ReSkateLauncher.exe as "
-                "administrator works too."};
+                "\"Run this program as an administrator\"."};
     if (mentions(raw, "LoadLibraryW is hooked")) {
-        std::string advice = "Security software or an overlay is modifying Skate while it starts, and ReSkate will "
-                             "not load itself through that. Allow ReSkateLauncher.exe and Skate.exe in it, or close "
-                             "it, then press RETRY.";
+        std::string advice = "A hook in Skate's loader could not be validated. Keep security software enabled, "
+                             "close overlays, then press RETRY. If it still fails, report the error and log to "
+                             "the ReSkate developers.";
         // The launcher named what it found in Skate; that is the useful half.
         if (const auto found = raw.find("Loaded into Skate"); found != std::string_view::npos)
             advice += " " + std::string(raw.substr(found));
@@ -90,8 +83,8 @@ inline Problem explain(std::string_view raw) {
         return {"Skate closed while it was starting", std::string(attach_advice)};
     if (mentions(raw, "timed out after"))
         return {"Skate took too long to start",
-                "A slow disk or an anti-virus scan usually causes this. Press RETRY; if it keeps happening, add "
-                "your skate. folder as an exclusion."};
+                "Wait for any disk activity or antivirus scan to finish, then press RETRY. If it keeps happening, "
+                "report the error and log to the ReSkate developers. Keep antivirus protection enabled."};
     if (mentions(raw, "validated Skate.exe") || mentions(raw, "loaded-image") || mentions(raw, "DOS header") ||
         mentions(raw, "module list") || mentions(raw, "VirtualAllocEx") || mentions(raw, "NtQueryInformationProcess") ||
         mentions(raw, "DingoSDKDebugInitialize") || mentions(raw, "Remote "))

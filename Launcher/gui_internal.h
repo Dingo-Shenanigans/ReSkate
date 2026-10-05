@@ -181,16 +181,13 @@ struct Settings {
     bool updates{true};
     // Off: a crash uploads nothing (RESKATE_CRASH_REPORTING=0 for the launcher and the game).
     bool crash_reports{true};
-    std::string steam_username;   // never the password
-    bool steam_remember{true};
-    bool steam_prefer_code{};
 };
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
 
 // ---------------------------------------------------------------- state
 
-enum class Phase { checking, update_available, updating, game_missing, game_outdated, downloading,
+enum class Phase { checking, update_available, updating, game_missing, game_outdated,
                    merging, mods_broken, ready, launching, failed };
 
 // A mod the pre-launch merge could not use, named so nobody has to guess which
@@ -206,14 +203,12 @@ struct State {
     std::string status{"Checking for updates"};
     std::string detail;
     float progress{-1};
-    std::vector<std::string> qr;
-    std::optional<update::Prompt> prompt;
     std::optional<update::Config> config;
     // Set when a merge before launch left mods out; PLAY waits on an answer.
     std::vector<ModProblem> mod_problems;
 };
 
-// Update checks, the Steam download and the game launch, one at a time on a worker thread.
+// Update checks and the game launch, one at a time on a worker thread.
 class Launcher {
 public:
     Launcher(const launcher_app::Session& session, std::vector<std::wstring> arguments);
@@ -241,15 +236,7 @@ public:
     // Where the game reads Mods from: the game folder, or -dataPath.
     fs::path mods_data_root() const;
     void apply_updates();
-    // `qr` signs in with a QR code; otherwise the saved Steam username is used.
-    // The password only lives in memory until DepotDownloader asks for it; it
-    // may be empty when DepotDownloader remembers the login.
-    void download(bool validate, bool qr, std::string password);
     void play();
-    void cancel();
-    // Answers the pending Steam prompt; nothing cancels the download.
-    void answer(std::optional<std::string> value);
-
     void restart();
 
 private:
@@ -259,23 +246,15 @@ private:
     bool relaunched_{};
     bool binaries_{true};
     std::mutex mutex_;
-    std::condition_variable answered_;
     State state_;
-    std::string password_;
-    bool qr_login_{true};
-    std::optional<std::string> answer_;
-    bool has_answer_{};
     std::thread worker_;
     std::atomic<bool> busy_{};
-    std::atomic<bool> cancel_{};
     std::atomic<bool> restart_{};
     std::atomic<bool> ignore_mod_problems_{};
     std::atomic<DWORD> game_{};
     std::atomic<bool> launched_{};
 
     template<class Task> void start(Task task);
-    static void wipe(std::string& value);
-    std::optional<std::string> prompt(const update::Prompt& prompt);
     void set(Phase phase, std::string status, std::string detail = {}, float progress = -1);
     void set_progress(std::string detail, float progress);
     void fail(const std::string& message);
@@ -285,7 +264,6 @@ private:
     bool runtime_outdated(const update::Config& config) const;
     void run_check();
     void run_updates();
-    void run_download(bool validate);
     // False when mods were left out and the launch should wait for an answer.
     bool run_mod_merge();
     void run_play();
@@ -298,12 +276,6 @@ struct Ui {
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
     bool mods{};
-    bool sign_in{};
-    bool sign_in_validate{};
-    bool focus{};
-    std::array<char, 65> username{};
-    std::array<char, 256> password{};
-    std::array<char, 16> code{};
     // The MOD MANAGER tile's "2 of 3 enabled", re-read every few seconds.
     std::string mods_detail;
     // Its badge: updates waiting, or mods that did not load, which wins.
@@ -455,10 +427,6 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
 bool picked(const Store& store, const std::string& full_name);
 void pick(Store& store, const std::string& full_name, bool on);
 
-void open_sign_in(Launcher& launcher, Ui& ui, bool validate);
-void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui);
-void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui);
-void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::vector<std::string>& rows);
 void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui);
 void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window);
 void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel, HWND window);

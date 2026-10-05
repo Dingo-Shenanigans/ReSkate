@@ -152,7 +152,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         if (ImGui::Button("Open folder")) open_path(paths.directory);
         ImGui::SameLine();
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Verify game files")) { open = false; open_sign_in(launcher, ui, true); }
+        if (ImGui::Button("Check installed game")) { open = false; launcher.check(); }
         ImGui::EndDisabled();
         ImGui::Spacing();
         ImGui::Spacing();

@@ -18,7 +18,7 @@ inline constexpr std::uint64_t steam_api_file_size = 300928;
 inline constexpr std::string_view steam_api_sha256 =
     "88b55dc33bfe9d8f998b72bf7074ebe0d21318a0b6dfdcca3530cb1e0c102a39";
 // The Steam content that ships the files above; the launcher config repeats these
-// so the launcher can fetch this build with DepotDownloader.
+// identifiers to describe the supported build.
 inline constexpr std::uint32_t steam_app_id = 3354750;
 inline constexpr std::uint32_t steam_depot_id = 3354751;
 inline constexpr std::string_view steam_manifest_id = "4621099302092747785";
