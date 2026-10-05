@@ -82,6 +82,10 @@ skater looks like a small figure in a model world). Your own settings can be sav
 - **Camera offset on the board / on foot**: forward, sideways and height of the camera from the skater's
   eyes, set separately for riding (airs and grinds count) and on foot; the view moves between them in
   about half a second.
+- **Chat** (its own card): **Show chat in VR** puts ReSkate's chat on a panel at the lower left of the
+  view (**Chat size**, **left / right**, **up / down**) instead of in the game image; **Show chat on left
+  hand controller** moves it above the left hand, facing you (at the view's spot while the controller is
+  not tracked). Type with the PC keyboard as usual; with a panel the headset stays in VR while you type.
 - **Comfort vignette** (off by default): darkens the edges while the view turns without your head.
 
 ### Controllers
@@ -120,6 +124,8 @@ a DualShock 4 or DualSense through DirectInput).
 | `vr.auto_first_person` | Take over the camera |
 | `vr.walk_where_you_look`, `vr.turn_style`, `vr.look_turn`, `vr.turn_speed` | On-foot view and right-stick turns |
 | `vr.hide_body`, `vr.hide_body_foot` | What first person hides on the board and on foot |
+| `vr.chat_in_vr`, `vr.chat_on_hand` | Chat on its own panel in VR; on the left controller |
+| `vr.chat_view_size`, `vr.chat_view_x`, `vr.chat_view_y` | The chat panel in the view: width and offset, in metres |
 | `vr.grab_view`, `vr.grab_body` | Grabs: outside view, or the whole body in first person |
 | `vr.bail_camera` | Flip & bail view |
 | `vr.vignette` | Comfort vignette (0 off, 1 strong) |
@@ -138,7 +144,7 @@ Settings are saved in the local profile under `ReSkate.VR.*`.
 | `vr_xr.cpp` | OpenXR loader, session, events and frame loop on the Present thread |
 | `vr_blit.cpp` | Back buffer → swapchain copy (D3D12, shader compiled at run time; comfort vignette) |
 | `vr_depth.cpp`, `vr_stereo.cpp` | Scene depth copy and the depth stereo pass |
-| `vr_input.cpp` | Headset controllers (OpenXR actions) as XInput pad 0 |
+| `vr_input.cpp` | Headset controllers (OpenXR actions) as XInput pad 0; the left hand's pose for the chat panel |
 | `vr_gamepad.cpp` | Right sticks the game's hook does not see (XInput slots, DirectInput Sony pads) |
 | `vr_console.cpp`, `vr_profile.cpp` | Console commands and saved settings (runtime target) |
 | `Extension/UI/Overlay/skate_menu_vr.cpp` | The SKATER > VR menu tab |
@@ -155,11 +161,15 @@ Changes to existing files are kept small:
   in, and passes right-stick values to `vr::`.
 - `client_first_person.cpp` also reads the skater's physics state (as No Bail does) and shows the whole
   skater during the flip & bail view.
+- `overlay_render.cpp`, `chat_overlay.cpp`, `overlay.cpp`: while VR wants the chat panel, the chat's draw
+  lists render into a texture of their own (a second draw on the overlay's command list) instead of the
+  game image, and an open chat alone does not switch the headset to the flat screen.
 - Console registration, the menu tab, and CMake (`cmake/VR.cmake`).
 
 ## Known limitations
 
-- The game's HUD and the menus are part of the game image, so they sit at screen depth.
+- The game's HUD and the menus are part of the game image, so they sit at screen depth (the chat has
+  its own panel).
 - The game moves its camera about 60 times a second. Depth stereo builds both eyes from each frame and
   the headset reprojects in between; with Alternate eyes each eye updates at about 30 Hz.
 - Depth stereo sees one view: gaps behind near objects (between board and body) are filled in, and the

@@ -38,6 +38,9 @@ bool valid(const Settings& v) noexcept {
         in(v.fov_correction, Limits::fov_correction_min, Limits::fov_correction_max) &&
         in(v.seat_forward, Limits::seat_forward_min, Limits::seat_max) && in(v.seat_up, Limits::seat_min, Limits::seat_max) &&
         in(v.seat_side, Limits::seat_min, Limits::seat_max) &&
+        in(v.chat_view_size, Limits::chat_view_size_min, Limits::chat_view_size_max) &&
+        in(v.chat_view_x, -Limits::chat_view_offset_max, Limits::chat_view_offset_max) &&
+        in(v.chat_view_y, -Limits::chat_view_offset_max, Limits::chat_view_offset_max) &&
         in(v.seat_forward_foot, Limits::seat_forward_min, Limits::seat_max) &&
         in(v.seat_up_foot, Limits::seat_min, Limits::seat_max) && in(v.seat_side_foot, Limits::seat_min, Limits::seat_max) &&
         in(v.fov_scale, Limits::fov_scale_min, Limits::fov_scale_max) &&

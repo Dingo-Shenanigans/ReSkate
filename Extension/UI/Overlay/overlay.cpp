@@ -95,7 +95,10 @@ bool observe_present(IDXGISwapChain* chain, UINT flags) noexcept {
     auto& s = state();
     std::lock_guard lock(s.render_mutex);
     if (s.stop.load() || !s.swapchain || !s.queue || object_identity(chain).Get() != s.swapchain_identity) return false;
-    dingosdk::vr::set_ui_open(interactive_visible(s));
+    // With VR's chat panel, an open chat alone keeps the VR view (it is typed on the panel).
+    const bool chat_on_panel = dingosdk::vr::wants_chat_panel() && !s.visible.load() && !s.console_visible.load() &&
+        !s.editor_visible.load();
+    dingosdk::vr::set_ui_open(interactive_visible(s) && !chat_on_panel);
     before(s.swapchain.Get(), s.queue.Get());
     return true;
 }

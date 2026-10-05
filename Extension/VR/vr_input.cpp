@@ -36,10 +36,13 @@ struct Input {
     PFN_xrGetActionStateBoolean get_boolean{};
     PFN_xrGetActionStateFloat get_float{};
     PFN_xrGetActionStateVector2f get_vector{};
+    PFN_xrCreateActionSpace create_action_space{};
 
     XrActionSet set = XR_NULL_HANDLE;
     std::array<XrPath, 2> hands{}; // left, right
     XrAction stick{}, stick_click{}, trigger{}, squeeze{}, menu{}, a{}, b{}, x{}, y{}, thumbrest{};
+    XrAction left_grip{};                 // the left hand's pose, for the chat panel
+    XrSpace left_space = XR_NULL_HANDLE;
     // Menu: Start on release of a short press, Back once held.
     double menu_since = 0, start_until = 0;
     bool menu_was = false;
@@ -128,7 +131,8 @@ bool input_start(XrInstance instance, XrSession session, PFN_xrGetInstanceProcAd
             !load(get, instance, "xrAttachSessionActionSets", in.attach) || !load(get, instance, "xrSyncActions", in.sync) ||
             !load(get, instance, "xrGetActionStateBoolean", in.get_boolean) ||
             !load(get, instance, "xrGetActionStateFloat", in.get_float) ||
-            !load(get, instance, "xrGetActionStateVector2f", in.get_vector)) {
+            !load(get, instance, "xrGetActionStateVector2f", in.get_vector) ||
+            !load(get, instance, "xrCreateActionSpace", in.create_action_space)) {
             log_info("Controllers unavailable: the runtime lacks an input function.");
             return false;
         }
@@ -150,12 +154,14 @@ bool input_start(XrInstance instance, XrSession session, PFN_xrGetInstanceProcAd
             !make_action(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_b", "B", false, in.b) ||
             !make_action(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_x", "X", false, in.x) ||
             !make_action(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_y", "Y", false, in.y) ||
-            !make_action(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_shift", "D-pad (left stick)", false, in.thumbrest)) {
+            !make_action(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_shift", "D-pad (left stick)", false, in.thumbrest) ||
+            !make_action(XR_ACTION_TYPE_POSE_INPUT, "left_hand", "Left hand", false, in.left_grip)) {
             log_info("Controllers unavailable: creating an action failed.");
             return false;
         }
         const bool touch = suggest(instance, "/interaction_profiles/oculus/touch_controller",
             {{in.stick, "/user/hand/left/input/thumbstick"}, {in.stick, "/user/hand/right/input/thumbstick"},
+                {in.left_grip, "/user/hand/left/input/grip/pose"},
                 {in.stick_click, "/user/hand/left/input/thumbstick/click"},
                 {in.stick_click, "/user/hand/right/input/thumbstick/click"},
                 {in.trigger, "/user/hand/left/input/trigger/value"}, {in.trigger, "/user/hand/right/input/trigger/value"},
@@ -165,6 +171,7 @@ bool input_start(XrInstance instance, XrSession session, PFN_xrGetInstanceProcAd
                 {in.y, "/user/hand/left/input/y/click"}, {in.thumbrest, "/user/hand/right/input/thumbrest/touch"}});
         const bool index = suggest(instance, "/interaction_profiles/valve/index_controller",
             {{in.stick, "/user/hand/left/input/thumbstick"}, {in.stick, "/user/hand/right/input/thumbstick"},
+                {in.left_grip, "/user/hand/left/input/grip/pose"},
                 {in.stick_click, "/user/hand/left/input/thumbstick/click"},
                 {in.stick_click, "/user/hand/right/input/thumbstick/click"},
                 {in.trigger, "/user/hand/left/input/trigger/value"}, {in.trigger, "/user/hand/right/input/trigger/value"},
@@ -179,7 +186,12 @@ bool input_start(XrInstance instance, XrSession session, PFN_xrGetInstanceProcAd
             log_info("Controllers unavailable: attaching the actions failed.");
             return false;
         }
-        log_info(std::format("Controllers ready (bindings: Touch {}, Index {}).", touch ? "yes" : "no", index ? "yes" : "no"));
+        XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        space.action = in.left_grip;
+        space.poseInActionSpace.orientation.w = 1;
+        if (XR_FAILED(in.create_action_space(session, &space, &in.left_space))) in.left_space = XR_NULL_HANDLE;
+        log_info(std::format("Controllers ready (bindings: Touch {}, Index {}; left hand pose {}).", touch ? "yes" : "no",
+            index ? "yes" : "no", in.left_space ? "yes" : "no"));
         return true;
     } catch (...) {
         return false;
@@ -254,8 +266,23 @@ void input_sync(XrSession session, bool focused) noexcept {
     } catch (...) {}
 }
 
+bool left_hand_pose(XrSpace base, XrTime time, math::Pose& out) noexcept {
+    auto& in = input();
+    if (!in.left_space || !base) return false;
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    constexpr XrSpaceLocationFlags tracked = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT |
+        XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+    if (XR_FAILED(shared().xr.locate_space(in.left_space, base, time, &location)) ||
+        (location.locationFlags & tracked) != tracked)
+        return false;
+    out = to_pose(location.pose);
+    return true;
+}
+
 void input_stop() noexcept {
     auto& in = input();
+    if (in.left_space && shared().xr.destroy_space) shared().xr.destroy_space(in.left_space);
+    in.left_space = XR_NULL_HANDLE;
     if (in.set && in.destroy_action_set) in.destroy_action_set(in.set);
     in.set = XR_NULL_HANDLE;
     std::lock_guard lock(in.mutex);

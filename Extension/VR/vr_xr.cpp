@@ -48,6 +48,8 @@ struct Runtime {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     std::array<Chain, 2> eyes;
     Chain screen;
+    Chain chat; // the chat panel (vr.chat_in_vr)
+    bool chat_error_logged = false;
     std::array<bool, 2> eye_ready{};
     std::array<EyeRecord, 2> eye_records{};
     ComPtr<ID3D12CommandQueue> queue;
@@ -236,6 +238,7 @@ void teardown(const std::string& reason, double retry) {
     r.depth_pending = false;
     for (auto& eye : r.eyes) destroy_chain(eye);
     destroy_chain(r.screen);
+    destroy_chain(r.chat);
     if (r.view) s.xr.destroy_space(r.view);
     if (r.local) s.xr.destroy_space(r.local);
     input_stop();
@@ -586,6 +589,70 @@ void publish_rates(double now) {
     });
 }
 
+// The chat panel: the overlay's texture of the last frame, and whether it should draw one.
+struct ChatPanel {
+    ComPtr<ID3D12Resource> texture;
+    std::uint32_t width = 0, height = 0;
+};
+ChatPanel& chat_panel() {
+    static ChatPanel value;
+    return value;
+}
+std::atomic<bool> chat_wanted{false};
+
+// The chat as a quad on the left controller (above the wrist, tilted towards the eyes), or at
+// the lower left of the view. Opaque: the overlay draws it on its own dark background.
+bool chat_layer(const Settings& options, XrCompositionLayerQuad& quad, std::string& error) {
+    auto& r = runtime();
+    auto& panel = chat_panel();
+    if (!panel.texture || !panel.width || !panel.height) return false;
+    const auto desc = panel.texture->GetDesc();
+    if (!ensure_chain(r.chat, static_cast<std::uint32_t>(desc.Width), desc.Height, error) ||
+        !copy_into(r.chat, panel.texture.Get(), error))
+        return false;
+    const float aspect = static_cast<float>(panel.height) / static_cast<float>(panel.width);
+    quad = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+    quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    quad.subImage.swapchain = r.chat.handle;
+    quad.subImage.imageRect = {{0, 0}, {static_cast<std::int32_t>(panel.width), static_cast<std::int32_t>(panel.height)}};
+    math::Pose hand;
+    if (options.chat_on_hand && left_hand_pose(r.local, r.frame.predictedDisplayTime, hand)) {
+        // Grip space: -Z along the controller, +Y up from the hand. The panel sits 8 cm towards
+        // the wrist and 6 cm up, and always faces the eyes, upright (no roll); without a head
+        // pose, turned 60 degrees back from the hand.
+        const auto offset = first_person::rotate(hand.orientation, {0, 0.06f, 0.08f});
+        const auto at = first_person::add(hand.position, offset);
+        first_person::Quat facing;
+        XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+        const auto to_eyes = XR_SUCCEEDED(shared().xr.locate_space(r.view, r.local, r.frame.predictedDisplayTime, &head)) &&
+                (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+            ? first_person::subtract(to_pose(head.pose).position, at) : first_person::Vec3{};
+        if (const float length = first_person::length(to_eyes); length > 0.01f) {
+            // The quad's +Z (its front) towards the eyes: yaw about up, then pitch.
+            const float yaw = std::atan2(to_eyes[0], to_eyes[2]), pitch = std::asin(std::clamp(-to_eyes[1] / length, -1.0f, 1.0f));
+            facing = first_person::multiply(first_person::Quat{0, std::sin(yaw / 2), 0, std::cos(yaw / 2)},
+                first_person::Quat{std::sin(pitch / 2), 0, 0, std::cos(pitch / 2)});
+        } else {
+            constexpr float tilt = -60.0f * math::pi / 180.0f;
+            facing = first_person::multiply(hand.orientation, first_person::Quat{std::sin(tilt / 2), 0, 0, std::cos(tilt / 2)});
+        }
+        quad.space = r.local;
+        quad.pose = to_xr({facing, at});
+        quad.size = {0.22f, 0.22f * aspect};
+        return true;
+    }
+    // In the view (vr.chat_view_*), 0.85 m ahead, turned to face the eyes.
+    constexpr float distance = 0.85f;
+    const float x = options.chat_view_x, y = options.chat_view_y;
+    const float turn = std::atan2(-x, distance), lift = std::atan2(y, std::hypot(x, distance));
+    const auto facing = first_person::multiply(first_person::Quat{0, std::sin(turn / 2), 0, std::cos(turn / 2)},
+        first_person::Quat{std::sin(lift / 2), 0, 0, std::cos(lift / 2)});
+    quad.space = r.view;
+    quad.pose = to_xr({facing, {x, y, -distance}});
+    quad.size = {options.chat_view_size, options.chat_view_size * aspect};
+    return true;
+}
+
 // The game image as a flat screen in front of the recentred view.
 bool screen_layer(const Settings& options, ID3D12Resource* image, std::uint32_t width, std::uint32_t height,
     XrCompositionLayerQuad& quad, std::string& error) {
@@ -626,7 +693,20 @@ Status status() {
     return result;
 }
 
+bool wants_chat_panel() noexcept { return chat_wanted.load(std::memory_order_acquire); }
+void submit_chat_panel(ID3D12Resource* texture, std::uint32_t width, std::uint32_t height) noexcept {
+    auto& panel = chat_panel();
+    panel.texture = texture;
+    panel.width = texture ? width : 0;
+    panel.height = texture ? height : 0;
+}
+
 void on_present(IDXGISwapChain3* chain, ID3D12CommandQueue* queue) noexcept {
+    bool chat_now = false; // the overlay draws the chat apart from the next frame on
+    struct ChatFlag {
+        bool& now;
+        ~ChatFlag() { chat_wanted.store(now, std::memory_order_release); }
+    } chat_flag{chat_now};
     try {
         auto& s = shared();
         auto& r = runtime();
@@ -675,7 +755,7 @@ void on_present(IDXGISwapChain3* chain, ID3D12CommandQueue* queue) noexcept {
         std::vector<XrCompositionLayerBaseHeader*> layers;
         std::array<XrCompositionLayerProjectionView, 2> views{};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+        XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD}, chat_quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
         std::string error;
         ComPtr<ID3D12Resource> image;
         DXGI_SWAP_CHAIN_DESC1 desc{};
@@ -725,6 +805,7 @@ void on_present(IDXGISwapChain3* chain, ID3D12CommandQueue* queue) noexcept {
             // Menus are drawn into the image, so they only read on the flat screen.
             const bool vr_camera = camera_active(now) && !s.ui_open.load(std::memory_order_acquire) &&
                 !s.game_menu.load(std::memory_order_acquire);
+            chat_now = vr_camera && options.chat_in_vr;
             if (!vr_camera) r.eye_ready = {};
             if (match) r.last_record = match;
             if (vr_camera && options.stereo_mode == 2) {
@@ -826,6 +907,14 @@ void on_present(IDXGISwapChain3* chain, ID3D12CommandQueue* queue) noexcept {
                 projection.viewCount = 2;
                 projection.views = views.data();
                 layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection));
+                // The chat panel is optional: a failed copy skips it (logged once) and keeps the frame.
+                std::string chat_error;
+                if (chat_now && chat_layer(options, chat_quad, chat_error))
+                    layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&chat_quad));
+                else if (!chat_error.empty() && !r.chat_error_logged) {
+                    r.chat_error_logged = true;
+                    log_warning("chat panel: " + chat_error);
+                }
             } else if (!failed && !vr_camera) {
                 if (screen_layer(options, image.Get(), desc.Width, desc.Height, quad, error))
                     layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad));

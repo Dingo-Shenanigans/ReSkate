@@ -194,6 +194,24 @@ void vr_controls(SkateMenu& menu, const Model& model) {
     }
     end_card();
 
+    // ---- Chat: ReSkate's chat on its own panel in VR.
+    begin_card(menu, "vr-chat", "CHAT");
+    if (toggle_row(menu, "Show chat in VR", "ReSkate's chat on a panel in VR instead of in the game image. Type with the PC "
+            "keyboard as usual; the headset stays in VR while you type.", options.chat_in_vr))
+        changed = true;
+    if (options.chat_in_vr) {
+        if (toggle_row(menu, "Show chat on left hand controller", "The panel above your left hand, facing you. While the "
+                "controller is not tracked (e.g. playing with a gamepad) it shows at the spot below.", options.chat_on_hand))
+            changed = true;
+        slider(menu, "Chat size", "Width of the chat panel in the view.", options.chat_view_size, Limits::chat_view_size_min,
+            Limits::chat_view_size_max, "%.2f m", set(options.chat_view_size));
+        slider(menu, "Chat left / right", "Move the chat panel in the view right (+) or left (-).", options.chat_view_x,
+            -Limits::chat_view_offset_max, Limits::chat_view_offset_max, "%.2f m", set(options.chat_view_x));
+        slider(menu, "Chat up / down", "Move the chat panel in the view up (+) or down (-).", options.chat_view_y,
+            -Limits::chat_view_offset_max, Limits::chat_view_offset_max, "%.2f m", set(options.chat_view_y));
+    }
+    end_card();
+
     // ---- Image: stereo and field of view.
     begin_card(menu, "vr-image", "IMAGE");
     if (tiles(menu, "Stereo", "Depth: both eyes from every frame and the game's depth (smoothest). Side-by-side: a ReShade "

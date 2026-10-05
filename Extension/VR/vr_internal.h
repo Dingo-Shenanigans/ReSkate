@@ -105,6 +105,7 @@ Shared& shared();
 bool input_start(XrInstance instance, XrSession session, PFN_xrGetInstanceProcAddr get) noexcept;
 void input_sync(XrSession session, bool focused) noexcept;
 void input_stop() noexcept;
+// left_hand_pose (below): the left controller's grip pose in `base` at `time`; false while untracked.
 Settings current_settings();
 double seconds_now() noexcept;
 // A camera write within this many seconds keeps the VR camera active.
@@ -121,4 +122,5 @@ inline XrPosef to_xr(const math::Pose& pose) {
     result.position = {pose.position[0], pose.position[1], pose.position[2]};
     return result;
 }
+bool left_hand_pose(XrSpace base, XrTime time, math::Pose& out) noexcept;
 }

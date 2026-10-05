@@ -56,6 +56,13 @@ struct Settings {
     int frame_lag = 2;
     float theater_distance = 2.5f;
     float theater_width = 3.2f;
+    // ReSkate's chat while the VR camera runs: on its own panel (chat_in_vr; otherwise drawn
+    // into the game image), on the left controller (chat_on_hand; the view's spot while the
+    // controller is not tracked). Typing (PC keyboard) keeps the VR view with a panel.
+    bool chat_in_vr = true, chat_on_hand = true;
+    // The view's chat panel (also the left hand's fallback): width and the centre's offset from
+    // straight ahead, in metres at 0.85 m; it turns to face the eyes.
+    float chat_view_size = 0.34f, chat_view_x = -0.30f, chat_view_y = -0.22f;
     // How the two eyes are made: 0 alternate eyes (the camera moves to each eye
     // in turn); 1 side-by-side input (the camera stays between the eyes and a
     // stereo shader, e.g. ReShade SuperDepth3D, draws left|right halves into
@@ -142,6 +149,7 @@ struct Limits {
     static constexpr float third_distance_min = 0.5f, third_distance_max = 8.0f;
     static constexpr float third_height_min = -1.0f, third_height_max = 3.0f;
     static constexpr float theater_distance_min = 0.5f, theater_distance_max = 20.0f;
+    static constexpr float chat_view_size_min = 0.1f, chat_view_size_max = 1.0f, chat_view_offset_max = 0.6f;
     static constexpr float theater_width_min = 0.5f, theater_width_max = 30.0f;
 };
 
@@ -175,6 +183,11 @@ bool take_presets_changed() noexcept;
 // The overlay reports whether a menu, console or chat is open. They are drawn
 // into the game image, so while one is open the headset shows the flat screen.
 void set_ui_open(bool open) noexcept;
+// The chat panel (Settings::chat_panel), Present thread. While wants_chat_panel(), the overlay
+// draws the chat into its own texture (the back buffer's format, state COMMON, the top-left
+// width x height pixels used; 0 x 0 when there is no chat to show) and hands it over each frame.
+bool wants_chat_panel() noexcept;
+void submit_chat_panel(ID3D12Resource* texture, std::uint32_t width, std::uint32_t height) noexcept;
 // Same for the game's own main or pause menu (client thread).
 void set_game_menu(bool open) noexcept;
 bool game_menu_open() noexcept;

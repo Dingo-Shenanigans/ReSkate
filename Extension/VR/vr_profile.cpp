@@ -52,6 +52,11 @@ constexpr const char* third_distance = "VR.ThirdDistance";
 constexpr const char* third_height = "VR.ThirdHeight";
 constexpr const char* theater_distance = "VR.TheaterDistance";
 constexpr const char* theater_width = "VR.TheaterWidth";
+constexpr const char* chat_in_vr = "VR.ChatInVr";
+constexpr const char* chat_on_hand = "VR.ChatOnHand";
+constexpr const char* chat_view_size = "VR.ChatViewSize";
+constexpr const char* chat_view_x = "VR.ChatViewX";
+constexpr const char* chat_view_y = "VR.ChatViewY";
 constexpr const char* recenter_key = "VR.RecenterKey";
 }
 constexpr ULONGLONG save_delay_ms = 750;
@@ -115,6 +120,11 @@ const std::array fields{
     Field{.key = key::third_height, .real = &Settings::third_height},
     Field{.key = key::theater_distance, .real = &Settings::theater_distance},
     Field{.key = key::theater_width, .real = &Settings::theater_width},
+    Field{.key = key::chat_in_vr, .flag = &Settings::chat_in_vr},
+    Field{.key = key::chat_on_hand, .flag = &Settings::chat_on_hand},
+    Field{.key = key::chat_view_size, .real = &Settings::chat_view_size},
+    Field{.key = key::chat_view_x, .real = &Settings::chat_view_x},
+    Field{.key = key::chat_view_y, .real = &Settings::chat_view_y},
     Field{.key = key::recenter_key, .whole = &Settings::recenter_key},
 };
 

@@ -165,6 +165,15 @@ void register_vr_commands(Commands& registry) {
         Limits::frame_lag_max);
     real(registry, "vr.theater_distance", "Flat screen distance in metres", &Settings::theater_distance,
         Limits::theater_distance_min, Limits::theater_distance_max);
+    flag(registry, "vr.chat_in_vr", "Chat on its own panel in VR (0: in the game image)", &Settings::chat_in_vr);
+    flag(registry, "vr.chat_on_hand", "Chat panel on the left controller (the view's spot while it is not tracked)",
+        &Settings::chat_on_hand);
+    real(registry, "vr.chat_view_size", "Chat panel in the view: width in metres (at 0.85 m)", &Settings::chat_view_size,
+        Limits::chat_view_size_min, Limits::chat_view_size_max);
+    real(registry, "vr.chat_view_x", "Chat panel in the view: metres right (+) or left (-) of straight ahead",
+        &Settings::chat_view_x, -Limits::chat_view_offset_max, Limits::chat_view_offset_max);
+    real(registry, "vr.chat_view_y", "Chat panel in the view: metres above (+) or below (-) straight ahead",
+        &Settings::chat_view_y, -Limits::chat_view_offset_max, Limits::chat_view_offset_max);
     real(registry, "vr.theater_width", "Flat screen width in metres", &Settings::theater_width, Limits::theater_width_min,
         Limits::theater_width_max);
     whole(registry, "vr.recenter_key", "Virtual-key code that recentres the view (0 = none; 119 = F8)", &Settings::recenter_key, 0,
