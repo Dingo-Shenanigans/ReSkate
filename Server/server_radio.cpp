@@ -118,7 +118,7 @@ struct Radio::State {
     };
 
     fs::path folder;
-    bool ytdlp = installed("yt-dlp"), ffmpeg = installed("ffmpeg");
+    bool ytdlp{}, ffmpeg{}; // looked up again on each play: installing a tool needs no restart
 
     mutable std::mutex mutex;
     std::condition_variable room; // the worker waits here for space in the queue
@@ -348,7 +348,11 @@ struct Radio::State {
     }
 };
 
-Radio::Radio(fs::path folder) : state_(std::make_unique<State>()) { state_->folder = std::move(folder); }
+Radio::Radio(fs::path folder) : state_(std::make_unique<State>()) {
+    state_->folder = std::move(folder);
+    state_->ffmpeg = installed("ffmpeg");
+    state_->ytdlp = installed("yt-dlp");
+}
 Radio::~Radio() { state_->halt(); }
 
 std::string Radio::play(std::string_view source) {
@@ -356,10 +360,13 @@ std::string Radio::play(std::string_view source) {
     std::string error;
     const auto input = check_source(source, s.folder, error);
     if (input.empty()) return error;
-    if (!s.ffmpeg) return "The radio needs ffmpeg installed on the server.";
+    const bool ffmpeg = installed("ffmpeg"), ytdlp = installed("yt-dlp");
+    if (!ffmpeg) return "The radio needs ffmpeg installed on the server.";
     s.halt();
     {
         std::lock_guard lock(s.mutex);
+        s.ffmpeg = ffmpeg;
+        s.ytdlp = ytdlp;
         s.source = std::string(trim(source));
         s.active = true;
         s.frames = s.bytes = s.started = 0;
