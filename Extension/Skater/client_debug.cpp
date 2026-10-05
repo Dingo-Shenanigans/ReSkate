@@ -145,14 +145,21 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     const overlay::FlightInput* input, DWORD error, std::optional<SourceCameraSnapshot>& taken) {
     auto& debug = trial.debug;
     // Skatepedia's camera is noted while its demonstration plays, also behind the editor's own.
-    if (ready && style_editor::wants_view()) {
-        static std::uintptr_t game_camera;
+    static std::uintptr_t game_camera, game_camera_vtable;
+    if (!ready || !style_editor::wants_view()) game_camera = game_camera_vtable = 0;
+    else {
         try {
             if (!debug.camera_owned)
-                if (const auto seen = source_camera_snapshot(trial, client); seen.active) game_camera = seen.active;
+                if (const auto seen = source_camera_snapshot(trial, client);
+                    seen.active && first_person_read(seen.active, &game_camera_vtable, sizeof(game_camera_vtable)))
+                    game_camera = seen.active;
+            std::uintptr_t vtable{};
             std::array<float, 16> matrix{};
             float fov{};
-            if (game_camera && first_person_read(game_camera + addr::style::camera_transform, matrix.data(), sizeof(matrix)) && first_person_read(game_camera + camera_fov_offset, &fov, sizeof(fov)))
+            // The game can free its camera while the editor holds the view, so its type must not change.
+            if (game_camera && first_person_read(game_camera, &vtable, sizeof(vtable)) && vtable == game_camera_vtable &&
+                first_person_read(game_camera + addr::style::camera_transform, matrix.data(), sizeof(matrix)) &&
+                first_person_read(game_camera + camera_fov_offset, &fov, sizeof(fov)))
                 style_editor::note_view(matrix, fov);
         } catch (...) {}
     }
@@ -244,7 +251,14 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     debug.flight_ready = true;
     // Written every tick: the camera may refresh its FOV from its own settings.
     if (debug.style_editor) {
-        if (const auto fov = style_editor::camera_fov(); fov > 0) (void)first_person_write_fov(camera.identity.camera, fov);
+        if (const auto fov = style_editor::camera_fov(); fov > 0) {
+            if (!debug.style_editor_saved_fov) {
+                float current{};
+                debug.style_editor_saved_fov = first_person_read(camera.identity.camera + camera_fov_offset, &current, 4) &&
+                    std::isfinite(current) && current > 1.0f && current < 175.0f ? current : -1.0f;
+            }
+            (void)first_person_write_fov(camera.identity.camera, fov);
+        }
     } else if (debug.first_person && debug.first_person_fov > 0)
         (void)first_person_write_fov(camera.identity.camera, debug.first_person_fov);
     else if (!debug.first_person && debug.free_camera_fov > 0) {
@@ -392,6 +406,11 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
     }
     if (request.action == overlay::DebugAction::set_style_editor) {
         if (request.enabled == debug.style_editor) return;
+        // The open went into Skatepedia first, so a refused open leaves it.
+        if (request.enabled && (debug.park_editor || !can_control || !phase)) {
+            style_editor::request_hide();
+            style_stage::leave();
+        }
         source_require(!debug.park_editor, "Close the park editor first.");
         source_require(can_control && phase, "Wait for the local camera before opening the style editor.");
         debug.editor_transition = true;
@@ -399,17 +418,26 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         const auto apply = [&](overlay::DebugAction action, bool enabled) {
             debug_action(trial, client, can_control, phase, {action, enabled}, error);
         };
+        // Returns false if a setting was not restored. The editor closes in all cases.
         const auto restore = [&] {
-            apply(overlay::DebugAction::set_game_ui_hidden, debug.editor_previous_ui);
-            if (!debug.editor_previous_camera) apply(overlay::DebugAction::set_free_camera, false);
-            if (debug.editor_previous_noclip && session_noclip_allowed()) apply(overlay::DebugAction::set_noclip, true);
-            if (debug.editor_previous_first_person) apply(overlay::DebugAction::set_first_person, true);
             debug.style_editor = false;
             style_editor::screen_open(false);
             // However the screen was closed, its skater goes, and the game returns to the world:
             // Skatepedia was only ever the editor's stage.
             style_editor::request_hide();
             style_stage::leave();
+            if (debug.style_editor_saved_fov > 0 && debug.camera_owned && debug.camera_identity.camera)
+                (void)first_person_write_fov(debug.camera_identity.camera, debug.style_editor_saved_fov);
+            debug.style_editor_saved_fov = 0;
+            bool restored = true;
+            const auto attempt = [&](overlay::DebugAction action, bool enabled) {
+                try { apply(action, enabled); } catch (...) { restored = false; }
+            };
+            attempt(overlay::DebugAction::set_game_ui_hidden, debug.editor_previous_ui);
+            if (!debug.editor_previous_camera) attempt(overlay::DebugAction::set_free_camera, false);
+            if (debug.editor_previous_noclip && session_noclip_allowed()) attempt(overlay::DebugAction::set_noclip, true);
+            if (debug.editor_previous_first_person) attempt(overlay::DebugAction::set_first_person, true);
+            return restored;
         };
         if (request.enabled) {
             const auto camera = source_camera_snapshot(trial, client);
@@ -422,14 +450,14 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
                 apply(overlay::DebugAction::set_free_camera, true);
                 apply(overlay::DebugAction::set_game_ui_hidden, true);
             } catch (...) {
-                try { restore(); } catch (...) {}
+                (void)restore();
                 throw;
             }
             style_editor::screen_open(true);
             debug.status = "Style editor open.";
         } else {
-            restore();
-            debug.status = "Style editor closed. Previous camera and UI settings restored.";
+            debug.status = restore() ? "Style editor closed. Previous camera and UI settings restored."
+                                     : "Style editor closed. Some camera or UI settings were not restored.";
         }
         return;
     }
@@ -503,6 +531,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         first_person_arm().settings = {};
         first_person_disarm();
         debug.park_editor = false;
+        debug.style_editor_saved_fov = 0;
         if (std::exchange(debug.style_editor, false)) {
             style_editor::screen_open(false);
             style_editor::request_hide();

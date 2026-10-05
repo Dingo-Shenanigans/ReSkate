@@ -110,6 +110,7 @@ struct InteractiveDebug {
     // Freecam FOV (0 = the game's own) and the camera's own value, put back
     // when Freecam ends or the setting returns to the default.
     float free_camera_fov{}, free_camera_saved_fov{};
+    float style_editor_saved_fov{}; // the camera's FOV before the style editor set its own
     first_person::Settings first_person_settings;
     SourceCameraIdentity camera_identity;
     std::uintptr_t ui_object{};

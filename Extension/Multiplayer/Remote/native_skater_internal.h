@@ -56,7 +56,7 @@ struct HookState {
     DestroyEntity original_destroy{};
     RenderPose original_render_pose{};
     std::atomic<EntityDestroyed> destroyed_listener{};
-    std::atomic<AnimationEvaluated> evaluated_listener{}, style_listener{};
+    std::atomic<AnimationEvaluated> evaluated_listener{};
     std::atomic<LocalPoseFilter> pose_filter{};
     std::atomic<RenderPosePublished> render_listener{}, style_render_listener{};
 };

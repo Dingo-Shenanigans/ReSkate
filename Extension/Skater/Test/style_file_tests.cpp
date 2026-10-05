@@ -47,6 +47,12 @@ int main() {
     for (int i = 0; i < 40; ++i) many += std::string(i ? "," : "") + R"({"time":1})";
     check(decode_style(many + "]}}").keys(1).size() == max_keys, "a trick keeps no more keyframes than the editor allows");
 
+    const auto twice = decode_style(R"({"format":2,"tricks":{
+        "kickflip":[{"time":1,"joints":{"Head":[10,0,0]}},{"time":2,"joints":{"Head":[20,0,0]}}],
+        "Kickflip":[{"time":0.5,"joints":{"Head":[30,0,0]}}]}})");
+    check((twice.keys(2) == std::vector<float>{1, 2} && twice.rotations.size() == 2) || (twice.keys(2) == std::vector<float>{0.5f} && twice.rotations.size() == 1),
+          "a trick named twice keeps one entry, with no stray rotations");
+
     check(refused("[]") && refused("{\"format\":3}") && refused("{\"format\":1}") && refused("not json"), "text that is not a style is refused");
     check(refused(R"({"format":2,"tricks":{"kickflip":[{"time":1,"joints":{"Head":["a",0,0]}}]}})"), "an angle that is not a number is refused");
     check(refused(std::string(maximum_style_bytes + 1, ' ')), "an oversized file is refused");

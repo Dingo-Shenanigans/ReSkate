@@ -378,8 +378,6 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
         return;
     }
     shared().original_animation(component, update);
-    if (const auto listener = shared().style_listener.load(std::memory_order_acquire))
-        listener(component);
     if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
         listener(component);
 }
@@ -609,9 +607,6 @@ void set_render_pose_style_listener(RenderPosePublished listener) noexcept {
 }
 void set_render_pose_listener(RenderPosePublished listener) noexcept {
     shared().render_listener.store(listener, std::memory_order_release);
-}
-void set_animation_style_listener(AnimationEvaluated listener) noexcept {
-    shared().style_listener.store(listener, std::memory_order_release);
 }
 void set_local_pose_filter(LocalPoseFilter filter) noexcept {
     shared().pose_filter.store(filter, std::memory_order_release);

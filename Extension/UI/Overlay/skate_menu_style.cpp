@@ -266,8 +266,7 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     ImGui::InputTextWithHint("##style-preset-name", "Name for a new preset", menu.style_preset_name.data(), menu.style_preset_name.size());
     const std::string name(menu.style_preset_name.data());
     // The name is the file name: letters, digits, '-' and '_'.
-    const bool valid = !name.empty() && std::ranges::all_of(name, [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; }) &&
-                       std::ranges::find(style.presets, name) == style.presets.end();
+    const bool valid = style::preset_name(name) && std::ranges::none_of(style.presets, [&](const std::string& p) { return style::same_preset(p, name); });
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
     ImGui::BeginDisabled(!valid);
     if (ImGui::Button("New empty preset", ImVec2(half, 0))) {

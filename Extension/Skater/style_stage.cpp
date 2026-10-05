@@ -243,8 +243,8 @@ void start_scan(State &s) noexcept {
     }
 }
 void fail(State &s, std::string_view why) {
-    // A menu that this opened does not stay open.
-    if (s.way != Way::none) s.leave.store(2, std::memory_order_relaxed);
+    // A menu that this opened does not stay open. After the key presses, `then` shows that an open is in progress.
+    if (s.way != Way::none || s.then) s.leave.store(2, std::memory_order_relaxed);
     s.way = Way::none;
     s.seek = Seek::none;
     s.seek_trick = 0;
@@ -413,13 +413,17 @@ void fetch(std::uint8_t trick) {
 }
 void tick(std::uintptr_t base, bool ready) noexcept {
     auto &s = state();
-    if (!ready || !base) return;
     try {
+        {
+            // A pressed key is released also when the world is not ready, so that it does not stay down.
+            std::lock_guard lock(s.mutex);
+            if (const auto key = std::exchange(s.key_down, WORD{})) send_key(key, true);
+        }
+        if (!ready || !base) return;
         const auto now = GetTickCount64();
         std::function<void()> then;
         {
             std::lock_guard lock(s.mutex);
-            if (const auto key = std::exchange(s.key_down, WORD{})) send_key(key, true);
             // Only for a player who uses the style, and a few times at most: the scan is not cheap.
             if (!s.navigation_type.load(std::memory_order_acquire) && !s.scanning.load() && now >= s.next_scan && s.scans < 3 &&
                 (style_layer::enabled() || s.then)) {

@@ -55,6 +55,20 @@ inline std::optional<Target> parse_target(std::string_view name) noexcept {
         if (same(flip_trick_names[i])) return Target{true, static_cast<std::uint8_t>(i)};
     return std::nullopt;
 }
+// Two preset names that name the same file: the file system ignores case.
+inline bool same_preset(std::string_view a, std::string_view b) noexcept {
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
+    return std::ranges::equal(a, b, [&](char x, char y) { return lower(x) == lower(y); });
+}
+// A preset's name is its file name on every computer: ASCII letters, digits, '-' and '_', and not a Windows device name.
+inline bool preset_name(std::string_view name) noexcept {
+    if (name.empty() || name.size() > 40) return false;
+    for (const char c : name)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+    for (const std::string_view device : {"con", "prn", "aux", "nul"})
+        if (same_preset(name, device)) return false;
+    return !(name.size() == 4 && (same_preset(name.substr(0, 3), "com") || same_preset(name.substr(0, 3), "lpt")) && name[3] >= '0' && name[3] <= '9');
+}
 
 // The joints of Animation/Dingo/AnimBase_Default_Skeleton that a style can rotate.
 inline constexpr std::array<std::string_view, 24> editable_joints{
@@ -116,7 +130,6 @@ struct StyleModel {
     float preview_time{};
     bool preview_playing{};
     bool editor_session_test{}; // the editor may open in a multiplayer session: a test switch
-    std::string status;
     // Presets: named style files. `preset` is the one in use.
     std::string preset;
     std::vector<std::string> presets;

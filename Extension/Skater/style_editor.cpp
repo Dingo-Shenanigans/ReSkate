@@ -553,9 +553,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     try {
         std::lock_guard lock(s.mutex);
         if (!s.listed) list(s);
-        // The editor screen did not open: the request for it ends.
-        if (s.wanted.load(std::memory_order_relaxed) && !s.screen.load(std::memory_order_relaxed) && clock_ms() > s.wanted_until.load(std::memory_order_relaxed))
+        // The editor screen did not open: the request for it ends, and the game leaves Skatepedia.
+        if (s.wanted.load(std::memory_order_relaxed) && !s.screen.load(std::memory_order_relaxed) && clock_ms() > s.wanted_until.load(std::memory_order_relaxed)) {
             s.wanted.store(false, std::memory_order_relaxed);
+            style_stage::leave();
+            say(s, "the editor screen did not open");
+        }
         if (!ready || !base || !style_layer::enabled()) {
             remove(base, s);
             s.shown.reset();

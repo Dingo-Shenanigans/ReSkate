@@ -79,7 +79,7 @@ struct Live {
     std::atomic<bool> active{}, share{true};
     std::atomic<bool> session_test{}; // the editor may run in a session: not tested yet
     std::atomic<std::shared_ptr<const Snapshot>> snapshot;
-    // The render thread and the client thread share the pose bookkeeping below.
+    // The render pose handoff and the client tick share the pose bookkeeping below.
     std::mutex pose_mutex;
     style::PoseTracker tracker{skeleton_joints};
     std::uintptr_t buffer{};
@@ -137,8 +137,11 @@ std::uint64_t steady_us() noexcept {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-// True when no remote skater exists apart from the stand-in.
-bool solo() noexcept { return !multiplayer::other_remote_skaters(multiplayer::max_remote_players - 1); }
+// True when no remote skater exists apart from the stand-in. A skater in the stand-in's slot is a player while no stand-in shows.
+bool solo() noexcept {
+    if (multiplayer::other_remote_skaters(multiplayer::max_remote_players - 1)) return false;
+    return live().ignored.load(std::memory_order_acquire) || !multiplayer::other_remote_skaters(multiplayer::max_remote_players);
+}
 std::uintptr_t pointer(std::uintptr_t object, std::uintptr_t offset = 0) noexcept {
     std::uintptr_t value{};
     if (object < 0x10000 || object > memory::highest_user_address - offset || !memory::peek(object + offset, value) ||
@@ -160,6 +163,10 @@ bool write_position(std::uintptr_t address, const std::array<float, 3> &value) n
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+// Sets the three scale lanes of a bone. The fourth lane keeps its value.
+bool write_scale(std::uintptr_t bone, float scale) noexcept {
+    return write_position(bone, {scale, scale, scale});
 }
 std::optional<Family> family_of(std::uint32_t state) noexcept {
     if (state >= riding_states_begin && state < riding_states_end) return Family::riding;
@@ -324,7 +331,7 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
             if (!skater && !clear && joint == 1) {
                 Quat scale{};
                 if (memory::peek(pose.buffer + bone_size, scale) && scale[0] == 0.0f && scale[1] == 0.0f)
-                    for (std::size_t each = 0; each < std::min<std::size_t>(pose.count, 32); ++each) (void)write_rotation(pose.buffer + each * bone_size, Quat{1.0f, 1.0f, 1.0f, 1.0f});
+                    for (std::size_t each = 0; each < std::min<std::size_t>(pose.count, 32); ++each) (void)write_scale(pose.buffer + each * bone_size, 1.0f);
             }
             if (moved || !clear) continue;
             if (skater) {
@@ -339,8 +346,7 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
             position[1] -= 2000.0f;
             (void)write_position(at, position);
             // The game does not draw a board from joint 1, so each joint also gets scale 0.
-            for (std::size_t each = 0; each < std::min<std::size_t>(pose.count, 32); ++each)
-                (void)write_rotation(pose.buffer + each * bone_size, Quat{0.0f, 0.0f, 0.0f, 0.0f});
+            for (std::size_t each = 0; each < std::min<std::size_t>(pose.count, 32); ++each) (void)write_scale(pose.buffer + each * bone_size, 0.0f);
         }
     } catch (...) {}
 }
@@ -426,6 +432,16 @@ void preview_other(std::uintptr_t holder) noexcept {
                 SetLastError(error);
                 return;
             }
+            // A slot in use is not taken. A slot not seen for 1 s gets the game's rotations back first.
+            if (oldest->holder && now < oldest->seen + 1000) {
+                SetLastError(error);
+                return;
+            }
+            if (oldest->holder && oldest->tracker) {
+                try {
+                    (void)write_pose(*oldest->tracker, oldest->holder, none);
+                } catch (...) {}
+            }
             slot = oldest;
             *slot = {holder, std::make_unique<style::PoseTracker>(skeleton_joints), now, {}};
         }
@@ -451,7 +467,7 @@ void preview_other(std::uintptr_t holder) noexcept {
     }
     SetLastError(error);
 }
-// Render thread. Physics rewrites the body joints after animation, so the layer writes here.
+// The render pose handoff, on the engine thread after the client tick. Physics rewrites the body joints after animation, so the layer writes here.
 void on_render(std::uintptr_t animation_interface) noexcept {
     auto &l = live();
     const auto holder = l.holder.load(std::memory_order_acquire);
@@ -544,19 +560,18 @@ constexpr wchar_t style_folder[] = L"MyStyles";
 constexpr std::string_view preset_extension = ".style.json";
 std::filesystem::path presets_folder() { return mods::engine_data_root() / mods::mods_folder / style_folder / L"styles"; }
 std::filesystem::path style_path(const std::string &preset) { return presets_folder() / (preset + std::string(preset_extension)); }
-// A preset's name is its file name on every computer: letters, digits, '-' and '_' only.
-bool preset_name(std::string_view name) noexcept {
-    return !name.empty() && name.size() <= 40 &&
-           std::ranges::all_of(name, [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; });
-}
 std::vector<std::string> list_presets(const std::string &in_use) {
     std::vector<std::string> names{in_use};
     std::error_code error;
     for (std::filesystem::directory_iterator at(presets_folder(), error), end; !error && at != end; at.increment(error)) {
-        const auto file = at->path().filename().string();
+        // A preset name is ASCII. Other names are skipped before conversion, which throws for some of them.
+        const auto wide = at->path().filename().wstring();
+        if (!std::ranges::all_of(wide, [](wchar_t c) { return c > 0 && c < 0x80; })) continue;
+        std::string file;
+        for (const auto c : wide) file.push_back(static_cast<char>(c));
         if (file.size() <= preset_extension.size() || !file.ends_with(preset_extension)) continue;
         auto name = file.substr(0, file.size() - preset_extension.size());
-        if (preset_name(name) && name != in_use) names.push_back(std::move(name));
+        if (style::preset_name(name) && name != in_use) names.push_back(std::move(name));
     }
     std::ranges::sort(names);
     return names;
@@ -577,7 +592,7 @@ void load(Settings &s) {
     std::string remembered;
     std::ifstream(presets_folder() / L"in-use.txt", std::ios::binary) >> remembered;
     std::error_code error;
-    if (preset_name(remembered) && std::filesystem::exists(style_path(remembered), error)) s.preset = remembered;
+    if (style::preset_name(remembered) && std::filesystem::exists(style_path(remembered), error)) s.preset = remembered;
     read_style(s);
 }
 void read_style(Settings &s) {
@@ -777,17 +792,18 @@ void request_reload() {
     read_style(s);
 }
 bool request_preset(std::string_view action, std::string_view name, std::string &error) {
-    auto &s = settings();
-    std::lock_guard lock(s.mutex);
-    if (!s.loaded) load(s);
     if (action == "folder") {
+        // Outside the lock: the shell can take a moment.
         std::error_code made;
         std::filesystem::create_directories(presets_folder(), made);
         ShellExecuteW(nullptr, L"open", presets_folder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return true;
     }
-    if (!preset_name(name)) {
-        error = "A preset name has letters, digits, '-' and '_', and at most 40 of them.";
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    if (!s.loaded) load(s);
+    if (!style::preset_name(name)) {
+        error = "A preset name has letters, digits, '-' and '_', at most 40 of them, and is not a Windows device name such as CON.";
         return false;
     }
     const std::string preset(name);
@@ -845,7 +861,11 @@ style::StyleModel model() {
         // The folder is listed again every two seconds: a preset can be copied in while the game runs.
         if (const auto now = GetTickCount64(); now >= s.presets_at) {
             s.presets_at = now + 2000;
-            s.presets = list_presets(s.preset);
+            try {
+                s.presets = list_presets(s.preset);
+            } catch (...) {
+                s.presets = {s.preset};
+            }
         }
         result.preset = s.preset;
         result.presets = s.presets;
@@ -853,7 +873,6 @@ style::StyleModel model() {
     result.preview = live().preview.load(std::memory_order_acquire);
     result.preview_playing = live().preview_played.load(std::memory_order_acquire) != 0;
     result.preview_time = preview_time(GetTickCount64());
-    result.status = status();
     return result;
 }
 bool enabled() noexcept {
@@ -863,6 +882,7 @@ bool enabled() noexcept {
 }
 void request_preview(std::uint8_t trick, float time, bool play) {
     auto &l = live();
+    if (trick >= style::flip_trick_names.size()) trick = 0;
     l.preview_time.store(std::bit_cast<std::uint32_t>(std::clamp(std::isfinite(time) ? time : 0.0f, 0.0f, style::trick_end)),
                          std::memory_order_release);
     l.preview_played.store(play ? GetTickCount64() : 0, std::memory_order_release);
@@ -893,7 +913,7 @@ bool stage_present() noexcept { return GetTickCount64() < live().stage_seen.load
 bool add_demo(std::uint8_t trick, float time, const std::vector<multiplayer::Transform> &skater) {
     auto &l = live();
     const auto snapshot = l.snapshot.load(std::memory_order_acquire);
-    if (!snapshot) return false;
+    if (!snapshot || trick >= style::flip_trick_names.size()) return false;
     style::TakeFrame frame{trick, std::clamp(time, 0.0f, style::trick_end), {}, {}};
     for (std::size_t i = 0; i < frame.shown.size(); ++i) {
         const auto joint = snapshot->signature[i];
@@ -981,9 +1001,14 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool menu_open
             if (s.save_at && GetTickCount64() >= s.save_at) save(s);
             if (s.enabled != s.saved_enabled) profile_runtime::set_local_preference("Style.Enabled", s.saved_enabled = s.enabled);
             if (s.share != s.saved_share) profile_runtime::set_local_preference("Style.Share", s.saved_share = s.share);
-            // The listener continues until it has restored the game's rotations.
+            // The listener continues until it has restored the game's rotations, then stops.
             if (!s.enabled) {
                 l.active.store(false, std::memory_order_release);
+                std::lock_guard pose(l.pose_mutex);
+                if (l.tracker.adjusted().empty() && std::ranges::none_of(l.others, [](const Live::Other &other) { return other.holder != 0; })) {
+                    l.holder.store(0, std::memory_order_release);
+                    l.component.store(0, std::memory_order_release);
+                }
                 return;
             }
             if (!ready || !base) {

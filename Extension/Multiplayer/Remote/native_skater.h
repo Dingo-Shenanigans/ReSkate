@@ -41,9 +41,6 @@ void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
 // install_entity_hooks. Runs on the thread that evaluates animation.
 using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
-// The same call, made before the evaluated listener: the style layer adjusts the pose that
-// listener (first person) then reads.
-void set_animation_style_listener(AnimationEvaluated listener) noexcept;
 // Called on the client thread with the local skater pose capture_local is about to return,
 // so a feature that changed the evaluated pose can decide what other players receive.
 using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;

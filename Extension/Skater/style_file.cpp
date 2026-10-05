@@ -75,10 +75,12 @@ Style decode_style(std::string_view text) {
     const auto root = Json::parse(text, JsonLimits{maximum_style_bytes, 8, 16384});
     if (!root.is_object() || root.value("format", 0) != format) throw std::runtime_error("This is not a style this version reads.");
     Style result;
+    std::uint64_t read{}; // one bit for each trick: a name in another case is the same trick, and the first one counts
     if (const auto *tricks = group(root, "tricks"))
         for (const auto &[name, keys] : tricks->items()) {
             auto target = parse_target(name);
-            if (!target || !target->trick) continue;
+            if (!target || !target->trick || target->id >= 64 || (read >> target->id & 1)) continue;
+            read |= 1ull << target->id;
             read_keys(keys, *target, result);
         }
     if (const auto *states = group(root, "states"))

@@ -147,6 +147,12 @@ int main() {
     check(near(change[0].rotation, identity), "an unchanged style leaves a replayed frame as it was");
     restyle({{5, bent}}, {}, change);
     check(near(normalized(multiply(bent, change[0].rotation)), identity), "a rotation since removed is taken out");
+    check(preset_name("street_2-a") && !preset_name("") && !preset_name(std::string(41, 'a')) && !preset_name("a b") && !preset_name("..") &&
+              !preset_name("caf\xc3\xa9"),
+          "a preset name is ASCII letters, digits, '-' and '_'");
+    check(!preset_name("CON") && !preset_name("nul") && !preset_name("Com1") && !preset_name("LPT9") && preset_name("console") && preset_name("com10"),
+          "and not a Windows device name");
+    check(same_preset("Street", "street") && !same_preset("street", "streets"), "two names that differ only in case name the same file");
     if (!failures) std::cout << "style pose tests passed\n";
     return failures ? 1 : 0;
 }
