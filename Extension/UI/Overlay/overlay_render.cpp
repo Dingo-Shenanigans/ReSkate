@@ -536,6 +536,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
+    draw_cover();
     draw_notices();
     draw_chat();
     sync_menu_cursor(); // close buttons also change visibility, without a key message

@@ -16,7 +16,35 @@ std::mutex notices_mutex;
 std::deque<Notice> notices;
 constexpr std::size_t maximum_notices = 6;
 
+std::atomic<std::uint64_t> cover_until{};
+std::mutex cover_mutex;
+std::string cover_text;
+bool cover_pending() { return GetTickCount64() < cover_until.load(std::memory_order_relaxed); }
+}
+void dingosdk::overlay::cover(std::string text, unsigned milliseconds) noexcept {
+    try {
+        std::lock_guard lock(cover_mutex);
+        cover_text = std::move(text);
+        cover_until.store(milliseconds ? GetTickCount64() + milliseconds : 0, std::memory_order_relaxed);
+    } catch (...) {}
+}
+namespace dingosdk::overlay::detail {
+void draw_cover() {
+    if (!cover_pending()) return;
+    std::string text;
+    {
+        std::lock_guard lock(cover_mutex);
+        text = cover_text;
+    }
+    const auto size = ImGui::GetIO().DisplaySize;
+    auto* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled({0, 0}, size, IM_COL32(10, 10, 12, 255));
+    const float height = std::max(22.0f, size.y * 0.035f);
+    const auto extent = ImGui::GetFont()->CalcTextSizeA(height, FLT_MAX, 0.0f, text.c_str());
+    draw->AddText(ImGui::GetFont(), height, {(size.x - extent.x) / 2, (size.y - extent.y) / 2}, IM_COL32(235, 235, 235, 255), text.c_str());
+}
 bool notices_pending() {
+    if (cover_pending()) return true;
     std::lock_guard lock(notices_mutex);
     return !notices.empty();
 }

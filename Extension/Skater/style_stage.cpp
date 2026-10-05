@@ -250,6 +250,7 @@ void fail(State &s, std::string_view why) {
     s.seek_trick = 0;
     s.then = nullptr;
     style_editor::expect(0);
+    overlay::cover({}, 0);
     logging::log(logging::Level::warning, logging::Channel::skater, "Style editor: {}.", why);
     overlay::notify(overlay::NoticeLevel::warning, "Style editor", std::string(why) + ".");
 }
@@ -380,6 +381,8 @@ void open(std::function<void()> then) {
     if (style_layer::stage_present() && current_entry) return then();
     // Our menus would take the key presses that are for the game.
     overlay::close_menus();
+    // The game's menus go past behind a cover.
+    overlay::cover("Opening the style editor", 45000);
     const auto now = GetTickCount64();
     std::lock_guard lock(s.mutex);
     if (!style_layer::stage_present()) s.nudged = false;
@@ -393,7 +396,10 @@ void open(std::function<void()> then) {
         s.way_deadline = now + 30000;
     }
 }
-void leave() noexcept { state().leave.store(3, std::memory_order_relaxed); }
+void leave() noexcept {
+    state().leave.store(3, std::memory_order_relaxed);
+    overlay::cover("Back to the world", 1500);
+}
 void fetch(std::uint8_t trick) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
@@ -455,7 +461,11 @@ void tick(std::uintptr_t base, bool ready) noexcept {
                 if (now >= s.seek_at) step_seek(base, s, now);
             } else if (s.way != Way::none) step_way(base, s, now);
         }
-        if (then) then();
+        if (then) {
+            then();
+            // The cover stays while the editor screen comes up.
+            overlay::cover("Opening the style editor", 900);
+        }
     } catch (...) {}
 }
 } // namespace dingosdk::style_stage

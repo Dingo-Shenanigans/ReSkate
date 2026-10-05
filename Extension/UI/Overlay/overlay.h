@@ -365,6 +365,8 @@ enum class NoticeLevel { info, warning, error };
 void notify(NoticeLevel level, std::string title, std::string text = {}) noexcept;
 // Closes the menu, console and chat: the game is about to be given key presses. Any thread.
 void close_menus() noexcept;
+// Covers the whole game view with one line of text for `milliseconds` (0 removes it). It takes no input. Any thread.
+void cover(std::string text, unsigned milliseconds) noexcept;
 }
 
 // Call outside DllMain, before the game's first DXGI factory is created. No
