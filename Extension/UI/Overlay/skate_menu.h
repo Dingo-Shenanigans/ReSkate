@@ -63,6 +63,19 @@ struct SkateMenu {
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu.cpp.
     int map_tab = 0, world_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
+    // STYLE page: the trick, keyframe and playhead being edited; the slider and the dragged
+    // keyframe keep their own value until the game has it.
+    int style_trick = 2, style_key = 0, style_edit_joint = -1, style_drag_key = -1, style_replay_trick = 0;
+    float style_time = 0.5f, style_drag_time{};
+    double style_drag_until{}, style_pending_until{}, style_orbit_sent{}, style_asked_at{}, style_closing_until{}, style_drawn_at{};
+    std::string style_asked; // the trick that the editor last asked to show
+    std::array<char, 41> style_preset_name{}; // typed for a new preset
+    double style_delete_until{};              // a first click on delete counts until then
+    int style_pending_key = -1;       // a new keyframe, selected when the game has it
+    std::array<float, 4> style_orbit{}; // camera turn, zoom and lift not yet sent
+    style::Target style_edit_target;
+    std::array<float, 3> style_edit{};
+    double style_edit_until{}, style_edit_sent{};
     bool loose_files_settings_loaded{}, loose_files_saved{true};
     bool custom_scripts_scanned{};
     std::vector<custom_scripts::Script> custom_script_rows;
@@ -96,6 +109,10 @@ struct SkateMenu {
     ImFont* mono = nullptr;
 };
 void load_skate_fonts(SkateMenu& menu);
+// The style editor screen, shown while Model::debug.style_editor is set.
+void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested);
+// True if the stand-in shows or the editor screen is wanted.
+bool style_stand_in_shown() noexcept;
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible);
 }

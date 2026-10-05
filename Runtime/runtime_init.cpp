@@ -13,6 +13,8 @@
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
+#include "Extension/Skater/style_editor.h"
+#include "Extension/Skater/style_layer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
 #include "Extension/Multiplayer/Session/session.h"
@@ -190,6 +192,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::set_game_text_feed(dingosdk::multiplayer::skate_debug_text);
         dingosdk::overlay::set_skate_hud_feed(dingosdk::multiplayer::skate_hud);
         dingosdk::overlay::set_nametag_feed(dingosdk::multiplayer::custom_nametags);
+        dingosdk::overlay::set_style_playhead_feed(dingosdk::style_editor::playhead);
         // Engine functions the profiler's stack sampler names in its reports.
         static constexpr dingosdk::profiler::Label engine_labels[]{
             {dingosdk::addr::profiler_labels::client_update, "Client game update (ReSkate tick hook)"},

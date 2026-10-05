@@ -11,6 +11,7 @@
 #include "Engine/Game/Settings/named_settings.h"
 #include "Engine/Game/Multiplayer/session_model.h"
 #include "Engine/Game/UI/menu_scale.h"
+#include "Engine/Game/Skater/style_pose.h"
 #include "Engine/Game/Skater/first_person_spring.h"
 
 #include "Engine/Core/Console/console_entry.h"
@@ -67,6 +68,7 @@ enum class DebugAction {
     set_first_person_spring_right,
     reset_first_person_arm,
     set_free_camera_fov,  // 0 = the game's own FOV
+    set_style_editor,
     // Keep the last action in sync with the bound in request_scheduler.h.
 };
 
@@ -94,6 +96,7 @@ struct DebugModel {
     float free_camera_fov = 0;  // 0 = the game's own FOV
     first_person::Settings first_person_arm;
     bool park_editor = false;
+    bool style_editor = false;
     bool camera_transform_valid = false;
     std::array<float, 16> camera_transform{};
     float camera_fov = 55;
@@ -216,6 +219,7 @@ struct Model {
     bool steam_offline = false;
     ControllerBindingsModel bindings;
     GraphicsControlsModel graphics;
+    style::StyleModel style;
     MultiplayerModel multiplayer;
     // Host bookkeeping: the revision each part of this copy was taken at (zero:
     // never). A reader that hands its previous copy back to read_model has only
@@ -316,6 +320,9 @@ struct Nametags {
 };
 using NametagFeed = Nametags (*)();
 void set_nametag_feed(NametagFeed) noexcept;
+// The replayed trick on screen, so the STYLE timeline can follow a replay being scrubbed.
+using StylePlayheadFeed = style::Playhead (*)() noexcept;
+void set_style_playhead_feed(StylePlayheadFeed) noexcept;
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);
@@ -356,6 +363,8 @@ bool keyboard_shortcuts_allowed() noexcept;
 // draws. They take no input and never open the menu.
 enum class NoticeLevel { info, warning, error };
 void notify(NoticeLevel level, std::string title, std::string text = {}) noexcept;
+// Closes the menu, console and chat: the game is about to be given key presses. Any thread.
+void close_menus() noexcept;
 }
 
 // Call outside DllMain, before the game's first DXGI factory is created. No

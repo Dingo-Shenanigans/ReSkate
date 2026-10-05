@@ -354,8 +354,9 @@ void draw_menu() {
     const auto interval = std::chrono::milliseconds(16);
     // Chat alone shows nothing from the model: polling it then would only make
     // the game thread wait on the host's lock.
-    const bool model_shown = s.visible.load() || s.console_visible.load() || s.editor_visible.load();
-    if (model_shown && now - s.last_model >= interval) {
+    bool model_shown = s.visible.load() || s.console_visible.load() || s.editor_visible.load();
+    // With nothing shown the model is still looked at now and then: an editor may have been opened.
+    if (now - s.last_model >= (model_shown ? interval : std::chrono::milliseconds(250))) {
         s.last_model = now;
         if (s.callbacks.read_model) {
             // Hand the host the model already held: it copies only what changed since.
@@ -383,12 +384,17 @@ void draw_menu() {
 
         }
     }
-    // Nothing but the chat: the held model may be old, so it must not reopen the editor.
+    model_shown |= s.model.debug.park_editor || s.model.debug.style_editor;
     if (!model_shown) {
         s.editor_flight.store(false);
         return;
     }
-    const bool editor_was_visible = s.editor_visible.exchange(s.model.debug.park_editor);
+    const bool editor_was_visible = s.editor_visible.exchange(s.model.debug.park_editor || s.model.debug.style_editor);
+    if (s.model.debug.style_editor && !s.model.debug.park_editor) {
+        s.editor_flight.store(false);
+        dingosdk::overlay::draw_style_editor(s.menu, s.model, s.callbacks, s.editor_exit_requested.exchange(false));
+        return;
+    }
     if (s.model.debug.park_editor) {
         if (!editor_was_visible) s.editor.exit_pending = false;
         bool visible = s.visible.load();
@@ -455,6 +461,14 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool nametag_frame = nametags_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     if (trainer_open_requested()) s.visible.store(true);
+    // An editor opened while nothing was showing: look at the model again, a few times a second.
+    if (!s.editor_visible.load() && dingosdk::overlay::style_stand_in_shown()) {
+        static std::chrono::steady_clock::time_point next_wake;
+        if (const auto wake_now = std::chrono::steady_clock::now(); wake_now >= next_wake) {
+            next_wake = wake_now + std::chrono::milliseconds(250);
+            s.editor_visible.store(true);
+        }
+    }
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
         if (s.ui_was_interactive) {

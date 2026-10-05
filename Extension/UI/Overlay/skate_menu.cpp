@@ -19,6 +19,7 @@ using namespace theme;
 // and its pages draw.
 namespace { float ui_scale = default_menu_scale; }
 float px(float value) { return value * ui_scale; }
+void set_scale(float scale) { ui_scale = scale; }
 
 // Heavy uppercase header over a thin rule, like the titles on skate.'s HUB tiles.
 void section(SkateMenu& menu, const char* text) {
@@ -276,11 +277,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, training, multiplayer, progress, mods, settings, special, developer, page_count };
+enum Page { map, world, build, skater, style, training, multiplayer, progress, mods, settings, special, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "SETTINGS", "SPECIAL", "DEVELOPER"};
+    "MAP", "WORLD", "BUILD", "SKATER", "STYLE", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "SETTINGS", "SPECIAL", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
-    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.",
+    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Move like you.", "Tune it. Drill it. Measure it.",
     "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your controls, your screen.", "Not everyone gets this page.",
     "Under the hood."};
 }
@@ -426,6 +427,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case world: world_page(menu, model, callbacks); break;
         case build: build_page(menu, model, callbacks); break;
         case skater: skater_page(menu, model, callbacks); break;
+        case style: style_page(menu, model, callbacks); break;
         case training: trainer_page(menu, model, callbacks); break;
         case multiplayer: multiplayer_page(menu, model, callbacks); break;
         case progress: progression_page(menu, model, callbacks); break;

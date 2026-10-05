@@ -22,6 +22,9 @@
 #include "Extension/Settings/gameplay_settings_override.h"
 #include "Extension/Settings/named_settings.h"
 #include "Extension/Skater/ai_skaters.h"
+#include "Extension/Skater/style_editor.h"
+#include "Extension/Skater/style_stage.h"
+#include "Extension/Skater/style_layer.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -85,6 +88,8 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     r.model.object_persistence = std::move(object_persistence);
     r.model.editor = std::move(editor);
     r.model.bindings = std::move(bindings);
+    r.model.style = dingosdk::style_layer::model();
+    dingosdk::style_editor::fill(r.model.style);
     r.model.missions_available = missions.available;
     r.model.mission_feedback = missions.feedback;
     r.model.missions = std::move(rows);
@@ -439,7 +444,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // camera), can have replaced the native camera: validate it again.
         if (debug_request || debug.free_camera != r.debug_model.free_camera ||
             debug.first_person != r.debug_model.first_person || debug.noclip != r.debug_model.noclip ||
-            debug.park_editor != r.debug_model.park_editor)
+            debug.park_editor != r.debug_model.park_editor || debug.style_editor != r.debug_model.style_editor)
             frame.camera_issue.reset();
         if (debug_ready && phase_issue && !debug.camera_available) {
             debug.camera_unavailable = phase_issue;
@@ -791,6 +796,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.world_controls = dingosdk::local_profile_world_controls();
     dingosdk::update_local_graphics_controls();
     model.graphics = dingosdk::local_profile_graphics_controls();
+    model.style = dingosdk::style_layer::model();
+    dingosdk::style_editor::fill(model.style);
     model.object_persistence = dingosdk::local_profile_object_persistence();
     // The park list is a disk walk of the Mods folder: only while the menu or the editor shows it.
     dingosdk::set_park_mod_list_visible(r.debug_model.park_editor ||
@@ -1019,6 +1026,13 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/AI skaters");
             dingosdk::ai_skaters::tick(r.base,client,multiplayer_ready);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/Style");
+            dingosdk::style_layer::tick(r.base,client,multiplayer_ready,
+                GetTickCount64() < r.named_settings_wanted_until.load(std::memory_order_relaxed));
+            dingosdk::style_editor::tick(r.base,client,multiplayer_ready);
+            dingosdk::style_stage::tick(r.base,multiplayer_ready);
         }
         {
             DINGO_PROFILE_ZONE("tick/trainer");

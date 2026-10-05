@@ -69,6 +69,7 @@ void request_stop_locked() {
     if (s.editor_visible.load() && s.callbacks.queue_debug) {
         std::array<char, 256> result{};
         s.callbacks.queue_debug(s.callbacks.user, {dingosdk::overlay::DebugAction::set_park_editor, false}, result.data(), result.size());
+        s.callbacks.queue_debug(s.callbacks.user, {dingosdk::overlay::DebugAction::set_style_editor, false}, result.data(), result.size());
     }
     s.stop.store(true);
     if (s.stop_event) SetEvent(s.stop_event);
@@ -417,6 +418,13 @@ extern "C" bool DingoSDKOverlayBindDx12(IDXGISwapChain* chain, ID3D12CommandQueu
 
 extern "C" void DingoSDKOverlayRequestStop() {
     request_stop();
+}
+
+void dingosdk::overlay::close_menus() noexcept {
+    auto &s = state();
+    s.visible.store(false);
+    s.console_visible.store(false);
+    s.chat_visible.store(false);
 }
 
 bool dingosdk::overlay::keyboard_shortcuts_allowed() noexcept {
