@@ -275,8 +275,11 @@ int main(int argc, char **argv) {
         bad.objects[0].rotation = {};
         rejects([&] { save_park(directory, name, bad); });
         check(load_park(directory, name).objects == park.objects, "Rejected save overwrote previous park");
+        const auto stray = directory / L"\U0001F6F9 notes.txt"; // No ANSI code page can hold this name.
+        std::ofstream(stray).put('x');
         const auto names = list_parks(directory);
         check(std::find(names.begin(), names.end(), name) != names.end(), "Saved park missing from browser");
+        std::filesystem::remove(stray);
         std::filesystem::remove(directory / (name + ".park.json"));
         // Park mods: <data>/Mods/<folder>/manifest.json + parks/<map>.park.json.
         {
