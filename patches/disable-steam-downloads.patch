@@ -1,0 +1,1137 @@
+diff --git a/Engine/Core/Platform/launcher_pe.cpp b/Engine/Core/Platform/launcher_pe.cpp
+index 4517e92..23245dd 100644
+--- a/Engine/Core/Platform/launcher_pe.cpp
++++ b/Engine/Core/Platform/launcher_pe.cpp
+@@ -140,8 +140,8 @@ std::string rva_string(const MappedFile& file, const ParsedPe& pe, std::uint32_t
+ 
+ // Opens a file to read all of it. A file that was written a moment ago (a download) is often
+ // held by the antivirus scanning it, so a sharing violation is waited out for a few seconds.
+-// A file that still cannot be opened is named along with the reason: with ReSkate.dll that is
+-// nearly always an antivirus blocking it, and "cannot open file" told the player nothing.
++// A file that still cannot be opened is named along with the Windows error.
++// Only virus-specific errors establish that security software blocked it.
+ Handle open_to_read(const fs::path& path) {
+     DWORD error{};
+     for (int attempt = 0; attempt < 50; ++attempt) {
+@@ -158,22 +158,23 @@ Handle open_to_read(const fs::path& path) {
+     switch (error) {
+     case ERROR_VIRUS_INFECTED:
+     case ERROR_VIRUS_DELETED:
+-        message = "Your antivirus blocked " + name + ". Add the folder " + folder +
+-                  " to its exclusions (in Windows Security: Virus & threat protection > Exclusions), then try again.";
++        message = "Your antivirus blocked " + name + ". Check the detection name in your antivirus history "
++                  "(Windows Security: Virus & threat protection > Protection history) and report it to the "
++                  "ReSkate developers for review. Keep antivirus protection enabled.";
+         break;
+     case ERROR_ACCESS_DENIED:
+-        message = name + " cannot be read: access was denied. An antivirus is probably blocking it: add the folder " + folder +
+-                  " to its exclusions, then try again.";
++        message = name + " cannot be read: access was denied. Check the file permissions and your antivirus history "
++                  "for a recorded detection. Keep antivirus protection enabled.";
+         break;
+     case ERROR_SHARING_VIOLATION:
+     case ERROR_LOCK_VIOLATION:
+-        message = name + " is in use by another program, usually an antivirus scan. Close Skate if it is running, wait a moment and try again; "
+-                  "if it keeps happening, add the folder " + folder + " to your antivirus exclusions.";
++        message = name + " is in use by another program. Close Skate if it is running, wait for any file copy or "
++                  "antivirus scan to finish, then try again.";
+         break;
+     case ERROR_FILE_NOT_FOUND:
+     case ERROR_PATH_NOT_FOUND:
+-        message = name + " is missing from " + folder + ". If it was just downloaded, an antivirus removed it: add the folder to its "
+-                  "exclusions, then try again.";
++        message = name + " is missing from " + folder + ". Check that the release was fully extracted and review "
++                  "your antivirus history for a recorded detection before restoring any quarantined file.";
+         break;
+     default:
+         message = "Cannot read " + name + " in " + folder;
+diff --git a/Engine/Game/Build/supported_build.h b/Engine/Game/Build/supported_build.h
+index d49886d..5601947 100644
+--- a/Engine/Game/Build/supported_build.h
++++ b/Engine/Game/Build/supported_build.h
+@@ -18,7 +18,7 @@ inline constexpr std::uint64_t steam_api_file_size = 300928;
+ inline constexpr std::string_view steam_api_sha256 =
+     "88b55dc33bfe9d8f998b72bf7074ebe0d21318a0b6dfdcca3530cb1e0c102a39";
+ // The Steam content that ships the files above; the launcher config repeats these
+-// so the launcher can fetch this build with DepotDownloader.
++// identifiers to describe the supported build.
+ inline constexpr std::uint32_t steam_app_id = 3354750;
+ inline constexpr std::uint32_t steam_depot_id = 3354751;
+ inline constexpr std::string_view steam_manifest_id = "4621099302092747785";
+diff --git a/Launcher/depot_output.h b/Launcher/depot_output.h
+deleted file mode 100644
+index 03ec6f2..0000000
+--- a/Launcher/depot_output.h
++++ /dev/null
+@@ -1,90 +0,0 @@
+-#pragma once
+-
+-#include <filesystem>
+-#include <optional>
+-#include <string>
+-#include <string_view>
+-#include <vector>
+-
+-namespace dingosdk::launcher_gui {
+-
+-// DepotDownloader prints its Steam sign-in QR code as rows of two-character
+-// modules ("â–ˆâ–ˆ" dark, "  " light) and its progress as " 12.34% path".
+-class DepotOutput {
+-public:
+-    std::optional<std::vector<std::string>> qr_update;
+-    std::optional<float> percent;
+-    std::string file;
+-    std::string message;
+-
+-    void feed(std::string_view line) {
+-        qr_update.reset();
+-        percent.reset();
+-        if (line.find("sign in with this QR code") != std::string_view::npos) {
+-            collecting_ = true;
+-            rows_.clear();
+-            return;
+-        }
+-        if (line.find("QR code has changed") != std::string_view::npos) return;
+-        if (collecting_) {
+-            std::string modules;
+-            if (qr_row(line, modules)) {
+-                if (modules.find('#') != std::string::npos) rows_.push_back(std::move(modules));
+-                else if (rows_.size() >= 21) finish(); // the smallest QR code is 21 x 21
+-                return;
+-            }
+-            if (!rows_.empty()) finish();
+-            collecting_ = false;
+-        }
+-        const auto trimmed = trim(line);
+-        if (trimmed.empty()) return;
+-        if (showing_qr_) { showing_qr_ = false; qr_update = std::vector<std::string>{}; }
+-        const auto sign = trimmed.find('%');
+-        if (sign != std::string_view::npos && sign <= 6 && sign + 1 < trimmed.size() && trimmed[sign + 1] == ' ') {
+-            try {
+-                percent = std::stof(std::string(trimmed.substr(0, sign)));
+-                file = filename(trimmed.substr(sign + 2));
+-                return;
+-            } catch (...) {}
+-        }
+-        message = std::string(trimmed.substr(0, 160));
+-    }
+-
+-private:
+-    bool collecting_{};
+-
+-    static std::string filename(std::string_view path) {
+-        const auto slash = path.find_last_of("\\/");
+-        return std::string(slash == std::string_view::npos ? path : path.substr(slash + 1));
+-    }
+-    bool showing_qr_{};
+-    std::vector<std::string> rows_;
+-
+-    static std::string_view trim(std::string_view value) {
+-        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.remove_prefix(1);
+-        while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.remove_suffix(1);
+-        return value;
+-    }
+-    // Without a console DepotDownloader writes in the ANSI code page, where the
+-    // full block becomes '?'; a console gives UTF-8 or OEM 0xDB instead.
+-    static bool qr_row(std::string_view line, std::string& modules) {
+-        std::string cells;
+-        for (std::size_t index = 0; index < line.size();) {
+-            if (line[index] == ' ') { cells.push_back(' '); ++index; }
+-            else if (line.substr(index, 3) == "\xE2\x96\x88") { cells.push_back('#'); index += 3; }
+-            else if (line[index] == '?' || line[index] == '\xDB') { cells.push_back('#'); ++index; }
+-            else return false;
+-        }
+-        if (cells.empty()) return true; // a blank line is part of the quiet zone
+-        for (std::size_t index = 0; index < cells.size(); index += 2) modules.push_back(cells[index]);
+-        return true;
+-    }
+-    void finish() {
+-        qr_update = rows_;
+-        showing_qr_ = true;
+-        collecting_ = false;
+-        rows_.clear();
+-    }
+-};
+-
+-} // namespace dingosdk::launcher_gui
+diff --git a/Launcher/gui.cpp b/Launcher/gui.cpp
+index 20277a0..108b78e 100644
+--- a/Launcher/gui.cpp
++++ b/Launcher/gui.cpp
+@@ -407,7 +407,7 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
+ 
+     int result = 0;
+     {
+-        // On the heap: crash dumps hold thread stacks, and both keep the Steam password while it is typed.
++        // Keep the launcher and UI state on the heap.
+         const auto launcher_storage = std::make_unique<Launcher>(session, arguments);
+         auto& launcher = *launcher_storage;
+         launcher.check();
+@@ -473,7 +473,6 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
+         }
+         ShowWindow(window, SW_HIDE);
+         if (game) CloseHandle(game);
+-        launcher.cancel();
+         // Closing the window with Settings still open must not lose changes.
+         try { launcher.save(); } catch (...) {}
+     }
+diff --git a/Launcher/gui_home.cpp b/Launcher/gui_home.cpp
+index f12306b..fefcc45 100644
+--- a/Launcher/gui_home.cpp
++++ b/Launcher/gui_home.cpp
+@@ -253,8 +253,7 @@ void status_tile(const Fonts& fonts, const State& state, ImVec2 position, float
+     if (state.config) {
+         const auto build = state.config->game.build_id.empty() ? state.config->game.manifest_id
+                                                                : state.config->game.build_id;
+-        const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated &&
+-                             state.phase != Phase::downloading;
++        const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated;
+         facts.push_back({game_ok ? Icon::check : Icon::warning, "skate. build " + build});
+         if (update::binary_updates_enabled())
+             facts.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
+@@ -358,7 +357,6 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
+     const ImVec2 size = io.DisplaySize;
+     const float time = static_cast<float>(ImGui::GetTime());
+     const auto state = launcher.snapshot();
+-    const bool qr_open = !state.qr.empty();
+     // The Thunderstore listing loads in the background from the start, so the
+     // MODS tile can say when installed mods have updates.
+     collect_listing(mods_panel);
+@@ -366,7 +364,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
+     // A mod dropped on the window opens the Mods panel and installs it.
+     {
+         std::lock_guard lock(g_dropped_mutex);
+-        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt && !mods_panel.installing) {
++        if (!g_dropped.empty() && !ui.settings && !mods_panel.installing) {
+             ui.mods = true;
+             mods_panel.tab = 0;
+             if (!mods_panel.scanned) scan(mods_panel, launcher.session());
+@@ -384,7 +382,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
+             ui.steam_offline = !launcher.settings().offline && !launcher_app::steam_signed_in();
+         }
+     }
+-    const bool modal = ui.settings || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
++    const bool modal = ui.settings || ui.mods ||
+         ui.steam_offline || state.phase == Phase::mods_broken || ui.mods_update_prompt;
+ 
+     ImGui::SetNextWindowPos(ImVec2(0, 0));
+@@ -424,12 +422,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
+     case Phase::checking: label = "CHECKING"; enabled = false; break;
+     case Phase::update_available: label = "UPDATE"; detail = "New ReSkate files are ready"; break;
+     case Phase::updating: label = "UPDATING"; enabled = false; break;
+-    case Phase::game_missing: label = "INSTALL"; detail = "Download skate. from Steam"; break;
+-    case Phase::game_outdated: label = "DOWNLOAD"; detail = "Get the supported build from Steam"; break;
+-    case Phase::downloading:
+-        label = "CANCEL"; enabled = true; secondary = true;
+-        detail = state.progress >= 0 ? std::format("Downloading  {:.0f}%", state.progress * 100) : "Downloading";
+-        break;
++    case Phase::game_missing:
++    case Phase::game_outdated: label = "CHECK AGAIN"; detail = "Check the installed game files"; break;
+     case Phase::merging: label = "MODS"; enabled = false; detail = "Merging your mods before Skate starts"; break;
+     case Phase::mods_broken: label = "PLAY"; enabled = false; detail = "Waiting on an answer about your mods"; break;
+     case Phase::ready:
+@@ -447,8 +441,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
+         switch (state.phase) {
+         case Phase::update_available: launcher.apply_updates(); break;
+         case Phase::game_missing:
+-        case Phase::game_outdated: open_sign_in(launcher, ui, false); break;
+-        case Phase::downloading: launcher.cancel(); break;
++        case Phase::game_outdated: launcher.check(); break;
+         case Phase::ready:
+             // Mods with updates waiting: ask first, once a session. Playing on
+             // the old version is a choice, not a mistake, so it stays offered.
+@@ -505,10 +498,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
+     g_drag_allowed = !modal && !ImGui::IsAnyItemHovered();
+     ImGui::End();
+ 
+-    if (state.prompt) prompt_window(launcher, fonts, size, *state.prompt, ui);
+-    else if (qr_open) qr_window(launcher, fonts, size, state.qr);
+-    else if (ui.sign_in) sign_in_window(launcher, fonts, size, ui);
+-    else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
++    if (ui.settings) settings_window(launcher, fonts, size, ui, window);
+     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
+     else if (state.phase == Phase::mods_broken)
+         mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);
+diff --git a/Launcher/gui_internal.h b/Launcher/gui_internal.h
+index 07ad623..f95b52e 100644
+--- a/Launcher/gui_internal.h
++++ b/Launcher/gui_internal.h
+@@ -181,16 +181,13 @@ struct Settings {
+     bool updates{true};
+     // Off: a crash uploads nothing (RESKATE_CRASH_REPORTING=0 for the launcher and the game).
+     bool crash_reports{true};
+-    std::string steam_username;   // never the password
+-    bool steam_remember{true};
+-    bool steam_prefer_code{};
+ };
+ 
+ inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
+ 
+ // ---------------------------------------------------------------- state
+ 
+-enum class Phase { checking, update_available, updating, game_missing, game_outdated, downloading,
++enum class Phase { checking, update_available, updating, game_missing, game_outdated,
+                    merging, mods_broken, ready, launching, failed };
+ 
+ // A mod the pre-launch merge could not use, named so nobody has to guess which
+@@ -206,14 +203,12 @@ struct State {
+     std::string status{"Checking for updates"};
+     std::string detail;
+     float progress{-1};
+-    std::vector<std::string> qr;
+-    std::optional<update::Prompt> prompt;
+     std::optional<update::Config> config;
+     // Set when a merge before launch left mods out; PLAY waits on an answer.
+     std::vector<ModProblem> mod_problems;
+ };
+ 
+-// Update checks, the Steam download and the game launch, one at a time on a worker thread.
++// Update checks and the game launch, one at a time on a worker thread.
+ class Launcher {
+ public:
+     Launcher(const launcher_app::Session& session, std::vector<std::wstring> arguments);
+@@ -241,15 +236,7 @@ public:
+     // Where the game reads Mods from: the game folder, or -dataPath.
+     fs::path mods_data_root() const;
+     void apply_updates();
+-    // `qr` signs in with a QR code; otherwise the saved Steam username is used.
+-    // The password only lives in memory until DepotDownloader asks for it; it
+-    // may be empty when DepotDownloader remembers the login.
+-    void download(bool validate, bool qr, std::string password);
+     void play();
+-    void cancel();
+-    // Answers the pending Steam prompt; nothing cancels the download.
+-    void answer(std::optional<std::string> value);
+-
+     void restart();
+ 
+ private:
+@@ -259,23 +246,15 @@ private:
+     bool relaunched_{};
+     bool binaries_{true};
+     std::mutex mutex_;
+-    std::condition_variable answered_;
+     State state_;
+-    std::string password_;
+-    bool qr_login_{true};
+-    std::optional<std::string> answer_;
+-    bool has_answer_{};
+     std::thread worker_;
+     std::atomic<bool> busy_{};
+-    std::atomic<bool> cancel_{};
+     std::atomic<bool> restart_{};
+     std::atomic<bool> ignore_mod_problems_{};
+     std::atomic<DWORD> game_{};
+     std::atomic<bool> launched_{};
+ 
+     template<class Task> void start(Task task);
+-    static void wipe(std::string& value);
+-    std::optional<std::string> prompt(const update::Prompt& prompt);
+     void set(Phase phase, std::string status, std::string detail = {}, float progress = -1);
+     void set_progress(std::string detail, float progress);
+     void fail(const std::string& message);
+@@ -285,7 +264,6 @@ private:
+     bool runtime_outdated(const update::Config& config) const;
+     void run_check();
+     void run_updates();
+-    void run_download(bool validate);
+     // False when mods were left out and the launch should wait for an answer.
+     bool run_mod_merge();
+     void run_play();
+@@ -298,12 +276,6 @@ struct Ui {
+     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
+     std::string key_error;
+     bool mods{};
+-    bool sign_in{};
+-    bool sign_in_validate{};
+-    bool focus{};
+-    std::array<char, 65> username{};
+-    std::array<char, 256> password{};
+-    std::array<char, 16> code{};
+     // The MOD MANAGER tile's "2 of 3 enabled", re-read every few seconds.
+     std::string mods_detail;
+     // Its badge: updates waiting, or mods that did not load, which wins.
+@@ -455,10 +427,6 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
+ bool picked(const Store& store, const std::string& full_name);
+ void pick(Store& store, const std::string& full_name, bool on);
+ 
+-void open_sign_in(Launcher& launcher, Ui& ui, bool validate);
+-void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui);
+-void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui);
+-void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::vector<std::string>& rows);
+ void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui);
+ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window);
+ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel, HWND window);
+diff --git a/Launcher/gui_launcher.cpp b/Launcher/gui_launcher.cpp
+index d96f8ca..0319d83 100644
+--- a/Launcher/gui_launcher.cpp
++++ b/Launcher/gui_launcher.cpp
+@@ -1,7 +1,5 @@
+ #include "gui_internal.h"
+ 
+-#include "depot_output.h"
+-
+ #include "Engine/Core/Json/json.h"
+ #include "Engine/Core/Log/logging.h"
+ #include "Engine/Vfs/mod_catalog.h"
+@@ -61,9 +59,6 @@ Settings load_settings(const fs::path& path) {
+         settings.keep_open_after_launch = !json.value("close_on_launch", !settings.keep_open_after_launch);
+         settings.updates = json.value("updates", settings.updates);
+         settings.crash_reports = json.value("crash_reports", settings.crash_reports);
+-        settings.steam_username = json.value("steam_username", std::string());
+-        settings.steam_remember = json.value("steam_remember", settings.steam_remember);
+-        settings.steam_prefer_code = json.value("steam_prefer_code", settings.steam_prefer_code);
+     } catch (const std::exception& exception) {
+         logging::log(logging::Level::warning, logging::Channel::launcher, "Ignoring launcher settings: {}", exception.what());
+     }
+@@ -85,9 +80,6 @@ void save_settings(const fs::path& path, const Settings& settings) {
+     json["close_on_launch"] = !settings.keep_open_after_launch;
+     json["updates"] = settings.updates;
+     json["crash_reports"] = settings.crash_reports;
+-    json["steam_username"] = settings.steam_username;
+-    json["steam_remember"] = settings.steam_remember;
+-    json["steam_prefer_code"] = settings.steam_prefer_code;
+     std::ofstream output(path, std::ios::binary | std::ios::trunc);
+     output << json.dump(2) << '\n';
+ }
+@@ -126,7 +118,6 @@ Launcher::Launcher(const launcher_app::Session& session, std::vector<std::wstrin
+ }
+ 
+ Launcher::~Launcher() {
+-    cancel();
+     if (worker_.joinable()) worker_.join();
+ }
+ 
+@@ -154,7 +145,6 @@ template<class Task> void Launcher::start(Task task) {
+     if (busy_) return;
+     if (worker_.joinable()) worker_.join();
+     busy_ = true;
+-    cancel_ = false;
+     worker_ = std::thread([this, task] {
+         try { task(); }
+         catch (const std::exception& exception) { fail(exception.what()); }
+@@ -165,32 +155,8 @@ template<class Task> void Launcher::start(Task task) {
+ void Launcher::check() { start([this] { run_check(); }); }
+ void Launcher::apply_updates() { start([this] { run_updates(); }); }
+ 
+-void Launcher::download(bool validate, bool qr, std::string password) {
+-    {
+-        std::lock_guard lock(mutex_);
+-        wipe(password_);
+-        password_ = std::move(password);
+-        qr_login_ = qr;
+-    }
+-    start([this, validate] { run_download(validate); });
+-}
+-
+ void Launcher::play() { start([this] { run_play(); }); }
+ 
+-void Launcher::cancel() {
+-    cancel_ = true;
+-    answered_.notify_all();
+-}
+-
+-void Launcher::answer(std::optional<std::string> value) {
+-    std::lock_guard lock(mutex_);
+-    if (answer_) wipe(*answer_);
+-    answer_ = std::move(value);
+-    if (!answer_) cancel_ = true;
+-    has_answer_ = true;
+-    answered_.notify_all();
+-}
+-
+ void Launcher::restart() {
+     auto arguments = arguments_;
+     if (std::find(arguments.begin(), arguments.end(), L"--reskate-updated") == arguments.end())
+@@ -198,29 +164,6 @@ void Launcher::restart() {
+     launcher_app::relaunch(session_.self, arguments);
+ }
+ 
+-void Launcher::wipe(std::string& value) {
+-    SecureZeroMemory(value.data(), value.size());
+-    value.clear();
+-}
+-
+-std::optional<std::string> Launcher::prompt(const update::Prompt& prompt) {
+-    std::unique_lock lock(mutex_);
+-    // Use the password from the sign-in panel once; ask again only if Steam re-asks.
+-    if (prompt.kind == update::PromptKind::password && !password_.empty()) {
+-        auto password = std::move(password_);
+-        password_.clear();
+-        return password;
+-    }
+-    state_.prompt = prompt;
+-    has_answer_ = false;
+-    answered_.wait(lock, [this] { return has_answer_ || cancel_; });
+-    state_.prompt.reset();
+-    if (cancel_) return std::nullopt;
+-    auto value = std::move(answer_);
+-    answer_.reset();
+-    return value;
+-}
+-
+ fs::path Launcher::mods_data_root() const {
+     // The game resolves -dataPath against its own folder (engine_data_root);
+     // the same argument can be typed into Settings, so follow it here too.
+@@ -273,7 +216,6 @@ void Launcher::fail(const std::string& message) {
+     state_.status = message;   // raw: the STATUS tile explains it and can copy it
+     state_.detail.clear();
+     state_.progress = -1;
+-    state_.qr.clear();
+ }
+ 
+ std::optional<update::Config> Launcher::config() {
+@@ -315,19 +257,11 @@ void Launcher::run_check() {
+     if (!launcher_app::game_files_supported(session_.paths)) {
+         std::error_code error;
+         const bool installed = fs::is_regular_file(session_.paths.game, error);
+-        if (!config) {
+-            fail(installed ? "This Skate version is not supported, and the update server could not be reached."
+-                           : "Skate is not installed here, and the update server could not be reached.");
+-            return;
+-        }
+-        if (!launcher_app::config_matches_build(*config)) {
+-            fail("This launcher is out of date. Download the latest ReSkate release.");
+-            return;
+-        }
+-        if (installed) set(Phase::game_outdated, "Steam updated Skate",
+-            "ReSkate needs the build below. Only the files that differ are downloaded.");
++        // Installation and build checks stay local; this launcher does not download Steam depots.
++        if (installed) set(Phase::game_outdated, "Skate files are not the supported build",
++            "Use an installed copy of the supported Skate build. Steam downloads are disabled in this launcher.");
+         else set(Phase::game_missing, "Skate is not installed here",
+-            "Download the build below from Steam, about 14 GB, with an account that owns skate.");
++            "Place ReSkateLauncher.exe and ReSkate.dll beside an existing Skate.exe, then check again.");
+         return;
+     }
+     std::error_code error;
+@@ -355,70 +289,6 @@ void Launcher::run_updates() {
+     run_check();
+ }
+ 
+-void Launcher::run_download(bool validate) {
+-    const auto config = this->config();
+-    if (!config) return run_check();
+-    set(Phase::downloading, "Preparing Steam download", {}, 0);
+-    const auto depot_downloader = update::ensure_depot_downloader(config->depot_downloader,
+-        progress_for("DepotDownloader"));
+-    set(Phase::downloading, "Connecting to Steam");
+-    DepotOutput output;
+-    update::SteamLogin login;
+-    login.username = settings_.steam_username;
+-    login.remember = settings_.steam_remember;
+-    login.prefer_code = settings_.steam_prefer_code;
+-    {
+-        std::lock_guard lock(mutex_);
+-        if (qr_login_) login.username.clear();
+-    }
+-    if (!login.username.empty()) set(Phase::downloading, "Signing in to Steam", login.username);
+-    const auto code = update::run_depot_downloader(depot_downloader, config->game,
+-        session_.paths.directory, validate, login, [&](std::string_view line) {
+-            // DepotDownloader names the account it signs in ("Logging 'name' into Steam3"); the log
+-            // travels with crash reports, so the name is left out.
+-            std::string logged(line);
+-            if (!login.username.empty())
+-                for (auto at = logged.find(login.username); at != std::string::npos; at = logged.find(login.username, at + 8))
+-                    logged.replace(at, login.username.size(), "<hidden>");
+-            logging::write(logging::Level::debug, logging::Channel::launcher, logged);
+-            output.feed(line);
+-            std::lock_guard lock(mutex_);
+-            if (line.find("Use the Steam Mobile App to confirm") != std::string_view::npos) {
+-                state_.status = "Approve the sign-in in the Steam app";
+-                state_.detail = "Open Steam on your phone and confirm. Waiting...";
+-                return;
+-            }
+-            if (output.qr_update) {
+-                state_.qr = *output.qr_update;
+-                if (state_.qr.empty()) state_.status = "Signed in to Steam";
+-            }
+-            if (output.percent) {
+-                state_.status = validate ? "Verifying Skate" : "Downloading Skate";
+-                state_.detail = std::format("{:.1f}%  {}", *output.percent, output.file);
+-                state_.progress = *output.percent / 100.0f;
+-            } else if (state_.qr.empty() && !output.message.empty() && output.message != state_.detail) {
+-                state_.detail = output.message;
+-            }
+-        }, [this](const update::Prompt& prompt) { return this->prompt(prompt); }, cancel_);
+-    {
+-        std::lock_guard lock(mutex_);
+-        state_.qr.clear();
+-        state_.prompt.reset();
+-        wipe(password_);
+-    }
+-    if (cancel_) {
+-        run_check();
+-        std::lock_guard lock(mutex_);
+-        state_.detail = "Download cancelled. It will resume where it stopped.";
+-        return;
+-    }
+-    if (launcher_app::game_files_supported(session_.paths)) {
+-        set(Phase::ready, "Ready to skate", "Skate build installed.");
+-        return;
+-    }
+-    fail(std::format("The Steam download did not finish (exit code {}). {}", code, output.message));
+-}
+-
+ // The merge the game does behind its splash, done here instead, so a mod that
+ // cannot be merged is a question the launcher can ask rather than a surprise
+ // three minutes into a loading screen. The game reuses what this builds.
+diff --git a/Launcher/gui_settings.cpp b/Launcher/gui_settings.cpp
+index 394d5eb..12151e7 100644
+--- a/Launcher/gui_settings.cpp
++++ b/Launcher/gui_settings.cpp
+@@ -152,7 +152,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
+         if (ImGui::Button("Open folder")) open_path(paths.directory);
+         ImGui::SameLine();
+         ImGui::BeginDisabled(busy);
+-        if (ImGui::Button("Verify game files")) { open = false; open_sign_in(launcher, ui, true); }
++        if (ImGui::Button("Check installed game")) { open = false; launcher.check(); }
+         ImGui::EndDisabled();
+         ImGui::Spacing();
+         ImGui::Spacing();
+diff --git a/Launcher/gui_sign_in.cpp b/Launcher/gui_sign_in.cpp
+index 93d7474..2650644 100644
+--- a/Launcher/gui_sign_in.cpp
++++ b/Launcher/gui_sign_in.cpp
+@@ -1,164 +1,6 @@
+ #include "gui_internal.h"
+ 
+-#include <cmath>
+-#include <cstdint>
+-#include <span>
+-
+-// The Steam panels: sign-in, password/Steam Guard prompts and the QR code.
+ namespace dingosdk::launcher_gui::detail {
+-namespace {
+-
+-void wipe(std::span<char> buffer) { SecureZeroMemory(buffer.data(), buffer.size()); }
+-
+-} // namespace
+-
+-void open_sign_in(Launcher& launcher, Ui& ui, bool validate) {
+-    ui.sign_in = true;
+-    ui.sign_in_validate = validate;
+-    ui.focus = true;
+-    wipe(ui.password);
+-    ui.username.fill(0);
+-    const auto& saved = launcher.settings().steam_username;
+-    std::copy_n(saved.begin(), std::min(saved.size(), ui.username.size() - 1), ui.username.begin());
+-}
+-
+-void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui) {
+-    const auto panel = begin_panel("##sign_in_panel", size, ImVec2(S(480), S(520)));
+-    auto& settings = launcher.settings();
+-    panel_title(fonts, "SIGN IN TO STEAM");
+-    ImGui::PushTextWrapPos(0);
+-    ImGui::TextDisabled("skate. is downloaded from Steam with DepotDownloader, so the account must own it. "
+-                        "Your password is passed straight to Steam and never saved.");
+-    ImGui::PopTextWrapPos();
+-    ImGui::Spacing();
+-    const auto start = [&](bool qr) {
+-        if (!qr) settings.steam_username = ui.username.data();
+-        launcher.save();
+-        launcher.download(ui.sign_in_validate, qr, qr ? std::string() : std::string(ui.password.data()));
+-        wipe(ui.password);
+-        ui.sign_in = false;
+-    };
+-    push_primary_button();
+-    const bool qr = ImGui::Button("SCAN A QR CODE WITH THE STEAM APP", ImVec2(-1, S(46)));
+-    pop_primary_button();
+-    if (qr) start(true);
+-    ImGui::Spacing();
+-    ImGui::PushFont(fonts.caption);
+-    ImGui::TextDisabled("OR SIGN IN WITH YOUR ACCOUNT");
+-    ImGui::PopFont();
+-    if (ui.focus) { ImGui::SetKeyboardFocusHere(); ui.focus = false; }
+-    ImGui::SetNextItemWidth(-1);
+-    ImGui::InputTextWithHint("##username", "Steam account name", ui.username.data(), ui.username.size(),
+-        ImGuiInputTextFlags_CharsNoBlank);
+-    ImGui::SetNextItemWidth(-1);
+-    const bool entered = ImGui::InputTextWithHint("##password", "Password (empty if remembered)", ui.password.data(),
+-        ui.password.size(), ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+-    ImGui::Checkbox("Remember me on this PC", &settings.steam_remember);
+-    ImGui::Checkbox("Type a Steam Guard code instead of approving in the app", &settings.steam_prefer_code);
+-    const std::string_view username(ui.username.data());
+-    const bool valid = !username.empty() && username.find_first_not_of(
+-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == std::string_view::npos;
+-    ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
+-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) { wipe(ui.password); ui.sign_in = false; }
+-    ImGui::SameLine(panel.x - S(28) - S(130));
+-    ImGui::BeginDisabled(!valid);
+-    push_primary_button();
+-    const bool sign_in = ImGui::Button("SIGN IN", ImVec2(S(130), 0));
+-    pop_primary_button();
+-    if (sign_in || (entered && valid)) start(false);
+-    ImGui::EndDisabled();
+-    ImGui::End();
+-}
+-
+-void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui) {
+-    const auto panel = begin_panel("##prompt_panel", size, ImVec2(S(440), S(300)));
+-    const bool password = prompt.kind == update::PromptKind::password;
+-    panel_title(fonts, password ? "STEAM PASSWORD" : "STEAM GUARD");
+-    ImGui::PushTextWrapPos(0);
+-    if (prompt.retry) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "That code was incorrect. Try again.");
+-    switch (prompt.kind) {
+-    case update::PromptKind::password:
+-        ImGui::TextDisabled("Enter the password for %s.", launcher.settings().steam_username.c_str());
+-        break;
+-    case update::PromptKind::authenticator_code:
+-        ImGui::TextDisabled("Enter the code shown in the Steam app on your phone (Steam Guard).");
+-        break;
+-    case update::PromptKind::email_code: {
+-        const auto at = prompt.text.find("email at ");
+-        ImGui::TextDisabled("Enter the code Steam emailed to %s.",
+-            at == std::string::npos ? "you" : prompt.text.c_str() + at + 9);
+-        break;
+-    }
+-    }
+-    ImGui::PopTextWrapPos();
+-    ImGui::Spacing();
+-    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+-    ImGui::SetNextItemWidth(-1);
+-    bool submit = false;
+-    if (password) {
+-        submit = ImGui::InputText("##prompt_password", ui.password.data(), ui.password.size(),
+-            ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+-    } else {
+-        ImGui::PushFont(fonts.heading);
+-        submit = ImGui::InputTextWithHint("##prompt_code", "XXXXX", ui.code.data(), ui.code.size(),
+-            ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_CharsNoBlank | ImGuiInputTextFlags_EnterReturnsTrue);
+-        ImGui::PopFont();
+-    }
+-    const char* value = password ? ui.password.data() : ui.code.data();
+-    ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
+-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) {
+-        wipe(ui.password);
+-        ui.code.fill(0);
+-        launcher.answer(std::nullopt);
+-    }
+-    ImGui::SameLine(panel.x - S(28) - S(130));
+-    ImGui::BeginDisabled(!*value);
+-    push_primary_button();
+-    const bool proceed = ImGui::Button("CONTINUE", ImVec2(S(130), 0));
+-    pop_primary_button();
+-    if ((proceed || submit) && *value) {
+-        launcher.answer(std::string(value));
+-        wipe(ui.password);
+-        ui.code.fill(0);
+-    }
+-    ImGui::EndDisabled();
+-    ImGui::End();
+-}
+-
+-void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::vector<std::string>& rows) {
+-    std::size_t first = SIZE_MAX, last = 0;
+-    for (const auto& row : rows) {
+-        const auto begin = row.find('#'), end = row.rfind('#');
+-        if (begin != std::string::npos) { first = std::min(first, begin); last = std::max(last, end); }
+-    }
+-    if (first == SIZE_MAX) return;
+-    const float columns = static_cast<float>(last - first + 1);
+-    const float module = std::floor(S(230) / columns);
+-    const float code = module * columns;
+-    const float quiet = module * 3;
+-    const auto panel = begin_panel("##qr_panel", size, ImVec2(S(440), code + quiet * 2 + S(200)));
+-    panel_title(fonts, "SCAN WITH STEAM");
+-    ImGui::PushTextWrapPos(0);
+-    ImGui::TextDisabled("Open the Steam app on your phone, tap the shield (Steam Guard) and scan this code. "
+-                        "The account must own skate.");
+-    ImGui::PopTextWrapPos();
+-    auto* draw = ImGui::GetWindowDrawList();
+-    const auto window = ImGui::GetWindowPos();
+-    const ImVec2 origin(window.x + (panel.x - code - quiet * 2) * 0.5f, ImGui::GetCursorScreenPos().y + S(8));
+-    draw->AddRectFilled(origin, ImVec2(origin.x + code + quiet * 2, origin.y + module * static_cast<float>(rows.size()) + quiet * 2),
+-        rgba(255, 255, 255));
+-    for (std::size_t y = 0; y < rows.size(); ++y)
+-        for (std::size_t x = first; x <= last && x < rows[y].size(); ++x)
+-            if (rows[y][x] == '#') {
+-                const ImVec2 cell(origin.x + quiet + static_cast<float>(x - first) * module,
+-                                  origin.y + quiet + static_cast<float>(y) * module);
+-                draw->AddRectFilled(cell, ImVec2(cell.x + module, cell.y + module), rgba(0, 0, 0));
+-            }
+-    ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
+-    ImGui::SetCursorPosX(panel.x - S(28) - S(110));
+-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) launcher.cancel();
+-    ImGui::End();
+-}
+ 
+ // Shown once when the launcher opens without Steam, so nobody reaches the main
+ // menu as Unknown Player wondering why multiplayer is missing.
+diff --git a/Launcher/main.cpp b/Launcher/main.cpp
+index c788a00..eabeea4 100644
+--- a/Launcher/main.cpp
++++ b/Launcher/main.cpp
+@@ -79,7 +79,7 @@ void run_headless(const app::Session& session, std::vector<std::wstring> argumen
+     }
+     if (!app::game_files_supported(session.paths))
+         throw std::runtime_error("Skate.exe is missing or is not the supported build. "
+-            "Open ReSkateLauncher.exe without --no-gui to download it from Steam.");
++            "Use an installed copy of the supported Skate build; Steam downloads are disabled in this launcher.");
+     app::start_game(session, options);
+ }
+ 
+diff --git a/Launcher/problem.h b/Launcher/problem.h
+index ab093bc..8a99903 100644
+--- a/Launcher/problem.h
++++ b/Launcher/problem.h
+@@ -18,11 +18,10 @@ inline bool mentions(std::string_view raw, std::string_view needle) {
+     return raw.find(needle) != std::string_view::npos;
+ }
+ 
+-// Anti-virus and overlays are behind most injection failures, so they share
+-// one piece of advice.
++// An attach failure alone does not establish that antivirus blocked the game.
+ inline constexpr std::string_view attach_advice =
+-    "Anti-virus software usually blocks this. Add your skate. folder as an exclusion, close overlays "
+-    "(Discord, MSI Afterburner, RTSS), then press RETRY.";
++    "Check your antivirus history for a recorded detection and keep protection enabled. Close overlays "
++    "(Discord, MSI Afterburner, RTSS), then press RETRY. If it still fails, report the error and log to the ReSkate developers.";
+ 
+ inline Problem explain(std::string_view raw) {
+     // Most specific first: the later rules match whole families of failures.
+@@ -40,10 +39,10 @@ inline Problem explain(std::string_view raw) {
+                 "also have quarantined part of it."};
+     if (mentions(raw, "Skate.exe is missing"))
+         return {"Skate.exe is not in this folder",
+-                "Run the launcher from your skate. folder, or press INSTALL to download the game here."};
++                "Put ReSkateLauncher.exe and ReSkate.dll beside an existing Skate.exe, then press RETRY."};
+     if (mentions(raw, "steam_api64.dll is missing") || mentions(raw, "steam_api64"))
+         return {"The original steam_api64.dll is missing",
+-                "Verify the game files in Steam, or press DOWNLOAD to fetch the supported build again."};
++                "Restore the original steam_api64.dll from your supported Skate installation, then press RETRY."};
+     if (mentions(raw, "This launcher is out of date"))
+         return {"This launcher is out of date",
+                 "Download the newest ReSkate release from GitHub and extract it over this folder."};
+@@ -53,12 +52,7 @@ inline Problem explain(std::string_view raw) {
+                 "turn on Offline mode in Settings and play without the check."};
+     if (mentions(raw, "not supported"))
+         return {"This copy of skate. is not the supported build",
+-                "Press DOWNLOAD to get the supported build with your Steam account. Only the files that differ "
+-                "are downloaded."};
+-    if (mentions(raw, "Steam download did not finish"))
+-        return {"The Steam download did not finish",
+-                "Check that the account you signed in with owns skate. and that you have about 14 GB free, "
+-                "then press DOWNLOAD again. Signing in again often clears it."};
++                "Use an installed copy of the supported Skate build. Steam downloads are disabled in this launcher."};
+     if (mentions(raw, "installing the game content cache"))
+         return {"Another ReSkate launcher is busy",
+                 "It is installing the game data this build needs. Wait for it to finish, then press RETRY."};
+@@ -75,12 +69,11 @@ inline Problem explain(std::string_view raw) {
+         return {"Skate.exe is set to always run as administrator",
+                 "ReSkate has to start Skate itself, and Windows does not let it start a program marked to "
+                 "need administrator. Right-click Skate.exe, pick Properties, then Compatibility, and untick "
+-                "\"Run this program as an administrator\". Starting ReSkateLauncher.exe as "
+-                "administrator works too."};
++                "\"Run this program as an administrator\"."};
+     if (mentions(raw, "LoadLibraryW is hooked")) {
+-        std::string advice = "Security software or an overlay is modifying Skate while it starts, and ReSkate will "
+-                             "not load itself through that. Allow ReSkateLauncher.exe and Skate.exe in it, or close "
+-                             "it, then press RETRY.";
++        std::string advice = "A hook in Skate's loader could not be validated. Keep security software enabled, "
++                             "close overlays, then press RETRY. If it still fails, report the error and log to "
++                             "the ReSkate developers.";
+         // The launcher named what it found in Skate; that is the useful half.
+         if (const auto found = raw.find("Loaded into Skate"); found != std::string_view::npos)
+             advice += " " + std::string(raw.substr(found));
+@@ -90,8 +83,8 @@ inline Problem explain(std::string_view raw) {
+         return {"Skate closed while it was starting", std::string(attach_advice)};
+     if (mentions(raw, "timed out after"))
+         return {"Skate took too long to start",
+-                "A slow disk or an anti-virus scan usually causes this. Press RETRY; if it keeps happening, add "
+-                "your skate. folder as an exclusion."};
++                "Wait for any disk activity or antivirus scan to finish, then press RETRY. If it keeps happening, "
++                "report the error and log to the ReSkate developers. Keep antivirus protection enabled."};
+     if (mentions(raw, "validated Skate.exe") || mentions(raw, "loaded-image") || mentions(raw, "DOS header") ||
+         mentions(raw, "module list") || mentions(raw, "VirtualAllocEx") || mentions(raw, "NtQueryInformationProcess") ||
+         mentions(raw, "DingoSDKDebugInitialize") || mentions(raw, "Remote "))
+diff --git a/Launcher/updater.cpp b/Launcher/updater.cpp
+index 5532a66..71618cb 100644
+--- a/Launcher/updater.cpp
++++ b/Launcher/updater.cpp
+@@ -55,28 +55,6 @@ void info(std::string_view message) {
+     logging::write(logging::Level::info, logging::Channel::launcher, message);
+ }
+ 
+-std::wstring quote_argument(std::wstring_view value) {
+-    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) return std::wstring(value);
+-    std::wstring output(1, L'\"');
+-    std::size_t slashes{};
+-    for (const auto character : value) {
+-        if (character == L'\\') {
+-            ++slashes;
+-        } else if (character == L'\"') {
+-            output.append(slashes * 2 + 1, L'\\');
+-            output.push_back(character);
+-            slashes = 0;
+-        } else {
+-            output.append(slashes, L'\\');
+-            slashes = 0;
+-            output.push_back(character);
+-        }
+-    }
+-    output.append(slashes * 2, L'\\');
+-    output.push_back(L'\"');
+-    return output;
+-}
+-
+ // Streams an HTTPS GET into `sink`, following up to five HTTPS redirects.
+ void http_get(const std::wstring& url, std::uint64_t limit, int timeout_ms,
+               const std::function<void(const char*, DWORD)>& sink) {
+@@ -171,13 +149,6 @@ RemoteFile parse_file(const Json& root, std::string_view key, bool required) {
+     return file;
+ }
+ 
+-fs::path local_app_data() {
+-    std::array<wchar_t, 32768> local{};
+-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
+-    if (!length || length >= local.size()) fail("LOCALAPPDATA is unavailable");
+-    return fs::path(local.data());
+-}
+-
+ struct Zip {
+     std::vector<unsigned char> bytes;
+     mz_zip_archive value{};
+@@ -213,16 +184,6 @@ void extract_index(Zip& zip, mz_uint index, const mz_zip_archive_file_stat& entr
+         fail(std::format("Cannot extract {}", entry.m_filename));
+ }
+ 
+-// Writes exactly one named ZIP entry to `output`; entry names never become paths.
+-void extract_entry(const fs::path& archive, const char* name, const fs::path& output) {
+-    Zip zip(archive);
+-    const int index = mz_zip_reader_locate_file(&zip.value, name, nullptr, 0);
+-    mz_zip_archive_file_stat entry{};
+-    if (index < 0 || !mz_zip_reader_file_stat(&zip.value, static_cast<mz_uint>(index), &entry) ||
+-        entry.m_is_directory || entry.m_is_encrypted) fail(std::format("DepotDownloader archive has no {}", name));
+-    extract_index(zip, static_cast<mz_uint>(index), entry, output);
+-}
+-
+ // A ZIP entry name as a path inside the install folder, or empty when it
+ // could escape it (absolute, drive-qualified, or with . or .. parts).
+ fs::path safe_entry_path(std::string_view name) {
+@@ -257,7 +218,6 @@ Config parse_config(std::string_view text) {
+     Config config;
+     config.launcher = parse_file(root, "launcher", false);
+     config.runtime = parse_file(root, "runtime", false);
+-    config.depot_downloader = parse_file(root, "depot_downloader", true);
+     config.server = parse_file(root, "server", false);
+     if (!config.server.url.empty()) {
+         config.server_exe_sha256 = root.at("server").at("exe_sha256").string();
+@@ -310,7 +270,7 @@ std::optional<Config> fetch_config() {
+         std::string json;
+         http_get(manifest->second, max_config_bytes, 8000, [&](const char* data, DWORD count) { json.append(data, count); });
+         auto config = parse_config(json);
+-        for (auto* file : {&config.launcher, &config.runtime, &config.depot_downloader, &config.server}) {
++        for (auto* file : {&config.launcher, &config.runtime, &config.server}) {
+             if (!file->url.starts_with(L"asset:")) continue;
+             const auto found = assets.find(utf8(std::wstring_view(file->url).substr(6)));
+             if (found == assets.end()) fail("The latest release is missing asset " + utf8(file->url.substr(6)));
+@@ -462,157 +422,4 @@ void remove_replaced_files(const fs::path& directory) noexcept {
+     }
+ }
+ 
+-fs::path ensure_depot_downloader(const RemoteFile& file, const Progress& progress) {
+-    const auto directory = local_app_data() / L"ReSkate" / L"tools" / L"DepotDownloader" / widen(file.sha256.substr(0, 16));
+-    const auto executable = directory / L"DepotDownloader.exe";
+-    std::error_code error;
+-    if (fs::is_regular_file(executable, error)) return executable;
+-    fs::create_directories(directory);
+-    const auto archive = directory / L"DepotDownloader.zip";
+-    const auto verified = download_verified(archive, file, progress);
+-    const fs::path unpacked = executable.wstring() + L".tmp";
+-    try {
+-        extract_entry(verified, "DepotDownloader.exe", unpacked);
+-    } catch (...) {
+-        DeleteFileW(verified.c_str());
+-        DeleteFileW(unpacked.c_str());
+-        throw;
+-    }
+-    DeleteFileW(verified.c_str());
+-    if (!MoveFileExW(unpacked.c_str(), executable.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+-        fail(std::format("Cannot install DepotDownloader (Windows error {})", GetLastError()));
+-    logging::write(logging::Level::info, logging::Channel::launcher, L"DepotDownloader ready: " + executable.wstring());
+-    return executable;
+-}
+-
+-DWORD run_depot_downloader(const fs::path& depot_downloader, const GameBuild& game,
+-                           const fs::path& directory, bool validate, const SteamLogin& login,
+-                           const std::function<void(std::string_view)>& on_line,
+-                           const PromptHandler& on_prompt, const std::atomic<bool>& cancel) {
+-    std::wstring command = quote_argument(depot_downloader.wstring()) +
+-        std::format(L" -app {} -depot {} -manifest {} -dir ", game.app_id, game.depot_id, widen(game.manifest_id)) +
+-        quote_argument(directory.wstring()) + L" -max-downloads 16";
+-    std::wstring user, options;
+-    if (login.username.empty()) options += L" -qr";
+-    else {
+-        user = L" -username " + quote_argument(widen(login.username));
+-        if (login.remember) options += L" -remember-password";
+-        if (login.prefer_code) options += L" -no-mobile";
+-    }
+-    if (validate) options += L" -validate";
+-    // The log is attached to crash reports, so it leaves out the Steam login name.
+-    logging::write(logging::Level::info, logging::Channel::launcher, L"Running DepotDownloader: " + command +
+-        (user.empty() ? L"" : L" -username <hidden>") + options);
+-    command += user + options;
+-
+-    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+-    Handle read_pipe, write_pipe;
+-    if (!CreatePipe(&read_pipe.value, &write_pipe.value, &inherit, 0) ||
+-        !SetHandleInformation(read_pipe.value, HANDLE_FLAG_INHERIT, 0)) fail("Cannot create the DepotDownloader pipe");
+-    Handle input_read, input_write;
+-    if (!CreatePipe(&input_read.value, &input_write.value, &inherit, 0) ||
+-        !SetHandleInformation(input_write.value, HANDLE_FLAG_INHERIT, 0)) fail("Cannot create the DepotDownloader pipe");
+-    STARTUPINFOW startup{sizeof(startup)};
+-    startup.dwFlags = STARTF_USESTDHANDLES;
+-    startup.hStdInput = input_read.value;
+-    startup.hStdOutput = startup.hStdError = write_pipe.value;
+-    std::vector<wchar_t> buffer(command.begin(), command.end());
+-    buffer.push_back(L'\0');
+-    PROCESS_INFORMATION process{};
+-    // The job ends DepotDownloader with the launcher, even if the launcher is killed.
+-    Handle job{CreateJobObjectW(nullptr, nullptr)};
+-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+-    if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+-        fail("Cannot create the DepotDownloader job");
+-    if (!CreateProcessW(depot_downloader.c_str(), buffer.data(), nullptr, nullptr, TRUE,
+-            CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, depot_downloader.parent_path().c_str(), &startup, &process))
+-        fail(std::format("Cannot start DepotDownloader (Windows error {})", GetLastError()));
+-    Handle thread{process.hThread};
+-    Handle child{process.hProcess};
+-    if (!AssignProcessToJobObject(job.value, child.value)) {
+-        TerminateProcess(child.value, ERROR_CANCELLED);
+-        fail(std::format("Cannot start DepotDownloader (Windows error {})", GetLastError()));
+-    }
+-    ResumeThread(thread.value);
+-    CloseHandle(write_pipe.value);
+-    write_pipe.value = INVALID_HANDLE_VALUE;
+-    CloseHandle(input_read.value);
+-    input_read.value = INVALID_HANDLE_VALUE;
+-
+-    std::string pending;
+-    bool rejected{};
+-    // "\r\n" is one break even when a read splits it; an extra empty line would
+-    // end DepotOutput's QR code after its first row.
+-    bool after_cr{};
+-    const auto emit = [&](bool flush) {
+-        for (;;) {
+-            const auto end = pending.find_first_of("\r\n");
+-            if (end == std::string::npos) break;
+-            if (end == 0 && pending[0] == '\n' && after_cr) {
+-                after_cr = false;
+-                pending.erase(0, 1);
+-                continue;
+-            }
+-            after_cr = pending[end] == '\r';
+-            const auto line = std::string_view(pending).substr(0, end);
+-            if (line.find("code you have provided is incorrect") != std::string_view::npos) rejected = true;
+-            on_line(line);
+-            pending.erase(0, end + 1);
+-        }
+-        if (flush && !pending.empty()) { on_line(pending); pending.clear(); }
+-    };
+-    bool cancelled{};
+-    // Prompts end in ": " without a newline, so look at the unfinished line.
+-    const auto answer_prompt = [&] {
+-        if (pending.size() < 2 || !pending.ends_with(": ")) return;
+-        Prompt prompt;
+-        if (pending.find("Enter account password") != std::string::npos) prompt.kind = PromptKind::password;
+-        else if (pending.find("authenticator app") != std::string::npos) prompt.kind = PromptKind::authenticator_code;
+-        else if (pending.find("auth code sent to the email") != std::string::npos) prompt.kind = PromptKind::email_code;
+-        else return;
+-        prompt.text = pending.substr(0, pending.size() - 2);
+-        prompt.retry = std::exchange(rejected, false);
+-        logging::write(logging::Level::info, logging::Channel::launcher, "DepotDownloader asks: " + prompt.text);
+-        pending.clear();
+-        auto answer = on_prompt(prompt);
+-        if (!answer || cancel) {
+-            cancelled = true;
+-            TerminateProcess(child.value, ERROR_CANCELLED);
+-            return;
+-        }
+-        answer->push_back('\n');
+-        DWORD written{};
+-        WriteFile(input_write.value, answer->data(), static_cast<DWORD>(answer->size()), &written, nullptr);
+-        SecureZeroMemory(answer->data(), answer->size());
+-    };
+-    std::array<char, 16384> chunk{};
+-    for (;;) {
+-        DWORD available{};
+-        const bool peeked = PeekNamedPipe(read_pipe.value, nullptr, 0, nullptr, &available, nullptr);
+-        if (peeked && available) {
+-            DWORD read{};
+-            if (!ReadFile(read_pipe.value, chunk.data(), static_cast<DWORD>(chunk.size()), &read, nullptr) || !read) break;
+-            pending.append(chunk.data(), read);
+-            emit(false);
+-            answer_prompt();
+-            continue;
+-        }
+-        // A broken pipe means every writer has exited and the output is drained.
+-        if (!peeked) break;
+-        if (cancel && !cancelled) {
+-            cancelled = true;
+-            TerminateProcess(child.value, ERROR_CANCELLED);
+-        }
+-        WaitForSingleObject(child.value, 50);
+-    }
+-    emit(true);
+-    WaitForSingleObject(child.value, INFINITE);
+-    DWORD exit_code{};
+-    GetExitCodeProcess(child.value, &exit_code);
+-    logging::log(logging::Level::info, logging::Channel::launcher, "DepotDownloader exited with code {}{}",
+-        exit_code, cancelled ? " (cancelled)" : "");
+-    return exit_code;
+-}
+-
+ } // namespace dingosdk::launcher_update
+diff --git a/Launcher/updater.h b/Launcher/updater.h
+index 92813c2..8a5836b 100644
+--- a/Launcher/updater.h
++++ b/Launcher/updater.h
+@@ -2,7 +2,6 @@
+ 
+ #include <Windows.h>
+ 
+-#include <atomic>
+ #include <cstdint>
+ #include <filesystem>
+ #include <functional>
+@@ -33,7 +32,6 @@ struct GameBuild {
+ struct Config {
+     RemoteFile launcher;
+     RemoteFile runtime;
+-    RemoteFile depot_downloader;
+     GameBuild game;
+     // The dedicated server's zip, and the SHA-256 of the ReSkateServer.exe inside
+     // it: a server whose own exe differs is out of date. Empty when not published.
+@@ -78,30 +76,4 @@ std::string archive_entry_sha256(const std::filesystem::path& archive, const cha
+ // Deletes the *.update-old files a previous install_archive left behind.
+ void remove_replaced_files(const std::filesystem::path& directory) noexcept;
+ 
+-// Downloads and unpacks DepotDownloader under %LOCALAPPDATA%\ReSkate\tools.
+-std::filesystem::path ensure_depot_downloader(const RemoteFile& file, const Progress& progress = {});
+-// How DepotDownloader signs in to Steam. An empty username shows a QR code.
+-struct SteamLogin {
+-    std::string username;
+-    bool remember{true};  // DepotDownloader keeps a login token, not the password
+-    bool prefer_code{};   // ask for a Steam Guard code instead of app approval
+-};
+-
+-enum class PromptKind { password, authenticator_code, email_code };
+-struct Prompt {
+-    PromptKind kind{};
+-    std::string text;     // DepotDownloader's own wording, e.g. the masked email
+-    bool retry{};         // Steam rejected the previous code
+-};
+-// Blocks until the user answers; nothing stops DepotDownloader.
+-using PromptHandler = std::function<std::optional<std::string>(const Prompt&)>;
+-
+-// Runs DepotDownloader hidden and hands each stdout/stderr line to `on_line`.
+-// Password and Steam Guard prompts go to `on_prompt`; answers are written to
+-// its stdin, never its command line. Setting `cancel` terminates it.
+-DWORD run_depot_downloader(const std::filesystem::path& depot_downloader, const GameBuild& game,
+-                           const std::filesystem::path& directory, bool validate, const SteamLogin& login,
+-                           const std::function<void(std::string_view line)>& on_line,
+-                           const PromptHandler& on_prompt, const std::atomic<bool>& cancel);
+-
+ } // namespace dingosdk::launcher_update
