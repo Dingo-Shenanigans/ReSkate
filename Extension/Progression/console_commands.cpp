@@ -36,16 +36,19 @@ void register_progression_commands(Commands &registry) {
     bus.inspect = available;
     bus.run = [](const Model &, const Values &args, const Output &out) { save("busstop", args, out); };
     registry.add(std::move(bus));
-    for (const auto &key : {"challenges", "maxranks"}) {
+    for (const auto &key : {"challenges", "maxranks", "unlockall"}) {
         auto entry = variable(key,
-                              equal(key, "challenges") ? "Show or hide challenges while keeping saved progress"
-                                                       : "Automatically maximize district ranks",
+                              equal(key, "challenges")  ? "Show or hide challenges while keeping saved progress"
+                              : equal(key, "maxranks") ? "Automatically maximize district ranks"
+                                                       : "Own every catalogue item, store and premium pass included "
+                                                         "(applies at the next game start)",
                               Group::progression, argument("0|1", Type::boolean));
         entry.aliases = {"progression " + std::string(key)};
-        entry.inspect = [challenges = equal(key, "challenges")](const Model &m) {
-            return boolean_state(m.progression.available,
-                                 challenges ? !m.progression.challenges_hidden : m.progression.ranks_maxed,
-                                 "Local profile is unavailable.");
+        entry.inspect = [key = std::string(key)](const Model &m) {
+            const bool value = key == "challenges" ? !m.progression.challenges_hidden
+                               : key == "maxranks" ? m.progression.ranks_maxed
+                                                   : m.progression.everything_unlocked;
+            return boolean_state(m.progression.available, value, "Local profile is unavailable.");
         };
         entry.run = [key = std::string(key)](const Model &, const Values &args, const Output &out) {
             save(key, args, out);

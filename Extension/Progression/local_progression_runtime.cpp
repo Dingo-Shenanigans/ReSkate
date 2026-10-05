@@ -36,6 +36,8 @@ ProgressionModel local_profile_progression() {
         }
         const auto max = saved.bool_options.find(profile::max_neighborhood_ranks_option);
         result.ranks_maxed = max != saved.bool_options.end() && max->second;
+        const auto everything = saved.bool_options.find(profile::unlock_everything_option);
+        result.everything_unlocked = everything != saved.bool_options.end() && everything->second;
         constexpr std::array<const char*, 4> names{"Entertainment", "Financial", "Historic", "Stadium"};
         for (unsigned i = 0; i < profile::neighborhood_ids.size(); ++i) {
             const auto id = profile::neighborhood_ids[i];
@@ -89,6 +91,12 @@ bool set_local_progression(const std::vector<std::string>& args) {
             s.store->set_bool_option(profile::max_neighborhood_ranks_option, number(1, 1) != 0);
             neighborhood_runtime().next_poll = 0;
             s.progression_feedback = "District rank preference saved.";
+        } else if (args.size() == 2 && args[0] == "unlockall") {
+            // Read when the game builds its cosmetics catalogue, so the change
+            // lands at the next start: on seeds every item, off hands the
+            // unearned ones back through the existing reconcile.
+            s.store->set_bool_option(profile::unlock_everything_option, number(1, 1) != 0);
+            s.progression_feedback = "Unlock preference saved. Restart the game to apply it.";
         } else throw std::runtime_error("Unknown progression command.");
         return true;
     } catch (const std::exception& error) {

@@ -27,6 +27,9 @@ inline constexpr std::string_view max_neighborhood_ranks_option = "ReSkate.MaxNe
 inline constexpr std::string_view unlock_bus_stops_option = "ReSkate.UnlockBusStops";
 inline constexpr std::string_view unlock_cosmetics_option = "ReSkate.UnlockCosmetics";
 inline constexpr std::string_view unlock_objects_option = "ReSkate.UnlockObjects";
+// Opt-in: with UnlockCosmetics / UnlockObjects, also own the catalogue items
+// no free source grants (store, premium pass, retired offers).
+inline constexpr std::string_view unlock_everything_option = "ReSkate.UnlockEverything";
 inline constexpr std::string_view hide_challenges_option = "ReSkate.HideChallenges";
 inline constexpr std::array<std::string_view, 4> neighborhood_ids{
     "neighbourhood_rank_entertainment", "neighbourhood_rank_financial",

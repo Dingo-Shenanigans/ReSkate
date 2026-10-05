@@ -26,6 +26,7 @@ struct DistrictProgressRow {
 struct ProgressionModel {
     bool available{}, challenges_enabled{}, ranks_maxed{}, score_available{};
     bool challenges_hidden{};
+    bool everything_unlocked{};   // ReSkate.UnlockEverything
     std::vector<BusStopRow> bus_stops;
     std::vector<ChallengeProgressRow> challenges;
     std::array<DistrictProgressRow, 4> districts;

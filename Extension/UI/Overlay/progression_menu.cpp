@@ -195,6 +195,14 @@ void progression_profile(SkateMenu& menu, const ProgressionModel& model, const C
         if (!valid) warn("Use score 0 to cap, cap 1 to 1,000,000,000, and level 1 to 10,000.");
     } else note("No saved RIP score is configured for this profile.");
     end_card();
+    begin_card(menu, "unlocks", "UNLOCKS");
+    bool everything = model.everything_unlocked;
+    if (toggle_row(menu, "Unlock every item",
+            "Own every cosmetic and object in the game's catalogue, including store and premium pass items. "
+            "Applies the next time the game starts.",
+            everything, callbacks.queue_console_command != nullptr))
+        progression_request(menu, callbacks, std::string("unlockall ") + (everything ? "1" : "0"));
+    end_card();
     begin_card(menu, "district-levels", "DISTRICT LEVELS");
     ImGui::BeginDisabled(!callbacks.queue_console_command);
     bool maxed = model.ranks_maxed;

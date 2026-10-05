@@ -129,12 +129,17 @@ bool refresh_cosmetic_catalog() {
         !read(manager + 0x30, current_buckets) || current_buckets != buckets ||
         !read(manager + 0x3c, current_count) || current_count != count) return false;
     const auto& catalogs = content_cache::catalogs();
+    // ReSkate.UnlockEverything also seeds the items a free source does not
+    // grant (store, premium pass, retired offers). Only ownership changes:
+    // reserved_cosmetic() still judges what other players wear, so a peer's
+    // store item stays blanked here as before.
+    const bool unlock_everything = s.store->bool_option(profile::unlock_everything_option).value_or(false);
     c.ownership_unavailable = !catalogs.available;
     std::vector<std::string> keys, objects, reserved_keys, reserved_objects;
     for (const auto& [key, info] : items) {
         std::string folded = key;
         for (auto& letter : folded) if (letter >= 'A' && letter <= 'Z') letter = static_cast<char>(letter + ('a' - 'A'));
-        const bool held = catalogs.reserved(folded);
+        const bool held = !unlock_everything && catalogs.reserved(folded);
         (info.build_kit ? (held ? reserved_objects : objects) : (held ? reserved_keys : keys)).push_back(key);
     }
     if (!c.ownership_unavailable) {
