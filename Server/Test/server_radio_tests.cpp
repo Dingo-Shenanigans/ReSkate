@@ -171,7 +171,7 @@ void tones(const fs::path &root) {
         radio.play("set");
         listen(radio, 30);
         check(radio.stop() == "Radio stopped.", "stop");
-        check(radio.status().starts_with("The radio is off"), "status after stop");
+        check(radio.status().starts_with("Nothing is playing"), "status after stop");
         check(radio.poll(2000000000).batches.empty(), "frames after stop");
     }
 }

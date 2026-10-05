@@ -29,6 +29,7 @@ Json to_json(const ServerConfig &c) {
     root["global_bans"] = c.global_bans;
     root["activity_log"] = c.activity_log;
     root["announce_throwdowns"] = c.announce_throwdowns;
+    root["radio"] = c.radio;
     root["parties"] = c.parties;
     root["party_size"] = c.party_size;
     root["speed_check"] = c.speed_check;
@@ -128,6 +129,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.global_bans = root.value("global_bans", c.global_bans);
     c.activity_log = root.value("activity_log", c.activity_log);
     c.announce_throwdowns = root.value("announce_throwdowns", c.announce_throwdowns);
+    c.radio = root.value("radio", c.radio);
     c.parties = root.value("parties", c.parties);
     c.party_size = std::clamp(root.value("party_size", c.party_size), 2U, 8U);
     c.speed_check = root.value("speed_check", c.speed_check);

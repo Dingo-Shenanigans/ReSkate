@@ -560,7 +560,7 @@ std::string Radio::play(std::string_view source) {
 std::string Radio::skip() {
     auto &s = *state_;
     std::lock_guard lock(s.mutex);
-    if (!s.active) return "The radio is off.";
+    if (!s.active) return "Nothing is playing.";
     // Only what is playing now: the next song may already be buffering.
     s.skipped = std::max(s.skipped, s.playing_track);
     std::erase_if(s.queue, [&](const State::Item &item) { return item.track <= s.skipped; });
@@ -572,7 +572,7 @@ std::string Radio::stop() {
     auto &s = *state_;
     {
         std::lock_guard lock(s.mutex);
-        if (!s.active) return "The radio is off.";
+        if (!s.active) return "Nothing is playing.";
     }
     s.halt();
     return "Radio stopped.";
@@ -581,7 +581,7 @@ std::string Radio::status() const {
     auto &s = *state_;
     std::lock_guard lock(s.mutex);
     std::string tools = std::string(s.ffmpeg ? "ffmpeg" : "no ffmpeg") + (s.ytdlp ? ", yt-dlp" : ", no yt-dlp");
-    if (!s.active) return "The radio is off (" + tools + "). Radio folder: " + utf8_name(s.folder);
+    if (!s.active) return "Nothing is playing (" + tools + "). Radio folder: " + utf8_name(s.folder);
     const auto seconds = s.frames * frame_us / 1000000;
     const auto kbps = seconds ? s.bytes * 8 / 1000 / seconds : 0;
     // One short line each: an admin reads this in chat, where a long line is cut off.

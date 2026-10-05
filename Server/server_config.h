@@ -43,6 +43,9 @@ struct ServerConfig {
     bool global_bans = true;   // turn away players the ReSkate team has banned (global_bans.h)
     bool activity_log = true;  // console lines for throwdowns, objects and loading
     bool announce_throwdowns = true; // tell everyone in chat when a throwdown drop is placed
+    // Admins may play music to everyone (Server/server_radio.h). Off until the owner turns it on:
+    // the owner answers for what the server plays.
+    bool radio = false;
     // Players form parties (/party, the game's Social menu): 2-8 players each (the game's Party
     // panel has eight rows). Off, nobody can be in one.
     bool parties = true;

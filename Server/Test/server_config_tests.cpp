@@ -36,9 +36,10 @@ int run() {
     const auto config = load_config(file, &added);
     const auto has = [&](std::string_view name) { return std::ranges::find(added, name) != added.end(); };
     check(has("enforce_tuning") && has("votes.seconds") && has("votes.kick") && has("score_check") && has("score_allow") &&
-              has("global_bans") && has("map_pool") && has("map_rotation_minutes"),
+              has("global_bans") && has("map_pool") && has("map_rotation_minutes") && has("radio"),
           "New settings not reported");
     check(!has("name") && !has("tps") && !has("votes.map"), "Settings the file had reported as new");
+    check(!config.radio, "The radio is on in a config that never turned it on");
     const auto written = text(file);
     check(written.find("\"enforce_tuning\"") != std::string::npos && written.find("\"seconds\"") != std::string::npos,
           "New settings not written into the file");

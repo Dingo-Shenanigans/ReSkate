@@ -22,6 +22,25 @@ Copy a custom map's mod folder from the game's Mods folder into a Mods folder
 next to the server (only its reskate-levels.json is read). The map can then be
 chosen by name. Players need the same map mod installed to join.
 
+Radio
+-----
+Off unless you turn it on ("radio": true, or "radio allow on" in the console).
+Then admins play music to everyone on the map with /radio play <source>, and
+each player sets its volume or mutes it in the game's Multiplayer menus.
+
+A source is an http(s) URL of an audio stream (an internet radio station, an
+MP3), or a file or folder in a Radio folder next to the server. The server
+needs ffmpeg installed to decode it. With yt-dlp installed too, a URL can also
+be a page or playlist yt-dlp reads, such as a YouTube video or channel.
+
+The server sends the audio to every player itself, so you are the one
+redistributing it. Only play what you may share with them: your own files,
+royalty-free or Creative Commons music, a station that allows it. Many sites,
+YouTube included, forbid downloading or replaying their content in their terms,
+and music in a player's stream or video can get it a copyright claim.
+
+Each song uses about 96 kbps of upload per player (16 players: about 1.5 Mbit/s).
+
 Players connect through Steam's relay network, so no ports need opening. If you
 do forward UDP 27015-27016 (port, query_port), the browser also shows the
 server's ping and players can join a little faster.
@@ -76,6 +95,7 @@ votes              Player votes, each off until turned on:
                    admins cannot be vote-kicked.
 announce_throwdowns  Tell everyone in chat when a throwdown drop is placed
                    (default true).
+radio              Let admins play music to everyone (default false; see Radio).
 parties            Let players form parties (default true): invite each other
                    from the game's Social menu, a player card, the ReSkate
                    Multiplayer menu or chat (/party invite <player>). Party
@@ -175,6 +195,9 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
                                 or physics; with no argument, every player's result.
   score-allow [<fingerprint>|remove <fingerprint>]   Accept a scoring mod's
                                 fingerprint like the game's own (or list them).
+  radio play <URL or file in Radio>   radio skip   radio stop   radio
+                                Music for everyone (see Radio; off until allowed).
+  radio allow on|off            Let admins use the radio (console only).
   admin add|remove <player or id>   admins      (console only)
   update                        Check for a new release and install it now (console only).
   quit, exit or stop            Shut the server down (console only).
