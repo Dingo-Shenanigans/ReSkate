@@ -25,6 +25,8 @@ std::uint64_t remote_pose_updates() noexcept;
 std::uint64_t remote_board_pose_updates() noexcept;
 NativeAnimationStats remote_animation_stats() noexcept;
 std::uintptr_t remote_skater_entity() noexcept;
+// Whether any slot other than `except` has a remote skater now. Any thread.
+bool other_remote_skaters(std::size_t except) noexcept;
 std::uintptr_t remote_board_entity() noexcept;
 // Changes whenever the current slot's actor is created, removed or destroyed.
 std::uint64_t remote_skater_generation() noexcept;
@@ -39,10 +41,19 @@ void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
 // install_entity_hooks. Runs on the thread that evaluates animation.
 using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+// The same call, made before the evaluated listener: the style layer adjusts the pose that
+// listener (first person) then reads.
+void set_animation_style_listener(AnimationEvaluated listener) noexcept;
+// Called on the client thread with the local skater pose capture_local is about to return,
+// so a feature that changed the evaluated pose can decide what other players receive.
+using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;
+void set_local_pose_filter(LocalPoseFilter filter) noexcept;
 // Called after a skeleton's pose is handed to the renderer, with
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
 void set_render_pose_listener(RenderPosePublished listener) noexcept;
+// The same call, made before the render pose listener, for the style layer.
+void set_render_pose_style_listener(RenderPosePublished listener) noexcept;
 // Far-player savings (puppet_cost.cpp): native work a remote player's skater and skateboard
 // skip while far away. Within 200 m of the local skater or the camera nothing changes.
 // Each is on by default; the setter is thread-safe and applies at each player's next
