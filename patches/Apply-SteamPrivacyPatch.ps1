@@ -2,7 +2,8 @@
 .SYNOPSIS
 Reapply the Steam privacy changes to ReSkate source after an upstream update.
 .DESCRIPTION
-Removes Steam sign-in and depot downloads, preserves installed-game checks,
+Installs the separate privacy module, excludes Steam sign-in and depot downloads,
+preserves installed-game checks,
 and revises the launcher's antivirus troubleshooting advice.
 Checks the whole patch before changing files. Already-patched source is left
 alone. Incompatible updates stop with an error and need a refreshed patch.
@@ -64,5 +65,5 @@ $applied = Invoke-GitCommand -Arguments @('-C', $sourceDirectory, 'apply', '--',
 if ($applied.ExitCode -ne 0) {
     throw "Git could not apply the patch.`n$($applied.Output)"
 }
-Write-Host 'Steam sign-in and depot downloads removed. Installed-game checks preserved.'
+Write-Host 'Steam privacy module installed; sign-in and depot downloads excluded from the build. Installed-game checks preserved.'
 Write-Host 'Rebuild ReSkateLauncher.exe and ReSkate.dll, then copy both beside Skate.exe.'

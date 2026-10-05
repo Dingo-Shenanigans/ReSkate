@@ -473,6 +473,7 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         }
         ShowWindow(window, SW_HIDE);
         if (game) CloseHandle(game);
+        launcher.cancel();
         // Closing the window with Settings still open must not lose changes.
         try { launcher.save(); } catch (...) {}
     }

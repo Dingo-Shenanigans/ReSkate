@@ -1,8 +1,8 @@
 # ReSkate
 
-Steam sign-in and depot download code has been removed from this fork for privacy reasons. Installed-game checks remain.
+Steam sign-in and depot downloading are excluded from this fork's build for privacy reasons. Installed-game checks remain.
 
-After updating source, run `./patches/Apply-SteamPrivacyPatch.ps1 -SourcePath <ReSkate-source-folder>`, then rebuild. The script stops if the patch no longer matches.
+The privacy module lives in [`Fork/`](Fork/README.md). Merge upstream updates into this fork and rebuild. For a fresh upstream checkout, use `./patches/Apply-SteamPrivacyPatch.ps1 -SourcePath <ReSkate-source-folder>`; incompatible source versions stop without changes.
 
 ## Download the supported game build manually
 

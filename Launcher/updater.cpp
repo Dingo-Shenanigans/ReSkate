@@ -55,6 +55,31 @@ void info(std::string_view message) {
     logging::write(logging::Level::info, logging::Channel::launcher, message);
 }
 
+#if !RESKATE_STEAM_DOWNLOADS_DISABLED
+std::wstring quote_argument(std::wstring_view value) {
+    if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) return std::wstring(value);
+    std::wstring output(1, L'\"');
+    std::size_t slashes{};
+    for (const auto character : value) {
+        if (character == L'\\') {
+            ++slashes;
+        } else if (character == L'\"') {
+            output.append(slashes * 2 + 1, L'\\');
+            output.push_back(character);
+            slashes = 0;
+        } else {
+            output.append(slashes, L'\\');
+            slashes = 0;
+            output.push_back(character);
+        }
+    }
+    output.append(slashes * 2, L'\\');
+    output.push_back(L'\"');
+    return output;
+}
+
+#endif
+
 // Streams an HTTPS GET into `sink`, following up to five HTTPS redirects.
 void http_get(const std::wstring& url, std::uint64_t limit, int timeout_ms,
               const std::function<void(const char*, DWORD)>& sink) {
@@ -149,6 +174,16 @@ RemoteFile parse_file(const Json& root, std::string_view key, bool required) {
     return file;
 }
 
+#if !RESKATE_STEAM_DOWNLOADS_DISABLED
+fs::path local_app_data() {
+    std::array<wchar_t, 32768> local{};
+    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
+    if (!length || length >= local.size()) fail("LOCALAPPDATA is unavailable");
+    return fs::path(local.data());
+}
+
+#endif
+
 struct Zip {
     std::vector<unsigned char> bytes;
     mz_zip_archive value{};
@@ -184,6 +219,18 @@ void extract_index(Zip& zip, mz_uint index, const mz_zip_archive_file_stat& entr
         fail(std::format("Cannot extract {}", entry.m_filename));
 }
 
+#if !RESKATE_STEAM_DOWNLOADS_DISABLED
+// Writes exactly one named ZIP entry to `output`; entry names never become paths.
+void extract_entry(const fs::path& archive, const char* name, const fs::path& output) {
+    Zip zip(archive);
+    const int index = mz_zip_reader_locate_file(&zip.value, name, nullptr, 0);
+    mz_zip_archive_file_stat entry{};
+    if (index < 0 || !mz_zip_reader_file_stat(&zip.value, static_cast<mz_uint>(index), &entry) ||
+        entry.m_is_directory || entry.m_is_encrypted) fail(std::format("DepotDownloader archive has no {}", name));
+    extract_index(zip, static_cast<mz_uint>(index), entry, output);
+}
+#endif
+
 // A ZIP entry name as a path inside the install folder, or empty when it
 // could escape it (absolute, drive-qualified, or with . or .. parts).
 fs::path safe_entry_path(std::string_view name) {
@@ -218,6 +265,9 @@ Config parse_config(std::string_view text) {
     Config config;
     config.launcher = parse_file(root, "launcher", false);
     config.runtime = parse_file(root, "runtime", false);
+#if !RESKATE_STEAM_DOWNLOADS_DISABLED
+    config.depot_downloader = parse_file(root, "depot_downloader", true);
+#endif
     config.server = parse_file(root, "server", false);
     if (!config.server.url.empty()) {
         config.server_exe_sha256 = root.at("server").at("exe_sha256").string();
@@ -270,7 +320,11 @@ std::optional<Config> fetch_config() {
         std::string json;
         http_get(manifest->second, max_config_bytes, 8000, [&](const char* data, DWORD count) { json.append(data, count); });
         auto config = parse_config(json);
-        for (auto* file : {&config.launcher, &config.runtime, &config.server}) {
+        for (auto* file : {&config.launcher, &config.runtime,
+#if !RESKATE_STEAM_DOWNLOADS_DISABLED
+                           &config.depot_downloader,
+#endif
+                           &config.server}) {
             if (!file->url.starts_with(L"asset:")) continue;
             const auto found = assets.find(utf8(std::wstring_view(file->url).substr(6)));
             if (found == assets.end()) fail("The latest release is missing asset " + utf8(file->url.substr(6)));
@@ -421,5 +475,161 @@ void remove_replaced_files(const fs::path& directory) noexcept {
         if (it->is_regular_file(error) && it->path().extension() == L".update-old") DeleteFileW(it->path().c_str());
     }
 }
+
+#if !RESKATE_STEAM_DOWNLOADS_DISABLED
+fs::path ensure_depot_downloader(const RemoteFile& file, const Progress& progress) {
+    const auto directory = local_app_data() / L"ReSkate" / L"tools" / L"DepotDownloader" / widen(file.sha256.substr(0, 16));
+    const auto executable = directory / L"DepotDownloader.exe";
+    std::error_code error;
+    if (fs::is_regular_file(executable, error)) return executable;
+    fs::create_directories(directory);
+    const auto archive = directory / L"DepotDownloader.zip";
+    const auto verified = download_verified(archive, file, progress);
+    const fs::path unpacked = executable.wstring() + L".tmp";
+    try {
+        extract_entry(verified, "DepotDownloader.exe", unpacked);
+    } catch (...) {
+        DeleteFileW(verified.c_str());
+        DeleteFileW(unpacked.c_str());
+        throw;
+    }
+    DeleteFileW(verified.c_str());
+    if (!MoveFileExW(unpacked.c_str(), executable.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        fail(std::format("Cannot install DepotDownloader (Windows error {})", GetLastError()));
+    logging::write(logging::Level::info, logging::Channel::launcher, L"DepotDownloader ready: " + executable.wstring());
+    return executable;
+}
+
+DWORD run_depot_downloader(const fs::path& depot_downloader, const GameBuild& game,
+                           const fs::path& directory, bool validate, const SteamLogin& login,
+                           const std::function<void(std::string_view)>& on_line,
+                           const PromptHandler& on_prompt, const std::atomic<bool>& cancel) {
+    std::wstring command = quote_argument(depot_downloader.wstring()) +
+        std::format(L" -app {} -depot {} -manifest {} -dir ", game.app_id, game.depot_id, widen(game.manifest_id)) +
+        quote_argument(directory.wstring()) + L" -max-downloads 16";
+    std::wstring user, options;
+    if (login.username.empty()) options += L" -qr";
+    else {
+        user = L" -username " + quote_argument(widen(login.username));
+        if (login.remember) options += L" -remember-password";
+        if (login.prefer_code) options += L" -no-mobile";
+    }
+    if (validate) options += L" -validate";
+    // The log is attached to crash reports, so it leaves out the Steam login name.
+    logging::write(logging::Level::info, logging::Channel::launcher, L"Running DepotDownloader: " + command +
+        (user.empty() ? L"" : L" -username <hidden>") + options);
+    command += user + options;
+
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+    Handle read_pipe, write_pipe;
+    if (!CreatePipe(&read_pipe.value, &write_pipe.value, &inherit, 0) ||
+        !SetHandleInformation(read_pipe.value, HANDLE_FLAG_INHERIT, 0)) fail("Cannot create the DepotDownloader pipe");
+    Handle input_read, input_write;
+    if (!CreatePipe(&input_read.value, &input_write.value, &inherit, 0) ||
+        !SetHandleInformation(input_write.value, HANDLE_FLAG_INHERIT, 0)) fail("Cannot create the DepotDownloader pipe");
+    STARTUPINFOW startup{sizeof(startup)};
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = input_read.value;
+    startup.hStdOutput = startup.hStdError = write_pipe.value;
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    PROCESS_INFORMATION process{};
+    // The job ends DepotDownloader with the launcher, even if the launcher is killed.
+    Handle job{CreateJobObjectW(nullptr, nullptr)};
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+        fail("Cannot create the DepotDownloader job");
+    if (!CreateProcessW(depot_downloader.c_str(), buffer.data(), nullptr, nullptr, TRUE,
+            CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, depot_downloader.parent_path().c_str(), &startup, &process))
+        fail(std::format("Cannot start DepotDownloader (Windows error {})", GetLastError()));
+    Handle thread{process.hThread};
+    Handle child{process.hProcess};
+    if (!AssignProcessToJobObject(job.value, child.value)) {
+        TerminateProcess(child.value, ERROR_CANCELLED);
+        fail(std::format("Cannot start DepotDownloader (Windows error {})", GetLastError()));
+    }
+    ResumeThread(thread.value);
+    CloseHandle(write_pipe.value);
+    write_pipe.value = INVALID_HANDLE_VALUE;
+    CloseHandle(input_read.value);
+    input_read.value = INVALID_HANDLE_VALUE;
+
+    std::string pending;
+    bool rejected{};
+    // "\r\n" is one break even when a read splits it; an extra empty line would
+    // end DepotOutput's QR code after its first row.
+    bool after_cr{};
+    const auto emit = [&](bool flush) {
+        for (;;) {
+            const auto end = pending.find_first_of("\r\n");
+            if (end == std::string::npos) break;
+            if (end == 0 && pending[0] == '\n' && after_cr) {
+                after_cr = false;
+                pending.erase(0, 1);
+                continue;
+            }
+            after_cr = pending[end] == '\r';
+            const auto line = std::string_view(pending).substr(0, end);
+            if (line.find("code you have provided is incorrect") != std::string_view::npos) rejected = true;
+            on_line(line);
+            pending.erase(0, end + 1);
+        }
+        if (flush && !pending.empty()) { on_line(pending); pending.clear(); }
+    };
+    bool cancelled{};
+    // Prompts end in ": " without a newline, so look at the unfinished line.
+    const auto answer_prompt = [&] {
+        if (pending.size() < 2 || !pending.ends_with(": ")) return;
+        Prompt prompt;
+        if (pending.find("Enter account password") != std::string::npos) prompt.kind = PromptKind::password;
+        else if (pending.find("authenticator app") != std::string::npos) prompt.kind = PromptKind::authenticator_code;
+        else if (pending.find("auth code sent to the email") != std::string::npos) prompt.kind = PromptKind::email_code;
+        else return;
+        prompt.text = pending.substr(0, pending.size() - 2);
+        prompt.retry = std::exchange(rejected, false);
+        logging::write(logging::Level::info, logging::Channel::launcher, "DepotDownloader asks: " + prompt.text);
+        pending.clear();
+        auto answer = on_prompt(prompt);
+        if (!answer || cancel) {
+            cancelled = true;
+            TerminateProcess(child.value, ERROR_CANCELLED);
+            return;
+        }
+        answer->push_back('\n');
+        DWORD written{};
+        WriteFile(input_write.value, answer->data(), static_cast<DWORD>(answer->size()), &written, nullptr);
+        SecureZeroMemory(answer->data(), answer->size());
+    };
+    std::array<char, 16384> chunk{};
+    for (;;) {
+        DWORD available{};
+        const bool peeked = PeekNamedPipe(read_pipe.value, nullptr, 0, nullptr, &available, nullptr);
+        if (peeked && available) {
+            DWORD read{};
+            if (!ReadFile(read_pipe.value, chunk.data(), static_cast<DWORD>(chunk.size()), &read, nullptr) || !read) break;
+            pending.append(chunk.data(), read);
+            emit(false);
+            answer_prompt();
+            continue;
+        }
+        // A broken pipe means every writer has exited and the output is drained.
+        if (!peeked) break;
+        if (cancel && !cancelled) {
+            cancelled = true;
+            TerminateProcess(child.value, ERROR_CANCELLED);
+        }
+        WaitForSingleObject(child.value, 50);
+    }
+    emit(true);
+    WaitForSingleObject(child.value, INFINITE);
+    DWORD exit_code{};
+    GetExitCodeProcess(child.value, &exit_code);
+    logging::log(logging::Level::info, logging::Channel::launcher, "DepotDownloader exited with code {}{}",
+        exit_code, cancelled ? " (cancelled)" : "");
+    return exit_code;
+}
+
+#endif
 
 } // namespace dingosdk::launcher_update

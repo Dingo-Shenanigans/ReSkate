@@ -78,8 +78,7 @@ void run_headless(const app::Session& session, std::vector<std::wstring> argumen
         if (config && apply_headless_updates(session, *config, original, relaunched)) return;
     }
     if (!app::game_files_supported(session.paths))
-        throw std::runtime_error("Skate.exe is missing or is not the supported build. "
-            "Use an installed copy of the supported Skate build; Steam downloads are disabled in this launcher.");
+        throw std::runtime_error(dingosdk::steam_privacy::headless_error);
     app::start_game(session, options);
 }
 
