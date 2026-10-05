@@ -51,6 +51,7 @@ constexpr std::string_view help_text =
     "park <lot> <layout> | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | speed-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>]\n"
+    "radio play <URL or file in Radio> | radio skip | radio stop | radio\n"
     "admin add|remove <SteamID64> | admins | update | quit";
 } // namespace
 
@@ -61,7 +62,8 @@ Host::Host(ServerConfig &config, SteamTransport &transport, Log log)
                     const auto *guest = find(id);
                     return guest && guest->handshaken ? guest_name(*guest) : std::string{};
                 },
-                [this](const std::string &text) { if (config_.announce_throwdowns) send_chat(text); }) {
+                [this](const std::string &text) { if (config_.announce_throwdowns) send_chat(text); }),
+      radio_(config_.file.parent_path() / "Radio") {
     parties_.set_limit(config_.party_size);
 }
 
@@ -155,6 +157,7 @@ bool Host::start(std::string &error) {
 }
 void Host::stop(const std::string &reason) {
     if (!running_) return;
+    radio_.stop();
     const auto away = packet(PacketKind::away, now_us());
     for (auto &[id, guest] : guests_)
         if (guest->handshaken) send_packet(*guest, away, true, false);
@@ -825,6 +828,12 @@ void Host::tick(std::uint64_t now) {
         log_("Everyone has loaded " + map_name() + ".");
     }
     sync_objects();
+    // The radio's frames are only counted until the game can play them: sending a packet kind
+    // today's clients cannot decode would drop them. Its notices already reach chat.
+    for (const auto &notice : radio_.poll(now_).notices) {
+        log_("[radio] " + notice);
+        send_chat(notice);
+    }
     activity_.tick(now_);
     if (std::exchange(vote_recount_, false)) check_vote(false);
     if (vote_ && now_ >= vote_->ends) check_vote(true);
@@ -1374,6 +1383,15 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         apply_layers();
         return changed(found->label + " set to " + std::string(mode) +
                        (config_.world_layer_sync ? "." : ". Turn on layer-sync to apply it to everyone."));
+    }
+    if (name == "radio") {
+        const auto [sub, source] = split(argument);
+        const auto what = lower(sub);
+        if (what.empty() || what == "status") return radio_.status();
+        if (what == "play") return radio_.play(source);
+        if (what == "skip" || what == "next") return radio_.skip();
+        if (what == "stop" || what == "off") return radio_.stop();
+        return "radio play <URL, or a file or folder in the server's Radio folder> | radio skip | radio stop | radio";
     }
     if (name == "admins" || name == "admin") {
         if (!console) return "Only the server console manages admins.";

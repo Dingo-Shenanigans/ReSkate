@@ -1,6 +1,7 @@
 #pragma once
 #include "server_activity.h"
 #include "server_config.h"
+#include "server_radio.h"
 #include "speed_check.h"
 #include "Engine/Game/Multiplayer/chat_rate.h"
 #include "Extension/Multiplayer/Net/delta_codec.h"
@@ -108,6 +109,7 @@ class Host {
     SteamTransport &transport_;
     Log log_;
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
+    Radio radio_;          // `radio play ...`: frames are produced, not yet sent (server_radio.h)
     // The running player vote (server_votes.cpp), and when each player may start another.
     struct Vote {
         VoteKind kind{};
