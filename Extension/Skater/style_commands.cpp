@@ -147,9 +147,12 @@ void register_style_commands(Commands &registry) {
     auto hide = action("style editor hide", "Remove the stand-in", Group::gameplay);
     hide.run = [](const Model &, const Values &, const Output &) { style_editor::request_hide(); };
     registry.add(std::move(hide));
-    auto play = action("style editor play", "Play the shown clip in a loop", Group::gameplay);
-    play.run = [](const Model &, const Values &, const Output &) { style_editor::request_play(); };
+    auto play = action("style editor play", "Play the shown clip in a loop from the shown moment", Group::gameplay);
+    play.run = [](const Model &, const Values &, const Output &) { style_editor::request_play(true); };
     registry.add(std::move(play));
+    auto pause = action("style editor pause", "Hold the shown clip at the shown moment", Group::gameplay);
+    pause.run = [](const Model &, const Values &, const Output &) { style_editor::request_play(false); };
+    registry.add(std::move(pause));
     auto hold = action("style editor hold", "Hold the shown clip at a time on the trick's timeline (0 to 3)", Group::gameplay, {time});
     hold.run = [](const Model &, const Values &args, const Output &) {
         style_editor::request_hold(static_cast<float>(std::get<double>(args[0])));
@@ -158,7 +161,7 @@ void register_style_commands(Commands &registry) {
     auto frames = argument("frames", Type::integer);
     frames.minimum = -600;
     frames.maximum = 600;
-    auto step = action("style editor step", "Move the held clip forward or backward by whole frames", Group::gameplay, {frames});
+    auto step = action("style editor step", "Move the held clip forward or backward by frames of 1/60 s", Group::gameplay, {frames});
     step.run = [](const Model &, const Values &args, const Output &) {
         style_editor::request_step(static_cast<int>(std::get<std::int64_t>(args[0])));
     };

@@ -20,9 +20,6 @@ struct ClipFrame {
     // The game's camera for this frame (rows: right, up, backward, position). fov is 0 when not recorded.
     std::array<float, 16> view{};
     float fov{};
-    // Saved in the file format. The editor does not use rate and phase yet.
-    float rate = 1;   // the playback speed of the demonstration (1: real speed)
-    float phase = -1; // the game's measure of flip progress. -1 is unknown
     std::vector<Transform> rig; // the joints of the game's board
 };
 struct Clip {
@@ -31,6 +28,8 @@ struct Clip {
     std::vector<ClipFrame> frames;
     std::uint32_t began{}; // the recording-clock time of the first frame. Not saved
 };
+// A root move longer than this between two frames is a jump of the demonstration back to its start.
+inline constexpr float teleport_metres = 1.0f;
 
 // Sets the exact timeline time of each frame from its part number. Returns false if the trick has no catch or no landing.
 bool retime(Clip &clip);
@@ -38,16 +37,16 @@ bool retime(Clip &clip);
 bool unwarp(Clip &clip);
 // The pose at a timeline time, blended between the two frames around it.
 [[nodiscard]] Pose sample(const Clip &clip, float time);
-// The first and last timeline times the clip holds, lead-in and follow-through included.
-[[nodiscard]] float first_time(const Clip &clip) noexcept;
-[[nodiscard]] float last_time(const Clip &clip) noexcept;
+// `a` moved by `amount` (0 to 1) toward `b`. Poses of different shapes give `a`.
+[[nodiscard]] Pose blend(const Pose &a, const Pose &b, float amount);
 // The timeline time at `milliseconds` into playback at recorded speed.
-[[nodiscard]] float time_at(const Clip &clip, std::uint32_t milliseconds) noexcept;
+[[nodiscard]] float time_at(const Clip &clip, float milliseconds) noexcept;
+// The playback milliseconds at a timeline time. The reverse of time_at.
+[[nodiscard]] float ms_at(const Clip &clip, float time) noexcept;
 [[nodiscard]] std::uint32_t duration(const Clip &clip) noexcept;
-// The time of the frame `frames` after (or before) the frame showing at `time`.
-[[nodiscard]] float step(const Clip &clip, float time, int frames) noexcept;
 
-// A clip as a file. decode_clip throws on invalid data.
+// A clip as a file. decode_clip throws on invalid data. A file of another version is refused, and the editor learns that clip again.
+inline constexpr std::uint32_t clip_version = 4;
 [[nodiscard]] std::vector<std::uint8_t> encode_clip(const Clip &clip);
 [[nodiscard]] Clip decode_clip(std::span<const std::uint8_t> bytes);
 

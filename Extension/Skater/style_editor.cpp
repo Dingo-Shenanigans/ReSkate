@@ -32,7 +32,11 @@ using style::Clip;
 using style::ClipFrame;
 // The stand-in uses the last remote-player slot. No session uses that slot in solo play.
 constexpr std::size_t stand_in_slot = multiplayer::max_remote_players - 1;
-constexpr std::uint64_t loop_pause_ms = 500;
+// The loop blends the last pose into the first over this time.
+constexpr float loop_blend_ms = 250;
+// A held clip eases to a new moment with this time constant, so a scrub or a frame step does not jump.
+constexpr float ease_ms = 45;
+constexpr float frame_ms = 1000.0f / 60.0f;
 // Measured 2026-10-04: the position of Skatepedia's skater on its stage.
 constexpr auto &skatepedia_room = addr::style::skatepedia_stage, &skatepedia_reach = addr::style::skatepedia_stage_reach;
 
@@ -40,10 +44,8 @@ struct State {
     std::mutex mutex;
     // Requests.
     std::optional<std::uint8_t> show; // the trick to show. 0 clears the stand-in
-    bool hide{}, playing{true};
+    bool hide{};
     std::uint64_t retry_after{}; // the earliest time for the next learn attempt
-    float hold_time{};
-    int step{};
     std::uint8_t learn{}; // the trick that the current recording is for
     // One clip for each trick, learned from Skatepedia's demonstration. Read from disk on first use.
     std::map<std::uint8_t, Clip> references;
@@ -69,9 +71,17 @@ struct State {
     bool spoiled{};   // the highlight moved during the recording
     int forget{-1};   // the trick whose clip to delete. 0 is all, -1 is none
     std::uint64_t demos_wanted{}; // learned clips that the layer does not have yet, one bit for each trick
-    // Playback.
+    // Playback, in milliseconds of the shown clip.
     std::optional<Clip> shown;
-    std::uint64_t started{}, next_cosmetics{};
+    bool playing{true};
+    double started{}, last_tick{};
+    float shown_ms{}, target_ms{}; // a held clip eases from shown_ms to target_ms
+    std::uint64_t next_cosmetics{};
+    // Playback requests from the menu. `controls` guards only them, so that a request never waits for file work.
+    std::mutex controls;
+    std::optional<float> hold_request; // a timeline time
+    std::optional<bool> play_request;  // false pauses
+    int step_request{};
     bool spawned{}, dressed{};
     std::string detail, note;
     std::vector<style::JointDelta> rotations;
@@ -93,6 +103,10 @@ std::uint64_t clock_ms() noexcept {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+// Playback runs on fractions of a millisecond, so that each frame advances the clip by its real duration.
+double playback_ms() noexcept {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 std::uintptr_t pointer(std::uintptr_t object, std::uintptr_t offset) noexcept {
     std::uintptr_t value{};
     if (object < 0x10000 || !memory::peek(object + offset, value) || value < 0x10000 || value > memory::highest_user_address - 0x10000) return 0;
@@ -113,7 +127,7 @@ void list(State &s) {
         std::ifstream file(file_of(trick), std::ios::binary);
         std::array<std::uint32_t, 4> head{}; // magic, version, trick, learned
         // Only a clip learned from Skatepedia's demonstration counts.
-        if (!file.read(reinterpret_cast<char *>(head.data()), sizeof(head)) || !head[3] || head[1] != 3) continue;
+        if (!file.read(reinterpret_cast<char *>(head.data()), sizeof(head)) || !head[3] || head[1] != style::clip_version) continue;
         s.on_disk |= 1ull << trick;
         s.learned |= 1ull << trick;
     }
@@ -145,8 +159,6 @@ const Clip *reference(State &s, std::uint8_t trick) {
         const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         auto clip = style::decode_clip({reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()});
         if (clip.trick != trick) throw std::runtime_error("it is for another trick");
-        // Remove the slowed parts from a clip that an older version saved.
-        if (style::unwarp(clip)) (void)style::retime(clip);
         (void)use_game_board(clip);
         return &(s.references[trick] = std::move(clip));
     } catch (const std::exception &failure) {
@@ -332,12 +344,54 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
     s.retry_after = 0;
     keep(s, std::move(*clip));
 }
-// The timeline time of the shown clip: held, or played at recorded speed with a pause before each loop.
-float time_now(const State &s, std::uint64_t now) {
-    if (!s.playing) return s.hold_time;
-    const auto length = style::duration(*s.shown);
-    const auto into = (now - s.started) % (length + loop_pause_ms);
-    return style::time_at(*s.shown, static_cast<std::uint32_t>(std::min<std::uint64_t>(into, length)));
+// Applies the menu's requests, then moves shown_ms: at recorded speed with a blend into each loop, or eased to the held moment.
+void advance(State &s, double now) {
+    const auto &clip = *s.shown;
+    const float length = static_cast<float>(style::duration(clip));
+    // A held clip stays inside the trick, where the timeline can show it.
+    const float low = style::ms_at(clip, 0), high = style::ms_at(clip, style::trick_end);
+    std::optional<float> hold;
+    std::optional<bool> play;
+    int step{};
+    {
+        std::lock_guard lock(s.controls);
+        hold = std::exchange(s.hold_request, std::nullopt);
+        play = std::exchange(s.play_request, std::nullopt);
+        step = std::exchange(s.step_request, 0);
+    }
+    const auto pause = [&] {
+        if (!s.playing) return;
+        s.playing = false;
+        s.target_ms = std::clamp(s.shown_ms, low, high);
+    };
+    if (play && *play && !s.playing) {
+        s.playing = true;
+        s.started = now - (s.shown_ms < length ? s.shown_ms : 0.0f);
+    } else if (play && !*play) pause();
+    if (hold) {
+        pause();
+        s.target_ms = style::ms_at(clip, *hold);
+    }
+    if (step) {
+        pause();
+        s.target_ms = std::clamp((std::round(s.target_ms / frame_ms) + static_cast<float>(step)) * frame_ms, low, high);
+    }
+    const auto elapsed = static_cast<float>(std::clamp(now - s.last_tick, 0.0, 100.0));
+    s.last_tick = now;
+    if (s.playing) s.shown_ms = static_cast<float>(std::fmod(now - s.started, static_cast<double>(length + loop_blend_ms)));
+    else if (const float gap = s.target_ms - s.shown_ms; std::abs(gap) < 0.25f) s.shown_ms = s.target_ms;
+    else s.shown_ms += gap * (1 - std::exp(-elapsed / ease_ms));
+}
+// The clip pose at `ms` with the current style.
+style::Pose styled(State &s, float ms) {
+    const auto &clip = *s.shown;
+    const float time = style::time_at(clip, ms);
+    auto pose = style::sample(clip, time);
+    style_layer::rotations_at(clip.trick, std::clamp(time, 0.0f, style::trick_end), s.rotations);
+    for (const auto &delta : s.rotations)
+        if (delta.joint < pose.skater.size())
+            pose.skater[delta.joint].rotation = style::normalized(style::multiply(pose.skater[delta.joint].rotation, delta.rotation));
+    return pose;
 }
 void remove(std::uintptr_t base, State &s) {
     s.shown_trick.store(0, std::memory_order_relaxed);
@@ -364,22 +418,23 @@ void request_hide() {
     s.fetching = 0;
     s.wanted.store(false, std::memory_order_relaxed);
 }
-void request_hold(float time) {
+void request_hold(float time) noexcept {
     auto &s = state();
-    std::lock_guard lock(s.mutex);
-    s.playing = false;
-    s.hold_time = std::clamp(std::isfinite(time) ? time : 0.0f, -2.0f, style::trick_end + 2.0f);
+    std::lock_guard lock(s.controls);
+    s.hold_request = std::clamp(std::isfinite(time) ? time : 0.0f, 0.0f, style::trick_end);
+    s.step_request = 0;
 }
-void request_play() {
+void request_play(bool play) noexcept {
     auto &s = state();
-    std::lock_guard lock(s.mutex);
-    s.playing = true;
-    s.started = clock_ms();
+    std::lock_guard lock(s.controls);
+    s.play_request = play;
+    s.hold_request.reset();
+    s.step_request = 0;
 }
-void request_step(int frames) {
+void request_step(int frames) noexcept {
     auto &s = state();
-    std::lock_guard lock(s.mutex);
-    s.step += frames;
+    std::lock_guard lock(s.controls);
+    s.step_request = std::clamp(s.step_request + frames, -600, 600);
 }
 std::uint32_t recording_clock() noexcept {
     return static_cast<std::uint32_t>(
@@ -422,7 +477,7 @@ bool has_clip(std::uint8_t trick) {
     if (!s.listed) list(s);
     return trick < 64 && (s.learned >> trick & 1);
 }
-void request_orbit(float yaw, float pitch, float distance, float height) {
+void request_orbit(float yaw, float pitch, float distance, float height) noexcept {
     auto &s = state();
     const auto add = [](std::atomic<std::uint32_t> &value, float by, float low, float high, bool wrap) {
         float next = std::bit_cast<float>(value.load(std::memory_order_relaxed)) + (std::isfinite(by) ? by : 0.0f);
@@ -463,11 +518,12 @@ bool camera_pose(std::array<float, 16> &matrix) noexcept {
 }
 style::Playhead playhead() noexcept {
     auto &s = state();
+    const bool wanted = s.wanted.load(std::memory_order_relaxed);
     if (const auto trick = s.shown_trick.load(std::memory_order_relaxed))
         return {static_cast<std::uint8_t>(trick), std::bit_cast<float>(s.shown_time.load(std::memory_order_relaxed)), true,
-                s.shown_playing.load(std::memory_order_relaxed), true};
+                s.shown_playing.load(std::memory_order_relaxed), wanted};
     // While the editor is wanted, the timeline does not follow Skatepedia's skater.
-    if (s.wanted.load(std::memory_order_relaxed)) return {0, 0, false, false, true};
+    if (wanted) return {0, 0, false, false, true};
     return style_layer::replay_playhead();
 }
 void fill(style::StyleModel &model) {
@@ -589,14 +645,14 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             const Clip *clip = trick ? reference(s, trick) : nullptr;
             if (clip) {
                 s.shown = *clip;
-                s.started = now;
+                s.started = s.last_tick = playback_ms();
+                s.shown_ms = s.target_ms = 0;
                 s.playing = true;
                 s.detail.clear();
             } else if (trick && style_layer::stage_present()) {
-                // Skatepedia is open, so fetch the trick from it.
+                // Skatepedia is open, so fetch the trick from it. A fetch of the same trick continues.
                 s.shown.reset();
-                s.fetching = trick;
-                style_stage::fetch(trick);
+                if (std::exchange(s.fetching, trick) != trick) style_stage::fetch(trick);
                 s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
             } else {
                 s.shown.reset();
@@ -627,21 +683,19 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.detail = "the stand-in is for solo play. Leave the session first";
             return;
         }
-        // A frame step holds the clip on the new frame.
-        if (s.step) {
-            s.hold_time = style::step(*s.shown, time_now(s, now), s.step);
-            s.playing = false;
-            s.step = 0;
-        }
-        // The clip pose with the current style.
-        const float time = time_now(s, now);
-        auto pose = style::sample(*s.shown, time);
+        advance(s, playback_ms());
+        // The clip pose with the current style. Each loop ends with a blend from the last pose into the first.
+        const float length = static_cast<float>(style::duration(*s.shown));
+        const float time = style::time_at(*s.shown, std::min(s.shown_ms, length));
+        auto pose = s.shown_ms <= length ? styled(s, s.shown_ms) : [&] {
+            const float amount = std::clamp((s.shown_ms - length) / loop_blend_ms, 0.0f, 1.0f);
+            return style::blend(styled(s, length), styled(s, 0), amount * amount * (3 - 2 * amount));
+        }();
         // The fov that Skatepedia's camera had on the first frame.
         const auto &opening = s.shown->frames.front();
         s.view_fov = opening.fov;
-        const bool recorded_place = s.view_fov > 0;
         // The camera starts with Skatepedia's framing, calculated one time for each shown trick.
-        if (recorded_place && s.framed != s.shown->trick) {
+        if (s.view_fov > 0 && s.framed != s.shown->trick) {
             s.framed = s.shown->trick;
             const auto &view = opening.view;
             const auto &root = opening.pose.root.position;
@@ -655,14 +709,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 s.height.store(std::bit_cast<std::uint32_t>(std::clamp(away[1] - back[1] * distance, 0.0f, 2.2f)), std::memory_order_relaxed);
             }
         }
-        if (!recorded_place) s.framed = 0;
+        if (s.view_fov <= 0) s.framed = 0;
         s.shown_time.store(std::bit_cast<std::uint32_t>(std::clamp(time, 0.0f, style::trick_end)), std::memory_order_relaxed);
         s.shown_playing.store(s.playing, std::memory_order_relaxed);
         s.shown_trick.store(s.shown->trick, std::memory_order_relaxed);
-        style_layer::rotations_at(s.shown->trick, std::clamp(time, 0.0f, style::trick_end), s.rotations);
-        for (const auto &delta : s.rotations)
-            if (delta.joint < pose.skater.size())
-                pose.skater[delta.joint].rotation = style::normalized(style::multiply(pose.skater[delta.joint].rotation, delta.rotation));
         // The anchor is Skatepedia's stage position, or a position 2 m from the player.
         const auto &here = local.pose.root.position;
         // Skatepedia's skater disappears briefly on each loop, so the stage state holds for 4 s.
@@ -670,13 +720,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         const bool on_stage = GetTickCount64() < s.stage_until;
         const auto anchor = on_stage ? std::array<float, 3>{skatepedia_room[0], style_layer::stage_floor(skatepedia_room[1]), skatepedia_room[2]}
                                      : std::array<float, 3>{here[0] + 2.0f, here[1], here[2]};
-        // The camera target follows the skater at ground height.
-        const std::array<float, 3> focus = recorded_place ? std::array<float, 3>{pose.root.position[0], opening.pose.root.position[1], pose.root.position[2]} : anchor;
-        for (std::size_t i = 0; i < 3; ++i) s.target[i].store(std::bit_cast<std::uint32_t>(focus[i]), std::memory_order_relaxed);
+        // The stand-in skates in place, so the camera neither lags it nor jumps back at each loop.
+        for (std::size_t i = 0; i < 3; ++i) s.target[i].store(std::bit_cast<std::uint32_t>(anchor[i]), std::memory_order_relaxed);
         s.targeted.store(true, std::memory_order_relaxed);
-        const auto &first = s.shown->frames.front().pose.root.position;
-        // A clip with a recorded camera plays at its recorded position. Other clips stay at the anchor.
-        if (!recorded_place) multiplayer::offset_pose(pose, {anchor[0] - pose.root.position[0], anchor[1] - first[1], anchor[2] - pose.root.position[2]});
+        multiplayer::offset_pose(pose, {anchor[0] - pose.root.position[0], anchor[1] - opening.pose.root.position[1], anchor[2] - pose.root.position[2]});
         const multiplayer::PeerScope scope(stand_in_slot);
         s.spawned = multiplayer::show_remote(base, client, local, pose, s.detail) || multiplayer::remote_skater_entity();
         if (const auto entity = multiplayer::remote_skater_entity())

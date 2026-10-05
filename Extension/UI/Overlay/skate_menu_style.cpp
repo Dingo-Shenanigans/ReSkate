@@ -18,6 +18,13 @@ constexpr ImU32 track_colour = IM_COL32(38, 40, 46, 255), track_alternate = IM_C
                 line_colour = IM_COL32(110, 114, 124, 255), key_colour = IM_COL32(236, 232, 220, 255),
                 selected_colour = IM_COL32(70, 150, 255, 255), playhead_colour = IM_COL32(255, 196, 64, 255);
 std::atomic<StylePlayheadFeed> playhead_feed{};
+StyleControls controls_value;
+std::atomic<const StyleControls*> controls{};
+const StyleControls& editor_controls() {
+    static const StyleControls none;
+    const auto* set = controls.load(std::memory_order_acquire);
+    return set ? *set : none;
+}
 // Queues a command without a reply line, because sliders and drags send many commands.
 void quiet(const CallbacksV3& callbacks, const std::string& command) {
     if (!callbacks.queue_console_command) return;
@@ -44,8 +51,9 @@ struct Editing {
     // Shows a timeline time on the stand-in if it is shown, else as a preview on the player's skater.
     void hold(float time) const {
         menu.style_time = time;
-        if (standing_in) quiet(callbacks, std::format("style editor hold {:.3f}", time));
-        else if (!replay.editor && !screen) quiet(callbacks, std::format("style preview {} {:.3f}", trick, time));
+        if (standing_in) {
+            if (const auto set = editor_controls().hold) set(time);
+        } else if (!replay.editor && !screen) quiet(callbacks, std::format("style preview {} {:.3f}", trick, time));
     }
     [[nodiscard]] float playhead() const {
         return replaying ? replay.time : previewing ? model.style.preview_time : menu.style_time;
@@ -71,7 +79,11 @@ Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     e.previewing = model.style.preview == e.trick_id;
     e.replaying = e.replay.trick == e.trick_id;
     e.standing_in = e.replaying && e.replay.editor;
-    if (e.replay.editor && model.style.preview) quiet(callbacks, "style preview off");
+    // Once: the model shows the preview until the game has stopped it.
+    if (e.replay.editor && model.style.preview && e.now >= menu.style_preview_off_sent + 0.5) {
+        menu.style_preview_off_sent = e.now;
+        quiet(callbacks, "style preview off");
+    }
     // A dragged keyframe shows at the mouse position until the game confirms the move.
     if (menu.style_drag_key >= 0 && menu.style_drag_key < static_cast<int>(e.times.size()) && e.now < menu.style_drag_until)
         e.times[static_cast<std::size_t>(menu.style_drag_key)] = menu.style_drag_time;
@@ -163,8 +175,7 @@ void timeline(Editing& e, float height) {
             quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.style_drag_key, mouse));
             e.hold(mouse);
         }
-    } else if (active && menu.style_drag_key < 0 && e.now >= menu.style_edit_sent + 0.05) {
-        menu.style_edit_sent = e.now;
+    } else if (active && menu.style_drag_key < 0) {
         e.hold(mouse);
     }
     if (ImGui::IsItemDeactivated() && menu.style_drag_key >= 0 && e.now < menu.style_drag_until) {
@@ -232,11 +243,13 @@ void joints(Editing& e) {
 }
 }
 void set_style_playhead_feed(StylePlayheadFeed feed) noexcept { playhead_feed.store(feed); }
-bool style_stand_in_shown() noexcept {
+void set_style_controls(const StyleControls& set) noexcept {
+    controls_value = set;
+    controls.store(&controls_value, std::memory_order_release);
+}
+bool style_editor_wanted() noexcept {
     const auto feed = playhead_feed.load();
-    if (!feed) return false;
-    const auto now = feed();
-    return now.wanted;
+    return feed && feed().wanted;
 }
 
 // The style editor screen: the stand-in in the middle, the timeline at the bottom, the joints at the side.
@@ -366,18 +379,21 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
             e.hold(at);
         };
         const auto toggle = [&] {
-            send_console(menu, callbacks, e.replay.playing ? std::format("style editor hold {:.3f}", e.replay.time) : std::string("style editor play"));
+            if (const auto play = editor_controls().play) play(!e.replay.playing);
+        };
+        const auto step = [&](int frames) {
+            if (const auto set = editor_controls().step) set(frames);
         };
         ImGui::BeginDisabled(!e.standing_in);
         if (ImGui::Button("|<")) e.hold(0);
         ImGui::SameLine();
         if (ImGui::Button("< Key")) select_at(previous());
         ImGui::SameLine();
-        if (ImGui::Button("< Frame")) quiet(callbacks, "style editor step -1");
+        if (ImGui::Button("< Frame")) step(-1);
         ImGui::SameLine();
         if (ImGui::Button(e.replay.playing ? "Pause" : "Play", ImVec2(px(90), 0))) toggle();
         ImGui::SameLine();
-        if (ImGui::Button("Frame >")) quiet(callbacks, "style editor step 1");
+        if (ImGui::Button("Frame >")) step(1);
         ImGui::SameLine();
         if (ImGui::Button("Key >")) select_at(next());
         ImGui::SameLine();
@@ -401,8 +417,8 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
                             model.style.saved ? "Saved" : "Saving...");
         if (!typing && e.standing_in) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle();
-            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) quiet(callbacks, "style editor step -1");
-            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) quiet(callbacks, "style editor step 1");
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) step(-1);
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) step(1);
         }
     }
     ImGui::End();
@@ -418,9 +434,8 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         else if (dragging) menu.style_orbit[1] += io.MouseDelta.y * 0.006f;
         menu.style_orbit[2] += zoom;
     }
-    if ((menu.style_orbit[0] != 0 || menu.style_orbit[1] != 0 || menu.style_orbit[2] != 0 || menu.style_orbit[3] != 0) && e.now >= menu.style_orbit_sent + 0.033) {
-        menu.style_orbit_sent = e.now;
-        quiet(callbacks, std::format("style editor orbit {:.4f} {:.4f} {:.3f} {:.4f}", menu.style_orbit[0], menu.style_orbit[1], menu.style_orbit[2], menu.style_orbit[3]));
+    if (const auto orbit = editor_controls().orbit; orbit && menu.style_orbit != std::array<float, 4>{}) {
+        orbit(menu.style_orbit[0], menu.style_orbit[1], menu.style_orbit[2], menu.style_orbit[3]);
         menu.style_orbit = {};
     }
     if (exit_requested || (!typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) close();

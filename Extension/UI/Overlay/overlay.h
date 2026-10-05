@@ -323,6 +323,14 @@ void set_nametag_feed(NametagFeed) noexcept;
 // The replayed trick on screen, so the STYLE timeline can follow a replay being scrubbed.
 using StylePlayheadFeed = style::Playhead (*)() noexcept;
 void set_style_playhead_feed(StylePlayheadFeed) noexcept;
+// The style editor's playback and camera. Each call only records the latest request, so the menu can call it every frame.
+struct StyleControls {
+    void (*hold)(float time) noexcept = nullptr; // a timeline time, 0 to 3
+    void (*play)(bool play) noexcept = nullptr;  // false pauses at the shown moment
+    void (*step)(int frames) noexcept = nullptr;
+    void (*orbit)(float yaw, float pitch, float distance, float height) noexcept = nullptr;
+};
+void set_style_controls(const StyleControls &) noexcept;
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);

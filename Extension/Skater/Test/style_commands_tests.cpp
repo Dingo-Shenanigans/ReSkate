@@ -17,7 +17,7 @@ struct Calls {
     bool session_test{};
     bool enabled{}, share{true}, restyle{true}, cleared{}, reloaded{};
     std::optional<dingosdk::style::Target> cleared_target;
-    std::string editor;
+    std::string editor, debug;
     dingosdk::style::Target target{};
     std::uint8_t preview{}, key_trick{}, key{};
     float preview_time{}, key_time{};
@@ -75,15 +75,15 @@ void request_show(std::uint8_t trick) { calls.editor = "show " + std::to_string(
 void request_open() { calls.editor = "open"; }
 void request_forget(std::uint8_t trick) { calls.editor = "forget " + std::to_string(trick); }
 void request_hide() { calls.editor = "hide"; }
-void request_hold(float time) { calls.editor = "hold " + std::to_string(time); }
-void request_play() { calls.editor = "play"; }
-void request_step(int frames) { calls.editor = "step " + std::to_string(frames); }
-void request_orbit(float yaw, float pitch, float distance, float height) { calls.editor = std::to_string(yaw + pitch + distance + height); }
+void request_hold(float time) noexcept { calls.editor = "hold " + std::to_string(time); }
+void request_play(bool play) noexcept { calls.editor = play ? "play" : "pause"; }
+void request_step(int frames) noexcept { calls.editor = "step " + std::to_string(frames); }
+void request_orbit(float yaw, float pitch, float distance, float height) noexcept { calls.editor = std::to_string(yaw + pitch + distance + height); }
 std::string status() { return "takes"; }
 } // namespace dingosdk::style_editor
 namespace dingosdk::console {
 void request_debug(overlay::DebugAction action, bool enabled, float) {
-    calls.editor += action == overlay::DebugAction::set_style_editor ? (enabled ? " opened" : " closed") : "";
+    if (action == overlay::DebugAction::set_style_editor) calls.debug = enabled ? "opened" : "closed";
 }
 Argument argument(std::string name, Type type, bool optional) {
     Argument result;
@@ -159,16 +159,18 @@ int main() {
         check(run("style reload") && calls.reloaded, "style reload reads the saved style");
         check(run("style editor show") && calls.editor == "show 0" && run("style editor show heelflip") && calls.editor == "show 3",
               "style editor show plays a trick's clip, or clears the stand-in");
-        check(run("style editor hold 1.5") && calls.editor.starts_with("hold 1.5") && run("style editor play") && calls.editor == "play",
-              "style editor hold and play move through it");
+        check(run("style editor hold 1.5") && calls.editor.starts_with("hold 1.5") && run("style editor play") && calls.editor == "play" &&
+                  run("style editor pause") && calls.editor == "pause",
+              "style editor hold, play and pause move through it");
         check(run("style editor hide") && calls.editor == "hide" && run("style editor takes") && printed == "takes",
               "style editor hide removes the stand-in, and takes lists the clips");
         check(run("style editor step -3") && calls.editor == "step -3", "style editor step moves by frames");
-        check(run("style editor open") && calls.editor == "open opened" && calls.enabled, "style editor open opens the editor screen");
+        check(run("style 0") && !calls.enabled && run("style editor open") && calls.editor == "open" && calls.debug == "opened" && calls.enabled,
+              "style editor open switches the layer on and opens the editor screen");
         check(run("style preset new street") && calls.editor == "new street" && run("style preset folder") && calls.editor == "folder " &&
                   !run("style preset rename street"),
               "style preset names an action and a preset");
-        check(run("style editor close") && calls.editor == "hide", "style editor close leaves it");
+        check(run("style editor close") && calls.editor == "hide" && calls.debug == "closed", "style editor close removes the stand-in and closes the screen");
         check(run("style status") && printed == "status line", "style status prints the status");
     } catch (const std::exception &failure) {
         std::cerr << "FAIL: " << failure.what() << '\n';

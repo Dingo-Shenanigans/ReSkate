@@ -346,45 +346,42 @@ bool finite_position(const std::array<float, 3>& position) {
     return std::all_of(position.begin(), position.end(), [](float value) { return std::isfinite(value); });
 }
 
+// Copies the published model; native world/catalog discovery stays on the client thread at its existing cadence.
+void read_model() {
+    auto& s = state();
+    s.last_model = std::chrono::steady_clock::now();
+    if (!s.callbacks.read_model) return;
+    // Hand the host the model already held: it copies only what changed since.
+    dingosdk::overlay::Model next = std::move(s.model);
+    next.console_log.clear();
+    s.callbacks.read_model(s.callbacks.user, next);
+    // Bound the UI work even if a corrupt/native catalog is returned.
+    if (next.levels.size() > 128) next.levels.resize(128);
+    for (auto& level : next.levels)
+        if (level.start_points.size() > 64) level.start_points.resize(64);
+    if (next.offline.variables.size() > 512) next.offline.variables.resize(512);
+    for (auto& variable : next.offline.variables)
+        if (variable.name.size() > 256) variable.name.resize(256);
+    if (next.console_log.size() > maximum_console_lines)
+        next.console_log.erase(next.console_log.begin(), next.console_log.end() - maximum_console_lines);
+    for (auto& line : next.console_log)
+        if (line.text.size() > maximum_console_line_length)
+            line.text.resize(maximum_console_line_length);
+    next.debug.camera_position_valid &= finite_position(next.debug.camera_position);
+    next.debug.skater_position_valid &= finite_position(next.debug.skater_position);
+    // The callback owns this fresh batch. Move it into ingestion rather
+    // than copying every retained log string a second time each poll.
+    ingest_console_log(std::move(next.console_log));
+    s.model = std::move(next);
+}
+
 void draw_menu() {
     auto& s = state();
-    const auto now = std::chrono::steady_clock::now();
-    // This only copies the published model; native world/catalog discovery stays
-    // on the client thread at its existing cadence.
-    const auto interval = std::chrono::milliseconds(16);
     // Chat alone shows nothing from the model: polling it then would only make
     // the game thread wait on the host's lock.
-    bool model_shown = s.visible.load() || s.console_visible.load() || s.editor_visible.load();
-    // With nothing shown the model is still looked at now and then: an editor may have been opened.
-    if (now - s.last_model >= (model_shown ? interval : std::chrono::milliseconds(250))) {
-        s.last_model = now;
-        if (s.callbacks.read_model) {
-            // Hand the host the model already held: it copies only what changed since.
-            dingosdk::overlay::Model next = std::move(s.model);
-            next.console_log.clear();
-            s.callbacks.read_model(s.callbacks.user, next);
-            // Bound the UI work even if a corrupt/native catalog is returned.
-            if (next.levels.size() > 128) next.levels.resize(128);
-            for (auto& level : next.levels)
-                if (level.start_points.size() > 64) level.start_points.resize(64);
-            if (next.offline.variables.size() > 512) next.offline.variables.resize(512);
-            for (auto& variable : next.offline.variables)
-                if (variable.name.size() > 256) variable.name.resize(256);
-            if (next.console_log.size() > maximum_console_lines)
-                next.console_log.erase(next.console_log.begin(), next.console_log.end() - maximum_console_lines);
-            for (auto& line : next.console_log)
-                if (line.text.size() > maximum_console_line_length)
-                    line.text.resize(maximum_console_line_length);
-            next.debug.camera_position_valid &= finite_position(next.debug.camera_position);
-            next.debug.skater_position_valid &= finite_position(next.debug.skater_position);
-            // The callback owns this fresh batch. Move it into ingestion rather
-            // than copying every retained log string a second time each poll.
-            ingest_console_log(std::move(next.console_log));
-            s.model = std::move(next);
-
-        }
-    }
-    model_shown |= s.model.debug.park_editor || s.model.debug.style_editor;
+    const bool model_shown = s.visible.load() || s.console_visible.load() || s.editor_visible.load();
+    if (model_shown && std::chrono::steady_clock::now() - s.last_model >= std::chrono::milliseconds(16)) read_model();
+    // Nothing but the chat: the held model may be old, so it must not reopen the editor.
     if (!model_shown) {
         s.editor_flight.store(false);
         return;
@@ -461,13 +458,11 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool nametag_frame = nametags_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     if (trainer_open_requested()) s.visible.store(true);
-    // An editor opened while nothing was showing: look at the model again, a few times a second.
-    if (!s.editor_visible.load() && dingosdk::overlay::style_stand_in_shown()) {
-        static std::chrono::steady_clock::time_point next_wake;
-        if (const auto wake_now = std::chrono::steady_clock::now(); wake_now >= next_wake) {
-            next_wake = wake_now + std::chrono::milliseconds(250);
-            s.editor_visible.store(true);
-        }
+    // The style editor was asked for while no model was read: read the model a few times a second until its screen opens.
+    if (!(s.visible.load() || s.console_visible.load() || s.editor_visible.load()) && dingosdk::overlay::style_editor_wanted() &&
+        std::chrono::steady_clock::now() - s.last_model >= std::chrono::milliseconds(250)) {
+        read_model();
+        if (s.model.debug.style_editor) s.editor_visible.store(true);
     }
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {

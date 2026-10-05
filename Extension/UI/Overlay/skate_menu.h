@@ -70,7 +70,7 @@ struct SkateMenu {
     // keyframe keep their own value until the game has it.
     int style_trick = 2, style_key = 0, style_edit_joint = -1, style_drag_key = -1, style_replay_trick = 0;
     float style_time = 0.5f, style_drag_time{};
-    double style_drag_until{}, style_pending_until{}, style_orbit_sent{}, style_asked_at{}, style_closing_until{}, style_drawn_at{};
+    double style_drag_until{}, style_pending_until{}, style_preview_off_sent{}, style_asked_at{}, style_closing_until{}, style_drawn_at{};
     std::string style_asked; // the trick that the editor last asked to show
     std::array<char, 41> style_preset_name{}; // typed for a new preset
     double style_delete_until{};              // a first click on delete counts until then
@@ -114,8 +114,8 @@ struct SkateMenu {
 void load_skate_fonts(SkateMenu& menu);
 // The style editor screen, shown while Model::debug.style_editor is set.
 void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested);
-// True if the stand-in shows or the editor screen is wanted.
-bool style_stand_in_shown() noexcept;
+// True while the style editor screen is asked for or open.
+bool style_editor_wanted() noexcept;
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible);
 }

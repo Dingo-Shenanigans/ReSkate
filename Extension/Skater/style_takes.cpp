@@ -10,6 +10,8 @@ namespace {
 constexpr std::uint32_t landing_ms = 450;
 constexpr std::size_t maximum_frames = 900, maximum_joints = 512, maximum_board = 64;
 constexpr std::size_t transform_floats = 10;
+// Time, at, fov and the 16 floats of the view.
+constexpr std::size_t frame_floats = 19;
 
 std::array<float, 3> rotate(const Quat &q, const std::array<float, 3> &v) noexcept {
     const float tx = 2 * (q[1] * v[2] - q[2] * v[1]), ty = 2 * (q[2] * v[0] - q[0] * v[2]), tz = 2 * (q[0] * v[1] - q[1] * v[0]);
@@ -24,16 +26,8 @@ Transform blend(const Transform &a, const Transform &b, float amount) noexcept {
     result.rotation = mix(a.rotation, b.rotation, amount);
     return result;
 }
-Pose blend(const Pose &a, const Pose &b, float amount) {
-    if (amount <= 0 || a.skater.size() != b.skater.size() || a.board.size() != b.board.size()) return a;
-    if (amount >= 1) return b;
-    Pose result;
-    result.root = blend(a.root, b.root, amount);
-    result.skater.reserve(a.skater.size());
-    for (std::size_t i = 0; i < a.skater.size(); ++i) result.skater.push_back(blend(a.skater[i], b.skater[i], amount));
-    result.board.reserve(a.board.size());
-    for (std::size_t i = 0; i < a.board.size(); ++i) result.board.push_back(blend(a.board[i], b.board[i], amount));
-    return result;
+float distance(const std::array<float, 3> &a, const std::array<float, 3> &b) noexcept {
+    return std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
 }
 // The first frame at or past `time`.
 std::size_t upper(const Clip &clip, float time) noexcept {
@@ -70,6 +64,17 @@ float median(std::vector<float> values) {
 }
 } // namespace
 
+Pose blend(const Pose &a, const Pose &b, float amount) {
+    if (amount <= 0 || a.skater.size() != b.skater.size() || a.board.size() != b.board.size()) return a;
+    if (amount >= 1) return b;
+    Pose result;
+    result.root = blend(a.root, b.root, amount);
+    result.skater.reserve(a.skater.size());
+    for (std::size_t i = 0; i < a.skater.size(); ++i) result.skater.push_back(blend(a.skater[i], b.skater[i], amount));
+    result.board.reserve(a.board.size());
+    for (std::size_t i = 0; i < a.board.size(); ++i) result.board.push_back(blend(a.board[i], b.board[i], amount));
+    return result;
+}
 bool retime(Clip &clip) {
     auto &frames = clip.frames;
     const auto first = [&](float from) {
@@ -106,7 +111,7 @@ bool unwarp(Clip &clip) {
     for (std::size_t i = 1; i < frames.size(); ++i) {
         const auto &a = frames[i - 1].pose.root.position, &b = frames[i].pose.root.position;
         step[i] = std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[2] - a[2]) * (b[2] - a[2]));
-        if (!std::isfinite(step[i]) || step[i] > 2.0f) return false; // a jump back to the start is not movement
+        if (!std::isfinite(step[i]) || step[i] > teleport_metres) return false; // a jump back to the start is not movement
     }
     // Measure speed across 6 frames, because the time of one frame is too coarse.
     constexpr std::size_t window = 6;
@@ -140,25 +145,25 @@ Pose sample(const Clip &clip, float time) {
     const auto &a = clip.frames[next - 1], &b = clip.frames[next];
     return blend(a.pose, b.pose, (time - a.time) / std::max(b.time - a.time, 1e-6f));
 }
-float first_time(const Clip &clip) noexcept { return clip.frames.empty() ? 0 : clip.frames.front().time; }
-float last_time(const Clip &clip) noexcept { return clip.frames.empty() ? 0 : clip.frames.back().time; }
 std::uint32_t duration(const Clip &clip) noexcept { return clip.frames.empty() ? 0 : clip.frames.back().at - clip.frames.front().at; }
-float time_at(const Clip &clip, std::uint32_t milliseconds) noexcept {
+float time_at(const Clip &clip, float milliseconds) noexcept {
     if (clip.frames.empty()) return 0;
-    const auto at = clip.frames.front().at + milliseconds;
-    const auto next = std::ranges::lower_bound(clip.frames, at, {}, &ClipFrame::at);
+    const float at = static_cast<float>(clip.frames.front().at) + (std::isfinite(milliseconds) ? milliseconds : 0.0f);
+    const auto next = std::ranges::lower_bound(clip.frames, at, {}, [](const ClipFrame &f) { return static_cast<float>(f.at); });
     if (next == clip.frames.begin()) return clip.frames.front().time;
     if (next == clip.frames.end()) return clip.frames.back().time;
     const auto &a = *(next - 1), &b = *next;
-    return a.time + (b.time - a.time) * static_cast<float>(at - a.at) / static_cast<float>(std::max<std::uint32_t>(b.at - a.at, 1));
+    return a.time + (b.time - a.time) * (at - static_cast<float>(a.at)) / static_cast<float>(std::max<std::uint32_t>(b.at - a.at, 1));
 }
-float step(const Clip &clip, float time, int frames) noexcept {
-    if (clip.frames.empty()) return time;
-    // The shown frame is the last frame at or before `time`.
-    auto index = static_cast<std::ptrdiff_t>(upper(clip, time));
-    if (index >= static_cast<std::ptrdiff_t>(clip.frames.size()) || clip.frames[static_cast<std::size_t>(index)].time > time) --index;
-    index = std::clamp<std::ptrdiff_t>(index + frames, 0, static_cast<std::ptrdiff_t>(clip.frames.size()) - 1);
-    return clip.frames[static_cast<std::size_t>(index)].time;
+float ms_at(const Clip &clip, float time) noexcept {
+    if (clip.frames.empty()) return 0;
+    const auto next = upper(clip, time);
+    const float first = static_cast<float>(clip.frames.front().at);
+    if (next == 0) return 0;
+    if (next >= clip.frames.size()) return static_cast<float>(clip.frames.back().at) - first;
+    const auto &a = clip.frames[next - 1], &b = clip.frames[next];
+    const float amount = (time - a.time) / std::max(b.time - a.time, 1e-6f);
+    return static_cast<float>(a.at) - first + static_cast<float>(b.at - a.at) * amount;
 }
 
 std::vector<std::uint8_t> encode_clip(const Clip &clip) {
@@ -169,22 +174,20 @@ std::vector<std::uint8_t> encode_clip(const Clip &clip) {
     for (const auto &frame : clip.frames)
         if (frame.rig.size() != rig || rig > maximum_board) rig = 0;
     std::vector<float> raw;
-    raw.reserve(clip.frames.size() * (21 + (1 + joints + board + rig) * transform_floats));
+    raw.reserve(clip.frames.size() * (frame_floats + (1 + joints + board + rig) * transform_floats));
     for (const auto &frame : clip.frames) {
         if (frame.pose.skater.size() != joints || frame.pose.board.size() != board) throw std::runtime_error("The clip's frames differ in shape.");
         raw.push_back(frame.time);
         raw.push_back(static_cast<float>(frame.at));
         raw.push_back(frame.fov);
         raw.insert(raw.end(), frame.view.begin(), frame.view.end());
-        raw.push_back(frame.rate);
-        raw.push_back(frame.phase);
         put(raw, frame.pose.root);
         for (const auto &joint : frame.pose.skater) put(raw, joint);
         for (const auto &bone : frame.pose.board) put(raw, bone);
         for (std::size_t i = 0; i < rig; ++i) put(raw, frame.rig[i]);
     }
     const auto bytes = raw.size() * sizeof(float);
-    Header header{{'R', 'S', 'T', 'K'}, 3, clip.trick, clip.learned, static_cast<std::uint32_t>(clip.frames.size()),
+    Header header{{'R', 'S', 'T', 'K'}, clip_version, clip.trick, clip.learned, static_cast<std::uint32_t>(clip.frames.size()),
                   static_cast<std::uint32_t>(joints), static_cast<std::uint32_t>(board), static_cast<std::uint32_t>(bytes), static_cast<std::uint32_t>(rig)};
     std::vector<std::uint8_t> out(sizeof(header) + static_cast<std::size_t>(LZ4_compressBound(static_cast<int>(bytes))));
     std::memcpy(out.data(), &header, sizeof(header));
@@ -198,8 +201,8 @@ Clip decode_clip(std::span<const std::uint8_t> bytes) {
     Header header{};
     if (bytes.size() <= sizeof(header)) throw std::runtime_error("This is not a clip.");
     std::memcpy(&header, bytes.data(), sizeof(header));
-    const std::size_t per_frame = 21 + (1 + std::size_t{header.joints} + header.board + header.rig) * transform_floats;
-    if (std::memcmp(header.magic, "RSTK", 4) || header.version != 3 || header.rig > maximum_board || !header.frames || header.frames > maximum_frames ||
+    const std::size_t per_frame = frame_floats + (1 + std::size_t{header.joints} + header.board + header.rig) * transform_floats;
+    if (std::memcmp(header.magic, "RSTK", 4) || header.version != clip_version || header.rig > maximum_board || !header.frames || header.frames > maximum_frames ||
         header.joints > maximum_joints || header.board > maximum_board || header.trick < 1 || header.trick >= flip_trick_names.size() ||
         header.raw_bytes != header.frames * per_frame * sizeof(float))
         throw std::runtime_error("This is not a clip this version reads.");
@@ -222,10 +225,6 @@ Clip decode_clip(std::span<const std::uint8_t> bytes) {
         for (const auto value : frame.view)
             if (!std::isfinite(value)) frame.fov = 0;
         if (!std::isfinite(frame.fov)) frame.fov = 0;
-        frame.rate = *in++;
-        frame.phase = *in++;
-        if (!std::isfinite(frame.rate) || frame.rate <= 0) frame.rate = 1;
-        if (!std::isfinite(frame.phase)) frame.phase = -1;
         if (!clip.frames.empty() && (frame.time <= clip.frames.back().time || frame.at < clip.frames.back().at))
             throw std::runtime_error("The clip's frames are out of order.");
         frame.pose.root = take(in);
@@ -331,7 +330,23 @@ std::optional<Clip> clip_from_capture(std::uint8_t trick, const std::vector<RigF
     caught = std::clamp(caught, off + 1, on - 1);
     // The flick is 5 frames before the board leaves the ground.
     const std::size_t flick = off >= 5 ? off - 5 : 0;
-    const std::size_t begin = flick >= 24 ? flick - 24 : 0, end = std::min(frames.size(), on + 45);
+    std::size_t begin = flick >= 24 ? flick - 24 : 0, end = std::min(frames.size(), on + 45);
+    // The demonstration loops: the lead-in and the follow-through stop at a jump back to its start.
+    const auto jumped = [&](std::size_t i) {
+        return distance(world(frames[i - 1].joints, joints.parents, joints.trajectory).position,
+                        world(frames[i].joints, joints.parents, joints.trajectory).position) > teleport_metres;
+    };
+    for (std::size_t i = begin + 1; i < end; ++i) {
+        if (!jumped(i)) continue;
+        if (i <= flick) begin = i;
+        else if (i > on) {
+            end = i;
+            break;
+        } else {
+            why = "the demonstration started again during the jump";
+            return std::nullopt;
+        }
+    }
     Clip clip{trick, true, {}};
     clip.began = frames[begin].at;
     const Transform live_entity = board.empty() ? Transform{} : board.front();

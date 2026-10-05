@@ -56,13 +56,21 @@ int main() {
         if (frame.time >= 2) frame.time = 4; // caught, then slammed
     check(!retime(bailed), "nor is one that was caught and then slammed");
 
-    // sample blends between frames. step moves by whole frames.
+    // sample blends between frames.
     check(close_to(sample(low, 0.5f).root.position[0], 30) && close_to(sample(low, 0.55f).root.position[0], 31), "a time on a frame gives that frame");
     check(close_to(sample(low, 0.525f).root.position[0], 30.5f, 1e-3f), "a time between two frames gives the pose between them");
     check(close_to(sample(low, -100).root.position[0], 0) && close_to(sample(low, 100).root.position[0], 119), "times off either end hold the end frames");
-    check(close_to(step(low, 0.5f, 1), 0.55f) && close_to(step(low, 0.52f, -1), 0.45f) && close_to(step(low, 0.5f, -1000), low.frames.front().time),
-          "stepping moves a frame at a time and stops at the ends");
-    check(duration(low) == 1190 && close_to(time_at(low, 300), 0.5f) && close_to(time_at(low, 305), 0.525f), "playback time maps onto the timeline");
+    check(duration(low) == 1190 && close_to(time_at(low, 300), 0.5f) && close_to(time_at(low, 305), 0.525f) && close_to(time_at(low, 302.5f), 0.5125f),
+          "playback time maps onto the timeline, also between whole milliseconds");
+    check(close_to(ms_at(low, 0.5f), 300, 1e-2f) && close_to(ms_at(low, 0.525f), 305, 1e-2f) && close_to(ms_at(low, -100), 0) && close_to(ms_at(low, 100), 1190),
+          "a timeline time maps back onto playback time");
+    for (const float ms : {0.0f, 155.0f, 401.5f, 777.0f, 1190.0f})
+        check(close_to(ms_at(low, time_at(low, ms)), ms, 0.05f), "the two maps are each other's reverse");
+    const auto halfway = blend(low.frames[0].pose, low.frames[10].pose, 0.5f);
+    check(close_to(halfway.root.position[0], 5) && close_to(halfway.skater[1].position[1], 5), "two poses blend");
+    Pose odd;
+    odd.skater.assign(1, Transform{});
+    check(close_to(blend(low.frames[0].pose, odd, 0.5f).root.position[0], 0), "poses of different shapes do not blend");
 
     // The file.
     const auto bytes = encode_clip(low);
@@ -111,6 +119,21 @@ int main() {
               "the clip's board follows the deck joint through the air");
         check(close_to(mid.board[2].position[1] - mid.board[0].position[1], 0.05f, 1e-3f), "and the board's own rig keeps its place on it");
     }
+    // The demonstration loops. Frames from before its restart, or after the next one, are not in the clip.
+    auto restarted = shown;
+    for (std::size_t i = 0; i < 30; ++i) restarted[i].joints[1].position[0] += 10;
+    for (std::size_t i = 110; i < restarted.size(); ++i) restarted[i].joints[1].position[0] -= 10;
+    const auto trimmed = clip_from_capture(3, restarted, joints, board, {}, why);
+    check(trimmed && trimmed->frames.size() == 110 - 30, "the clip starts after the demonstration starts again, and ends before the next start");
+    if (trimmed) {
+        bool smooth = true;
+        for (std::size_t i = 1; i < trimmed->frames.size(); ++i)
+            smooth &= std::abs(trimmed->frames[i].pose.root.position[0] - trimmed->frames[i - 1].pose.root.position[0]) < teleport_metres;
+        check(smooth, "so the clip has no jump in it");
+    }
+    auto broken = shown;
+    for (std::size_t i = 70; i < broken.size(); ++i) broken[i].joints[1].position[0] -= 10;
+    check(!clip_from_capture(3, broken, joints, board, {}, why) && !why.empty(), "a restart in the air spoils the jump");
     std::vector<RigFrame> rolling(shown.begin(), shown.begin() + 45);
     check(!clip_from_capture(3, rolling, joints, board, {}, why) && !why.empty(), "a recording with no jump says so");
     if (!failures) std::cout << "style takes tests passed\n";
