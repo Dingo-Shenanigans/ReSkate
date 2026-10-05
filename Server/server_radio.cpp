@@ -3,15 +3,19 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#ifndef _WIN32
 #include <condition_variable>
 #include <deque>
+#include <initializer_list>
 #include <mutex>
+#include <opus.h>
 #include <thread>
+#ifdef _WIN32
+#include <Windows.h>
+#else
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <fcntl.h>
-#include <opus.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -26,6 +30,18 @@ namespace {
 bool web_url(std::string_view text) {
     const auto scheme = lower(text.substr(0, std::min<std::size_t>(text.size(), 8)));
     return scheme.starts_with("http://") || scheme.starts_with("https://");
+}
+// Names are UTF-8 everywhere in the server; on Windows a path's narrow string is the ANSI code page.
+fs::path utf8_path(std::string_view text) { return fs::path(std::u8string(text.begin(), text.end())); }
+std::string utf8_name(const fs::path &path) {
+    const auto text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+// One line of a tool's output, without the carriage return Windows programs end it with.
+std::string_view line_of(std::string_view text) {
+    auto line = text.substr(0, text.find('\n'));
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    return line;
 }
 } // namespace
 
@@ -48,13 +64,19 @@ std::string Radio::check_source(std::string_view source, const fs::path &folder,
         }
         return std::string(source);
     }
-    if (source.find("://") != std::string_view::npos || source.front() == '-') {
+    // On Windows a colon in a name is a drive or an alternate data stream: never a file to play.
+    const bool colon = source.find(':') != std::string_view::npos;
+#ifdef _WIN32
+    if (colon || source.front() == '-') {
+#else
+    if ((colon && source.find("://") != std::string_view::npos) || source.front() == '-') {
+#endif
         error = "The radio plays http and https URLs, or files in the server's Radio folder.";
         return {};
     }
     // A file or folder in the Radio folder, named relative to it: never outside it, whether
     // by an absolute path, "..", or a link that points elsewhere.
-    const fs::path relative(std::string{source});
+    const auto relative = utf8_path(source);
     if (relative.is_absolute() || relative.has_root_name() || relative.has_root_directory() ||
         std::any_of(relative.begin(), relative.end(), [](const fs::path &part) { return part == ".."; })) {
         error = "Name a file or folder inside the server's Radio folder.";
@@ -69,23 +91,14 @@ std::string Radio::check_source(std::string_view source, const fs::path &folder,
             if (t == target.end() || *r != *t) return false;
         return t != target.end();
     };
-    if (failed || !fs::exists(target, failed) || !inside()) {
-        error = "No file or folder called \"" + std::string(source) + "\" in " + folder.string() + ".";
+    // Only plain files and folders: not a device, a pipe or a socket that happens to be there.
+    if (failed || !(fs::is_regular_file(target, failed) || fs::is_directory(target, failed)) || !inside()) {
+        error = "No file or folder called \"" + std::string(source) + "\" in " + utf8_name(folder) + ".";
         return {};
     }
-    return target.string();
+    return utf8_name(target);
 }
 
-#ifdef _WIN32
-struct Radio::State {};
-Radio::Radio(fs::path) : state_(std::make_unique<State>()) {}
-Radio::~Radio() = default;
-std::string Radio::play(std::string_view) { return "The radio runs on the Linux server only for now."; }
-std::string Radio::skip() { return play({}); }
-std::string Radio::stop() { return play({}); }
-std::string Radio::status() const { return "The radio runs on the Linux server only for now."; }
-Radio::Output Radio::poll(std::uint64_t) noexcept { return {}; }
-#else
 namespace {
 constexpr std::size_t queue_frames = 150;    // 3 s encoded ahead of playback
 constexpr std::uint64_t frame_us = 20000;
@@ -95,6 +108,142 @@ constexpr int bitrate = 96000;
 constexpr std::size_t max_listing = 1 << 20; // what yt-dlp may print about one source
 constexpr std::array<std::string_view, 9> audio_files{".mp3", ".ogg", ".opus", ".flac", ".wav", ".m4a", ".aac", ".webm", ".mka"};
 
+// The tools run from an argument list, never through a shell. A running one is a Child: stop and
+// skip end it together with anything it started (yt-dlp runs helpers of its own).
+#ifdef _WIN32
+// Its job object (which holds it and everything it starts), the process and the read end of its stdout.
+struct Child {
+    HANDLE job{}, process{}, out{};
+    bool operator==(const Child &) const = default;
+};
+std::wstring widen(std::string_view text) {
+    if (text.empty()) return {};
+    const auto size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(std::max(size, 0)), L'\0');
+    if (size > 0) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), size);
+    return wide;
+}
+// The tool's .exe in a folder on PATH, as a full path. Only an .exe: CreateProcess runs a .bat or
+// .cmd through cmd.exe, which would parse the arguments again (the "BatBadBut" kind of injection).
+// Relative PATH entries are skipped, so the server's own folder never stands in for a tool.
+std::wstring find_program(std::string_view name) {
+    std::wstring path(32767, L'\0');
+    path.resize(GetEnvironmentVariableW(L"PATH", path.data(), static_cast<DWORD>(path.size())));
+    const auto file = widen(name) + L".exe";
+    for (std::wstring_view rest = path; !rest.empty();) {
+        const auto semicolon = rest.find(L';');
+        auto folder = rest.substr(0, semicolon);
+        rest = semicolon == std::wstring_view::npos ? std::wstring_view{} : rest.substr(semicolon + 1);
+        if (folder.size() >= 2 && folder.front() == L'"' && folder.back() == L'"') folder = folder.substr(1, folder.size() - 2);
+        const fs::path candidate = fs::path(folder) / file;
+        std::error_code failed;
+        if (!folder.empty() && candidate.is_absolute() && fs::is_regular_file(candidate, failed)) return candidate.wstring();
+    }
+    return {};
+}
+bool installed(const char *program) { return !find_program(program).empty(); }
+// One argument as CommandLineToArgvW (and the C runtime) reads it back: quoted, with the
+// backslashes before a quote doubled.
+std::wstring quote(const std::wstring &argument) {
+    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) return argument;
+    std::wstring out = L"\"";
+    for (auto at = argument.begin();; ++at) {
+        std::size_t backslashes{};
+        for (; at != argument.end() && *at == L'\\'; ++at) ++backslashes;
+        if (at == argument.end()) {
+            out.append(backslashes * 2, L'\\');
+            break;
+        }
+        out.append(*at == L'"' ? backslashes * 2 + 1 : backslashes, L'\\');
+        out.push_back(*at);
+    }
+    out.push_back(L'"');
+    return out;
+}
+// stdout piped back, stdin and stderr on NUL, no console window, and nothing else of the server's
+// inherited: the handle list holds just those two.
+bool start(const std::vector<std::string> &args, Child &child) {
+    const auto program = find_program(args.front());
+    if (program.empty()) return false;
+    std::wstring line = quote(program);
+    for (std::size_t i = 1; i < args.size(); ++i) line += L' ' + quote(widen(args[i]));
+    SECURITY_ATTRIBUTES inherit{sizeof inherit, nullptr, TRUE};
+    HANDLE read{}, write{};
+    if (!CreatePipe(&read, &write, &inherit, 0)) return false;
+    SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
+    const HANDLE null = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
+                                    OPEN_EXISTING, 0, nullptr);
+    const HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    std::array<HANDLE, 2> handles{write, null};
+    SIZE_T size{};
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+    std::vector<std::byte> storage(size);
+    const auto attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    bool ok = null != INVALID_HANDLE_VALUE && job &&
+              SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, static_cast<DWORD>(sizeof limits)) &&
+              InitializeProcThreadAttributeList(attributes, 1, 0, &size);
+    const bool listed = ok;
+    ok = ok && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles.data(), sizeof handles,
+                                         nullptr, nullptr);
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof startup;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = null;
+    startup.StartupInfo.hStdOutput = write;
+    startup.StartupInfo.hStdError = null;
+    startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION info{};
+    // Suspended until it is in the job, so nothing it starts can escape the job.
+    ok = ok && CreateProcessW(program.c_str(), line.data(), nullptr, nullptr, TRUE,
+                              CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+                              &startup.StartupInfo, &info);
+    if (listed) DeleteProcThreadAttributeList(attributes);
+    CloseHandle(write);
+    if (null != INVALID_HANDLE_VALUE) CloseHandle(null);
+    if (ok && !AssignProcessToJobObject(job, info.hProcess)) {
+        TerminateProcess(info.hProcess, 1);
+        ok = false;
+    }
+    if (info.hThread) {
+        if (ok) ResumeThread(info.hThread);
+        CloseHandle(info.hThread);
+    }
+    if (!ok) {
+        if (info.hProcess) CloseHandle(info.hProcess);
+        if (job) CloseHandle(job);
+        CloseHandle(read);
+        return false;
+    }
+    child = {job, info.hProcess, read};
+    return true;
+}
+// Bytes read, or 0 once the tool has closed its output (or ended).
+std::size_t read_some(const Child &child, char *buffer, std::size_t size) {
+    DWORD count{};
+    return ReadFile(child.out, buffer, static_cast<DWORD>(size), &count, nullptr) ? count : 0;
+}
+void terminate(const Child &child) {
+    if (child.job) TerminateJobObject(child.job, 1);
+}
+// Waits for the tool to end and returns its exit code; the job stays open for release().
+int wait_for(const Child &child) {
+    CloseHandle(child.out);
+    WaitForSingleObject(child.process, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(child.process, &code);
+    CloseHandle(child.process);
+    return static_cast<int>(code);
+}
+void release(const Child &child) { CloseHandle(child.job); } // ends whatever the tool left running
+#else
+// Its process group (the tool leads it) and the read end of its stdout.
+struct Child {
+    pid_t pid{};
+    int out = -1;
+    bool operator==(const Child &) const = default;
+};
 bool installed(const char *program) {
     const char *path = std::getenv("PATH");
     for (std::string_view rest = path ? path : ""; !rest.empty();) {
@@ -104,6 +253,70 @@ bool installed(const char *program) {
         if (!dir.empty() && access((std::string(dir) + "/" + program).c_str(), X_OK) == 0) return true;
     }
     return false;
+}
+// Its own process group, stdin and stderr closed off, stdout piped back.
+bool start(const std::vector<std::string> &args, Child &child) {
+    int fds[2];
+    if (pipe2(fds, O_CLOEXEC) != 0) return false;
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    // The server ignores SIGPIPE; a tool must not inherit that, or it would outlive a closed pipe.
+    sigset_t defaults, none;
+    sigemptyset(&defaults);
+    sigaddset(&defaults, SIGPIPE);
+    sigemptyset(&none);
+    posix_spawnattr_setsigdefault(&attributes, &defaults);
+    posix_spawnattr_setsigmask(&attributes, &none);
+    posix_spawnattr_setpgroup(&attributes, 0);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+    std::vector<char *> argv;
+    for (const auto &arg : args) argv.push_back(const_cast<char *>(arg.c_str()));
+    argv.push_back(nullptr);
+    pid_t pid{};
+    const auto result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attributes);
+    close(fds[1]);
+    if (result != 0) {
+        close(fds[0]);
+        return false;
+    }
+    child = {pid, fds[0]};
+    return true;
+}
+std::size_t read_some(const Child &child, char *buffer, std::size_t size) {
+    for (;;) {
+        const auto count = read(child.out, buffer, size);
+        if (count >= 0) return static_cast<std::size_t>(count);
+        if (errno != EINTR) return 0;
+    }
+}
+void terminate(const Child &child) {
+    if (child.pid > 0) ::kill(-child.pid, SIGTERM);
+}
+int wait_for(const Child &child) {
+    close(child.out);
+    int status{};
+    while (waitpid(child.pid, &status, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+void release(const Child &) {}
+#endif
+
+// yt-dlp never reads its config files (they can run commands). On Windows it would write to a
+// pipe in the ANSI code page.
+std::vector<std::string> ytdlp(std::initializer_list<std::string> rest) {
+    std::vector<std::string> args{"yt-dlp", "--ignore-config", "--no-warnings"};
+#ifdef _WIN32
+    args.insert(args.end(), {"--encoding", "utf-8"});
+#endif
+    args.insert(args.end(), rest);
+    return args;
 }
 } // namespace
 
@@ -126,7 +339,7 @@ struct Radio::State {
     std::deque<std::string> notices;
     std::thread worker;
     bool cancel{}, worker_done{}, active{};
-    pid_t child{}; // the running tool's process group
+    Child child; // the running tool
     std::uint32_t next_track = 1, worker_track{}, playing_track{}, skipped{};
     std::string source, playing_title;
     std::uint64_t next_at{}, frames{}, bytes{}, started{};
@@ -143,79 +356,42 @@ struct Radio::State {
         {
             std::lock_guard lock(mutex);
             cancel = true;
-            if (child > 0) ::kill(-child, SIGTERM);
+            terminate(child);
         }
         room.notify_all();
         if (worker.joinable()) worker.join();
         std::lock_guard lock(mutex);
         queue.clear();
         cancel = worker_done = active = false;
-        child = 0;
+        child = {};
         next_at = 0;
         playing_title.clear();
     }
 
-    // Runs a tool from an argument list, never a shell: its own process group (so stop and skip
-    // end it and anything it starts), stdin and stderr closed off, stdout piped back.
-    pid_t spawn(const std::vector<std::string> &args, int &out) {
-        int fds[2];
-        if (pipe2(fds, O_CLOEXEC) != 0) return -1;
-        posix_spawn_file_actions_t actions;
-        posix_spawn_file_actions_init(&actions);
-        posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
-        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-        posix_spawnattr_t attributes;
-        posix_spawnattr_init(&attributes);
-        // The server ignores SIGPIPE; a tool must not inherit that, or it would outlive a closed pipe.
-        sigset_t defaults, none;
-        sigemptyset(&defaults);
-        sigaddset(&defaults, SIGPIPE);
-        sigemptyset(&none);
-        posix_spawnattr_setsigdefault(&attributes, &defaults);
-        posix_spawnattr_setsigmask(&attributes, &none);
-        posix_spawnattr_setpgroup(&attributes, 0);
-        posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
-        std::vector<char *> argv;
-        for (const auto &arg : args) argv.push_back(const_cast<char *>(arg.c_str()));
-        argv.push_back(nullptr);
-        pid_t pid{};
-        const auto result = posix_spawnp(&pid, argv[0], &actions, &attributes, argv.data(), environ);
-        posix_spawn_file_actions_destroy(&actions);
-        posix_spawnattr_destroy(&attributes);
-        close(fds[1]);
-        if (result != 0) {
-            close(fds[0]);
-            return -1;
-        }
-        out = fds[0];
+    bool spawn(const std::vector<std::string> &args, Child &started_child) {
+        if (!start(args, started_child)) return false;
         std::lock_guard lock(mutex);
-        child = pid;
-        if (cancel) ::kill(-pid, SIGTERM); // stopped while it started
-        return pid;
+        child = started_child;
+        if (cancel) terminate(started_child); // stopped while it started
+        return true;
     }
-    int reap(pid_t pid, int out) {
-        close(out);
-        int status{};
-        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-        std::lock_guard lock(mutex);
-        if (child == pid) child = 0;
-        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    int reap(const Child &done) {
+        const auto code = wait_for(done);
+        {
+            std::lock_guard lock(mutex);
+            if (child == done) child = {};
+        }
+        release(done);
+        return code;
     }
     std::string capture(const std::vector<std::string> &args) {
-        int out{};
-        const auto pid = spawn(args, out);
-        if (pid < 0) return {};
+        Child tool;
+        if (!spawn(args, tool)) return {};
         std::string text;
         char buffer[4096];
-        for (ssize_t count; (count = read(out, buffer, sizeof buffer)) != 0;) {
-            if (count < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            if (text.size() < max_listing) text.append(buffer, static_cast<std::size_t>(count));
-        }
-        return reap(pid, out) == 0 ? text : std::string{};
+        for (std::size_t count; (count = read_some(tool, buffer, sizeof buffer)) != 0;)
+            if (text.size() < max_listing) text.append(buffer, count);
+        return reap(tool) == 0 ? text : std::string{};
     }
 
     std::vector<Entry> entries(const std::string &input) {
@@ -224,11 +400,11 @@ struct Radio::State {
             if (!ytdlp) return {{input, input}};
             // One line per video ("<url>\t<title>"): a playlist lists them all (the first 500 of a
             // channel), a page lists itself. A single video has no flat "url", only its page's.
-            const auto listing = capture({"yt-dlp", "--ignore-config", "--no-warnings", "--flat-playlist", "--playlist-end",
-                                          "500", "--print", "%(webpage_url,url)s\t%(title)s", "--", input});
+            const auto listing = capture(server::ytdlp({"--flat-playlist", "--playlist-end", "500", "--print",
+                                                        "%(webpage_url,url)s\t%(title)s", "--", input}));
             for (std::string_view rest = listing; !rest.empty();) {
                 const auto end = rest.find('\n');
-                const auto line = rest.substr(0, end);
+                const auto line = line_of(rest);
                 rest = end == std::string_view::npos ? std::string_view{} : rest.substr(end + 1);
                 const auto tab = line.find('\t');
                 const auto url = line.substr(0, tab);
@@ -239,14 +415,15 @@ struct Radio::State {
             return result;
         }
         std::error_code failed;
-        if (fs::is_directory(input, failed)) {
-            for (const auto &file : fs::directory_iterator(input, failed))
+        const auto path = utf8_path(input);
+        if (fs::is_directory(path, failed)) {
+            for (const auto &file : fs::directory_iterator(path, failed))
                 if (file.is_regular_file(failed) &&
-                    std::find(audio_files.begin(), audio_files.end(), lower(file.path().extension().string())) != audio_files.end())
-                    result.push_back({file.path().string(), file.path().stem().string()});
+                    std::find(audio_files.begin(), audio_files.end(), lower(utf8_name(file.path().extension()))) != audio_files.end())
+                    result.push_back({utf8_name(file.path()), utf8_name(file.path().stem())});
             std::sort(result.begin(), result.end(), [](const Entry &a, const Entry &b) { return a.input < b.input; });
         } else {
-            result.push_back({input, fs::path(input).stem().string()});
+            result.push_back({input, utf8_name(path.stem())});
         }
         return result;
     }
@@ -265,9 +442,8 @@ struct Radio::State {
         std::string input = entry.input;
         if (remote && ytdlp) {
             // The page's audio stream: the best audio-only format, or whatever it has.
-            const auto direct = capture({"yt-dlp", "--ignore-config", "--no-warnings", "--no-playlist", "-f",
-                                         "bestaudio/best", "-g", "--", entry.input});
-            input = std::string(trim(std::string_view(direct).substr(0, direct.find('\n'))));
+            const auto direct = capture(server::ytdlp({"--no-playlist", "-f", "bestaudio/best", "-g", "--", entry.input}));
+            input = std::string(trim(line_of(direct)));
             if (!web_url(input)) return 0;
         }
         std::uint32_t track{};
@@ -280,13 +456,13 @@ struct Radio::State {
         if (!encoder || error != OPUS_OK) return 0;
         opus_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate));
         // Remote sources may not reach local files, local ones may not reach the network.
-        int out{};
-        const auto pid = spawn({"ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist",
-                                remote ? "http,https,tcp,tls,crypto,hls" : "file", "-i", remote ? input : "file:" + input,
-                                "-vn", "-ac", "2", "-ar", std::to_string(radio_rate), "-f", "s16le", "pipe:1"},
-                               out);
+        Child tool;
+        const bool running = spawn({"ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist",
+                                    remote ? "http,https,tcp,tls,crypto,hls" : "file", "-i", remote ? input : "file:" + input,
+                                    "-vn", "-ac", "2", "-ar", std::to_string(radio_rate), "-f", "s16le", "pipe:1"},
+                                   tool);
         std::size_t queued{};
-        if (pid >= 0) {
+        if (running) {
             constexpr auto samples = radio_frame_samples * radio_channels;
             std::vector<opus_int16> pcm;
             std::vector<std::uint8_t> raw;
@@ -304,11 +480,7 @@ struct Radio::State {
                 return true;
             };
             char buffer[16384];
-            for (ssize_t count; open && (count = read(out, buffer, sizeof buffer)) != 0;) {
-                if (count < 0) {
-                    if (errno == EINTR) continue;
-                    break;
-                }
+            for (std::size_t count; open && (count = read_some(tool, buffer, sizeof buffer)) != 0;) {
                 raw.insert(raw.end(), buffer, buffer + count);
                 const auto whole = raw.size() / 2;
                 for (std::size_t i = 0; i < whole; ++i)
@@ -320,8 +492,8 @@ struct Radio::State {
                 pcm.resize(samples);
                 encode();
             }
-            if (!open) ::kill(-pid, SIGTERM); // skipped or stopped: ffmpeg may still be writing
-            reap(pid, out);
+            if (!open) terminate(tool); // skipped or stopped: ffmpeg may still be writing
+            reap(tool);
         }
         opus_encoder_destroy(encoder);
         return queued;
@@ -392,7 +564,7 @@ std::string Radio::skip() {
     // Only what is playing now: the next song may already be buffering.
     s.skipped = std::max(s.skipped, s.playing_track);
     std::erase_if(s.queue, [&](const State::Item &item) { return item.track <= s.skipped; });
-    if (s.worker_track <= s.skipped && s.child > 0) ::kill(-s.child, SIGTERM);
+    if (s.worker_track <= s.skipped) terminate(s.child);
     s.room.notify_all();
     return "Radio: skipped " + (s.playing_title.empty() ? std::string("the song") : s.playing_title) + ".";
 }
@@ -409,7 +581,7 @@ std::string Radio::status() const {
     auto &s = *state_;
     std::lock_guard lock(s.mutex);
     std::string tools = std::string(s.ffmpeg ? "ffmpeg" : "no ffmpeg") + (s.ytdlp ? ", yt-dlp" : ", no yt-dlp");
-    if (!s.active) return "The radio is off (" + tools + "). Radio folder: " + s.folder.string();
+    if (!s.active) return "The radio is off (" + tools + "). Radio folder: " + utf8_name(s.folder);
     const auto seconds = s.frames * frame_us / 1000000;
     const auto kbps = seconds ? s.bytes * 8 / 1000 / seconds : 0;
     // One short line each: an admin reads this in chat, where a long line is cut off.
@@ -458,5 +630,4 @@ Radio::Output Radio::poll(std::uint64_t now) noexcept {
     }
     return out;
 }
-#endif
 } // namespace dingosdk::server

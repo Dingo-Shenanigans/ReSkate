@@ -6,11 +6,17 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <numbers>
 #include <opus.h>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 
 using namespace dingosdk::server;
 using namespace dingosdk::multiplayer;
@@ -41,7 +47,9 @@ void sources(const fs::path &root) {
     fs::create_directories(root / "outside");
     { std::ofstream(folder / "song.mp3") << "x"; }
     { std::ofstream(root / "outside" / "secret.mp3") << "x"; }
-    fs::create_symlink(root / "outside", folder / "escape");
+    // Windows only lets an administrator (or developer mode) make links: without one, no link to test.
+    std::error_code no_link;
+    fs::create_directory_symlink(root / "outside", folder / "escape", no_link);
     std::string error;
     check(Radio::check_source("https://example.com/live.mp3", folder, error) == "https://example.com/live.mp3", "https URL refused");
     check(Radio::check_source("HTTP://example.com/a", folder, error) == "HTTP://example.com/a", "upper-case scheme refused");
@@ -51,10 +59,15 @@ void sources(const fs::path &root) {
                             "-o", "--exec=id", "file:///etc/passwd", "tcp://10.0.0.1:80", "ftp://example.com/a.mp3",
                             "concat:song.mp3|song.mp3", "missing.mp3", "https://example.com/a b", "https://example.com/\n-x"})
         check(Radio::check_source(bad, folder, error).empty(), std::string("source accepted: ") + bad);
+#ifdef _WIN32
+    for (const auto *bad : {"..\\outside\\secret.mp3", "albums\\..\\..\\outside\\secret.mp3", "C:\\Windows\\win.ini",
+                            "C:song.mp3", "\\\\server\\share\\a.mp3", "\\outside\\secret.mp3", "song.mp3:hidden", "NUL"})
+        check(Radio::check_source(bad, folder, error).empty(), std::string("source accepted: ") + bad);
+#endif
 }
 // Energy at `frequency` relative to the whole signal (Goertzel on the left channel).
 double tone_share(const std::vector<float> &left, double frequency) {
-    const double w = 2 * M_PI * frequency / radio_rate, coefficient = 2 * std::cos(w);
+    const double w = 2 * std::numbers::pi * frequency / radio_rate, coefficient = 2 * std::cos(w);
     double s1{}, s2{}, total{};
     for (const auto x : left) {
         const auto s = x + coefficient * s1 - s2;
@@ -106,9 +119,15 @@ Played listen(Radio &radio, unsigned steps, const std::string &skip_after = {}) 
     for (auto &[track, decoder] : decoders) opus_decoder_destroy(decoder);
     return played;
 }
+// The command is fixed by the test, so going through the shell (cmd.exe on Windows) is fine here.
 bool make_tone(const fs::path &file, int frequency, int seconds) {
+#ifdef _WIN32
+    const auto quoted = "\"" + file.string() + "\"";
+#else
+    const auto quoted = "'" + file.string() + "'";
+#endif
     const auto command = "ffmpeg -nostdin -loglevel error -y -f lavfi -i sine=frequency=" + std::to_string(frequency) +
-                         ":sample_rate=48000:duration=" + std::to_string(seconds) + " -ac 2 '" + file.string() + "'";
+                         ":sample_rate=48000:duration=" + std::to_string(seconds) + " -ac 2 " + quoted;
     return std::system(command.c_str()) == 0;
 }
 void tones(const fs::path &root) {
