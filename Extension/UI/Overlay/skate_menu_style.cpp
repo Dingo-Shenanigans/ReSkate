@@ -1,7 +1,6 @@
 #include "skate_menu_internal.h"
 #include "Extension/UI/skate_theme.h"
 
-#include <cctype>
 #include <algorithm>
 #include <array>
 #include <atomic>

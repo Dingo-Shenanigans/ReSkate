@@ -133,7 +133,7 @@ bool unwarp(Clip &clip) {
     double at{};
     for (std::size_t i = 1; i < frames.size(); ++i) {
         at += std::max(1.0, static_cast<double>(step[i] / real));
-        frames[i].at = frames.front().at + static_cast<std::uint32_t>(at + 0.5);
+        frames[i].at = frames.front().at + static_cast<std::uint32_t>(std::lround(at));
     }
     return true;
 }

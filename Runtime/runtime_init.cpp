@@ -14,7 +14,6 @@
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
 #include "Extension/Skater/style_editor.h"
-#include "Extension/Skater/style_layer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
 #include "Extension/Multiplayer/Session/session.h"
