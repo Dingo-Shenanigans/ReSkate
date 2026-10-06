@@ -328,7 +328,8 @@ std::optional<Clip> clip_from_capture(std::uint8_t trick, const std::vector<RigF
     };
     for (std::size_t i = begin + 1; i < end; ++i) {
         if (!jumped(i)) continue;
-        if (i <= flick) begin = i;
+        // The game moves the board back one frame after the skater, so the clip starts one frame after the jump.
+        if (i <= flick) begin = std::min(i + 1, flick);
         else if (i > on) {
             end = i;
             break;

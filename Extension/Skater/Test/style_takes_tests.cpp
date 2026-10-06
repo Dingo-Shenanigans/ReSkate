@@ -127,7 +127,8 @@ int main() {
     for (std::size_t i = 0; i < 30; ++i) restarted[i].joints[1].position[0] += 10;
     for (std::size_t i = 110; i < restarted.size(); ++i) restarted[i].joints[1].position[0] -= 10;
     const auto trimmed = clip_from_capture(3, restarted, joints, board, {}, why);
-    check(trimmed && trimmed->frames.size() == 110 - 30, "the clip starts after the demonstration starts again, and ends before the next start");
+    check(trimmed && trimmed->frames.size() == 110 - 31,
+          "the clip starts one frame after the demonstration starts again, when the board is back in place, and ends before the next start");
     if (trimmed) {
         bool smooth = true;
         for (std::size_t i = 1; i < trimmed->frames.size(); ++i)
