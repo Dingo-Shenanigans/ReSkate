@@ -37,7 +37,7 @@ constexpr std::string_view title_prefix = "ID_SKATEPEDIA_";
 // A part-of-the-board entry: Skatepedia shows the board alone for it.
 constexpr std::string_view parked_entry = "ID_SKATEPEDIA_DECK";
 
-enum class Way { none, look, wait_stage, wait_closed, open, wait_open, settings, keys };
+enum class Way { none, look, wait_stage, wait_closed, open, wait_open, settings, tile, wait_tile, keys };
 enum class Seek { none, find, set, learn };
 
 struct State {
@@ -286,9 +286,18 @@ void step_way(std::uintptr_t base, State &s, std::uint64_t now) {
         else if (now > s.way_deadline) fail(s, "The editor could not open: the pause menu did not open");
     } else if (s.way == Way::settings) {
         if (!navigate(base, s, "GoToSettings")) return fail(s, "The editor could not open: the settings page did not open");
-        // Skatepedia is the third tile down.
+        next(Way::tile, 1200);
+    } else if (s.way == Way::tile) {
+        // The settings page's Skatepedia tile sends this navigation when it is selected.
+        // The first open of a session loads the stage for up to 15 s, so the key presses wait that long.
+        if (navigate(base, s, "Settings_Skatepedia")) next(Way::wait_tile, 0, 15000);
+        else next(Way::wait_tile, 0);
+    } else if (s.way == Way::wait_tile) {
+        if (now <= s.way_deadline) return;
+        // Skatepedia's stage did not appear: select its tile with key presses. It is the third tile down.
+        logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the Skatepedia navigation did not open it. Key presses are used.");
         s.way_keys = 2;
-        next(Way::keys, 1200);
+        next(Way::keys, 0);
     } else if (s.way == Way::keys) {
         const bool last = s.way_keys-- <= 0;
         if (!press_key(s, last ? WORD{VK_SPACE} : WORD{'S'})) return fail(s, "The editor could not open: the game window does not have the keyboard");
