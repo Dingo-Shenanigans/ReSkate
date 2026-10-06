@@ -123,10 +123,49 @@ int main() {
     check(at.size() == 2 && at[1].joint == 6 && near(at[1].rotation, mix(identity, bent, 0.5f)), "between keyframes each joint moves from one to the next");
     evaluate(keys, 2.0f, at);
     check(at.size() == 2 && near(at[0].rotation, turned) && near(at[1].rotation, bent), "and reaches the next keyframe at its time");
-    evaluate(keys, 2.5f, at);
+    const float released = 2.0f + release_ms / even_pace[2];
+    evaluate(keys, (2.0f + released) * 0.5f, at);
     check(at.size() == 2 && near(at[0].rotation, mix(turned, identity, 0.5f)), "after the last keyframe it returns to the game's pose");
+    evaluate(keys, released, at);
+    check(at.size() == 2 && near(at[0].rotation, identity) && near(at[1].rotation, identity), "in release_ms");
+    evaluate(keys, 2.9f, at);
+    check(near(at[0].rotation, identity), "and stays there to the end of the landing");
+    const Pace measured{440, 290, 450};
+    const std::vector<Key> caught{{1.0f, {{5, bent}}}};
+    evaluate(caught, 1.0f + (release_ms - 10) / measured[1], at, measured);
+    check(!near(at[0].rotation, identity), "the return takes release_ms in real time");
+    evaluate(caught, 1.0f + release_ms / measured[1], at, measured);
+    check(near(at[0].rotation, identity), "also when the part has a different length");
     evaluate({}, 1.0f, at);
     check(at.empty(), "a trick with no keyframes changes nothing");
+    // Blend out: the pose is back to the game's pose that many ms after the keyframe, then moves to the next keyframe.
+    const std::vector<Key> hit{{1.0f, {{5, bent}}, 100}, {2.0f, {{5, bent}}}};
+    const float out_at = 1.0f + 100 / even_pace[1];
+    evaluate(hit, (1.0f + out_at) * 0.5f, at);
+    check(near(at[0].rotation, mix(bent, identity, 0.5f)), "a blend out leaves the keyframe");
+    evaluate(hit, out_at, at);
+    check(near(at[0].rotation, identity), "and is at the game's pose after its time");
+    evaluate(hit, (out_at + 2.0f) * 0.5f, at);
+    check(near(at[0].rotation, mix(identity, bent, 0.5f)), "then the pose moves to the next keyframe");
+    const std::vector<Key> too_long{{1.0f, {{5, bent}}, 600}, {2.0f, {{5, turned}}}}, straight{{1.0f, {{5, bent}}}, {2.0f, {{5, turned}}}};
+    std::vector<JointDelta> direct;
+    for (const float time : {1.2f, 1.5f, 1.9f}) {
+        evaluate(too_long, time, at);
+        evaluate(straight, time, direct);
+        check(near(at[0].rotation, direct[0].rotation), "a blend out that does not end before the next keyframe goes straight to it");
+    }
+    const std::vector<Key> last{{1.0f, {{5, bent}}, 100}};
+    evaluate(last, 1.0f + 90 / measured[1], at, measured);
+    check(!near(at[0].rotation, identity), "the last keyframe's blend out replaces release_ms");
+    evaluate(last, 1.0f + 100 / measured[1], at, measured);
+    check(near(at[0].rotation, identity), "and is in real time");
+    const std::vector<Key> late{{2.9f, {{5, bent}}, max_blend_out_ms}};
+    evaluate(late, 2.95f, at);
+    check(!near(at[0].rotation, identity), "a blend out longer than the trick");
+    evaluate(late, trick_end, at);
+    check(near(at[0].rotation, identity), "ends with the trick");
+    for (const float time : {0.0f, 0.4f, 1.0f, 1.7f, 2.2f, 3.0f})
+        check(std::abs(timeline_at(paced(time, measured), measured) - time) < 1e-4f, "timeline_at undoes paced");
     // The angle of joint 5 about X, at a timeline time.
     const auto angle = [](const std::vector<Key> &keyframes, float time, const Pace &pace) {
         std::vector<JointDelta> rotations;
@@ -135,7 +174,7 @@ int main() {
     };
     // A joint that keeps turning one way goes through a keyframe with no corner: its speed is the same on both sides.
     const std::vector<Key> onward{{1.0f, {{5, from_degrees(30, 0, 0)}}}, {2.0f, {{5, from_degrees(60, 0, 0)}}}, {2.9f, {{5, from_degrees(70, 0, 0)}}}};
-    for (const auto &pace : {even_pace, Pace{440, 290, 450}}) {
+    for (const auto &pace : {even_pace, measured}) {
         const float step = 0.002f, scale_before = pace[0], scale_after = pace[1];
         const float before = (angle(onward, 1.0f, pace) - angle(onward, 1.0f - step, pace)) / (step * scale_before);
         const float after = (angle(onward, 1.0f + step, pace) - angle(onward, 1.0f, pace)) / (step * scale_after);
@@ -145,7 +184,7 @@ int main() {
     const float peak = angle(keys, 1.0f, even_pace);
     check(std::abs(angle(keys, 0.99f, even_pace) - peak) < 0.05f && angle(keys, 1.01f, even_pace) <= peak + 1e-3f, "a joint that turns back stops at the keyframe");
     for (float time = 0; time <= trick_end; time += 0.01f)
-        if (angle(onward, time, Pace{440, 290, 450}) > 70.001f) {
+        if (angle(onward, time, measured) > 70.001f) {
             check(false, "the curve never goes past a keyframe");
             break;
         }

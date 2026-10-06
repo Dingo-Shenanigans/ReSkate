@@ -20,7 +20,7 @@ struct Calls {
     std::string editor, debug;
     dingosdk::style::Target target{};
     std::uint8_t preview{}, key_trick{}, key{};
-    float preview_time{}, key_time{};
+    float preview_time{}, key_time{}, blend_out{-1};
     bool preview_play{};
     int key_calls{};
     std::string joint;
@@ -57,6 +57,9 @@ void request_preview(std::uint8_t trick, float time, bool play) { calls.preview 
 int request_key_add(std::uint8_t trick, float time, std::string &) { return calls.key_trick = trick, calls.key_time = time, ++calls.key_calls, 3; }
 bool request_key_move(std::uint8_t trick, std::uint8_t key, float time, std::string &) {
     return calls.key_trick = trick, calls.key = key, calls.key_time = time, true;
+}
+bool request_key_blend_out(std::uint8_t trick, std::uint8_t key, float ms, std::string &) {
+    return calls.key_trick = trick, calls.key = key, calls.blend_out = ms, true;
 }
 bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error) {
     calls.key_trick = trick, calls.key = key;
@@ -150,6 +153,10 @@ int main() {
               "style key add places a keyframe");
         check(run("style key move heelflip 1 2.5") && calls.key_trick == 3 && calls.key == 1 && calls.key_time == 2.5f, "style key move moves one");
         check(run("style key delete kickflip 2") && calls.key == 2 && printed.empty(), "style key delete removes one");
+        check(run("style key blendout heelflip 1 300") && calls.key_trick == 3 && calls.key == 1 && calls.blend_out == 300.0f,
+              "style key blendout sets a keyframe's blend out in ms");
+        check(run("style key blendout heelflip 1 off") && calls.blend_out == 0.0f, "and off sends it to the next keyframe again");
+        check(run("style key blendout heelflip 1 soon") && printed.find("error") == 0, "a blend out that is not a time is refused");
         check(run("style key delete kickflip 9") && printed.find("error") == 0, "a keyframe the trick does not have is reported");
         check(!run("style key add riding 1") && !run("style key add kickflip 7"), "keyframes belong to flip tricks and to the timeline");
         check(run("style preview off") && calls.preview == 0, "style preview off ends it");

@@ -46,6 +46,8 @@ using addr::style::bone_size, addr::style::bone_rotation, addr::style::bone_posi
 constexpr auto &stage_centre = addr::style::skatepedia_stage, &stage_reach = addr::style::skatepedia_stage_reach;
 constexpr float blend_seconds = 0.08f; // smooths sudden changes, such as the catch or a slam
 constexpr float preview_play_seconds = 1.6f; // one pass of a previewed timeline
+constexpr float preview_part_ms = preview_play_seconds * 1000.0f / style::trick_end;
+constexpr style::Pace preview_pace{preview_part_ms, preview_part_ms, preview_part_ms};
 
 // The joint rotations for each state family and each flip trick. A published snapshot never changes.
 struct Snapshot {
@@ -244,7 +246,7 @@ void apply(std::uintptr_t component) {
     l.merged.clear();
     const auto preview = l.preview.load(std::memory_order_acquire);
     if (preview && snapshot) {
-        style::evaluate(snapshot->tricks[preview], preview_time(now), l.merged);
+        style::evaluate(snapshot->tricks[preview], preview_time(now), l.merged, preview_pace);
     } else if (family && snapshot && l.active.load(std::memory_order_acquire)) {
         merged(*snapshot, *family, moment.trick, moment.time, l.trick.pace(moment.trick), l.timeline, l.merged);
     }
@@ -413,7 +415,7 @@ void preview_other(std::uintptr_t holder) noexcept {
         }
         slot->seen = now;
         if (solo && preview) {
-            style::evaluate(snapshot->tricks[preview], preview_time(now), slot->shown);
+            style::evaluate(snapshot->tricks[preview], preview_time(now), slot->shown, preview_pace);
         } else if (frame) {
             // Replace the rotations of the recorded frame with the rotations of the current style.
             merged(*snapshot, Family::riding, frame->trick, frame->time, l.trick.pace(frame->trick), l.timeline, l.restyled);
@@ -496,6 +498,9 @@ std::shared_ptr<const Snapshot> build(const Settings &s) {
     result->rig = {joint("AITrajectory"), joint("Deck"), joint("LeftFoot"), joint("RightFoot"), std::move(parents)};
     for (std::uint8_t trick = 1; trick < result->tricks.size(); ++trick)
         for (const auto time : s.style.keys(trick)) result->tricks[trick].push_back({time, {}});
+    for (const auto &[target, ms] : s.style.blend_outs)
+        if (target.trick && target.id < result->tricks.size() && target.key < result->tricks[target.id].size())
+            result->tricks[target.id][target.key].blend_out_ms = ms;
     for (const auto &[key, degrees] : s.style.rotations) {
         const auto found = std::ranges::find(*s.skeleton, key.second, &style::SkeletonJoint::name);
         if (found == s.skeleton->end()) continue;
@@ -662,7 +667,10 @@ void request_clear(std::optional<style::Target> target) {
         std::erase_if(s.style.rotations, [&](const auto &entry) {
             return entry.first.first.trick == target->trick && entry.first.first.id == target->id;
         });
-        if (target->trick) s.style.times.erase(target->id);
+        if (target->trick) {
+            s.style.times.erase(target->id);
+            std::erase_if(s.style.blend_outs, [&](const auto &entry) { return entry.first.id == target->id; });
+        }
     } else s.style = {};
     changed(s);
 }
@@ -745,6 +753,29 @@ bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error
         kept[{target, entry.second}] = degrees;
     }
     s.style.rotations = std::move(kept);
+    style::BlendOuts blends;
+    for (const auto &[entry, ms] : s.style.blend_outs) {
+        auto target = entry;
+        if (target.id == trick) {
+            if (target.key == key) continue;
+            if (target.key > key) --target.key;
+        }
+        blends[target] = ms;
+    }
+    s.style.blend_outs = std::move(blends);
+    changed(s);
+    return true;
+}
+bool request_key_blend_out(std::uint8_t trick, std::uint8_t key, float ms, std::string &error) {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    if (!valid_trick(trick) || key >= s.style.keys(trick).size()) {
+        error = "That trick does not have that keyframe.";
+        return false;
+    }
+    const style::Target target{true, trick, key};
+    if (std::isfinite(ms) && ms > 0) s.style.blend_outs[target] = std::clamp(ms, style::min_blend_out_ms, style::max_blend_out_ms);
+    else s.style.blend_outs.erase(target);
     changed(s);
     return true;
 }
@@ -821,6 +852,7 @@ style::StyleModel model() {
                 result.rotations.push_back({key.first, static_cast<std::uint8_t>(joint - style::editable_joints.begin()), degrees});
         }
         result.times = s.style.times;
+        result.blend_outs = s.style.blend_outs;
         // The folder is listed again every two seconds: a preset can be copied in while the game runs.
         if (const auto now = GetTickCount64(); now >= s.presets_at) {
             s.presets_at = now + 2000;

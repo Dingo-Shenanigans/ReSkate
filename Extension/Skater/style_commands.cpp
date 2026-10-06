@@ -82,6 +82,20 @@ void register_style_commands(Commands &registry) {
             out("error: " + error);
     };
     registry.add(std::move(remove));
+    auto blend = action("style key blendout",
+                        "Set the ms from a flip trick's keyframe back to the game's pose. off blends to the next keyframe",
+                        Group::gameplay, {shown, key, argument("ms|off", Type::text)});
+    blend.run = [trick_of](const Model &, const Values &args, const Output &out) {
+        const auto &text = std::get<std::string>(args[2]);
+        const auto ms = equal(text, "off") ? std::optional<Value>(0.0) : parse_value(Type::number, text);
+        std::string error;
+        if (!ms)
+            out("error: Give a time in ms, or off.");
+        else if (!style_layer::request_key_blend_out(trick_of(args), static_cast<std::uint8_t>(std::get<std::uint64_t>(args[1])),
+                                                     static_cast<float>(std::get<double>(*ms)), error))
+            out("error: " + error);
+    };
+    registry.add(std::move(blend));
     shown.choices.push_back("off");
     auto moment = argument("time|play", Type::text, true);
     auto preview = action("style preview", "Show a flip trick's pose at a time on its timeline, or play the timeline. The game's demonstration skater also shows it",

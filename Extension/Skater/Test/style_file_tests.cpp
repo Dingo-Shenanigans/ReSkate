@@ -27,8 +27,11 @@ int main() {
     style.rotations[{Target{true, 2, 0}, "LeftArm"}] = {0, 110, -12.5f};
     style.rotations[{Target{true, 2, 3}, "Hips"}] = {0, -4, 0};
     style.rotations[{Target{false, 1}, "Head"}] = {0, 0, 30};
+    style.blend_outs[Target{true, 2, 1}] = 300;
     const auto text = encode_style(style);
-    check(decode_style(text) == style, "a saved style reads back, keyframe times and all");
+    check(decode_style(text) == style, "a saved style reads back, keyframe times and blend outs and all");
+    check(text.find("blend_out_ms") != std::string::npos && decode_style(text).blend_outs.size() == 1,
+          "only a keyframe with a blend out saves one");
     check(text.find("\"kickflip\"") != std::string::npos && text.find("\"grind\"") != std::string::npos,
           "tricks and states are saved by name");
     // A trick starts with no keyframes. A rotation on a missing keyframe is not saved.
@@ -43,7 +46,14 @@ int main() {
     check(loose.rotations.size() == 1 && loose.rotations.begin()->second == std::array<float, 3>{max_degrees, 0, -max_degrees} &&
               loose.keys(2) == std::vector<float>{trick_end},
           "angles and times are clamped; unknown tricks, placement joints, untimed keyframes and empty rotations are dropped");
-    std::string many = R"({"format":2,"tricks":{"ollie":[)";
+    const auto blends = decode_style(R"({"format":2,"tricks":{"kickflip":[{"time":1},{"time":1.5,"blend_out_ms":99999},
+        {"time":2,"blend_out_ms":-5},{"time":2.5,"blend_out_ms":"soon"}]}})");
+    check(blends.blend_outs == BlendOuts{{Target{true, 2, 1}, max_blend_out_ms}},
+          "a keyframe without a blend out goes to the next keyframe; a blend out is clamped, and one that is not a time is dropped");
+    Style stray;
+    stray.blend_outs[Target{true, 3, 1}] = 200;
+    check(decode_style(encode_style(stray)).blend_outs.empty(), "a blend out on a missing keyframe is not saved");
+    std::string many =R"({"format":2,"tricks":{"ollie":[)";
     for (int i = 0; i < 40; ++i) many += std::string(i ? "," : "") + R"({"time":1})";
     check(decode_style(many + "]}}").keys(1).size() == max_keys, "a trick keeps no more keyframes than the editor allows");
 

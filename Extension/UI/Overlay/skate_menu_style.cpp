@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cmath>
 #include <format>
+#include <optional>
 #include <utility>
 
 // Style editing: the style editor screen with a keyframe timeline for each flip trick, and the STYLE page.
@@ -15,7 +16,9 @@ using namespace menu;
 using style::Target;
 constexpr ImU32 track_colour = IM_COL32(38, 40, 46, 255), track_alternate = IM_COL32(48, 51, 58, 255),
                 line_colour = IM_COL32(110, 114, 124, 255), key_colour = IM_COL32(236, 232, 220, 255),
-                selected_colour = IM_COL32(70, 150, 255, 255), playhead_colour = IM_COL32(255, 196, 64, 255);
+                selected_colour = IM_COL32(70, 150, 255, 255), playhead_colour = IM_COL32(255, 196, 64, 255),
+                tail_colour = IM_COL32(236, 232, 220, 80), default_tail_colour = IM_COL32(236, 232, 220, 36),
+                cut_tail_colour = IM_COL32(255, 128, 72, 120);
 std::atomic<StylePlayheadFeed> playhead_feed{};
 StyleControls controls_value;
 std::atomic<const StyleControls*> controls{};
@@ -44,6 +47,8 @@ struct Editing {
     std::uint8_t trick_id{};
     std::string trick;
     std::vector<float> times;
+    std::vector<float> blend_outs; // ms for each keyframe. 0: the keyframe blends to the next keyframe
+    style::Pace pace;              // the shown clip's
     double now{};
     bool replaying{}, standing_in{};
     // Moves the playhead, and the stand-in when it shows this trick.
@@ -77,8 +82,42 @@ Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     // A dragged keyframe shows at the mouse position until the game confirms the move.
     if (menu.styling.drag_key >= 0 && menu.styling.drag_key < static_cast<int>(e.times.size()) && e.now < menu.styling.drag_until)
         e.times[static_cast<std::size_t>(menu.styling.drag_key)] = menu.styling.drag_time;
+    e.blend_outs.assign(e.times.size(), 0.0f);
+    for (const auto& [target, ms] : model.style.blend_outs)
+        if (target.trick && target.id == e.trick_id && target.key < e.blend_outs.size()) e.blend_outs[target.key] = ms;
+    // A changed blend out shows its own value until the game confirms it.
+    if (menu.styling.blend_key >= 0 && menu.styling.blend_key < static_cast<int>(e.times.size()) && e.now < menu.styling.blend_until)
+        e.blend_outs[static_cast<std::size_t>(menu.styling.blend_key)] = menu.styling.blend_ms;
+    e.pace = model.style.pace;
     if (e.replaying) menu.styling.time = e.replay.time;
     return e;
+}
+// Where a keyframe's blend out ends on the timeline.
+struct BlendOut {
+    float ms{}, end{};
+    float room_ms{};           // the time to the next keyframe or the trick's end
+    bool last{}, set{}, cut{}; // set: the keyframe has its own time. cut: the next keyframe or the trick's end comes first
+};
+std::optional<BlendOut> blend_out(const Editing& e, std::size_t key) {
+    const float at = e.times[key];
+    float next = style::trick_end;
+    for (const auto time : e.times)
+        if (time > at && time < next) next = time;
+    const bool last = next == style::trick_end, set = e.blend_outs[key] > 0;
+    const float ms = set ? e.blend_outs[key] : last ? style::release_ms : 0.0f;
+    if (ms <= 0 || at >= style::trick_end) return std::nullopt;
+    const float from = style::paced(at, e.pace), room = style::paced(next, e.pace) - from;
+    return BlendOut{ms, style::timeline_at(from + std::min(ms, room), e.pace), room, last, set, ms >= room - 1e-3f};
+}
+// Shows a keyframe's blend out at once and sends it, but not faster than the game accepts commands.
+void send_blend_out(Editing& e, std::size_t key, float ms, bool final) {
+    auto& menu = e.menu;
+    menu.styling.blend_key = static_cast<int>(key);
+    menu.styling.blend_ms = ms;
+    menu.styling.blend_until = e.now + 0.75;
+    if (!final && e.now < menu.styling.blend_sent + 0.08) return;
+    menu.styling.blend_sent = e.now;
+    quiet(e.callbacks, std::format("style key blendout {} {} {}", e.trick, key, ms > 0 ? std::format("{:.0f}", ms) : "off"));
 }
 void trick_picker(Editing& e) {
     auto& menu = e.menu;
@@ -138,6 +177,17 @@ void timeline(Editing& e, float height) {
         if (part) draw->AddLine(ImVec2(left, origin.y + label), ImVec2(left, origin.y + label + height), line_colour, px(1));
     }
     const float middle = origin.y + label + height * 0.5f;
+    // Each blend out is a tail that narrows to the game's pose. It stops at the next keyframe or the trick's end.
+    for (std::size_t i = 0; i < e.times.size(); ++i)
+        if (const auto blend = blend_out(e, i)) {
+            const float x = x_of(e.times[i]);
+            const ImU32 colour = blend->set && blend->cut ? cut_tail_colour : blend->set ? tail_colour : default_tail_colour;
+            draw->AddTriangleFilled(ImVec2(x, middle - radius), ImVec2(x_of(blend->end), middle), ImVec2(x, middle + radius), colour);
+        }
+    // The selected keyframe's blend out has a handle at its end.
+    const auto selected = menu.styling.key >= 0 ? blend_out(e, static_cast<std::size_t>(menu.styling.key)) : std::nullopt;
+    const float handle = selected ? x_of(selected->end) : 0.0f;
+    const bool on_handle = selected && hovered && std::abs(pointer - handle) <= radius;
     int nearest = -1;
     for (int i = 0; i < static_cast<int>(e.times.size()); ++i) {
         const float x = x_of(e.times[static_cast<std::size_t>(i)]);
@@ -147,9 +197,23 @@ void timeline(Editing& e, float height) {
         const ImU32 colour = i == menu.styling.key ? selected_colour : key_colour;
         draw->AddQuadFilled(ImVec2(x, middle - radius), ImVec2(x + radius, middle), ImVec2(x, middle + radius), ImVec2(x - radius, middle), colour);
     }
-    const float shown = active && menu.styling.drag_key < 0 ? pointer : x_of(e.playhead());
+    if (selected)
+        draw->AddRectFilled(ImVec2(handle - px(2), middle - radius), ImVec2(handle + px(2), middle + radius),
+                            selected->set && selected->cut ? cut_tail_colour | IM_COL32_A_MASK : selected_colour);
+    const float shown = active && menu.styling.drag_key < 0 && !menu.styling.blend_drag ? pointer : x_of(e.playhead());
     draw->AddLine(ImVec2(shown, origin.y + label - px(3)), ImVec2(shown, origin.y + label + height + px(3)), playhead_colour, px(2));
-    if (ImGui::IsItemActivated()) {
+    if (ImGui::IsItemActivated() && on_handle) {
+        // A click on the handle drags the blend out. It does not go past the next keyframe or the trick's end.
+        menu.styling.blend_drag = true;
+        menu.styling.drag_key = -1;
+    } else if (active && menu.styling.blend_drag) {
+        if (selected) {
+            const auto key = static_cast<std::size_t>(menu.styling.key);
+            const float most = std::max(style::min_blend_out_ms, std::min(selected->room_ms, style::max_blend_out_ms));
+            const float ms = std::round(std::clamp(style::paced(mouse, e.pace) - style::paced(e.times[key], e.pace), style::min_blend_out_ms, most));
+            if (ms != e.blend_outs[key]) send_blend_out(e, key, ms, false);
+        }
+    } else if (ImGui::IsItemActivated()) {
         // A click on a keyframe selects it for a drag. A click elsewhere moves the playhead.
         menu.styling.drag_key = hovered ? nearest : -1;
         if (nearest >= 0) {
@@ -167,11 +231,37 @@ void timeline(Editing& e, float height) {
     } else if (active && menu.styling.drag_key < 0) {
         e.hold(mouse);
     }
+    if (ImGui::IsItemDeactivated() && std::exchange(menu.styling.blend_drag, false) && menu.styling.blend_key == menu.styling.key &&
+        e.now < menu.styling.blend_until)
+        send_blend_out(e, static_cast<std::size_t>(menu.styling.key), menu.styling.blend_ms, true);
     if (ImGui::IsItemDeactivated() && menu.styling.drag_key >= 0 && e.now < menu.styling.drag_until) {
         quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.styling.drag_key, menu.styling.drag_time));
         e.hold(menu.styling.drag_time);
     }
-    if (hovered && !active) ImGui::SetTooltip(nearest >= 0 ? "Drag to move this keyframe" : "Click to show this moment");
+    if (hovered && !active) {
+        if (on_handle) ImGui::SetTooltip("Drag to change the blend out (%.0f ms)", selected->ms);
+        else ImGui::SetTooltip(nearest >= 0 ? "Drag to move this keyframe" : "Click to show this moment");
+    }
+}
+// The selected keyframe's blend out: the ms back to the game's pose. At 0 the pose blends to the next keyframe.
+void blend_slider(Editing& e) {
+    auto& menu = e.menu;
+    if (menu.styling.key < 0 || menu.styling.key >= static_cast<int>(e.times.size())) return;
+    const auto key = static_cast<std::size_t>(menu.styling.key);
+    const auto blend = blend_out(e, key);
+    const bool last = std::ranges::none_of(e.times, [&](float time) { return time > e.times[key]; });
+    field(menu, "Blend out", "The time from this keyframe back to the game's pose. At the left end, the pose blends to the next keyframe.");
+    int ms = static_cast<int>(std::lround(e.blend_outs[key]));
+    const auto none = last ? std::format("Default ({:.0f} ms)", style::release_ms) : std::string("Next keyframe");
+    ImGui::SetNextItemWidth(-1);
+    const bool changed = ImGui::SliderInt("##blend-out", &ms, 0, static_cast<int>(style::max_blend_out_ms), ms ? "%d ms" : none.c_str(),
+                                          ImGuiSliderFlags_AlwaysClamp);
+    const bool released = ImGui::IsItemDeactivatedAfterEdit();
+    if (changed || released) send_blend_out(e, key, ms > 0 ? std::max(static_cast<float>(ms), style::min_blend_out_ms) : 0.0f, released);
+    if (blend && blend->set && blend->cut)
+        note((last ? std::format("The trick ends {:.0f} ms after this keyframe, so the blend out ends with it.", blend->room_ms)
+                   : std::format("The next keyframe comes {:.0f} ms after this one, so the pose blends straight to it.", blend->room_ms))
+                 .c_str());
 }
 void add_keyframe(Editing& e) {
     send_console(e.menu, e.callbacks, std::format("style key add {} {:.3f}", e.trick, e.menu.styling.time));
@@ -334,6 +424,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         if (!model.style.editor_note.empty()) ImGui::TextDisabled("%s", model.style.editor_note.c_str());
         if (menu.styling.key >= 0) {
             section(menu, std::format("KEYFRAME {} OF {}", menu.styling.key + 1, e.times.size()).c_str());
+            blend_slider(e);
             ImGui::BeginChild("##style-editor-joints", ImVec2(0, 0));
             joints(e);
             ImGui::EndChild();

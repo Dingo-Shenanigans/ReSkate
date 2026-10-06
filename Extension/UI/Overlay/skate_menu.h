@@ -83,6 +83,10 @@ struct SkateMenu {
         style::Target edit_target;
         std::array<float, 3> edit{};
         double edit_until{}, edit_sent{};
+        int blend_key = -1;  // a changed blend out, shown until the game has it
+        float blend_ms{};
+        double blend_until{}, blend_sent{};
+        bool blend_drag{};   // the selected keyframe's blend out is dragged on the timeline
     } styling;
     bool loose_files_settings_loaded{}, loose_files_saved{true};
     bool custom_scripts_scanned{};

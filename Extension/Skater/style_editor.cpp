@@ -521,6 +521,7 @@ void fill(style::StyleModel &model) {
     model.clips = s.on_disk;
     model.editor_session_test = style_layer::session_test();
     model.editor_note = s.note;
+    model.pace = s.pace;
 }
 std::string status() {
     auto &s = state();

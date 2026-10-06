@@ -16,6 +16,8 @@ bool request_joint(style::Target target, std::string_view joint, float x, float 
 int request_key_add(std::uint8_t trick, float time, std::string &error);
 bool request_key_move(std::uint8_t trick, std::uint8_t key, float time, std::string &error);
 bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error);
+// Sets a keyframe's blend out in ms. 0 blends to the next keyframe.
+bool request_key_blend_out(std::uint8_t trick, std::uint8_t key, float ms, std::string &error);
 // Removes every rotation, or those of one target.
 void request_clear(std::optional<style::Target> target = std::nullopt);
 // Discards unsaved state and reads the saved style again.

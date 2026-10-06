@@ -99,13 +99,40 @@ inline Quat from_degrees(float x, float y, float z) noexcept {
     return normalized(multiply(multiply(axis(x, 0), axis(y, 1)), axis(z, 2)));
 }
 
+// The length of a trick's pop, fall and landing in milliseconds. Keyframes move at an even speed in real time, not in timeline parts.
+using Pace = std::array<float, 3>;
+inline constexpr Pace even_pace{500.0f, 500.0f, 500.0f};
+// The time from the last keyframe back to the game's pose.
+inline constexpr float release_ms = 250.0f;
+// A timeline time (0 to 3) as time at `pace`.
+inline float paced(float time, const Pace &pace) noexcept {
+    float result{};
+    for (std::size_t part = 0; part < pace.size(); ++part)
+        result += std::clamp(time - static_cast<float>(part), 0.0f, 1.0f) * std::max(pace[part], 1e-3f);
+    return result;
+}
+// The inverse of paced: the timeline time at `ms` into the trick.
+inline float timeline_at(float ms, const Pace &pace) noexcept {
+    float time{};
+    for (std::size_t part = 0; part < pace.size(); ++part) {
+        const float length = std::max(pace[part], 1e-3f);
+        time += std::clamp(ms / length, 0.0f, 1.0f);
+        ms -= length;
+    }
+    return time;
+}
+
 // Degrees about each joint's own X, Y and Z axes, for each target.
 using Rotations = std::map<std::pair<Target, std::string>, std::array<float, 3>>;
 // The timeline time of each keyframe of each flip trick, by key number.
 using KeyTimes = std::map<std::uint8_t, std::vector<float>>;
+// The blend out of each keyframe that has one: the ms from the keyframe back to the game's pose. Others blend to the next keyframe.
+using BlendOuts = std::map<Target, float>;
+inline constexpr float min_blend_out_ms = 50.0f, max_blend_out_ms = 2000.0f;
 struct Style {
     Rotations rotations;
     KeyTimes times;
+    BlendOuts blend_outs;
     bool operator==(const Style &) const = default;
     // A trick starts with no keyframes.
     [[nodiscard]] std::vector<float> keys(std::uint8_t trick) const {
@@ -132,6 +159,8 @@ struct StyleModel {
     std::vector<std::string> presets;
     std::vector<StyleRotation> rotations;
     KeyTimes times;
+    BlendOuts blend_outs;
+    Pace pace{even_pace}; // the shown clip's pop, fall and landing
     std::uint64_t clips{}; // the tricks that have a clip, one bit for each trick
     std::string editor_note; // the last message from the editor
     bool operator==(const StyleModel &) const = default;
@@ -214,17 +243,8 @@ private:
 struct Key {
     float time{};
     std::vector<JointDelta> joints;
+    float blend_out_ms{}; // 0: blends to the next keyframe
 };
-// The length of a trick's pop, fall and landing, in any unit. Keyframes move at an even speed in real time, not in timeline parts.
-using Pace = std::array<float, 3>;
-inline constexpr Pace even_pace{1.0f, 1.0f, 1.0f};
-// A timeline time (0 to 3) as time at `pace`.
-inline float paced(float time, const Pace &pace) noexcept {
-    float result{};
-    for (std::size_t part = 0; part < pace.size(); ++part)
-        result += std::clamp(time - static_cast<float>(part), 0.0f, 1.0f) * std::max(pace[part], 1e-3f);
-    return result;
-}
 // A rotation as its axis times its angle in radians, so that rotations add and scale.
 using Turn = std::array<float, 3>;
 inline Turn turn_of(Quat q) noexcept {
@@ -245,16 +265,26 @@ inline Quat quat_of(const Turn &turn) noexcept {
 inline void evaluate(const std::vector<Key> &keys, float time, std::vector<JointDelta> &out, const Pace &pace = even_pace) {
     out.clear();
     if (keys.empty()) return;
-    // The points of the curve: the game's pose at the flick and at the end, and each keyframe. A keyframe on an end replaces it.
-    std::array<float, max_keys + 2> at{};
-    std::array<const Key *, max_keys + 2> point{};
+    // The points of the curve: each keyframe, and the game's pose at the flick and where a keyframe's blend out ends.
+    // A keyframe on an end replaces it. The last keyframe blends out in release_ms if it does not set a time.
+    std::array<float, 2 * max_keys + 2> at{};
+    std::array<const Key *, 2 * max_keys + 2> point{};
     std::size_t count{};
     const auto add = [&](float moment, const Key *key) {
-        if (count < at.size()) at[count] = paced(moment, pace), point[count++] = key;
+        if (count < at.size()) at[count] = moment, point[count++] = key;
     };
+    const float end_ms = paced(trick_end, pace);
     if (keys.front().time > 0) add(0, nullptr);
-    for (const auto &key : keys) add(key.time, &key);
-    if (keys.back().time < trick_end) add(trick_end, nullptr);
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        const float here = paced(keys[i].time, pace);
+        add(here, &keys[i]);
+        const bool last = i + 1 == keys.size();
+        const float blend = keys[i].blend_out_ms > 0 ? keys[i].blend_out_ms : last ? release_ms : 0.0f;
+        // A blend out that does not end before the next keyframe or the trick's end goes straight to it.
+        const float next = last ? end_ms : paced(keys[i + 1].time, pace);
+        if (blend > 0 && here + blend < next - 1e-3f) add(here + blend, nullptr);
+        else if (last && keys[i].time < trick_end) add(end_ms, nullptr);
+    }
     const float now = paced(std::clamp(time, 0.0f, trick_end), pace);
     std::size_t from = 0;
     while (from + 2 < count && now >= at[from + 1]) ++from;

@@ -36,6 +36,9 @@ void read_keys(const Json &keys, Target target, Style &result) {
         target.key = static_cast<std::uint8_t>(times.size());
         times.push_back(std::clamp(static_cast<float>(time), 0.0f, trick_end));
         if (key.contains("joints")) read_joints(key.at("joints"), target, result.rotations);
+        if (key.contains("blend_out_ms") && key.at("blend_out_ms").is_number())
+            if (const auto ms = key.at("blend_out_ms").get<double>(); std::isfinite(ms) && ms > 0)
+                result.blend_outs[target] = std::clamp(static_cast<float>(ms), min_blend_out_ms, max_blend_out_ms);
     }
     result.times[target.id] = std::move(times);
 }
@@ -61,6 +64,8 @@ std::string encode_style(const Style &style) {
         return keys;
     };
     for (const auto &[trick, times] : style.times) (void)keys_of(trick);
+    for (const auto &[target, ms] : style.blend_outs)
+        if (target.trick && target.key < style.keys(target.id).size()) keys_of(target.id)[target.key]["blend_out_ms"] = ms;
     for (const auto &[key, degrees] : style.rotations) {
         const auto angles = Json::array({degrees[0], degrees[1], degrees[2]});
         if (!key.first.trick) root["states"][family_names[key.first.id]][key.second] = angles;
