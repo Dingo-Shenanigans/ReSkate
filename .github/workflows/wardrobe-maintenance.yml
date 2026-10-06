@@ -66,10 +66,18 @@ jobs:
         if: steps.meta.outputs.build == 'true'
         shell: pwsh
         run: |
-          cmake -S . -B build/wardrobe-release -G "Visual Studio 17 2022" -A x64 `
-            -DDINGOSDK_LAUNCHER_AUTO_UPDATE=ON `
-            -DDINGOSDK_RELEASE_REPO=sub-north/ReSkateCOLOURS `
-            -DDINGOSDK_VERSION=${{ steps.meta.outputs.version }}
+          $version = "${{ steps.meta.outputs.version }}"
+          $cmakeArgs = @(
+            "-S", ".",
+            "-B", "build/wardrobe-release",
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DDINGOSDK_LAUNCHER_AUTO_UPDATE=ON",
+            "-DDINGOSDK_RELEASE_REPO=sub-north/ReSkateCOLOURS",
+            "-DDINGOSDK_VERSION=$version"
+          )
+          & cmake @cmakeArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build ReSkate launcher and runtime
         if: steps.meta.outputs.build == 'true'
@@ -160,4 +168,4 @@ jobs:
           "### ReSkateCOLOURS" >> $env:GITHUB_STEP_SUMMARY
           "Upstream merge changed source: **${{ steps.sync.outputs.changed }}**" >> $env:GITHUB_STEP_SUMMARY
           "Build requested: **${{ steps.meta.outputs.build }}**" >> $env:GITHUB_STEP_SUMMARY
-          "Source commit: `${{ steps.meta.outputs.sha }}`" >> $env:GITHUB_STEP_SUMMARY
+          "Source commit: ${{ steps.meta.outputs.sha }}" >> $env:GITHUB_STEP_SUMMARY
