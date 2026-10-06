@@ -423,8 +423,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         const auto restore = [&] {
             debug.style_editor = false;
             style_editor::screen_open(false);
-            // However the screen was closed, its skater goes, and the game returns to the world:
-            // Skatepedia was only ever the editor's stage.
+            // However the screen closes, its skater goes, and the game returns to the world: Skatepedia is only the editor's stage.
             style_editor::request_hide();
             style_stage::leave();
             if (debug.style_editor_saved_fov > 0 && debug.camera_owned && debug.camera_identity.camera)

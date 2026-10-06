@@ -77,7 +77,7 @@ Settings &settings() { static auto *value = new Settings; return *value; }
 struct Live {
     std::atomic<std::uintptr_t> base{}, component{}, context{}, holder{}, trick_selection{};
     std::atomic<bool> active{}, share{true};
-    std::atomic<bool> session_test{}; // the editor may run in a session: not tested yet
+    std::atomic<bool> session_test{}; // the editor may run in a multiplayer session
     std::atomic<std::shared_ptr<const Snapshot>> snapshot;
     // The render pose handoff and the client tick share the pose bookkeeping below.
     std::mutex pose_mutex;
