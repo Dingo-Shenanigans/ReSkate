@@ -453,7 +453,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool game_text_frame = game_text_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
-    const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
+    const bool plugin_hud_frame = plugin_hud_pending(); // polled every frame, so not behind a short-circuit
+    const bool perf_frame = perf_hud_pending() || trainer_hud_pending() || plugin_hud_frame;
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
@@ -522,6 +523,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
+    draw_plugin_hud();
     draw_notices();
     draw_chat();
     sync_menu_cursor(); // close buttons also change visibility, without a key message

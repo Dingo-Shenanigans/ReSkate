@@ -104,6 +104,14 @@ The menu and console keys can be changed in the launcher's Settings.
 
 Only install mods you trust. Mods change game data, and custom scripts can run code.
 
+## Plugins
+
+Native plugins can add gameplay effects that the Lua layer cannot reach (it has no per-frame hook and no access to the skater or board). A plugin is a DLL in a `Plugins` folder beside `Skate.exe`. It is loaded on the first client tick of a session in which loose files are allowed, the same condition that gates custom Lua scripts, so it never runs in a session that has them off.
+
+The interface is plain C: [`Extension/Plugins/reskate_plugin.h`](Extension/Plugins/reskate_plugin.h). A plugin exports `reskate_plugin_init(const ReSkatePluginApi*)` and, optionally, `reskate_plugin_tick()` (once per client tick) and `reskate_plugin_api_version()`. Through the API it can read the local skater and the most recent landing, force a bail, read the board's pose, hide the board, create extra board entities ("pieces") with their own bone pose, play a `.wav`, and show a HUD bar. Everything runs on the client tick; a plugin that faults is disabled for the session and the board is shown again.
+
+A small example is in [`contrib/plugins/hard_landing_example`](contrib/plugins/hard_landing_example). Plugins run native code with the game's permissions: only install ones you trust.
+
 ## Dedicated servers
 
 `ReSkateServer.exe` is a headless lobby that needs neither the game nor Steam installed. It is in the

@@ -1,6 +1,7 @@
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
+#include "Extension/Plugins/plugin_host.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -800,6 +801,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         }
         model.no_bail_available = can_control && update_no_bail(client, model.skater_identity, debug.no_bail && no_bail_allowed,
             debug.noclip && debug.noclip_velocity.valid, debug.noclip_velocity.expires);
+        plugins::tick(base, client, model.skater_identity);
         if (model.camera_available) {
             if (!model.no_bail_available) model.noclip_unavailable = "Waiting for local No Bail protection.";
             else if (!state.velocity_guard_active.load(std::memory_order_acquire))

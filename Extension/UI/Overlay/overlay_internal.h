@@ -269,6 +269,9 @@ void draw_game_text();
 // ReSkate's S.K.A.T.E. throwdown HUD (skate_hud_overlay.cpp): polled every presented frame.
 bool skate_hud_pending();
 void draw_skate_hud();
+// Bars drawn for native plugins (plugin_hud_overlay.cpp): polled every presented frame.
+bool plugin_hud_pending();
+void draw_plugin_hud();
 // ReSkate's nametags (nametag_overlay.cpp): polled every presented frame.
 bool nametags_pending();
 void draw_nametags();

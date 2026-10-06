@@ -1,4 +1,5 @@
 #include "native_skater_internal.h"
+#include "board_debris.h"
 #include "native_pose_layout.h"
 #include "native_creation_list.h"
 #include "native_cosmetics.h"
@@ -475,5 +476,116 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
     } catch (const std::exception &e) {
         detail = std::string("Cosmetics: ") + e.what();
     }
+}
+// ---- Board-break pieces: extra skateboard entities that are not a remote player's board. ----
+namespace {
+void destroy_debris_entity(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t context,
+                           std::uintptr_t parent) noexcept {
+    try {
+        if (entity && shared().hooks && GetCurrentThreadId() == shared().engine_thread &&
+            ptr(entity) == base + addr::engine::board_entity_vtable && ptr(entity, 0x20) == context &&
+            ptr(entity, 0x40) == parent)
+            shared().original_destroy(entity, parent);
+    } catch (...) { /* the level may already have freed it */
+    }
+}
+} // namespace
+bool debris_create(std::uintptr_t base, std::uintptr_t client, const Transform &at, BoardDebris &out,
+                   std::string &why) noexcept {
+    std::uintptr_t entity{}, context{}, parent{};
+    try {
+        install(base);
+        require(GetCurrentThreadId() == shared().engine_thread, "Board pieces must be made on the client thread.");
+        require(read<std::uint8_t>(base, addr::engine::entity_creation_ready) != 0,
+                "Native entity creation is not ready.");
+        const auto local = capture_local(base, client, false);
+        require(local.ready && local.entity && local.board_entity, "The local skateboard is unavailable.");
+        const auto tls_array = static_cast<std::uintptr_t>(__readgsqword(0x58));
+        const auto tls_index = read<std::uint32_t>(base, addr::engine::tls_index);
+        require(tls_index <= 4095, "Native TLS index changed.");
+        const auto tls = ptr(tls_array, std::uintptr_t{tls_index} * 8);
+        require(read<std::uint8_t>(tls, 0xb19) != 0 && ptr(tls, 0x550) == local.context,
+                "Not inside the native client job context.");
+        const auto local_board = read_native_board(readable, base, local.entity);
+        require(local_board.entity && local_board.entity == local.board_entity,
+                "Waiting for the local skateboard blueprint.");
+        const auto blueprint = read_native_board_blueprint(readable, base, local_board.entity);
+        context = local.context;
+        CreationScope creation(base);
+        entity = create_actor(base, local.parent, blueprint, at, &creation.list);
+        require(entity && entity != local_board.entity && entity != local.entity,
+                "Engine did not create an independent skateboard.");
+        require(ptr(entity) == base + addr::engine::board_entity_vtable && ptr(entity, 0x20) == local.context,
+                "Board piece entity differs.");
+        parent = ptr(entity, 0x40);
+        const auto component = read_native_component(readable, entity, base + addr::engine::board_component_vtable);
+        require(!ptr(component, 0x40) && !ptr(component, 0x58),
+                "Board piece already has physics or a skater association.");
+        const std::uint8_t disabled = 1;
+        require(write(component + 0x7d, &disabled, 1), "Cannot disable board piece physics.");
+        creation.initialize(entity, local.context, local.entity, local_board.entity);
+        alignas(16) const auto matrix = to_matrix(at);
+        using InitializePlacement = void (*)(std::uintptr_t, const void *, std::uintptr_t, std::uint8_t);
+        reinterpret_cast<InitializePlacement>(base + entities::initialize_placement)(entity, matrix.data(), 0, 1);
+        require((read<std::uint32_t>(entity, 0x28) & 8) != 0 && !ptr(component, 0x40) && !ptr(component, 0x58) &&
+                    read<std::uint8_t>(component, 0x7d) == 1,
+                "Board piece initialization changed its physics state.");
+        initialize_appearance(base, entity, local_board.entity);
+        const auto visual = read_native_board_visual(readable, base, entity);
+        require(visual.initialized, "Board piece animation resource did not initialize.");
+        reinterpret_cast<void (*)(std::uintptr_t, std::uint8_t)>(base + native::enable_board_resources)(
+            visual.holder, 1);
+        out = {entity, parent, local.context, local.parent};
+        why.clear();
+        return true;
+    } catch (const std::exception &e) {
+        why = e.what();
+    } catch (...) {
+        why = "unknown error";
+    }
+    destroy_debris_entity(base, entity, context, parent);
+    out = {};
+    return false;
+}
+bool debris_place(std::uintptr_t base, const BoardDebris &piece, const Transform &at, std::string &why) noexcept {
+    try {
+        const auto entity = piece.entity;
+        require(entity && ptr(entity) == base + addr::engine::board_entity_vtable &&
+                    ptr(entity, 0x20) == piece.context && ptr(entity, 0x40) == piece.parent,
+                "Board piece is gone.");
+        const auto holder = ptr(entity, 0xf0);
+        require(holder && ptr(holder) == base + addr::engine::board_holder_vtable && ptr(holder, 0xb8),
+                "Board piece animation transform controller unavailable.");
+        const auto parent = piece.parent;
+        require(ptr(holder, 0x30) == parent && ptr(parent, 0x20) == piece.context,
+                "Board piece transform ownership changed.");
+        const auto transform = ptr(parent, 0x18);
+        require(transform && ptr(transform) == base + native::blueprint_transform_vtable &&
+                    transform != ptr(piece.local_parent, 0x18) && !read<std::uint8_t>(transform, 0xa5),
+                "Board piece world transform unavailable.");
+        alignas(16) const auto matrix = to_matrix(at);
+        reinterpret_cast<void (*)(std::uintptr_t, const void *)>(base + native::set_blueprint_transform)(
+            transform, matrix.data());
+        reinterpret_cast<void (*)(std::uintptr_t, const void *)>(base + native::place_board)(entity, matrix.data());
+        return true;
+    } catch (const std::exception &e) {
+        why = e.what();
+    } catch (...) {
+        why = "unknown error";
+    }
+    return false;
+}
+std::uintptr_t debris_holder(const BoardDebris &piece) noexcept {
+    try {
+        return piece.entity ? ptr(piece.entity, 0xf0) : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+void debris_destroy(std::uintptr_t base, BoardDebris &piece) noexcept {
+    if (const auto holder = debris_holder(piece))
+        debris_clear_pose(holder);
+    destroy_debris_entity(base, piece.entity, piece.context, piece.parent);
+    piece = {};
 }
 } // namespace dingosdk::multiplayer

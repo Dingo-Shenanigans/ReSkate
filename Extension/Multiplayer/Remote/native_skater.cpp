@@ -1,5 +1,6 @@
 #include "native_skater_internal.h"
 #include "native_pose_layout.h"
+#include "board_debris.h"
 #include "puppet_cost.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
@@ -9,6 +10,9 @@
 #include <algorithm>
 #include <cstring>
 #include <span>
+#include <vector>
+#include <atomic>
+#include <mutex>
 
 namespace dingosdk::multiplayer {
 using namespace native_skater_detail;
@@ -187,6 +191,63 @@ HiddenJoint &hidden_joint() {
     static auto *value = new HiddenJoint;
     return *value;
 }
+// ---- Board-break pieces: a bone pose per piece, written when its skeleton is published. ----
+struct PiecePose {
+    std::uintptr_t holder{};
+    std::vector<Transform> bones;
+    PieceStatus status;
+};
+struct PieceRegistry {
+    std::mutex mutex;
+    std::vector<PiecePose> pieces;
+    std::atomic<std::size_t> count{};
+};
+PieceRegistry &piece_registry() {
+    static auto *value = new PieceRegistry;
+    return *value;
+}
+// Bones 0 and 1 (the rig root and the board's world placement) stay with the engine; the deck,
+// the trucks and the wheels (2..11) come from the piece.
+constexpr std::size_t piece_first_bone = 2, piece_last_bone = 12;
+void apply_piece_pose(std::uintptr_t animation_interface, std::uintptr_t render_data) {
+    auto &registry = piece_registry();
+    if (!registry.count.load(std::memory_order_acquire))
+        return;
+    const auto error = GetLastError();
+    std::unique_lock lock(registry.mutex, std::try_to_lock);
+    if (lock.owns_lock()) {
+        const auto holder = animation_interface - 0xc0;
+        for (auto &piece : registry.pieces) {
+            if (piece.holder != holder)
+                continue;
+            auto &status = piece.status;
+            ++status.calls;
+            try {
+                const auto pose = skeleton(shared().base, holder, max_board_bones - 1);
+                const auto published_buffer = ptr(render_data, 0x10);
+                status.count = pose.count;
+                status.same_buffer = pose.buffer && published_buffer == pose.buffer;
+                if (!pose.buffer)
+                    ++status.no_layout;
+                else if (!status.same_buffer)
+                    ++status.wrong_buffer;
+                else if (pose.count != piece.bones.size() || pose.count < piece_last_bone)
+                    ++status.wrong_count;
+                else if (write_bones(pose.buffer + piece_first_bone * sizeof(NativeBone),
+                                     piece.bones.data() + piece_first_bone, piece_last_bone - piece_first_bone)) {
+                    ++status.written;
+                    NativeBone check{};
+                    if (readable(pose.buffer + 3 * sizeof(NativeBone), &check, sizeof(check)))
+                        status.deck = {check.position[0], check.position[1], check.position[2]};
+                }
+            } catch (...) {
+                ++status.failed;
+            }
+            break;
+        }
+    }
+    SetLastError(error);
+}
 void apply_render_pose(std::uintptr_t animation_interface, std::uintptr_t render_data) {
     auto &r = remote();
     const auto holder = watched().board_holder[peer_slot].load(std::memory_order_acquire);
@@ -343,6 +404,8 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         slot < max_remote_players) {
         const PeerScope scope(slot);
         apply_render_pose(animation_interface, render_data);
+    } else if (result && animation_interface > 0xc0) {
+        apply_piece_pose(animation_interface, render_data);
     }
     return result;
 }
@@ -550,6 +613,31 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
 }
 NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client) {
     return capture_local(base, client, true);
+}
+void debris_set_pose(std::uintptr_t holder, std::span<const Transform> bones) {
+    auto &registry = piece_registry();
+    std::lock_guard lock(registry.mutex);
+    for (auto &piece : registry.pieces)
+        if (piece.holder == holder) {
+            piece.bones.assign(bones.begin(), bones.end());
+            return;
+        }
+    registry.pieces.push_back({holder, {bones.begin(), bones.end()}});
+    registry.count.store(registry.pieces.size(), std::memory_order_release);
+}
+PieceStatus debris_pose_status(std::uintptr_t holder) {
+    auto &registry = piece_registry();
+    std::lock_guard lock(registry.mutex);
+    for (const auto &piece : registry.pieces)
+        if (piece.holder == holder)
+            return piece.status;
+    return {};
+}
+void debris_clear_pose(std::uintptr_t holder) noexcept {
+    auto &registry = piece_registry();
+    std::lock_guard lock(registry.mutex);
+    std::erase_if(registry.pieces, [holder](const PiecePose &piece) { return piece.holder == holder; });
+    registry.count.store(registry.pieces.size(), std::memory_order_release);
 }
 std::uint64_t remote_pose_updates() noexcept { return remote().applied.load(std::memory_order_relaxed); }
 std::uint64_t remote_board_pose_updates() noexcept {

@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace dingosdk::overlay {
@@ -298,6 +299,11 @@ struct SkateHud {
 };
 using SkateHudFeed = SkateHud (*)();
 void set_skate_hud_feed(SkateHudFeed) noexcept;
+// Bars for native plugins (plugin_hud_overlay.cpp), stacked in the bottom-left corner in skate.'s
+// style. `fraction` is 0..1; `rgb` is 0xRRGGBB, or 0 for green, amber and red as it falls. A bar
+// not refreshed for a second disappears, so a plugin that stops leaves nothing on screen. Any thread.
+void set_plugin_hud_bar(std::string_view id, std::string_view label, float fraction, std::uint32_t rgb) noexcept;
+void clear_plugin_hud_bar(std::string_view id) noexcept;
 // ReSkate's own nametags: one per other player, placed over the world with the camera the
 // client last used. Close ones show a name and distance, far ones a dot, and players off
 // screen a dot at the screen's edge. Empty = nothing to draw (off, or the game hides its UI).

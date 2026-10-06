@@ -6,6 +6,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include <array>
 #include <atomic>
 #include <intrin.h>
 
@@ -164,8 +165,43 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
     }
     return true;
 }
+// Bail causes recorded for the watched local skater, queued for the client tick. The hook
+// runs on the game's physics thread, so it only compares a pointer and copies a few bytes
+// under a lock that nothing holds across native code.
+struct ImpactWatch {
+    std::atomic<std::uintptr_t> causes{};
+    std::atomic<std::uint64_t> until{};
+    SRWLOCK lock = SRWLOCK_INIT;
+    std::array<ImpactEvent, 8> ring{};
+    std::uint64_t written{}; // events ever stored; guarded by lock
+    std::uint64_t taken{};   // events ever taken; guarded by lock
+};
+ImpactWatch& impact_watch() { static auto* value = new ImpactWatch; return *value; }
+void note_cause(std::uintptr_t causes, std::int32_t reason, float magnitude, std::uintptr_t caller) noexcept {
+    LastError error;
+    auto& w = impact_watch();
+    const auto now = GetTickCount64();
+    if (!causes || causes != w.causes.load(std::memory_order_acquire) || now >= w.until.load(std::memory_order_acquire))
+        return;
+    ImpactEvent event;
+    event.tick = now;
+    event.reason = reason;
+    event.magnitude = magnitude;
+    const auto base = protection().base;
+    for (std::size_t i = 0; i < impact_bail_calls.size(); ++i) {
+        if (caller == base + impact_bail_calls[i].return_rva && reason == impact_bail_calls[i].reason) {
+            event.site = static_cast<std::int32_t>(i);
+            break;
+        }
+    }
+    AcquireSRWLockExclusive(&w.lock);
+    event.sequence = ++w.written;
+    w.ring[(w.written - 1) % w.ring.size()] = event;
+    ReleaseSRWLockExclusive(&w.lock);
+}
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    note_cause(causes, reason, magnitude, caller);
     const bool protect = suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
@@ -185,6 +221,23 @@ void hold_off_board(std::uintptr_t selector, std::uint32_t current) noexcept {
     if (!resolve(board.owner.client, board.owner.entity, current_owner) || current_owner != board.owner) return;
     (void)cancel_request(current_owner.context, animation_request_offset, mount_request_mask);
 }
+// A bail the SDK asked for, waiting for the owner's next state selection.
+struct ForcedBail {
+    std::atomic<std::uintptr_t> selector{}, context{}, causes{};
+    std::atomic<std::uint64_t> until{};
+};
+ForcedBail& forced_bail() { static auto* value = new ForcedBail; return *value; }
+// No C++ objects in this frame, so __try is allowed. The two steps of every native impact
+// site: request bit 15, then the cause (reason 9, magnitude 0).
+bool raise_impact_request(std::uintptr_t context, RecordCause record, std::uintptr_t causes) noexcept {
+    const auto address = context + impact_request_offset;
+    if (context < 0x10000 || (address & (alignof(LONG) - 1)) != 0) return false;
+    __try {
+        _InterlockedOr(reinterpret_cast<volatile LONG*>(address), impact_request_mask);
+        record(causes, 9, 0.0f);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     {
         LastError error;
@@ -194,9 +247,23 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     // transitions can still run. Some contact tests return Wipeout directly;
     // retain the current state only for that result, never ordinary Offboard.
     const bool filtered = filter_requests(selector, &Owner::selector);
+    // A bail the SDK asked for: raise the request and cause inside this step, before the selector reads them.
+    bool forcing = false;
+    {
+        auto& f = forced_bail();
+        if (!filtered && current != wipeout_physics_state && selector == f.selector.load(std::memory_order_acquire) &&
+            GetTickCount64() < f.until.load(std::memory_order_acquire))
+            forcing = raise_impact_request(f.context.load(std::memory_order_acquire), protection().cause_original,
+                f.causes.load(std::memory_order_acquire));
+    }
     const auto next = protection().choose_original(selector, current);
     LastError error;
-    const auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
+    if (forcing && chosen != wipeout_physics_state) chosen = wipeout_physics_state; // the native predicate did not take it: bail anyway
+    if (chosen == wipeout_physics_state) {
+        auto& f = forced_bail();
+        if (selector == f.selector.load(std::memory_order_acquire)) f.selector.store(0, std::memory_order_release); // consumed
+    }
     auto& w = state_watch();
     if (selector == w.selector.load(std::memory_order_acquire) && GetTickCount64() < w.until.load(std::memory_order_acquire)) {
         if (const auto before = w.state.exchange(chosen, std::memory_order_acq_rel); before != chosen) {
@@ -417,5 +484,41 @@ void clear_no_bail_flight() noexcept {
     AcquireSRWLockExclusive(&p.lock);
     p.lease.flight_until = 0;
     ReleaseSRWLockExclusive(&p.lock);
+}
+void watch_impacts(std::uintptr_t client, std::uintptr_t entity) noexcept {
+    LastError error;
+    Owner owner;
+    if (!protection().ready.load(std::memory_order_acquire) || !resolve(client, entity, owner)) return;
+    auto& w = impact_watch();
+    w.causes.store(owner.causes, std::memory_order_release);
+    w.until.store(GetTickCount64() + 500, std::memory_order_release);
+}
+bool force_bail(std::uintptr_t client, std::uintptr_t entity) noexcept {
+    LastError error;
+    auto& p = protection();
+    Owner owner;
+    if (!p.ready.load(std::memory_order_acquire) || !p.cause_original || !resolve(client, entity, owner)) return false;
+    // The request is carried out by the state selector, on the game's physics thread, inside the
+    // physics step (choose_state): a request raised from here is cleared before that step reads it.
+    auto& f = forced_bail();
+    f.context.store(owner.context, std::memory_order_release);
+    f.causes.store(owner.causes, std::memory_order_release);
+    f.until.store(GetTickCount64() + 600, std::memory_order_release);
+    f.selector.store(owner.selector, std::memory_order_release);
+    return true;
+}
+bool take_impact(ImpactEvent& event) noexcept {
+    auto& w = impact_watch();
+    bool found = false;
+    AcquireSRWLockExclusive(&w.lock);
+    if (w.taken < w.written) {
+        // Events that fell out of the ring are gone; skip to the oldest one still held.
+        if (w.written - w.taken > w.ring.size()) w.taken = w.written - w.ring.size();
+        event = w.ring[w.taken % w.ring.size()];
+        ++w.taken;
+        found = true;
+    }
+    ReleaseSRWLockExclusive(&w.lock);
+    return found;
 }
 }
