@@ -7,7 +7,7 @@
 // The part of the style layer that only the style editor uses.
 namespace dingosdk::style_layer {
 // The rotations that the current style gives a flip trick at a timeline time.
-void rotations_at(std::uint8_t trick, float time, std::vector<style::JointDelta> &out);
+void rotations_at(std::uint8_t trick, float time, const style::Pace &pace, std::vector<style::JointDelta> &out);
 // The layer does not change these poses: the stand-in and its board. 0 is none.
 void ignore_holder(std::uintptr_t holder, std::uintptr_t board = 0) noexcept;
 // True if Skatepedia's skater was on its stage in the last 500 ms. Always false unless watch_stage() was called in the last 2 s.

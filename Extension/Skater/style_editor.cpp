@@ -394,7 +394,10 @@ style::Pose styled(State &s, float ms) {
     const auto &clip = *s.shown;
     const float time = style::time_at(clip, ms);
     auto pose = style::sample(clip, time);
-    style_layer::rotations_at(clip.trick, std::clamp(time, 0.0f, style::trick_end), s.rotations);
+    // Keyframes move at the clip's own pace, so their speed does not change where the parts meet.
+    const float flick = style::ms_at(clip, 0), catch_ms = style::ms_at(clip, 1), touchdown = style::ms_at(clip, 2);
+    const style::Pace pace{catch_ms - flick, touchdown - catch_ms, style::ms_at(clip, style::trick_end) - touchdown};
+    style_layer::rotations_at(clip.trick, std::clamp(time, 0.0f, style::trick_end), pace, s.rotations);
     for (const auto &delta : s.rotations)
         if (delta.joint < pose.skater.size())
             pose.skater[delta.joint].rotation = style::normalized(style::multiply(pose.skater[delta.joint].rotation, delta.rotation));

@@ -120,12 +120,35 @@ int main() {
     evaluate(keys, 1.0f, at);
     check(near(at[0].rotation, bent), "reaching it at its time");
     evaluate(keys, 1.5f, at);
-    check(at.size() == 2 && near(at[0].rotation, mix(bent, turned, 0.5f)) && at[1].joint == 6 && near(at[1].rotation, mix(identity, bent, 0.5f)),
-          "between keyframes each joint moves from one to the next");
+    check(at.size() == 2 && at[1].joint == 6 && near(at[1].rotation, mix(identity, bent, 0.5f)), "between keyframes each joint moves from one to the next");
+    evaluate(keys, 2.0f, at);
+    check(at.size() == 2 && near(at[0].rotation, turned) && near(at[1].rotation, bent), "and reaches the next keyframe at its time");
     evaluate(keys, 2.5f, at);
     check(at.size() == 2 && near(at[0].rotation, mix(turned, identity, 0.5f)), "after the last keyframe it returns to the game's pose");
     evaluate({}, 1.0f, at);
     check(at.empty(), "a trick with no keyframes changes nothing");
+    // The angle of joint 5 about X, at a timeline time.
+    const auto angle = [](const std::vector<Key> &keyframes, float time, const Pace &pace) {
+        std::vector<JointDelta> rotations;
+        evaluate(keyframes, time, rotations, pace);
+        return rotations.empty() ? 0.0f : 2 * std::atan2(rotations[0].rotation[0], rotations[0].rotation[3]) * 57.29578f;
+    };
+    // A joint that keeps turning one way goes through a keyframe with no corner: its speed is the same on both sides.
+    const std::vector<Key> onward{{1.0f, {{5, from_degrees(30, 0, 0)}}}, {2.0f, {{5, from_degrees(60, 0, 0)}}}, {2.9f, {{5, from_degrees(70, 0, 0)}}}};
+    for (const auto &pace : {even_pace, Pace{440, 290, 450}}) {
+        const float step = 0.002f, scale_before = pace[0], scale_after = pace[1];
+        const float before = (angle(onward, 1.0f, pace) - angle(onward, 1.0f - step, pace)) / (step * scale_before);
+        const float after = (angle(onward, 1.0f + step, pace) - angle(onward, 1.0f, pace)) / (step * scale_after);
+        check(before > 0 && std::abs(before - after) < 0.05f * before, "a joint goes through a keyframe at one speed, also when the parts have different lengths");
+    }
+    // A joint that turns back at a keyframe slows to a stop there, and does not go past it.
+    const float peak = angle(keys, 1.0f, even_pace);
+    check(std::abs(angle(keys, 0.99f, even_pace) - peak) < 0.05f && angle(keys, 1.01f, even_pace) <= peak + 1e-3f, "a joint that turns back stops at the keyframe");
+    for (float time = 0; time <= trick_end; time += 0.01f)
+        if (angle(onward, time, Pace{440, 290, 450}) > 70.001f) {
+            check(false, "the curve never goes past a keyframe");
+            break;
+        }
     // Takes: a replayed frame is recognised by its pose, and restyled from what was shown.
     Takes takes;
     const auto shown_at = [](float degrees) {

@@ -251,7 +251,7 @@ void apply(std::uintptr_t component) {
     } else if (family && snapshot && l.active.load(std::memory_order_acquire)) {
         l.merged = snapshot->families[static_cast<std::size_t>(*family)];
         if (moment.trick) {
-            style::evaluate(snapshot->tricks[moment.trick], moment.time, l.timeline);
+            style::evaluate(snapshot->tricks[moment.trick], moment.time, l.timeline, l.trick.pace(moment.trick));
             for (const auto &delta : l.timeline) {
                 const auto same = std::ranges::find(l.merged, delta.joint, &style::JointDelta::joint);
                 if (same == l.merged.end()) l.merged.push_back(delta);
@@ -443,7 +443,7 @@ void preview_other(std::uintptr_t holder) noexcept {
         } else if (frame) {
             // Replace the rotations of the recorded frame with the rotations of the current style.
             l.restyled = snapshot->families[static_cast<std::size_t>(Family::riding)];
-            style::evaluate(snapshot->tricks[frame->trick], frame->time, l.timeline);
+            style::evaluate(snapshot->tricks[frame->trick], frame->time, l.timeline, l.trick.pace(frame->trick));
             for (const auto &delta : l.timeline) {
                 const auto same = std::ranges::find(l.restyled, delta.joint, &style::JointDelta::joint);
                 if (same == l.restyled.end()) l.restyled.push_back(delta);
@@ -880,12 +880,12 @@ void request_preview(std::uint8_t trick, float time, bool play) {
     l.preview_played.store(play ? GetTickCount64() : 0, std::memory_order_release);
     l.preview.store(trick, std::memory_order_release);
 }
-void rotations_at(std::uint8_t trick, float time, std::vector<style::JointDelta> &out) {
+void rotations_at(std::uint8_t trick, float time, const style::Pace &pace, std::vector<style::JointDelta> &out) {
     out.clear();
     const auto snapshot = live().snapshot.load(std::memory_order_acquire);
     if (!snapshot || trick >= snapshot->tricks.size()) return;
     std::vector<style::JointDelta> timeline;
-    style::evaluate(snapshot->tricks[trick], time, timeline);
+    style::evaluate(snapshot->tricks[trick], time, timeline, pace);
     out = snapshot->families[static_cast<std::size_t>(Family::riding)];
     for (const auto &delta : timeline) {
         const auto same = std::ranges::find(out, delta.joint, &style::JointDelta::joint);

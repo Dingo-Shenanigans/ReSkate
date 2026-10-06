@@ -218,27 +218,79 @@ struct Key {
     float time{};
     std::vector<JointDelta> joints;
 };
+// The length of a trick's pop, fall and landing, in any unit. Keyframes move at an even speed in real time, not in timeline parts.
+using Pace = std::array<float, 3>;
+inline constexpr Pace even_pace{1.0f, 1.0f, 1.0f};
+// A timeline time (0 to 3) as time at `pace`.
+inline float paced(float time, const Pace &pace) noexcept {
+    float result{};
+    for (std::size_t part = 0; part < pace.size(); ++part)
+        result += std::clamp(time - static_cast<float>(part), 0.0f, 1.0f) * std::max(pace[part], 1e-3f);
+    return result;
+}
+// A rotation as its axis times its angle in radians, so that rotations add and scale.
+using Turn = std::array<float, 3>;
+inline Turn turn_of(Quat q) noexcept {
+    if (q[3] < 0)
+        for (auto &value : q) value = -value;
+    const float sine = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+    const float scale = sine < 1e-7f ? 2.0f : 2.0f * std::atan2(sine, q[3]) / sine;
+    return {q[0] * scale, q[1] * scale, q[2] * scale};
+}
+inline Quat quat_of(const Turn &turn) noexcept {
+    const float angle = std::sqrt(turn[0] * turn[0] + turn[1] * turn[1] + turn[2] * turn[2]);
+    if (angle < 1e-7f) return normalized({turn[0] * 0.5f, turn[1] * 0.5f, turn[2] * 0.5f, 1.0f});
+    const float scale = std::sin(angle * 0.5f) / angle;
+    return {turn[0] * scale, turn[1] * scale, turn[2] * scale, std::cos(angle * 0.5f)};
+}
 // The rotations at `time` for keyframes sorted by time. A joint that a keyframe omits has the game's rotation there.
-inline void evaluate(const std::vector<Key> &keys, float time, std::vector<JointDelta> &out) {
+// The curve goes through each keyframe with no corner, and slows to a stop where a joint turns back, so it does not overshoot.
+inline void evaluate(const std::vector<Key> &keys, float time, std::vector<JointDelta> &out, const Pace &pace = even_pace) {
     out.clear();
     if (keys.empty()) return;
-    const auto after = std::ranges::find_if(keys, [&](const Key &key) { return key.time > time; });
-    const Key *next = after != keys.end() ? &*after : nullptr;
-    const Key *previous = after != keys.begin() ? &*(after - 1) : nullptr;
-    const float from = previous ? previous->time : 0.0f, to = next ? next->time : trick_end;
-    const float amount = to > from ? std::clamp((time - from) / (to - from), 0.0f, 1.0f) : 1.0f;
-    const auto rotation_in = [](const Key *key, std::uint16_t joint) {
-        if (key)
-            for (const auto &delta : key->joints)
-                if (delta.joint == joint) return delta.rotation;
-        return identity;
+    // The points of the curve: the game's pose at the flick and at the end, and each keyframe. A keyframe on an end replaces it.
+    std::vector<float> at;
+    std::vector<const Key *> point;
+    if (keys.front().time > 0) at.push_back(paced(0, pace)), point.push_back(nullptr);
+    for (const auto &key : keys) at.push_back(paced(key.time, pace)), point.push_back(&key);
+    if (keys.back().time < trick_end) at.push_back(paced(trick_end, pace)), point.push_back(nullptr);
+    const auto rotation_in = [&](std::size_t index, std::uint16_t joint) {
+        if (point[index])
+            for (const auto &delta : point[index]->joints)
+                if (delta.joint == joint) return turn_of(delta.rotation);
+        return Turn{};
     };
-    if (previous)
-        for (const auto &delta : previous->joints) out.push_back({delta.joint, mix(delta.rotation, rotation_in(next, delta.joint), amount)});
-    if (next)
-        for (const auto &delta : next->joints)
-            if (!previous || std::ranges::find(previous->joints, delta.joint, &JointDelta::joint) == previous->joints.end())
-                out.push_back({delta.joint, mix(identity, delta.rotation, amount)});
+    const float now = paced(std::clamp(time, 0.0f, trick_end), pace);
+    std::size_t from = 0;
+    while (from + 2 < at.size() && now >= at[from + 1]) ++from;
+    const std::size_t to = std::min(from + 1, at.size() - 1);
+    const float span = at[to] - at[from];
+    const float u = span > 1e-6f ? std::clamp((now - at[from]) / span, 0.0f, 1.0f) : 1.0f;
+    // Cubic Hermite weights for the two points and their slopes.
+    const float u2 = u * u, u3 = u2 * u;
+    const float start = 2 * u3 - 3 * u2 + 1, start_slope = u3 - 2 * u2 + u, end = 3 * u2 - 2 * u3, end_slope = u3 - u2;
+    // The slope at a point, for one axis: zero at the ends and where the joint turns back (Fritsch-Butland).
+    const auto slope = [&](std::size_t index, std::uint16_t joint, std::size_t axis) {
+        if (index == 0 || index + 1 >= at.size()) return 0.0f;
+        const float before = at[index] - at[index - 1], after = at[index + 1] - at[index];
+        if (before < 1e-6f || after < 1e-6f) return 0.0f;
+        const float in = (rotation_in(index, joint)[axis] - rotation_in(index - 1, joint)[axis]) / before;
+        const float out_slope = (rotation_in(index + 1, joint)[axis] - rotation_in(index, joint)[axis]) / after;
+        if (in * out_slope <= 0) return 0.0f;
+        const float w1 = 2 * after + before, w2 = after + 2 * before;
+        return (w1 + w2) / (w1 / in + w2 / out_slope);
+    };
+    const auto add = [&](std::uint16_t joint) {
+        if (std::ranges::find(out, joint, &JointDelta::joint) != out.end()) return;
+        const auto a = rotation_in(from, joint), b = rotation_in(to, joint);
+        Turn turn;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+            turn[axis] = start * a[axis] + end * b[axis] + span * (start_slope * slope(from, joint, axis) + end_slope * slope(to, joint, axis));
+        out.push_back({joint, quat_of(turn)});
+    };
+    for (const auto index : {from, to})
+        if (point[index])
+            for (const auto &delta : point[index]->joints) add(delta.joint);
 }
 
 // Follows one flip trick along its timeline from the game's trick number and ground state. The last pop and fall durations set the pace.
@@ -269,6 +321,10 @@ public:
         const float expected = part_ == 0 ? pop_ms_[trick_] : part_ == 1 ? fall_ms_[trick_] : static_cast<float>(landing_ms);
         const float within = std::min(static_cast<float>(now_ms - since_) / expected, part_ == 2 ? 1.0f : 0.999f);
         return {trick_, static_cast<float>(part_) + within};
+    }
+    // The last measured lengths of this trick's pop and fall, and the landing, in milliseconds.
+    [[nodiscard]] Pace pace(std::uint8_t trick) const noexcept {
+        return trick < pop_ms_.size() ? Pace{pop_ms_[trick], fall_ms_[trick], static_cast<float>(landing_ms)} : even_pace;
     }
 
 private:
