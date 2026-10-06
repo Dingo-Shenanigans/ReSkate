@@ -2,6 +2,7 @@
 #include "style_skeleton.h"
 #include "style_internal.h"
 #include "style_file.h"
+#include "Engine/Core/Json/json.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Core/Log/logging.h"
@@ -21,7 +22,6 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -141,32 +141,17 @@ bool solo() noexcept {
     if (multiplayer::other_remote_skaters(multiplayer::max_remote_players - 1)) return false;
     return live().ignored.load(std::memory_order_acquire) || !multiplayer::other_remote_skaters(multiplayer::max_remote_players);
 }
-std::uintptr_t pointer(std::uintptr_t object, std::uintptr_t offset = 0) noexcept {
-    std::uintptr_t value{};
-    if (object < 0x10000 || object > memory::highest_user_address - offset || !memory::peek(object + offset, value) ||
-        value < 0x10000 || value > memory::highest_user_address - 0x10000) return 0;
-    return value;
-}
-bool write_rotation(std::uintptr_t address, const Quat &value) noexcept {
+// Writes a value into game memory. False if the page cannot be written.
+template <class T> bool poke(std::uintptr_t address, const T &value) noexcept {
     __try {
-        std::memcpy(reinterpret_cast<void *>(address), value.data(), sizeof(value));
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-bool write_position(std::uintptr_t address, const std::array<float, 3> &value) noexcept {
-    __try {
-        std::memcpy(reinterpret_cast<void *>(address), value.data(), sizeof(value));
+        std::memcpy(reinterpret_cast<void *>(address), &value, sizeof(T));
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
 }
 // Sets the three scale lanes of a bone. The fourth lane keeps its value.
-bool write_scale(std::uintptr_t bone, float scale) noexcept {
-    return write_position(bone, {scale, scale, scale});
-}
+bool write_scale(std::uintptr_t bone, float scale) noexcept { return poke(bone, std::array<float, 3>{scale, scale, scale}); }
 std::optional<Family> family_of(std::uint32_t state) noexcept {
     if (state >= riding_states_begin && state < riding_states_end) return Family::riding;
     if (state >= grind_states_begin && state < grind_states_end) return Family::grind;
@@ -194,6 +179,18 @@ float preview_time(std::uint64_t now) noexcept {
         return std::fmod(static_cast<float>(now - started) / 1000.0f / preview_play_seconds, 1.0f) * style::trick_end;
     return std::bit_cast<float>(l.preview_time.load(std::memory_order_acquire));
 }
+// The rotations of a state family with a trick's keyframes at `time` on top. `timeline` is scratch space.
+void merged(const Snapshot &snapshot, Family family, std::uint8_t trick, float time, const style::Pace &pace,
+            std::vector<style::JointDelta> &timeline, std::vector<style::JointDelta> &out) {
+    out = snapshot.families[static_cast<std::size_t>(family)];
+    if (!trick || trick >= snapshot.tricks.size()) return;
+    style::evaluate(snapshot.tricks[trick], time, timeline, pace);
+    for (const auto &delta : timeline) {
+        const auto same = std::ranges::find(out, delta.joint, &style::JointDelta::joint);
+        if (same == out.end()) out.push_back(delta);
+        else *same = delta;
+    }
+}
 // Writes `deltas` into the pose of `holder`. Returns false if there is no work or no standard skeleton.
 bool write_pose(style::PoseTracker &tracker, std::uintptr_t holder, const std::vector<style::JointDelta> &deltas,
                 std::uintptr_t *buffer = nullptr) {
@@ -219,9 +216,9 @@ bool write_pose(style::PoseTracker &tracker, std::uintptr_t holder, const std::v
         bool reused{};
         const auto next = tracker.adjust(delta.joint, now, delta.rotation, &reused);
         any_reused |= reused;
-        if (!write_rotation(rotation_at(delta.joint), next)) throw std::runtime_error("pose unwritable");
+        if (!poke(rotation_at(delta.joint), next)) throw std::runtime_error("pose unwritable");
     }
-    tracker.end(current, [&](std::uint16_t joint, const Quat &base) { (void)write_rotation(rotation_at(joint), base); });
+    tracker.end(current, [&](std::uint16_t joint, const Quat &base) { (void)poke(rotation_at(joint), base); });
     if (any_reused && buffer) l.reused_calls.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
@@ -249,23 +246,15 @@ void apply(std::uintptr_t component) {
     if (preview && snapshot) {
         style::evaluate(snapshot->tricks[preview], preview_time(now), l.merged);
     } else if (family && snapshot && l.active.load(std::memory_order_acquire)) {
-        l.merged = snapshot->families[static_cast<std::size_t>(*family)];
-        if (moment.trick) {
-            style::evaluate(snapshot->tricks[moment.trick], moment.time, l.timeline, l.trick.pace(moment.trick));
-            for (const auto &delta : l.timeline) {
-                const auto same = std::ranges::find(l.merged, delta.joint, &style::JointDelta::joint);
-                if (same == l.merged.end()) l.merged.push_back(delta);
-                else *same = delta;
-            }
-        }
+        merged(*snapshot, *family, moment.trick, moment.time, l.trick.pace(moment.trick), l.timeline, l.merged);
     }
     const auto elapsed = l.blended_at ? static_cast<float>(std::min<std::uint64_t>(micro - l.blended_at, 100000)) / 1000000.0f : 0.0f;
     l.blended_at = micro;
     const auto &written = l.blender.step(l.merged, style::ease_amount(elapsed, blend_seconds));
-    (void)write_pose(l.tracker, pointer(component, addr::style::component_pose_holder), written, &l.buffer);
+    (void)write_pose(l.tracker, memory::peek_pointer(component, addr::style::component_pose_holder), written, &l.buffer);
     // The layer keeps the frame as shown, so that it can restyle a replay of this trick.
     if (moment.trick && snapshot && !preview)
-        if (const auto shown = signature(pointer(component, addr::style::component_pose_holder), *snapshot, nullptr))
+        if (const auto shown = signature(memory::peek_pointer(component, addr::style::component_pose_holder), *snapshot, nullptr))
             l.takes.add({moment.trick, moment.time, *shown, written});
 }
 // Returns 1 for the skater skeleton, 2 for a small rig such as a skateboard, 0 for all others. The answer is cached for 2 s.
@@ -312,11 +301,8 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
             if (skater) l.stage_seen.store(GetTickCount64(), std::memory_order_relaxed);
             // The game does not restore the scale, so the layer restores it when the skater is no longer hidden.
             if (skater && !clear) {
-                Quat scale{};
-                if (memory::peek(pose.buffer + bone_size, scale) && scale[0] < 0.01f) {
-                    scale[0] = scale[1] = scale[2] = 1.0f;
-                    (void)write_rotation(pose.buffer + bone_size, scale);
-                }
+                float scale{};
+                if (memory::peek(pose.buffer + bone_size, scale) && scale < 0.01f) (void)write_scale(pose.buffer + bone_size, 1.0f);
             }
             // The layer restores the scale of a board in the same way.
             if (!skater && !clear && joint == 1) {
@@ -327,15 +313,11 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
             if (moved || !clear) continue;
             if (skater) {
                 // Scale 0.001, not a move: Skatepedia's camera follows a moved skater, and at scale 0 the stage disappears.
-                Quat scale{};
-                if (memory::peek(pose.buffer + bone_size, scale)) {
-                    scale[0] = scale[1] = scale[2] = 0.001f;
-                    (void)write_rotation(pose.buffer + bone_size, scale);
-                }
+                (void)write_scale(pose.buffer + bone_size, 0.001f);
                 continue;
             }
             position[1] -= 2000.0f;
-            (void)write_position(at, position);
+            (void)poke(at, position);
             // The game does not draw a board from joint 1, so each joint also gets scale 0.
             for (std::size_t each = 0; each < std::min<std::size_t>(pose.count, 32); ++each) (void)write_scale(pose.buffer + each * bone_size, 0.0f);
         }
@@ -350,6 +332,8 @@ void learn(std::uintptr_t holder) noexcept {
         if (!pose.buffer || !pose.count || (pose.count != skeleton_joints && pose.count > 32)) return;
         std::lock_guard lock(l.pose_mutex);
         if (l.learned.size() > 96u * 1024 * 1024) return;
+        // A recording of 8 s is about 36 MB. One reservation saves copies of the buffer as it grows.
+        if (l.learned.empty()) l.learned.reserve(48u * 1024 * 1024);
         const std::uint64_t header[3]{steady_us() / 1000, holder, pose.count};
         const auto at = l.learned.size();
         l.learned.resize(at + sizeof(header) + pose.count * bone_size);
@@ -414,16 +398,6 @@ void preview_other(std::uintptr_t holder) noexcept {
                 SetLastError(error);
                 return;
             }
-            // Boards, props and other rigs also come through this hook.
-            bool skater{};
-            try {
-                const auto pose = multiplayer::read_native_pose_layout(memory::peek_bytes, l.base.load(std::memory_order_acquire), holder, 512);
-                skater = pose.buffer && pose.count == skeleton_joints;
-            } catch (...) {}
-            if (!skater) {
-                SetLastError(error);
-                return;
-            }
             // A slot in use is not taken. A slot not seen for 1 s gets the game's rotations back first.
             if (oldest->holder && now < oldest->seen + 1000) {
                 SetLastError(error);
@@ -442,13 +416,7 @@ void preview_other(std::uintptr_t holder) noexcept {
             style::evaluate(snapshot->tricks[preview], preview_time(now), slot->shown);
         } else if (frame) {
             // Replace the rotations of the recorded frame with the rotations of the current style.
-            l.restyled = snapshot->families[static_cast<std::size_t>(Family::riding)];
-            style::evaluate(snapshot->tricks[frame->trick], frame->time, l.timeline, l.trick.pace(frame->trick));
-            for (const auto &delta : l.timeline) {
-                const auto same = std::ranges::find(l.restyled, delta.joint, &style::JointDelta::joint);
-                if (same == l.restyled.end()) l.restyled.push_back(delta);
-                else *same = delta;
-            }
+            merged(*snapshot, Family::riding, frame->trick, frame->time, l.trick.pace(frame->trick), l.timeline, l.restyled);
             style::restyle(frame->written, l.restyled, slot->shown);
         }
         if (write_pose(*slot->tracker, holder, wanted ? slot->shown : none))
@@ -619,12 +587,17 @@ void save(Settings &s) {
     if (s.keep_file) return;
     try {
         const auto path = style_path(s.preset);
-        const auto manifest = path.parent_path().parent_path() / L"manifest.json";
+        const auto manifest = path.parent_path().parent_path() / mods::manifest_file;
         std::error_code error;
         std::filesystem::create_directories(path.parent_path(), error);
-        if (!std::filesystem::exists(manifest, error))
-            std::ofstream(manifest, std::ios::binary) << "{\n  \"name\": \"My Styles\",\n  \"author\": \"\",\n  \"version_number\": \"1.0.0\",\n"
-                                                         "  \"description\": \"Styles made in the ReSkate style editor.\"\n}\n";
+        if (!std::filesystem::exists(manifest, error)) {
+            auto root = Json::object();
+            root["name"] = "My Styles";
+            root["author"] = "";
+            root["version_number"] = "1.0.0";
+            root["description"] = "Styles made in the ReSkate style editor.";
+            std::ofstream(manifest, std::ios::binary) << root.dump(2) << "\n";
+        }
         auto temporary = path;
         temporary += L".tmp";
         {
@@ -659,9 +632,7 @@ void request_share(bool share) {
     s.share = share;
 }
 bool request_joint(style::Target target, std::string_view joint, float x, float y, float z, std::string &error) {
-    const auto known = std::ranges::find_if(style::editable_joints, [&](std::string_view name) {
-        return std::ranges::equal(name, joint, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
-    });
+    const auto known = std::ranges::find_if(style::editable_joints, [&](std::string_view name) { return style::same_text(name, joint); });
     if (known == style::editable_joints.end() ||
         target.id >= (target.trick ? style::flip_trick_names.size() : style::family_count) || (target.trick && !target.id) ||
         (!target.trick && target.key)) {
@@ -885,13 +856,7 @@ void rotations_at(std::uint8_t trick, float time, const style::Pace &pace, std::
     const auto snapshot = live().snapshot.load(std::memory_order_acquire);
     if (!snapshot || trick >= snapshot->tricks.size()) return;
     std::vector<style::JointDelta> timeline;
-    style::evaluate(snapshot->tricks[trick], time, timeline, pace);
-    out = snapshot->families[static_cast<std::size_t>(Family::riding)];
-    for (const auto &delta : timeline) {
-        const auto same = std::ranges::find(out, delta.joint, &style::JointDelta::joint);
-        if (same == out.end()) out.push_back(delta);
-        else *same = delta;
-    }
+    merged(*snapshot, Family::riding, trick, time, pace, timeline, out);
 }
 void ignore_holder(std::uintptr_t holder, std::uintptr_t board) noexcept {
     live().ignored.store(holder, std::memory_order_release);
@@ -1034,18 +999,18 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool menu_open
         }
         const auto frame = multiplayer::capture_local(base, client, false);
         std::uintptr_t component{}, core{}, context{};
-        if (frame.ready && (component = pointer(frame.entity, addr::style::entity_component)) != 0 &&
-            pointer(component) == base + addr::engine::skater_component_vtable &&
-            (core = pointer(component, component_core)) != 0 && pointer(core) == base + addr::no_bail::bail_core_vtable)
-            context = pointer(core, core_context);
-        const auto holder = pointer(component, addr::style::component_pose_holder);
+        if (frame.ready && (component = memory::peek_pointer(frame.entity, addr::style::entity_component)) != 0 &&
+            memory::peek_pointer(component) == base + addr::engine::skater_component_vtable &&
+            (core = memory::peek_pointer(component, component_core)) != 0 && memory::peek_pointer(core) == base + addr::no_bail::bail_core_vtable)
+            context = memory::peek_pointer(core, core_context);
+        const auto holder = memory::peek_pointer(component, addr::style::component_pose_holder);
         if (!context || !holder) {
             l.component.store(0, std::memory_order_release);
             l.holder.store(0, std::memory_order_release);
             return;
         }
         l.holder.store(holder, std::memory_order_release);
-        l.trick_selection.store(pointer(core, core_trick_selection), std::memory_order_release);
+        l.trick_selection.store(memory::peek_pointer(core, core_trick_selection), std::memory_order_release);
         l.base.store(base, std::memory_order_release);
         l.context.store(context, std::memory_order_release);
         l.active.store(!multiplayer::local_throwdown_active(), std::memory_order_release);

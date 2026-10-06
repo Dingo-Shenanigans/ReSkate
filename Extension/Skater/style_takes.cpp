@@ -7,7 +7,6 @@
 
 namespace dingosdk::style {
 namespace {
-constexpr std::uint32_t landing_ms = 450;
 constexpr std::size_t maximum_frames = 900, maximum_joints = 512, maximum_board = 64;
 constexpr std::size_t transform_floats = 10;
 // Time, at, fov and the 16 floats of the view.
@@ -16,15 +15,6 @@ constexpr std::size_t frame_floats = 19;
 std::array<float, 3> rotate(const Quat &q, const std::array<float, 3> &v) noexcept {
     const float tx = 2 * (q[1] * v[2] - q[2] * v[1]), ty = 2 * (q[2] * v[0] - q[0] * v[2]), tz = 2 * (q[0] * v[1] - q[1] * v[0]);
     return {v[0] + q[3] * tx + (q[1] * tz - q[2] * ty), v[1] + q[3] * ty + (q[2] * tx - q[0] * tz), v[2] + q[3] * tz + (q[0] * ty - q[1] * tx)};
-}
-Transform blend(const Transform &a, const Transform &b, float amount) noexcept {
-    Transform result;
-    for (std::size_t i = 0; i < 3; ++i) {
-        result.position[i] = a.position[i] + (b.position[i] - a.position[i]) * amount;
-        result.scale[i] = a.scale[i] + (b.scale[i] - a.scale[i]) * amount;
-    }
-    result.rotation = mix(a.rotation, b.rotation, amount);
-    return result;
 }
 float distance(const std::array<float, 3> &a, const std::array<float, 3> &b) noexcept {
     return std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
@@ -68,11 +58,11 @@ Pose blend(const Pose &a, const Pose &b, float amount) {
     if (amount <= 0 || a.skater.size() != b.skater.size() || a.board.size() != b.board.size()) return a;
     if (amount >= 1) return b;
     Pose result;
-    result.root = blend(a.root, b.root, amount);
+    result.root = multiplayer::interpolate(a.root, b.root, amount);
     result.skater.reserve(a.skater.size());
-    for (std::size_t i = 0; i < a.skater.size(); ++i) result.skater.push_back(blend(a.skater[i], b.skater[i], amount));
+    for (std::size_t i = 0; i < a.skater.size(); ++i) result.skater.push_back(multiplayer::interpolate(a.skater[i], b.skater[i], amount));
     result.board.reserve(a.board.size());
-    for (std::size_t i = 0; i < a.board.size(); ++i) result.board.push_back(blend(a.board[i], b.board[i], amount));
+    for (std::size_t i = 0; i < a.board.size(); ++i) result.board.push_back(multiplayer::interpolate(a.board[i], b.board[i], amount));
     return result;
 }
 bool retime(Clip &clip) {
@@ -84,9 +74,9 @@ bool retime(Clip &clip) {
     if (flick >= frames.size() || caught >= frames.size() || landed >= frames.size() || !(flick < caught && caught < landed)) return false;
     // A slam after the catch has no landing. Its touchdown would be the first frame after the trick.
     if (frames[caught].time >= 2 || frames[landed].time > trick_end) return false;
-    // The landing lasts landing_ms after the touchdown, or to the end of the clip.
+    // The landing lasts as long as the game's tracker counts it, or to the end of the clip.
     std::size_t over = landed;
-    while (over + 1 < frames.size() && frames[over].at < frames[landed].at + landing_ms) ++over;
+    while (over + 1 < frames.size() && frames[over].at < frames[landed].at + TrickTracker::landing_ms) ++over;
     if (over == landed) return false;
     const std::array<std::size_t, 4> marks{flick, caught, landed, over};
     for (std::size_t i = 0; i < frames.size(); ++i) {

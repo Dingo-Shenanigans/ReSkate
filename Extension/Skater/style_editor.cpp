@@ -75,6 +75,8 @@ struct State {
     bool playing{true};
     double started{}, last_tick{};
     float shown_ms{}, target_ms{}; // a held clip eases from shown_ms to target_ms
+    float low_ms{}, high_ms{};     // the trick part of the shown clip: the flick and the end
+    style::Pace pace{style::even_pace}; // the length of the shown clip's pop, fall and landing
     std::uint64_t next_cosmetics{};
     // Playback requests from the menu. `controls` guards only them, so that a request never waits for file work.
     std::mutex controls;
@@ -97,7 +99,7 @@ struct State {
 };
 State &state() { static auto *value = new State; return *value; }
 
-// GetTickCount64 is too coarse to separate two frames.
+// GetTickCount64 is too coarse to separate two frames. The layer's recording is on this clock too.
 std::uint64_t clock_ms() noexcept {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -105,11 +107,6 @@ std::uint64_t clock_ms() noexcept {
 // Playback runs on fractions of a millisecond, so that each frame advances the clip by its real duration.
 double playback_ms() noexcept {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-std::uintptr_t pointer(std::uintptr_t object, std::uintptr_t offset) noexcept {
-    std::uintptr_t value{};
-    if (object < 0x10000 || !memory::peek(object + offset, value) || value < 0x10000 || value > memory::highest_user_address - 0x10000) return 0;
-    return value;
 }
 std::filesystem::path folder() { return profile::default_path().parent_path() / L"style-clips"; }
 std::filesystem::path file_of(std::uint8_t trick) {
@@ -193,6 +190,17 @@ void keep(State &s, Clip clip) {
     style_layer::clear_demos();
     s.demos_wanted = s.learned;
 }
+// The sample nearest to `when` within 60 ms, or null. Samples have a millisecond time `at`.
+template <class Sample> const Sample *nearest_at(const std::vector<Sample> &samples, std::uint32_t when) noexcept {
+    const Sample *nearest{};
+    std::uint32_t apart = 60;
+    for (const auto &sample : samples)
+        if (const auto gap = sample.at > when ? sample.at - when : when - sample.at; gap < apart) {
+            apart = gap;
+            nearest = &sample;
+        }
+    return nearest;
+}
 // Makes the clip of the trick from the layer's recording of Skatepedia's demonstration.
 void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<std::uint8_t> &recorded) {
     const auto trick = std::exchange(s.learn, std::uint8_t{});
@@ -212,26 +220,18 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         at += sizeof(header);
         const auto count = static_cast<std::size_t>(header[2]);
         if (count > 512 || at + count * sizeof(Bone) > recorded.size()) break;
-        if (count == rig.parents->size()) {
+        // A small rig is a skateboard. Its recorded scale can be the hidden scale, so it gets 1.
+        const bool skater = count == rig.parents->size();
+        if (skater || (count >= 2 && count <= 32)) {
             style::RigFrame frame{static_cast<std::uint32_t>(header[0]), {}};
             frame.joints.reserve(count);
             for (std::size_t i = 0; i < count; ++i) {
                 Bone bone;
                 std::memcpy(&bone, recorded.data() + at + i * sizeof(Bone), sizeof(Bone));
                 frame.joints.push_back({{bone.position[0], bone.position[1], bone.position[2]}, style::normalized(bone.rotation),
-                                        {bone.scale[0], bone.scale[1], bone.scale[2]}});
+                                        skater ? std::array<float, 3>{bone.scale[0], bone.scale[1], bone.scale[2]} : std::array<float, 3>{1, 1, 1}});
             }
-            rigs[header[1]].push_back(std::move(frame));
-        } else if (count >= 2 && count <= 32) {
-            // A small rig is a skateboard. Its recorded scale can be the hidden scale, so use 1.
-            style::RigFrame frame{static_cast<std::uint32_t>(header[0]), {}};
-            frame.joints.reserve(count);
-            for (std::size_t i = 0; i < count; ++i) {
-                Bone bone;
-                std::memcpy(&bone, recorded.data() + at + i * sizeof(Bone), sizeof(Bone));
-                frame.joints.push_back({{bone.position[0], bone.position[1], bone.position[2]}, style::normalized(bone.rotation), {1, 1, 1}});
-            }
-            boards[header[1]].push_back(std::move(frame));
+            (skater ? rigs : boards)[header[1]].push_back(std::move(frame));
         }
         at += count * sizeof(Bone);
     }
@@ -284,24 +284,16 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
                  rigs.size(), farthest);
     // Each frame gets the camera sample nearest to its time.
     std::size_t viewed{}, unviewed{clip->frames.size()}; // unviewed: the first frame with no camera
-    if (!s.views.empty())
-        for (auto &frame : clip->frames) {
-            const auto when = clip->began + frame.recorded;
-            const State::View *nearest{};
-            std::uint32_t apart = 60;
-            for (const auto &view : s.views)
-                if (const auto gap = view.at > when ? view.at - when : when - view.at; gap < apart) {
-                    apart = gap;
-                    nearest = &view;
-                }
-            if (!nearest) {
-                unviewed = std::min(unviewed, static_cast<std::size_t>(&frame - clip->frames.data()));
-                continue;
-            }
-            frame.view = nearest->matrix;
-            frame.fov = nearest->fov;
-            ++viewed;
+    for (auto &frame : clip->frames) {
+        const auto *nearest = nearest_at(s.views, clip->began + frame.recorded);
+        if (!nearest) {
+            unviewed = std::min(unviewed, static_cast<std::size_t>(&frame - clip->frames.data()));
+            continue;
         }
+        frame.view = nearest->matrix;
+        frame.fov = nearest->fov;
+        ++viewed;
+    }
     // The game's board is the small rig nearest to the skater at the start of the clip.
     {
         const std::vector<style::RigFrame> *board{};
@@ -319,14 +311,7 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         std::size_t boarded{}, unboarded{clip->frames.size()}; // unboarded: the first frame with no board
         if (board)
             for (auto &frame : clip->frames) {
-                const auto when = clip->began + frame.recorded;
-                const style::RigFrame *best{};
-                std::uint32_t apart = 60;
-                for (const auto &shot : *board)
-                    if (const auto gap = shot.at > when ? shot.at - when : when - shot.at; gap < apart) {
-                        apart = gap;
-                        best = &shot;
-                    }
+                const auto *best = nearest_at(*board, clip->began + frame.recorded);
                 if (!best) {
                     unboarded = std::min(unboarded, static_cast<std::size_t>(&frame - clip->frames.data()));
                     continue;
@@ -356,7 +341,7 @@ void advance(State &s, double now) {
     const auto &clip = *s.shown;
     const float length = static_cast<float>(style::duration(clip));
     // A held clip stays inside the trick, where the timeline can show it.
-    const float low = style::ms_at(clip, 0), high = style::ms_at(clip, style::trick_end);
+    const float low = s.low_ms, high = s.high_ms;
     std::optional<float> hold;
     std::optional<bool> play;
     int step{};
@@ -395,9 +380,7 @@ style::Pose styled(State &s, float ms) {
     const float time = style::time_at(clip, ms);
     auto pose = style::sample(clip, time);
     // Keyframes move at the clip's own pace, so their speed does not change where the parts meet.
-    const float flick = style::ms_at(clip, 0), catch_ms = style::ms_at(clip, 1), touchdown = style::ms_at(clip, 2);
-    const style::Pace pace{catch_ms - flick, touchdown - catch_ms, style::ms_at(clip, style::trick_end) - touchdown};
-    style_layer::rotations_at(clip.trick, std::clamp(time, 0.0f, style::trick_end), pace, s.rotations);
+    style_layer::rotations_at(clip.trick, std::clamp(time, 0.0f, style::trick_end), s.pace, s.rotations);
     for (const auto &delta : s.rotations)
         if (delta.joint < pose.skater.size())
             pose.skater[delta.joint].rotation = style::normalized(style::multiply(pose.skater[delta.joint].rotation, delta.rotation));
@@ -446,10 +429,6 @@ void request_step(int frames) noexcept {
     std::lock_guard lock(s.controls);
     s.step_request = std::clamp(s.step_request + frames, -600, 600);
 }
-std::uint32_t recording_clock() noexcept {
-    return static_cast<std::uint32_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 1000);
-}
 bool wants_view() noexcept { return style_layer::stage_present(); }
 void note_view(const std::array<float, 16> &matrix, float fov) {
     for (const auto value : matrix)
@@ -458,7 +437,7 @@ void note_view(const std::array<float, 16> &matrix, float fov) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     if (s.views.size() >= 4000) s.views.erase(s.views.begin(), s.views.begin() + 2000);
-    s.views.push_back({recording_clock(), matrix, fov});
+    s.views.push_back({static_cast<std::uint32_t>(clock_ms()), matrix, fov});
 }
 float camera_fov() noexcept {
     auto &s = state();
@@ -580,8 +559,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             return;
         }
         style_layer::watch_stage();
-        const auto local = multiplayer::capture_local(base, client, true);
-        if (!local.ready || local.pose.skater.size() < 2) return;
+        // The skater's bones are read only for a learn. The stand-in needs the entity and the root.
+        const auto local = multiplayer::capture_local(base, client, false);
+        if (!local.ready) return;
         const auto now = clock_ms();
         // Each tick gives one learned clip to the layer, for the restyle of Skatepedia's skater.
         if (s.demos_wanted) {
@@ -601,7 +581,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             } else {
                 const auto wanted = s.learn;
                 s.retry_after = now + 60000;
-                learn(s, local, recorded);
+                learn(s, multiplayer::capture_local(base, client, true), recorded);
                 // If the learn of the fetched trick failed, record it again after 500 ms.
                 if (wanted && wanted == s.fetching && !(s.learned >> wanted & 1)) s.retry_after = now + 500;
             }
@@ -659,6 +639,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             const Clip *clip = trick ? reference(s, trick) : nullptr;
             if (clip) {
                 s.shown = *clip;
+                const float flick = style::ms_at(*clip, 0), caught = style::ms_at(*clip, 1), touchdown = style::ms_at(*clip, 2);
+                s.low_ms = flick;
+                s.high_ms = style::ms_at(*clip, style::trick_end);
+                s.pace = {caught - flick, touchdown - caught, s.high_ms - touchdown};
                 s.started = s.last_tick = playback_ms();
                 s.shown_ms = s.target_ms = 0;
                 s.playing = true;
@@ -744,8 +728,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         const multiplayer::PeerScope scope(stand_in_slot);
         s.spawned = multiplayer::show_remote(base, client, local, pose, s.detail) || multiplayer::remote_skater_entity();
         if (const auto entity = multiplayer::remote_skater_entity())
-            style_layer::ignore_holder(pointer(pointer(entity, addr::style::entity_component), addr::style::component_pose_holder),
-                                       pointer(multiplayer::remote_board_entity(), addr::style::board_pose_holder));
+            style_layer::ignore_holder(memory::peek_pointer(memory::peek_pointer(entity, addr::style::entity_component), addr::style::component_pose_holder),
+                                       memory::peek_pointer(multiplayer::remote_board_entity(), addr::style::board_pose_holder));
         // On Skatepedia's stage, the stand-in replaces Skatepedia's skater.
         if (on_stage) style_layer::keep_stage_clear();
         // The stand-in wears the player's cosmetics.

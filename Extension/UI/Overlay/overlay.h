@@ -320,7 +320,7 @@ struct Nametags {
 };
 using NametagFeed = Nametags (*)();
 void set_nametag_feed(NametagFeed) noexcept;
-// The replayed trick on screen, so the STYLE timeline can follow a replay being scrubbed.
+// The style editor's playhead: the clip on the stand-in, and whether the editor screen is wanted.
 using StylePlayheadFeed = style::Playhead (*)() noexcept;
 void set_style_playhead_feed(StylePlayheadFeed) noexcept;
 // The style editor's playback and camera. Each call only records the latest request, so the menu can call it every frame.

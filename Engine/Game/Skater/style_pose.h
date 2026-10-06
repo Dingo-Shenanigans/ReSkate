@@ -45,20 +45,17 @@ struct Target {
     std::uint8_t key{};
     auto operator<=>(const Target &) const = default;
 };
-inline std::optional<Target> parse_target(std::string_view name) noexcept {
-    const auto same = [&](std::string_view known) {
-        return std::ranges::equal(known, name, [](char a, char b) { return a == (b >= 'A' && b <= 'Z' ? b + 32 : b); });
-    };
-    for (std::size_t i = 0; i < family_names.size(); ++i)
-        if (same(family_names[i])) return Target{false, static_cast<std::uint8_t>(i)};
-    for (std::size_t i = 1; i < flip_trick_names.size(); ++i)
-        if (same(flip_trick_names[i])) return Target{true, static_cast<std::uint8_t>(i)};
-    return std::nullopt;
-}
-// Two preset names that name the same file: the file system ignores case.
-inline bool same_preset(std::string_view a, std::string_view b) noexcept {
+// Equal when ASCII case is ignored. Preset names, trick names and joint names compare this way.
+inline bool same_text(std::string_view a, std::string_view b) noexcept {
     const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
     return std::ranges::equal(a, b, [&](char x, char y) { return lower(x) == lower(y); });
+}
+inline std::optional<Target> parse_target(std::string_view name) noexcept {
+    for (std::size_t i = 0; i < family_names.size(); ++i)
+        if (same_text(family_names[i], name)) return Target{false, static_cast<std::uint8_t>(i)};
+    for (std::size_t i = 1; i < flip_trick_names.size(); ++i)
+        if (same_text(flip_trick_names[i], name)) return Target{true, static_cast<std::uint8_t>(i)};
+    return std::nullopt;
 }
 // A preset's name is its file name on every computer: ASCII letters, digits, '-' and '_', and not a Windows device name.
 inline bool preset_name(std::string_view name) noexcept {
@@ -66,8 +63,8 @@ inline bool preset_name(std::string_view name) noexcept {
     for (const char c : name)
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
     for (const std::string_view device : {"con", "prn", "aux", "nul"})
-        if (same_preset(name, device)) return false;
-    return !(name.size() == 4 && (same_preset(name.substr(0, 3), "com") || same_preset(name.substr(0, 3), "lpt")) && name[3] >= '0' && name[3] <= '9');
+        if (same_text(name, device)) return false;
+    return !(name.size() == 4 && (same_text(name.substr(0, 3), "com") || same_text(name.substr(0, 3), "lpt")) && name[3] >= '0' && name[3] <= '9');
 }
 
 // The joints of Animation/Dingo/AnimBase_Default_Skeleton that a style can rotate.
@@ -249,48 +246,54 @@ inline void evaluate(const std::vector<Key> &keys, float time, std::vector<Joint
     out.clear();
     if (keys.empty()) return;
     // The points of the curve: the game's pose at the flick and at the end, and each keyframe. A keyframe on an end replaces it.
-    std::vector<float> at;
-    std::vector<const Key *> point;
-    if (keys.front().time > 0) at.push_back(paced(0, pace)), point.push_back(nullptr);
-    for (const auto &key : keys) at.push_back(paced(key.time, pace)), point.push_back(&key);
-    if (keys.back().time < trick_end) at.push_back(paced(trick_end, pace)), point.push_back(nullptr);
-    const auto rotation_in = [&](std::size_t index, std::uint16_t joint) {
-        if (point[index])
-            for (const auto &delta : point[index]->joints)
-                if (delta.joint == joint) return turn_of(delta.rotation);
-        return Turn{};
+    std::array<float, max_keys + 2> at{};
+    std::array<const Key *, max_keys + 2> point{};
+    std::size_t count{};
+    const auto add = [&](float moment, const Key *key) {
+        if (count < at.size()) at[count] = paced(moment, pace), point[count++] = key;
     };
+    if (keys.front().time > 0) add(0, nullptr);
+    for (const auto &key : keys) add(key.time, &key);
+    if (keys.back().time < trick_end) add(trick_end, nullptr);
     const float now = paced(std::clamp(time, 0.0f, trick_end), pace);
     std::size_t from = 0;
-    while (from + 2 < at.size() && now >= at[from + 1]) ++from;
-    const std::size_t to = std::min(from + 1, at.size() - 1);
+    while (from + 2 < count && now >= at[from + 1]) ++from;
+    const std::size_t to = std::min(from + 1, count - 1);
     const float span = at[to] - at[from];
     const float u = span > 1e-6f ? std::clamp((now - at[from]) / span, 0.0f, 1.0f) : 1.0f;
     // Cubic Hermite weights for the two points and their slopes.
     const float u2 = u * u, u3 = u2 * u;
     const float start = 2 * u3 - 3 * u2 + 1, start_slope = u3 - 2 * u2 + u, end = 3 * u2 - 2 * u3, end_slope = u3 - u2;
-    // The slope at a point, for one axis: zero at the ends and where the joint turns back (Fritsch-Butland).
-    const auto slope = [&](std::size_t index, std::uint16_t joint, std::size_t axis) {
-        if (index == 0 || index + 1 >= at.size()) return 0.0f;
-        const float before = at[index] - at[index - 1], after = at[index + 1] - at[index];
-        if (before < 1e-6f || after < 1e-6f) return 0.0f;
-        const float in = (rotation_in(index, joint)[axis] - rotation_in(index - 1, joint)[axis]) / before;
-        const float out_slope = (rotation_in(index + 1, joint)[axis] - rotation_in(index, joint)[axis]) / after;
-        if (in * out_slope <= 0) return 0.0f;
-        const float w1 = 2 * after + before, w2 = after + 2 * before;
-        return (w1 + w2) / (w1 / in + w2 / out_slope);
+    // The slope at a point on one axis: zero at the ends and where the joint turns back (Fritsch-Butland).
+    const auto slope = [&](std::size_t index, float before, float here, float after) {
+        if (index == 0 || index + 1 >= count) return 0.0f;
+        const float left = at[index] - at[index - 1], right = at[index + 1] - at[index];
+        if (left < 1e-6f || right < 1e-6f) return 0.0f;
+        const float in = (here - before) / left, onward = (after - here) / right;
+        if (in * onward <= 0) return 0.0f;
+        const float w1 = 2 * right + left, w2 = right + 2 * left;
+        return (w1 + w2) / (w1 / in + w2 / onward);
     };
-    const auto add = [&](std::uint16_t joint) {
+    const auto turn_at = [&](std::size_t index, std::uint16_t joint) {
+        if (index < count && point[index])
+            for (const auto &delta : point[index]->joints)
+                if (delta.joint == joint) return turn_of(delta.rotation);
+        return Turn{};
+    };
+    const auto curve = [&](std::uint16_t joint) {
         if (std::ranges::find(out, joint, &JointDelta::joint) != out.end()) return;
-        const auto a = rotation_in(from, joint), b = rotation_in(to, joint);
+        // The joint's rotation at the point before `from`, at `from`, at `to` and at the point after `to`.
+        const std::array<Turn, 4> around{from ? turn_at(from - 1, joint) : Turn{}, turn_at(from, joint), turn_at(to, joint), turn_at(to + 1, joint)};
         Turn turn;
         for (std::size_t axis = 0; axis < 3; ++axis)
-            turn[axis] = start * a[axis] + end * b[axis] + span * (start_slope * slope(from, joint, axis) + end_slope * slope(to, joint, axis));
+            turn[axis] = start * around[1][axis] + end * around[2][axis] +
+                         span * (start_slope * slope(from, around[0][axis], around[1][axis], around[2][axis]) +
+                                 end_slope * slope(to, around[1][axis], around[2][axis], around[3][axis]));
         out.push_back({joint, quat_of(turn)});
     };
     for (const auto index : {from, to})
         if (point[index])
-            for (const auto &delta : point[index]->joints) add(delta.joint);
+            for (const auto &delta : point[index]->joints) curve(delta.joint);
 }
 
 // Follows one flip trick along its timeline from the game's trick number and ground state. The last pop and fall durations set the pace.
@@ -336,9 +339,9 @@ private:
     }
     std::uint8_t trick_{}, part_{};
     std::uint64_t since_{};
-    std::array<float, 33> pop_ms_ = filled(300.0f), fall_ms_ = filled(250.0f);
-    static constexpr std::array<float, 33> filled(float value) {
-        std::array<float, 33> result{};
+    std::array<float, flip_trick_names.size()> pop_ms_ = filled(300.0f), fall_ms_ = filled(250.0f);
+    static constexpr std::array<float, flip_trick_names.size()> filled(float value) {
+        std::array<float, flip_trick_names.size()> result{};
         for (auto &entry : result) entry = value;
         return result;
     }

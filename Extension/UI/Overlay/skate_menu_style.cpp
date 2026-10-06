@@ -8,7 +8,7 @@
 #include <format>
 #include <utility>
 
-// Style editing: a keyframe timeline for each flip trick. Drawn as the STYLE page and as the style editor screen.
+// Style editing: the style editor screen with a keyframe timeline for each flip trick, and the STYLE page.
 namespace dingosdk::overlay {
 namespace {
 using namespace menu;
@@ -45,26 +45,18 @@ struct Editing {
     std::string trick;
     std::vector<float> times;
     double now{};
-    bool previewing{}, replaying{}, standing_in{};
-    bool screen{}; // drawn as the editor screen, which never poses the player's skater
-    // Shows a timeline time on the stand-in if it is shown, else as a preview on the player's skater.
+    bool replaying{}, standing_in{};
+    // Moves the playhead, and the stand-in when it shows this trick.
     void hold(float time) const {
         menu.styling.time = time;
-        if (standing_in) {
-            if (const auto set = editor_controls().hold) set(time);
-        } else if (!replay.editor && !screen) quiet(callbacks, std::format("style preview {} {:.3f}", trick, time));
+        if (const auto set = editor_controls().hold; standing_in && set) set(time);
     }
-    [[nodiscard]] float playhead() const {
-        return replaying ? replay.time : previewing ? model.style.preview_time : menu.styling.time;
-    }
+    [[nodiscard]] float playhead() const { return replaying ? replay.time : menu.styling.time; }
 };
 Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    // The timeline follows the clip on the stand-in, or a replay on screen.
+    // The timeline follows the clip on the stand-in.
     const auto feed = playhead_feed.load();
     Editing e{menu, model, callbacks, feed ? feed() : style::Playhead{}};
-    // Outside the editor screen, a replay on screen selects its trick.
-    if (!model.debug.style_editor && e.replay.trick && e.replay.trick != menu.styling.replay_trick) menu.styling.trick = e.replay.trick;
-    menu.styling.replay_trick = e.replay.trick;
     menu.styling.trick = std::clamp(menu.styling.trick, 1, static_cast<int>(style::flip_trick_names.size()) - 1);
     e.trick_id = static_cast<std::uint8_t>(menu.styling.trick);
     e.trick = style::flip_trick_names[e.trick_id];
@@ -75,7 +67,6 @@ Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     } else menu.styling.pending_key = -1;
     menu.styling.key = e.times.empty() ? -1 : std::clamp(menu.styling.key, 0, static_cast<int>(e.times.size()) - 1);
     e.now = ImGui::GetTime();
-    e.previewing = model.style.preview == e.trick_id;
     e.replaying = e.replay.trick == e.trick_id;
     e.standing_in = e.replaying && e.replay.editor;
     // Once: the model shows the preview until the game has stopped it.
@@ -112,8 +103,7 @@ void trick_picker(Editing& e) {
                 menu.styling.trick = i;
                 menu.styling.key = 0;
                 // The stand-in follows the selected trick.
-                if (e.replay.editor || e.screen) send_console(menu, e.callbacks, std::format("style editor show {}", style::flip_trick_names[i]));
-                else if (e.model.style.preview) send_console(menu, e.callbacks, std::format("style preview {} play", style::flip_trick_names[i]));
+                send_console(menu, e.callbacks, std::format("style editor show {}", style::flip_trick_names[i]));
             }
         }
         ImGui::Unindent();
@@ -223,9 +213,7 @@ void joints(Editing& e) {
         }
         if (changed || released) {
             // An edit of a keyframe shows that keyframe.
-            if (e.standing_in ? e.replay.playing || std::abs(e.replay.time - at) > 0.05f
-                              : !e.previewing || e.model.style.preview_playing || std::abs(e.model.style.preview_time - at) > 0.01f)
-                e.hold(at);
+            if (!e.standing_in || e.replay.playing || std::abs(e.replay.time - at) > 0.05f) e.hold(at);
             menu.styling.edit = degrees;
             menu.styling.edit_joint = joint;
             menu.styling.edit_target = target;
@@ -265,7 +253,7 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     ImGui::InputTextWithHint("##style-preset-name", "Name for a new preset", menu.styling.preset_name.data(), menu.styling.preset_name.size());
     const std::string name(menu.styling.preset_name.data());
     // The name is the file name: letters, digits, '-' and '_'.
-    const bool valid = style::preset_name(name) && std::ranges::none_of(style.presets, [&](const std::string& p) { return style::same_preset(p, name); });
+    const bool valid = style::preset_name(name) && std::ranges::none_of(style.presets, [&](const std::string& p) { return style::same_text(p, name); });
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
     ImGui::BeginDisabled(!valid);
     if (ImGui::Button("New empty preset", ImVec2(half, 0))) {
@@ -307,7 +295,6 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(14), px(12)));
     const int colours = skate_theme::push_widget_colours();
     auto e = begin_editing(menu, model, callbacks);
-    e.screen = true;
     // The screen draws one or two more frames after close, and must not ask for its trick again.
     const auto close = [&] {
         menu.styling.closing_until = ImGui::GetTime() + 3.0;
@@ -334,7 +321,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         const bool has_clip = (model.style.clips >> e.trick_id & 1) != 0;
         if (!e.standing_in) {
             // A selected trick is shown. A trick without a clip is first fetched from Skatepedia.
-            if (e.now >= menu.styling.closing_until && model.debug.style_editor && (menu.styling.asked != e.trick || e.now > menu.styling.asked_at + 20.0)) {
+            if (e.now >= menu.styling.closing_until && (menu.styling.asked != e.trick || e.now > menu.styling.asked_at + 20.0)) {
                 menu.styling.asked = e.trick;
                 menu.styling.asked_at = e.now;
                 send_console(menu, callbacks, "style editor show " + e.trick);

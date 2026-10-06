@@ -178,7 +178,7 @@ int main() {
           "a preset name is ASCII letters, digits, '-' and '_'");
     check(!preset_name("CON") && !preset_name("nul") && !preset_name("Com1") && !preset_name("LPT9") && preset_name("console") && preset_name("com10"),
           "and not a Windows device name");
-    check(same_preset("Street", "street") && !same_preset("street", "streets"), "two names that differ only in case name the same file");
+    check(same_text("Street", "street") && !same_text("street", "streets"), "two names that differ only in case name the same file");
     if (!failures) std::cout << "style pose tests passed\n";
     return failures ? 1 : 0;
 }

@@ -66,9 +66,9 @@ struct SkateMenu {
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu.cpp.
     int map_tab = 0, world_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
-    // STYLE page and style editor screen. The slider and the dragged keyframe keep their own value until the game has it.
+    // The style editor screen. The slider and the dragged keyframe keep their own value until the game has it.
     struct Styling {
-        int trick = 2, key = 0, edit_joint = -1, drag_key = -1, replay_trick = 0;
+        int trick = 2, key = 0, edit_joint = -1, drag_key = -1;
         float time = 0.5f, drag_time{};
         double drag_until{}, pending_until{}, preview_off_sent{}, asked_at{}, closing_until{}, drawn_at{};
         std::string asked; // the trick that the editor last asked to show
