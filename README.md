@@ -48,6 +48,16 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 4. Press **PLAY**.
 
 ReSkate supports one game build at a time (Steam build `25414733`).
+
+### macOS (experimental)
+
+Apple Silicon Macs can use the Mac wrapper in [contrib/macos](contrib/macos/README.md).
+`./build-mac` builds a native `.app` and optional DMG around an existing ReSkate
+Windows build, pinned Wine libraries, and a builder-supplied Apple graphics runtime.
+The app handles first-time setup and opens the same launcher for downloads, mods
+and updates. See the linked guide for the tested macOS/runtime requirements,
+build inputs and distribution notes.
+
 ### Controls
 
 | Key | Opens |
