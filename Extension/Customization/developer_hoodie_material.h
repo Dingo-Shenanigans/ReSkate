@@ -134,9 +134,10 @@ inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mar
     using multiplayer::IdentityList;
     using multiplayer::MarkMode;
     ItemAnimation out;
-    if (!mark || style.mode == MarkMode::off) return out;
+    if (style.mode == MarkMode::off) return out;
+    if (!mark && style.mode == MarkMode::standard) return out;
     out.on = true;
-    out.rainbow = style.mode == MarkMode::standard && *mark == IdentityList::developer;
+    out.rainbow = mark && style.mode == MarkMode::standard && *mark == IdentityList::developer;
     const std::uint64_t normal = out.rainbow ? 8000 : 3000;
     out.period = style.speed == 1 ? normal * 2 : style.speed == 2 ? normal / 2 : normal;
     if (style.mode == MarkMode::solid) {
@@ -144,7 +145,7 @@ inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mar
     } else if (style.mode == MarkMode::gradient) {
         const auto from = material_color(style.from), to = material_color(style.to);
         out.stops = {from, Color{(from[0] + to[0]) * .5f, (from[1] + to[1]) * .5f, (from[2] + to[2]) * .5f}, to};
-    } else if (!out.rainbow) {
+    } else if (mark && !out.rainbow) {
         // One colour getting lighter and darker is hard to see, so each goes on into the colour
         // next to it: a deep shade, a bright one, then a reddish pink or a yellow.
         constexpr std::array<Color, 3> red{{{.2f, .004f, .01f}, {.8f, .03f, .03f}, {.8f, .05f, .13f}}};

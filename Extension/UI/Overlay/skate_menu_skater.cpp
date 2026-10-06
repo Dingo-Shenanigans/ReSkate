@@ -1,7 +1,12 @@
 #include "skate_menu_internal.h"
+#include "multiplayer_menu_internal.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <format>
+#include <vector>
 
 // The SKATER page.
 namespace dingosdk::overlay::menu {
@@ -132,12 +137,106 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     end_card();
 }
 
+void wardrobe_colour_controls(SkateMenu& menu, const Model& model) {
+    using namespace multiplayer_detail;
+    const auto& mp = model.multiplayer;
+    if (mp.identity_styles.empty()) {
+        note("Wardrobe colours are still loading. Enter a map, then reopen this tab.");
+        return;
+    }
+
+    note("Pick any colour with the hue/saturation picker or type an exact HEX value. Changes save to your local ReSkate profile.");
+
+    struct Picking {
+        std::array<float, 3> from{}, to{};
+        bool dirty{};
+        int waiting{};
+    };
+    static std::vector<Picking> picking;
+    picking.resize(mp.identity_styles.size());
+    std::array<char, 65> unused{};
+
+    const auto same = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+        return std::abs(a[0] - b[0]) < .003f && std::abs(a[1] - b[1]) < .003f && std::abs(a[2] - b[2]) < .003f;
+    };
+    const auto hex = [](const std::array<float, 3>& colour) {
+        unsigned value{};
+        for (float part : colour)
+            value = (value << 8) | static_cast<unsigned>(std::clamp(part, 0.0f, 1.0f) * 255.0f + 0.5f);
+        return value;
+    };
+
+    for (int item = 0; item < static_cast<int>(mp.identity_styles.size()); ++item) {
+        const auto& style = mp.identity_styles[static_cast<std::size_t>(item)];
+        auto& picked = picking[static_cast<std::size_t>(item)];
+
+        if (picked.waiting && same(picked.from, style.from) && same(picked.to, style.to)) picked.waiting = 0;
+        else if (picked.waiting) --picked.waiting;
+        if (!picked.dirty && !picked.waiting) {
+            picked.from = style.from;
+            picked.to = style.to;
+        }
+
+        const auto send = [&](int mode, int speed) {
+            send_private(menu, "mark-style",
+                         std::format("{} {} {:06x} {:06x} {}", item, mode, hex(picked.from), hex(picked.to), speed),
+                         unused, false);
+            picked.waiting = 120;
+        };
+
+        std::string title = style.name;
+        for (auto& letter : title) letter = static_cast<char>(std::toupper(static_cast<unsigned char>(letter)));
+        ImGui::PushID(item);
+        begin_card(menu, title.c_str(), title.c_str());
+
+        // ReSkate modes: 0 original/role default, 1 off, 2 gradient, 3 solid.
+        static constexpr std::array<int, 4> modes{0, 3, 2, 1};
+        const auto found = std::find(modes.begin(), modes.end(), style.mode);
+        int option = found == modes.end() ? 0 : static_cast<int>(found - modes.begin());
+        field(menu, "Mode");
+        if (choice(menu, "wardrobe-mode", option, {"ORIGINAL", "SOLID", "GRADIENT", "OFF"}))
+            send(modes[static_cast<std::size_t>(option)], style.speed);
+
+        const int selectedMode = modes[static_cast<std::size_t>(option)];
+        if (style.mode == 2 || style.mode == 3 || selectedMode == 2 || selectedMode == 3) {
+            const bool gradient = selectedMode == 2 || (selectedMode == style.mode && style.mode == 2);
+            field(menu, gradient ? "Colours" : "Colour",
+                  gradient ? "Choose the two colours to blend between." : "Click the swatch for hue/saturation/brightness, or type a HEX value.");
+
+            constexpr auto flags = ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_DisplayHex |
+                                   ImGuiColorEditFlags_PickerHueWheel | ImGuiColorEditFlags_InputRGB;
+            if (ImGui::ColorEdit3("##wardrobe-from", picked.from.data(), flags)) picked.dirty = true;
+            if (gradient) {
+                ImGui::SameLine(0, px(8));
+                if (ImGui::ColorEdit3("##wardrobe-to", picked.to.data(), flags)) picked.dirty = true;
+            }
+
+            // Save once the user lets go/closes the picker; avoids flooding the request queue.
+            if (picked.dirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsItemActive()) {
+                picked.dirty = false;
+                send(selectedMode, style.speed);
+            }
+        }
+
+        if (selectedMode == 2) {
+            int speed = style.speed;
+            field(menu, "Gradient speed");
+            if (choice(menu, "wardrobe-speed", speed, {"NORMAL", "SLOW", "FAST"})) send(2, speed);
+        }
+
+        end_card();
+        ImGui::PopID();
+    }
+}
+
+
 void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.skater_tab, {"CAMERA", "MOVEMENT"}, "skater-tabs");
+    category_tabs(menu, menu.skater_tab, {"CAMERA", "MOVEMENT", "COLOURS"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
     ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)));
     if (menu.skater_tab == 0) camera_controls(menu, model, callbacks);
-    else movement_controls(menu, model, callbacks);
+    else if (menu.skater_tab == 1) movement_controls(menu, model, callbacks);
+    else wardrobe_colour_controls(menu, model);
     ImGui::EndChild();
     ImGui::PopID();
 }

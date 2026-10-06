@@ -194,6 +194,27 @@ void publish(Session &s, const NativeFrame *local) {
                     shown.from[part] = static_cast<float>(from[part]) / 255.f, shown.to[part] = static_cast<float>(to[part]) / 255.f;
             }
         }
+    // Wardrobe editor: expose the existing per-slot colour settings to every local player.
+    // Identity tags/role animations remain role-only; this only supplies the UI model.
+    if (view.identity_styles.empty()) {
+        const auto styles = developer_hoodie_detail::own_styles.load();
+        view.identity_styles.resize(styles.size());
+        constexpr std::array<std::uint8_t, 3> neutral{0xb3, 0xb3, 0xb3};
+        for (std::size_t i = 0; i < styles.size(); ++i) {
+            const bool picked = styles[i].mode == MarkMode::gradient || styles[i].mode == MarkMode::solid ||
+                                styles[i].from != styles[i].to || styles[i].from != std::array<std::uint8_t, 3>{};
+            const auto &from = picked ? styles[i].from : neutral;
+            const auto &to = picked ? styles[i].to : neutral;
+            auto &shown = view.identity_styles[i];
+            shown.name = mark_item_names[i];
+            shown.mode = static_cast<int>(styles[i].mode);
+            shown.speed = styles[i].speed;
+            for (std::size_t part = 0; part < 3; ++part) {
+                shown.from[part] = static_cast<float>(from[part]) / 255.f;
+                shown.to[part] = static_cast<float>(to[part]) / 255.f;
+            }
+        }
+    }
     view.identity_tag_shown = own_tag_shown();
     view.identity_items_shown = own_items_shown();
     load_host_preferences(s);

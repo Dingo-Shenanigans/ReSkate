@@ -1,0 +1,163 @@
+name: Wardrobe fork maintenance
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wardrobe-fork-maintenance
+  cancel-in-progress: false
+
+jobs:
+  sync-build-release:
+    runs-on: windows-2022
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream ReSkate
+        id: sync
+        shell: pwsh
+        run: |
+          git config user.name "ReSkateCOLOURS bot"
+          git config user.email "actions@users.noreply.github.com"
+          git remote remove upstream 2>$null
+          git remote add upstream https://github.com/Dingo-Shenanigans/ReSkate.git
+          $before = (git rev-parse HEAD).Trim()
+          git fetch upstream main
+          git merge --no-edit upstream/main
+          if ($LASTEXITCODE -ne 0) {
+            git merge --abort
+            throw "Upstream merge conflicted. Last working wardrobe release is untouched."
+          }
+          $after = (git rev-parse HEAD).Trim()
+          $changed = $before -ne $after
+          "changed=$($changed.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if ($changed) {
+            git push origin HEAD:main
+          }
+
+      - name: Decide whether to build
+        id: meta
+        shell: pwsh
+        run: |
+          $event = "${{ github.event_name }}"
+          $changed = "${{ steps.sync.outputs.changed }}" -eq "true"
+          $build = ($event -ne "schedule") -or $changed
+          $sha = (git rev-parse HEAD).Trim()
+          $short = $sha.Substring(0, 8)
+          $version = "1.1.${{ github.run_number }}"
+          $tag = "wardrobe-${{ github.run_number }}-$short"
+          "build=$($build.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          "short=$short" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Configure wardrobe release build
+        if: steps.meta.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          cmake -S . -B build/wardrobe-release -G "Visual Studio 17 2022" -A x64 `
+            -DDINGOSDK_LAUNCHER_AUTO_UPDATE=ON `
+            -DDINGOSDK_RELEASE_REPO=sub-north/ReSkateCOLOURS `
+            -DDINGOSDK_VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Build ReSkate launcher and runtime
+        if: steps.meta.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          cmake --build build/wardrobe-release --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
+
+      - name: Make self-updating wardrobe release
+        if: steps.meta.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $headers = @{
+            "User-Agent" = "ReSkateCOLOURS-Actions"
+            "Accept" = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $upstream = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/Dingo-Shenanigans/ReSkate/releases/latest"
+          $manifestAsset = $upstream.assets | Where-Object { $_.name -eq "launcher.json" } | Select-Object -First 1
+          if (-not $manifestAsset) { throw "Upstream latest release has no launcher.json." }
+
+          Invoke-WebRequest -Headers $headers -Uri $manifestAsset.browser_download_url -OutFile "launcher-upstream.json"
+          $config = Get-Content "launcher-upstream.json" -Raw | ConvertFrom-Json
+
+          foreach ($sectionName in @("depot_downloader", "server")) {
+            $section = $config.$sectionName
+            if ($null -ne $section -and [string]$section.url -like "asset:*") {
+              $assetName = ([string]$section.url).Substring(6)
+              $asset = $upstream.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+              if (-not $asset) { throw "Upstream release is missing asset $assetName." }
+              $section.url = $asset.browser_download_url
+            }
+          }
+
+          $launcher = "build/wardrobe-release/Release/ReSkateLauncher.exe"
+          $runtime = "build/wardrobe-release/Release/ReSkate.dll"
+          $version = "${{ steps.meta.outputs.version }}"
+
+          $config.launcher.version = $version
+          $config.launcher.url = "asset:ReSkateLauncher.exe"
+          $config.launcher.sha256 = (Get-FileHash $launcher -Algorithm SHA256).Hash.ToLowerInvariant()
+          $config.launcher.size = (Get-Item $launcher).Length
+
+          $config.runtime.version = $version
+          $config.runtime.url = "asset:ReSkate.dll"
+          $config.runtime.sha256 = (Get-FileHash $runtime -Algorithm SHA256).Hash.ToLowerInvariant()
+          $config.runtime.size = (Get-Item $runtime).Length
+
+          $config | ConvertTo-Json -Depth 20 | Set-Content "launcher.json" -Encoding utf8
+
+          New-Item -ItemType Directory -Force -Path "package" | Out-Null
+          Copy-Item $launcher "package/ReSkateLauncher.exe"
+          Copy-Item $runtime "package/ReSkate.dll"
+          Compress-Archive -Path "package/*" -DestinationPath "ReSkateCOLOURS-$version.zip" -Force
+
+      - name: Upload build artifact
+        if: steps.meta.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSkateCOLOURS-${{ steps.meta.outputs.version }}
+          path: |
+            build/wardrobe-release/Release/ReSkateLauncher.exe
+            build/wardrobe-release/Release/ReSkate.dll
+            launcher.json
+            ReSkateCOLOURS-${{ steps.meta.outputs.version }}.zip
+
+      - name: Publish latest wardrobe release
+        if: steps.meta.outputs.build == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" `
+            "build/wardrobe-release/Release/ReSkateLauncher.exe" `
+            "build/wardrobe-release/Release/ReSkate.dll" `
+            "launcher.json" `
+            "ReSkateCOLOURS-${{ steps.meta.outputs.version }}.zip" `
+            --repo "${{ github.repository }}" `
+            --title "ReSkateCOLOURS ${{ steps.meta.outputs.version }}" `
+            --notes "Automatic wardrobe build from upstream ReSkate commit ${{ steps.meta.outputs.sha }}. Includes the permanent SKATER > COLOURS editor and a launcher that updates from this fork." `
+            --latest
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          "### ReSkateCOLOURS" >> $env:GITHUB_STEP_SUMMARY
+          "Upstream merge changed source: **${{ steps.sync.outputs.changed }}**" >> $env:GITHUB_STEP_SUMMARY
+          "Build requested: **${{ steps.meta.outputs.build }}**" >> $env:GITHUB_STEP_SUMMARY
+          "Source commit: `${{ steps.meta.outputs.sha }}`" >> $env:GITHUB_STEP_SUMMARY

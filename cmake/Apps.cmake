@@ -130,7 +130,7 @@ option(DINGOSDK_LAUNCHER_AUTO_UPDATE "Let the launcher replace itself and ReSkat
 if(DINGOSDK_RELEASE_REPO STREQUAL "Dingo-Shenanigans/DingoSDK")
     unset(DINGOSDK_RELEASE_REPO CACHE)
 endif()
-set(DINGOSDK_RELEASE_REPO "Dingo-Shenanigans/ReSkate" CACHE STRING "Public GitHub owner/repo whose releases update the launcher")
+set(DINGOSDK_RELEASE_REPO "sub-north/ReSkateCOLOURS" CACHE STRING "Public GitHub owner/repo whose releases update the launcher")
 set(launcher_release_repo "${DINGOSDK_RELEASE_REPO}")
 if(NOT launcher_release_repo MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     message(FATAL_ERROR "DINGOSDK_RELEASE_REPO must be owner/repo")
