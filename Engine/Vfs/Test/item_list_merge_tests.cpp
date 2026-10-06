@@ -11,6 +11,12 @@
 // one mod ships is not merged at all, it passes through as that mod built it, so every case
 // here has two mods shipping the shared bundle.)
 //
+// The same mods also show what else the merge does with two copies of one of the game's assets:
+//   * an item two mods both list is in the merged list once;
+//   * values two mods changed in place in one asset are both in the merged asset, and where that
+//     cannot be done the merge keeps one mod's copy whole and says whose changes are missing;
+//   * the list other mods' copies of the bundle are given leaves out an item that is not in them.
+//
 // The mods are made here from the installed game's own list and one of its items.
 // Arguments: <Skate folder> [<folder>]; skipped when the game is not there. With a second
 // argument the two mods of the first case are also left in that folder, stamped for this game,
@@ -28,7 +34,9 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -140,6 +148,8 @@ struct Game {
     std::string listName;
     fb::ebx::Document list;
     std::size_t listed{};
+    std::size_t itemIndex{};
+    std::string itemName;
     fb::ebx::Document item;
 };
 Game read_game(const fs::path& root, const CasStore& store) {
@@ -162,6 +172,8 @@ Game read_game(const fs::path& root, const CasStore& store) {
             game.list = std::move(document);
         } else if (!item && type.find("itemasset") != std::string::npos) {
             item = true;
+            game.itemIndex = index;
+            game.itemName = assets[index].name;
             game.item = std::move(document);
         }
     }
@@ -172,8 +184,9 @@ Game read_game(const fs::path& root, const CasStore& store) {
 // A cosmetic mod's folder: its copy of the shared bundle in items.toc (the game's assets, the
 // item list replaced and its items added) and one archive holding the manifest and those payloads.
 // With no list the mod leaves the game's as it is, as a mod does whose items go in another one.
+// `changed` replaces assets of the game's, by their place in the bundle.
 void write_mod(const fs::path& directory, const CasStore& store, const Game& game, const Bytes* list,
-               std::initializer_list<Item> items) {
+               std::initializer_list<Item> items, const std::map<std::size_t, Bytes>& changed = {}) {
     auto manifest = game.shared.listing.manifest;
     const auto& shipped = game.shared.listing.files;
     std::vector<fb::BundleFileInfo> files(shipped.begin() + static_cast<std::ptrdiff_t>(game.shared.listing.first), shipped.end());
@@ -190,6 +203,11 @@ void write_mod(const fs::path& directory, const CasStore& store, const Game& gam
         manifest.ebx[game.listIndex].sha1 = sha1_of(*list);
         manifest.ebx[game.listIndex].originalSize = list->size();
         files[game.listIndex] = stored(encoded(*list));
+    }
+    for (const auto& [index, payload] : changed) {
+        manifest.ebx[index].sha1 = sha1_of(payload);
+        manifest.ebx[index].originalSize = payload.size();
+        files[index] = stored(encoded(payload));
     }
     for (const auto& item : items) {
         fb::BundleAsset asset;
@@ -365,6 +383,167 @@ void one_mod_changes_the_list(const Game& game, const CasStore& store, bool miss
     expect(said == missing, label + (missing ? ": the merge says which item was left out\n" : ": nothing is reported\n") +
            describe(report));
 }
+
+// Two packs that both carry one item, each with an item of its own besides. Both list the shared
+// one, and it is one item: the merged list has it once.
+void an_item_two_mods_both_list(const Game& game, const CasStore& store) {
+    Merge merge(game, "listed-twice");
+    const auto both = item_from(game.item, "items/reskate_test/own_in_both", 0x10);
+    const auto first = item_from(game.item, "items/reskate_test/own_first", 0x20);
+    const auto second = item_from(game.item, "items/reskate_test/own_second", 0x30);
+    const auto firstList = list_with(game.list, {both.identity, first.identity});
+    const auto secondList = list_with(game.list, {both.identity, second.identity});
+    write_mod(merge.add("first"), store, game, &firstList, {both, first});
+    write_mod(merge.add("second"), store, game, &secondList, {both, second});
+    const auto report = mods::merge_mods(merge.catalog);
+    const auto list = merged_list(merge, game, report, "listed by both", 3);
+    expect(names(list, both) && names(list, first) && names(list, second), "listed by both: the list has all three items");
+    expect(std::ranges::count(list, both.identity.fileGuid) == 1, "listed by both: the item both mods list is in it once");
+    expect(noted(report, game.listName + ": combined 2 edits (0 instance(s), 3 list entries, 1 repeated entry(ies) listed once)"),
+           "listed by both: the merge says one entry was a repeat\n" + describe(report));
+}
+
+// The game's item as a mod that retunes it ships it: the same document, changed in place.
+Bytes item_with(const fb::ebx::Document& game, const std::function<void(fb::ebx::Object&)>& change) {
+    auto item = fb::ebx::detail::clone_document(game);
+    change(*item.instances.front().object);
+    return fb::ebx::write_document(item);
+}
+fb::ebx::Value& field(fb::ebx::Object& object, std::string_view name) {
+    for (auto& entry : object.fields)
+        if (entry.name == name) return entry.value;
+    throw std::runtime_error("the game's item has no " + std::string(name));
+}
+void set_hash(fb::ebx::Object& object, std::uint32_t hash) {
+    auto& value = field(object, "HashedAssetKey");
+    if (std::holds_alternative<std::int64_t>(value.data)) value.data = static_cast<std::int64_t>(hash);
+    else value.data = static_cast<std::uint64_t>(hash);
+}
+std::uint32_t hash_of(const fb::ebx::Object& object) {
+    const auto& value = field(const_cast<fb::ebx::Object&>(object), "HashedAssetKey");
+    const auto* number = std::get_if<std::int64_t>(&value.data);
+    return number ? static_cast<std::uint32_t>(*number) : static_cast<std::uint32_t>(std::get<std::uint64_t>(value.data));
+}
+// A change the merge cannot take value by value: the first list of the item made one shorter,
+// or failing that its first reference cleared. False when the item has neither.
+bool reshape(fb::ebx::Object& object) {
+    for (auto& entry : object.fields)
+        if (auto* list = std::get_if<fb::ebx::Value::Array>(&entry.value.data); list && !list->empty()) {
+            list->pop_back();
+            return true;
+        }
+    for (auto& entry : object.fields)
+        if (auto* pointer = std::get_if<fb::ebx::PointerReference>(&entry.value.data);
+            pointer && pointer->kind != fb::ebx::PointerKind::null) {
+            *pointer = {};
+            return true;
+        }
+    return false;
+}
+
+// The merged shared bundle's copy of the game's item, and the sha1 the bundle lists it under.
+std::pair<fb::ebx::Document, fb::Sha1> merged_item(const Merge& merge, const Game& game) {
+    const auto output = merge.catalog.root / mods::generated_folder;
+    const auto layout = vfs::read_layout(output / L"layout.toc");
+    const CasStore store(game.base, merge.root / L"unused", layout.root);
+    const auto shared = shared_in(store, output, game.base, game.root);
+    const auto& assets = shared.listing.manifest.ebx;
+    for (std::size_t index = 0; index < assets.size(); ++index)
+        if (assets[index].name == game.itemName)
+            return {fb::ebx::read_document(read_asset(store, output, game.base, shared.listing, index, game.root)), assets[index].sha1};
+    throw std::runtime_error("the merged bundle has no " + game.itemName);
+}
+
+// Two mods each ship the game's item with values of their own changed in place. Nothing was added
+// to it, so the merge has no list to put together: it has the values. Each mod's are in the
+// merged item, and where both changed one the higher mod's is.
+void values_two_mods_changed(const Game& game, const CasStore& store, bool contested) {
+    const std::string label = contested ? "one value from two mods" : "values from two mods";
+    Merge merge(game, contested ? "one-value" : "two-values");
+    const auto upper = item_with(game.item, [&](fb::ebx::Object& root) {
+        if (contested) set_hash(root, 0x1111);
+        else field(root, "Key").data = std::string("reskate_upper");
+    });
+    const auto under = item_with(game.item, [&](fb::ebx::Object& root) {
+        set_hash(root, 0x2222);
+        if (contested) field(root, "Key").data = std::string("reskate_under");
+    });
+    write_mod(merge.add("upper"), store, game, nullptr, {}, {{game.itemIndex, upper}});
+    write_mod(merge.add("under"), store, game, nullptr, {}, {{game.itemIndex, under}});
+    const auto report = mods::merge_mods(merge.catalog);
+    expect(report.issue.empty() && report.built && report.problems.empty(),
+           label + ": the merge builds the patch and keeps every mod\n" + describe(report));
+    if (!report.built) return;
+    const auto item = merged_item(merge, game).first;
+    auto& root = *item.instances.front().object;
+    expect(std::get<std::string>(field(root, "Key").data) == (contested ? "reskate_under" : "reskate_upper"),
+           label + ": the merged item has the key one mod changed");
+    expect(hash_of(root) == (contested ? 0x1111u : 0x2222u),
+           label + (contested ? ": the value both changed is the higher mod's" : ": and the value the other mod changed"));
+    expect(noted(report, game.itemName + ": combined 2 edits (0 instance(s), 0 list entries, " +
+                         (contested ? "3 changed value(s), 1 disagreed)" : "2 changed value(s))")),
+           label + ": the merge says what it combined\n" + describe(report));
+}
+
+// One of the two also changed the item in a way that is not a value (a list made shorter). That
+// cannot be put together with the other mod's values, so the higher mod's copy stays whole, as
+// it always did, and the merge now says whose changes are not in the game.
+void a_change_that_does_not_combine(const Game& game, const CasStore& store) {
+    Merge merge(game, "not-combined");
+    bool reshaped{};
+    const auto upper = item_with(game.item, [&](fb::ebx::Object& root) {
+        field(root, "Key").data = std::string("reskate_upper");
+        reshaped = reshape(root);
+    });
+    if (!reshaped) {
+        std::cout << "The game's item has no list or reference to change; that case is skipped.\n";
+        return;
+    }
+    const auto under = item_with(game.item, [&](fb::ebx::Object& root) { set_hash(root, 0x2222); });
+    write_mod(merge.add("upper"), store, game, nullptr, {}, {{game.itemIndex, upper}});
+    write_mod(merge.add("under"), store, game, nullptr, {}, {{game.itemIndex, under}});
+    const auto report = mods::merge_mods(merge.catalog);
+    expect(report.issue.empty() && report.built && report.problems.empty(),
+           "not combined: the merge builds the patch and keeps every mod\n" + describe(report));
+    if (!report.built) return;
+    expect(merged_item(merge, game).second == sha1_of(upper), "not combined: the bundle has the higher mod's copy as that mod built it");
+    expect(noted(report, game.itemName + ": kept upper's copy whole; the changes under made to it are of a kind that cannot "
+                         "be combined with it and are not in the game"),
+           "not combined: the merge says whose changes are missing\n" + describe(report));
+}
+
+// What other mods' copies of the bundle are given (a map carries one for its levels): one list
+// for all of them, put together from every mod's. Under a name two mods share, such a copy gets
+// the higher mod's asset, so the lower mod's entry for its own has to be out of that list too.
+void the_list_other_copies_are_given(const Game& game, const CasStore& store) {
+    Merge merge(game, "carried-list");
+    const auto upper = item_from(game.item, same_name, 0x10);
+    const auto under = item_from(game.item, same_name, 0x20);
+    const auto upperList = list_with(game.list, {upper.identity}), underList = list_with(game.list, {under.identity});
+    write_mod(merge.add("upper"), store, game, &upperList, {upper});
+    write_mod(merge.add("under"), store, game, &underList, {under});
+    std::vector<const mods::Mod*> order;
+    std::map<const mods::Mod*, RelativeFiles> files;
+    for (const auto& mod : merge.catalog.mods) {
+        order.push_back(&mod);
+        files.emplace(&mod, scan(mod.directory));
+    }
+    mods::MergeReport report;
+    const auto overrides = collect_asset_overrides(order, files, store, game.base, game.root, report);
+    const auto versions = overrides.changed.find(lower(game.listName));
+    expect(versions != overrides.changed.end() && versions->second.size() == 1,
+           "carried list: there is one changed list for other mods' copies\n" + describe(report));
+    if (versions == overrides.changed.end() || versions->second.empty()) return;
+    const auto& change = versions->second.begin()->second;
+    const auto list = listed(fb::ebx::read_document(fb::decode_cas(change.encoded, {game.root})));
+    expect(list.size() == game.listed + 1 && names(list, upper) && !names(list, under),
+           "carried list: it has the game's items and the higher mod's, not the one no copy is given (" +
+           std::to_string(list.size()) + " entries)");
+    expect(change.names == std::set<fb::Guid>{upper.identity.fileGuid}, "carried list: the item that goes with it is the higher mod's");
+    expect(noted(report, "under: " + game.listName + ": 1 entry(ies) left out of the copies other mods carry, where another "
+                         "mod's asset of the same name stands in for what they name"),
+           "carried list: the merge says which mod's entry was left out\n" + describe(report));
+}
 } // namespace
 
 int main(int argc, char** argv) try {
@@ -381,6 +560,11 @@ int main(int argc, char** argv) try {
     different_names_from_two_mods(game, store);
     one_mod_changes_the_list(game, store, false);
     one_mod_changes_the_list(game, store, true);
+    an_item_two_mods_both_list(game, store);
+    values_two_mods_changed(game, store, false);
+    values_two_mods_changed(game, store, true);
+    a_change_that_does_not_combine(game, store);
+    the_list_other_copies_are_given(game, store);
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

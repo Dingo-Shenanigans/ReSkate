@@ -265,6 +265,56 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         send_private(menu, "chat-filter", filter ? "on" : "off", unused, false);
     }
+    bool bubbles = mp.chat_bubbles;
+    if (toggle_row(menu, "Chat bubbles", "Show each player's newest chat line in a bubble above their skater.", bubbles)) {
+        std::array<char, 65> unused{};
+        send_private(menu, "chat-bubbles", bubbles ? "on" : "off", unused, false);
+    }
+    bool own_bubbles = mp.chat_bubbles_own;
+    if (toggle_row(menu, "Own chat bubbles", "Also show your own messages above your skater.", own_bubbles, mp.chat_bubbles,
+                   "OFF")) {
+        std::array<char, 65> unused{};
+        send_private(menu, "chat-bubbles-own", own_bubbles ? "on" : "off", unused, false);
+    }
+    if (mp.chat_bubbles) {
+        std::array<char, 65> unused{};
+        field(menu, "Bubble distance", "How far away a player can be and still show a chat bubble.");
+        float distance = menu.chat_bubbles_distance_pending.value_or(mp.chat_bubbles_distance);
+        ImGui::SliderFloat("##bubble-distance", &distance, 5.f, 200.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActive()) menu.chat_bubbles_distance_pending = distance;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            send_private(menu, "chat-bubbles-distance", std::to_string(static_cast<int>(distance)), unused, false);
+            menu.chat_bubbles_distance_until = ImGui::GetTime() + 2;
+        }
+        if (!ImGui::IsItemActive() && menu.chat_bubbles_distance_pending &&
+            (*menu.chat_bubbles_distance_pending == mp.chat_bubbles_distance ||
+             ImGui::GetTime() >= menu.chat_bubbles_distance_until))
+            menu.chat_bubbles_distance_pending.reset();
+        field(menu, "Bubble duration", "How many seconds a chat bubble stays before it fades.");
+        float duration = menu.chat_bubbles_duration_pending.value_or(mp.chat_bubbles_duration);
+        ImGui::SliderFloat("##bubble-duration", &duration, 1.f, 30.f, "%.0f s", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActive()) menu.chat_bubbles_duration_pending = duration;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            send_private(menu, "chat-bubbles-duration", std::to_string(static_cast<int>(duration)), unused, false);
+            menu.chat_bubbles_duration_until = ImGui::GetTime() + 2;
+        }
+        if (!ImGui::IsItemActive() && menu.chat_bubbles_duration_pending &&
+            (*menu.chat_bubbles_duration_pending == mp.chat_bubbles_duration ||
+             ImGui::GetTime() >= menu.chat_bubbles_duration_until))
+            menu.chat_bubbles_duration_pending.reset();
+        field(menu, "Bubble history", "How many recent messages stack above each skater (1-8).");
+        int history = menu.chat_bubbles_history_pending.value_or(mp.chat_bubbles_history);
+        ImGui::SliderInt("##bubble-history", &history, 1, 8, "%d lines", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActive()) menu.chat_bubbles_history_pending = history;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            send_private(menu, "chat-bubbles-history", std::to_string(history), unused, false);
+            menu.chat_bubbles_history_until = ImGui::GetTime() + 2;
+        }
+        if (!ImGui::IsItemActive() && menu.chat_bubbles_history_pending &&
+            (*menu.chat_bubbles_history_pending == mp.chat_bubbles_history ||
+             ImGui::GetTime() >= menu.chat_bubbles_history_until))
+            menu.chat_bubbles_history_pending.reset();
+    }
     note("These only change your screen; nobody else is affected.");
     end_card();
 }

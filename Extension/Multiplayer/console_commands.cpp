@@ -32,6 +32,11 @@ void register_multiplayer_commands(Commands &registry) {
                           Command{"tphere", "Host or server admin: teleport one player to you"},
                           Command{"nametags", "Show or hide player nametags (on, off, toggle)"},
                           Command{"nametag-style", "ReSkate nametags or the game's own (reskate, game, toggle)"},
+                          Command{"chat-bubbles", "Show or hide chat bubbles above skaters (on, off, toggle)"},
+                          Command{"chat-bubbles-own", "Also show your own chat messages above your skater (on, off, toggle)"},
+                          Command{"chat-bubbles-distance", "How far away a player may be and still show a chat bubble, in metres (5-500)"},
+                          Command{"chat-bubbles-duration", "How many seconds a chat bubble stays before it fades (1-30)"},
+                          Command{"chat-bubbles-history", "How many recent messages stack above a skater (1-8)"},
                           Command{"score-check", "Host: keep players whose mods change scoring or physics out of throwdowns and "
                                                  "coop challenges (on, off, toggle; on by default)"},
                           Command{"retry", "Retry remote skater creation after an error"},
@@ -47,8 +52,15 @@ void register_multiplayer_commands(Commands &registry) {
         if (std::string_view(c.name) == "join-lobby")
             args.push_back(argument("lobby_id"));
         if (std::string_view(c.name) == "nametags" || std::string_view(c.name) == "nametag-style" ||
+            std::string_view(c.name) == "chat-bubbles" || std::string_view(c.name) == "chat-bubbles-own" ||
             std::string_view(c.name) == "score-check")
             args.push_back(argument("choice"));
+        if (std::string_view(c.name) == "chat-bubbles-distance")
+            args.push_back(argument("metres"));
+        if (std::string_view(c.name) == "chat-bubbles-duration")
+            args.push_back(argument("seconds"));
+        if (std::string_view(c.name) == "chat-bubbles-history")
+            args.push_back(argument("lines"));
         if (std::string_view(c.name) == "chat" || std::string_view(c.name) == "server" || std::string_view(c.name) == "party" ||
             std::string_view(c.name) == "tp" || std::string_view(c.name) == "tphere") {
             auto message = argument("message");

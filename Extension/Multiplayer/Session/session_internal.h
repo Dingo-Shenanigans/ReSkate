@@ -229,6 +229,10 @@ struct Session {
     bool nametags = true, chat_visible = true, display_preferences_loaded{};
     bool custom_nametags = true; // ReSkate's nametags instead of the game's (Hud/custom_nametags.h)
     bool chat_filter = true;     // bad words in chat show as **** (Engine/Core/Text/word_filter.h)
+    // Chat bubbles above each skater's head (Hud/custom_nametags.h, nametag_overlay.cpp).
+    bool chat_bubbles = true, chat_bubbles_own{};
+    float chat_bubbles_distance = 40.f, chat_bubbles_duration = 5.f;
+    int chat_bubbles_history = 3;
     bool game_menu{};            // a game menu is up or the game's UI is hidden: no chat on screen
     bool hooks_prepared{};       // the remote-player hooks were installed (once per process)
     // Host settings remembered between sessions and game restarts.

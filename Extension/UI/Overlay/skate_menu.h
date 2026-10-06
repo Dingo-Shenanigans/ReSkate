@@ -54,6 +54,10 @@ struct SkateMenu {
     std::optional<VoiceSettings> voice_pending;
     std::optional<float> voice_range_pending;  // the host's range slider while dragged / until the model agrees
     double voice_range_until{};
+    // Chat bubble distance/duration/history sliders, likewise held while dragged.
+    std::optional<float> chat_bubbles_distance_pending, chat_bubbles_duration_pending;
+    std::optional<int> chat_bubbles_history_pending;
+    double chat_bubbles_distance_until{}, chat_bubbles_duration_until{}, chat_bubbles_history_until{};
     std::map<std::uint64_t, std::pair<float, double>> voice_volume_pending;
     std::array<bool, 256> voice_keys_down{};
     std::string multiplayer_distance_lobby;

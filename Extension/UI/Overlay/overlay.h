@@ -305,6 +305,13 @@ void set_skate_hud_feed(SkateHudFeed) noexcept;
 // ReSkate's own nametags: one per other player, placed over the world with the camera the
 // client last used. Close ones show a name and distance, far ones a dot, and players off
 // screen a dot at the screen's edge. Empty = nothing to draw (off, or the game hides its UI).
+// One line in a player's bubble stack: the text (masked when the chat filter is on), the line
+// as sent when the filter changed it (same length; emote names are taken back from it), how
+// far its pop-in has come (0 just arrived, 1 settled) and how opaque it still is (1 down to 0).
+struct NametagBubble {
+    std::string text, raw;
+    float appear{1}, fade{1};
+};
 struct Nametag {
     std::array<float, 3> position{}; // above the skater's head, world space
     std::string name;
@@ -312,10 +319,16 @@ struct Nametag {
     std::string tag;                  // role badge before the name ("Dev", "Creator", "Homie", "Admin", "Host", "Friend")
     float distance{};                 // metres from the local skater
     bool talking{};
+    // Recent chat lines to show as bubbles above the head, oldest first ("" = none).
+    std::vector<NametagBubble> bubbles;
+    bool self{};                      // the local player: bubbles only, never a name or dot
 };
 struct Nametags {
     std::array<float, 16> camera{}; // world matrix: right, up, back, position rows
     float vertical_fov{};
+    bool show_names{true};          // draw the name, distance and role badge
+    bool show_bubbles{};            // draw chat bubbles above the heads
+    float bubble_distance{40.f};    // furthest a player may be and still show a bubble (metres)
     std::vector<Nametag> tags;
 };
 using NametagFeed = Nametags (*)();

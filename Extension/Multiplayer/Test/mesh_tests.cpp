@@ -269,7 +269,7 @@ void prepare_native_indicators(std::uintptr_t) noexcept {}
 void prepare_player_ui(std::uintptr_t) noexcept {}
 void prepare_remote_audio(std::uintptr_t) noexcept {}
 bool install_entity_hooks(std::uintptr_t, std::string &) noexcept { return true; }
-void publish_custom_nametags(std::uintptr_t, std::vector<NametagPlayer>, std::optional<std::array<float, 3>>) noexcept {}
+void publish_custom_nametags(std::uintptr_t, std::vector<NametagPlayer>, std::optional<std::array<float, 3>>, bool, bool, float) noexcept {}
 void set_custom_nametags_enabled(bool) noexcept {}
 GameUiState sample_game_ui_state(std::uintptr_t) noexcept { return {}; }
 void note_local_skater(const Transform &) noexcept {}

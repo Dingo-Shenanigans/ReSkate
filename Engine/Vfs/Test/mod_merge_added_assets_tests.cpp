@@ -5,6 +5,7 @@
 // The fixture is a small made-up game and two mods in a temp folder, written with the repo's
 // own writers, so it needs no game files:
 //   game   bundle "win32/test/shared": test/playlist, test/other
+//          bundle "win32/test/second": test/playlist again, test/extra
 //   map    a level mod: its own level superbundle (a new TOC) with a copy of that bundle, as a
 //          custom map carries the core assets for its level; it edits nothing
 //   music  an asset mod that changes test/playlist to name a new song, and adds the song, the
@@ -34,6 +35,7 @@ namespace {
 using Bytes = std::vector<std::byte>;
 constexpr std::uint32_t package = 0x1234;
 constexpr char bundle_name[] = "win32/test/shared";
+constexpr char second_bundle[] = "win32/test/second";
 
 int failures = 0;
 void expect(bool ok, const std::string& what) {
@@ -193,16 +195,26 @@ struct Fixture {
         catalog.data_root = root / "game";
         catalog.root = catalog.data_root / "Mods";
         catalog.present = true;
-        // The game: two assets in one bundle, stored in the game's own archive.
+        // The game: two assets in one bundle, and a second bundle that has the playlist as well
+        // (the game keeps a list in several bundles), stored in the game's own archive.
         const std::vector<Ebx> assets{{"test/playlist", 0, ebx_document(guid(1), {})}, {"test/other", 0, ebx_document(guid(2), {})}};
+        const std::vector<Ebx> second{{"test/playlist", 0, ebx_document(guid(1), {})}, {"test/extra", 0, ebx_document(guid(3), {})}};
         Bytes archive;
-        std::vector<fb::BundleFileInfo> files;
-        for (const auto& asset : assets) {
-            const auto payload = encoded(asset.payload);
-            files.push_back({{false, package, 1}, static_cast<std::uint32_t>(archive.size()), static_cast<std::uint32_t>(payload.size())});
-            archive.insert(archive.end(), payload.begin(), payload.end());
-        }
-        const std::vector<fb::TocBundle> bundles{{bundle_name, fb::write_bundle_region(files, fb::write_binary_bundle(manifest_of(assets, {}))), 1}};
+        const auto region = [&](const std::vector<Ebx>& list) {
+            // The asset list is the region's first file, as it is in every bundle of the game:
+            // a bundle one mod alone ships then passes through as that mod built it.
+            const auto listing = fb::write_binary_bundle(manifest_of(list, {}));
+            std::vector<fb::BundleFileInfo> files{{{false, package, 1}, static_cast<std::uint32_t>(archive.size()),
+                                                   static_cast<std::uint32_t>(listing.size())}};
+            archive.insert(archive.end(), listing.begin(), listing.end());
+            for (const auto& asset : list) {
+                const auto payload = encoded(asset.payload);
+                files.push_back({{false, package, 1}, static_cast<std::uint32_t>(archive.size()), static_cast<std::uint32_t>(payload.size())});
+                archive.insert(archive.end(), payload.begin(), payload.end());
+            }
+            return fb::write_bundle_region(files);
+        };
+        const std::vector<fb::TocBundle> bundles{{bundle_name, region(assets), 1}, {second_bundle, region(second), 1}};
         write(catalog.data_root / "Data" / "layout.toc", layout_toc());
         write(catalog.data_root / "Data" / "Win32" / "test_shared.toc", fb::write_patch_toc(bundles));
         write(catalog.data_root / "Data" / "Win32" / "pkg" / "cas_01.cas", archive);
@@ -212,9 +224,9 @@ struct Fixture {
         fs::remove_all(root, ignored);
     }
 
-    // A mod with its own copy of the bundle: the manifest first (raw), then every payload.
+    // A mod with its own copy of a bundle: the manifest first (raw), then every payload.
     void add(const std::string& name, bool levels, const std::string& toc, const std::vector<std::string>& superbundles,
-             const std::vector<Ebx>& assets, const std::vector<Resource>& resources = {}) {
+             const std::vector<Ebx>& assets, const std::vector<Resource>& resources = {}, const char* bundle = bundle_name) {
         const auto listing = fb::write_binary_bundle(manifest_of(assets, resources));
         Bytes archive(listing);
         std::vector<fb::BundleFileInfo> files{{{true, package, 1}, 0, static_cast<std::uint32_t>(listing.size())}};
@@ -225,7 +237,7 @@ struct Fixture {
         };
         for (const auto& asset : assets) store(asset.payload);
         for (const auto& resource : resources) store(resource.payload);
-        const std::vector<fb::TocBundle> bundles{{bundle_name, fb::write_bundle_region(files), 1}};
+        const std::vector<fb::TocBundle> bundles{{bundle, fb::write_bundle_region(files), 1}};
         const auto directory = catalog.root / name;
         write(directory / "layout.toc", layout_toc(superbundles));
         write(directory / "Win32" / fs::path(toc), fb::write_patch_toc(bundles));
@@ -238,12 +250,12 @@ struct Fixture {
         catalog.mods.push_back(std::move(mod));
     }
 
-    // How many files the merged copy of the bundle in `toc` lists, or -1 when the merge left none.
-    int merged_files(const std::string& relative) const {
+    // How many files the merged copy of a bundle in `toc` lists, or -1 when the merge left none.
+    int merged_files(const std::string& relative, const std::string& name = bundle_name) const {
         const auto toc = catalog.root / mods::generated_folder / "Win32" / fs::path(relative);
         if (!fs::exists(toc)) return -1;
         for (const auto& bundle : fb::read_toc(read(toc)).bundles)
-            if (bundle.name == bundle_name) return static_cast<int>(fb::read_bundle_region(bundle.region).files.size());
+            if (bundle.name == name) return static_cast<int>(fb::read_bundle_region(bundle.region).files.size());
         return -1;
     }
 };
@@ -382,6 +394,35 @@ void two_music_mods_both_carried_into_maps_copy(int baseline) {
     expect(files == baseline + 6, "two music mods: the map's copy gained 6 files (3 per music mod): " +
            std::to_string(files) + " vs " + std::to_string(baseline + 6));
 }
+
+// The game keeps the playlist in a second bundle too, as it keeps the music playlist in eight. A
+// mod that ships its own copy of that one (it changed something else in it) takes the music mod's
+// playlist there. The song, its wave and the wave's resource were added beside the playlist in
+// the first bundle; they have to be beside it in this one as well, or the list names a song its
+// bundle does not hold. The asset nothing names stays out, and the music mod's own bundle is as
+// that mod built it. Either mod may come first.
+void carried_into_another_bundle_with_the_list(bool music_first) {
+    const std::string order = music_first ? "second bundle, music first" : "second bundle, music last";
+    Fixture fixture(music_first ? "second-bundle-music-first" : "second-bundle-music-last");
+    const auto add_music = [&] { fixture.add("music", false, shared_toc, {}, music_assets(), music_resources()); };
+    const auto add_tweak = [&] {
+        fixture.add("tweak", false, shared_toc, {},
+                    {{"test/playlist", 0, ebx_document(guid(1), {})}, {"test/extra", 1, ebx_document(guid(3), {})}}, {}, second_bundle);
+    };
+    if (music_first) { add_music(); add_tweak(); } else { add_tweak(); add_music(); }
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.issue.empty() && report.built, order + ": the merge builds the patch\n" + describe(report));
+    expect(noted(report, std::string("tweak: ") + second_bundle + ": 1 asset(s) take another mod's change, e.g. test/playlist from music"),
+           order + ": the copy of the second bundle takes the changed playlist\n" + describe(report));
+    expect(noted(report, std::string("tweak: ") + second_bundle + ": 3 asset(s) added by other mods, e.g. test/song"),
+           order + ": and with it the song, its wave and the wave's resource\n" + describe(report));
+    const auto files = fixture.merged_files(shared_toc, second_bundle);
+    expect(files == 1 + 2 + 3, order + ": that copy lists its manifest, its two assets and those three (" + std::to_string(files) + " files)");
+    const auto own = fixture.merged_files(shared_toc);
+    const auto built = static_cast<int>(1 + music_assets().size() + music_resources().size());
+    expect(own == built, order + ": the music mod's own bundle is as it built it (" + std::to_string(own) + " files, " +
+           std::to_string(built) + " built)");
+}
 } // namespace
 
 int main() try {
@@ -393,6 +434,8 @@ int main() try {
     same_name_from_two_mods(true);
     same_name_from_two_mods(false);
     two_music_mods_both_carried_into_maps_copy(baseline);
+    carried_into_another_bundle_with_the_list(true);
+    carried_into_another_bundle_with_the_list(false);
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

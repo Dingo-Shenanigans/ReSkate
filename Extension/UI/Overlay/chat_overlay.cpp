@@ -1,5 +1,6 @@
 #include "overlay_internal.h"
 #include "chat_emotes.h"
+#include "chat_rich.h"
 #include "nametag_gradient.h"
 #include "role_badge.h"
 #include <imgui_internal.h>
@@ -124,119 +125,8 @@ std::vector<const MultiplayerChatCommand*> matching_commands(const MultiplayerCh
         if (command.name.starts_with(lowered) || lowered.starts_with(command.name + " ")) result.push_back(&command);
     return result;
 }
-// A message laid out with its :emote: images, in lines no wider than `wrap`; the first line
-// starts `indent` in. Emotes are a little taller than the text and centred on their line.
-// Items refer to the message by offset, so a layout stays valid for the line after the feed
-// is polled again (a line's text never changes).
-struct RichItem {
-    std::size_t begin{}, length{}; // within the message: the text, or the emote's name
-    bool emote{};
-    ImVec2 at, size;
-    std::size_t line{};
-};
-struct RichText {
-    std::vector<RichItem> items;
-    float height{};
-};
-bool has_emotes(std::string_view text) {
-    if (!chat_emotes_loaded()) return false;
-    for (std::size_t at = text.find(':'); at != std::string_view::npos; at = text.find(':', at + 1)) {
-        const auto end = text.find(':', at + 1);
-        if (end == std::string_view::npos) return false;
-        ChatEmote emote;
-        if (end > at + 1 && chat_emote(text.substr(at + 1, end - at - 1), emote)) return true;
-    }
-    return false;
-}
-RichText lay_out(ImFont* font, float size, std::string_view text, float wrap, float indent) {
-    RichText out;
-    const float text_height = font->CalcTextSizeA(size, FLT_MAX, 0.0f, "Ay").y, emote_height = text_height * 1.3f;
-    std::vector<float> lines{text_height};
-    float x = indent;
-    const auto offset = [&](std::string_view part) { return static_cast<std::size_t>(part.data() - text.data()); };
-    const auto measure = [&](std::string_view part) {
-        return font->CalcTextSizeA(size, FLT_MAX, 0.0f, part.data(), part.data() + part.size());
-    };
-    const auto new_line = [&] {
-        x = 0.0f;
-        lines.push_back(text_height);
-    };
-    const auto place = [&](RichItem item) {
-        if (x > 0.0f && x + item.size.x > wrap) new_line();
-        item.at.x = x;
-        item.line = lines.size() - 1;
-        lines.back() = std::max(lines.back(), item.size.y);
-        x += item.size.x;
-        out.items.push_back(item);
-    };
-    // Text: whole where it fits on a line; longer than a line, broken where it must be, each
-    // piece filling what is left of its line.
-    const auto place_text = [&](std::string_view part) {
-        while (!part.empty()) {
-            const auto whole = measure(part);
-            if (whole.x <= wrap) {
-                place({offset(part), part.size(), false, {}, ImVec2(whole.x, text_height)});
-                return;
-            }
-            if (x > 0.0f && measure(part.substr(0, 1)).x > wrap - x) new_line();
-            std::size_t fit = 1;
-            while (fit < part.size() && measure(part.substr(0, fit + 1)).x <= wrap - x) ++fit;
-            const auto piece = part.substr(0, fit);
-            place({offset(piece), piece.size(), false, {}, ImVec2(measure(piece).x, text_height)});
-            part.remove_prefix(fit);
-            if (!part.empty()) new_line();
-        }
-    };
-    for (std::size_t at = 0; at < text.size();) {
-        // A word and the spaces after it.
-        auto end = text.find(' ', at);
-        end = end == std::string_view::npos ? text.size() : text.find_first_not_of(' ', end);
-        if (end == std::string_view::npos) end = text.size();
-        const auto token = text.substr(at, end - at);
-        const auto word = token.substr(0, token.find_last_not_of(' ') + 1);
-        at = end;
-        // Emotes can sit inside a word too (":blob::blob:"): each :name: of a known emote is an
-        // image, the rest text.
-        std::size_t done = 0;
-        for (auto open = word.find(':'); open != std::string_view::npos;) {
-            const auto close = word.find(':', open + 1);
-            if (close == std::string_view::npos) break;
-            ChatEmote emote;
-            if (close > open + 1 && chat_emote(word.substr(open + 1, close - open - 1), emote)) {
-                if (open > done) place_text(word.substr(done, open - done));
-                place({offset(word) + open + 1, close - open - 1, true, {}, ImVec2(emote_height * emote.aspect, emote_height)});
-                done = close + 1;
-                open = word.find(':', done);
-            } else {
-                open = close; // it may open the next one
-            }
-        }
-        if (done < word.size()) place_text(word.substr(done));
-        const auto spaces = token.substr(word.size());
-        if (!spaces.empty()) place({offset(spaces), spaces.size(), false, {}, measure(spaces)});
-    }
-    std::vector<float> tops(lines.size());
-    for (std::size_t i = 1; i < lines.size(); ++i) tops[i] = tops[i - 1] + lines[i - 1];
-    for (auto& item : out.items) item.at.y = tops[item.line] + (lines[item.line] - item.size.y) * 0.5f;
-    out.height = tops.back() + lines.back();
-    return out;
-}
-void draw_rich(ImDrawList* draw, ImFont* font, float size, ImVec2 origin, std::string_view text, const RichText& rich,
-               ImU32 colour, float alpha) {
-    for (const auto& item : rich.items) {
-        if (item.begin > text.size() || item.length > text.size() - item.begin) continue;
-        const auto part = text.substr(item.begin, item.length);
-        const ImVec2 at(origin.x + item.at.x, origin.y + item.at.y);
-        if (item.emote) {
-            // Looked up as it is drawn, so an animated emote shows its current frame.
-            ChatEmote emote;
-            if (chat_emote(part, emote))
-                draw->AddImage(emote.texture, at, ImVec2(at.x + item.size.x, at.y + item.size.y), emote.uv0, emote.uv1,
-                               IM_COL32(255, 255, 255, static_cast<int>(255.0f * alpha)));
-        } else
-            draw->AddText(font, size, at, colour, part.data(), part.data() + part.size());
-    }
-}
+// Messages with their :emote: images: chat_rich.h, shared with the chat bubbles.
+using namespace chat_rich;
 
 // A chat line as drawn: its label, whether it has emotes and their layout, kept per line
 // (sequences never repeat) for the font, size, width and indent it was laid out with, instead
@@ -249,6 +139,7 @@ struct LineLayout {
     float size{}, wrap{}, indent{};
     bool emotes_loaded{};
     bool emotes{};   // has_emotes; without any the text is drawn plainly
+    std::string text; // what is drawn: the line's text with any emote the filter masked put back
     RichText rich;   // its layout, when it has
     ImVec2 extent{}; // its size: the layout's, or the plain text's wrapped at `wrap` (the closed view)
 };
@@ -281,9 +172,10 @@ const LineLayout& layout_for(LineLayout& entry, const MultiplayerChatLine& line,
     entry.wrap = wrap;
     entry.indent = indent;
     entry.emotes_loaded = loaded;
-    entry.emotes = has_emotes(line.text);
-    entry.rich = entry.emotes ? lay_out(font, size, line.text, wrap, indent) : RichText{};
-    entry.extent = entry.emotes ? ImVec2(wrap, entry.rich.height) : font->CalcTextSizeA(size, FLT_MAX, wrap, line.text.c_str());
+    entry.text = restore_emotes(line.text, line.unmasked);
+    entry.emotes = has_emotes(entry.text);
+    entry.rich = entry.emotes ? lay_out(font, size, entry.text, wrap, indent) : RichText{};
+    entry.extent = entry.emotes ? ImVec2(wrap, entry.rich.height) : font->CalcTextSizeA(size, FLT_MAX, wrap, entry.text.c_str());
     return entry;
 }
 
@@ -600,12 +492,12 @@ void draw_chat() {
                 const auto& drawn = layout_for(layout, line, ImGui::GetFont(), ImGui::GetFontSize(), line_width,
                                                ImGui::GetCursorScreenPos().x - line_start.x);
                 if (drawn.emotes) {
-                    draw_rich(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), line_start, line.text,
+                    draw_rich(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), line_start, drawn.text,
                               drawn.rich, ImGui::GetColorU32(ImGuiCol_Text), 1.0f);
                     ImGui::SetCursorScreenPos(line_start);
                     ImGui::Dummy(ImVec2(line_width, drawn.rich.height));
                 } else {
-                    ImGui::TextUnformatted(line.text.c_str());
+                    ImGui::TextUnformatted(drawn.text.c_str());
                 }
             }
             if (c.feed.lines.empty()) {
@@ -711,8 +603,8 @@ void draw_chat() {
         draw->AddText(heading, name_size, ImVec2(at.x + badge, at.y), with_alpha(name_colour(*line), alpha), label.c_str());
         shade_nametag_gradient(draw, name_vertices, at.x + badge, name_extent.x, name_colour(*line), ImGui::GetTime());
         const ImVec2 text_at = beside ? ImVec2(at.x + indent, at.y) : ImVec2(at.x, at.y + name_extent.y);
-        if (emotes) draw_rich(draw, body, size, text_at, line->text, drawn.rich, with_alpha(theme::paper, alpha), alpha);
-        else draw->AddText(body, size, text_at, with_alpha(theme::paper, alpha), line->text.c_str(), nullptr, wrap);
+        if (emotes) draw_rich(draw, body, size, text_at, drawn.text, drawn.rich, with_alpha(theme::paper, alpha), alpha);
+        else draw->AddText(body, size, text_at, with_alpha(theme::paper, alpha), drawn.text.c_str(), nullptr, wrap);
         bottom = top_left.y - gap;
     }
 }

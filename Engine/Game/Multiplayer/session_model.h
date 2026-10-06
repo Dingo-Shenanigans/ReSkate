@@ -67,12 +67,16 @@ inline constexpr std::size_t multiplayer_chat_history = 50;
 struct MultiplayerChatLine {
     std::uint64_t sequence{};   // local arrival order, increasing within the process
     std::uint64_t sender{};     // Steam id; 0 for a notice from ReSkate itself
+    std::uint64_t received{};   // local monotonic time (microseconds) the line arrived
     std::string name, text;
     bool local{};               // sent by this player
     // The sender's role, as their nametag shows it: its colour (IM_COL32 layout, 0 = none)
     // and a tag shown in a box before the name ("Dev", "Creator", "Homie", "Admin", "Host", "Friend" or empty).
     std::uint32_t color{};
     std::string tag;
+    // With the chat filter on, `text` is masked and this is the line as sent (same length), so
+    // the overlay can keep emote names the filter caught; empty when nothing was masked.
+    std::string unmasked;
 };
 // A command typed into chat with a leading "/" (shown as the player types "/").
 struct MultiplayerChatCommand {
@@ -114,6 +118,15 @@ struct MultiplayerModel {
     bool chat_visible{true};
     // Local: bad words in chat names and messages show as **** (on by default).
     bool chat_filter{true};
+    // Local: chat bubbles above each skater's head. `chat_bubbles_distance` is how far away
+    // a player may be and still show one, `chat_bubbles_duration` how many seconds a line
+    // stays before it fades, `chat_bubbles_history` how many recent lines stack up.
+    // `chat_bubbles_own` also shows this player's own lines.
+    bool chat_bubbles{true};
+    bool chat_bubbles_own{};
+    float chat_bubbles_distance{40.f};
+    float chat_bubbles_duration{5.f};
+    int chat_bubbles_history{3};
     // Local: the tag the ReSkate backend gives this player ("Dev", "Creator" or "Homie"; empty
     // for most players) and its role colour, and whether they show it, and the animated items
     // that come with it, to everyone.

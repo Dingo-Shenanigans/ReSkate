@@ -32,7 +32,9 @@ void apply_object_placement(Session &s, ObjectPlacement policy) {
     set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || s.server_admin));
 }
 void apply_nametags(const Session &s) {
-    set_custom_nametags_enabled(s.nametags && s.custom_nametags);
+    // The feed also runs when only chat bubbles are on: the overlay draws whichever of the
+    // two is enabled from the flags it is handed.
+    set_custom_nametags_enabled((s.nametags && s.custom_nametags) || s.chat_bubbles);
     set_native_nametags_enabled(s.nametags && !s.custom_nametags);
     set_native_compass_enabled(!(s.nametags && s.custom_nametags));
 }
@@ -379,6 +381,52 @@ std::string edit_chat_filter(Session &s, std::string_view argument) {
     publish_chat(s);
     return s.chat_filter ? "Bad words in chat are hidden." : "Chat is shown unfiltered.";
 }
+std::string edit_chat_bubbles(Session &s, std::string_view argument) {
+    const auto enabled = parse_switch(argument, s.chat_bubbles);
+    if (!enabled) return "Use on, off, or toggle for chat bubbles.";
+    s.chat_bubbles = *enabled;
+    s.display_preferences_loaded = true;
+    apply_nametags(s);
+    profile_runtime::set_local_preference("ChatBubbles", s.chat_bubbles);
+    return s.chat_bubbles ? "Chat bubbles show above skaters." : "Chat bubbles hidden.";
+}
+std::string edit_chat_bubbles_own(Session &s, std::string_view argument) {
+    const auto enabled = parse_switch(argument, s.chat_bubbles_own);
+    if (!enabled) return "Use on, off, or toggle for your own chat bubbles.";
+    s.chat_bubbles_own = *enabled;
+    profile_runtime::set_local_preference("ChatBubblesOwn", s.chat_bubbles_own);
+    return s.chat_bubbles_own ? "Your own messages show as bubbles too."
+                              : "Only other players' messages show as bubbles.";
+}
+std::string edit_chat_bubbles_distance(Session &s, std::string_view argument) {
+    float value{};
+    const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !std::isfinite(value) ||
+        value < 5.f || value > 500.f)
+        return "Chat bubble distance is a number of metres from 5 to 500.";
+    s.chat_bubbles_distance = value;
+    profile_runtime::set_local_values({{"ChatBubblesDistance", static_cast<double>(value)}});
+    return "Chat bubbles show within " + std::to_string(static_cast<int>(value)) + " m.";
+}
+std::string edit_chat_bubbles_duration(Session &s, std::string_view argument) {
+    float value{};
+    const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !std::isfinite(value) ||
+        value < 1.f || value > 30.f)
+        return "Chat bubble duration is a number of seconds from 1 to 30.";
+    s.chat_bubbles_duration = value;
+    profile_runtime::set_local_values({{"ChatBubblesDuration", static_cast<double>(value)}});
+    return "Chat bubbles last " + std::to_string(static_cast<int>(value)) + " seconds.";
+}
+std::string edit_chat_bubbles_history(Session &s, std::string_view argument) {
+    int value{};
+    const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || value < 1 || value > 8)
+        return "Chat bubble history is a number of lines from 1 to 8.";
+    s.chat_bubbles_history = value;
+    profile_runtime::set_local_values({{"ChatBubblesHistory", static_cast<std::int64_t>(value)}});
+    return "Chat bubbles stack up to " + std::to_string(value) + " recent line(s).";
+}
 std::string kick_player(Session &s, std::string_view argument) {
     if (s.mode != Mode::host) return "Only the session host can kick players.";
     const auto split = argument.find(' ');
@@ -485,6 +533,8 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
     if ((action != "host" && action != "host-config" && action != "join" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
          action != "distances" && action != "object-placement" && action != "kick" && action != "clear-objects" &&
          action != "nametags" && action != "nametag-style" && action != "chat-visible" && action != "chat-filter" &&
+         action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
+         action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
          !own_mark_command(action) &&
          action != "voice" && action != "voice-mute" &&
          action != "voice-volume" && action != "voice-allow" && action != "voice-range" && action != "chat" && action != "ban" && action != "unban" &&
@@ -666,7 +716,11 @@ std::string command(std::string_view action, std::string_view argument, std::str
             {"nametags", edit_nametags},
             {"nametag-style", edit_nametag_style},
             {"mark-tag", edit_own_tag}, {"mark-items", edit_own_items}, {"mark-style", edit_mark_style},
-            {"chat-visible", edit_chat_visible}, {"chat-filter", edit_chat_filter}};
+            {"chat-visible", edit_chat_visible}, {"chat-filter", edit_chat_filter},
+            {"chat-bubbles", edit_chat_bubbles}, {"chat-bubbles-own", edit_chat_bubbles_own},
+            {"chat-bubbles-distance", edit_chat_bubbles_distance},
+            {"chat-bubbles-duration", edit_chat_bubbles_duration},
+            {"chat-bubbles-history", edit_chat_bubbles_history}};
         for (const auto &[name, edit] : settings)
             if (action == name) {
                 s.status = edit(s, argument);

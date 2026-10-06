@@ -31,6 +31,20 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         std::vector<std::pair<std::string, AssetAddition>> candidates, companions;
         std::vector<fb::TocChunk> newChunks;   // TOC chunks the game's TOCs do not have
         std::set<fb::Guid> imported;
+        // The game's assets this mod changed. They wait until its additions are
+        // settled: one that another mod's asset of the same name stands in for
+        // is not where a copy can find it, and a change must not name it there.
+        struct Change {
+            std::string bundle;                         // lower case: where the mod changed it
+            std::string name;                           // lower case
+            std::string asset;                          // as the bundle spells it
+            fb::Sha1 game;                              // the game's copy it replaces
+            fb::Sha1 sha1;
+            std::uint64_t originalSize{};
+            std::vector<std::byte> encoded;
+            std::optional<fb::BundleFileInfo> gameFile; // where the game's copy is
+        };
+        std::vector<Change> changes;
         const auto decoded = [&](std::span<const std::byte> encoded) {
             return fb::ebx::read_document(fb::decode_cas(encoded, {gameRoot}));
         };
@@ -53,13 +67,17 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                     const auto modListing = list_bundle(store, mod->directory, baseRoot, bundle, gameRoot);
                     const auto gameListing = list_bundle(store, baseRoot, baseRoot, *shipped->second, gameRoot);
                     if (!modListing || !gameListing) continue;
-                    std::map<std::string, fb::Sha1, std::less<>> original;
-                    for (const auto& asset : gameListing->manifest.ebx) original.emplace(lower(asset.name), asset.sha1);
+                    // The game's copy of each asset: its sha1, and where in the listing it is.
+                    std::map<std::string, std::pair<fb::Sha1, std::size_t>, std::less<>> original;
+                    for (std::size_t index = 0; index < gameListing->manifest.ebx.size(); ++index) {
+                        const auto& asset = gameListing->manifest.ebx[index];
+                        original.emplace(lower(asset.name), std::pair{asset.sha1, index});
+                    }
                     for (std::size_t index = 0; index < modListing->manifest.ebx.size(); ++index) {
                         const auto& asset = modListing->manifest.ebx[index];
                         const auto name = lower(asset.name);
                         const auto game_copy = original.find(name);
-                        if (game_copy != original.end() && game_copy->second == asset.sha1) continue;
+                        if (game_copy != original.end() && game_copy->second.first == asset.sha1) continue;
                         const auto at = modListing->first + index;
                         if (at >= modListing->files.size()) continue;
                         const auto& file = modListing->files[at];
@@ -71,44 +89,25 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                             candidates.push_back({lower(bundle.name), {mod->name, asset, payload(), lower(relative)}});
                             continue;
                         }
-                        const auto encodedPayload = payload();
+                        auto encodedPayload = payload();
                         try {
                             for (const auto& reference : decoded(encodedPayload).imports)
                                 imported.insert(reference.fileGuid);
                         } catch (const std::exception&) {}
-                        auto& versions = out.changed[name];
-                        const auto existing = versions.find(game_copy->second);
-                        if (existing == versions.end()) {
-                            versions.emplace(game_copy->second,
-                                AssetOverride{mod->name, asset.sha1, asset.originalSize, encodedPayload});
-                            ++changed;
-                        } else {
-                            try {
-                                std::size_t baseIndex = 0;
-                                while (baseIndex < gameListing->manifest.ebx.size() &&
-                                       lower(gameListing->manifest.ebx[baseIndex].name) != name)
-                                    ++baseIndex;
-                                if (gameListing->first + baseIndex < gameListing->files.size()) {
-                                    const auto& baseFile = gameListing->files[gameListing->first + baseIndex];
-                                    const auto baseBytes = store.read(baseRoot, baseFile.location, baseFile.offset, baseFile.size);
-                                    const auto baseDoc = decoded(baseBytes);
-                                    const auto existingDoc = decoded(existing->second.encoded);
-                                    const auto thisDoc = decoded(encodedPayload);
-                                    const std::array<const fb::ebx::Document*, 2> editDocs{&existingDoc, &thisDoc};
-                                    fb::ebx::MergeSummary summary;
-                                    auto combined = fb::ebx::merge_documents(baseDoc, editDocs, &summary);
-                                    if (summary.instances || summary.arrayEntries) {
-                                        const auto rebuilt = fb::ebx::write_document(combined);
-                                        existing->second.sha1 = sha1_of(rebuilt);
-                                        existing->second.originalSize = rebuilt.size();
-                                        existing->second.encoded = fb::encode_cas(rebuilt, {gameRoot});
-                                        existing->second.mod += " + " + mod->name;
-                                        for (const auto& reference : combined.imports)
-                                            imported.insert(reference.fileGuid);
-                                    }
-                                }
+                        // A higher mod's version of the asset, which this change is
+                        // combined with below, may name what this mod adds.
+                        if (const auto versions = out.changed.find(name); versions != out.changed.end())
+                            if (const auto existing = versions->second.find(game_copy->second.first);
+                                existing != versions->second.end()) try {
+                                for (const auto& reference : decoded(existing->second.encoded).imports)
+                                    imported.insert(reference.fileGuid);
                             } catch (const std::exception&) {}
-                        }
+                        std::optional<fb::BundleFileInfo> gameFile;
+                        if (const auto gameAt = gameListing->first + game_copy->second.second;
+                            gameAt < gameListing->files.size())
+                            gameFile = gameListing->files[gameAt];
+                        changes.push_back({lower(bundle.name), name, asset.name, game_copy->second.first, asset.sha1,
+                                           asset.originalSize, std::move(encodedPayload), gameFile});
                     }
                     // Maps carry stock SkaterLoader too. Replacing it only in the game's
                     // bundles loses custom cosmetic material targets on a map transition.
@@ -157,6 +156,9 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         // is, and only one of them can be what a copy gets: say whose, so a song or an
         // item that goes missing on a map can be traced to the mod that took its name.
         std::map<std::string, std::pair<std::size_t, std::string>, std::less<>> shadowed;   // by the mod kept
+        // This mod's added EBX that another mod's different document stands in for: what
+        // names one by its guid finds nothing in a copy that was given the other's.
+        std::set<fb::Guid> lost;
         const auto keep = [&](const std::string& bundle, AssetAddition addition) {
             auto& list = out.added[bundle];
             const auto name = lower(addition.asset.name);
@@ -166,6 +168,8 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 if (holder->mod != addition.mod && holder->asset.sha1 != addition.asset.sha1) {
                     auto& [count, example] = shadowed[holder->mod];
                     if (!count++) example = addition.asset.name;
+                    if (addition.asset.kind == fb::AssetKind::ebx && holder->file != addition.file)
+                        lost.insert(addition.file);
                 }
                 return false;
             }
@@ -174,23 +178,25 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         };
         // Transitively: an addition a following addition imports follows too (a new song
         // imports its new wave, and only the song is named by the changed playlist).
-        struct Candidate { fb::Guid file; std::vector<fb::Guid> imports; bool taken{}; };
-        std::vector<Candidate> parsed(candidates.size());
+        std::vector<bool> followed(candidates.size());
+        // The documents this mod added to each bundle, by guid.
+        std::map<std::string, std::set<fb::Guid>, std::less<>> addedIn;
         for (std::size_t index = 0; index < candidates.size(); ++index) {
+            auto& addition = candidates[index].second;
             try {
-                const auto document = decoded(candidates[index].second.encoded);
-                parsed[index].file = document.fileGuid;
-                for (const auto& reference : document.imports) parsed[index].imports.push_back(reference.fileGuid);
-            } catch (const std::exception&) { parsed[index].taken = true; }   // unreadable: never follows
+                const auto document = decoded(addition.encoded);
+                addition.file = document.fileGuid;
+                for (const auto& reference : document.imports) addition.names.push_back(reference.fileGuid);
+                addedIn[candidates[index].first].insert(addition.file);
+            } catch (const std::exception&) { followed[index] = true; }   // unreadable: never follows
         }
         for (bool grew = true; grew;) {
             grew = false;
             for (std::size_t index = 0; index < candidates.size(); ++index) {
-                auto& candidate = parsed[index];
-                if (candidate.taken || !imported.contains(candidate.file)) continue;
-                candidate.taken = grew = true;
-                imported.insert(candidate.imports.begin(), candidate.imports.end());
                 auto& [bundle, addition] = candidates[index];
+                if (followed[index] || !imported.contains(addition.file)) continue;
+                followed[index] = grew = true;
+                imported.insert(addition.names.begin(), addition.names.end());
                 keep(bundle, std::move(addition));
             }
         }
@@ -203,6 +209,65 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                     return addition.mod == mod->name && addition.asset.kind == fb::AssetKind::ebx &&
                            lower(addition.asset.name) == name; }))
                 keep(bundle, std::move(companion));
+        }
+        for (auto& change : changes) {
+            // What the change names of the assets the mod added beside it. The mod
+            // put them in one bundle with what names them, so they stay together.
+            std::set<fb::Guid> names;
+            const auto beside = addedIn.find(change.bundle);
+            try {
+                auto document = decoded(change.encoded);
+                const auto stays = [&](const fb::ebx::ImportReference& reference) {
+                    return !lost.contains(reference.fileGuid); };
+                if (!std::ranges::all_of(document.imports, stays))
+                    if (const auto gone = fb::ebx::drop_root_references(document, stays)) {
+                        const auto rebuilt = fb::ebx::write_document(document);
+                        change.sha1 = sha1_of(rebuilt);
+                        change.originalSize = rebuilt.size();
+                        change.encoded = fb::encode_cas(rebuilt, {gameRoot});
+                        report.notes.push_back(mod->name + ": " + change.asset + ": " + std::to_string(gone) +
+                            " entry(ies) left out of the copies other mods carry, where another mod's asset of "
+                            "the same name stands in for what they name");
+                    }
+                if (beside != addedIn.end())
+                    for (const auto& reference : document.imports)
+                        if (beside->second.contains(reference.fileGuid) && stays(reference))
+                            names.insert(reference.fileGuid);
+            } catch (const std::exception&) {}
+            auto& versions = out.changed[change.name];
+            const auto existing = versions.find(change.game);
+            if (existing == versions.end()) {
+                versions.emplace(change.game, AssetOverride{mod->name, change.sha1, change.originalSize,
+                                                            std::move(change.encoded), std::nullopt, std::move(names)});
+                ++changed;
+                continue;
+            }
+            // The same change again, from another of the mod's bundles or another mod.
+            if (existing->second.sha1 == change.sha1) {
+                existing->second.names.insert(names.begin(), names.end());
+                continue;
+            }
+            if (!change.gameFile) continue;
+            try {
+                const auto baseDoc = decoded(store.read(baseRoot, change.gameFile->location,
+                                                        change.gameFile->offset, change.gameFile->size));
+                const auto existingDoc = decoded(existing->second.encoded);
+                const auto thisDoc = decoded(change.encoded);
+                // Lowest priority first, the order a bundle's own copies are combined
+                // in: where two mods changed one value, the higher mod's is kept.
+                const std::array<const fb::ebx::Document*, 2> editDocs{&thisDoc, &existingDoc};
+                fb::ebx::MergeSummary summary;
+                auto combined = fb::ebx::merge_documents(baseDoc, editDocs, &summary);
+                // Changed values alone are only worth a copy that has all of them.
+                if (!summary.instances && !summary.arrayEntries && !(summary.values && summary.exact())) continue;
+                const auto rebuilt = fb::ebx::write_document(combined);
+                existing->second.sha1 = sha1_of(rebuilt);
+                existing->second.originalSize = rebuilt.size();
+                existing->second.encoded = fb::encode_cas(rebuilt, {gameRoot});
+                if (existing->second.mod != mod->name && !existing->second.mod.ends_with(" + " + mod->name))
+                    existing->second.mod += " + " + mod->name;
+                existing->second.names.insert(names.begin(), names.end());
+            } catch (const std::exception&) {}
         }
         for (const auto& [other, clash] : shadowed)
             report.notes.push_back(mod->name + ": " + std::to_string(clash.first) +

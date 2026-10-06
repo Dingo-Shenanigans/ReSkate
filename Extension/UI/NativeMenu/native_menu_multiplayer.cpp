@@ -395,6 +395,10 @@ void render_section(const Context& context, const MultiplayerModel& model, Secti
                 "nametags", "toggle", false, 136.f);
             add_button(context, side, "nametag-style", std::string("Nametag style: ") + (model.custom_nametags ? "ReSkate" : "Game"),
                 "nametag-style", "toggle", false, 136.f);
+            add_button(context, side, "chat-bubbles", std::string("Chat bubbles: ") + (model.chat_bubbles ? "On" : "Off"),
+                "chat-bubbles", "toggle", false, 136.f);
+            add_button(context, side, "chat-bubbles-own", std::string("Own chat bubbles: ") + (model.chat_bubbles_own ? "On" : "Off"),
+                model.chat_bubbles ? "chat-bubbles-own" : "", "toggle", false, 136.f);
             add_button(context, side, "copy-code", "Copy join code", model.invite.empty() ? "" : "copy-code", {}, false, 136.f);
             add_button(context, side, "leave", model.hosting ? "End session" : "Leave session", "stop", {}, false, 136.f);
         }

@@ -914,8 +914,8 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
             }
         }
         if (recipients.empty()) return "No admins are online.";
-        const auto line = dm_line(from, scope, text, multiplayer_chat_max_bytes);
-        for (auto *guest : recipients) send_chat(line, guest);
+        const auto message = dm_line(from, scope, text, multiplayer_chat_max_bytes);
+        for (auto *guest : recipients) send_chat(message, guest);
         const auto done = "Sent to " + label + (recipients.size() > 1 || to_admins ? " (" + std::to_string(recipients.size()) + " players)" : "") + ".";
         if (!console) log_("[dm] " + from + " -> " + label + ": " + clean_chat_text(text));
         return done;

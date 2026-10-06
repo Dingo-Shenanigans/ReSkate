@@ -10,12 +10,24 @@
 // ReSkate's own nametags (drawn by the overlay, Extension/UI/Overlay/nametag_overlay.cpp)
 // in place of the game's nametag and compass arrows; the pause map's player icons stay.
 namespace dingosdk::multiplayer {
+// One line in a player's bubble stack: the text (masked when the chat filter is on), the line
+// as sent when the filter changed it (so emote names survive), how far its pop-in has come
+// (0 just arrived, 1 settled) and how opaque it still is (1, down to 0 as it goes).
+struct NametagBubble {
+    std::string text, raw;
+    float appear{1}, fade{1};
+};
 struct NametagPlayer {
     std::array<float, 3> head{}; // world position above the skater
     std::string name;
     std::uint32_t color{0xffffffffU}; // IM_COL32 layout
     std::string tag;                  // role badge before the name, as in chat ("" for none)
     bool talking{};
+    // The player's recent chat lines to show as bubbles above the head, oldest first. Empty
+    // draws no bubbles.
+    std::vector<NametagBubble> bubbles;
+    // The local player's own tag: only ever draws bubbles, never a name or dot.
+    bool self{};
 };
 // Role colours; friends are the viewer's own Steam friends.
 inline constexpr std::uint32_t nametag_white = 0xffffffffU, nametag_developer = 0xffff78b4U, // purple
@@ -31,8 +43,11 @@ inline constexpr std::uint32_t nametag_developer_start = 0xffff206eU, // #6E20FF
 
 // Client thread, once per rendered frame: everyone to label and the local skater's position
 // (for distances). Also reads whether the game is hiding its own nametags right now.
+// `show_names` draws the name, distance and role badge; `show_bubbles` draws chat bubbles
+// within `bubble_distance` metres.
 void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> players,
-                             std::optional<std::array<float, 3>> local) noexcept;
+                             std::optional<std::array<float, 3>> local, bool show_names,
+                             bool show_bubbles, float bubble_distance) noexcept;
 void set_custom_nametags_enabled(bool enabled) noexcept;
 bool custom_nametags_enabled() noexcept;
 // The overlay's feed (any thread): nothing while off, stale, or while the game hides nametags.

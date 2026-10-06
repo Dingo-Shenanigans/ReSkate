@@ -20,6 +20,7 @@
 #include "Extension/Skater/physics_tuning.h"
 #include "Extension/Multiplayer/Remote/remote_collision.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Game/UI/game_view.h"
 #include <Windows.h>
@@ -261,6 +262,14 @@ void publish_party(Session &s) {
         s.custom_nametags = profile_runtime::local_preference("CustomNametags").value_or(true);
         s.chat_visible = profile_runtime::local_preference("ChatVisible").value_or(true);
         s.chat_filter = profile_runtime::local_preference("ChatFilter").value_or(true);
+        s.chat_bubbles = profile_runtime::local_preference("ChatBubbles").value_or(true);
+        s.chat_bubbles_own = profile_runtime::local_preference("ChatBubblesOwn").value_or(false);
+        if (const auto saved = profile_runtime::local_value("ChatBubblesDistance"); saved && saved->is_number())
+            s.chat_bubbles_distance = std::clamp(saved->get<float>(), 5.f, 500.f);
+        if (const auto saved = profile_runtime::local_value("ChatBubblesDuration"); saved && saved->is_number())
+            s.chat_bubbles_duration = std::clamp(saved->get<float>(), 1.f, 30.f);
+        if (const auto saved = profile_runtime::local_value("ChatBubblesHistory"); saved && saved->is_number())
+            s.chat_bubbles_history = std::clamp(static_cast<int>(saved->get<double>()), 1, 8);
         show_own_tag(profile_runtime::local_preference("IdentityTag").value_or(true));
         show_own_items(profile_runtime::local_preference("IdentityItems").value_or(true));
         if (const auto saved = profile_runtime::local_value("IdentityStyles"); saved && saved->is_string())
@@ -385,10 +394,43 @@ std::uint64_t far_sample_interval(const Peer &p, float distance) {
 void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::uint64_t now) {
     if (!world_playing(s, local)) return;
     const auto view = latest_game_view();
-    // ReSkate's nametags: every shown player, placed above their head each frame.
+    // ReSkate's nametags and chat bubbles: every shown player, placed above their head
+    // each frame.
     std::vector<NametagPlayer> nametags;
-    const bool labels = s.nametags && s.custom_nametags;
+    const bool bubbles = s.chat_bubbles;
+    const bool labels = (s.nametags && s.custom_nametags) || bubbles;
     if (labels) refresh_friends(s);
+    // The newest chat lines from `sender` still inside the bubble duration, oldest first,
+    // filtered the same way the chat panel filters them, each with the opacity it has left
+    // (it fades over the last half second). At most `chat_bubbles_history` lines.
+    const auto recent_bubbles = [&](std::uint64_t sender) {
+        std::vector<NametagBubble> result;
+        if (!bubbles) return result;
+        const int limit = std::max(1, s.chat_bubbles_history);
+        const auto duration = static_cast<std::uint64_t>(std::max(0.5f, s.chat_bubbles_duration) * 1e6f);
+        const auto fade_from = std::min<std::uint64_t>(duration, 500000);
+        for (auto it = s.chat.rbegin(); it != s.chat.rend() && static_cast<int>(result.size()) < limit; ++it) {
+            if (it->sender != sender) continue;
+            // Older lines are older still: once one has expired, stop.
+            if (now < it->received || now - it->received >= duration) break;
+            NametagBubble line;
+            line.text = it->text;
+            if (s.chat_filter) {
+                const auto masked = s.chat_masked.find(it->sequence);
+                auto filtered = masked != s.chat_masked.end() ? masked->second.second : text::mask_bad_words(it->text);
+                if (filtered != it->text) line.raw = std::exchange(line.text, std::move(filtered));
+            }
+            if (line.text.find_first_not_of(' ') == std::string::npos) continue;
+            const auto age = now - it->received;
+            // Pops in over the first few frames, fades over the last half second.
+            constexpr std::uint64_t pop_us = 220000;
+            line.appear = std::min(1.0f, static_cast<float>(age) / static_cast<float>(pop_us));
+            line.fade = fade_from ? std::min(1.0f, static_cast<float>(duration - age) / static_cast<float>(fade_from)) : 1.0f;
+            result.push_back(std::move(line));
+        }
+        std::reverse(result.begin(), result.end()); // oldest first
+        return result;
+    };
     // Who is talking, as last published for the UI (10 Hz), without copying the voice model.
     const auto &voices = s.view.voice.players;
     const auto label = [&](const Peer &p) {
@@ -399,6 +441,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         // The same role colour and badge the player's chat lines get.
         std::tie(tag.color, tag.tag) = player_role(s, p.member.id, false);
         tag.talking = std::any_of(voices.begin(), voices.end(), [&](const auto &v) { return v.id == p.member.id && v.speaking; });
+        tag.bubbles = recent_bubbles(p.member.id);
         nametags.push_back(std::move(tag));
     };
     // Creating a player's actor (skater, skateboard and both recipes) or re-applying a
@@ -539,9 +582,22 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             }
         }
     });
+    // The local player's own lines, above their own skater, when asked for.
+    if (labels && bubbles && s.chat_bubbles_own && local.ready) {
+        auto own = recent_bubbles(s.transport.status().local_id);
+        if (!own.empty()) {
+            NametagPlayer tag;
+            tag.head = local.pose.root.position;
+            tag.head[1] += 1.0f;
+            tag.self = true;
+            tag.bubbles = std::move(own);
+            nametags.push_back(std::move(tag));
+        }
+    }
     if (labels)
         publish_custom_nametags(s.base, std::move(nametags),
-                                local.ready ? std::optional(local.pose.root.position) : std::nullopt);
+                                local.ready ? std::optional(local.pose.root.position) : std::nullopt,
+                                s.nametags && s.custom_nametags, bubbles, s.chat_bubbles_distance);
 }
 } // namespace
 MultiplayerModel model() {
