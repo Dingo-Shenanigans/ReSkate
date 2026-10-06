@@ -342,6 +342,7 @@ struct StyleControls {
     void (*play)(bool play) noexcept = nullptr;  // false pauses at the shown moment
     void (*step)(int frames) noexcept = nullptr;
     void (*orbit)(float yaw, float pitch, float distance, float height) noexcept = nullptr;
+    void (*speed)(float speed) noexcept = nullptr; // a fraction of the clip's recorded speed
 };
 void set_style_controls(const StyleControls &) noexcept;
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);

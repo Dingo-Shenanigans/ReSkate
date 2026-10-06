@@ -15,6 +15,8 @@ void request_hold(float time) noexcept;
 void request_play(bool play) noexcept;
 // Moves a held clip by frames of 1/60 s. A playing clip is paused first.
 void request_step(int frames) noexcept;
+// Plays the clip at this fraction of its recorded speed, from the shown moment.
+void request_speed(float speed) noexcept;
 // True if the clip of this trick is saved.
 [[nodiscard]] bool has_clip(std::uint8_t trick);
 // Skatepedia's skater now performs this trick for a learn. 0 cancels.

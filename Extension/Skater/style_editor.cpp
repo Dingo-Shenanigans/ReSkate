@@ -73,6 +73,7 @@ struct State {
     // Playback, in milliseconds of the shown clip.
     std::optional<Clip> shown;
     bool playing{true};
+    float speed{1.0f}; // a fraction of the recorded speed
     double started{}, last_tick{};
     float shown_ms{}, target_ms{}; // a held clip eases from shown_ms to target_ms
     float low_ms{}, high_ms{};     // the trick part of the shown clip: the flick and the end
@@ -83,6 +84,7 @@ struct State {
     std::optional<float> hold_request; // a timeline time
     std::optional<bool> play_request;  // false pauses
     int step_request{};
+    std::optional<float> speed_request;
     bool spawned{}, dressed{}, anchored_on_stage{};
     std::string detail, note;
     std::vector<style::JointDelta> rotations;
@@ -345,8 +347,10 @@ void advance(State &s, double now) {
     std::optional<float> hold;
     std::optional<bool> play;
     int step{};
+    std::optional<float> speed;
     {
         std::lock_guard lock(s.controls);
+        speed = std::exchange(s.speed_request, std::nullopt);
         hold = std::exchange(s.hold_request, std::nullopt);
         play = std::exchange(s.play_request, std::nullopt);
         step = std::exchange(s.step_request, 0);
@@ -356,9 +360,14 @@ void advance(State &s, double now) {
         s.playing = false;
         s.target_ms = std::clamp(s.shown_ms, low, high);
     };
+    if (speed && *speed != s.speed) {
+        // The clip continues from the shown moment.
+        if (s.playing) s.started = now - s.shown_ms / *speed;
+        s.speed = *speed;
+    }
     if (play && *play && !s.playing) {
         s.playing = true;
-        s.started = now - (s.shown_ms < length ? s.shown_ms : 0.0f);
+        s.started = now - (s.shown_ms < length ? s.shown_ms : 0.0f) / s.speed;
     } else if (play && !*play) pause();
     if (hold) {
         pause();
@@ -370,7 +379,7 @@ void advance(State &s, double now) {
     }
     const auto elapsed = static_cast<float>(std::clamp(now - s.last_tick, 0.0, 100.0));
     s.last_tick = now;
-    if (s.playing) s.shown_ms = static_cast<float>(std::fmod(now - s.started, static_cast<double>(length + loop_blend_ms)));
+    if (s.playing) s.shown_ms = static_cast<float>(std::fmod((now - s.started) * s.speed, static_cast<double>(length + loop_blend_ms)));
     else if (const float gap = s.target_ms - s.shown_ms; std::abs(gap) < 0.25f) s.shown_ms = s.target_ms;
     else s.shown_ms += gap * (1 - std::exp(-elapsed / ease_ms));
 }
@@ -428,6 +437,11 @@ void request_step(int frames) noexcept {
     auto &s = state();
     std::lock_guard lock(s.controls);
     s.step_request = std::clamp(s.step_request + frames, -600, 600);
+}
+void request_speed(float speed) noexcept {
+    auto &s = state();
+    std::lock_guard lock(s.controls);
+    s.speed_request = std::clamp(std::isfinite(speed) ? speed : 1.0f, 0.1f, 1.0f);
 }
 bool wants_view() noexcept { return style_layer::stage_present(); }
 void note_view(const std::array<float, 16> &matrix, float fov) {

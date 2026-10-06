@@ -193,7 +193,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::set_nametag_feed(dingosdk::multiplayer::custom_nametags);
         dingosdk::overlay::set_style_playhead_feed(dingosdk::style_editor::playhead);
         dingosdk::overlay::set_style_controls({dingosdk::style_editor::request_hold, dingosdk::style_editor::request_play,
-                                               dingosdk::style_editor::request_step, dingosdk::style_editor::request_orbit});
+                                               dingosdk::style_editor::request_step, dingosdk::style_editor::request_orbit,
+                                               dingosdk::style_editor::request_speed});
         // Engine functions the profiler's stack sampler names in its reports.
         static constexpr dingosdk::profiler::Label engine_labels[]{
             {dingosdk::addr::profiler_labels::client_update, "Client game update (ReSkate tick hook)"},

@@ -474,6 +474,19 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         if (ImGui::Button("Key >")) select_at(next());
         ImGui::SameLine();
         if (ImGui::Button(">|")) e.hold(style::trick_end);
+        ImGui::SameLine();
+        constexpr std::array<std::pair<const char*, float>, 4> speeds{{{"1x", 1.0f}, {"3/4x", 0.75f}, {"1/2x", 0.5f}, {"1/4x", 0.25f}}};
+        menu.styling.speed = std::clamp(menu.styling.speed, 0, static_cast<int>(speeds.size()) - 1);
+        ImGui::SetNextItemWidth(px(84));
+        if (ImGui::BeginCombo("##style-speed", speeds[static_cast<std::size_t>(menu.styling.speed)].first)) {
+            for (int i = 0; i < static_cast<int>(speeds.size()); ++i)
+                if (ImGui::Selectable(speeds[static_cast<std::size_t>(i)].first, i == menu.styling.speed)) {
+                    menu.styling.speed = i;
+                    if (const auto set = editor_controls().speed) set(speeds[static_cast<std::size_t>(i)].second);
+                }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Playback speed");
         ImGui::EndDisabled();
         ImGui::SameLine(0, px(28));
         ImGui::BeginDisabled(e.times.size() >= style::max_keys);
