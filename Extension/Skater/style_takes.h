@@ -17,6 +17,7 @@ struct ClipFrame {
     // Timeline time: 0 to 3 in the trick, seconds below 0 before the flick, 3 plus seconds after the end.
     float time = -1;
     std::uint32_t at{}; // milliseconds from the clip's first frame
+    std::uint32_t recorded{}; // `at` on the recording clock, before unwarp. Not saved
     // The game's camera for this frame (rows: right, up, backward, position). fov is 0 when not recorded.
     std::array<float, 16> view{};
     float fov{};
@@ -46,7 +47,7 @@ bool unwarp(Clip &clip);
 [[nodiscard]] std::uint32_t duration(const Clip &clip) noexcept;
 
 // A clip as a file. decode_clip throws on invalid data. A file of another version is refused, and the editor learns that clip again.
-inline constexpr std::uint32_t clip_version = 4;
+inline constexpr std::uint32_t clip_version = 5;
 [[nodiscard]] std::vector<std::uint8_t> encode_clip(const Clip &clip);
 [[nodiscard]] Clip decode_clip(std::span<const std::uint8_t> bytes);
 

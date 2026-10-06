@@ -81,7 +81,7 @@ struct State {
     std::optional<float> hold_request; // a timeline time
     std::optional<bool> play_request;  // false pauses
     int step_request{};
-    bool spawned{}, dressed{};
+    bool spawned{}, dressed{}, anchored_on_stage{};
     std::string detail, note;
     std::vector<style::JointDelta> rotations;
     // The editor camera orbits the stand-in.
@@ -283,10 +283,10 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} skater(s) were on screen. The learned skater was {:.0f} m away.",
                  rigs.size(), farthest);
     // Each frame gets the camera sample nearest to its time.
-    std::size_t viewed{};
+    std::size_t viewed{}, unviewed{clip->frames.size()}; // unviewed: the first frame with no camera
     if (!s.views.empty())
         for (auto &frame : clip->frames) {
-            const auto when = clip->began + frame.at;
+            const auto when = clip->began + frame.recorded;
             const State::View *nearest{};
             std::uint32_t apart = 60;
             for (const auto &view : s.views)
@@ -294,7 +294,10 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
                     apart = gap;
                     nearest = &view;
                 }
-            if (!nearest) continue;
+            if (!nearest) {
+                unviewed = std::min(unviewed, static_cast<std::size_t>(&frame - clip->frames.data()));
+                continue;
+            }
             frame.view = nearest->matrix;
             frame.fov = nearest->fov;
             ++viewed;
@@ -313,10 +316,10 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
                     board = &frames;
                 }
             }
-        std::size_t boarded{};
+        std::size_t boarded{}, unboarded{clip->frames.size()}; // unboarded: the first frame with no board
         if (board)
             for (auto &frame : clip->frames) {
-                const auto when = clip->began + frame.at;
+                const auto when = clip->began + frame.recorded;
                 const style::RigFrame *best{};
                 std::uint32_t apart = 60;
                 for (const auto &shot : *board)
@@ -324,21 +327,26 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
                         apart = gap;
                         best = &shot;
                     }
-                if (!best) continue;
+                if (!best) {
+                    unboarded = std::min(unboarded, static_cast<std::size_t>(&frame - clip->frames.data()));
+                    continue;
+                }
                 frame.rig = best->joints;
                 ++boarded;
             }
         if (boarded != clip->frames.size())
             for (auto &frame : clip->frames) frame.rig.clear();
-        logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} of {} frames have the game's board ({} small rigs seen, nearest {:.2f} m).", boarded,
-                     clip->frames.size(), boards.size(), board ? nearest : -1.0f);
+        logging::log(logging::Level::info, logging::Channel::skater,
+                     "Style editor: {} of {} frames have the game's board ({} small rigs seen, nearest {:.2f} m, first frame without it {}).", boarded,
+                     clip->frames.size(), boards.size(), board ? nearest : -1.0f, unboarded);
     }
     if (const float apart = use_game_board(*clip); apart >= 0)
         logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the board uses the game's trucks and wheels. Its anchor is {:.3f} m from the calculated anchor.", apart);
     // A clip keeps its camera only if every frame has one.
     if (viewed != clip->frames.size())
         for (auto &frame : clip->frames) frame.fov = 0;
-    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} of {} frames have a camera ({} samples).", viewed, clip->frames.size(), s.views.size());
+    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} of {} frames have a camera ({} samples, first frame without one {}).", viewed,
+                 clip->frames.size(), s.views.size(), unviewed);
     say(s, std::format("learned the {} from the game's demonstration ({} frames)", style::flip_trick_names[trick], clip->frames.size()));
     s.retry_after = 0;
     keep(s, std::move(*clip));
@@ -721,7 +729,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         // Skatepedia's skater disappears briefly on each loop, so the stage state holds for 4 s.
         if (style_layer::stage_present() || (s.parked && s.open)) s.stage_until = GetTickCount64() + 4000;
         const bool on_stage = GetTickCount64() < s.stage_until;
-        const auto anchor = on_stage ? std::array<float, 3>{skatepedia_room[0], style_layer::stage_floor(skatepedia_room[1]), skatepedia_room[2]}
+        if (std::exchange(s.anchored_on_stage, on_stage) != on_stage)
+            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the stand-in skates {}.", on_stage ? "on Skatepedia's stage" : "beside the player");
+        // The clip was recorded on the stage, so there it keeps its own heights.
+        const auto anchor = on_stage ? std::array<float, 3>{skatepedia_room[0], opening.pose.root.position[1], skatepedia_room[2]}
                                      : std::array<float, 3>{here[0] + 2.0f, here[1], here[2]};
         // The stand-in skates in place, so the camera neither lags it nor jumps back at each loop.
         for (std::size_t i = 0; i < 3; ++i) s.target[i].store(std::bit_cast<std::uint32_t>(anchor[i]), std::memory_order_relaxed);

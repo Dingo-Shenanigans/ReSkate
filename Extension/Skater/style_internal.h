@@ -13,8 +13,6 @@ void ignore_holder(std::uintptr_t holder, std::uintptr_t board = 0) noexcept;
 // True if Skatepedia's skater was on its stage in the last 500 ms. Always false unless watch_stage() was called in the last 2 s.
 [[nodiscard]] bool stage_present() noexcept;
 void watch_stage() noexcept;
-// The height at which Skatepedia's skater last stood, or `fallback`.
-[[nodiscard]] float stage_floor(float fallback) noexcept;
 // Adds one frame of a learned clip for the restyle of Skatepedia's skater. False until the skeleton is read.
 bool add_demo(std::uint8_t trick, float time, const std::vector<multiplayer::Transform> &skater);
 void clear_demos();

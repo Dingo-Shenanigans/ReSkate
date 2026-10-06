@@ -352,7 +352,7 @@ std::optional<Clip> clip_from_capture(std::uint8_t trick, const std::vector<RigF
     const Transform live_entity = board.empty() ? Transform{} : board.front();
     for (std::size_t i = begin; i < end; ++i) {
         ClipFrame frame;
-        frame.at = frames[i].at - frames[begin].at;
+        frame.at = frame.recorded = frames[i].at - frames[begin].at;
         frame.time = i < flick ? -1.0f : i < caught ? 0.0f : i < on ? 1.0f : 2.0f;
         frame.pose.skater = frames[i].joints;
         frame.pose.root = world(frames[i].joints, joints.parents, joints.trajectory);

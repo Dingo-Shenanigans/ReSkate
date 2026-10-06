@@ -146,8 +146,9 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     auto& debug = trial.debug;
     // Skatepedia's camera is noted while its demonstration plays, also behind the editor's own.
     static std::uintptr_t game_camera, game_camera_vtable;
-    if (!ready || !style_editor::wants_view()) game_camera = game_camera_vtable = 0;
-    else {
+    // The stage goes for a moment on each loop of the demonstration, so only a world change forgets the camera.
+    if (!ready) game_camera = game_camera_vtable = 0;
+    else if (style_editor::wants_view()) {
         try {
             if (!debug.camera_owned)
                 if (const auto seen = source_camera_snapshot(trial, client);

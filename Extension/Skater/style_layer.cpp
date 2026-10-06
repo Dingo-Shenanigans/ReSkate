@@ -100,13 +100,11 @@ struct Live {
     // The frames of the learned clips, for the restyle of Skatepedia's skater.
     style::Takes demos;
     std::atomic<std::uint64_t> stage_seen{};
-    std::atomic<std::uint32_t> stage_floor{}; // float bits of the height where Skatepedia's skater stands. 0 is unknown
     std::vector<style::JointDelta> restyled;
     std::atomic<std::uint64_t> replay_seen{}, replay_matches{}, replay_misses{};
     std::atomic<std::uint32_t> replay_trick{}, replay_time{}, replay_distance{};
     // The pose holder of the stand-in. The layer does not change it.
     std::atomic<std::uintptr_t> ignored{};
-    std::atomic<std::uint64_t> floor_seen{}; // when Skatepedia's skater last stood on its stage
     // The recording of other rigs that request_learn() starts. pose_mutex guards the buffers.
     std::atomic<std::uint64_t> learn_until{};
     std::vector<std::uint8_t> learned, learned_done;
@@ -312,14 +310,6 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
                 continue;
             }
             if (skater) l.stage_seen.store(GetTickCount64(), std::memory_order_relaxed);
-            if (skater && !moved) {
-                const auto now = GetTickCount64();
-                // The skater also jumps, so the floor is its lowest height.
-                const auto floor = std::bit_cast<float>(l.stage_floor.load(std::memory_order_relaxed));
-                if (!l.stage_floor.load(std::memory_order_relaxed) || now > l.floor_seen.load(std::memory_order_relaxed) + 10000 || position[1] < floor)
-                    l.stage_floor.store(std::bit_cast<std::uint32_t>(position[1]), std::memory_order_relaxed);
-                l.floor_seen.store(now, std::memory_order_relaxed);
-            }
             // The game does not restore the scale, so the layer restores it when the skater is no longer hidden.
             if (skater && !clear) {
                 Quat scale{};
@@ -906,10 +896,6 @@ void rotations_at(std::uint8_t trick, float time, std::vector<style::JointDelta>
 void ignore_holder(std::uintptr_t holder, std::uintptr_t board) noexcept {
     live().ignored.store(holder, std::memory_order_release);
     live().ignored_board.store(board, std::memory_order_release);
-}
-float stage_floor(float fallback) noexcept {
-    const auto bits = live().stage_floor.load(std::memory_order_relaxed);
-    return bits ? std::bit_cast<float>(bits) : fallback;
 }
 bool stage_present() noexcept { return GetTickCount64() < live().stage_seen.load(std::memory_order_relaxed) + 500; }
 bool add_demo(std::uint8_t trick, float time, const std::vector<multiplayer::Transform> &skater) {

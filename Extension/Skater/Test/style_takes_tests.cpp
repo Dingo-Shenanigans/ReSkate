@@ -118,6 +118,9 @@ int main() {
         check(close_to(mid.root.position[0], 6.0f, 1e-3f) && close_to(mid.board[0].position[0], 6.0f, 1e-3f) && mid.board[0].position[1] > 0.3f,
               "the clip's board follows the deck joint through the air");
         check(close_to(mid.board[2].position[1] - mid.board[0].position[1], 0.05f, 1e-3f), "and the board's own rig keeps its place on it");
+        bool on_clock = true;
+        for (std::size_t i = 0; i < learned->frames.size(); ++i) on_clock &= learned->frames[i].recorded == i * 16;
+        check(on_clock, "each frame keeps its time on the recording clock, for the camera and board samples");
     }
     // The demonstration loops. Frames from before its restart, or after the next one, are not in the clip.
     auto restarted = shown;
