@@ -34,6 +34,19 @@ video sites are not sources. The server needs ffmpeg installed to decode it
 (on Windows, ffmpeg.exe on PATH); installing it takes effect on the next play,
 without a restart.
 
+To play your own files, create a folder named Radio next to ReSkateServer.json
+(the server does not create it) and put audio files in it: .mp3, .ogg, .opus,
+.flac, .wav, .m4a, .aac, .webm or .mka. Name them relative to that folder:
+
+  /radio play song.mp3              one file
+  /radio play my album              every audio file in Radio/my album, in name
+                                    order (not the folders inside it)
+  /radio play my album/bonus/a.mp3  a file in a folder inside Radio
+  /radio play https://...           an internet radio station or MP3 URL
+
+Names may have spaces. Anything outside the Radio folder is refused, including
+links that point out of it.
+
 The server sends the audio to every player itself, so you are the one sharing
 it with them, and what it plays is your responsibility. Only play what you may
 share: music you made or own the rights to, royalty-free or Creative Commons
