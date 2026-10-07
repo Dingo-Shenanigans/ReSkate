@@ -68,6 +68,7 @@ struct State {
     std::uint8_t fetching{}; // the trick to show when its clip is learned
     std::uint64_t named_since{}, named_seen{};
     bool spoiled{};   // the highlight moved during the recording
+    bool switched{};  // the editor changed Skatepedia's trick, and the next learn starts at that change
     int forget{-1};   // the trick whose clip to delete. 0 is all, -1 is none
     std::uint64_t demos_wanted{}; // learned clips that the layer does not have yet, one bit for each trick
     // Playback, in milliseconds of the shown clip.
@@ -334,7 +335,9 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         for (auto &frame : clip->frames) frame.fov = 0;
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} of {} frames have a camera ({} samples, first frame without one {}).", viewed,
                  clip->frames.size(), s.views.size(), unviewed);
-    say(s, std::format("learned the {} from the game's demonstration ({} frames)", style::flip_trick_names[trick], clip->frames.size()));
+    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: learned the {} from the game's demonstration ({} frames).",
+                 style::flip_trick_names[trick], clip->frames.size());
+    s.note.clear();
     s.retry_after = 0;
     keep(s, std::move(*clip));
 }
@@ -409,6 +412,8 @@ void remove(std::uintptr_t base, State &s) {
 void request_show(std::uint8_t trick) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    if (trick && trick < style::flip_trick_names.size() && s.show != trick && s.fetching != trick)
+        logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the {} was picked.", style::flip_trick_names[trick]);
     s.show = trick;
     s.hide = false;
 }
@@ -473,6 +478,9 @@ void expect(std::uint8_t trick) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     s.fetching = trick;
+    // Skatepedia starts the demonstration again at the change. The next tick reads the highlight, so the recording starts with it.
+    s.next_named = 0;
+    s.switched = true;
 }
 bool has_clip(std::uint8_t trick) {
     auto &s = state();
@@ -617,7 +625,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             say(s, "the clip was deleted. The editor learns it again the next time it loads that trick");
         }
         // Read Skatepedia's highlighted trick two times each second.
-        if (now >= s.next_named) {
+        const bool checked = now >= s.next_named;
+        if (checked) {
             s.next_named = now + 500;
             // A parked Skatepedia has no skater on its stage, so `parked` also permits the check.
             std::string title;
@@ -637,14 +646,16 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             } else if (now > s.named_seen + 3000) s.named = 0;
             if (s.learn && s.named && s.named != s.learn) s.spoiled = true;
         }
-        // Learn only the fetched trick, and only after the highlight was on it for 2.5 s.
-        if (const auto named = !s.learn && now >= s.retry_after && now >= s.named_since + 2500 ? s.named : std::uint8_t{};
+        // Learn only the fetched trick. The recording keeps the first whole loop of the demonstration.
+        if (const auto named = !s.learn && now >= s.retry_after ? s.named : std::uint8_t{};
             named && !(s.learned >> named & 1) && named == s.fetching) {
             s.spoiled = false;
             s.learn = named;
-            say(s, std::format("watching the game's demonstration of the {}", style::flip_trick_names[named]));
-            style_layer::request_learn();
+            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: watching the game's demonstration of the {}.", style::flip_trick_names[named]);
+            style_layer::request_learn(s.switched);
         }
+        // Only the first check after a change can start at it. A later learn waits for a restart.
+        if (checked) s.switched = false;
         if (s.hide) {
             s.hide = false;
             s.shown.reset();
@@ -667,6 +678,12 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 // Skatepedia is open, so fetch the trick from it. A fetch of the same trick continues.
                 s.shown.reset();
                 if (std::exchange(s.fetching, trick) != trick) style_stage::fetch(trick);
+                s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
+            } else if (trick && s.wanted.load(std::memory_order_relaxed) && (s.parked || s.open)) {
+                // Parked Skatepedia has no skater on its stage. Unpark now, and fetch when the skater is back.
+                s.shown.reset();
+                s.show = trick;
+                s.next_park = 0;
                 s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
             } else {
                 s.shown.reset();

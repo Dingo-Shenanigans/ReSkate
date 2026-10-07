@@ -1,5 +1,6 @@
 #include "style_layer.h"
 #include "style_skeleton.h"
+#include "style_takes.h"
 #include "style_internal.h"
 #include "style_file.h"
 #include "Engine/Core/Json/json.h"
@@ -116,6 +117,12 @@ struct Live {
     // The recording of other rigs that request_learn() starts. pose_mutex guards the buffers.
     std::atomic<std::uint64_t> learn_until{};
     std::vector<std::uint8_t> learned, learned_done;
+    // Skatepedia's skater as last seen on the stage, and the loop restarts in the current recording.
+    std::uintptr_t stage_holder{};
+    std::array<float, 3> stage_position{};
+    std::uint64_t learn_started{};
+    std::uint32_t learn_restarts{}, learn_frames{}, learn_seen{};
+    float learn_low{}, learn_high{}; // the stage skater's lowest and highest root in the recording
     // A cache of the kind of each other rig.
     struct Seen {
         std::uintptr_t holder{};
@@ -289,6 +296,41 @@ std::uint8_t other_kind(std::uintptr_t holder) noexcept {
     }
     return slot->kind;
 }
+// The demonstration restarts with a new rig or with a jump of the skater back to the start.
+// In a recording, the first restart starts the loop that is kept, and the next one ends the recording.
+void note_stage_skater(std::uintptr_t holder, const std::array<float, 3> &position) noexcept {
+    auto &l = live();
+    const auto now = GetTickCount64();
+    std::string restart;
+    std::uint32_t restarts{};
+    std::uint64_t started{};
+    {
+        std::lock_guard lock(l.pose_mutex);
+        const float dx = position[0] - l.stage_position[0], dy = position[1] - l.stage_position[1], dz = position[2] - l.stage_position[2];
+        const bool new_rig = l.stage_holder && holder != l.stage_holder;
+        const bool jumped = l.stage_holder && std::sqrt(dx * dx + dy * dy + dz * dz) > style::teleport_metres;
+        l.stage_holder = holder;
+        l.stage_position = position;
+        if (now >= l.learn_until.load(std::memory_order_relaxed)) return;
+        l.learn_low = l.learn_seen ? std::min(l.learn_low, position[1]) : position[1];
+        l.learn_high = l.learn_seen ? std::max(l.learn_high, position[1]) : position[1];
+        ++l.learn_seen;
+        if (l.learn_restarts) ++l.learn_frames;
+        // A loop has at least 60 frames, so a restart sooner than that is not the end of the loop.
+        if (!(new_rig || jumped) || (l.learn_restarts && l.learn_frames < 60)) return;
+        restarts = ++l.learn_restarts;
+        restart = new_rig ? "new rig" : "jump back";
+        started = l.learn_started;
+        if (restarts == 1) {
+            l.learned.clear();
+            l.learn_frames = 0;
+        } else {
+            l.learn_until.store(now, std::memory_order_relaxed);
+        }
+    }
+    logging::log(logging::Level::info, logging::Channel::skater, "Style: Skatepedia's demonstration restarted ({}) {} ms into the recording.{}", restart,
+                 now - started, restarts == 1 ? " The recording keeps this loop." : " The loop is complete.");
+}
 // Hides a rig that is on Skatepedia's stage, so that only the stand-in shows there.
 void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
     auto &l = live();
@@ -306,7 +348,10 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
                 std::abs(position[1] + (moved ? 2000.0f : 0.0f) - stage_centre[1]) > stage_reach[1]) {
                 continue;
             }
-            if (skater) l.stage_seen.store(GetTickCount64(), std::memory_order_relaxed);
+            if (skater) {
+                l.stage_seen.store(GetTickCount64(), std::memory_order_relaxed);
+                note_stage_skater(holder, {position[0], position[1] + (moved ? 2000.0f : 0.0f), position[2]});
+            }
             // The game does not restore the scale, so the layer restores it when the skater is no longer hidden.
             if (skater && !clear) {
                 float scale{};
@@ -340,13 +385,26 @@ void learn(std::uintptr_t holder) noexcept {
         if (!pose.buffer || !pose.count || (pose.count != skeleton_joints && pose.count > 32)) return;
         std::lock_guard lock(l.pose_mutex);
         if (l.learned.size() > 96u * 1024 * 1024) return;
-        // A recording of 8 s is about 36 MB. One reservation saves copies of the buffer as it grows.
+        // A recording of 10 s is about 45 MB. One reservation saves copies of the buffer as it grows.
         if (l.learned.empty()) l.learned.reserve(48u * 1024 * 1024);
         const std::uint64_t header[3]{steady_us() / 1000, holder, pose.count};
         const auto at = l.learned.size();
         l.learned.resize(at + sizeof(header) + pose.count * bone_size);
         std::memcpy(l.learned.data() + at, header, sizeof(header));
-        if (!memory::peek_bytes(pose.buffer, l.learned.data() + at + sizeof(header), pose.count * bone_size)) l.learned.resize(at);
+        if (!memory::peek_bytes(pose.buffer, l.learned.data() + at + sizeof(header), pose.count * bone_size)) {
+            l.learned.resize(at);
+            return;
+        }
+        // A skater that the editor hid this frame has scale 0.001 in joint 1. The recording keeps scale 1.
+        if (pose.count == skeleton_joints) {
+            auto *const bytes = l.learned.data() + at + sizeof(header) + bone_size;
+            std::array<float, 3> scale;
+            std::memcpy(scale.data(), bytes, sizeof(scale));
+            if (scale[0] < 0.01f) {
+                scale = {1, 1, 1};
+                std::memcpy(bytes, scale.data(), sizeof(scale));
+            }
+        }
     } catch (...) {}
 }
 // Shows the preview or a restyle on another skater. Solo play only, because other players use the same skeleton.
@@ -996,7 +1054,17 @@ std::vector<std::uint8_t> collect_learned() {
     std::lock_guard lock(l.pose_mutex);
     return std::exchange(l.learned_done, {});
 }
-void request_learn() { live().learn_until.store(GetTickCount64() + 8000, std::memory_order_release); }
+void request_learn(bool at_switch) {
+    auto &l = live();
+    std::lock_guard lock(l.pose_mutex);
+    l.learned.clear();
+    l.stage_holder = 0;
+    l.learn_restarts = at_switch ? 1 : 0;
+    l.learn_frames = l.learn_seen = 0;
+    l.learn_started = GetTickCount64();
+    // The restart at the end of the loop ends the recording. Without it, the recording ends after 10 s.
+    l.learn_until.store(l.learn_started + 10000, std::memory_order_release);
+}
 void request_session_test(bool allowed) { live().session_test.store(allowed, std::memory_order_release); }
 bool session_test() noexcept { return live().session_test.load(std::memory_order_acquire); }
 void request_restyle(bool on) { live().restyle.store(on, std::memory_order_release); }
@@ -1042,11 +1110,18 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool menu_open
         if (const auto until = l.learn_until.load(std::memory_order_relaxed); until && GetTickCount64() > until + 200) {
             l.learn_until.store(0, std::memory_order_relaxed);
             std::vector<std::uint8_t> recorded;
+            std::uint32_t restarts{}, seen{};
+            float rise{};
             {
                 std::lock_guard lock(l.pose_mutex);
                 recorded.swap(l.learned);
+                restarts = l.learn_restarts;
+                seen = l.learn_seen;
+                rise = l.learn_high - l.learn_low;
             }
-            logging::log(logging::Level::info, logging::Channel::skater, "Style: recorded {} bytes of other rigs.", recorded.size());
+            logging::log(logging::Level::info, logging::Channel::skater, "Style: Skatepedia's skater was on the stage in {} frames of the recording. Its root rose {:.2f} m.", seen, rise);
+            logging::log(logging::Level::info, logging::Channel::skater, "Style: recorded {} bytes of other rigs in {} ms{}.", recorded.size(), until - l.learn_started,
+                         restarts >= 2 ? ", one whole loop" : restarts == 1 ? ", until the time limit from one restart" : ", until the time limit with no restart");
             if (recorded.empty()) recorded.push_back(0); // an empty recording must also reach the editor
             std::lock_guard lock(l.pose_mutex);
             l.learned_done = std::move(recorded);

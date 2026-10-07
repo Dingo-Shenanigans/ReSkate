@@ -374,6 +374,7 @@ void step_seek(std::uintptr_t base, State &s, std::uint64_t now) {
             s.seek = Seek::find;
             s.seek_presses = 0;
         } else if (failure.empty()) {
+            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: Skatepedia's highlighted entry is now the {}.", style::flip_trick_names[s.seek_trick]);
             s.seek = Seek::learn;
             s.seek_deadline = now + 40000;
             style_editor::expect(s.seek_trick);
@@ -449,7 +450,7 @@ void fetch(std::uint8_t trick) {
     s.seek = Seek::find;
     s.seek_presses = s.seek_tabs = s.seek_retries = 0;
     s.seek_at = GetTickCount64();
-    overlay::notify(overlay::NoticeLevel::info, "Style editor", std::format("Loading the {}. This takes about ten seconds. Then you can edit it.", style::flip_trick_titles[trick]));
+    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: finding the {} in Skatepedia.", style::flip_trick_names[trick]);
 }
 void tick(std::uintptr_t base, bool ready) noexcept {
     auto &s = state();

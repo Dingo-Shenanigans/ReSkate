@@ -46,8 +46,9 @@ void request_restyle(bool restyle);
 [[nodiscard]] bool restyling() noexcept;
 // The replayed trick on screen and its timeline time. Thread-safe.
 [[nodiscard]] style::Playhead replay_playhead() noexcept;
-// Records all other rigs for 8 s. The editor uses this to capture Skatepedia's demonstration.
-void request_learn();
+// Records all other rigs for one loop of Skatepedia's demonstration, or 10 s at most.
+// `at_switch`: the demonstration started at the recording's start, so the first restart ends the loop.
+void request_learn(bool at_switch);
 [[nodiscard]] bool enabled() noexcept;
 [[nodiscard]] bool sharing() noexcept;
 // Presets are named style files. `action`: load, new (an empty preset), copy (the style in use, under a new name),
