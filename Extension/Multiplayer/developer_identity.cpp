@@ -11,7 +11,7 @@
 namespace dingosdk::multiplayer {
 namespace {
 // The API's name for each category, in IdentityList order; the ban list follows them.
-constexpr std::array<std::string_view, 3> categories{"dev", "homie", "content_creator"};
+constexpr std::array<std::string_view, 4> categories{"dev", "homie", "content_creator", "centrix"};
 constexpr auto banned = static_cast<std::size_t>(IdentityList::banned);
 
 std::atomic<std::shared_ptr<const IdentityLists>> current;

@@ -1,5 +1,6 @@
 #include "server_config.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Engine/Game/World/world_names.h"
 #include <algorithm>
@@ -207,7 +208,7 @@ void save_config(const ServerConfig &c) {
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out << to_json(c).dump(2) << '\n';
-        if (!out) throw std::runtime_error("Cannot write " + temporary.string());
+        if (!out) throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
     std::filesystem::rename(temporary, c.file);
 }
@@ -230,7 +231,7 @@ std::optional<std::uint64_t> parse_scoring(std::string_view text) {
 }
 std::string config_error(const ServerConfig &c) {
     using namespace multiplayer;
-    if (c.name.empty() || c.name.size() > 64 || !valid_member_name(c.name)) return "name must be 1 to 64 characters.";
+    if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
     if (c.map.empty() || !valid_map_destination(map_destination(c.map)))
         return "map \"" + c.map + "\" is not a known map. Use a name like \"San Vansterdam\", or put the map's mod "
                "folder in Mods next to the server.";

@@ -6,6 +6,7 @@
 #include "Engine/Vfs/mod_scoring.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/mod_layers.h"
 #include "Extension/UI/Startup/startup_window.h"
@@ -268,7 +269,7 @@ bool start_mod_layers(std::uintptr_t base, std::string& error) {
     }
     if (!catalog.present) {
         logging::log(logging::Level::info, logging::Channel::assets,
-            "No Mods folder at {}; only Patch and Data are layered.", catalog.root.string());
+            "No Mods folder at {}; only Patch and Data are layered.", path_utf8(catalog.root));
         return true;
     }
     if (!catalog.merged) {
@@ -322,7 +323,7 @@ bool start_mod_layers(std::uintptr_t base, std::string& error) {
     }
     installed_base = base;
     logging::log(logging::Level::info, logging::Channel::assets,
-        "Merged mod patch ready at {}", state().merged_root.string());
+        "Merged mod patch ready at {}", path_utf8(state().merged_root));
     return true;
 }
 LayoutObjects layout_objects() noexcept { return {seen_manager.load(), seen_layers.load()}; }

@@ -33,12 +33,12 @@ void parsing() {
         R"({"categories":{"dev":["76561198000000002","76561198000000001","76561198000000002"],)"
         R"("homie":["76561198000000003"],"content_creator":["76561198000000004"]}})");
     check(lists[0] == std::vector{dev, other_dev} && lists[1] == std::vector{homie} && lists[2] == std::vector{creator} &&
-              lists[3].empty(),
+              lists[3].empty() && lists[4].empty(),
           "The backend's answer was not read as its three lists, with nobody banned");
     // The ban list comes beside the categories; a player can be in both.
     const auto bans = parse_identity_lists(
         R"({"categories":{"dev":["76561198000000001"]},"banned":["76561198000000005","76561198000000001","76561198000000005"]})");
-    check(bans[0] == std::vector{dev} && bans[3] == std::vector{dev, stranger}, "The ban list was not read");
+    check(bans[0] == std::vector{dev} && bans[static_cast<std::size_t>(L::banned)] == std::vector{dev, stranger}, "The ban list was not read");
     // A newer backend may list more categories and fields, and an older one fewer.
     const auto partial = parse_identity_lists(
         R"({"updated":"2026-10-04","categories":{"moderator":["76561198000000005"],"dev":["76561198000000001"]}})");
@@ -72,7 +72,7 @@ void lookup() {
           "A player was found in a list they are not in");
     check(!reskate_developer(0) && !identity_listed(dev, L::count), "No player, or no list, matched");
     check(!reskate_banned(dev) && !reskate_banned(stranger), "Someone is banned though the lists ban nobody");
-    check(publish_identity_lists({{{dev, other_dev}, {homie}, {creator}, {dev, stranger}}}) && reskate_banned(stranger) &&
+    check(publish_identity_lists({{{dev, other_dev}, {homie}, {creator}, {}, {dev, stranger}}}) && reskate_banned(stranger) &&
               reskate_banned(dev) && reskate_developer(dev) && !reskate_banned(other_dev) && !reskate_banned(0),
           "The ban list did not ban exactly the players on it");
     check(publish_identity_lists({{{dev, other_dev}, {homie}, {creator}}}) && !reskate_banned(stranger), "A lifted ban stayed");
@@ -82,6 +82,16 @@ void lookup() {
               identity_mark(creator) == L::content_creator && identity_mark(homie) == L::homie && !identity_mark(stranger) &&
               !identity_mark(0),
           "A player's mark is not the first list they are on");
+    // Centrix: read from the answer as its own list, and its mark comes after a developer's and
+    // before a content creator's.
+    const auto centrix = parse_identity_lists(R"({"categories":{"centrix":["76561198000000005"],"dev":["76561198000000001"]}})");
+    check(centrix[static_cast<std::size_t>(L::centrix)] == std::vector{stranger} && centrix[static_cast<std::size_t>(L::banned)].empty(),
+          "The Centrix list was not read as its own");
+    check(publish_identity_lists({{{dev}, {homie, stranger}, {creator, stranger}, {dev, creator, stranger}}}) &&
+              identity_mark(dev) == L::developer && identity_mark(stranger) == L::centrix && identity_mark(creator) == L::centrix &&
+              identity_mark(homie) == L::homie && !reskate_banned(stranger),
+          "Centrix is not marked after a developer and before a content creator");
+    check(publish_identity_lists({{{dev}, {dev, homie, creator}, {dev, creator}}}), "The lists did not go back");
     // Their tag and their items are each their own to hide.
     check(own_tag_shown() && own_items_shown(), "A player's tag or items start hidden");
     show_own_tag(false);

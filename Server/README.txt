@@ -12,6 +12,10 @@ folder together: steam_api64.dll, steamclient64.dll, tier0_s64.dll and
 vstdlib_s64.dll are how the server talks to Steam, and world-layers.json lets it
 set world layers (time of day and so on) for everyone.
 
+Start it with --config <file> to use another settings file instead, e.g.
+ReSkateServer.exe --config grom.json. A file that does not exist yet is written
+with the defaults, as on the first run.
+
 Custom maps
 -----------
 Copy a custom map's mod folder from the game's Mods folder into a Mods folder
@@ -38,7 +42,7 @@ straight away (players are told to rejoin). Turn this off with
 
 ReSkateServer.json
 ------------------
-name               Shown in the browser (1-64 characters).
+name               Shown in the browser: 1-64 letters, numbers, spaces and - _ [ ] ( ).
 map                The map everyone skates, named like the game's load command:
                    "San Vansterdam", "Isle of Grom", "Super Ultra Mega Resort",
                    "Stadium 1", or a custom map such as "bbcity" (see Custom maps).
@@ -129,6 +133,7 @@ Admins can also type any of them in chat with a / in front (/kick, /map, /votes)
 Admins can also change the server's map by picking a level in Levels or Travel,
 and change voice, distances, placement and kicks from the Multiplayer menu.
 
+  help                          A short list of every command.
   status                        Name, map, players, code.
   players                       Connected players and their SteamID64s.
   say <text>                    Chat as the server (console only).
@@ -156,6 +161,7 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   tphere <player>               One player to you (admins in game).
   park <construction|historic|financial> <layout>
   layer-sync on|off   layer <key> default|on|off
+  layers <key>=<mode> ...       Several world layers at once, each default, on or off.
   tod <default|morning|noon|afternoon|evening|night|weatherday|weathernight>
                                 Time of day on every map (needs layer-sync on).
   votes [map|kick|tod on|off|<percent>]   The vote settings (see votes).
@@ -170,4 +176,5 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   score-allow [<fingerprint>|remove <fingerprint>]   Accept a scoring mod's
                                 fingerprint like the game's own (or list them).
   admin add|remove <player or id>   admins      (console only)
-  quit
+  update                        Check for a new release and install it now (console only).
+  quit, exit or stop            Shut the server down (console only).

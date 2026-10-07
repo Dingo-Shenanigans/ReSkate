@@ -1,4 +1,5 @@
 #include "park_document.h"
+#include "Engine/Vfs/mod_list.h"
 #include <Windows.h>
 #include <algorithm>
 #include <fstream>
@@ -80,7 +81,7 @@ std::vector<std::string> list_parks(const std::filesystem::path &directory) {
          !error && it != end && names.size() < 256; it.increment(error)) {
         if (!it->is_regular_file(error))
             continue;
-        auto name = it->path().filename().string();
+        auto name = mods::ascii_path(it->path().filename());
         if (!name.ends_with(".park.json"))
             continue;
         name.resize(name.size() - 10);

@@ -1,4 +1,5 @@
 #include "cas_codec.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -68,7 +69,7 @@ HMODULE oodle(const std::filesystem::path& gameRoot) {
     std::ranges::sort(matches);
     handle = LoadLibraryExW(matches.back().c_str(), nullptr,
                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!handle) throw std::runtime_error("Cannot load " + matches.back().string() +
+    if (!handle) throw std::runtime_error("Cannot load " + path_utf8(matches.back()) +
                                           " (Windows error " + std::to_string(GetLastError()) + ")");
     return handle;
 }

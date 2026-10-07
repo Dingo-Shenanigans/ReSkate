@@ -9,7 +9,7 @@
 #include "Engine/Game/Build/20260929/runtime.h"
 
 #include <Windows.h>
-#include <TlHelp32.h>
+#include <Psapi.h>
 #include <ShlObj.h>
 #include <shellapi.h>
 #include <winternl.h>
@@ -366,27 +366,33 @@ struct RemoteModule {
     fs::path path;
 };
 
-std::vector<RemoteModule> remote_modules(DWORD process_id) {
-    Handle snapshot;
+std::vector<RemoteModule> remote_modules(HANDLE process) { // not Toolhelp: it turns non-ANSI path characters into '?'
+    std::vector<HMODULE> handles(512);
     for (unsigned attempt = 0; attempt < 8; ++attempt) {
-        snapshot.reset(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, process_id));
-        if (snapshot || GetLastError() != ERROR_BAD_LENGTH) break;
+        const auto capacity = static_cast<DWORD>(handles.size() * sizeof(HMODULE));
+        DWORD needed{};
+        if (!EnumProcessModulesEx(process, handles.data(), capacity, &needed, LIST_MODULES_DEFAULT)) {
+            if (GetLastError() == ERROR_PARTIAL_COPY) continue; // the list changed while it was read
+            win32_failure(L"EnumProcessModulesEx");
+        }
+        if (needed > capacity) { handles.resize(needed / sizeof(HMODULE) + 16); continue; }
+        handles.resize(needed / sizeof(HMODULE));
+        std::vector<RemoteModule> output;
+        std::vector<wchar_t> path(32768);
+        for (const auto handle : handles) {
+            MODULEINFO info{};
+            const auto length = GetModuleFileNameExW(process, handle, path.data(), static_cast<DWORD>(path.size()));
+            if (!length || length >= path.size() || !GetModuleInformation(process, handle, &info, sizeof(info))) continue;
+            output.push_back({reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll), info.SizeOfImage,
+                              fs::path(std::wstring(path.data(), length))});
+        }
+        return output;
     }
-    if (!snapshot) win32_failure(L"CreateToolhelp32Snapshot");
-    MODULEENTRY32W entry{sizeof(entry)};
-    if (!Module32FirstW(snapshot.get(), &entry)) win32_failure(L"Module32FirstW");
-    std::vector<RemoteModule> output;
-    do {
-        output.push_back({reinterpret_cast<std::uintptr_t>(entry.modBaseAddr), entry.modBaseSize,
-                          fs::path(entry.szExePath)});
-        entry.dwSize = sizeof(entry);
-    } while (Module32NextW(snapshot.get(), &entry));
-    if (GetLastError() != ERROR_NO_MORE_FILES) win32_failure(L"Module32NextW");
-    return output;
+    throw std::runtime_error("The child module list kept changing while it was read");
 }
 
-RemoteModule find_remote_module(DWORD process_id, const fs::path& path) {
-    for (const auto& module : remote_modules(process_id))
+RemoteModule find_remote_module(HANDLE process, const fs::path& path) {
+    for (const auto& module : remote_modules(process))
         if (same_file(path, module.path)) return module;
     throw std::runtime_error("Injected ReSkate.dll is not present in the child module list");
 }
@@ -416,7 +422,7 @@ DWORD run_remote_thread(HANDLE process, std::uintptr_t start, void* parameter,
     return result;
 }
 
-RemoteModule inject_dll(HANDLE process, DWORD process_id, const fs::path& dll) {
+RemoteModule inject_dll(HANDLE process, const fs::path& dll) {
     const auto path = dll.wstring();
     const auto byte_count = (path.size() + 1) * sizeof(wchar_t);
     RemoteAllocation remote_path(process, byte_count);
@@ -433,7 +439,7 @@ RemoteModule inject_dll(HANDLE process, DWORD process_id, const fs::path& dll) {
     const auto loader_result = run_remote_thread(process, loader, remote_path.get(), L"LoadLibraryW");
     // A thread exit code is only 32 bits and cannot carry an x64 HMODULE. Confirm
     // success and obtain the full module base from the target's module list.
-    const auto module = find_remote_module(process_id, dll);
+    const auto module = find_remote_module(process, dll);
     std::wostringstream loaded;
     loaded << L"ReSkate.dll loaded at 0x" << std::hex << module.base
            << L" (LoadLibraryW low result 0x" << loader_result << L')';
@@ -734,7 +740,7 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         loader_ready << L", skipped " << exiting << L" already exiting";
     logging::write(logging::Level::info, logging::Channel::launcher, loader_ready.str());
 
-    const auto remote_dll = inject_dll(child.process(), child.id(), paths.dll);
+    const auto remote_dll = inject_dll(child.process(), paths.dll);
     const auto initialize_address = remote_dll.base + initialize_rva;
     if (initialize_address < remote_dll.base || initialize_rva >= remote_dll.size)
         throw std::runtime_error("Remote DingoSDKDebugInitialize address is invalid");

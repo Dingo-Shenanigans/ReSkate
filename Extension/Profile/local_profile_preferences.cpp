@@ -62,8 +62,27 @@ std::optional<bool> local_preference(std::string_view key) noexcept {
 void set_local_preference(std::string_view key, bool value) noexcept {
     try {
         auto& s = local_runtime();
-        if (s.store) s.store->set_user_value("ReSkate." + std::string(key), value);
-    } catch (...) { /* Saving is best effort; the runtime value already applied. */ }
+        if (!s.store) {
+            dingosdk::logging::event(dingosdk::logging::Channel::profile,
+                "{\"event\":\"local_preference_save_failed\",\"reason\":\"profile_unavailable\"}");
+            return;
+        }
+        const auto full_key = "ReSkate." + std::string(key);
+        s.store->set_user_value(full_key, value);
+        const auto saved = s.store->user_value(full_key);
+        if (!saved || !saved->is_boolean() || saved->get<bool>() != value) {
+            dingosdk::logging::event(dingosdk::logging::Channel::profile,
+                dingosdk::Json{{"event", "local_preference_save_failed"},
+                    {"key", full_key}, {"reason", "readback_mismatch"}}.dump().c_str());
+            return;
+        }
+        dingosdk::logging::event(dingosdk::logging::Channel::profile,
+            dingosdk::Json{{"event", "local_preference_saved"},
+                {"key", full_key}, {"value", value}}.dump().c_str());
+    } catch (...) {
+        dingosdk::logging::event(dingosdk::logging::Channel::profile,
+            "{\"event\":\"local_preference_save_failed\",\"reason\":\"exception\"}");
+    }
 }
 
 std::optional<Json> local_value(std::string_view key) noexcept {

@@ -273,6 +273,17 @@ when replacing its tracked generation in the same manager. Reopening and switchi
 screens must be tested: a valid handle from one observation is not proof of its
 validity after scene teardown.
 
+The Mods shelf participates in the existing pre-level-transition callback. Before
+leaving a level/sublevel or shutting down, it removes its anchor from the native
+shelf list, clears the anchor's tile binding, and destroys both owned roots while
+their widget assets are still loaded. Construction and row polling are suspended
+during loading and resume when the next world becomes active. Recreating the
+screen also releases the previous generation, including partially built roots.
+This addresses the observed stale widget-reference crash at `0x143DC5EAA` during
+map unloading. The installed Release build was confirmed in game to resolve the
+reported shelf-creation/map-switch reproduction; the lifetime tests separately
+cover ownership and transition ordering.
+
 ## Inspecting a screen yourself
 
 ReSkate's console exposes the live model dumper:

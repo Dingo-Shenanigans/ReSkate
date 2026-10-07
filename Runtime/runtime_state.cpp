@@ -1,5 +1,6 @@
 #include "runtime_internal.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Extension/Progression/fixed_stop_entitlement_provider.h"
 #include "Extension/Progression/mission_progression_override.h"
 #include "Extension/Progression/neighborhood_unlock_override.h"
@@ -23,10 +24,10 @@ dingosdk::CustomLevelManifest read_custom_levels(const std::vector<std::filesyst
         if (!manifest.present) continue;
         if (manifest.issue.empty()) {
             dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::level,
-                "Custom-level manifest accepted: {} destination(s) from {}.", manifest.levels.size(), path.string());
+                "Custom-level manifest accepted: {} destination(s) from {}.", manifest.levels.size(), dingosdk::path_utf8(path));
         } else {
             dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::level,
-                "Custom-level manifest ignored: {} ({}).", manifest.issue, path.string());
+                "Custom-level manifest ignored: {} ({}).", manifest.issue, dingosdk::path_utf8(path));
         }
         manifests.push_back(std::move(manifest));
     }

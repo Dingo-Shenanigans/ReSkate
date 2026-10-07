@@ -176,7 +176,8 @@ void publish(Session &s, const NativeFrame *local) {
         if (const auto mark = identity_mark(social->local.id)) {
             std::tie(view.identity_tag_colour, view.identity_tag) = mark_role(*mark);
             view.identity_animation =
-                *mark == IdentityList::developer ? "RAINBOW" : *mark == IdentityList::content_creator ? "RED" : "GOLD";
+                *mark == IdentityList::developer ? "RAINBOW" : *mark == IdentityList::content_creator ? "RED" :
+                *mark == IdentityList::centrix ? "BLUE" : "GOLD";
             const auto styles = developer_hoodie_detail::own_styles.load();
             const auto standard = developer_hoodie_detail::standard_picks(*mark);
             view.identity_styles.resize(styles.size());
@@ -538,6 +539,7 @@ std::pair<std::uint32_t, std::string> mark_role(IdentityList list) {
     switch (list) {
     case IdentityList::developer: return {nametag_developer, "Dev"};
     case IdentityList::content_creator: return {nametag_creator, "Creator"};
+    case IdentityList::centrix: return {nametag_centrix, "Centrix"};
     default: return {nametag_homie, "Homie"};
     }
 }

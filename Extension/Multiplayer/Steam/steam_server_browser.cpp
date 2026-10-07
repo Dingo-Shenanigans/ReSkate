@@ -206,10 +206,11 @@ void SteamServerBrowser::read() {
     }
     // A restarted server gets a new, higher Steam ID, while Steam lists the old
     // one for a while. Only one can hold an address and port: keep the newest.
-    // Servers named with bad words are never shown (they refuse to list themselves too).
+    // Servers named with bad words, or with characters a server name cannot have, are
+    // never shown (a server refuses such a name too, but anyone can list one).
     std::vector<MultiplayerLobby> rows;
     for (const auto &[id, entry] : found_) {
-        if (text::contains_bad_words(entry.row.name)) continue;
+        if (!valid_server_name(entry.row.name) || text::contains_bad_words(entry.row.name)) continue;
         const bool replaced = std::any_of(found_.begin(), found_.end(), [&](const auto &other) {
             return other.first > id && std::any_of(entry.addresses.begin(), entry.addresses.end(), [&](const auto &a) {
                 return std::find(other.second.addresses.begin(), other.second.addresses.end(), a) != other.second.addresses.end();

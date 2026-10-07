@@ -12,7 +12,10 @@
 //     every reference a mod appended to one of its lists, and has every value a mod changed in
 //     place changed: no value in it is the merge's own invention;
 //   * a list whose entries the game keeps beside it (an item list, the music playlist) names
-//     nothing its own bundle does not hold, in every copy of that bundle the patch carries.
+//     nothing its own bundle does not hold, in every copy of that bundle the patch carries;
+//   * a bundle's chunk metadata has one record for each of its chunks, in the order of the
+//     chunks' guids as the game writes it: every texture's own record, with the first mip its
+//     header gives, is at its chunk's place.
 // What is only reported: assets two mods add under one name, and assets of the game two mods
 // change where the patch has one mod's copy whole.
 //
@@ -30,7 +33,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cctype>
 #include <chrono>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -225,6 +230,12 @@ struct Audit {
     std::map<Place, EbxFacts> facts;
     std::map<Place, fb::Guid> guids;
     std::vector<Contested> contested;
+    // The patch's bundles (by TOC and bundle) that a mod ships a readable copy of: the ones whose
+    // chunk metadata the merge may have written.
+    std::set<std::pair<std::size_t, std::size_t>> chunkBundles;
+    // Those of them the patch has exactly as one mod ships them, chunks and list: the merge wrote
+    // nothing there.
+    std::set<std::pair<std::size_t, std::size_t>> chunkBundlesAsShipped;
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 
     void progress(const std::string& what) const {
@@ -302,6 +313,84 @@ struct Audit {
         for (const auto& entry : bundle.assets) {
             if (entry.asset->kind != fb::AssetKind::ebx) continue;
             if (const auto* id = guid(place(from, entry.file))) result.insert(*id); else unsure = true;
+        }
+        return result;
+    }
+    // One record of a bundle's chunk metadata: whose the chunk is, and a texture's first mip.
+    struct ChunkMeta {
+        std::optional<std::uint64_t> owner;
+        std::optional<std::int32_t> firstMip;
+    };
+    // A copy's chunk metadata, record by record; nothing when the list cannot be read.
+    static std::optional<std::vector<ChunkMeta>> records_of(const Bundle& bundle) {
+        std::vector<ChunkMeta> records;
+        const auto& list = bundle.listing->manifest.chunkMetadata;
+        if (list.empty()) return records;
+        try {
+            const std::span<const unsigned char> bytes(reinterpret_cast<const unsigned char*>(list.data()), list.size());
+            const auto root = native_db::read(bytes, "chunk metadata", nullptr, {.unique_fields = false, .max_entries = bytes.size()});
+            for (const auto& row : root.children) {
+                ChunkMeta record;
+                if (const auto* hash = row.field("h64"); hash && hash->payload().size() == 8)
+                    std::memcpy(&record.owner.emplace(), hash->payload().data(), 8);
+                if (const auto* meta = row.field("meta"))
+                    if (const auto* mip = meta->field("firstMip"); mip && mip->payload().size() == 4)
+                        std::memcpy(&record.firstMip.emplace(), mip->payload().data(), 4);
+                records.push_back(record);
+            }
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+        return records;
+    }
+    // The hash a record names a resource by: of its lower-case name.
+    static std::uint64_t owner_hash(std::string_view name) {
+        std::uint64_t value = 5381;
+        for (const auto c : name) value = value * 33U ^ static_cast<unsigned char>(std::tolower(static_cast<unsigned char>(c)));
+        return value;
+    }
+    // The textures of a copy of a bundle whose pixels are one of the bundle's chunks, each against
+    // the record at its chunk's place when the chunks are in the order of their guids: how many
+    // there are, how many have another resource's record (or none) there, how many their own with
+    // another first mip than the texture's header gives, and one of those that are wrong.
+    struct TextureRecords {
+        std::size_t textures{}, misplaced{}, mips{};
+        std::string example;
+    };
+    TextureRecords texture_records(int from, const Bundle& bundle, const std::vector<ChunkMeta>& records) const {
+        constexpr std::uint32_t textureType = 0x6BDE20BA;
+        const auto& manifest = bundle.listing->manifest;
+        std::vector<std::size_t> order(manifest.chunks.size());
+        for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
+        std::ranges::sort(order, [&](std::size_t left, std::size_t right) { return manifest.chunks[left].guid < manifest.chunks[right].guid; });
+        std::map<fb::Guid, std::size_t> guidPlace;
+        for (std::size_t at = 0; at < order.size(); ++at) guidPlace.emplace(manifest.chunks[order[at]].guid, at);
+        TextureRecords result;
+        for (std::size_t index = 0; index < manifest.resources.size(); ++index) {
+            const auto& resource = manifest.resources[index];
+            if (resource.resourceType != textureType || resource.resourceMeta.size() < 4) continue;
+            Bytes header;
+            try { header = payload(place(from, bundle.assets[manifest.ebx.size() + index].file)); } catch (const std::exception&) { continue; }
+            if (header.size() != 144 && header.size() != 180) continue;
+            // The header: type and format, a version's extra field, then flags and sizes, the mip
+            // count and first mip, padding, and the chunk the pixels are in.
+            std::uint32_t version{};
+            std::memcpy(&version, resource.resourceMeta.data(), 4);
+            const std::size_t mips = 8 + 4 + 4 + (version >= 12 ? 4 : 0) + 10;
+            const auto firstMip = static_cast<std::int32_t>(header[mips + 1]);
+            fb::Guid chunk;
+            std::memcpy(chunk.bytes.data(), header.data() + mips + 2 + (header.size() == 180 ? 8 : 4), 16);
+            const auto at = guidPlace.find(chunk);
+            if (at == guidPlace.end()) continue;   // its pixels are not in this bundle
+            ++result.textures;
+            const auto* record = at->second < records.size() ? &records[at->second] : nullptr;
+            if (!record || record->owner != owner_hash(resource.name)) {
+                if (!result.misplaced++ && result.example.empty()) result.example = resource.name + " has " + (record ? "another resource's record" : "no record") + " at its chunk's place";
+            } else if (record->firstMip != firstMip) {
+                if (!result.mips++ && result.example.empty())
+                    result.example = resource.name + " is told first mip " + (record->firstMip ? std::to_string(*record->firstMip) : std::string("none")) +
+                                     ", its header says " + std::to_string(firstMip);
+            }
         }
         return result;
     }
@@ -567,6 +656,11 @@ struct Audit {
                     const auto mine = read_bundle(static_cast<int>(index + 2), bundle);
                     if (!mine.listing || !patched.listing) { ++byName; continue; }
                     const auto* game = game_bundle(bundle.name);
+                    chunkBundles.emplace(merged->second, at->second);
+                    if (mine.listing->manifest.chunkMetadata == patched.listing->manifest.chunkMetadata &&
+                        std::ranges::equal(mine.listing->manifest.chunks, patched.listing->manifest.chunks, {},
+                                           &fb::BundleAsset::guid, &fb::BundleAsset::guid))
+                        chunkBundlesAsShipped.emplace(merged->second, at->second);
                     for (const auto& entry : mine.assets) {
                         ++assets;
                         const auto key = key_of(*entry.asset);
@@ -884,6 +978,62 @@ struct Audit {
         std::cout << copies << " such list(s) with entries mods added, across every copy in the patch; " << entries << " added entries checked\n";
     }
 
+    // ---------------------------------------------------------------- chunk metadata
+    // The engine reads a chunk's record before it streams the chunk. The game writes a bundle's
+    // list with a record for each chunk, in the order of the chunks' guids, so a texture's record
+    // (the hash of its name, and its first mip) is at its chunk's place in that order. A bundle
+    // the patch has from more than the game's copy (two mods' costumes built on one game costume,
+    // each with chunks of its own) has to be in that form as well: with fewer records than
+    // chunks, or with records where the mods' own lists have them, textures and meshes get
+    // another's record or none and never appear. Checked wherever the game's own copy of the
+    // bundle is in that form, which is everywhere it has been looked at.
+    void chunk_metadata() {
+        section("Chunk metadata");
+        std::size_t bundles{}, untouched{}, asShipped{}, checked{}, textures{}, unknownForm{};
+        for (const auto& where : chunkBundles) {
+            const auto& toc = tocs[where.first];
+            const auto& patched = toc.bundles[where.second];
+            const auto& kept = patched.listing->manifest.chunks;
+            if (kept.empty()) continue;
+            ++bundles;
+            const auto what = toc.relative + ": " + patched.name;
+            const auto* game = game_bundle(patched.name);
+            // The game's own list on the game's own chunks is what the game shipped.
+            if (game && game->listing->manifest.chunkMetadata == patched.listing->manifest.chunkMetadata &&
+                game->listing->manifest.chunks.size() == kept.size() &&
+                std::ranges::equal(game->listing->manifest.chunks, kept, {}, &fb::BundleAsset::guid, &fb::BundleAsset::guid)) {
+                ++untouched;
+                continue;
+            }
+            // One mod's copy passed through whole is that mod's to have right: its tool's list is
+            // not in the game's form, and the merge does not rewrite what only one mod ships.
+            if (chunkBundlesAsShipped.contains(where)) { ++asShipped; continue; }
+            const auto records = records_of(patched);
+            if (!records) { fail("chunk metadata", what + ": the patch's list cannot be read"); continue; }
+            if (records->size() != kept.size() && !(records->empty() && (!game || game->listing->manifest.chunkMetadata.empty()))) {
+                fail("chunk metadata", what + ": " + std::to_string(records->size()) + " record(s) for " +
+                    std::to_string(kept.size()) + " chunk(s)");
+                continue;
+            }
+            // Only a bundle whose own copy in the game is in guid order says what the patch's has to be.
+            if (!game) { ++unknownForm; continue; }
+            const auto shipped = records_of(*game);
+            if (!shipped) { ++unknownForm; continue; }
+            const auto original = texture_records(0, *game, *shipped);
+            if (original.misplaced || original.mips) { ++unknownForm; continue; }
+            ++checked;
+            const auto merged = texture_records(1, patched, *records);
+            textures += merged.textures;
+            if (merged.misplaced || merged.mips)
+                fail("chunk metadata", what + ": of " + std::to_string(merged.textures) + " texture(s) with a chunk in the bundle, " +
+                    std::to_string(merged.misplaced) + " do not have their own record at their chunk's place and " +
+                    std::to_string(merged.mips) + " have another first mip than their header, e.g. " + merged.example);
+        }
+        std::cout << bundles << " bundle(s) mods ship that hold chunks: " << untouched << " with the game's own list on the game's own chunks, "
+                  << asShipped << " exactly as one mod ships them, " << checked << " others checked, " << textures
+                  << " texture record(s) in them; " << unknownForm << " whose own copy in the game gives nothing to check against\n";
+    }
+
     int summary() const {
         section("Summary");
         std::size_t total{};
@@ -908,6 +1058,7 @@ int main(int argc, char** argv) try {
     audit.mods_against_patch();
     audit.outcomes();
     audit.lists();
+    audit.chunk_metadata();
     return audit.summary();
 } catch (const std::exception& error) {
     std::cerr << "FAIL: " << error.what() << '\n';

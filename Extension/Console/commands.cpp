@@ -1,5 +1,6 @@
 #include "commands.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/path_text.h"
 #include <memory>
 
 namespace dingosdk::console {
@@ -179,7 +180,7 @@ void register_console_commands(Commands &registry) {
     log.run = [](const Model &, const Values &, const Output &out) {
         const auto s = logging::status();
         out(std::string("Logging level: ") + std::string(logging::name(s.level)));
-        out((s.directory / L"ReSkate.log").string());
+        out(path_utf8(s.directory / L"ReSkate.log"));
     };
     registry.add(std::move(log));
     auto level = argument("level");

@@ -12,4 +12,5 @@ extern MusicModelConstruct music_model_construct_original;
 std::uint64_t music_model_construct_hook(std::uintptr_t manager, std::uint8_t mode,
     std::uint64_t id, std::uintptr_t type, bool flag, std::uintptr_t record);
 void update_music_shelf();
+void music_shelf_before_level_transition(unsigned next) noexcept;
 } // namespace dingosdk::profile_runtime

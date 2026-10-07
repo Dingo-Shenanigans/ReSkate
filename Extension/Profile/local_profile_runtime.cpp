@@ -6,6 +6,7 @@
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Music/local_music_ui.h"
 #include "Extension/Music/local_music_shelf.h"
+#include "Extension/Music/local_music_playback.h"
 #include "Extension/News/local_news_runtime.h"
 #include "Extension/Objects/local_buildkit_labels.h"
 #include "Extension/Objects/local_buildkit_limits.h"
@@ -340,6 +341,7 @@ void local_profile_before_level_transition(unsigned next) noexcept {
     auto& s = local_runtime();
     if (!s.active.load(std::memory_order_acquire)) return;
     std::lock_guard lock(s.native_mutex);
+    music_shelf_before_level_transition(next);
     news_runtime().pending.before_transition(next);
     object_runtime().pending.before_transition(next);
     auto& placements = placements_runtime();
@@ -534,6 +536,13 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
             else dingosdk::logging::event(dingosdk::logging::Channel::music,
                 "{\"event\":\"music_model_construct_contract_mismatch\"}");
         }
+        const bool playback_ready = initialize_music_playback(base,
+            local_preference("MusicShuffle").value_or(false));
+        if (playback_ready)
+            hook(addr::local_music::playback_select_next_contract,
+                &music_select_next_hook, music_select_next_original());
+        else dingosdk::logging::event(dingosdk::logging::Channel::music,
+            "{\"event\":\"music_playback_order_contract_mismatch\"}");
         hook(buildkit_text_exists_contract, &buildkit_text_exists, buildkit_text_functions().exists);
         hook(buildkit_text_translate_contract, &buildkit_text_translate, buildkit_text_functions().translate);
         hook(buildkit_grabber_settings_contract, &buildkit_grabber_settings_hook, buildkit_limits_runtime().grabber_settings);
@@ -569,6 +578,7 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
             enable_attempted = true;
             if (hook_enable(target) != HookOk) throw std::runtime_error("Cannot enable local profile hook");
         }
+        if (playback_ready) activate_music_playback();
         initialize_placement_store(path);
         initialize_park_editor(path.parent_path());
         set_park_mods_root(mods::engine_data_root());
@@ -584,6 +594,7 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         return true;
     } catch (const std::exception& e) {
         s.active.store(false, std::memory_order_release);
+        deactivate_music_playback();
         set_local_profile_event_provider(base, false);
         set_local_object_browser_provider(base, nullptr);
         for (auto* target : created) {

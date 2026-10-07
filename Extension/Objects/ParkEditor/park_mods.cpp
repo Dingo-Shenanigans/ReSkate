@@ -2,6 +2,7 @@
 
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Core/Platform/path_text.h"
 
 #include <Windows.h>
 
@@ -46,23 +47,23 @@ void write_atomically(const fs::path &path, const std::string &text) {
         stream.write(text.data(), static_cast<std::streamsize>(text.size()));
         stream.flush();
         if (!stream)
-            throw std::runtime_error("Could not write " + path.filename().string() + ". The previous copy was kept.");
+            throw std::runtime_error("Could not write " + path_utf8(path.filename()) + ". The previous copy was kept.");
     }
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        throw std::runtime_error("Could not replace " + path.filename().string() + ". The previous copy was kept.");
+        throw std::runtime_error("Could not replace " + path_utf8(path.filename()) + ". The previous copy was kept.");
 }
 
 std::string read_file(const fs::path &path, std::size_t limit) {
     std::error_code error;
     const auto size = fs::file_size(path, error);
     if (error)
-        throw std::runtime_error("Could not open " + path.filename().string() + ".");
+        throw std::runtime_error("Could not open " + path_utf8(path.filename()) + ".");
     if (size > limit)
-        throw std::runtime_error(path.filename().string() + " is too large.");
+        throw std::runtime_error(path_utf8(path.filename()) + " is too large.");
     std::ifstream stream(path, std::ios::binary);
     std::string text(static_cast<std::size_t>(size), '\0');
     if (!stream.read(text.data(), static_cast<std::streamsize>(text.size())))
-        throw std::runtime_error("Could not read " + path.filename().string() + ".");
+        throw std::runtime_error("Could not read " + path_utf8(path.filename()) + ".");
     return text;
 }
 

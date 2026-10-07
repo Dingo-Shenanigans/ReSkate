@@ -8,6 +8,7 @@
 #include "server_update.h"
 #include "steam_server.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/World/world_layer_catalog.h"
 #include "Engine/Game/World/world_names.h"
@@ -301,14 +302,14 @@ int run(int argc, char **argv, bool skip_update) {
         const bool fresh = !std::filesystem::exists(config_file);
         std::vector<std::string> added;
         config = load_config(config_file, &added);
-        if (fresh) write_log("Wrote a default " + config_file.filename().string() + ". Edit it to name the server and add admins.");
+        if (fresh) write_log("Wrote a default " + path_utf8(config_file.filename()) + ". Edit it to name the server and add admins.");
         if (!added.empty()) {
             std::string names;
             for (const auto &name : added) names += (names.empty() ? "" : ", ") + name;
-            write_log("Added new settings to " + config_file.filename().string() + " with their defaults: " + names + ".");
+            write_log("Added new settings to " + path_utf8(config_file.filename()) + " with their defaults: " + names + ".");
         }
     } catch (const std::exception &e) {
-        write_log("Cannot read " + config_file.string() + ": " + e.what());
+        write_log("Cannot read " + path_utf8(config_file) + ": " + e.what());
         return 1;
     }
     // Maps: the retail ones and custom maps from Mods\<mod>\reskate-levels.json.

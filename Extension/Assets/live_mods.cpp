@@ -5,6 +5,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/World/custom_level_manifest.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/20260929/live_mods.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Vfs/mod_catalog.h"
@@ -211,7 +212,7 @@ bool refresh_toc(const std::string &superbundle, const std::filesystem::path &fi
     std::ifstream in(file, std::ios::binary);
     std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (bytes.size() <= native::toc_header + 4) {
-        problem = file.filename().string() + " could not be read";
+        problem = path_utf8(file.filename()) + " could not be read";
         return false;
     }
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));

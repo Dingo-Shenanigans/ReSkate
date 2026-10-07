@@ -1017,7 +1017,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(rotation_text());
     }
     if (name == "name") {
-        if (argument.empty() || argument.size() > 64 || !valid_member_name(argument)) return "Server names are 1 to 64 characters.";
+        if (!valid_server_name(argument)) return std::string("Server names are ") + server_name_rule + ".";
         config_.name = argument;
         if (text::contains_bad_words(config_.name))
             return changed("Server renamed to " + config_.name +

@@ -4,7 +4,8 @@
 #include <string>
 
 namespace dingosdk::profile_runtime {
-// Serves only registered PNG bytes on an ephemeral loopback port. No filesystem HTTP routes.
+// Serves registered mod PNGs on loopback. The 64 MiB byte cache reloads evicted
+// images from their registered canonical files; HTTP paths never name arbitrary files.
 class MusicArtworkServer {
 public:
     MusicArtworkServer();

@@ -8,10 +8,25 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace dingosdk {
 constexpr unsigned max_map_rotation = 1440; // minutes a server's rotation keeps one map, at most
+// A dedicated server's name: 1 to 64 letters, digits, spaces and - _ [ ] ( ), with a
+// letter or digit among them and no space at either end. A server refuses any other
+// name, and the server browser does not show one.
+inline constexpr char server_name_rule[] = "1 to 64 letters, numbers, spaces and - _ [ ] ( )";
+[[nodiscard]] constexpr bool valid_server_name(std::string_view name) noexcept {
+    if (name.empty() || name.size() > 64 || name.front() == ' ' || name.back() == ' ') return false;
+    bool named{};
+    for (const auto c : name) {
+        const bool word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        if (!word && std::string_view(" -_[]()").find(c) == std::string_view::npos) return false;
+        named |= word;
+    }
+    return named;
+}
 struct MultiplayerLobby {
     std::uint64_t id{}, owner{};
     std::string name, map, code;
@@ -71,7 +86,7 @@ struct MultiplayerChatLine {
     std::string name, text;
     bool local{};               // sent by this player
     // The sender's role, as their nametag shows it: its colour (IM_COL32 layout, 0 = none)
-    // and a tag shown in a box before the name ("Dev", "Creator", "Homie", "Admin", "Host", "Friend" or empty).
+    // and a tag shown in a box before the name ("Dev", "Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or empty).
     std::uint32_t color{};
     std::string tag;
     // With the chat filter on, `text` is masked and this is the line as sent (same length), so
@@ -127,7 +142,7 @@ struct MultiplayerModel {
     float chat_bubbles_distance{40.f};
     float chat_bubbles_duration{5.f};
     int chat_bubbles_history{3};
-    // Local: the tag the ReSkate backend gives this player ("Dev", "Creator" or "Homie"; empty
+    // Local: the tag the ReSkate backend gives this player ("Dev", "Creator", "Centrix" or "Homie"; empty
     // for most players) and its role colour, and whether they show it, and the animated items
     // that come with it, to everyone.
     std::string identity_tag;
@@ -135,7 +150,7 @@ struct MultiplayerModel {
     bool identity_tag_shown{true}, identity_items_shown{true};
     // Local: how each of this player's marked cosmetics is coloured, for the Special page: what
     // they wear in each slot ("Top", "Shoes", ...), then the parts of their board. mode: 0 what
-    // their list gives (`identity_animation`: "RAINBOW", "RED" or "GOLD"), 1 off, 2 a gradient
+    // their list gives (`identity_animation`: "RAINBOW", "RED", "BLUE" or "GOLD"), 1 off, 2 a gradient
     // between the two colours they picked, 3 the first of them alone. speed: 0 normal, 1 slow,
     // 2 fast.
     struct IdentityStyle {

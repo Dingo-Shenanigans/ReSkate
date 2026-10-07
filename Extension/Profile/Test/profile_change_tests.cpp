@@ -41,6 +41,9 @@ int main() {
         check(announced(), "several settings saved together are announced");
         store.set_bool_option("gp_use_high_cam", false);
         check(announced(), "a profile option save is announced");
+        store.set_user_value("ReSkate.MusicShuffle", true);
+        check(announced() && store.user_value("ReSkate.MusicShuffle") == Json(true),
+            "the music shuffle preference is saved as a Boolean profile option");
         store.set_selected_cosmetic_preset(3);
         check(announced(), "a save outside the settings is announced");
     }
@@ -50,6 +53,7 @@ int main() {
         const auto number = store.user_value("grindAssist");
         check(store.native_profile_option(2, "UseHighCam") == Json(false) &&
             store.user_value("enableCompass") == Json(false) && store.user_value("cameraMode") == Json(2) &&
+            store.user_value("ReSkate.MusicShuffle") == Json(true) &&
             number && number->is_number_float() && number->get<double>() == 20.0 &&
             store.selected_cosmetic_preset() == 3, "saved settings come back after a restart");
     }

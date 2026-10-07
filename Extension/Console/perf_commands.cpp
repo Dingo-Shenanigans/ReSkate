@@ -101,7 +101,7 @@ void register_perf_commands(Commands& registry) {
     seconds.minimum = 0.5;
     seconds.maximum = 60;
     auto target = argument("client|present|all|<thread id>", Type::text, true);
-    target.choices = {"client", "present", "all"};
+    target.complete = [](const Model&, auto) { return std::vector<std::string>{"client", "present", "all"}; };
     auto rate = argument("rate", Type::unsigned_integer, true);
     rate.minimum = 50;
     rate.maximum = 4000;

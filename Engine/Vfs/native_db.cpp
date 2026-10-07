@@ -12,7 +12,7 @@ public:
         : input_(input), context_(context), options_(options) {}
 
     Node read(unsigned depth = 0) {
-        if (depth > 32 || ++nodes_ > 32768) fail("DB nesting/entry limit exceeded");
+        if (depth > 32 || ++nodes_ > options_.max_entries) fail("DB nesting/entry limit exceeded");
         const auto tag = take(1)[0];
         Node node;
         node.type = tag & 31;

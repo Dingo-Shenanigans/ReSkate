@@ -13,7 +13,7 @@ namespace dingosdk::multiplayer {
 // api.reskate.dev, so they change without a release. Steam authenticates these
 // identities. Each category has its tag in chat and on nametags (player_role)
 // and its animation on the marked hoodie and board (developer_hoodie_material.h).
-enum class IdentityList : std::uint8_t { developer, homie, content_creator, banned, count };
+enum class IdentityList : std::uint8_t { developer, homie, content_creator, centrix, banned, count };
 using IdentityLists = std::array<std::vector<std::uint64_t>, static_cast<std::size_t>(IdentityList::count)>;
 inline constexpr std::string_view identity_lists_url = "https://api.reskate.dev/api/v1/steam-ids";
 
@@ -26,10 +26,10 @@ void refresh_identity_lists() noexcept;
 bool identity_listed(std::uint64_t id, IdentityList list) noexcept;
 // Shared by the developer tag and the rainbow hoodie and board.
 inline bool reskate_developer(std::uint64_t id) noexcept { return identity_listed(id, IdentityList::developer); }
-// The category a player's tag and items come from: a developer's before a content creator's
-// before a homie's. Most players are in none.
+// The category a player's tag and items come from: a developer's before Centrix's before a
+// content creator's before a homie's. Most players are in none.
 inline std::optional<IdentityList> identity_mark(std::uint64_t id) noexcept {
-    for (const auto list : {IdentityList::developer, IdentityList::content_creator, IdentityList::homie})
+    for (const auto list : {IdentityList::developer, IdentityList::centrix, IdentityList::content_creator, IdentityList::homie})
         if (identity_listed(id, list)) return list;
     return std::nullopt;
 }

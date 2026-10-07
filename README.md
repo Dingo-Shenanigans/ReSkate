@@ -169,9 +169,11 @@ Useful launcher flags:
 |---|---|
 | `--no-gui` | start the game straight away, without the launcher window |
 | `--no-update` | skip the update check |
-| `--offline` | play offline, without Steam running |
+| `--offline`, `-offline` | play offline, without Steam running |
 | `--windowed`, `--width=N`, `--height=N` | windowed mode and its size |
-| `--log-level=<trace\|debug\|info\|warning\|error>` | how much `ReSkate.log` records |
+| `--log-level=<trace\|debug\|info\|warning\|error\|critical\|off>` | how much `ReSkate.log` records (`warn` works too) |
+| `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
+| `-wconsole` | also show the log live in a console window while the game runs |
 | `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |

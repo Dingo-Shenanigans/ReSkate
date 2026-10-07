@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -25,7 +26,7 @@
 
 namespace dingosdk::profile_runtime {
 namespace {
-constexpr std::size_t max_image = 4 * 1024 * 1024, max_total = 64 * 1024 * 1024;
+constexpr std::size_t max_image = 4 * 1024 * 1024, max_cached = 64 * 1024 * 1024;
 constexpr unsigned short fixed_port = 47823; // stable origin so the game's HTTP cache is reused
 constexpr std::size_t max_frame = 16384;
 
@@ -271,13 +272,19 @@ std::string mod_folder_name(const std::filesystem::path& mod) {
 } // namespace
 
 struct MusicArtworkServer::Impl {
+    struct Image {
+        std::filesystem::path file;
+        std::shared_ptr<const std::vector<char>> bytes;
+        std::list<std::string>::iterator position;
+    };
     bool winsock = false;
     Socket listener;
     unsigned short port = 0;
     std::mutex mutex;
-    std::map<std::string, std::shared_ptr<const std::vector<char>>, std::less<>> images; // route -> bytes
+    std::map<std::string, Image, std::less<>> images; // registered routes survive byte-cache eviction
     std::map<std::filesystem::path, std::pair<std::filesystem::file_time_type, std::string>> paths;
-    std::size_t total = 0;
+    std::list<std::string> cached; // most recently used first
+    std::size_t cached_bytes = 0; // active responses can retain their own shared bytes
     std::vector<std::jthread> workers;
 
     Impl() {
@@ -347,10 +354,51 @@ struct MusicArtworkServer::Impl {
         else respond(client);
     }
 
+    static std::shared_ptr<const std::vector<char>> read_png(const std::filesystem::path& file) {
+        // A registered canonical file must not become a symlink to an unregistered file.
+        if (std::filesystem::canonical(file) != file) return {};
+        const auto size = std::filesystem::file_size(file);
+        if (size > max_image) return {};
+        std::ifstream input(file, std::ios::binary);
+        auto bytes = std::make_shared<std::vector<char>>(static_cast<std::size_t>(size));
+        if (!input.read(bytes->data(), static_cast<std::streamsize>(size)) || !png_ok(*bytes)) return {};
+        return bytes;
+    }
+
+    // Called with mutex held. Keep the byte cache bounded without invalidating any URLs.
+    void cache(const std::string& route, Image& image, std::shared_ptr<const std::vector<char>> bytes) {
+        if (image.bytes) {
+            cached_bytes -= image.bytes->size();
+            cached.erase(image.position);
+            image.bytes.reset();
+        }
+        while (cached_bytes + bytes->size() > max_cached && !cached.empty()) {
+            auto& oldest = images.at(cached.back());
+            cached_bytes -= oldest.bytes->size();
+            oldest.bytes.reset();
+            cached.pop_back();
+        }
+        cached.push_front(route);
+        image.position = cached.begin();
+        image.bytes = std::move(bytes);
+        cached_bytes += image.bytes->size();
+    }
+
     std::shared_ptr<const std::vector<char>> find(std::string_view route) {
         std::lock_guard lock(mutex);
         const auto found = images.find(route);
-        return found == images.end() ? nullptr : found->second;
+        if (found == images.end()) return {};
+        auto& image = found->second;
+        if (image.bytes) {
+            cached.splice(cached.begin(), cached, image.position);
+        } else {
+            try {
+                auto bytes = read_png(image.file);
+                if (!bytes) return {};
+                cache(found->first, image, std::move(bytes));
+            } catch (const std::exception&) { return {}; }
+        }
+        return image.bytes;
     }
 
     // Graceful close: closing with unread frames queued makes Windows send RST and the client can
@@ -492,17 +540,15 @@ std::string MusicArtworkServer::add(const std::filesystem::path& mod, const std:
         std::lock_guard lock(impl_->mutex);
         if (const auto found = impl_->paths.find(file); found != impl_->paths.end() && found->second.first == stamp)
             return found->second.second;
-        const auto size = std::filesystem::file_size(file);
-        if (size > max_image || impl_->total + size > max_total) return {};
-        std::ifstream input(file, std::ios::binary);
-        auto bytes = std::make_shared<std::vector<char>>(static_cast<std::size_t>(size));
-        if (!input.read(bytes->data(), static_cast<std::streamsize>(size)) || !png_ok(*bytes)) return {};
+        auto bytes = Impl::read_png(file);
+        if (!bytes) return {};
         // A stable, readable route so the URL is identical every launch (and the game's HTTP cache
         // can be reused) and the image identity is in the path, like the game's own CDN links.
         const auto route = "/music-art/" + sanitize(mod_folder_name(mod)) + "/" + relative;
         const auto url = "http://127.0.0.1:" + std::to_string(impl_->port) + route;
-        impl_->images[route] = bytes;
-        impl_->total += bytes->size();
+        auto& image = impl_->images[route];
+        image.file = file;
+        impl_->cache(route, image, std::move(bytes));
         impl_->paths[file] = {stamp, url};
         return url;
     } catch (const std::exception&) { return {}; }

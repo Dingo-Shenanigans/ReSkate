@@ -36,6 +36,9 @@ struct Asset {
     fb::BundleFileInfo file;
     bool base{};
     const std::string* mod{};   // whose copy of the bundle it came in; null for the game's
+    // For a chunk: where its record is in the chunk metadata of the copy this version
+    // of it came in, and where the game's copy lists the chunk (merge_chunk_metadata).
+    ChunkRecord record;
 };
 
 // Where one contributor's copy of an asset lives, so conflicting copies can be
@@ -95,7 +98,13 @@ struct BundleState {
     std::uint32_t manifestChunk{};
     std::vector<Asset> assets;
     std::vector<fb::BundleFileInfo> files;
-    std::vector<std::byte> metadata;
+    // Each copy's chunk metadata; copies that carry the same list share an entry.
+    // Every chunk remembers its record in one of these (Asset::record), and the
+    // list is written again when the manifest is rebuilt (merge_chunk_metadata).
+    std::vector<std::vector<std::byte>> metadata;
+    // Which of those is the game's own, and the chunks the game's copy lists.
+    std::size_t gameMetadata{ChunkRecord::none};
+    std::vector<fb::Guid> shippedChunks;
     // Keyed position of each asset, so replacing one stays constant time: these
     // bundles hold tens of thousands of entries.
     std::map<std::string, std::size_t, std::less<>> seen;
@@ -196,7 +205,114 @@ void build_manifest(const std::vector<Asset>& assets, std::span<const std::byte>
     emit(fb::AssetKind::chunk, manifest.chunks);
 }
 
+std::span<const unsigned char> unsigned_bytes(std::span<const std::byte> data) {
+    return {reinterpret_cast<const unsigned char*>(data.data()), data.size()};
+}
+
 } // namespace
+
+std::vector<std::byte> merge_chunk_metadata(std::span<const std::vector<std::byte>> lists,
+                                            std::span<const ChunkRecord> chunks, std::size_t game,
+                                            std::span<const fb::Guid> shipped) {
+    // A bundle with no chunks has nothing to describe; what the first copy has stays.
+    if (chunks.empty()) return lists.empty() ? std::vector<std::byte>{} : lists.front();
+    const bool shippedList = game < lists.size() && !lists[game].empty();
+
+    // Nothing moved: nearly every bundle is this, and its list is not read at all.
+    // With the game's list, every chunk is the game's own where the game lists it;
+    // without one, every chunk keeps one copy's record at its own place.
+    const auto first = shippedList ? game : chunks.front().copy;
+    bool whole = first < lists.size() && (!shippedList || chunks.size() == shipped.size());
+    for (std::size_t index = 0; whole && index < chunks.size(); ++index)
+        whole = chunks[index].copy == first && chunks[index].index == index &&
+                (!shippedList || chunks[index].shipped == index);
+    if (whole) return lists[first];
+
+    std::vector<std::optional<native_db::Node>> read(lists.size());
+    const auto list = [&](std::size_t copy) -> const native_db::Node* {
+        if (copy >= lists.size() || lists[copy].empty()) return nullptr;
+        // A level's root bundle has thousands of chunks; every value takes a byte at least.
+        if (!read[copy])
+            read[copy] = native_db::read(unsigned_bytes(lists[copy]), "chunk metadata", nullptr,
+                                         {.unique_fields = false, .max_entries = lists[copy].size()});
+        return &*read[copy];
+    };
+    const auto row = [&](std::size_t copy, std::size_t index) -> const native_db::Node* {
+        const auto* from = list(copy);
+        return from && index < from->children.size() ? &from->children[index] : nullptr;
+    };
+
+    // The game's list, when it is the kind this is written as: a record for each of
+    // the game's chunks, in the order of their guids.
+    const auto* original = shippedList ? list(game) : nullptr;
+    if (original && original->children.size() != shipped.size()) original = nullptr;
+    std::vector<std::size_t> place(shipped.size());   // where each of the game's chunks has its record
+    if (original) {
+        std::vector<std::size_t> order(shipped.size());
+        for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
+        std::ranges::sort(order, [&](std::size_t left, std::size_t right) { return shipped[left] < shipped[right]; });
+        for (std::size_t at = 0; at < order.size(); ++at) place[order[at]] = at;
+    }
+
+    std::vector<native_db::Node> records;
+    std::vector<bool> described(chunks.size());
+    records.reserve(chunks.size());
+    for (std::size_t index = 0; index < chunks.size(); ++index) {
+        const auto& chunk = chunks[index];
+        const auto* written = row(chunk.copy, chunk.index);
+        const native_db::Node* kept = written;
+        std::optional<native_db::Node> changed;
+        if (original && chunk.shipped < shipped.size()) {
+            kept = &original->children[place[chunk.shipped]];
+            // A mod's version of the chunk: its tool started from the game's list and wrote a
+            // record where the chunk is listed, in place of whatever the game has there. The
+            // first mip it gave is the one the mod's texture has; the rest of it is not the
+            // chunk's (the hash is another chunk's, or empty).
+            const auto* before = chunk.index < original->children.size() ? &original->children[chunk.index] : nullptr;
+            if (chunk.copy != game && written && (!before || native_db::write(*written) != native_db::write(*before)))
+                if (const auto* meta = written->field("meta"))
+                    if (const auto* mip = meta->field("firstMip")) {
+                        changed = *kept;
+                        if (auto* own = changed->field("meta")) {
+                            if (auto* current = own->field("firstMip")) *current = *mip;
+                            else own->children.push_back(*mip);
+                            kept = &*changed;
+                        }
+                    }
+        }
+        described[index] = kept != nullptr;
+        records.push_back(kept ? *kept : native_db::Node{});
+    }
+    const native_db::Node* shape = original;
+    for (std::size_t copy = 0; !shape && copy < read.size(); ++copy)
+        if (read[copy]) shape = &*read[copy];
+    if (!shape) return {};   // no copy has a list at all
+    // A chunk no list describes still takes up its place, with a record that says nothing.
+    native_db::Node blank;
+    blank.type = 2;
+    for (std::size_t index = 0; index < records.size(); ++index)
+        if (described[index]) {
+            blank = records[index];
+            blank.children.clear();
+            break;
+        }
+    for (std::size_t index = 0; index < records.size(); ++index)
+        if (!described[index]) records[index] = blank;
+
+    // As the game writes it: by the chunks' guids. Only a bundle whose own list in the
+    // game is of another kind keeps the order its chunks are listed in.
+    std::vector<std::size_t> order(chunks.size());
+    for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
+    if (original || !shippedList)
+        std::ranges::stable_sort(order, [&](std::size_t left, std::size_t right) { return chunks[left].guid < chunks[right].guid; });
+    auto merged = *shape;
+    merged.children.clear();
+    merged.children.reserve(records.size());
+    for (const auto index : order) merged.children.push_back(std::move(records[index]));
+    const auto bytes = native_db::write(merged);
+    const auto* data = reinterpret_cast<const std::byte*>(bytes.data());
+    return {data, data + bytes.size()};
+}
 
 // One superbundle, combined across every mod that ships it. `used` collects the
 // patch archives the result actually references, keyed by install chunk, so the
@@ -561,6 +677,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 state.opaqueWhy = manifestFailure;
                 state.files = std::move(region.files);
                 state.assets.clear(); state.seen.clear();
+                state.metadata.clear(); state.shippedChunks.clear();
+                state.gameMetadata = ChunkRecord::none;
             }
             return;
         }
@@ -580,7 +698,29 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         }
         if (casBacked) state.casBacked = true;
         if (!region.files.empty()) state.manifestChunk = region.files.front().location.installChunk;
-        if (fresh || state.metadata.empty()) state.metadata = manifest.chunkMetadata;
+        // Each chunk remembers where this copy lists it, and with that its record
+        // in this copy's chunk metadata, whichever version of the chunk is kept.
+        {
+            auto copy = ChunkRecord::none;
+            if (!manifest.chunkMetadata.empty()) {
+                auto list = std::find(state.metadata.begin(), state.metadata.end(), manifest.chunkMetadata);
+                if (list == state.metadata.end()) list = state.metadata.insert(state.metadata.end(), manifest.chunkMetadata);
+                copy = static_cast<std::size_t>(list - state.metadata.begin());
+            }
+            if (isBase) {
+                state.gameMetadata = copy;
+                state.shippedChunks.clear();
+                for (const auto& chunk : manifest.chunks) state.shippedChunks.push_back(chunk.guid);
+            }
+            const auto firstChunk = manifest.ebx.size() + manifest.resources.size();
+            for (std::size_t index = 0; index < manifest.chunks.size() && firstChunk + index < flat.size(); ++index) {
+                auto& record = flat[firstChunk + index].record;
+                record.guid = manifest.chunks[index].guid;
+                record.copy = copy;
+                record.index = index;
+                if (isBase) record.shipped = index;
+            }
+        }
         const std::size_t firstFile = casBacked ? 1 : 0;
         const auto* owner = isBase ? nullptr : &*owners.insert(modName).first;
         // By the mod whose added assets this copy's replace: how many, and one of them.
@@ -645,6 +785,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     if (!count++) example = entry.asset.name;
                     state.displaced.emplace_back(at->first, previous.asset.sha1);
                 }
+                // Whichever version is kept, it is still the chunk the game lists there.
+                entry.record.shipped = previous.record.shipped;
                 state.assets[at->second] = std::move(entry);
             }
         }
@@ -884,9 +1026,36 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 }
             }
 
+            // The merged bundle holds every mod's chunks, so its chunk metadata has
+            // to describe them all, and in the game's own form: a record for each
+            // chunk, in the order of the chunks' guids. With the game's list alone,
+            // or with the lists the mods ship (which are not in that order, and
+            // have lost the records their tools wrote over), the meshes and textures
+            // of costumes built on one game costume never stream in.
+            std::vector<std::byte> metadata;
+            {
+                std::vector<ChunkRecord> records;
+                std::size_t fromMods{};
+                for (const auto& entry : state.assets) {
+                    if (entry.asset.kind != fb::AssetKind::chunk) continue;
+                    records.push_back(entry.record);
+                    fromMods += entry.record.shipped == ChunkRecord::none || entry.record.copy != state.gameMetadata;
+                }
+                try {
+                    metadata = merge_chunk_metadata(state.metadata, records, state.gameMetadata, state.shippedChunks);
+                    if (fromMods && state.gameMetadata != ChunkRecord::none &&
+                        metadata != state.metadata[state.gameMetadata])
+                        report.notes.push_back(name + ": chunk metadata written again for " + std::to_string(records.size()) +
+                            " chunks, " + std::to_string(fromMods) + " of them added, changed or carried by mods");
+                } catch (const std::exception& failure) {
+                    if (!state.metadata.empty()) metadata = state.metadata.front();
+                    report.notes.push_back(name + ": the copies' chunk metadata could not be put together (" + failure.what() +
+                        "); kept the first copy's, so chunks mods add to this bundle may not load");
+                }
+            }
             fb::BinaryBundle manifest;
             std::vector<fb::BundleFileInfo> files;
-            build_manifest(state.assets, state.metadata, manifest, files);
+            build_manifest(state.assets, metadata, manifest, files);
             if (!state.casBacked) {
                 region = fb::write_bundle_region(files, fb::write_binary_bundle(manifest));
             } else {

@@ -121,12 +121,14 @@ inline std::pair<std::array<std::uint8_t, 3>, std::array<std::uint8_t, 3>> stand
     using multiplayer::IdentityList;
     if (mark == IdentityList::content_creator) return {{0x88, 0x23, 0x23}, {0xff, 0x48, 0x70}};
     if (mark == IdentityList::homie) return {{0xad, 0x6c, 0x1c}, {0xff, 0xe6, 0x67}};
+    if (mark == IdentityList::centrix) return {{0x1f, 0x7b, 0xff}, {0xff, 0xff, 0xff}};
     return {{0x6e, 0x20, 0xff}, {0xb4, 0x78, 0xff}};
 }
 // What a cosmetic does for a player on `mark`'s list (nobody else's does anything) with the
 // style they chose on the Special page. Left standard, a developer's cycles the rainbow, a
 // content creator's goes from deep red through bright red to a reddish pink and back, and a
-// homie's from deep gold through bright gold to yellow and back. No style asks for the rainbow:
+// homie's from deep gold through bright gold to yellow and back, and Centrix's from blue
+// through light blue to white and back. No style asks for the rainbow:
 // it is a developer's standard, and nobody else's.
 inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mark, const multiplayer::MarkStyle &style) noexcept {
     using multiplayer::IdentityList;
@@ -147,7 +149,8 @@ inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mar
         // next to it: a deep shade, a bright one, then a reddish pink or a yellow.
         constexpr std::array<Color, 3> red{{{.2f, .004f, .01f}, {.8f, .03f, .03f}, {.8f, .05f, .13f}}};
         constexpr std::array<Color, 3> gold{{{.34f, .12f, .006f}, {.8f, .5f, .06f}, {.8f, .64f, .11f}}};
-        out.stops = *mark == IdentityList::content_creator ? red : gold;
+        constexpr std::array<Color, 3> blue{{{.01f, .16f, .8f}, {.3f, .5f, .8f}, {.8f, .8f, .8f}}};
+        out.stops = *mark == IdentityList::content_creator ? red : *mark == IdentityList::centrix ? blue : gold;
     }
     return out;
 }

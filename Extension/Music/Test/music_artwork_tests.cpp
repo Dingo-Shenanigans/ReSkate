@@ -3,6 +3,7 @@
 #include <winhttp.h>
 #include "Extension/Music/music_artwork.h"
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -136,6 +137,66 @@ int main() try {
     fs::create_directory_symlink(root, root / L"mod" / L"escape", ec);
     if (!ec) check(server.add(root / L"mod", "escape/outside.png").empty(), "symlink escape is refused");
     else std::cout << "SKIP: symlink test needs Windows symlink privileges\n";
+    // Cross the production 64 MiB cache budget. Padding preserves the PNG header;
+    // these fixtures exercise byte storage/transport, not an image decoder.
+    std::string large = bytes;
+    large.resize(1024 * 1024, '\0');
+    std::string first, last;
+    for (unsigned i = 0; i < 65; ++i) {
+        const auto relative = "artwork/large-" + std::to_string(i) + ".png";
+        { std::ofstream out(root / L"mod" / relative, std::ios::binary); out.write(large.data(), large.size()); }
+        const auto registered = server.add(root / L"mod", relative);
+        check(!registered.empty(), "artwork beyond 64 MiB still registers");
+        if (i == 0) first = registered;
+        if (i == 64) last = registered;
+    }
+    check(server.add(root / L"mod", "artwork/large-0.png") == first, "evicted artwork keeps its registered URL");
+    if (!first.empty()) {
+        const auto [status, body] = fetch(first);
+        check(status == 200 && body == large, "evicted artwork reloads with exact bytes");
+    }
+    if (!last.empty()) {
+        const auto [status, body] = fetch(last);
+        check(status == 200 && body == large, "artwork registered beyond the budget is served");
+    }
+    if (!url.empty()) {
+        const auto colon = url.find(':', 7), slash = url.find('/', colon);
+        const auto port = static_cast<unsigned short>(std::stoi(url.substr(colon + 1, slash - colon - 1)));
+        const auto [status, body] = fetch_h2c(port, url.substr(slash));
+        check(status == 200 && body == bytes, "h2c reloads evicted artwork with exact bytes");
+    }
+    // Replacing one file must not consume another image's worth of budget forever.
+    const auto replacement = root / L"mod/artwork/replacement.png";
+    std::string replacement_url;
+    const auto stamp = fs::file_time_type::clock::now();
+    for (unsigned i = 0; i < 65; ++i) {
+        large.back() = static_cast<char>(i);
+        { std::ofstream out(replacement, std::ios::binary); out.write(large.data(), large.size()); }
+        fs::last_write_time(replacement, stamp + std::chrono::seconds(i));
+        const auto registered = server.add(root / L"mod", "artwork/replacement.png");
+        check(!registered.empty(), "replacing artwork does not exhaust the cache budget");
+        if (i == 0) replacement_url = registered;
+        else check(registered == replacement_url, "replacement retains its stable URL");
+    }
+    if (!replacement_url.empty()) {
+        const auto [status, body] = fetch(replacement_url);
+        check(status == 200 && body == large, "replacement serves the latest registered bytes");
+    }
+    // large-1 was evicted; a reload must validate the registered file again.
+    const auto invalid_url = server.add(root / L"mod", "artwork/large-1.png");
+    { std::ofstream out(root / L"mod/artwork/large-1.png", std::ios::binary); out << "not an image"; }
+    if (!invalid_url.empty()) check(fetch(invalid_url).first == 404, "evicted artwork refuses invalid replacement bytes");
+    const auto removed_url = server.add(root / L"mod", "artwork/large-2.png");
+    fs::remove(root / L"mod/artwork/large-2.png");
+    if (!removed_url.empty()) check(fetch(removed_url).first == 404, "missing evicted artwork returns 404");
+    ec.clear();
+    fs::create_symlink(root / L"outside.png", root / L"mod/artwork/large-2.png", ec);
+    if (!ec && !removed_url.empty()) check(fetch(removed_url).first == 404, "evicted artwork refuses a new symlink target");
+    else if (ec) std::cout << "SKIP: reload symlink test needs Windows symlink privileges\n";
+    std::string oversized = bytes;
+    oversized.resize(4 * 1024 * 1024 + 1, '\0');
+    { std::ofstream out(root / L"mod/artwork/oversized.png", std::ios::binary); out.write(oversized.data(), oversized.size()); }
+    check(server.add(root / L"mod", "artwork/oversized.png").empty(), "individual images remain limited to 4 MiB");
     if (!failures) std::cout << "music artwork tests passed\n";
     return failures ? 1 : 0;
 } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

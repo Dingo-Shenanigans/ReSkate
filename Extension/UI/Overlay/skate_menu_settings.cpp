@@ -1,6 +1,8 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "skate_menu_internal.h"
 #include "Engine/Core/Profiling/profiler.h"
+#include "Extension/Music/local_music_playback.h"
+#include "Extension/Profile/local_profile_runtime.h"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +10,15 @@
 // The SETTINGS and DEVELOPER pages.
 namespace dingosdk::overlay::menu {
 void ui_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    begin_card(menu, "music-playback", "MUSIC PLAYBACK");
+    bool shuffle = dingosdk::profile_runtime::music_shuffle_enabled();
+    if (toggle_row(menu, "Shuffle playlists", "Off plays songs in playlist order. On shuffles.", shuffle,
+            dingosdk::profile_runtime::music_playback_available())) {
+        dingosdk::profile_runtime::set_music_shuffle_enabled(shuffle);
+        dingosdk::profile_runtime::set_local_preference("MusicShuffle", shuffle);
+    }
+    end_card();
+
     begin_card(menu, "on-screen", "ON SCREEN");
     bool hidden = model.debug.game_ui_hidden;
     if (toggle_row(menu, "Hide game UI", "Keep the view clear for riding and captures.", hidden,

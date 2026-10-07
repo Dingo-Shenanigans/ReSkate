@@ -1,6 +1,7 @@
 #include "overlay_internal.h"
 #include "skate_style.h"
 #include "Engine/Core/Profiling/profiler.h"
+#include "Engine/Core/Platform/path_text.h"
 #include <cstdio>
 #include <format>
 
@@ -251,7 +252,7 @@ void draw_perf_window() {
                     for (const auto& thread : report->threads)
                         ImGui::TextDisabled("  %5.1f%%  thread %u  %s", thread.cpu_percent, thread.id, thread.label.c_str());
                     if (!report->error.empty()) ImGui::TextColored(ImColor(skate::danger), "%s", report->error.c_str());
-                    const auto report_path = report->report.string(), folded_path = report->folded.string();
+                    const auto report_path = path_utf8(report->report), folded_path = path_utf8(report->folded);
                     ImGui::TextDisabled("Report: %s", report_path.c_str());
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Copy##report")) ImGui::SetClipboardText(report_path.c_str());

@@ -23,6 +23,7 @@ std::string text(const std::filesystem::path &file) {
 
 int run() {
     using namespace dingosdk::server;
+    using dingosdk::valid_server_name;
     const auto folder = std::filesystem::temp_directory_path() / "reskate_server_config_tests";
     std::filesystem::remove_all(folder);
     std::filesystem::create_directories(folder);
@@ -46,6 +47,15 @@ int run() {
           "The file's own values or the new defaults were lost");
     const auto reloaded = load_config(file);
     check(reloaded.name == "Old Server" && !reloaded.boosts && reloaded.votes.map.percent == 60, "Values lost on rewrite");
+
+    // Server names: letters, digits, spaces and - _ [ ] ( ) only.
+    check(valid_server_name("Old Server") && valid_server_name("[EU] Skate_Park-2 (24x7)") && valid_server_name("a"),
+          "A plain server name was refused");
+    check(!valid_server_name("") && !valid_server_name(std::string(65, 'a')) && !valid_server_name("Best! Server") &&
+              !valid_server_name("caf\xC3\xA9") && !valid_server_name("a.b") && !valid_server_name("<b>x</b>") &&
+              !valid_server_name(" padded") && !valid_server_name("padded ") && !valid_server_name("[]--()") &&
+              !valid_server_name("two\nlines"),
+          "A server name with other characters was accepted");
 
     // An up-to-date file is left alone.
     const auto before = std::filesystem::last_write_time(file);

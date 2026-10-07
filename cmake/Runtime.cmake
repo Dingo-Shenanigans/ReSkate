@@ -149,6 +149,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Objects/local_object_runtime.cpp
     Extension/Music/local_music_assets.cpp
     Extension/Music/local_music_safety.cpp
+    Extension/Music/local_music_playback.cpp
     Extension/Music/music_artwork.cpp
     Extension/Music/local_music_ui.cpp
     Extension/Music/local_music_shelf.cpp

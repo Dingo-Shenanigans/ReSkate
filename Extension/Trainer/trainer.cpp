@@ -5,6 +5,7 @@
 #include "trainer_session.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/physics_tuning.h"
@@ -1706,7 +1707,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             file << std::format("{}\t0x{:x}\t{}\t{:.6g}\t{:.6g}\n", e.id, e.offset,
                                 e.kind == Kind::real ? "real" : e.kind == Kind::flag ? "flag" : e.kind == Kind::curve ? "curve" :
                                 e.kind == Kind::graph ? "graph" : "int", e.stock, e.value);
-        return std::format("Wrote {} values to {}.", s.entries.size(), (directory / L"tuning-values.txt").string());
+        return std::format("Wrote {} values to {}.", s.entries.size(), path_utf8(directory / L"tuning-values.txt"));
     }
     if (v == "selftest") {
         if (s.test.step) return "The self test is already running.";

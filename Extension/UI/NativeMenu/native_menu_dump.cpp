@@ -1,6 +1,7 @@
 #include "native_menu_dump.h"
 #include "native_menu_data.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -225,7 +226,7 @@ void run_pending_ui_dump(std::uintptr_t base) noexcept {
             if (text.empty()) text = "asset " + name + " is not loaded in any domain\n";
             const auto path = dump_path("asset", GetTickCount64());
             std::ofstream(path, std::ios::trunc) << text;
-            logging::log(logging::Level::info, logging::Channel::ui, "UI dump: asset {} written to {}.", name, path.string());
+            logging::log(logging::Level::info, logging::Channel::ui, "UI dump: asset {} written to {}.", name, path_utf8(path));
             return;
         }
         std::uint32_t only_schema{};
@@ -255,7 +256,7 @@ void run_pending_ui_dump(std::uintptr_t base) noexcept {
         out << "roots " << roots << ", written " << written << ", filter " << (what.empty() ? "all" : what) << "\n"
             << text;
         logging::log(logging::Level::info, logging::Channel::ui,
-            "UI dump: {} of {} roots written to {}.", written, roots, path.string());
+            "UI dump: {} of {} roots written to {}.", written, roots, path_utf8(path));
     } catch (const std::exception& error) {
         logging::log(logging::Level::warning, logging::Channel::ui, "UI dump failed: {}.", error.what());
     }

@@ -677,6 +677,12 @@ void role_checks() {
           "A developer on every list is not shown as a developer");
     check(player_role(host, id(third), false) == Role{nametag_creator, "Creator"},
           "A content creator who is also a homie is not shown as a creator");
+    // A special tag comes before every lobby role: a Centrix player who hosts is Centrix, not Host.
+    simulated_identities.insert({id(host), L::centrix});
+    check(player_role(first, id(host), false) == Role{nametag_centrix, "Centrix"} &&
+              player_role(host, id(host), true) == Role{nametag_centrix, "Centrix"},
+          "A Centrix player who hosts is not shown as Centrix");
+    simulated_identities.erase({id(host), L::centrix});
     // A player who has turned their tag off (the Special page) is whatever they are in the lobby,
     // to everyone: their appearance carries the choice through the host. Their items are a
     // separate choice, which leaves the tag alone.

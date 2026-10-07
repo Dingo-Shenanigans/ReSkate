@@ -230,6 +230,40 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                                        const CasStore& store, const fs::path& baseRoot,
                                        const fs::path& gameRoot, MergeReport& report);
 
+// A bundle's chunk metadata is a list with one record for each of its chunks: the
+// hash of the name of the resource the chunk belongs to ("h64") and what the
+// engine needs before it streams the chunk (a texture's first mip). In the game's
+// own bundles the records are in the order of the chunks' guids, not the order
+// the chunks are listed in. A mod's copy starts from the game's list as it is and
+// has, at the place each chunk it adds or replaces is listed at, a record its
+// tool wrote: for an added chunk that is the chunk's own record, but for a
+// replaced one it has taken the place of another chunk's (and older tools left
+// its hash empty), so the game's record for that other chunk is gone from the
+// mod's list.
+struct ChunkRecord {
+    static constexpr std::size_t none = static_cast<std::size_t>(-1);
+    fb::Guid guid;
+    std::size_t copy{none};     // the list of the copy this version of the chunk came in; none when that copy has no list
+    std::size_t index{};        // where that copy lists the chunk
+    std::size_t shipped{none};  // where the game's copy lists it; none for a chunk mods add
+};
+// The list for a merged bundle, written as the game writes one: a record for each
+// of `chunks` (the bundle's chunks, as listed), in the order of their guids. A
+// chunk of the game's keeps the game's record for it, whichever copy carries it
+// (`game` is the game's list among `lists`, `shipped` the chunks the game's copy
+// lists); when the kept version is one a mod replaced it with, the first mip that
+// mod's record gives goes into it. A chunk a mod adds has that mod's record, and
+// one nothing describes gets a record that says nothing. In a bundle the game
+// does not ship, or ships without a list, every chunk is one a mod adds. When
+// every chunk is the game's own where the game lists it, the game's list comes
+// back as it is; so does one mod's, for a bundle without a list in the game that
+// is that mod's copy alone.
+// Throws when a list that is needed cannot be read.
+[[nodiscard]] std::vector<std::byte> merge_chunk_metadata(std::span<const std::vector<std::byte>> lists,
+                                                          std::span<const ChunkRecord> chunks,
+                                                          std::size_t game = ChunkRecord::none,
+                                                          std::span<const fb::Guid> shipped = {});
+
 fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         std::vector<Source>& sources, MergeReport& report,
                         const std::string& relative, ArchiveUse& used, CasStore& store,

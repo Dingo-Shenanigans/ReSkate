@@ -41,6 +41,10 @@ struct Options {
     // an entry. layout.toc's meta section repeats keys by design, so readers of
     // that file turn the rule off.
     bool unique_fields = true;
+    // How many values a file may hold: more than any the game reads whole at
+    // startup. A reader of something longer by nature (the chunk list of a
+    // level's root bundle) raises it to what its input can hold.
+    std::size_t max_entries = 32768;
 };
 
 // Throws std::runtime_error prefixed with `context`, for example "InitFS".
