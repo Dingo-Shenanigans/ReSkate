@@ -404,8 +404,9 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         send_console(menu, callbacks, "style editor close");
     };
     const float side = std::min(px(400), io.DisplaySize.x * 0.34f), bottom = px(176);
+    // No keyboard navigation: Space and the arrow keys are the editor's own shortcuts, and must not also press the focused button.
     constexpr auto fixed = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                           ImGuiWindowFlags_NoSavedSettings;
+                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs;
     const bool typing = io.WantTextInput;
 
     // The side panel: the trick and the selected keyframe.
@@ -438,7 +439,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         if (menu.styling.key >= 0) {
             section(menu, std::format("KEYFRAME {} OF {}", menu.styling.key + 1, e.times.size()).c_str());
             blend_slider(e);
-            ImGui::BeginChild("##style-editor-joints", ImVec2(0, 0));
+            ImGui::BeginChild("##style-editor-joints", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoNavInputs);
             joints(e);
             ImGui::EndChild();
         } else note("This trick has no keyframes. Add one at the playhead.");
