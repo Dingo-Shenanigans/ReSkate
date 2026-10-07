@@ -56,6 +56,13 @@ struct Decoder {
         return count == static_cast<int>(radio_frame_samples);
     }
 };
+// The game goes quiet when it is not the foreground window, and the radio with it: muted, not
+// stopped, so it is in step again the moment the game is back.
+bool game_in_front() {
+    DWORD process{};
+    GetWindowThreadProcessId(GetForegroundWindow(), &process);
+    return process == GetCurrentProcessId();
+}
 // The device side: one engine, one stereo voice, the frames it still reads.
 struct Output {
     Microsoft::WRL::ComPtr<IXAudio2> engine;
@@ -172,7 +179,7 @@ struct RadioPlayer::Impl {
                     }
                     output.collect();
                     if (output.voice) {
-                        output.voice->SetVolume(settings.volume);
+                        output.voice->SetVolume(game_in_front() ? settings.volume : 0.f);
                         // An underrun waits for the buffer to fill again instead of stuttering.
                         if (output.started && output.queued.empty()) {
                             output.voice->Stop();
