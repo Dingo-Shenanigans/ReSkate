@@ -3,6 +3,7 @@
 #include "style_internal.h"
 #include "style_layer.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -36,8 +37,10 @@ constexpr std::array<std::string_view, 33> entry_titles{
 constexpr std::string_view title_prefix = "ID_SKATEPEDIA_";
 // A part-of-the-board entry: Skatepedia shows the board alone for it.
 constexpr std::string_view parked_entry = "ID_SKATEPEDIA_DECK";
+// The way back: Skatepedia's Escape, then the settings page's and the pause menu's Back navigations. Found in a UI model dump on 2026-10-04.
+constexpr std::array<std::string_view, 3> way_back{"Escape", "Back", "ToggleMenu"};
 
-enum class Way { none, look, wait_stage, wait_closed, open, wait_open, settings, tile, wait_tile, keys };
+enum class Way { none, look, wait_stage, wait_closed, open, wait_open, settings, wait_settings, tile, wait_tile };
 enum class Seek { none, find, set, learn };
 
 struct State {
@@ -49,15 +52,16 @@ struct State {
     int scans{};       // attempts started: the scan costs a core for a long time
     WORD key_down{};   // a key held since the last tick, to release
     Way way{};
-    std::uint64_t way_at{}, way_deadline{};
-    int way_keys{};
+    std::uint64_t way_at{}, way_deadline{}, way_started{};
+    int way_retries{}; // Skatepedia's navigation sent again
     Seek seek{};
     std::uint8_t seek_trick{};
     int seek_presses{}, seek_tabs{}, seek_retries{};
     std::uint64_t seek_at{}, seek_deadline{};
     bool nudged{}; // the highlight was already moved once this visit
     std::atomic<int> leave{};
-    std::uint64_t leave_at{};
+    bool leave_pressed{}, leave_told{}, leave_retried{};
+    std::uint64_t leave_wait{}; // the fallback time of the current step
     std::function<void()> then;
     std::uint64_t then_deadline{};
 };
@@ -150,6 +154,44 @@ std::string put_entry(std::uintptr_t base, std::string_view wanted, std::uint8_t
     } catch (const std::exception &error) {
         return error.what();
     }
+}
+// The menu's current navigation as a name hash, or 0.
+std::uint32_t current_navigation(std::uintptr_t base) noexcept {
+    try {
+        const auto manager = model_manager(base);
+        if (!manager) return 0;
+        const menu_data::Context context(base, manager);
+        game::ModelWriteLock lock(manager);
+        for (const auto &root : context.roots({model::navigation_queue}))
+            return menu_data::read<std::uint32_t>(context.address(context.field(root.model, model::navigation_current)));
+    } catch (...) {}
+    return 0;
+}
+// True while Skatepedia's page has its entry models.
+bool skatepedia_open(std::uintptr_t base) noexcept {
+    try {
+        const auto manager = model_manager(base);
+        if (!manager) return false;
+        const menu_data::Context context(base, manager);
+        game::ModelWriteLock lock(manager);
+        return !context.roots({model::skatepedia_entry}).empty();
+    } catch (...) {}
+    return false;
+}
+// True while the menu has a queued navigation that it has not run yet.
+bool navigation_pending(std::uintptr_t base) noexcept {
+    try {
+        const auto manager = model_manager(base);
+        if (!manager) return false;
+        const menu_data::Context context(base, manager);
+        game::ModelWriteLock lock(manager);
+        for (const auto &root : context.roots({model::navigation_queue})) {
+            unsigned count{}, stride{};
+            (void)context.array(context.field(root.model, model::navigation_queued), 4, count, stride);
+            return count > 0;
+        }
+    } catch (...) {}
+    return false;
 }
 // Queues a named navigation as the menu's own buttons do.
 bool queue_navigation(std::uintptr_t base, std::string_view name) noexcept {
@@ -259,53 +301,53 @@ void step_way(std::uintptr_t base, State &s, std::uint64_t now) {
     const auto next = [&](Way way, std::uint64_t wait, std::uint64_t deadline = 0) {
         s.way = way;
         s.way_at = now + wait;
+        s.way_started = now;
         s.way_deadline = now + deadline;
     };
     const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
+    // Each step waits until the game has run the queued navigation. The fallback time applies only when the queue does not empty.
+    const bool settled = !navigation_pending(base) || now > s.way_started + 1500;
     if (style_layer::stage_present()) s.way = Way::none;
     else if (!s.navigation_type.load(std::memory_order_acquire)) {
         if (!s.scanning.load() && now > s.way_deadline) fail(s, "The editor could not open: the game's menu was not found");
     } else if (now < s.way_at) {
     } else if (s.way == Way::look) {
-        // A menu is open: Skatepedia between two loops, or a screen that must close first.
-        if (in_menu) next(Way::wait_stage, 0, 1500);
-        else next(Way::open, 0);
+        // In Skatepedia between two loops, its stage comes back. Another menu closes first.
+        if (in_menu && current_navigation(base) == game::native_name_hash("Settings_Skatepedia")) next(Way::wait_stage, 0, 1500);
+        else if (in_menu) {
+            (void)navigate(base, s, "ToggleMenu");
+            next(Way::wait_closed, 0, 4000);
+        } else next(Way::open, 0);
     } else if (s.way == Way::wait_stage) {
         if (now > s.way_deadline) {
             (void)navigate(base, s, "ToggleMenu");
-            next(Way::wait_closed, 300, 4000);
+            next(Way::wait_closed, 0, 4000);
         }
     } else if (s.way == Way::wait_closed) {
-        if (!in_menu) next(Way::open, 600);
+        if (!in_menu && settled) next(Way::open, 0);
         else if (now > s.way_deadline) fail(s, "The editor could not open: the game's menu did not close");
     } else if (s.way == Way::open) {
         (void)navigate(base, s, "ToggleMenu");
-        next(Way::wait_open, 300, 4000);
+        next(Way::wait_open, 0, 4000);
     } else if (s.way == Way::wait_open) {
-        if (in_menu) next(Way::settings, 800);
+        if (in_menu && settled) next(Way::settings, 0);
         else if (now > s.way_deadline) fail(s, "The editor could not open: the pause menu did not open");
     } else if (s.way == Way::settings) {
         if (!navigate(base, s, "GoToSettings")) return fail(s, "The editor could not open: the settings page did not open");
-        next(Way::tile, 1200);
+        next(Way::wait_settings, 0);
+    } else if (s.way == Way::wait_settings) {
+        if (settled) next(Way::tile, 0);
     } else if (s.way == Way::tile) {
-        // The settings page's Skatepedia tile sends this navigation when it is selected.
-        // The first open of a session loads the stage for up to 15 s, so the key presses wait that long.
-        if (navigate(base, s, "Settings_Skatepedia")) next(Way::wait_tile, 0, 15000);
-        else next(Way::wait_tile, 0);
+        // The settings page's Skatepedia tile sends this navigation. The first open of a session loads the stage for up to 15 s.
+        (void)navigate(base, s, "Settings_Skatepedia");
+        next(Way::wait_tile, 0, 15000);
     } else if (s.way == Way::wait_tile) {
+        // The stage's appearance ends this step. Without it, the navigation is sent one more time.
         if (now <= s.way_deadline) return;
-        // Skatepedia's stage did not appear: select its tile with key presses. It is the third tile down.
-        logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the Skatepedia navigation did not open it. Key presses are used.");
-        s.way_keys = 2;
-        next(Way::keys, 0);
-    } else if (s.way == Way::keys) {
-        const bool last = s.way_keys-- <= 0;
-        if (!press_key(s, last ? WORD{VK_SPACE} : WORD{'S'})) return fail(s, "The editor could not open: the game window does not have the keyboard");
-        if (!last) next(Way::keys, 350);
-        else {
-            s.way = Way::none;
-            s.then_deadline = now + 20000;
-        }
+        if (s.way_retries++ < 1) {
+            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: Skatepedia did not open, so its navigation is sent again.");
+            next(Way::tile, 0);
+        } else fail(s, "The editor could not open: Skatepedia did not open");
     }
 }
 // In Skatepedia: finds the highlighted entry's model, then makes its skater perform the wanted trick.
@@ -402,13 +444,15 @@ void open(std::function<void()> then) {
     s.then_deadline = now + 60000;
     if (s.way == Way::none) {
         s.way = Way::look;
+        s.way_started = now;
+        s.way_retries = 0;
         s.way_at = now + 400;
         s.way_deadline = now + 30000;
     }
 }
 void leave() noexcept {
-    state().leave.store(3, std::memory_order_relaxed);
-    overlay::cover("Back to the world", 1500);
+    state().leave.store(static_cast<int>(way_back.size()), std::memory_order_relaxed);
+    overlay::cover("Back to the world", 3000);
 }
 void fetch(std::uint8_t trick) {
     auto &s = state();
@@ -442,22 +486,47 @@ void tick(std::uintptr_t base, bool ready) noexcept {
                 start_scan(s);
             }
             if (s.leave.load(std::memory_order_relaxed)) {
-                if (now < s.leave_at) return;
-                // The pause button's request. It repeats while a menu is still open.
-                if (!multiplayer::sample_game_ui_state(base).in_menu) s.leave.store(0, std::memory_order_relaxed);
-                else {
-                    // Skatepedia gets its highlighted entry back first.
-                    if (current_entry && !written_name.empty()) (void)put_entry(base, {}, 0);
-                    written_name.clear();
-                    style_editor::expect(0);
-                    (void)navigate(base, s, "ToggleMenu");
-                    s.leave.fetch_sub(1, std::memory_order_relaxed);
-                    s.leave_at = now + 1500;
-                    s.way = Way::none;
-                    s.seek = Seek::none;
-                    s.seek_trick = 0;
-                    s.then = nullptr;
+                // Skatepedia gets the Escape key: only its Back button gives the skater's board sound back.
+                const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
+                const auto done = [&] {
+                    s.leave.store(0, std::memory_order_relaxed);
+                    s.leave_pressed = s.leave_told = s.leave_retried = false;
+                };
+                const int left = std::clamp(s.leave.load(std::memory_order_relaxed), 0, static_cast<int>(way_back.size()));
+                const auto step = way_back.size() - static_cast<std::size_t>(left); // the next step
+                if (s.leave_pressed) {
+                    // Each step waits for its event. The time is the fallback.
+                    const bool ran = step == 1 ? !skatepedia_open(base) : !navigation_pending(base);
+                    if (in_menu && !ran && now < s.leave_wait) return;
+                    s.leave_pressed = false;
+                    // A lost Escape: Skatepedia gets one more.
+                    if (step == 1 && in_menu && !ran && !std::exchange(s.leave_retried, true)) s.leave.fetch_add(1, std::memory_order_relaxed);
+                    return;
                 }
+                if (!in_menu || left == 0) return done();
+                // Skatepedia gets its highlighted entry back first.
+                if (current_entry && !written_name.empty()) (void)put_entry(base, {}, 0);
+                written_name.clear();
+                style_editor::expect(0);
+                s.way = Way::none;
+                s.seek = Seek::none;
+                s.seek_trick = 0;
+                s.then = nullptr;
+                if (step > 0) {
+                    (void)navigate(base, s, way_back[step]);
+                    s.leave_pressed = true;
+                } else if (skatepedia_open(base)) {
+                    // With Escape as a ReSkate key, the player presses Back. The press also waits until the game has the keyboard.
+                    if (const auto keys = launcher::overlay_keys(); keys.menu == VK_ESCAPE || keys.console == VK_ESCAPE) {
+                        if (!std::exchange(s.leave_told, true))
+                            overlay::notify(overlay::NoticeLevel::info, "Style editor", "Press Back to leave Skatepedia.");
+                        return;
+                    }
+                    if (!press_key(s, VK_ESCAPE)) return;
+                    s.leave_pressed = true;
+                }
+                s.leave.fetch_sub(1, std::memory_order_relaxed);
+                s.leave_wait = now + 2000;
                 return;
             }
             if (s.then || s.way != Way::none || s.seek != Seek::none) style_layer::watch_stage();
