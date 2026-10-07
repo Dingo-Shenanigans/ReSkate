@@ -81,6 +81,7 @@ void request_hide() { calls.editor = "hide"; }
 void request_hold(float time) noexcept { calls.editor = "hold " + std::to_string(time); }
 void request_play(bool play) noexcept { calls.editor = play ? "play" : "pause"; }
 void request_step(int frames) noexcept { calls.editor = "step " + std::to_string(frames); }
+void request_speed(float speed) noexcept { calls.editor = "speed " + std::to_string(speed); }
 void request_orbit(float yaw, float pitch, float distance, float height) noexcept { calls.editor = std::to_string(yaw + pitch + distance + height); }
 std::string status() { return "takes"; }
 } // namespace dingosdk::style_editor
@@ -172,6 +173,8 @@ int main() {
         check(run("style editor hide") && calls.editor == "hide" && run("style editor takes") && printed == "takes",
               "style editor hide removes the stand-in, and takes lists the clips");
         check(run("style editor step -3") && calls.editor == "step -3", "style editor step moves by frames");
+        check(run("style editor speed 0.25") && calls.editor.starts_with("speed 0.25"), "style editor speed sets the playback speed");
+        check(!run("style editor speed 2") && !run("style editor speed 0"), "the speed is a fraction of the recorded speed");
         check(run("style 0") && !calls.enabled && run("style editor open") && calls.editor == "open" && calls.debug == "opened" && calls.enabled,
               "style editor open switches the layer on and opens the editor screen");
         check(run("style preset new street") && calls.editor == "new street" && run("style preset folder") && calls.editor == "folder " &&

@@ -88,6 +88,8 @@ struct SkateMenu {
         double blend_until{}, blend_sent{};
         bool blend_drag{};   // the selected keyframe's blend out is dragged on the timeline
         int speed{};         // index into the playback speeds
+        std::optional<float> hold; // a playhead move not yet sent
+        double controls_sent{};
     } styling;
     bool loose_files_settings_loaded{}, loose_files_saved{true};
     bool custom_scripts_scanned{};

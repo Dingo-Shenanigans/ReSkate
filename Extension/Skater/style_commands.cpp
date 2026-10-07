@@ -180,6 +180,14 @@ void register_style_commands(Commands &registry) {
         style_editor::request_step(static_cast<int>(std::get<std::int64_t>(args[0])));
     };
     registry.add(std::move(step));
+    auto fraction = argument("speed", Type::number);
+    fraction.minimum = 0.1;
+    fraction.maximum = 1;
+    auto speed = action("style editor speed", "Play the shown clip at a fraction of its recorded speed (0.1 to 1)", Group::gameplay, {fraction});
+    speed.run = [](const Model &, const Values &args, const Output &) {
+        style_editor::request_speed(static_cast<float>(std::get<double>(args[0])));
+    };
+    registry.add(std::move(speed));
     auto turn = argument("amount", Type::number);
     turn.minimum = -20;
     turn.maximum = 20;

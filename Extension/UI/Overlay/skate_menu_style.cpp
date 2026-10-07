@@ -20,13 +20,6 @@ constexpr ImU32 track_colour = IM_COL32(38, 40, 46, 255), track_alternate = IM_C
                 tail_colour = IM_COL32(236, 232, 220, 80), default_tail_colour = IM_COL32(236, 232, 220, 36),
                 cut_tail_colour = IM_COL32(255, 128, 72, 120);
 std::atomic<StylePlayheadFeed> playhead_feed{};
-StyleControls controls_value;
-std::atomic<const StyleControls*> controls{};
-const StyleControls& editor_controls() {
-    static const StyleControls none;
-    const auto* set = controls.load(std::memory_order_acquire);
-    return set ? *set : none;
-}
 // Queues a command without a reply line, because sliders and drags send many commands.
 void quiet(const CallbacksV3& callbacks, const std::string& command) {
     if (!callbacks.queue_console_command) return;
@@ -51,10 +44,10 @@ struct Editing {
     style::Pace pace;              // the shown clip's
     double now{};
     bool replaying{}, standing_in{};
-    // Moves the playhead, and the stand-in when it shows this trick.
+    // Moves the playhead, and the stand-in when it shows this trick. send_controls sends the move.
     void hold(float time) const {
         menu.styling.time = time;
-        if (const auto set = editor_controls().hold; standing_in && set) set(time);
+        if (standing_in) menu.styling.hold = time;
     }
     [[nodiscard]] float playhead() const { return replaying ? replay.time : menu.styling.time; }
 };
@@ -91,6 +84,30 @@ Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     e.pace = model.style.pace;
     if (e.replaying) menu.styling.time = e.replay.time;
     return e;
+}
+// Sends the newest playhead move and the camera turn gathered since the last send.
+// A drag changes them every frame, so they go at most every 40 ms: the game runs one command for each tick.
+void send_controls(Editing& e, bool now) {
+    auto& s = e.menu.styling;
+    if (!now && e.now < s.controls_sent + 0.04) return;
+    bool sent{};
+    if (const auto time = std::exchange(s.hold, std::nullopt)) {
+        quiet(e.callbacks, std::format("style editor hold {:.4f}", std::clamp(*time, 0.0f, style::trick_end)));
+        sent = true;
+    }
+    if (s.orbit != std::array<float, 4>{}) {
+        const auto [yaw, pitch, distance, height] = s.orbit;
+        const auto limit = [](float value) { return std::clamp(value, -20.0f, 20.0f); };
+        quiet(e.callbacks, std::format("style editor orbit {:.4f} {:.4f} {:.4f} {:.4f}", limit(yaw), limit(pitch), limit(distance), limit(height)));
+        s.orbit = {};
+        sent = true;
+    }
+    if (sent) s.controls_sent = e.now;
+}
+// Sends a playback command after the moves before it, so the game runs them in order.
+void send_now(Editing& e, const std::string& command) {
+    send_controls(e, true);
+    quiet(e.callbacks, command);
 }
 // Where a keyframe's blend out ends on the timeline.
 struct BlendOut {
@@ -320,10 +337,6 @@ void joints(Editing& e) {
 }
 }
 void set_style_playhead_feed(StylePlayheadFeed feed) noexcept { playhead_feed.store(feed); }
-void set_style_controls(const StyleControls& set) noexcept {
-    controls_value = set;
-    controls.store(&controls_value, std::memory_order_release);
-}
 bool style_editor_wanted() noexcept {
     const auto feed = playhead_feed.load();
     return feed && feed().wanted;
@@ -454,12 +467,8 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
                 if (std::abs(e.times[static_cast<std::size_t>(i)] - at) < 0.001f) menu.styling.key = i;
             e.hold(at);
         };
-        const auto toggle = [&] {
-            if (const auto play = editor_controls().play) play(!e.replay.playing);
-        };
-        const auto step = [&](int frames) {
-            if (const auto set = editor_controls().step) set(frames);
-        };
+        const auto toggle = [&] { send_now(e, e.replay.playing ? "style editor pause" : "style editor play"); };
+        const auto step = [&](int frames) { send_now(e, std::format("style editor step {}", frames)); };
         ImGui::BeginDisabled(!e.standing_in);
         if (ImGui::Button("|<")) e.hold(0);
         ImGui::SameLine();
@@ -482,7 +491,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
             for (int i = 0; i < static_cast<int>(speeds.size()); ++i)
                 if (ImGui::Selectable(speeds[static_cast<std::size_t>(i)].first, i == menu.styling.speed)) {
                     menu.styling.speed = i;
-                    if (const auto set = editor_controls().speed) set(speeds[static_cast<std::size_t>(i)].second);
+                    send_now(e, std::format("style editor speed {}", speeds[static_cast<std::size_t>(i)].second));
                 }
             ImGui::EndCombo();
         }
@@ -523,10 +532,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         else if (dragging) menu.styling.orbit[1] += io.MouseDelta.y * 0.006f;
         menu.styling.orbit[2] += zoom;
     }
-    if (const auto orbit = editor_controls().orbit; orbit && menu.styling.orbit != std::array<float, 4>{}) {
-        orbit(menu.styling.orbit[0], menu.styling.orbit[1], menu.styling.orbit[2], menu.styling.orbit[3]);
-        menu.styling.orbit = {};
-    }
+    send_controls(e, false);
     if (exit_requested || (!typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) close();
     ImGui::PopStyleColor(colours);
     ImGui::PopStyleVar(7);
