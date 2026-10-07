@@ -78,6 +78,7 @@ struct SkateMenu {
         std::string asked; // the trick that the editor last asked to show
         std::array<char, 41> preset_name{}; // typed for a new preset
         double delete_until{};              // a first click on delete counts until then
+        double discard_until{};             // the same for discard
         int pending_key = -1;               // a new keyframe, selected when the game has it
         std::array<float, 4> orbit{};       // camera turn, zoom and lift not yet sent
         style::Target edit_target;
@@ -90,6 +91,11 @@ struct SkateMenu {
         int speed{};         // index into the playback speeds
         std::optional<float> hold; // a playhead move not yet sent
         double controls_sent{};
+        bool grouping{};   // a drag's undo group is open
+        bool popup_open{}; // a popup was open in the last frame
+        int leave{};       // the action that waits for the leave prompt: 0 none, 1 close, 2 trick, 3 preset
+        int leave_trick{};
+        std::string leave_command;
     } styling;
     bool loose_files_settings_loaded{}, loose_files_saved{true};
     bool custom_scripts_scanned{};

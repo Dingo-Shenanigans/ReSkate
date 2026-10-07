@@ -22,6 +22,18 @@ bool request_key_blend_out(std::uint8_t trick, std::uint8_t key, float ms, std::
 void request_clear(std::optional<style::Target> target = std::nullopt);
 // Discards unsaved state and reads the saved style again.
 void request_reload();
+// Puts the style back to before the last edit, or does that edit again. False if there is none.
+bool request_undo();
+bool request_redo();
+// The edits between an open and a close are one undo step, such as one drag.
+void request_group(bool open);
+// Forgets the edits to undo and redo. The editor does this when it leaves a trick.
+void request_history_clear();
+// Writes the preset now.
+void request_save();
+// On: each edit saves after 750 ms. Off: edits wait for request_save.
+void request_auto_save(bool on);
+[[nodiscard]] bool auto_saving() noexcept;
 // Thread-safe copy for the menus.
 [[nodiscard]] style::StyleModel model();
 // Shows the pose of one flip trick at a timeline time, or in a loop. 0 stops the preview.

@@ -65,8 +65,12 @@ struct Settings {
     std::shared_ptr<const Skeleton> skeleton;
     std::string issue; // why the layer is not applied
     bool skeleton_started{}, hooks_tried{}, hooks{};
-    // The style file is read one time. It is written 750 ms after each change.
+    // The style file is read one time. With auto save, it is written 750 ms after each change.
     bool loaded{}, saved_enabled{}, saved_share{true};
+    bool auto_save{true}, saved_auto_save{true};
+    bool unsaved{}; // without auto save: the style differs from the file
+    style::Style on_disk; // the style as last read or saved
+    style::History history;
     std::uint64_t save_at{};
     std::string file_issue;
     bool keep_file{}; // the saved style did not load and has no copy
@@ -553,6 +557,7 @@ void load(Settings &s) {
     s.loaded = true;
     s.saved_enabled = s.enabled = profile_runtime::local_preference("Style.Enabled").value_or(false);
     s.saved_share = s.share = profile_runtime::local_preference("Style.Share").value_or(true);
+    s.saved_auto_save = s.auto_save = profile_runtime::local_preference("Style.AutoSave").value_or(true);
     live().share.store(s.share, std::memory_order_release);
     std::string remembered;
     std::ifstream(presets_folder() / L"in-use.txt", std::ios::binary) >> remembered;
@@ -561,8 +566,10 @@ void load(Settings &s) {
     read_style(s);
 }
 void read_style(Settings &s) {
-    s.style = {};
+    s.style = s.on_disk = {};
     s.dirty = true;
+    s.unsaved = false;
+    s.history.clear();
     s.keep_file = false;
     s.file_issue.clear();
     s.presets_at = 0;
@@ -573,7 +580,7 @@ void read_style(Settings &s) {
         if (std::filesystem::file_size(path, error) > style::maximum_style_bytes || error) throw std::runtime_error("the style file is too large");
         std::ifstream stream(path, std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-        s.style = style::decode_style(text);
+        s.style = s.on_disk = style::decode_style(text);
         s.dirty = true;
     } catch (const std::exception &failure) {
         s.file_issue = failure.what();
@@ -614,15 +621,24 @@ void save(Settings &s) {
         if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
             throw std::runtime_error("could not replace the style file");
         s.file_issue.clear();
+        s.on_disk = s.style;
+        s.unsaved = false;
     } catch (const std::exception &failure) {
         s.file_issue = failure.what();
         logging::log(logging::Level::warning, logging::Channel::skater, "Style: not saved: {}.", s.file_issue);
     }
 }
-// The change shows immediately. The save follows 750 ms later.
-void changed(Settings &s) {
+// The change shows immediately. With auto save, the save follows 750 ms later.
+void mark(Settings &s) {
     s.dirty = true;
-    s.save_at = GetTickCount64() + 750;
+    if (s.auto_save) s.save_at = GetTickCount64() + 750;
+    else s.unsaved = s.style != s.on_disk;
+}
+// `before` is the style before the edit named `what`. An edit that changes nothing makes no undo step.
+void changed(Settings &s, const style::Style &before, std::string what) {
+    if (s.style == before) return;
+    s.history.record(before, std::move(what));
+    mark(s);
 }
 } // namespace
 void request_enabled(bool enabled) {
@@ -654,15 +670,17 @@ bool request_joint(style::Target target, std::string_view joint, float x, float 
         error = "That trick does not have that keyframe.";
         return false;
     }
+    const auto before = s.style;
     const std::pair key{target, std::string(*known)};
     if (x == 0 && y == 0 && z == 0) s.style.rotations.erase(key);
     else s.style.rotations[key] = {x, y, z};
-    changed(s);
+    changed(s, before, "change " + std::string(*known));
     return true;
 }
 void request_clear(std::optional<style::Target> target) {
     auto &s = settings();
     std::lock_guard lock(s.mutex);
+    const auto before = s.style;
     if (target) {
         std::erase_if(s.style.rotations, [&](const auto &entry) {
             return entry.first.first.trick == target->trick && entry.first.first.id == target->id;
@@ -672,7 +690,7 @@ void request_clear(std::optional<style::Target> target) {
             std::erase_if(s.style.blend_outs, [&](const auto &entry) { return entry.first.id == target->id; });
         }
     } else s.style = {};
-    changed(s);
+    changed(s, before, target && target->trick ? "reset trick" : "reset");
 }
 namespace {
 bool valid_trick(std::uint8_t trick) noexcept { return trick >= 1 && trick < style::flip_trick_names.size(); }
@@ -686,6 +704,7 @@ int request_key_add(std::uint8_t trick, float time, std::string &error) {
         error = "That trick cannot have more keyframes.";
         return -1;
     }
+    const auto before_add = s.style;
     time = on_timeline(time);
     // The new keyframe starts as the pose shown at that time, so the addition changes nothing on screen.
     int before = -1, after = -1;
@@ -716,7 +735,7 @@ int request_key_add(std::uint8_t trick, float time, std::string &error) {
     }
     times.push_back(time);
     s.style.times[trick] = std::move(times);
-    changed(s);
+    changed(s, before_add, "add keyframe");
     return static_cast<int>(s.style.times[trick].size()) - 1;
 }
 bool request_key_move(std::uint8_t trick, std::uint8_t key, float time, std::string &error) {
@@ -727,9 +746,10 @@ bool request_key_move(std::uint8_t trick, std::uint8_t key, float time, std::str
         error = "That trick does not have that keyframe.";
         return false;
     }
+    const auto before = s.style;
     times[key] = on_timeline(time);
     s.style.times[trick] = std::move(times);
-    changed(s);
+    changed(s, before, "move keyframe");
     return true;
 }
 bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error) {
@@ -740,6 +760,7 @@ bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error
         error = "That trick does not have that keyframe.";
         return false;
     }
+    const auto before = s.style;
     times.erase(times.begin() + key);
     s.style.times[trick] = std::move(times);
     // Later keyframes and their rotations move down one number.
@@ -763,7 +784,7 @@ bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error
         blends[target] = ms;
     }
     s.style.blend_outs = std::move(blends);
-    changed(s);
+    changed(s, before, "delete keyframe");
     return true;
 }
 bool request_key_blend_out(std::uint8_t trick, std::uint8_t key, float ms, std::string &error) {
@@ -773,10 +794,11 @@ bool request_key_blend_out(std::uint8_t trick, std::uint8_t key, float ms, std::
         error = "That trick does not have that keyframe.";
         return false;
     }
+    const auto before = s.style;
     const style::Target target{true, trick, key};
     if (std::isfinite(ms) && ms > 0) s.style.blend_outs[target] = std::clamp(ms, style::min_blend_out_ms, style::max_blend_out_ms);
     else s.style.blend_outs.erase(target);
-    changed(s);
+    changed(s, before, "blend out");
     return true;
 }
 void request_reload() {
@@ -784,6 +806,46 @@ void request_reload() {
     std::lock_guard lock(s.mutex);
     s.save_at = 0;
     read_style(s);
+}
+namespace {
+bool travel(bool back) {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    auto style = back ? s.history.undo(s.style) : s.history.redo(s.style);
+    if (!style) return false;
+    s.style = std::move(*style);
+    mark(s);
+    return true;
+}
+} // namespace
+bool request_undo() { return travel(true); }
+bool request_redo() { return travel(false); }
+void request_group(bool open) {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    s.history.group(open);
+}
+void request_history_clear() {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    s.history.clear();
+}
+void request_save() {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    if (s.loaded) save(s);
+}
+void request_auto_save(bool on) {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    s.auto_save = on;
+    // Edits that waited for a save are saved now.
+    if (on && s.unsaved) s.save_at = GetTickCount64() + 750;
+}
+bool auto_saving() noexcept {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    return s.auto_save;
 }
 bool request_preset(std::string_view action, std::string_view name, std::string &error) {
     if (action == "folder") {
@@ -807,7 +869,12 @@ bool request_preset(std::string_view action, std::string_view name, std::string 
         error = exists ? "A preset of that name exists." : "There is no preset of that name.";
         return false;
     }
-    // Edits not yet written go to the preset they were made in.
+    // Without auto save, a switch away from unsaved edits waits until they are saved or discarded. A copy takes them along.
+    if (s.unsaved && (action == "load" || action == "new" || (action == "delete" && preset == s.preset))) {
+        error = "The preset has unsaved changes. Save or discard them first.";
+        return false;
+    }
+    // With auto save, edits not yet written go to the preset they were made in.
     if (s.save_at) save(s);
     if (action == "load") {
         s.preset = preset;
@@ -817,6 +884,7 @@ bool request_preset(std::string_view action, std::string_view name, std::string 
         s.preset = preset;
         s.keep_file = false;
         s.dirty = true;
+        s.history.clear();
         save(s);
     } else if (action == "delete") {
         std::filesystem::remove(style_path(preset), issue);
@@ -845,7 +913,12 @@ style::StyleModel model() {
         std::lock_guard lock(s.mutex);
         result.enabled = s.enabled;
         result.share = s.share;
-        result.saved = !s.save_at && s.file_issue.empty();
+        result.saved = !s.save_at && !s.unsaved && s.file_issue.empty();
+        result.auto_save = s.auto_save;
+        result.unsaved = s.unsaved;
+        result.save_issue = s.file_issue;
+        if (const auto *name = s.history.undo_name()) result.undo_name = *name;
+        if (const auto *name = s.history.redo_name()) result.redo_name = *name;
         for (const auto &[key, degrees] : s.style.rotations) {
             const auto joint = std::ranges::find(style::editable_joints, std::string_view(key.second));
             if (joint != style::editable_joints.end())
@@ -987,6 +1060,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool menu_open
             if (s.save_at && GetTickCount64() >= s.save_at) save(s);
             if (s.enabled != s.saved_enabled) profile_runtime::set_local_preference("Style.Enabled", s.saved_enabled = s.enabled);
             if (s.share != s.saved_share) profile_runtime::set_local_preference("Style.Share", s.saved_share = s.share);
+            if (s.auto_save != s.saved_auto_save) profile_runtime::set_local_preference("Style.AutoSave", s.saved_auto_save = s.auto_save);
             // The listener continues until it has restored the game's rotations, then stops.
             if (!s.enabled) {
                 l.active.store(false, std::memory_order_release);

@@ -137,6 +137,31 @@ void register_style_commands(Commands &registry) {
     clear = action("style reload", "Read the preset in use again from its file", Group::gameplay);
     clear.run = [](const Model &, const Values &, const Output &) { style_layer::request_reload(); };
     registry.add(std::move(clear));
+    auto undo = action("style undo", "Put the style back to before the last edit", Group::gameplay);
+    undo.run = [](const Model &, const Values &, const Output &out) {
+        if (!style_layer::request_undo()) out("Nothing to undo.");
+    };
+    registry.add(std::move(undo));
+    auto redo = action("style redo", "Do the last undone edit again", Group::gameplay);
+    redo.run = [](const Model &, const Values &, const Output &out) {
+        if (!style_layer::request_redo()) out("Nothing to redo.");
+    };
+    registry.add(std::move(redo));
+    auto bound = argument("begin|end");
+    bound.choices = {"begin", "end"};
+    auto group = action("style group", "Make the edits between begin and end one undo step, such as one drag", Group::gameplay, {bound});
+    group.run = [](const Model &, const Values &args, const Output &) { style_layer::request_group(std::get<std::string>(args[0]) == "begin"); };
+    registry.add(std::move(group));
+    auto history = action("style history clear", "Forget the edits to undo and redo", Group::gameplay);
+    history.run = [](const Model &, const Values &, const Output &) { style_layer::request_history_clear(); };
+    registry.add(std::move(history));
+    auto save = action("style save", "Write the preset in use now", Group::gameplay);
+    save.run = [](const Model &, const Values &, const Output &) { style_layer::request_save(); };
+    registry.add(std::move(save));
+    auto auto_save = on_off("style autosave", "Save the preset after each edit (1), or only when you save it (0)", style_layer::request_auto_save,
+                            style_layer::auto_saving);
+    auto_save.reset = [](const Model &, const Output &) { style_layer::request_auto_save(true); };
+    registry.add(std::move(auto_save));
     auto clip = argument("trick", Type::text, true);
     clip.choices.assign(style::flip_trick_names.begin() + 1, style::flip_trick_names.end());
     // No trick gives 0, which clears the stand-in.
@@ -207,6 +232,8 @@ void register_style_commands(Commands &registry) {
         if (m.multiplayer.active && !style_layer::session_test())
             return out("Leave the multiplayer session first. The style editor is not tested in a session yet (to test it: style editor session 1).");
         if (!m.style.enabled) style_layer::request_enabled(true);
+        // A close by another path, such as a level load, does not clear the history: an open starts it again.
+        style_layer::request_history_clear();
         style_stage::open([] {
             style_editor::request_open();
             request_debug(overlay::DebugAction::set_style_editor, true);
@@ -218,6 +245,7 @@ void register_style_commands(Commands &registry) {
     close.run = [](const Model &, const Values &, const Output &) {
         request_debug(overlay::DebugAction::set_style_editor, false);
         style_editor::request_hide();
+        style_layer::request_history_clear();
     };
     registry.add(std::move(close));
     auto takes = action("style editor takes", "List the saved clips and the state of the stand-in", Group::gameplay);

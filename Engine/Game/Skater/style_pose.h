@@ -141,6 +141,46 @@ struct Style {
     }
 };
 
+// The edits to undo and redo. In a group, such as one drag, only the first edit makes a step.
+class History {
+public:
+    static constexpr std::size_t depth = 100;
+    // `before` is the style before the edit named `what`.
+    void record(const Style &before, std::string what) {
+        if (grouping_ && grouped_) return;
+        undo_.push_back({before, std::move(what)});
+        if (undo_.size() > depth) undo_.pop_front();
+        redo_.clear();
+        grouped_ = grouping_;
+    }
+    void group(bool open) noexcept { grouping_ = open, grouped_ = false; }
+    // The style to show instead of `current`, or nothing.
+    [[nodiscard]] std::optional<Style> undo(const Style &current) { return step(undo_, redo_, current); }
+    [[nodiscard]] std::optional<Style> redo(const Style &current) { return step(redo_, undo_, current); }
+    [[nodiscard]] const std::string *undo_name() const noexcept { return undo_.empty() ? nullptr : &undo_.back().what; }
+    [[nodiscard]] const std::string *redo_name() const noexcept { return redo_.empty() ? nullptr : &redo_.back().what; }
+    void clear() noexcept {
+        undo_.clear(), redo_.clear();
+        grouping_ = grouped_ = false;
+    }
+
+private:
+    struct Step {
+        Style style;
+        std::string what;
+    };
+    std::optional<Style> step(std::deque<Step> &from, std::deque<Step> &to, const Style &current) {
+        grouping_ = grouped_ = false;
+        if (from.empty()) return std::nullopt;
+        auto taken = std::move(from.back());
+        from.pop_back();
+        to.push_back({current, taken.what});
+        return std::move(taken.style);
+    }
+    std::deque<Step> undo_, redo_;
+    bool grouping_{}, grouped_{};
+};
+
 // What the menus show of the style layer.
 struct StyleRotation {
     Target target;
@@ -150,6 +190,9 @@ struct StyleRotation {
 };
 struct StyleModel {
     bool enabled{}, share{true}, saved{true};
+    bool auto_save{true}, unsaved{};  // unsaved: without auto save, edits that are not in the file
+    std::string save_issue;           // why the preset could not be read or saved. Empty: no problem
+    std::string undo_name, redo_name; // the edit that undo or redo changes. Empty: none
     std::uint8_t preview{}; // the previewed flip trick, or 0
     float preview_time{};
     bool preview_playing{};

@@ -218,6 +218,36 @@ int main() {
     check(!preset_name("CON") && !preset_name("nul") && !preset_name("Com1") && !preset_name("LPT9") && preset_name("console") && preset_name("com10"),
           "and not a Windows device name");
     check(same_text("Street", "street") && !same_text("street", "streets"), "two names that differ only in case name the same file");
+    // History: each edit is one step to undo and redo. A group, such as one drag, is one step.
+    Style one, two, three;
+    two.times[2] = {1.0f};
+    three.times[2] = {1.5f};
+    History history;
+    check(!history.undo(one) && !history.redo(one), "an empty history changes nothing");
+    history.record(one, "add keyframe");
+    history.record(two, "move keyframe");
+    check(history.undo_name() && *history.undo_name() == "move keyframe", "the step to undo has the edit's name");
+    const auto back = history.undo(three);
+    check(back && *back == two && history.redo_name() && *history.redo_name() == "move keyframe", "undo gives the style before the last edit");
+    check(history.redo(two) == three, "redo gives it back");
+    (void)history.undo(three);
+    history.record(two, "delete keyframe");
+    check(!history.redo(one), "a new edit after an undo ends the redo steps");
+    History grouped;
+    grouped.group(true);
+    grouped.record(one, "move keyframe");
+    grouped.record(two, "move keyframe");
+    grouped.group(false);
+    grouped.record(three, "blend out");
+    (void)grouped.undo(one);
+    check(grouped.undo(three) == one && !grouped.undo(one), "the edits of one group are one step");
+    History deep;
+    for (std::size_t i = 0; i < History::depth + 5; ++i) deep.record(one, "edit");
+    std::size_t steps{};
+    while (deep.undo(one)) ++steps;
+    check(steps == History::depth, "the history keeps a limited number of steps");
+    history.clear();
+    check(!history.undo(one) && !history.redo(one), "a cleared history has no steps");
     if (!failures) std::cout << "style pose tests passed\n";
     return failures ? 1 : 0;
 }

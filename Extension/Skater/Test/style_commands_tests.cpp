@@ -22,7 +22,9 @@ struct Calls {
     std::uint8_t preview{}, key_trick{}, key{};
     float preview_time{}, key_time{}, blend_out{-1};
     bool preview_play{};
-    int key_calls{};
+    int key_calls{}, undos{}, redos{}, saves{};
+    bool auto_save{true}, history_cleared{};
+    std::string group;
     std::string joint;
     float x{}, y{}, z{};
 } calls;
@@ -66,6 +68,13 @@ bool request_key_delete(std::uint8_t trick, std::uint8_t key, std::string &error
     if (key > 5) error = "no such keyframe";
     return key <= 5;
 }
+bool request_undo() { return ++calls.undos == 1; }
+bool request_redo() { return ++calls.redos, true; }
+void request_group(bool open) { calls.group = open ? "begin" : "end"; }
+void request_history_clear() { calls.history_cleared = true; }
+void request_save() { ++calls.saves; }
+void request_auto_save(bool on) { calls.auto_save = on; }
+bool auto_saving() noexcept { return calls.auto_save; }
 bool enabled() noexcept { return calls.enabled; }
 bool sharing() noexcept { return calls.share; }
 std::string status() { return "status line"; }
@@ -175,12 +184,24 @@ int main() {
         check(run("style editor step -3") && calls.editor == "step -3", "style editor step moves by frames");
         check(run("style editor speed 0.25") && calls.editor.starts_with("speed 0.25"), "style editor speed sets the playback speed");
         check(!run("style editor speed 2") && !run("style editor speed 0"), "the speed is a fraction of the recorded speed");
-        check(run("style 0") && !calls.enabled && run("style editor open") && calls.editor == "open" && calls.debug == "opened" && calls.enabled,
-              "style editor open switches the layer on and opens the editor screen");
+        check(run("style undo") && calls.undos == 1 && printed.empty() && run("style undo") && printed == "Nothing to undo.",
+              "style undo undoes the last edit, and says when there is none");
+        check(run("style redo") && calls.redos == 1, "style redo does it again");
+        check(run("style group begin") && calls.group == "begin" && run("style group end") && calls.group == "end" && !run("style group maybe"),
+              "style group makes the edits between begin and end one undo step");
+        check(run("style history clear") && calls.history_cleared, "style history clear forgets the steps");
+        check(run("style save") && calls.saves == 1, "style save writes the preset now");
+        check(run("style autosave 0") && !calls.auto_save && run("style autosave 1") && calls.auto_save, "style autosave switches the saving after each edit");
+        calls.history_cleared = false;
+        check(run("style 0") && !calls.enabled && run("style editor open") && calls.editor == "open" && calls.debug == "opened" && calls.enabled &&
+                  calls.history_cleared,
+              "style editor open switches the layer on, opens the editor screen and starts the undo steps again");
         check(run("style preset new street") && calls.editor == "new street" && run("style preset folder") && calls.editor == "folder " &&
                   !run("style preset rename street"),
               "style preset names an action and a preset");
-        check(run("style editor close") && calls.editor == "hide" && calls.debug == "closed", "style editor close removes the stand-in and closes the screen");
+        calls.history_cleared = false;
+        check(run("style editor close") && calls.editor == "hide" && calls.debug == "closed" && calls.history_cleared,
+              "style editor close removes the stand-in, closes the screen and forgets the undo steps");
         check(run("style status") && printed == "status line", "style status prints the status");
     } catch (const std::exception &failure) {
         std::cerr << "FAIL: " << failure.what() << '\n';

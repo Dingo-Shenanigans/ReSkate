@@ -109,6 +109,34 @@ void send_now(Editing& e, const std::string& command) {
     send_controls(e, true);
     quiet(e.callbacks, command);
 }
+// The edits between a press and its release are one undo step.
+void begin_group(Editing& e) {
+    if (!std::exchange(e.menu.styling.grouping, true)) quiet(e.callbacks, "style group begin");
+}
+void end_group(Editing& e) {
+    if (std::exchange(e.menu.styling.grouping, false)) quiet(e.callbacks, "style group end");
+}
+// Undo and redo. Sliders and drags then show the game's values, not their own.
+void travel(Editing& e, const char* command) {
+    auto& s = e.menu.styling;
+    s.edit_until = s.drag_until = s.blend_until = 0;
+    s.pending_key = -1;
+    send_now(e, command);
+}
+constexpr int leave_close = 1, leave_trick = 2, leave_preset = 3;
+// Shows another trick on the stand-in. Its undo steps start empty.
+void show_trick(Editing& e, int trick) {
+    e.menu.styling.trick = trick;
+    e.menu.styling.key = 0;
+    quiet(e.callbacks, "style history clear");
+    send_console(e.menu, e.callbacks, std::format("style editor show {}", style::flip_trick_names[static_cast<std::size_t>(trick)]));
+}
+// The screen draws one or two more frames after close, and must not ask for its trick again.
+void close_editor(SkateMenu& menu, const CallbacksV3& callbacks) {
+    menu.styling.closing_until = ImGui::GetTime() + 3.0;
+    menu.styling.grouping = false;
+    send_console(menu, callbacks, "style editor close");
+}
 // Where a keyframe's blend out ends on the timeline.
 struct BlendOut {
     float ms{}, end{};
@@ -156,10 +184,9 @@ void trick_picker(Editing& e) {
             const bool edited = std::ranges::any_of(e.model.style.rotations, [&](const auto& r) { return r.target.trick && r.target.id == i; });
             const auto label = std::format("{}{}", style::flip_trick_titles[i], edited ? "  *" : "");
             if (ImGui::Selectable(label.c_str(), i == menu.styling.trick) && i != menu.styling.trick) {
-                menu.styling.trick = i;
-                menu.styling.key = 0;
-                // The stand-in follows the selected trick.
-                send_console(menu, e.callbacks, std::format("style editor show {}", style::flip_trick_names[i]));
+                // With unsaved changes, the leave prompt asks first.
+                if (e.model.style.unsaved) menu.styling.leave = leave_trick, menu.styling.leave_trick = i;
+                else show_trick(e, i);
             }
         }
         ImGui::Unindent();
@@ -223,6 +250,7 @@ void timeline(Editing& e, float height) {
         // A click on the handle drags the blend out. It does not go past the next keyframe or the trick's end.
         menu.styling.blend_drag = true;
         menu.styling.drag_key = -1;
+        begin_group(e);
     } else if (active && menu.styling.blend_drag) {
         if (selected) {
             const auto key = static_cast<std::size_t>(menu.styling.key);
@@ -231,11 +259,13 @@ void timeline(Editing& e, float height) {
             if (ms != e.blend_outs[key]) send_blend_out(e, key, ms, false);
         }
     } else if (ImGui::IsItemActivated()) {
-        // A click on a keyframe selects it for a drag. A click elsewhere moves the playhead.
+        // A click on a keyframe selects it for a drag. A click elsewhere moves the playhead. The last drag's drop point does not apply.
         menu.styling.drag_key = hovered ? nearest : -1;
+        menu.styling.drag_until = 0;
         if (nearest >= 0) {
             menu.styling.key = nearest;
             e.hold(e.times[static_cast<std::size_t>(nearest)]);
+            begin_group(e);
         } else e.hold(mouse);
     } else if (active && menu.styling.drag_key >= 0 && ImGui::GetIO().MouseDragMaxDistanceSqr[0] > px(3) * px(3)) {
         menu.styling.drag_time = mouse;
@@ -255,6 +285,7 @@ void timeline(Editing& e, float height) {
         quiet(e.callbacks, std::format("style key move {} {} {:.3f}", e.trick, menu.styling.drag_key, menu.styling.drag_time));
         e.hold(menu.styling.drag_time);
     }
+    if (ImGui::IsItemDeactivated()) end_group(e);
     if (hovered && !active) {
         if (on_handle) ImGui::SetTooltip("Drag to change the blend out (%.0f ms)", selected->ms);
         else ImGui::SetTooltip(nearest >= 0 ? "Drag to move this keyframe" : "Click to show this moment");
@@ -273,8 +304,10 @@ void blend_slider(Editing& e) {
     ImGui::SetNextItemWidth(-1);
     const bool changed = ImGui::SliderInt("##blend-out", &ms, 0, static_cast<int>(style::max_blend_out_ms), ms ? "%d ms" : none.c_str(),
                                           ImGuiSliderFlags_AlwaysClamp);
-    const bool released = ImGui::IsItemDeactivatedAfterEdit();
+    const bool released = ImGui::IsItemDeactivatedAfterEdit(), pressed = ImGui::IsItemActivated(), let_go = ImGui::IsItemDeactivated();
+    if (pressed) begin_group(e);
     if (changed || released) send_blend_out(e, key, ms > 0 ? std::max(static_cast<float>(ms), style::min_blend_out_ms) : 0.0f, released);
+    if (let_go) end_group(e);
     if (blend && blend->set && blend->cut)
         note((last ? std::format("The trick ends {:.0f} ms after this keyframe, so the blend out ends with it.", blend->room_ms)
                    : std::format("The next keyframe comes {:.0f} ms after this one, so the pose blends straight to it.", blend->room_ms))
@@ -303,7 +336,7 @@ void joints(Editing& e) {
         auto degrees = mine ? menu.styling.edit : saved(e.model, target, joint);
         const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
         const float width = (ImGui::GetContentRegionAvail().x - reset - ImGui::GetStyle().ItemSpacing.x * 3) / 3;
-        bool changed{}, released{};
+        bool changed{}, released{}, pressed{}, let_go{};
         for (int axis = 0; axis < 3; ++axis) {
             ImGui::PushID(axis);
             ImGui::SetNextItemWidth(width);
@@ -311,9 +344,12 @@ void joints(Editing& e) {
             changed |= ImGui::SliderFloat("##axis", &degrees[axis], -style::max_degrees, style::max_degrees, formats[axis],
                                           ImGuiSliderFlags_AlwaysClamp);
             released |= ImGui::IsItemDeactivatedAfterEdit();
+            pressed |= ImGui::IsItemActivated();
+            let_go |= ImGui::IsItemDeactivated();
             ImGui::PopID();
             ImGui::SameLine();
         }
+        if (pressed) begin_group(e);
         if (ImGui::Button("Reset", ImVec2(reset, 0))) {
             degrees = {};
             changed = released = true;
@@ -332,8 +368,55 @@ void joints(Editing& e) {
                                                degrees[1], degrees[2], target.key));
             }
         }
+        if (let_go) end_group(e);
         ImGui::PopID();
     }
+}
+// Leaving a trick with unsaved changes asks to save or discard them. Closing the editor always asks.
+void leave_prompt(Editing& e) {
+    auto& s = e.menu.styling;
+    constexpr const char* title = "##style-leave";
+    if (!s.leave) return;
+    const bool unsaved = e.model.style.unsaved;
+    const auto go = [&] {
+        const int what = std::exchange(s.leave, 0);
+        if (what == leave_close) close_editor(e.menu, e.callbacks);
+        else if (what == leave_trick) show_trick(e, s.leave_trick);
+        else if (what == leave_preset) send_console(e.menu, e.callbacks, s.leave_command);
+    };
+    const bool was_open = ImGui::IsPopupOpen(title);
+    // A trick or preset switch with nothing to save does not ask.
+    if (!unsaved && s.leave != leave_close) {
+        if (was_open && ImGui::BeginPopupModal(title)) ImGui::CloseCurrentPopup(), ImGui::EndPopup();
+        return go();
+    }
+    if (!was_open) ImGui::OpenPopup(title);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                                    ImGuiWindowFlags_NoNavInputs))
+        return;
+    bool done{};
+    constexpr std::array<const char*, 4> questions{"", "Close the style editor?", "Switch to another trick?", "Switch to another preset?"};
+    ImGui::TextUnformatted(questions[static_cast<std::size_t>(std::clamp(s.leave, 0, 3))]);
+    if (unsaved) {
+        ImGui::TextDisabled("This preset has unsaved changes.");
+        if (!e.model.style.save_issue.empty()) ImGui::TextDisabled("Not saved: %s", e.model.style.save_issue.c_str());
+        if (ImGui::Button("Save", ImVec2(px(110), 0))) quiet(e.callbacks, "style save"), done = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Discard", ImVec2(px(110), 0))) quiet(e.callbacks, "style reload"), done = true;
+    } else if (ImGui::Button("Close", ImVec2(px(110), 0))) {
+        done = true;
+    }
+    ImGui::SameLine();
+    // The Escape press that opened the prompt does not also cancel it.
+    if (ImGui::Button("Cancel", ImVec2(px(110), 0)) || (was_open && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+        s.leave = 0;
+        ImGui::CloseCurrentPopup();
+    } else if (done) {
+        go();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 }
 void set_style_playhead_feed(StylePlayheadFeed feed) noexcept { playhead_feed.store(feed); }
@@ -346,28 +429,64 @@ bool style_editor_wanted() noexcept {
 // Presets: pick the one in use, make an empty one, or copy the one in use to a new name.
 void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool manage) {
     const auto& style = model.style;
+    bool auto_save = style.auto_save;
+    if (ImGui::Checkbox("Auto save", &auto_save)) send_console(menu, callbacks, auto_save ? "style autosave 1" : "style autosave 0");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: each edit saves 750 ms after it is made. Off: edits wait for Save.");
+    if (!style.auto_save) {
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!style.unsaved);
+        if (ImGui::Button("Save")) send_console(menu, callbacks, "style save");
+        ImGui::SameLine();
+        // Discard reverts every unsaved edit, so the second click within three seconds does it.
+        const bool armed = ImGui::GetTime() < menu.styling.discard_until;
+        if (ImGui::Button(armed ? "Click again to discard" : "Discard changes")) {
+            if (armed) {
+                send_console(menu, callbacks, "style reload");
+                menu.styling.edit_until = menu.styling.drag_until = menu.styling.blend_until = 0;
+            }
+            menu.styling.discard_until = armed ? 0.0 : ImGui::GetTime() + 3.0;
+        }
+        ImGui::EndDisabled();
+    }
+    // A switch away from unsaved changes: the editor asks first, and this page waits for Save or Discard.
+    const auto switch_to = [&](const std::string& command) {
+        if (!style.unsaved) {
+            send_console(menu, callbacks, command);
+            return;
+        }
+        menu.styling.leave = leave_preset;
+        menu.styling.leave_command = command;
+    };
+    const bool locked = manage && style.unsaved;
+    ImGui::BeginDisabled(locked);
     ImGui::SetNextItemWidth(-1);
     if (ImGui::BeginCombo("##style-preset", style.preset.c_str())) {
         for (const auto& name : style.presets)
-            if (ImGui::Selectable(name.c_str(), name == style.preset) && name != style.preset) send_console(menu, callbacks, "style preset load " + name);
+            if (ImGui::Selectable(name.c_str(), name == style.preset) && name != style.preset) switch_to("style preset load " + name);
         ImGui::EndCombo();
     }
+    ImGui::EndDisabled();
+    if (locked) note("Save or discard the changes to switch presets.");
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##style-preset-name", "Name for a new preset", menu.styling.preset_name.data(), menu.styling.preset_name.size());
     const std::string name(menu.styling.preset_name.data());
     // The name is the file name: letters, digits, '-' and '_'.
     const bool valid = style::preset_name(name) && std::ranges::none_of(style.presets, [&](const std::string& p) { return style::same_text(p, name); });
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
-    ImGui::BeginDisabled(!valid);
+    ImGui::BeginDisabled(!valid || locked);
     if (ImGui::Button("New empty preset", ImVec2(half, 0))) {
-        send_console(menu, callbacks, "style preset new " + name);
-        menu.styling.preset_name = {};
+        switch_to("style preset new " + name);
+        // A switch that waits for the leave prompt keeps the name, in case of Cancel.
+        if (!style.unsaved) menu.styling.preset_name = {};
     }
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!valid);
     ImGui::SameLine();
     if (ImGui::Button("Save a copy", ImVec2(half, 0))) {
         send_console(menu, callbacks, "style preset copy " + name);
         menu.styling.preset_name = {};
     }
+    if (ImGui::IsItemHovered() && style.unsaved) ImGui::SetTooltip("The copy gets the unsaved changes. This preset keeps its saved version.");
     ImGui::EndDisabled();
     if (!name.empty() && !valid) note("Use letters, digits, '-' and '_', and a name that no preset has.");
     if (!manage) return;
@@ -382,8 +501,13 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
 }
 void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested) {
     auto& io = ImGui::GetIO();
-    // After the screen opens again, ask for the selected trick again.
-    if (ImGui::GetTime() > menu.styling.drawn_at + 1.0) menu.styling.asked.clear();
+    // After the screen opens again, ask for the selected trick again. A close by another path can leave a prompt or a drag behind.
+    if (ImGui::GetTime() > menu.styling.drawn_at + 1.0) {
+        menu.styling.asked.clear();
+        menu.styling.leave = 0;
+        menu.styling.grouping = menu.styling.popup_open = false;
+        menu.styling.hold.reset();
+    }
     menu.styling.drawn_at = ImGui::GetTime();
     menu::set_scale(std::clamp(model.menu_scale, min_menu_scale, max_menu_scale));
     const auto restore_font_scale = io.FontGlobalScale;
@@ -398,16 +522,14 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(14), px(12)));
     const int colours = skate_theme::push_widget_colours();
     auto e = begin_editing(menu, model, callbacks);
-    // The screen draws one or two more frames after close, and must not ask for its trick again.
-    const auto close = [&] {
-        menu.styling.closing_until = ImGui::GetTime() + 3.0;
-        send_console(menu, callbacks, "style editor close");
-    };
     const float side = std::min(px(400), io.DisplaySize.x * 0.34f), bottom = px(176);
     // No keyboard navigation: Space and the arrow keys are the editor's own shortcuts, and must not also press the focused button.
     constexpr auto fixed = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavInputs;
     const bool typing = io.WantTextInput;
+    // The keyboard shortcuts wait while a popup is open, and in the frame after it closes on Escape.
+    const bool popup = menu.styling.popup_open || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    const bool keys = !typing && !popup;
 
     // The side panel: the trick and the selected keyframe.
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -508,22 +630,49 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("Reset trick")) send_console(menu, callbacks, "style clear " + e.trick);
+        // During a drag, undo would split the drag's step and could change which keyframe the drag moves.
+        const auto& undo_name = model.style.undo_name;
+        const auto& redo_name = model.style.redo_name;
+        const bool can_undo = !undo_name.empty() && !menu.styling.grouping, can_redo = !redo_name.empty() && !menu.styling.grouping;
+        ImGui::SameLine(0, px(28));
+        ImGui::BeginDisabled(!can_undo);
+        if (ImGui::Button("Undo")) travel(e, "style undo");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", undo_name.empty() ? "Nothing to undo" : ("Undo: " + undo_name + "  (Ctrl+Z)").c_str());
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!can_redo);
+        if (ImGui::Button("Redo")) travel(e, "style redo");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", redo_name.empty() ? "Nothing to redo" : ("Redo: " + redo_name + "  (Ctrl+Y or Ctrl+Shift+Z)").c_str());
+        ImGui::EndDisabled();
         const float closing = ImGui::CalcTextSize("Close").x + ImGui::GetStyle().FramePadding.x * 2;
         ImGui::SameLine(ImGui::GetWindowWidth() - closing - ImGui::GetStyle().WindowPadding.x);
-        if (ImGui::Button("Close")) close();
+        if (ImGui::Button("Close")) menu.styling.leave = leave_close;
         timeline(e, px(52));
+        const auto saving = !model.style.save_issue.empty() ? "Not saved: " + model.style.save_issue
+                            : model.style.unsaved      ? std::string("Unsaved changes")
+                            : model.style.saved        ? std::string("Saved")
+                                                       : std::string("Saving...");
         ImGui::TextDisabled("Drag: turn the camera.   Right drag: raise or lower the view.   Wheel: zoom (Shift: fine).   Space: play / pause   Left / Right: frame   %s",
-                            model.style.saved ? "Saved" : "Saving...");
-        if (!typing && e.standing_in) {
+                            saving.c_str());
+        if (keys && e.standing_in) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle();
             if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) step(-1);
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) step(1);
+        }
+        if (keys) {
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z) && can_undo) travel(e, "style undo");
+            if ((ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y) || ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) && can_redo)
+                travel(e, "style redo");
+            // The model can lag behind an edit that is still queued, so Ctrl+S always asks for a save.
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S) && !model.style.auto_save) send_now(e, "style save");
         }
     }
     ImGui::End();
 
     // A drag in the view turns the camera around the stand-in.
-    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && !ImGui::IsAnyItemActive()) {
+    if (!popup && !menu.styling.leave && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) && !ImGui::IsAnyItemActive()) {
         // A left drag turns the camera. A right drag also raises or lowers the camera target.
         const bool lifting = ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0);
         const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0) || lifting;
@@ -534,7 +683,9 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         menu.styling.orbit[2] += zoom;
     }
     send_controls(e, false);
-    if (exit_requested || (!typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) close();
+    if (!menu.styling.leave && (exit_requested || (keys && ImGui::IsKeyPressed(ImGuiKey_Escape, false)))) menu.styling.leave = leave_close;
+    leave_prompt(e);
+    menu.styling.popup_open = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
     ImGui::PopStyleColor(colours);
     ImGui::PopStyleVar(7);
     ImGui::PopFont();
