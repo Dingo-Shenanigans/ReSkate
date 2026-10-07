@@ -11,16 +11,15 @@
 namespace dingosdk::server {
 // The server's radio: an admin plays a source (`radio play <source>`) and the server turns it
 // into 20 ms Opus frames (Extension/Multiplayer/Net/radio_frames.h), released in real time.
-// A source is an http(s) URL, or a file or folder inside the server's Radio folder. With yt-dlp
-// installed a URL may be any page it reads, a playlist included; without it, a direct audio
-// stream (an internet radio station, an MP3). ffmpeg decodes everything.
+// A source is the http(s) URL of an audio stream (an internet radio station, an MP3), or a file
+// or folder inside the server's Radio folder. ffmpeg decodes it. Web pages and video sites are not
+// sources: the server owner sends what plays to every player, so it should be audio they may share.
 //
-// Admin text ends up in another program's arguments, so neither tool ever sees a shell: each
-// runs from an argument list, URLs come after "--", yt-dlp ignores its config files (which can
-// run commands), and ffmpeg only opens the protocols the source needs.
+// Admin text ends up in ffmpeg's arguments, so it never sees a shell: it runs from an argument
+// list, and only opens the protocols the source needs.
 //
-// Runs on Linux and Windows servers. On Windows only ffmpeg.exe and yt-dlp.exe from a folder on
-// PATH are started, never a .bat or .cmd (server_radio.cpp, find_program).
+// Runs on Linux and Windows servers. On Windows only ffmpeg.exe from a folder on PATH is started,
+// never a .bat or .cmd (server_radio.cpp, find_program).
 class Radio {
   public:
     explicit Radio(std::filesystem::path folder);

@@ -29,17 +29,16 @@ Then admins play music to everyone on the map with /radio play <source>, and
 each player sets their volume or mutes it in the game's Multiplayer menus.
 
 A source is an http(s) URL of an audio stream (an internet radio station, an
-MP3), or a file or folder in a Radio folder next to the server. The server
-needs ffmpeg installed to decode it. With yt-dlp installed too, a URL can also
-be a page or playlist yt-dlp reads, such as a YouTube video or channel. On
-Windows both must be on PATH as ffmpeg.exe and yt-dlp.exe. Installing either
-takes effect on the next play, without a restart.
+MP3), or a file or folder in a Radio folder next to the server. Web pages and
+video sites are not sources. The server needs ffmpeg installed to decode it
+(on Windows, ffmpeg.exe on PATH); installing it takes effect on the next play,
+without a restart.
 
-The server sends the audio to every player itself, so you are the one
-redistributing it. Only play what you may share with them: your own files,
-royalty-free or Creative Commons music, a station that allows it. Many sites,
-YouTube included, forbid downloading or replaying their content in their terms,
-and music in a player's stream or video can get it a copyright claim.
+The server sends the audio to every player itself, so you are the one sharing
+it with them, and what it plays is your responsibility. Only play what you may
+share: music you made or own the rights to, royalty-free or Creative Commons
+music, or a station that allows rebroadcasting. Music in a player's own stream
+or video can get them a copyright claim, so each player can mute the radio.
 
 Each song uses about 96 kbps of upload per player (16 players: about 1.5 Mbit/s).
 

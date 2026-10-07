@@ -37,12 +37,6 @@ std::string utf8_name(const fs::path &path) {
     const auto text = path.u8string();
     return std::string(text.begin(), text.end());
 }
-// One line of a tool's output, without the carriage return Windows programs end it with.
-std::string_view line_of(std::string_view text) {
-    auto line = text.substr(0, text.find('\n'));
-    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-    return line;
-}
 } // namespace
 
 std::string Radio::check_source(std::string_view source, const fs::path &folder, std::string &error) {
@@ -52,7 +46,7 @@ std::string Radio::check_source(std::string_view source, const fs::path &folder,
         return {};
     }
     // Control characters and spaces never belong in a URL or one of these names, and keep
-    // anything that looks like a second argument out of the tools' command lines.
+    // anything that looks like a second argument out of ffmpeg's command line.
     if (source.size() > 2048 || std::any_of(source.begin(), source.end(), [](unsigned char c) { return c < 32 || c == 127; })) {
         error = "That is not a URL or a file name.";
         return {};
@@ -105,11 +99,10 @@ constexpr std::uint64_t frame_us = 20000;
 constexpr std::uint64_t lead_us = 200000;    // released this far ahead of real time
 constexpr std::size_t batch_frames = 5;
 constexpr int bitrate = 96000;
-constexpr std::size_t max_listing = 1 << 20; // what yt-dlp may print about one source
 constexpr std::array<std::string_view, 9> audio_files{".mp3", ".ogg", ".opus", ".flac", ".wav", ".m4a", ".aac", ".webm", ".mka"};
 
-// The tools run from an argument list, never through a shell. A running one is a Child: stop and
-// skip end it together with anything it started (yt-dlp runs helpers of its own).
+// ffmpeg runs from an argument list, never through a shell. A running one is a Child: stop and
+// skip end it together with anything it started.
 #ifdef _WIN32
 // Its job object (which holds it and everything it starts), the process and the read end of its stdout.
 struct Child {
@@ -311,16 +304,6 @@ int wait_for(const Child &child) {
 void release(const Child &) {}
 #endif
 
-// yt-dlp never reads its config files (they can run commands). On Windows it would write to a
-// pipe in the ANSI code page.
-std::vector<std::string> ytdlp(std::initializer_list<std::string> rest) {
-    std::vector<std::string> args{"yt-dlp", "--ignore-config", "--no-warnings"};
-#ifdef _WIN32
-    args.insert(args.end(), {"--encoding", "utf-8"});
-#endif
-    args.insert(args.end(), rest);
-    return args;
-}
 } // namespace
 
 struct Radio::State {
@@ -334,7 +317,7 @@ struct Radio::State {
     };
 
     fs::path folder;
-    bool ytdlp{}, ffmpeg{}; // looked up again on each play: installing a tool needs no restart
+    bool ffmpeg{}; // looked up again on each play: installing it needs no restart
 
     mutable std::mutex mutex;
     std::condition_variable room; // the worker waits here for space in the queue
@@ -387,36 +370,9 @@ struct Radio::State {
         release(done);
         return code;
     }
-    std::string capture(const std::vector<std::string> &args) {
-        Child tool;
-        if (!spawn(args, tool)) return {};
-        std::string text;
-        char buffer[4096];
-        for (std::size_t count; (count = read_some(tool, buffer, sizeof buffer)) != 0;)
-            if (text.size() < max_listing) text.append(buffer, count);
-        return reap(tool) == 0 ? text : std::string{};
-    }
-
     std::vector<Entry> entries(const std::string &input) {
         std::vector<Entry> result;
-        if (web_url(input)) {
-            if (!ytdlp) return {{input, input}};
-            // One line per video ("<url>\t<title>"): a playlist lists them all (the first 500 of a
-            // channel), a page lists itself. A single video has no flat "url", only its page's.
-            const auto listing = capture(server::ytdlp({"--flat-playlist", "--playlist-end", "500", "--print",
-                                                        "%(webpage_url,url)s\t%(title)s", "--", input}));
-            for (std::string_view rest = listing; !rest.empty();) {
-                const auto end = rest.find('\n');
-                const auto line = line_of(rest);
-                rest = end == std::string_view::npos ? std::string_view{} : rest.substr(end + 1);
-                const auto tab = line.find('\t');
-                const auto url = line.substr(0, tab);
-                if (!web_url(url) || url.find(' ') != std::string_view::npos) continue;
-                const auto title = tab == std::string_view::npos ? url : trim(line.substr(tab + 1));
-                result.push_back({std::string(url), std::string(title.empty() ? url : title)});
-            }
-            return result;
-        }
+        if (web_url(input)) return {{input, input}}; // a stream: one entry, named by its URL
         std::error_code failed;
         const auto path = utf8_path(input);
         if (fs::is_directory(path, failed)) {
@@ -442,26 +398,19 @@ struct Radio::State {
 
     // Decodes one entry with ffmpeg and encodes it. Returns how many frames it queued.
     std::size_t play(const Entry &entry, bool remote) {
-        // Numbered before yt-dlp resolves it: a skip meanwhile ends the song that is playing, never
-        // this one's yt-dlp.
+        // Numbered before ffmpeg starts: a skip meanwhile ends the song that is playing, never this one.
         std::uint32_t track{};
         {
             std::lock_guard lock(mutex);
             track = worker_track = next_track++;
         }
-        std::string input = entry.input;
-        if (remote && ytdlp) {
-            // The page's audio stream: the best audio-only format, or whatever it has.
-            const auto direct = capture(server::ytdlp({"--no-playlist", "-f", "bestaudio/best", "-g", "--", entry.input}));
-            input = std::string(trim(line_of(direct)));
-            if (!web_url(input)) return 0;
-        }
+        const auto &input = entry.input;
         int error{};
         auto *encoder = opus_encoder_create(radio_rate, radio_channels, OPUS_APPLICATION_AUDIO, &error);
         if (!encoder || error != OPUS_OK) return 0;
         opus_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate));
         std::vector<std::string> args{"ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"};
-        // A source read at playback pace keeps its connection open for the whole song, and YouTube's
+        // A source read at playback pace keeps its connection open for the whole song, and many
         // servers drop such connections after a minute or two: resume at the same byte (a Range
         // request) rather than ending the song there. 15 s without a byte counts as a dropped
         // connection too, so a silent one is resumed (or, on a live stream that cannot resume, ends)
@@ -520,13 +469,12 @@ struct Radio::State {
         const bool remote = web_url(input);
         const auto list = entries(input);
         if (list.empty())
-            notice("Radio: nothing to play at " + input + (remote && !ytdlp ? " (pages and playlists need yt-dlp installed)" : "") + ".");
+            notice("Radio: nothing to play at " + input + ".");
         for (const auto &entry : list) {
             if (cancelled()) return;
             // A skip only ends a song that has already queued frames, so no frames at all is a failure.
             if (!play(entry, remote) && !cancelled())
-                notice("Radio: could not play " + entry.title +
-                       (remote && !ytdlp ? " (a page like YouTube needs yt-dlp on the server)." : "."));
+                notice("Radio: could not play " + entry.title + (remote ? " (is it an audio stream?)." : "."));
         }
         std::lock_guard lock(mutex);
         worker_done = true;
@@ -536,7 +484,6 @@ struct Radio::State {
 Radio::Radio(fs::path folder) : state_(std::make_unique<State>()) {
     state_->folder = std::move(folder);
     state_->ffmpeg = installed("ffmpeg");
-    state_->ytdlp = installed("yt-dlp");
 }
 Radio::~Radio() { state_->halt(); }
 
@@ -545,13 +492,12 @@ std::string Radio::play(std::string_view source) {
     std::string error;
     const auto input = check_source(source, s.folder, error);
     if (input.empty()) return error;
-    const bool ffmpeg = installed("ffmpeg"), ytdlp = installed("yt-dlp");
+    const bool ffmpeg = installed("ffmpeg");
     if (!ffmpeg) return "The radio needs ffmpeg installed on the server.";
     s.halt();
     {
         std::lock_guard lock(s.mutex);
         s.ffmpeg = ffmpeg;
-        s.ytdlp = ytdlp;
         s.source = std::string(trim(source));
         s.active = true;
         s.frames = s.bytes = s.started = 0;
@@ -566,7 +512,7 @@ std::string Radio::play(std::string_view source) {
             s.worker_done = true;
         }
     });
-    return "Radio: starting " + s.source + (web_url(input) && !s.ytdlp ? " (as a direct stream: yt-dlp is not installed)" : "") + ".";
+    return "Radio: starting " + s.source + ".";
 }
 std::string Radio::skip() {
     auto &s = *state_;
@@ -594,7 +540,7 @@ std::string Radio::stop() {
 std::string Radio::status() const {
     auto &s = *state_;
     std::lock_guard lock(s.mutex);
-    std::string tools = std::string(s.ffmpeg ? "ffmpeg" : "no ffmpeg") + (s.ytdlp ? ", yt-dlp" : ", no yt-dlp");
+    const std::string tools = s.ffmpeg ? "ffmpeg" : "no ffmpeg";
     if (!s.active) return "Nothing is playing (" + tools + "). Radio folder: " + utf8_name(s.folder);
     const auto seconds = s.frames * frame_us / 1000000;
     const auto kbps = seconds ? s.bytes * 8 / 1000 / seconds : 0;
