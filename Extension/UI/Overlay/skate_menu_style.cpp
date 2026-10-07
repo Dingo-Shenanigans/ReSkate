@@ -144,6 +144,8 @@ struct BlendOut {
     bool last{}, set{}, cut{}; // set: the keyframe has its own time. cut: the next keyframe or the trick's end comes first
 };
 std::optional<BlendOut> blend_out(const Editing& e, std::size_t key) {
+    // A trick switch selects keyframe 0 before this frame's keyframes change.
+    if (key >= e.times.size() || key >= e.blend_outs.size()) return std::nullopt;
     const float at = e.times[key];
     float next = style::trick_end;
     for (const auto time : e.times)
