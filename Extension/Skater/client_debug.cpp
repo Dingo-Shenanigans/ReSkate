@@ -471,7 +471,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         request.action == overlay::DebugAction::set_free_camera_fov ||
         (request.action >= overlay::DebugAction::set_first_person_spring && request.action <= overlay::DebugAction::reset_first_person_arm) ||
         request.action == overlay::DebugAction::set_no_bail,
-        "Close Park Editor before changing camera or HUD modes.");
+        debug.style_editor ? "Close the style editor before changing camera or HUD modes." : "Close Park Editor before changing camera or HUD modes.");
     if (request.action >= overlay::DebugAction::set_first_person_spring &&
         request.action <= overlay::DebugAction::reset_first_person_arm) {
         auto settings = debug.first_person_settings;
