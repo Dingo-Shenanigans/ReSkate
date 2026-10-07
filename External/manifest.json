@@ -257,5 +257,15 @@
       "bcdec.h": "134520764d96f70a27db814173616c89ad85db95fbd3328417c7a8c77e7ca189",
       "LICENSE.txt": "2414c782587f6e96661cb0d19d752432ddecfcc1a221b4cb12bc2253a54dc5ac"
     }
+  },
+  "openxr": {
+    "repository": "https://github.com/KhronosGroup/OpenXR-SDK",
+    "commit": "release-1.1.63",
+    "files": {
+      "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "include/openxr/openxr.h": "17e8e334a7ad0c6933b31143330d4771010e393df5d5d9d08566eb15bb171a15",
+      "include/openxr/openxr_platform.h": "f17e6d752e0065ede9f2a4c8932155acff96462306a2468a67a6ad77484641d8",
+      "include/openxr/openxr_platform_defines.h": "a458ba5777415f2de518fdcdcc87fcf8651ba0468c9f69a101378672aad80946"
+    }
   }
 }

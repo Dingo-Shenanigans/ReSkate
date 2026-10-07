@@ -3,6 +3,7 @@
 #include "chat_rich.h"
 #include "nametag_gradient.h"
 #include "role_badge.h"
+#include "Extension/VR/vr.h"
 #include <imgui_internal.h>
 #include <optional>
 
@@ -386,6 +387,21 @@ std::size_t first_shown(std::size_t current, std::size_t count, std::size_t limi
     if (count <= limit || current < limit) return 0;
     return std::min(current + 1 - limit, count - limit);
 }
+// Where the chat draws outside its window: the foreground, or, while VR shows the chat on its
+// own panel, a full-display window without input, so the overlay can tell it apart (overlay_render).
+ImDrawList* chat_draw_list() {
+    if (!dingosdk::vr::wants_chat_panel()) return ImGui::GetForegroundDrawList();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    constexpr auto flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoBringToFrontOnFocus;
+    ImGui::Begin("##reskate_chat_feed", nullptr, flags);
+    auto* list = ImGui::GetWindowDrawList();
+    ImGui::End(); // the list stays valid until the frame renders
+    return list;
+}
+
 void draw_command_list(ChatState& c, ImFont* heading, ImFont* body, ImVec2 bottom_left, float width, float scale) {
     const auto& found = suggestions(c, suggesting_for(c));
     const auto& arguments = found.arguments;
@@ -399,7 +415,7 @@ void draw_command_list(ChatState& c, ImFont* heading, ImFont* body, ImVec2 botto
         const float size = 15.0f * scale, pad = 8.0f * scale, row = size + 4.0f * scale;
         const auto rows = std::min(arguments.size(), limit);
         const float height = pad * 2 + row * static_cast<float>(rows) + (arguments.size() > limit ? row : 0.0f);
-        auto* draw = ImGui::GetForegroundDrawList();
+        auto* draw = chat_draw_list();
         const ImVec2 min(bottom_left.x, bottom_left.y - height), max(bottom_left.x + width, bottom_left.y);
         draw->AddRectFilled(min, max, with_alpha(theme::ink, 0.94f), 4.0f * scale);
         float y = min.y + pad;
@@ -422,7 +438,7 @@ void draw_command_list(ChatState& c, ImFont* heading, ImFont* body, ImVec2 botto
     const auto rows = std::min(matches.size(), shown_limit);
     const float row = size + gap;
     const float height = pad * 2 + row * static_cast<float>(rows) - gap + (matches.size() > shown_limit ? row : 0.0f);
-    auto* draw = ImGui::GetForegroundDrawList();
+    auto* draw = chat_draw_list();
     const ImVec2 min(bottom_left.x, bottom_left.y - height), max(bottom_left.x + width, bottom_left.y);
     draw->AddRectFilled(min, max, with_alpha(theme::ink, 0.94f), 4.0f * scale);
     float y = min.y + pad;
@@ -574,7 +590,7 @@ void draw_chat() {
         shown.emplace_back(&*it, alpha);
     }
     if (shown.empty()) return;
-    auto* draw = ImGui::GetForegroundDrawList();
+    auto* draw = chat_draw_list();
     const float size = body->FontSize * scale * 0.9f, name_size = heading->FontSize * scale * 0.9f;
     const float pad_x = 10.0f * scale, pad_y = 5.0f * scale, gap = 4.0f * scale;
     const float text_width = width - pad_x * 2.0f;

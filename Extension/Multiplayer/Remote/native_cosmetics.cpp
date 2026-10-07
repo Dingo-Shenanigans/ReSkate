@@ -8,6 +8,7 @@
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include <Windows.h>
+#include <atomic>
 #include <mutex>
 #include <set>
 
@@ -52,6 +53,13 @@ std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFra
         detail = std::string("Cosmetics: ") + e.what();
         return {};
     }
+}
+namespace {
+std::atomic<OutfitForOthers> others_filter{};
+}
+void set_outfit_for_others(OutfitForOthers filter) noexcept { others_filter.store(filter, std::memory_order_release); }
+void outfit_for_others(CosmeticRecipe &skater) noexcept {
+    if (const auto filter = others_filter.load(std::memory_order_acquire)) filter(skater);
 }
 void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t local_entity,
                            const CosmeticRecipe &recipe) {

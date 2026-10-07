@@ -7,6 +7,10 @@
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
+#include "Extension/VR/vr.h"
+#include <imgui_internal.h>
+#include <cmath>
+#include <string_view>
 
 namespace dingosdk::overlay::detail {
 
@@ -414,6 +418,100 @@ void draw_menu() {
     if (!visible) s.visible.store(false);
 }
 
+// VR's chat panel (vr::wants_chat_panel): the chat's draw lists render into a texture of their
+// own, on a dark background, and VR shows it as a panel; the rest stays in the game image.
+struct ChatPanel {
+    ComPtr<ID3D12Device> device;
+    ComPtr<ID3D12Resource> texture;
+    ComPtr<ID3D12DescriptorHeap> rtv;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    ImVector<ImDrawList*> lists;
+    ImDrawData data;
+    UINT width = 0, height = 0; // the used top-left part of the texture
+};
+ChatPanel& chat_panel() {
+    static ChatPanel value;
+    return value;
+}
+constexpr UINT chat_texture_size = 1280; // the chat at 2x scale is 1040 px wide
+
+bool chat_list(const ImDrawList* list) {
+    const std::string_view owner = list->_OwnerName ? list->_OwnerName : "";
+    return owner.starts_with("##reskate_chat") || owner.starts_with("##reskate_emote_picker");
+}
+
+// Moves the chat's lists out of `all` into the panel's draw data. False when VR wants no panel
+// or there is no chat this frame.
+bool split_chat(ImDrawData* all, ChatPanel& panel) {
+    panel.lists.clear();
+    if (!dingosdk::vr::wants_chat_panel()) return false;
+    ImVector<ImDrawList*> rest;
+    ImVec2 low(FLT_MAX, FLT_MAX), high(-FLT_MAX, -FLT_MAX);
+    for (ImDrawList* list : all->CmdLists) {
+        if (!chat_list(list) || list->VtxBuffer.empty()) {
+            rest.push_back(list);
+            continue;
+        }
+        panel.lists.push_back(list);
+        for (const auto& vertex : list->VtxBuffer) {
+            low = ImMin(low, vertex.pos);
+            high = ImMax(high, vertex.pos);
+        }
+    }
+    if (panel.lists.empty()) return false;
+    const auto count = [](ImDrawData& data) {
+        data.TotalVtxCount = data.TotalIdxCount = 0;
+        for (const ImDrawList* list : data.CmdLists) {
+            data.TotalVtxCount += list->VtxBuffer.Size;
+            data.TotalIdxCount += list->IdxBuffer.Size;
+        }
+        data.CmdListsCount = data.CmdLists.Size;
+    };
+    all->CmdLists.swap(rest);
+    count(*all);
+    constexpr float pad = 8.0f;
+    const float size = static_cast<float>(chat_texture_size);
+    panel.width = static_cast<UINT>(std::min(size, std::ceil(high.x - low.x + pad * 2)));
+    panel.height = static_cast<UINT>(std::min(size, std::ceil(high.y - low.y + pad * 2)));
+    panel.data = ImDrawData();
+    panel.data.Valid = true;
+    panel.data.CmdLists = panel.lists;
+    count(panel.data);
+    // Taller than the texture: keep the bottom (the input line and the newest messages).
+    panel.data.DisplayPos = ImVec2(low.x - pad, std::max(low.y - pad, high.y + pad - size));
+    panel.data.DisplaySize = ImVec2(size, size);
+    panel.data.FramebufferScale = ImVec2(1.0f, 1.0f);
+    panel.data.OwnerViewport = all->OwnerViewport;
+    return true;
+}
+
+bool ensure_chat_texture(State& s, ChatPanel& panel, DXGI_FORMAT format) {
+    if (panel.texture && panel.device.Get() == s.device.Get() && panel.format == format) return true;
+    panel = {};
+    D3D12_DESCRIPTOR_HEAP_DESC heap{};
+    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    heap.NumDescriptors = 1;
+    if (FAILED(s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&panel.rtv)))) return false;
+    D3D12_HEAP_PROPERTIES properties{};
+    properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = desc.Height = chat_texture_size;
+    desc.DepthOrArraySize = desc.MipLevels = 1;
+    desc.Format = format;
+    desc.SampleDesc.Count = 1;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (FAILED(s.device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+            nullptr, IID_PPV_ARGS(&panel.texture)))) {
+        panel = {};
+        return false;
+    }
+    s.device->CreateRenderTargetView(panel.texture.Get(), nullptr, panel.rtv->GetCPUDescriptorHandleForHeapStart());
+    panel.device = s.device;
+    panel.format = format;
+    return true;
+}
+
 void render(IDXGISwapChain* presented, UINT flags) {
     auto& s = state();
     if (flags & DXGI_PRESENT_TEST) return;
@@ -526,13 +624,21 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_chat();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
     ImGui::Render();
-    if (ImGui::GetDrawData()->TotalVtxCount == 0) { ImGui::SetCurrentContext(previous); return; }
+    auto& chat_panel_state = chat_panel();
+    const bool chat_texture = split_chat(ImGui::GetDrawData(), chat_panel_state) &&
+        ensure_chat_texture(s, chat_panel_state, frame.buffer->GetDesc().Format);
+    dingosdk::vr::submit_chat_panel(chat_texture ? chat_panel_state.texture.Get() : nullptr, chat_panel_state.width,
+        chat_panel_state.height);
+    if (ImGui::GetDrawData()->TotalVtxCount == 0 && !chat_texture) { ImGui::SetCurrentContext(previous); return; }
     const auto upload_slot = static_cast<std::size_t>(s.submitted_draws % s.upload_fences.size());
+    // The chat panel is a second backend draw this frame: its upload buffers are the next slot's.
+    const auto chat_slot = static_cast<std::size_t>((s.submitted_draws + 1) % s.upload_fences.size());
     // The ImGui backend rotates upload buffers by submitted draw count, while
     // command allocators rotate by swapchain index. Wait for both exact owners
     // so every presented frame receives UI instead of intermittently skipping.
     if (!completed(frame.fence, render_fence_timeout_ms)
-        || !completed(s.upload_fences[upload_slot], render_fence_timeout_ms)) {
+        || !completed(s.upload_fences[upload_slot], render_fence_timeout_ms)
+        || (chat_texture && !completed(s.upload_fences[chat_slot], render_fence_timeout_ms))) {
         ImGui::SetCurrentContext(previous);
         s.failed = true;
         restore_input(true);
@@ -555,6 +661,21 @@ void render(IDXGISwapChain* presented, UINT flags) {
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), s.commands.Get());
     std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
     s.commands->ResourceBarrier(1, &barrier);
+    if (chat_texture) {
+        // COMMON (VR's copy reads it as a presented image) -> render target -> COMMON.
+        D3D12_RESOURCE_BARRIER chat_barrier = barrier;
+        chat_barrier.Transition.pResource = chat_panel_state.texture.Get();
+        chat_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        chat_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        s.commands->ResourceBarrier(1, &chat_barrier);
+        const auto chat_rtv = chat_panel_state.rtv->GetCPUDescriptorHandleForHeapStart();
+        constexpr float background[4] = {0.035f, 0.04f, 0.05f, 1.0f};
+        s.commands->ClearRenderTargetView(chat_rtv, background, 0, nullptr);
+        s.commands->OMSetRenderTargets(1, &chat_rtv, FALSE, nullptr);
+        ImGui_ImplDX12_RenderDrawData(&chat_panel_state.data, s.commands.Get());
+        std::swap(chat_barrier.Transition.StateBefore, chat_barrier.Transition.StateAfter);
+        s.commands->ResourceBarrier(1, &chat_barrier);
+    }
     ImGui::SetCurrentContext(previous);
     if (FAILED(s.commands->Close())) { s.failed = true; restore_input(true); return; }
     ID3D12CommandList* lists[] = {s.commands.Get()};
@@ -564,6 +685,10 @@ void render(IDXGISwapChain* presented, UINT flags) {
     frame.fence = signal;
     s.upload_fences[upload_slot] = signal;
     ++s.submitted_draws;
+    if (chat_texture) {
+        s.upload_fences[chat_slot] = signal;
+        ++s.submitted_draws;
+    }
     ++s.rendered_frames;
 }
 

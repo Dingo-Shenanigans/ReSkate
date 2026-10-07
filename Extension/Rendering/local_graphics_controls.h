@@ -28,11 +28,19 @@ struct GraphicsRuntime {
     std::array<GraphicsLease, 2> settings_fields{};
     DWORD thread{};
     std::uint64_t last_update{};
+    // VR turns vignette and chromatic aberration off while it runs, without
+    // touching the saved choices (they come back when VR stops).
+    bool vr_override{};
 };
 
 GraphicsRuntime& graphics_runtime();
 
 std::uint32_t graphics_video_mask(const GraphicsControls& choices);
+
+// The choices in effect: the saved ones, with the VR override applied.
+GraphicsControls graphics_effective_choices(const GraphicsRuntime& r);
+// Engine thread: VR running (true) or not; re-applies only on a change.
+void set_graphics_vr_override(bool active) noexcept;
 
 void graphics_video_setup(const std::uintptr_t* params, std::uintptr_t context, std::uintptr_t output);
 

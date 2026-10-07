@@ -4,6 +4,7 @@
 #include "cursor.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
+#include "Extension/VR/vr.h"
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -81,10 +82,38 @@ void request_stop() {
     request_stop_locked();
 }
 
+namespace {
+std::atomic<dingosdk::overlay::PresentObserver> present_before{};
+std::atomic<dingosdk::overlay::PresentCompletion> present_after{};
+}
+
+// Hands the selected swapchain's frame to the present observer. Returns
+// whether it ran, so the completion call matches it.
+bool observe_present(IDXGISwapChain* chain, UINT flags) noexcept {
+    const auto before = present_before.load(std::memory_order_acquire);
+    if (!before || (flags & DXGI_PRESENT_TEST)) return false;
+    auto& s = state();
+    std::lock_guard lock(s.render_mutex);
+    if (s.stop.load() || !s.swapchain || !s.queue || object_identity(chain).Get() != s.swapchain_identity) return false;
+    // With VR's chat panel, an open chat alone keeps the VR view (it is typed on the panel).
+    const bool chat_on_panel = dingosdk::vr::wants_chat_panel() && !s.visible.load() && !s.console_visible.load() &&
+        !s.editor_visible.load();
+    dingosdk::vr::set_ui_open(interactive_visible(s) && !chat_on_panel);
+    before(s.swapchain.Get(), s.queue.Get());
+    return true;
+}
+
+void complete_present(bool observed) noexcept {
+    if (!observed) return;
+    if (const auto after = present_after.load(std::memory_order_acquire)) after();
+}
+
 HRESULT STDMETHODCALLTYPE present(IDXGISwapChain* chain, UINT interval, UINT flags) {
     PresentGuard guard;
     if (guard.outermost) guarded_render(chain, flags);
+    const bool observed = guard.outermost && observe_present(chain, flags);
     const HRESULT result = original<PresentFn>(state().present)(chain, interval, flags);
+    complete_present(observed);
     if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
         ComPtr<ID3D12Device> device;
         chain->GetDevice(IID_PPV_ARGS(&device));
@@ -97,7 +126,9 @@ HRESULT STDMETHODCALLTYPE present1(IDXGISwapChain1* chain, UINT interval, UINT f
     const DXGI_PRESENT_PARAMETERS* parameters) {
     PresentGuard guard;
     if (guard.outermost) guarded_render(chain, flags);
+    const bool observed = guard.outermost && observe_present(chain, flags);
     const HRESULT result = original<Present1Fn>(state().present1)(chain, interval, flags, parameters);
+    complete_present(observed);
     if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
         ComPtr<ID3D12Device> device;
         chain->GetDevice(IID_PPV_ARGS(&device));
@@ -232,6 +263,75 @@ HRESULT STDMETHODCALLTYPE set_fullscreen(IDXGISwapChain* chain, BOOL fullscreen,
     return original<FullscreenFn>(state().fullscreen)(chain, fullscreen, output);
 }
 
+// The engine only accepts resolutions from the monitor's mode list. With a
+// launcher window size (the VR setup), square sizes from low to high end are
+// added to that list, plus the requested size, so they can be picked in the
+// game's own resolution menu.
+constexpr UINT vr_sizes[]{1440, 1600, 1800, 2016, 2304, 2592, 2880, 3240, 3600, 3840};
+std::vector<std::pair<UINT, UINT>> extra_modes() {
+    const auto& s = state();
+    std::vector<std::pair<UINT, UINT>> sizes;
+    if (!s.forced_width) return sizes;
+    for (const auto size : vr_sizes) sizes.emplace_back(size, size);
+    if (s.forced_width != s.forced_height || std::find(std::begin(vr_sizes), std::end(vr_sizes), s.forced_width) == std::end(vr_sizes))
+        sizes.emplace_back(s.forced_width, s.forced_height);
+    return sizes;
+}
+template<class Mode, class Function, class Output>
+HRESULT modes_with_extra(Function list, Output* output, DXGI_FORMAT format, UINT flags, UINT* count, Mode* modes) {
+    const auto extra = extra_modes();
+    if (extra.empty() || !count) return list(output, format, flags, count, modes);
+    const auto added = static_cast<UINT>(extra.size());
+    if (!modes) {
+        const HRESULT result = list(output, format, flags, count, nullptr);
+        if (SUCCEEDED(result) && *count) *count += added;
+        return result;
+    }
+    if (*count <= added) return list(output, format, flags, count, modes);
+    UINT real = *count - added;
+    const HRESULT result = list(output, format, flags, &real, modes);
+    *count = real;
+    if (FAILED(result) || !real) return result;
+    // Each extra size copies the format, refresh rate and scaling of the largest real mode.
+    const Mode model = modes[real - 1];
+    UINT total = real;
+    for (const auto& [width, height] : extra) {
+        if (std::any_of(modes, modes + total, [&](const Mode& m) { return m.Width == width && m.Height == height; })) continue;
+        modes[total] = model;
+        modes[total].Width = width;
+        modes[total].Height = height;
+        ++total;
+    }
+    std::stable_sort(modes, modes + total, [](const Mode& a, const Mode& b) {
+        return a.Width != b.Width ? a.Width < b.Width : a.Height < b.Height;
+    });
+    *count = total;
+    static std::atomic<bool> logged{};
+    if (!logged.exchange(true))
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "Display modes: added %u VR sizes (%ux%u to %ux%u) to the game's resolution list.", total - real,
+            vr_sizes[0], vr_sizes[0], vr_sizes[std::size(vr_sizes) - 1], vr_sizes[std::size(vr_sizes) - 1]);
+    return result;
+}
+HRESULT STDMETHODCALLTYPE display_modes(IDXGIOutput* output, DXGI_FORMAT format, UINT flags, UINT* count, DXGI_MODE_DESC* modes) {
+    return modes_with_extra(original<ModeListFn>(state().modes), output, format, flags, count, modes);
+}
+HRESULT STDMETHODCALLTYPE display_modes1(IDXGIOutput1* output, DXGI_FORMAT format, UINT flags, UINT* count, DXGI_MODE_DESC1* modes) {
+    return modes_with_extra(original<ModeList1Fn>(state().modes1), output, format, flags, count, modes);
+}
+void install_mode_hooks_locked(IDXGIFactory* base) {
+    ComPtr<IDXGIAdapter> adapter;
+    ComPtr<IDXGIOutput> output;
+    if (FAILED(base->EnumAdapters(0, &adapter)) || FAILED(adapter->EnumOutputs(0, &output))) return;
+    auto** table = *reinterpret_cast<void***>(output.Get());
+    install(state().modes, table[8], reinterpret_cast<void*>(display_modes));
+    ComPtr<IDXGIOutput1> output1;
+    if (SUCCEEDED(output.As(&output1))) {
+        table = *reinterpret_cast<void***>(output1.Get());
+        install(state().modes1, table[19], reinterpret_cast<void*>(display_modes1));
+    }
+}
+
 HRESULT WINAPI factory(REFIID iid, void** output) {
     const HRESULT result = original<FactoryFn>(state().factory)(iid, output);
     if (FAILED(result) || !output || !*output || state().stop.load()) return result;
@@ -247,6 +347,7 @@ HRESULT WINAPI factory(REFIID iid, void** output) {
         table = *reinterpret_cast<void***>(extended.Get());
         hwnd = install(state().create_hwnd, table[15], reinterpret_cast<void*>(create_hwnd));
     }
+    if (state().forced_width) install_mode_hooks_locked(base.Get());
     if (!basic || !hwnd) dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics, "DXGI factory differs from the hooked implementation; unsupported path ignored.");
     return result;
 }
@@ -294,6 +395,17 @@ bool start_overlay(const dingosdk::overlay::CallbacksV3* callbacks) {
     if (s.started || s.stop.load()) return false;
     dingosdk::overlay::initialize_graphics_diagnostics();
     s.force_windowed = dingosdk::overlay::graphics_option_enabled(L"RESKATE_FORCE_WINDOWED");
+    if (s.force_windowed) {
+        const auto size = [](const wchar_t* name) -> UINT {
+            wchar_t text[16]{};
+            const auto count = GetEnvironmentVariableW(name, text, 16);
+            const auto value = count && count < 16 ? std::wcstoul(text, nullptr, 10) : 0ul;
+            return value >= 320 && value <= 16384 ? static_cast<UINT>(value) : 0;
+        };
+        s.forced_width = size(L"RESKATE_WINDOW_WIDTH");
+        s.forced_height = size(L"RESKATE_WINDOW_HEIGHT");
+        if (!s.forced_width || !s.forced_height) s.forced_width = s.forced_height = 0;
+    }
     {
         wchar_t game[32768]{};
         const auto length = GetModuleFileNameW(nullptr, game, 32768);
@@ -430,4 +542,13 @@ extern "C" void DingoSDKOverlayGetStatus(dingosdk::overlay::Status* output) {
     std::lock_guard lock(s.render_mutex);
     *output = {s.started.load(), s.swapchain != nullptr, s.ready, s.visible.load(),
         s.stop.load(), s.failed.load(), s.rendered_frames};
+}
+
+namespace dingosdk::overlay {
+void set_present_observer(PresentObserver before, PresentCompletion after) noexcept {
+    // Under the render lock, so no Present is between its two calls.
+    std::lock_guard lock(detail::state().render_mutex);
+    detail::present_after.store(after, std::memory_order_release);
+    detail::present_before.store(before, std::memory_order_release);
+}
 }

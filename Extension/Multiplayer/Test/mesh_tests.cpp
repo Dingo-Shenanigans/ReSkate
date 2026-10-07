@@ -289,6 +289,7 @@ std::shared_ptr<const SteamSocialSnapshot> steam_social_snapshot() {
     return snapshot;
 }
 std::optional<Appearance> capture_cosmetics(std::uintptr_t, const NativeFrame &, std::string &) { return {}; }
+void outfit_for_others(CosmeticRecipe &) noexcept {}
 void prepare_audio_capture(std::uintptr_t, const NativeFrame &) noexcept {}
 std::vector<AudioSample> drain_audio_capture(std::uint64_t) { return {}; }
 void update_remote_audio(std::uintptr_t, const NativeFrame &, const Pose &, const AudioState &) noexcept {}

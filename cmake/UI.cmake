@@ -16,6 +16,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/skate_menu.cpp
     Extension/UI/Overlay/skate_menu_world.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
+    Extension/UI/Overlay/skate_menu_vr.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp
@@ -35,7 +36,7 @@ add_library(dingosdk_overlay STATIC
     Extension/Trainer/trainer_page.cpp
     Extension/Trainer/trainer_view.cpp
 )
-target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE hid cfgmgr32 shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
+target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dingosdk_vr dxguid PRIVATE hid cfgmgr32 shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 
 # The window shown from the moment ReSkate loads until the game's own window appears.
 add_library(dingosdk_startup_window STATIC Extension/UI/Startup/startup_window.cpp)

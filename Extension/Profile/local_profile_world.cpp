@@ -33,7 +33,7 @@ bool set_local_graphics_control(std::string_view key, int value) {
     try {
         s.store->save_graphics_controls(choices);
         r.model.choices = choices; r.last_update = 0;
-        r.disabled_video_effects.store(graphics_video_mask(choices), std::memory_order_release);
+        r.disabled_video_effects.store(graphics_video_mask(graphics_effective_choices(r)), std::memory_order_release);
         r.model.status = "Saved. Applying graphics controls.";
         dingosdk::logging::event(dingosdk::logging::Channel::profile, dingosdk::Json{{"event","graphics_control_saved"},{"key",key},{"value",value}}.dump().c_str());
         return true;
