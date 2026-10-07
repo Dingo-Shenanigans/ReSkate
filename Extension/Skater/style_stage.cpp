@@ -11,6 +11,7 @@
 #include "Engine/Game/Build/20260929/style.h"
 #include "Engine/Game/Skater/style_pose.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Throwdowns/native_type_scan.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/UI/Overlay/overlay.h"
@@ -224,23 +225,8 @@ bool dispatch_known(std::uintptr_t base) noexcept {
 }
 // Announces the queued navigation on the UI's event dispatcher. The event has no payload.
 bool announce(std::uintptr_t base, std::uintptr_t type) noexcept {
-    namespace party = addr::native_party;
-    alignas(16) std::array<std::byte, 64> payload{};
-    __try {
-        alignas(16) std::array<std::byte, 16> context{};
-        reinterpret_cast<void (*)(void *)>(base + party::current_context)(context.data());
-        const auto dispatcher = reinterpret_cast<std::uintptr_t (*)(void *)>(base + party::event_dispatcher)(context.data());
-        std::uint8_t live{};
-        if (!dispatcher || !memory::peek(dispatcher + model::dispatcher_live, live) || !live) return false;
-        struct Options {
-            float delay;
-            std::uint32_t count, flags;
-        } options{0.f, 1, 0};
-        reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t, const void *, void *, std::uintptr_t)>(base + party::event_post)(dispatcher, type, payload.data(), &options, 0);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    alignas(16) const std::array<std::byte, 64> payload{};
+    return multiplayer::post_native_ui_event(base, type, payload.data());
 }
 bool navigate(std::uintptr_t base, State &s, std::string_view name) noexcept {
     const auto type = s.navigation_type.load(std::memory_order_acquire);

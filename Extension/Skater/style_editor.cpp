@@ -658,6 +658,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 s.low_ms = flick;
                 s.high_ms = style::ms_at(*clip, style::trick_end);
                 s.pace = {caught - flick, touchdown - caught, s.high_ms - touchdown};
+                style_layer::note_editor_pace(s.pace);
                 s.started = s.last_tick = playback_ms();
                 s.shown_ms = s.target_ms = 0;
                 s.playing = true;
@@ -689,8 +690,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             remove(base, s);
             return;
         }
-        // Solo only, until the editor is tested with other players in the session.
-        if (multiplayer::other_remote_skaters(stand_in_slot) && !style_layer::session_test()) {
+        // Solo only, until the editor is tested with other players in the session. A skater in the stand-in's slot before the stand-in exists is a player.
+        const bool players = multiplayer::other_remote_skaters(stand_in_slot) || (!s.spawned && multiplayer::other_remote_skaters(multiplayer::max_remote_players));
+        if (players && !style_layer::session_test()) {
             remove(base, s);
             s.shown.reset();
             s.detail = "the stand-in is for solo play. Leave the session first";

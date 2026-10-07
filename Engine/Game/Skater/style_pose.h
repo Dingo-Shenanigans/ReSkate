@@ -288,6 +288,23 @@ struct Key {
     std::vector<JointDelta> joints;
     float blend_out_ms{}; // 0: blends to the next keyframe
 };
+// One trick's keyframes as the layer plays them, sorted by time. A joint is its index in editable_joints.
+inline std::vector<Key> trick_keys(const Style &style, std::uint8_t trick) {
+    const auto times = style.keys(trick);
+    std::vector<Key> keys(times.size());
+    for (std::size_t i = 0; i < times.size(); ++i) {
+        keys[i].time = times[i];
+        if (const auto found = style.blend_outs.find(Target{true, trick, static_cast<std::uint8_t>(i)}); found != style.blend_outs.end())
+            keys[i].blend_out_ms = found->second;
+    }
+    for (const auto &[key, degrees] : style.rotations) {
+        const auto joint = std::ranges::find(editable_joints, std::string_view(key.second));
+        if (!key.first.trick || key.first.id != trick || key.first.key >= keys.size() || joint == editable_joints.end()) continue;
+        keys[key.first.key].joints.push_back({static_cast<std::uint16_t>(joint - editable_joints.begin()), from_degrees(degrees[0], degrees[1], degrees[2])});
+    }
+    std::ranges::stable_sort(keys, {}, &Key::time);
+    return keys;
+}
 // A rotation as its axis times its angle in radians, so that rotations add and scale.
 using Turn = std::array<float, 3>;
 inline Turn turn_of(Quat q) noexcept {

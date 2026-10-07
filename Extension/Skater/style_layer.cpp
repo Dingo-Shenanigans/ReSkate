@@ -17,6 +17,7 @@
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "no_bail.h"
 #include <windows.h>
+#include <objbase.h>
 #include <shellapi.h>
 #include <algorithm>
 #include <array>
@@ -70,6 +71,7 @@ struct Settings {
     bool auto_save{true}, saved_auto_save{true};
     bool unsaved{}; // without auto save: the style differs from the file
     style::Style on_disk; // the style as last read or saved
+    style::Pace editor_pace{style::even_pace}; // the pace of the clip on the editor's stand-in
     style::History history;
     std::uint64_t save_at{};
     std::string file_issue;
@@ -706,32 +708,14 @@ int request_key_add(std::uint8_t trick, float time, std::string &error) {
     }
     const auto before_add = s.style;
     time = on_timeline(time);
-    // The new keyframe starts as the pose shown at that time, so the addition changes nothing on screen.
-    int before = -1, after = -1;
-    for (int i = 0; i < static_cast<int>(times.size()); ++i) {
-        const float at = times[static_cast<std::size_t>(i)];
-        if (at <= time && (before < 0 || at > times[static_cast<std::size_t>(before)])) before = i;
-        if (at > time && (after < 0 || at < times[static_cast<std::size_t>(after)])) after = i;
-    }
-    const float from = before >= 0 ? times[static_cast<std::size_t>(before)] : 0.0f, to = after >= 0 ? times[static_cast<std::size_t>(after)] : style::trick_end;
-    const float amount = to > from ? std::clamp((time - from) / (to - from), 0.0f, 1.0f) : 1.0f;
+    // The new keyframe starts as the pose shown at that time, at the shown clip's pace, so the addition changes nothing on screen.
     const auto added = static_cast<std::uint8_t>(times.size());
-    // The two end angles of each joint. A keyframe without the joint gives the game's own pose.
-    std::map<std::string, std::array<std::array<float, 3>, 2>> ends;
-    for (const auto &[key, degrees] : s.style.rotations) {
-        if (!key.first.trick || key.first.id != trick) continue;
-        if (key.first.key == before) ends[key.second][0] = degrees;
-        else if (key.first.key == after) ends[key.second][1] = degrees;
-    }
-    for (const auto &[joint, pair] : ends) {
-        // The blend that the timeline shows, converted to keyframe angles.
-        const auto shown = style::mix(style::from_degrees(pair[0][0], pair[0][1], pair[0][2]), style::from_degrees(pair[1][0], pair[1][1], pair[1][2]), amount);
-        auto degrees = style::to_degrees(shown);
-        // If the angles do not reproduce that rotation, use the blend of the angles.
-        const auto again = style::from_degrees(degrees[0], degrees[1], degrees[2]);
-        if (std::abs(again[0] * shown[0] + again[1] * shown[1] + again[2] * shown[2] + again[3] * shown[3]) < 0.99995f)
-            for (std::size_t axis = 0; axis < 3; ++axis) degrees[axis] = pair[0][axis] + (pair[1][axis] - pair[0][axis]) * amount;
-        if (std::abs(degrees[0]) > 0.01f || std::abs(degrees[1]) > 0.01f || std::abs(degrees[2]) > 0.01f) s.style.rotations[{style::Target{true, trick, added}, joint}] = degrees;
+    std::vector<style::JointDelta> shown;
+    style::evaluate(style::trick_keys(s.style, trick), time, shown, s.editor_pace);
+    for (const auto &delta : shown) {
+        const auto degrees = style::to_degrees(delta.rotation);
+        if (std::abs(degrees[0]) > 0.01f || std::abs(degrees[1]) > 0.01f || std::abs(degrees[2]) > 0.01f)
+            s.style.rotations[{style::Target{true, trick, added}, std::string(style::editable_joints[delta.joint])}] = degrees;
     }
     times.push_back(time);
     s.style.times[trick] = std::move(times);
@@ -849,10 +833,19 @@ bool auto_saving() noexcept {
 }
 bool request_preset(std::string_view action, std::string_view name, std::string &error) {
     if (action == "folder") {
-        // Outside the lock: the shell can take a moment.
-        std::error_code made;
-        std::filesystem::create_directories(presets_folder(), made);
-        ShellExecuteW(nullptr, L"open", presets_folder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        // The shell can take a moment, so it runs off the game thread.
+        try {
+            std::thread([folder = presets_folder()] {
+                std::error_code made;
+                std::filesystem::create_directories(folder, made);
+                const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
+                ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if (com) CoUninitialize();
+            }).detach();
+        } catch (...) {
+            error = "The presets folder could not be opened.";
+            return false;
+        }
         return true;
     }
     auto &s = settings();
@@ -955,6 +948,11 @@ void request_preview(std::uint8_t trick, float time, bool play) {
                          std::memory_order_release);
     l.preview_played.store(play ? GetTickCount64() : 0, std::memory_order_release);
     l.preview.store(trick, std::memory_order_release);
+}
+void note_editor_pace(const style::Pace &pace) {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    s.editor_pace = pace;
 }
 void rotations_at(std::uint8_t trick, float time, const style::Pace &pace, std::vector<style::JointDelta> &out) {
     out.clear();

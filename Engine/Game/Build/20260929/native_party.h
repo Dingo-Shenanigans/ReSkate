@@ -109,6 +109,8 @@ inline constexpr std::uintptr_t voice_unavailable = 0x848e60;
 // dispatcher = event_dispatcher(&buffer16); if dispatcher+0x28: event_post(dispatcher, type object,
 // payload*, options* {f32 0, u32 1, u32 0}, 0).
 inline constexpr std::uintptr_t current_context = 0x18b6ae0, event_dispatcher = 0x4b257a0, event_post = 0x4b30ab0;
+// The dispatcher's byte that says it accepts events.
+inline constexpr std::uintptr_t dispatcher_live = 0x28;
 // Their type objects: GroupJoinNotification {u64 EAId}, GroupLeaveNotification {u64 EAId, i32 reason
 // (0 left, 1 kicked, 2 location access)}, GroupLeaderChangedNotification {u64 new leader},
 // GameInviteUpdated {String GameId, String GameInviteId, u64 inviter, i32 1, bool matchmaking}.

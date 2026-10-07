@@ -218,6 +218,33 @@ int main() {
     check(!preset_name("CON") && !preset_name("nul") && !preset_name("Com1") && !preset_name("LPT9") && preset_name("console") && preset_name("com10"),
           "and not a Windows device name");
     check(same_text("Street", "street") && !same_text("street", "streets"), "two names that differ only in case name the same file");
+    // A keyframe added at the shown pose leaves that pose as it was, also after a blend out.
+    Style styled;
+    styled.times[2] = {0.5f, 2.0f};
+    styled.rotations[{Target{true, 2, 0}, "Hips"}] = {60, 0, 0};
+    styled.rotations[{Target{true, 2, 1}, "LeftArm"}] = {0, 40, 0};
+    styled.blend_outs[Target{true, 2, 0}] = 120;
+    const auto played = trick_keys(styled, 2);
+    check(played.size() == 2 && played[0].time == 0.5f && played[0].blend_out_ms == 120 && played[1].joints.size() == 1,
+          "a trick's keyframes are played with their joints and blend outs");
+    for (const float moment : {0.9f, 1.4f, 2.6f}) {
+        std::vector<JointDelta> before;
+        evaluate(trick_keys(styled, 2), moment, before, measured);
+        auto added = styled;
+        const auto key = static_cast<std::uint8_t>(added.times[2].size());
+        added.times[2].push_back(moment);
+        for (const auto &shown : before)
+            added.rotations[{Target{true, 2, key}, std::string(editable_joints[shown.joint])}] = to_degrees(shown.rotation);
+        std::vector<JointDelta> after;
+        evaluate(trick_keys(added, 2), moment, after, measured);
+        bool same = before.size() <= after.size();
+        for (const auto &shown : before) {
+            const auto match = std::ranges::find(after, shown.joint, &JointDelta::joint);
+            same = same && match != after.end() && std::abs(std::abs(match->rotation[0] * shown.rotation[0] + match->rotation[1] * shown.rotation[1] +
+                                                                      match->rotation[2] * shown.rotation[2] + match->rotation[3] * shown.rotation[3]) - 1.0f) < 1e-4f;
+        }
+        check(same, "a keyframe added at the shown pose does not change it");
+    }
     // History: each edit is one step to undo and redo. A group, such as one drag, is one step.
     Style one, two, three;
     two.times[2] = {1.0f};

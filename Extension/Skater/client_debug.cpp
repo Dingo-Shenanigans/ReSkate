@@ -412,8 +412,11 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
             style_editor::request_hide();
             style_stage::leave();
         }
-        source_require(!debug.park_editor, "Close the park editor first.");
-        source_require(can_control && phase, "Wait for the local camera before opening the style editor.");
+        // Only an open is checked: a close always runs.
+        if (request.enabled) {
+            source_require(!debug.park_editor, "Close the park editor first.");
+            source_require(can_control && phase, "Wait for the local camera before opening the style editor.");
+        }
         debug.editor_transition = true;
         struct EndTransition { bool& flag; ~EndTransition(){flag=false;} } transition{debug.editor_transition};
         const auto apply = [&](overlay::DebugAction action, bool enabled) {
@@ -531,6 +534,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         first_person_arm().settings = {};
         first_person_disarm();
         debug.park_editor = false;
+        if (debug.style_editor_saved_fov > 0 && debug.camera_owned && debug.camera_identity.camera)
+            (void)first_person_write_fov(debug.camera_identity.camera, debug.style_editor_saved_fov);
         debug.style_editor_saved_fov = 0;
         if (std::exchange(debug.style_editor, false)) {
             style_editor::screen_open(false);

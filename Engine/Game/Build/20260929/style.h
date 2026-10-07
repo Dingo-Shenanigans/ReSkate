@@ -35,8 +35,8 @@ inline constexpr std::uintptr_t entity_component = 0x628, component_pose_holder 
 inline constexpr std::uintptr_t holder_animation_interface = 0xc0;
 // One bone of a pose buffer: scale, then rotation, then position.
 inline constexpr std::uintptr_t bone_size = 0x30, bone_rotation = 0x10, bone_position = 0x20;
-// UI manager -> model manager. The event dispatcher's byte that says it accepts events.
-inline constexpr std::uintptr_t ui_model_manager = 0x140, dispatcher_live = 0x28;
+// UI manager -> model manager.
+inline constexpr std::uintptr_t ui_model_manager = 0x140;
 // A camera's world transform: 4x4 floats, rows right, up, backward, position.
 inline constexpr std::uintptr_t camera_transform = 0x50;
 // Skatepedia's stage in the world, and how far its skater goes from that point. Measured 2026-10-04.
