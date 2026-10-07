@@ -196,7 +196,6 @@ struct StyleModel {
     std::uint8_t preview{}; // the previewed flip trick, or 0
     float preview_time{};
     bool preview_playing{};
-    bool editor_session_test{}; // the editor may open in a multiplayer session: a test switch
     // Presets: named style files. `preset` is the one in use.
     std::string preset;
     std::vector<std::string> presets;

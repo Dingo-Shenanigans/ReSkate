@@ -38,9 +38,6 @@ void request_auto_save(bool on);
 [[nodiscard]] style::StyleModel model();
 // Shows the pose of one flip trick at a timeline time, or in a loop. 0 stops the preview.
 void request_preview(std::uint8_t trick, float time = 0, bool play = false);
-// The style editor runs in solo play only. True lets it run in a multiplayer session, for a test.
-void request_session_test(bool allowed);
-[[nodiscard]] bool session_test() noexcept;
 // Shows a replayed flip trick with the current style. Default on. Solo play only.
 void request_restyle(bool restyle);
 [[nodiscard]] bool restyling() noexcept;

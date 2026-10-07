@@ -541,7 +541,6 @@ void fill(style::StyleModel &model) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     model.clips = s.on_disk;
-    model.editor_session_test = style_layer::session_test();
     model.editor_note = s.note;
     model.pace = s.pace;
 }
@@ -707,12 +706,14 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             remove(base, s);
             return;
         }
-        // Solo only, until the editor is tested with other players in the session. A skater in the stand-in's slot before the stand-in exists is a player.
-        const bool players = multiplayer::other_remote_skaters(stand_in_slot) || (!s.spawned && multiplayer::other_remote_skaters(multiplayer::max_remote_players));
-        if (players && !style_layer::session_test()) {
-            remove(base, s);
+        // A skater in the stand-in's slot before the stand-in exists is a player: the lobby is full.
+        const bool slot_taken = [] {
+            const multiplayer::PeerScope scope(stand_in_slot);
+            return multiplayer::remote_skater_entity() != 0;
+        }();
+        if (!s.spawned && slot_taken) {
             s.shown.reset();
-            s.detail = "the stand-in is for solo play. Leave the session first";
+            s.detail = "the lobby is full, so there is no slot for the stand-in";
             return;
         }
         advance(s, playback_ms());
