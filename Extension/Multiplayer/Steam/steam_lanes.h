@@ -53,6 +53,10 @@ inline std::uint64_t lane_queue_time(const SteamNetConnectionRealTimeStatus_t &i
     if (time == std::numeric_limits<SteamNetworkingMicroseconds>::max()) return 0;
     return static_cast<std::uint64_t>(std::max<SteamNetworkingMicroseconds>(0, time));
 }
+// A whole connection's queue time, with the same care for Steam's "cannot estimate" value.
+inline std::uint64_t queue_time(const SteamNetConnectionRealTimeStatus_t &info) {
+    return lane_queue_time(info, {}, TrafficLane::gameplay);
+}
 inline bool lane_congested(const SteamNetConnectionRealTimeStatus_t &info,
     std::span<const SteamNetConnectionRealTimeLaneStatus_t> lanes, TrafficLane lane) {
     if (info.m_eState != k_ESteamNetworkingConnectionState_Connected) return false;

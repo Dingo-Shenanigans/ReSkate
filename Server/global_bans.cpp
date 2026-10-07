@@ -50,6 +50,7 @@ BanListCheck use_ban_list(std::string_view answer) {
     BanListCheck check;
     try {
         auto lists = multiplayer::parse_identity_lists(answer);
+        multiplayer::server_tokens_rule = multiplayer::parse_server_tokens_required(answer);
         const auto &bans = lists[static_cast<std::size_t>(multiplayer::IdentityList::banned)];
         check.banned = bans.size();
         check.changed = last != bans;

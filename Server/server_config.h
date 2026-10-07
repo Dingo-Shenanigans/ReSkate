@@ -27,6 +27,7 @@ struct VoteSettings {
 };
 // ReSkateServer.json. Every setting an admin or the console changes is saved
 // back, so a restart keeps it.
+inline constexpr unsigned dedicated_tps = 20;
 struct ServerConfig {
     std::filesystem::path file;
     std::string name = "ReSkate server";
@@ -36,9 +37,21 @@ struct ServerConfig {
     std::vector<std::string> map_pool; // maps for votes and the rotation, in order; empty: every map
     unsigned map_rotation = 0;         // minutes per map before the next pool map (0: off)
     unsigned max_players = 16; // players; the server itself is not one
+    // Of those, how many are kept for the players in `reserved` and the admins: everyone else
+    // is told the server is full once only these are left. 0: none are kept.
+    unsigned reserved_slots = 0;
+    // The most poses a second one player is sent (crowd_limits); 0: no limit.
+    unsigned crowd_budget = crowd_pose_budget;
+    // What the server may send each player, in KB/s (128-16384).
+    unsigned send_rate = 900;
+    std::vector<std::uint64_t> reserved;
     std::string password;      // empty: anyone may join
     std::string welcome;       // sent to each player as they join
     bool listed = true;        // shown in the in-game server browser
+    // A Steam game server login token (steamcommunity.com/dev/managegameservers, app 3354750).
+    // With one the server signs in to its own account and keeps the same Steam ID every start,
+    // which is how the ReSkate team's list of official servers knows it. Empty: anonymous.
+    std::string steam_token;
     bool auto_update = true;   // install new releases when nobody is on
     bool global_bans = true;   // turn away players the ReSkate team has banned (global_bans.h)
     bool activity_log = true;  // console lines for throwdowns, objects and loading
@@ -58,12 +71,17 @@ struct ServerConfig {
     // everyone installs). Each player's fingerprint is in the console when they are flagged.
     std::vector<std::uint64_t> score_allow;
     std::uint16_t port = 27015, query_port = 27016;
-    unsigned tps = multiplayer_default_tps;
+    // Fixed for dedicated servers for now (dedicated_tps): a busy one's traffic, in and out,
+    // is its players' poses, and at 20 a second that is a third less than at 30. Whatever
+    // the file says is read as this; lobbies keep their own choice.
+    unsigned tps = dedicated_tps;
     bool voice_chat = true;
     float voice_range = default_voice_range;
     MultiplayerDistances distances;
     // everyone, admins (only the admins below may build) or nobody.
     ObjectPlacement object_placement = ObjectPlacement::everyone;
+    // Objects each player may have placed (object_placement.h); 0: no limit. Admins are not held to it.
+    unsigned object_limit = default_object_limit;
     // Whether players may use noclip (and teleport) / No Bail / the boosts (admins always may).
     bool noclip = true, no_bail = true, boosts = true;
     // Players skate with the game's own physics tuning, not copies they edited.
@@ -82,6 +100,9 @@ struct ServerConfig {
 // their names go to `added` ("votes.seconds" for a nested one).
 ServerConfig load_config(const std::filesystem::path &file, std::vector<std::string> *added = nullptr);
 void save_config(const ServerConfig &config);
+// Whether a player who is not yet on may join a server with `on` players on it: anyone while
+// an unreserved slot is free, then only the reserved players and the admins until it is full.
+bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noexcept;
 // Why `config` cannot run, or empty.
 std::string config_error(const ServerConfig &config);
 // A scoring fingerprint as the config and console write it (16 hex digits), and read back
@@ -101,6 +122,9 @@ std::vector<std::string> load_levels(const std::filesystem::path &mods);
 const std::vector<ServerLevel> &levels();
 // Like the game's `load`: a level path, a name or short name, or the unique start of one.
 const ServerLevel *find_level(std::string_view map);
+// Whether the server has this map (a name, level path or destination): one of the game's own,
+// or one a mod folder in its Mods lists. It only moves players to a map it has itself.
+bool installed_map(std::string_view map);
 // What players load for a map, as the protocol carries it ("<root>|<level>").
 // Empty when the map is unknown (a full level path is always accepted).
 std::string map_destination(std::string_view map);

@@ -52,8 +52,18 @@ class Host {
             return ++messages <= burst;
         }
     };
+    // What is sent and received, in bytes, by what it carries (traffic_kind): poses, sound,
+    // voice, outfits, objects, the rest. `last` is the last whole half minute.
+    struct Traffic {
+        std::array<std::uint64_t, 6> out{}, in{};
+        std::uint64_t snapshots{}; // whole states sent reliably; the rest of a stream is differences
+    };
+    struct Counted {
+        Traffic total, mark, last;
+    };
     struct Guest {
         Member member;
+        Counted traffic;
         std::uint64_t password_challenge{};
         bool handshaken{}, map_authorized{}, world_ready = true;
         std::uint64_t last_map_offer{}, travel_since{}, connected_at{}, last_packet{};
@@ -69,8 +79,17 @@ class Host {
         struct PendingCosmetics { Packet packet; std::uint64_t received{}; };
         std::vector<PendingCosmetics> pending_cosmetics;
         std::optional<Transform> latest_root;
+        // Where they last stood and faced, and when they last moved from it: a player standing
+        // still (in a menu, away from the keyboard, watching) is sent on at the low rate.
+        // Their earlier poses, as encoded: the one before, and ones kept a quarter of a second
+        // and a second (measure_pose).
+        struct Earlier { std::vector<std::uint8_t> raw; std::uint64_t time{}; };
+        Earlier pose_last, pose_quarter, pose_second;
+        Transform still_at;
+        std::uint64_t moved_at{};
         std::uint64_t pose_arrival{};
         std::array<PoseDelivery, max_players> pose_delivery;
+        CrowdLimits crowd; // how far the full and half rates reach for them in a crowd
         std::vector<Member> direct_routes;
         std::uint64_t route_reported{};
         std::uint32_t route_sequence{};
@@ -91,6 +110,12 @@ class Host {
         bool scoring_flagged{};     // out of linked activities (config score_check)
         ChatBudget scoring_budget;
         std::uint64_t bans_sent{}; // the ban list revision this admin has
+        std::uint64_t undelivered_since{}; // Steam has refused what they must be sent since
+        // The players they have not been shown yet (introduce): on joining, and after a map
+        // change, a player is sent the others a few a second, nearest first, instead of every
+        // outfit and every stream at once. Nothing of a player in here is sent to them.
+        std::set<std::uint64_t> unmet;
+        std::uint64_t next_introduction{};
         bool maps_sent{};          // this player has the server's map list (send_maps)
         // The owner's own upload, and what the server shares of it.
         ObjectState objects, shared;
@@ -101,6 +126,7 @@ class Host {
             std::vector<ObjectChunk> chunks;
             std::uint64_t source{}, epoch{};
             std::size_t next{}, cursor{};
+            std::uint64_t failing_since{}; // Steam has refused their object updates since
         } object_delivery;
     };
 
@@ -137,6 +163,29 @@ class Host {
     bool roster_dirty_ = true, running_{};
     std::uint64_t bans_revision_ = 1; // bumped whenever the ban list or the admins change
     std::uint64_t now_{}, last_roster_{}, last_world_state_{}, next_object_update_{}, travel_started_{};
+    std::uint64_t next_crowd_{}; // when the crowd limits are worked out again
+    std::uint64_t next_network_log_{}; // the log's once-a-minute line about the connections
+    // How the server's own loop is keeping up, for `net` and that line: passes of tick() in a
+    // minute, the time spent in them, the longest one and the longest wait between two. A long
+    // pass or gap is the server itself stalling, which every player feels at once.
+    struct Loop {
+        std::uint64_t since{}, passes{}, busy_us{}, longest_pass_us{}, longest_gap_us{};
+    } loop_, last_loop_, worst_loop_;
+    std::uint64_t pass_started_{};
+    Counted traffic_;
+    // What a pose costs to send as a difference from references of different ages, measured on
+    // every fourth pose that arrives (net). A nearer reference changes less, so it packs
+    // smaller: this says by how much, before the server is made to send them that way.
+    struct PoseSizes {
+        std::uint64_t samples{}, whole{}, last{}, quarter{}, second{};
+        std::array<std::uint64_t, 4> sent{}, sent_bytes{}; // differences sent, by precision (pose_precision)
+    } pose_sizes_;
+    void measure_pose(Guest &from, const Packet &packet);
+    std::uint64_t traffic_mark_{}, traffic_window_us_{}; // when `mark` was taken, and how long `last` covers
+    void meet_later(Guest &guest);
+    void introduce();
+    std::string loop_report() const;
+    std::string network_report(std::string_view player, bool console);
 
     Guest *find(std::uint64_t id);
     Packet packet(PacketKind kind, std::uint64_t now);
@@ -147,7 +196,8 @@ class Host {
     bool is_banned(std::uint64_t id) const;
     void save();
 
-    void drop(std::uint64_t id, const std::string &reason);
+    // `detail` is for the log alone: the player is told `reason`.
+    void drop(std::uint64_t id, const std::string &reason, const std::string &detail = {});
     bool send_packet(Guest &, const Packet &, bool reliable, bool fresh, std::span<const std::uint8_t> raw = {},
                      std::span<const std::uint8_t> wire = {});
     void send_required(Guest &, const std::vector<std::uint8_t> &bytes);

@@ -94,6 +94,39 @@ struct SteamTransport::Impl {
         bool recheck{}; // a status callback named this connection: read its state this poll
     };
     std::map<std::uint64_t, Link> links;
+    // How the connections Steam closed ended (take_closed). A handful at most wait here.
+    std::map<std::uint64_t, std::string> closed;
+    // What each connection may send a second, and Steam's call that changes an open one.
+    int send_rate = connection_send_rate, listen_rate = connection_send_rate; // now, and when the listen socket opened
+    void *utils{};
+    bool (*set_config)(void *, ESteamNetworkingConfigValue, ESteamNetworkingConfigScope, intptr_t,
+                       ESteamNetworkingConfigDataType, const void *){};
+    // Gives one open connection the current send rate. A connection a listen socket
+    // accepts starts with the rate the socket was opened with, so each one is given it.
+    bool apply_rate(HSteamNetConnection handle) {
+        if (!handle || !set_config || !utils) return false;
+        bool ok = true;
+        const auto set = [&](ESteamNetworkingConfigValue option, int32 value) {
+            ok &= set_config(utils, option, k_ESteamNetworkingConfig_Connection, static_cast<intptr_t>(handle),
+                             k_ESteamNetworkingConfig_Int32, &value);
+        };
+        // The minimum never above the maximum on the way, whatever the rate was before.
+        set(k_ESteamNetworkingConfig_SendRateMin, min_send_rate);
+        set(k_ESteamNetworkingConfig_SendRateMax, send_rate);
+        set(k_ESteamNetworkingConfig_SendRateMin, send_rate);
+        return ok;
+    }
+    // "ping 48 ms, quality 99%/97%, 0 B queued": what was last measured of a link.
+    static std::string measured(const Link &link) {
+        if (!link.status_ok) return "link not measured";
+        const auto &s = link.status;
+        const auto percent = [](float quality) { return quality < 0 ? std::string("?") : std::to_string(static_cast<int>(quality * 100.f + .5f)) + "%"; };
+        return "ping " + std::to_string(s.m_nPing) + " ms, quality " + percent(s.m_flConnectionQualityLocal) + " here / " +
+               percent(s.m_flConnectionQualityRemote) + " there, " + std::to_string(s.m_cbPendingReliable + s.m_cbPendingUnreliable) +
+               " B queued (" + std::to_string(queue_time(s) / 1000) + " ms), " +
+               std::to_string(static_cast<int>(s.m_flOutBytesPerSec / 1024.f + .5f)) + " KB/s out, " +
+               std::to_string(static_cast<int>(s.m_flInBytesPerSec / 1024.f + .5f)) + " KB/s in";
+    }
     std::uint64_t frame{};
     ULONGLONG next_measure{}, next_sweep{};
     struct Name {
@@ -146,12 +179,20 @@ struct SteamTransport::Impl {
                       reinterpret_cast<void *>(&changed));
         return option;
     }
-    std::array<SteamNetworkingConfigValue_t, 3> options() {
-        std::array<SteamNetworkingConfigValue_t, 3> out{};
+    std::array<SteamNetworkingConfigValue_t, 5> options() {
+        std::array<SteamNetworkingConfigValue_t, 5> out{};
         out[0] = callback_option();
-        // Raise this connection's ceiling; Steam retains congestion control and
-        // its default minimum. Do not alter the game's global Steam settings.
-        out[1].SetInt32(k_ESteamNetworkingConfig_SendRateMax, 1024 * 1024);
+        // This connection's send rate. Steam asks for the minimum and the maximum to be set
+        // to the same value: with only the maximum raised a connection stays at the 256 KB/s
+        // default, which a busy server fills for every player. Do not alter the game's
+        // global Steam settings.
+        listen_rate = send_rate;
+        out[1].SetInt32(k_ESteamNetworkingConfig_SendRateMax, send_rate);
+        out[3].SetInt32(k_ESteamNetworkingConfig_SendRateMin, send_rate);
+        // Room for what must arrive. Steam refuses a reliable message once 512 KB wait, its
+        // default, and a busy connection already holds half of that in poses: the refusal
+        // then ends the session for a player whose connection was only slow.
+        out[4].SetInt32(k_ESteamNetworkingConfig_SendBufferSize, 4 * 1024 * 1024);
         // Every connection goes through Steam's relays, which is how players who are not
         // Steam friends already connect: no player's IP address is shared with the others
         // in a session, whatever each one's own Steam setting is.
@@ -303,6 +344,12 @@ bool SteamTransport::bind(void *library, void *sockets, void *networking_utils) 
     } catch (...) {
         p.lanes = {};
     }
+    p.utils = networking_utils;
+    try {
+        p.set_config = symbol<decltype(p.set_config)>(module, "SteamAPI_ISteamNetworkingUtils_SetConfigValue");
+    } catch (...) {
+        p.set_config = nullptr; // open connections keep their rate; new ones get the new one
+    }
     symbol<void (*)(void *)>(module,
                              "SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess")(networking_utils);
     symbol<ESteamNetworkingAvailability (*)(void *)>(
@@ -407,6 +454,9 @@ void SteamTransport::disconnect(std::uint64_t id, const char *reason) {
         return;
     const auto handle = found->second.handle;
     p.links.erase(found);
+    // Closed from this side, unless Steam's own account of the end is already kept.
+    if (p.closed.size() >= 256) p.closed.clear();
+    p.closed.try_emplace(id, std::string("closed by this side: ") + (reason ? reason : ""));
     if (handle && p.close)
         p.close(p.sockets, handle, 1000, reason, false);
     p.state.detail = reason;
@@ -476,6 +526,7 @@ bool SteamTransport::connect_peer(std::uint64_t id) {
     auto options = p.options();
     const auto connection =
         p.connect(p.sockets, &identity, virtual_port, static_cast<int>(options.size()), options.data());
+    p.closed.erase(id);
     if (connection)
         p.links.emplace(id, Impl::Link{connection, GetTickCount64(), false, name(id),
                                       p.lanes.setup(p.sockets, connection)});
@@ -539,8 +590,10 @@ void SteamTransport::poll() {
             p.close(p.sockets, event.m_hConn, 4003, "Cannot accept connection", false);
             continue;
         }
+        p.closed.erase(id);
         p.links.emplace(id, Impl::Link{event.m_hConn, now, false, name(id),
                                       p.lanes.setup(p.sockets, event.m_hConn)});
+        if (p.send_rate != p.listen_rate) p.apply_rate(event.m_hConn);
     }
     // Connected links report changes through the status callback (above), so read their
     // state only then, plus once a second in case a callback was dropped.
@@ -565,6 +618,13 @@ void SteamTransport::poll() {
         } else if (info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer ||
                    info.m_eState == k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
             const auto detail = bounded(info.m_szEndDebug, sizeof(info.m_szEndDebug));
+            // Steam's end reasons: 1xxx the application closed it, 3xxx a problem at this end,
+            // 4xxx one at the other end (4001: it stopped answering), 5xxx anything else.
+            if (p.closed.size() >= 256) p.closed.clear();
+            p.closed[id] = std::string(info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer ? "closed by their game"
+                                                                                                    : "connection lost") +
+                           ", Steam reason " + std::to_string(info.m_eEndReason) + (detail.empty() ? std::string{} : " \"" + detail + "\"") +
+                           "; last " + Impl::measured(link);
             disconnect(id, detail.empty() ? "Steam connection closed." : detail.c_str());
         } else if (now - link.connecting_since > 20000)
             disconnect(id, "Steam connection timed out.");
@@ -574,6 +634,73 @@ void SteamTransport::poll() {
         p.measure();
     }
     p.publish_links();
+}
+std::string SteamTransport::take_closed(std::uint64_t id) {
+    auto &p = *impl_;
+    const auto found = p.closed.find(id);
+    if (found == p.closed.end()) return {};
+    auto text = std::move(found->second);
+    p.closed.erase(found);
+    return text;
+}
+int SteamTransport::send_rate() const { return impl_->send_rate; }
+bool SteamTransport::set_send_rate(int rate) {
+    auto &p = *impl_;
+    if (rate < min_send_rate || rate > max_send_rate) return false;
+    p.send_rate = rate;
+    bool all = true;
+    for (auto &[id, link] : p.links)
+        if (link.handle) all &= p.apply_rate(link.handle);
+    return all;
+}
+std::int64_t SteamTransport::pending(std::uint64_t id) const {
+    const auto found = impl_->links.find(id);
+    if (found == impl_->links.end() || !found->second.status_ok) return 0;
+    return std::int64_t{found->second.status.m_cbPendingReliable} + found->second.status.m_cbPendingUnreliable;
+}
+std::string SteamTransport::link_report(std::uint64_t id) {
+    auto &p = *impl_;
+    const auto found = p.links.find(id);
+    if (found == p.links.end()) return "no connection";
+    if (found->second.handle && found->second.connected) p.read_status(found->second);
+    return Impl::measured(found->second);
+}
+std::vector<TransportLink> SteamTransport::links() {
+    auto &p = *impl_;
+    std::vector<TransportLink> out;
+    out.reserve(p.links.size());
+    for (auto &[id, link] : p.links) {
+        TransportLink row;
+        row.id = id;
+        row.connected = link.connected;
+        if (link.handle && link.connected) p.read_status(link);
+        if (link.connected && link.status_ok) {
+            const auto &s = link.status;
+            row.measured = true;
+            row.ping_ms = s.m_nPing;
+            row.pending_bytes = s.m_cbPendingReliable + s.m_cbPendingUnreliable;
+            row.send_rate = s.m_nSendRateBytesPerSecond;
+            row.quality_local = s.m_flConnectionQualityLocal;
+            row.quality_remote = s.m_flConnectionQualityRemote;
+            row.out_bps = s.m_flOutBytesPerSec;
+            row.in_bps = s.m_flInBytesPerSec;
+            row.queue_us = queue_time(s);
+            SteamNetConnectionInfo_t info{};
+            if (p.get_info && p.get_info(p.sockets, link.handle, &info)) {
+                // A location's ID is its name's characters packed into a number.
+                const auto named = [](SteamNetworkingPOPID id) {
+                    std::string text;
+                    for (const unsigned shift : {16U, 8U, 0U, 24U})
+                        if (const auto c = static_cast<char>((id >> shift) & 0xff); c > 32 && c < 127) text.push_back(c);
+                    return text;
+                };
+                row.relay = named(info.m_idPOPRelay);
+                row.remote_relay = named(info.m_idPOPRemote);
+            }
+        }
+        out.push_back(row);
+    }
+    return out;
 }
 std::string SteamTransport::name(std::uint64_t id) {
     auto &p = *impl_;
@@ -674,33 +801,41 @@ std::vector<TransportMessage> SteamTransport::receive() {
         const auto &link = (it++)->second;
         if (!link.connected)
             continue;
-        SteamNetworkingMessage_t *messages[128]{};
-        const int count = p.receive_messages(p.sockets, link.handle, messages, 128);
-        if (count < 0) {
-            disconnect(id, "Steam receive failed.");
-            continue;
-        }
-        for (int i = 0; i < count; ++i) {
-            auto *message = messages[i];
-            if (!message)
-                continue;
-            struct Release {
-                Impl &p;
-                SteamNetworkingMessage_t *m;
-                ~Release() { p.release_message(m); }
-            } release{p, message};
-            if (message->m_cbSize <= 0 || message->m_cbSize > static_cast<int>(max_packet) ||
-                !message->m_pData) {
-                ++p.state.dropped;
-                ++p.state.invalid_messages;
-                continue;
+        // Everything that has arrived, not one batch a call: a dedicated server sends a busy
+        // session's player a few thousand messages a second, and what a slow frame leaves
+        // behind would wait in Steam, later and later, taking memory until it is read.
+        bool failed{};
+        for (unsigned batch = 0; batch < 64 && !failed; ++batch) {
+            SteamNetworkingMessage_t *messages[128]{};
+            const int count = p.receive_messages(p.sockets, link.handle, messages, 128);
+            if (count < 0) {
+                failed = true;
+                break;
             }
-            const auto *data = static_cast<const std::uint8_t *>(message->m_pData);
-            result.push_back({id, {data, data + message->m_cbSize},
-                              message->m_usecTimeReceived > 0 ? static_cast<std::uint64_t>(message->m_usecTimeReceived) : 0});
-            ++p.state.received;
-            p.state.received_bytes += static_cast<std::uint64_t>(message->m_cbSize);
+            for (int i = 0; i < count; ++i) {
+                auto *message = messages[i];
+                if (!message)
+                    continue;
+                struct Release {
+                    Impl &p;
+                    SteamNetworkingMessage_t *m;
+                    ~Release() { p.release_message(m); }
+                } release{p, message};
+                if (message->m_cbSize <= 0 || message->m_cbSize > static_cast<int>(max_packet) ||
+                    !message->m_pData) {
+                    ++p.state.dropped;
+                    ++p.state.invalid_messages;
+                    continue;
+                }
+                const auto *data = static_cast<const std::uint8_t *>(message->m_pData);
+                result.push_back({id, {data, data + message->m_cbSize},
+                                  message->m_usecTimeReceived > 0 ? static_cast<std::uint64_t>(message->m_usecTimeReceived) : 0});
+                ++p.state.received;
+                p.state.received_bytes += static_cast<std::uint64_t>(message->m_cbSize);
+            }
+            if (count < 128) break;
         }
+        if (failed) disconnect(id, "Steam receive failed.");
     }
     return result;
 }

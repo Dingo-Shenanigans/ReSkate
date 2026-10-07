@@ -34,6 +34,26 @@ int main() {
         check(steam_join_presence(model) == "+reskate_lobby 9001", "Connected guests can advertise their verified public lobby");
         model.connected = false;
         check(steam_join_presence(model).empty(), "Guests cannot advertise before admission");
+        // Where a player skates, for friends' server lists: any public session, joinable or not.
+        check(steam_session_target("9001") == 9001, "A session id parses");
+        for (const auto* value : {"", "0", "-1", "9001 ", "+reskate_lobby 9001", "18446744073709551616", "lobby"})
+            check(!steam_session_target(value), "Malformed session values must be ignored");
+        model = open;
+        check(steam_session_presence(model) == "9001", "A public host tells friends its listing");
+        model.password_required = true; model.players = model.capacity; model.local_ready = false;
+        check(steam_session_presence(model) == "9001", "A full, protected or loading public session is still told");
+        model = open; model.public_host = false;
+        check(steam_session_presence(model).empty(), "A private host is never told");
+        model = open; model.public_lobby = 0;
+        check(steam_session_presence(model).empty(), "A session joined by a private code is never told");
+        model = open; model.lobby_listed = false;
+        check(steam_session_presence(model).empty(), "A closed listing is not told");
+        model = open; model.active = false;
+        check(steam_session_presence(model).empty(), "An ended session is not told");
+        model = open; model.hosting = model.public_host = model.lobby_listed = false;
+        check(steam_session_presence(model).empty(), "A guest is not told before admission");
+        model.connected = true;
+        check(steam_session_presence(model) == "9001", "A connected guest tells friends the server they are on");
         std::cout << "Steam friend join checks passed.\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

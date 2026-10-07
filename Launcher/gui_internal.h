@@ -86,7 +86,7 @@ struct Background {
 };
 inline Background g_background;
 // White tile icons (assets/launcher/icon_*.png), drawn faded like the HUB's.
-inline Background g_icon_mods, g_icon_settings;
+inline Background g_icon_mods, g_icon_settings, g_icon_thunderstore;
 
 using launcher_text::utf8;
 using launcher_text::wide;
@@ -435,7 +435,9 @@ std::string size_text(std::uint64_t bytes);
 void refresh_listing(ModsPanel& panel, double time, bool force = false);
 // Takes over a fetch the worker finished; call once a frame.
 void collect_listing(ModsPanel& panel);
-thunderstore::Installed installed_versions(const mods::ModList& list);
+// `enabled_only`: for what is asked before playing. A disabled mod does not load, so its
+// update is offered on the Mods page and nowhere else.
+thunderstore::Installed installed_versions(const mods::ModList& list, bool enabled_only = false);
 // The package an installed mod folder came from, if the listing has it.
 const thunderstore::Package* package_for(const Store& store, std::string_view folder);
 std::vector<const thunderstore::Package*> updates(const Store& store, const thunderstore::Installed& installed);

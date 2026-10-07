@@ -50,6 +50,8 @@ void load_host_preferences(Session &s) {
         p.voice_range = value->get<float>();
     if (const auto value = number("Host.ObjectPlacement"); value && *value >= 0 && valid_object_placement(static_cast<std::uint64_t>(*value)))
         p.placement = static_cast<ObjectPlacement>(*value);
+    if (const auto value = number("Host.ObjectLimit"); value && *value >= 0 && valid_object_limit(static_cast<std::uint64_t>(*value)))
+        p.object_limit = static_cast<unsigned>(*value);
     p.guest_noclip = profile_runtime::local_preference("Host.GuestNoclip").value_or(true);
     p.guest_no_bail = profile_runtime::local_preference("Host.GuestNoBail").value_or(true);
     p.guest_boosts = profile_runtime::local_preference("Host.GuestBoosts").value_or(true);
@@ -70,6 +72,7 @@ void save_host_preferences(const Session &s) {
         {"Host.Distance.HalfReturn", static_cast<std::int64_t>(p.distances.half_rate_return)},
         {"Host.Distance.LowStart", static_cast<std::int64_t>(p.distances.low_rate_start)},
         {"Host.ObjectPlacement", static_cast<std::int64_t>(p.placement)},
+        {"Host.ObjectLimit", static_cast<std::int64_t>(p.object_limit)},
         {"Host.GuestNoclip", p.guest_noclip},
         {"Host.GuestNoBail", p.guest_no_bail},
         {"Host.GuestBoosts", p.guest_boosts},
@@ -147,6 +150,9 @@ void publish(Session &s, const NativeFrame *local) {
     view.tps = s.tps;
     view.distances = s.distances;
     view.object_placement = s.object_placement;
+    view.object_limit = s.object_limit;
+    view.object_limit_own = s.mode == Mode::host || s.server_admin ? 0 : s.object_limit; // as apply_object_limit gives this game
+    view.objects_placed = s.mode == Mode::off ? 0 : static_cast<unsigned>(s.local_objects.objects().size());
     view.guest_noclip = s.guest_noclip;
     view.guest_no_bail = s.guest_no_bail;
     view.guest_boosts = s.guest_boosts;
@@ -171,24 +177,27 @@ void publish(Session &s, const NativeFrame *local) {
     view.saved_host = {true, s.host_preferences.public_lobby, s.host_preferences.password_required,
                        static_cast<int>(s.host_preferences.capacity), s.host_preferences.tps, s.host_preferences.lobby_name};
     view.nametags = s.nametags;
-    view.custom_nametags = s.custom_nametags;
     if (const auto social = steam_social_snapshot())
         if (const auto mark = identity_mark(social->local.id)) {
             std::tie(view.identity_tag_colour, view.identity_tag) = mark_role(*mark);
             view.identity_animation =
                 *mark == IdentityList::developer ? "RAINBOW" : *mark == IdentityList::content_creator ? "RED" :
-                *mark == IdentityList::centrix ? "BLUE" : "GOLD";
+                *mark == IdentityList::centrix ? "BLUE" : *mark == IdentityList::staff ? "GREEN" : "GOLD";
+            // A developer's standard is the rainbow already.
+            view.identity_rainbow = *mark == IdentityList::staff;
             const auto styles = developer_hoodie_detail::own_styles.load();
             const auto standard = developer_hoodie_detail::standard_picks(*mark);
             view.identity_styles.resize(styles.size());
             for (std::size_t i = 0; i < styles.size(); ++i) {
                 // A cosmetic never given colours shows its list's own in the pickers.
-                const bool picked = styles[i].mode == MarkMode::gradient || styles[i].mode == MarkMode::solid ||
-                                    styles[i].from != styles[i].to || styles[i].from != std::array<std::uint8_t, 3>{};
+                // The rainbow has no colours of its own to show either.
+                const bool rainbow = view.identity_rainbow && rainbow_style(styles[i]);
+                const bool picked = !rainbow && (styles[i].mode == MarkMode::gradient || styles[i].mode == MarkMode::solid ||
+                                                 styles[i].from != styles[i].to || styles[i].from != std::array<std::uint8_t, 3>{});
                 const auto &from = picked ? styles[i].from : standard.first, &to = picked ? styles[i].to : standard.second;
                 auto &shown = view.identity_styles[i];
                 shown.name = mark_item_names[i];
-                shown.mode = static_cast<int>(styles[i].mode);
+                shown.mode = rainbow ? 4 : static_cast<int>(styles[i].mode);
                 shown.speed = styles[i].speed;
                 for (std::size_t part = 0; part < 3; ++part)
                     shown.from[part] = static_cast<float>(from[part]) / 255.f, shown.to[part] = static_cast<float>(to[part]) / 255.f;
@@ -219,6 +228,10 @@ void publish(Session &s, const NativeFrame *local) {
         view.server_map_rotation = s.server_map_rotation;
         view.server_map_votes = (s.server_votes & server_vote_map) != 0;
     }
+    view.player_distance = s.player_distance;
+    view.nametag_distance = s.nametag_distance;
+    view.nametag_dots = s.nametag_dots;
+    view.nametags_friends = s.nametags_friends;
     view.chat_visible = s.chat_visible;
     view.chat_filter = s.chat_filter;
     view.chat_bubbles = s.chat_bubbles;
@@ -261,7 +274,16 @@ void publish(Session &s, const NativeFrame *local) {
     view.browser_status = lobby.browser;
     // Dedicated servers first: they are always up and never a stranger's own session.
     view.lobbies = s.servers.rows();
+    // Looked up as the list is shown: the team's list can arrive, or change, after a server was found.
+    for (auto &server : view.lobbies) server.official = official_server(server.id);
     view.lobbies.insert(view.lobbies.end(), lobby.rows.begin(), lobby.rows.end());
+    // Steam friends by the public server or lobby their game says they are in.
+    if (const auto social = steam_social_snapshot())
+        for (const auto &player : social->friends) {
+            if (!player.session) continue;
+            const auto row = std::find_if(view.lobbies.begin(), view.lobbies.end(), [&](const auto &entry) { return entry.id == player.session; });
+            if (row != view.lobbies.end() && row->friends.size() < 16) row->friends.push_back(player.name.empty() ? std::string("A friend") : player.name);
+        }
     view.status = s.status;
     view.native_status = s.native_status;
     view.audio_captured = captured_audio_frames();
@@ -438,6 +460,9 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
         list.push_back({"/party", "/party", "Who is in your party"});
     }
     if (dedicated_host(s)) {
+        // The server's own commands (server_votes.cpp, server_host.cpp): it answers them, and
+        // this list is only what the "/" menu offers, so one left out here still works unseen.
+        list.push_back({"/w", "/w <player> <message>", "Send a player a private message", "player"});
         if (s.server_votes & server_vote_map) list.push_back({"/vote map", "/vote map <map>", "Start a vote to change the map", "map"});
         if (s.server_votes & server_vote_kick)
             list.push_back({"/vote kick", "/vote kick <player>", "Start a vote to kick a player", "player"});
@@ -448,6 +473,9 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/no", "/no", "Vote no in the running vote"});
         }
         if (s.server_admin) {
+            list.push_back({"/msg", "/msg <player> <message>", "Admin: message a player privately", "player"});
+            list.push_back({"/msg-party", "/msg-party <player> <message>", "Admin: message everyone in a player's party", "player"});
+            list.push_back({"/msg-admins", "/msg-admins <message>", "Admin: message the admins who are on"});
             list.push_back({"/kick", "/kick <player>", "Admin: kick a player until the server restarts", "player"});
             list.push_back({"/ban", "/ban <player>", "Admin: ban a player", "player"});
             list.push_back({"/map", "/map <map>", "Admin: change the server's map", "map"});
@@ -540,6 +568,7 @@ std::pair<std::uint32_t, std::string> mark_role(IdentityList list) {
     case IdentityList::developer: return {nametag_developer, "Dev"};
     case IdentityList::content_creator: return {nametag_creator, "Creator"};
     case IdentityList::centrix: return {nametag_centrix, "Centrix"};
+    case IdentityList::staff: return {nametag_staff, "Staff"};
     default: return {nametag_homie, "Homie"};
     }
 }

@@ -23,6 +23,7 @@ void fetch() noexcept {
                                             L"ReSkate-Identity/1", &download);
         if (answer) {
             auto lists = parse_identity_lists(*answer);
+            server_tokens_rule = parse_server_tokens_required(*answer);
             const auto developers = lists[0].size(), homies = lists[1].size(), creators = lists[2].size(),
                        bans = lists[static_cast<std::size_t>(IdentityList::banned)].size();
             if (publish_identity_lists(std::move(lists)) || failing)

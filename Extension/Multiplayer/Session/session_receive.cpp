@@ -73,7 +73,8 @@ constexpr std::size_t chat_proofs_kept = 8;
 // Whether a line the host passed on as this player's would show a badge that rests on who
 // they are: another guest's, known to Steam, on one of the backend's lists and showing it.
 bool owes_proof(const Session &s, const Peer &sender) {
-    return s.mode == Mode::join && sender.member.id != s.host_id && steam_vouched(s, sender) && shows_tag(sender) &&
+    // Their own copy only comes over a direct connection: without one there is none to wait for.
+    return s.mode == Mode::join && sender.member.id != s.host_id && sender.direct_ready && shows_tag(sender) &&
            identity_mark(sender.member.id);
 }
 std::string chat_name(Session &s, const Peer &sender) {
@@ -202,6 +203,7 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
         for (auto &peer : active_peers(s)) peer.pose_delivery = {};
     }
     apply_object_placement(s, p.object_placement);
+    apply_object_limit(s, p.object_limit); // after server_admin, which exempts an admin
     apply_guest_tools(s, p.guest_noclip, p.guest_no_bail, p.guest_boosts);
     s.enforce_tuning = p.enforce_tuning;
     s.server_votes = dedicated_host(s) ? p.server_votes : 0;

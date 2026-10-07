@@ -293,9 +293,10 @@ void collect_listing(ModsPanel& panel) {
     store.incoming.clear();
 }
 
-thunderstore::Installed installed_versions(const mods::ModList& list) {
+thunderstore::Installed installed_versions(const mods::ModList& list, bool enabled_only) {
     ts::Installed installed;
-    for (const auto& entry : list.entries) installed[entry.mod.name] = entry.mod.version;
+    for (const auto& entry : list.entries)
+        if (entry.enabled || !enabled_only) installed[entry.mod.name] = entry.mod.version;
     return installed;
 }
 

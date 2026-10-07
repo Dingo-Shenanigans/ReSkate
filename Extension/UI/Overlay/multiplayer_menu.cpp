@@ -240,19 +240,55 @@ void debug_page(SkateMenu &menu, const MultiplayerModel &mp, const CallbacksV3 &
 void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
     const auto &mp = model.multiplayer;
     begin_card(menu, "multiplayer-display", "MULTIPLAYER");
+    {
+        std::array<char, 65> unused{};
+        field(menu, "Player distance", "How far away other players are still shown as skaters. Past it they keep their nametag "
+                                       "or dot. Lower it on a busy server for more frames and less memory; all the way up shows everyone.");
+        float shown = menu.player_distance_pending.value_or(mp.player_distance);
+        ImGui::SliderFloat("##player-distance", &shown, player_distance_least, player_distance_unlimited,
+                           shown >= player_distance_unlimited ? "Everyone" : "%.0f m", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActive()) menu.player_distance_pending = shown;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            send_private(menu, "player-distance", std::to_string(static_cast<int>(shown)), unused, false);
+            menu.player_distance_until = ImGui::GetTime() + 2;
+        }
+        if (!ImGui::IsItemActive() && menu.player_distance_pending &&
+            (*menu.player_distance_pending == mp.player_distance || ImGui::GetTime() >= menu.player_distance_until))
+            menu.player_distance_pending.reset();
+    }
     bool nametags = mp.nametags;
-    if (toggle_row(menu, "Player nametags", "The name above each skater.", nametags)) {
+    if (toggle_row(menu, "Player nametags",
+                   "The name above each skater, with their distance: purple for ReSkate developers, red for content creators, "
+                   "gold for homies, pink for server admins, blue for the host, green for your Steam friends.",
+                   nametags)) {
         std::array<char, 65> unused{};
         send_private(menu, "nametags", nametags ? "on" : "off", unused, false);
     }
-    bool custom = mp.custom_nametags;
-    if (toggle_row(menu, "ReSkate nametags",
-                   "Names with distance: purple for ReSkate developers, red for content creators, gold for homies, "
-                   "pink for server admins, blue for the host, green for your Steam friends; far and off-screen players as dots. "
-                   "Off: the game's own nametags and arrows.",
-                   custom, mp.nametags, "OFF")) {
+    if (mp.nametags) {
         std::array<char, 65> unused{};
-        send_private(menu, "nametag-style", custom ? "reskate" : "game", unused, false);
+        field(menu, "Nametag distance", "How far away a player's name still shows. Past it they are a dot.");
+        float distance = menu.nametag_distance_pending.value_or(mp.nametag_distance);
+        ImGui::SliderFloat("##nametag-distance", &distance, 10.f, 500.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActive()) menu.nametag_distance_pending = distance;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            send_private(menu, "nametag-distance", std::to_string(static_cast<int>(distance)), unused, false);
+            menu.nametag_distance_until = ImGui::GetTime() + 2;
+        }
+        if (!ImGui::IsItemActive() && menu.nametag_distance_pending &&
+            (*menu.nametag_distance_pending == mp.nametag_distance || ImGui::GetTime() >= menu.nametag_distance_until))
+            menu.nametag_distance_pending.reset();
+    }
+    bool dots = mp.nametag_dots;
+    if (toggle_row(menu, "Nametag dots", "Show players past the nametag distance, and players off screen, as dots.", dots,
+                   mp.nametags, "OFF")) {
+        std::array<char, 65> unused{};
+        send_private(menu, "nametag-dots", dots ? "on" : "off", unused, false);
+    }
+    bool friends_only = mp.nametags_friends;
+    if (toggle_row(menu, "Friends' nametags only", "Only your Steam friends have a name or dot. Chat bubbles still show for everyone.",
+                   friends_only, mp.nametags, "OFF")) {
+        std::array<char, 65> unused{};
+        send_private(menu, "nametags-friends", friends_only ? "on" : "off", unused, false);
     }
     bool chat = mp.chat_visible;
     if (toggle_row(menu, "Text chat", "Show session chat in the bottom-right corner; T opens it. Hidden, nothing shows and T does nothing.",
@@ -399,12 +435,20 @@ void special_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
         ImGui::PushID(item);
         begin_card(menu, title.c_str(), title.c_str());
         // The options in the order shown; a style's mode is 0 what the list gives, 1 off, 2 a
-        // gradient between the player's two colours, 3 their one colour.
-        static constexpr std::array<int, 4> modes{0, 2, 3, 1};
-        int option = static_cast<int>(std::find(modes.begin(), modes.end(), style.mode) - modes.begin()) % 4;
+        // gradient between the player's two colours, 3 their one colour, 4 the rainbow (the
+        // staff's to pick).
         field(menu, "Color");
-        if (choice(menu, "mode", option, {mp.identity_animation.c_str(), "GRADIENT", "SOLID", "OFF"}, shown))
-            send(modes[static_cast<std::size_t>(option)], style.speed);
+        if (mp.identity_rainbow) {
+            static constexpr std::array<int, 5> modes{0, 4, 2, 3, 1};
+            int option = static_cast<int>(std::find(modes.begin(), modes.end(), style.mode) - modes.begin()) % 5;
+            if (choice(menu, "mode", option, {mp.identity_animation.c_str(), "RAINBOW", "GRADIENT", "SOLID", "OFF"}, shown))
+                send(modes[static_cast<std::size_t>(option)], style.speed);
+        } else {
+            static constexpr std::array<int, 4> modes{0, 2, 3, 1};
+            int option = static_cast<int>(std::find(modes.begin(), modes.end(), style.mode) - modes.begin()) % 4;
+            if (choice(menu, "mode", option, {mp.identity_animation.c_str(), "GRADIENT", "SOLID", "OFF"}, shown))
+                send(modes[static_cast<std::size_t>(option)], style.speed);
+        }
         if (style.mode == 2 || style.mode == 3) {
             const bool gradient = style.mode == 2;
             field(menu, gradient ? "Colors" : "Pick", gradient ? "The two colors it moves between. Click one to change it."
@@ -436,7 +480,7 @@ void special_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
             }
         }
         // A colour that stands still has no speed.
-        if (style.mode == 0 || style.mode == 2) {
+        if (style.mode == 0 || style.mode == 2 || style.mode == 4) {
             int speed = style.speed;
             field(menu, "Speed");
             if (choice(menu, "speed", speed, {"NORMAL", "SLOW", "FAST"}, shown)) send(style.mode, speed);

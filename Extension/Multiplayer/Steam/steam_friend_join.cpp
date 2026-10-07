@@ -81,7 +81,7 @@ struct Api {
     LobbyCallback lobby_callback;
     PresenceCallback presence_callback;
     std::uint64_t next_open{}, next_presence{};
-    std::string owned, previous;
+    std::string owned, previous, session;
     bool reported_error{};
     void open() {
         const auto loaded = GetModuleHandleW(L"steam_api64.dll");
@@ -139,6 +139,10 @@ void tick_steam_friend_join() noexcept {
         if (now >= api->next_presence) {
             api->next_presence = now + 2000;
             api->presence(steam_join_presence(model()));
+            // Only written when it changes; cleared (an empty value removes the key) on leaving.
+            if (auto session = steam_session_presence(model()); session != api->session &&
+                api->set(api->friends, steam_session_key.data(), session.c_str()))
+                api->session = std::move(session);
         }
     } catch (const std::exception& error) {
         if (!api->reported_error) {

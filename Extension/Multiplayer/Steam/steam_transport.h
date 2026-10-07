@@ -13,6 +13,19 @@ struct TransportPeer {
     std::uint64_t id{};
     bool connected{};
 };
+// What Steam measures of one connection right now (SteamTransport::links).
+struct TransportLink {
+    std::uint64_t id{};
+    bool connected{}, measured{};
+    int ping_ms{}, pending_bytes{}, send_rate{}; // send_rate: bytes a second Steam will let out to them
+    float quality_local = -1, quality_remote = -1; // 0-1 of packets delivered each way; -1 unknown
+    float out_bps{}, in_bps{};
+    std::uint64_t queue_us{}; // how long a message sent now would wait
+    // Which of Steam's relay locations the connection goes through, by their short names
+    // ("ord", "fra"...): the one this side uses and the one the other side uses. A ping far
+    // above the direct one is the route, and these say which way it went.
+    std::string relay, remote_relay;
+};
 struct TransportMessage {
     std::uint64_t peer{};
     std::vector<std::uint8_t> bytes;
@@ -44,6 +57,8 @@ struct TransportStatus {
     std::uint64_t queue_us{}, skipped{}, send_failures{}, invalid_messages{}, sent_bytes{}, received_bytes{},
         raw_sent_bytes{};
 };
+// What each connection may send a second (bytes): a crowded server's players, mostly.
+inline constexpr int connection_send_rate = 900 * 1024, min_send_rate = 128 * 1024, max_send_rate = 16 * 1024 * 1024;
 class SteamTransport {
   public:
     SteamTransport();
@@ -69,6 +84,19 @@ class SteamTransport {
     std::vector<TransportMessage> receive();
     std::string name(std::uint64_t id);
     const TransportStatus &status() const;
+    // For a host's log. How Steam says a connection it closed ended, once (empty when this
+    // side closed it, or it is still open): who closed it, Steam's reason code and words, and
+    // the last ping and quality measured. And a connected player's link right now.
+    std::string take_closed(std::uint64_t id);
+    std::string link_report(std::uint64_t id);
+    // Bytes waiting to go out to a player, as last measured (a few times a second).
+    std::int64_t pending(std::uint64_t id) const;
+    // What each connection may send a second from now on, the open ones included. False when
+    // out of range, or when an open connection could not be changed (new ones still get it).
+    bool set_send_rate(int bytes_per_second);
+    int send_rate() const;
+    // Every connection, measured now: one Steam call each, so for a command, not every tick.
+    std::vector<TransportLink> links();
 
   private:
     bool bind(void *steam_api, void *sockets, void *networking_utils);

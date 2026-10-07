@@ -31,7 +31,10 @@ void register_multiplayer_commands(Commands &registry) {
                           Command{"tpall", "Host or server admin: teleport everyone to you"},
                           Command{"tphere", "Host or server admin: teleport one player to you"},
                           Command{"nametags", "Show or hide player nametags (on, off, toggle)"},
-                          Command{"nametag-style", "ReSkate nametags or the game's own (reskate, game, toggle)"},
+                          Command{"player-distance", "How far away another player still gets a skater, in metres (50-1000; 1000: every player). Past it: a nametag or dot"},
+                          Command{"nametag-distance", "How far away a player's name still shows, in metres (10-500); past it they are a dot"},
+                          Command{"nametag-dots", "Show far and off-screen players as dots (on, off, toggle)"},
+                          Command{"nametags-friends", "Only your Steam friends have nametags (on, off, toggle)"},
                           Command{"chat-bubbles", "Show or hide chat bubbles above skaters (on, off, toggle)"},
                           Command{"chat-bubbles-own", "Also show your own chat messages above your skater (on, off, toggle)"},
                           Command{"chat-bubbles-distance", "How far away a player may be and still show a chat bubble, in metres (5-500)"},
@@ -51,14 +54,17 @@ void register_multiplayer_commands(Commands &registry) {
         }
         if (std::string_view(c.name) == "join-lobby")
             args.push_back(argument("lobby_id"));
-        if (std::string_view(c.name) == "nametags" || std::string_view(c.name) == "nametag-style" ||
+        if (std::string_view(c.name) == "nametags" ||
             std::string_view(c.name) == "chat-bubbles" || std::string_view(c.name) == "chat-bubbles-own" ||
+            std::string_view(c.name) == "nametag-dots" || std::string_view(c.name) == "nametags-friends" ||
             std::string_view(c.name) == "score-check")
             args.push_back(argument("choice"));
-        if (std::string_view(c.name) == "chat-bubbles-distance")
+        if (std::string_view(c.name) == "chat-bubbles-distance" || std::string_view(c.name) == "nametag-distance")
             args.push_back(argument("metres"));
         if (std::string_view(c.name) == "chat-bubbles-duration")
             args.push_back(argument("seconds"));
+        if (std::string_view(c.name) == "player-distance")
+            args.push_back(argument("metres"));
         if (std::string_view(c.name) == "chat-bubbles-history")
             args.push_back(argument("lines"));
         if (std::string_view(c.name) == "chat" || std::string_view(c.name) == "server" || std::string_view(c.name) == "party" ||

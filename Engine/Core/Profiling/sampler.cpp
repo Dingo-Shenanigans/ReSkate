@@ -186,6 +186,7 @@ const HANDLE symbol_session = reinterpret_cast<HANDLE>(static_cast<std::uintptr_
 bool symbols_ready{};
 std::unordered_set<std::uintptr_t> symbols_loaded;
 
+const char waiting_marker{}; // an address inside this module, to tell it from the others
 std::string symbol_name(const Module& module, std::uintptr_t address) {
     std::lock_guard lock(symbols_mutex);
     if (!symbols_ready) {
@@ -200,8 +201,16 @@ std::string symbol_name(const Module& module, std::uintptr_t address) {
     info->SizeOfStruct = sizeof(SYMBOL_INFO);
     info->MaxNameLen = 511;
     DWORD64 displacement{};
-    if (symbols_ready && SymFromAddr(symbol_session, address, &displacement, info) && info->Name[0])
-        return module.name + "!" + info->Name;
+    if (symbols_ready && SymFromAddr(symbol_session, address, &displacement, info) && info->Name[0]) {
+        // A release ReSkate.dll ships without its symbols, so all this finds in it is the nearest
+        // export, megabytes away: every function of ours then reads as one of three exports and
+        // a report cannot say which was slow. Unless the address is inside a symbol with a size
+        // (the real ones have one), give our own module's address instead: the release's symbols
+        // (build/release/ReSkate-<version>-symbols) name it afterwards.
+        const auto here = reinterpret_cast<std::uintptr_t>(&waiting_marker);
+        const bool own = module.base <= here && here < module.end;
+        if (!own || (info->Size && displacement < info->Size)) return module.name + "!" + info->Name;
+    }
     return std::format("{}+0x{:x}", module.name, address - module.base);
 }
 

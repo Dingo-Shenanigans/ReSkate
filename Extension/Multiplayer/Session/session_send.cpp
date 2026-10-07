@@ -26,6 +26,8 @@ void publish_guest_objects(Session &s) {
         if (peer.handshaken && peer.objects.revision() != peer.shared_from) {
             auto layout = peer.objects.layout();
             std::erase_if(layout, [&](const auto &object) { return peer.cleared.contains(object.id); });
+            // The host's limit on each guest's objects, which a patched client cannot place past.
+            layout = limited_layout(std::move(layout), peer.shared.objects(), s.object_limit);
             peer.shared.replace(layout);
             peer.shared_from = peer.objects.revision();
         }
@@ -429,6 +431,7 @@ void send_roster(Session &s, std::uint64_t now) {
     p.voice_range = s.voice_range;
     p.distances = s.distances;
     p.object_placement = s.object_placement;
+    p.object_limit = s.object_limit;
     p.guest_noclip = s.guest_noclip;
     p.guest_no_bail = s.guest_no_bail;
     p.guest_boosts = s.guest_boosts;

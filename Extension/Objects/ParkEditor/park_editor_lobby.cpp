@@ -5,10 +5,26 @@
 #include <atomic>
 
 namespace dingosdk {
-namespace { std::atomic<bool> placement_allowed{true}; }
+namespace {
+std::atomic<bool> placement_allowed{true};
+std::atomic<unsigned> object_limit{};
+}
 bool lobby_object_placement_allowed() noexcept { return placement_allowed.load(std::memory_order_acquire); }
+void set_lobby_object_limit(unsigned limit) noexcept { object_limit.store(limit, std::memory_order_release); }
+unsigned lobby_object_limit() noexcept { return object_limit.load(std::memory_order_acquire); }
 using namespace profile_runtime;
 using namespace profile_runtime::park_editor_detail;
+// Not for callers that hold the native mutex: they have the layout, and count it themselves.
+std::size_t lobby_object_count() {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto &r = placements_runtime();
+    const auto found = r.document.maps.find(r.map);
+    return found == r.document.maps.end() ? 0 : found->second.size();
+}
+bool lobby_object_limit_reached() {
+    const auto limit = lobby_object_limit();
+    return limit && lobby_object_count() >= limit;
+}
 void set_lobby_object_guest(bool guest) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto &r = placements_runtime();

@@ -73,6 +73,8 @@ void stop(Session &s, std::string reason) {
     s.voice_policy = {};
     s.tps = multiplayer_default_tps;
     s.object_placement = ObjectPlacement::everyone;
+    s.object_limit = 0;
+    set_lobby_object_limit(0);
     s.server_admin = false;
     s.server_bans.clear();
     s.server_ban_total = 0;
@@ -259,7 +261,12 @@ void publish_party(Session &s) {
     if (!s.display_preferences_loaded) {
         s.display_preferences_loaded = true;
         s.nametags = profile_runtime::local_preference("Nametags").value_or(true);
-        s.custom_nametags = profile_runtime::local_preference("CustomNametags").value_or(true);
+        if (const auto saved = profile_runtime::local_value("NametagDistance"); saved && saved->is_number())
+            s.nametag_distance = std::clamp(saved->get<float>(), 10.f, 500.f);
+        s.nametag_dots = profile_runtime::local_preference("NametagDots").value_or(true);
+        if (const auto saved = profile_runtime::local_value("PlayerDistance"); saved && saved->is_number())
+            s.player_distance = std::clamp(saved->get<float>(), player_distance_least, player_distance_unlimited);
+        s.nametags_friends = profile_runtime::local_preference("NametagsFriendsOnly").value_or(false);
         s.chat_visible = profile_runtime::local_preference("ChatVisible").value_or(true);
         s.chat_filter = profile_runtime::local_preference("ChatFilter").value_or(true);
         s.chat_bubbles = profile_runtime::local_preference("ChatBubbles").value_or(true);
@@ -398,7 +405,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     // each frame.
     std::vector<NametagPlayer> nametags;
     const bool bubbles = s.chat_bubbles;
-    const bool labels = (s.nametags && s.custom_nametags) || bubbles;
+    const bool labels = s.nametags || bubbles;
     if (labels) refresh_friends(s);
     // The newest chat lines from `sender` still inside the bubble duration, oldest first,
     // filtered the same way the chat panel filters them, each with the opacity it has left
@@ -440,6 +447,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         tag.name = p.member.name.empty() ? s.transport.name(p.member.id) : p.member.name;
         // The same role colour and badge the player's chat lines get.
         std::tie(tag.color, tag.tag) = player_role(s, p.member.id, false);
+        // Friends only: everyone else keeps their chat bubbles and loses the name and dot.
+        tag.nameless = s.nametags_friends && !std::binary_search(s.friend_ids.begin(), s.friend_ids.end(), p.member.id);
         tag.talking = std::any_of(voices.begin(), voices.end(), [&](const auto &v) { return v.id == p.member.id && v.speaking; });
         tag.bubbles = recent_bubbles(p.member.id);
         nametags.push_back(std::move(tag));
@@ -480,6 +489,20 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     const auto developer_id = [&](const Peer &p) {
         return steam_vouched(s, p) && shows_items(p) ? p.member.id : std::uint64_t{};
     };
+    // Only players within `player_distance` get a skater: each one costs memory and frame time
+    // whether or not it is in view, and on a full server most are far across the map, too small
+    // to see. Checked twice a second; a player already shown stays until a little further
+    // out, so one skating along the edge is not built and taken down over and over (building
+    // a skater is the expensive part). Before a pose has placed them, nobody is too far.
+    if (now >= s.next_shown_rank) {
+        s.next_shown_rank = now + 500000;
+        const bool everyone = s.player_distance >= player_distance_unlimited;
+        for (auto &p : active_peers(s)) {
+            if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id)) continue;
+            p.shown_wanted = everyone || !p.placed ||
+                             nearest_distance(p, local, view) <= s.player_distance * (p.visible ? 1.15f : 1.f);
+        }
+    }
     each_active_peer(s, [&](Peer &p) {
         // A dedicated server has no skater to show.
         if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id))
@@ -501,13 +524,20 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         if (local.ready && !p.render_failed) {
             const bool sampled = s.mode == Mode::echo ? p.poses.sample(now, p.render_pose)
                                                        : p.poses.sample_remote(now, p.render_pose);
+            // Nothing new from them for over a second (a stall here, at the host or on the way):
+            // their skater stays where it was for a while longer. Taking it down and building
+            // it again three seconds later is the most expensive thing a frame can do, and on
+            // a busy server one slow frame made it happen to everyone at once, which made
+            // the next frames slower still.
+            const bool held = !sampled && was_visible && p.poses.heard_within(now, 8000000);
             // Showing a player without an actor spawns one (native_skater_spawn.cpp).
-            const bool spawning = sampled && p.appearance.value() && !was_visible && !remote_skater_entity();
+            if (sampled) p.placed = true;
+            const bool spawning = sampled && p.shown_wanted && p.appearance.value() && !was_visible && !remote_skater_entity();
             if (spawning && now < p.next_spawn) {
                 p.native_status = "Waiting to show the player again.";
             } else if (spawning && native_pass) {
                 p.native_status = "Waiting for another player's skater to finish spawning.";
-            } else if (sampled && p.appearance.value()) {
+            } else if ((sampled || held) && p.shown_wanted && p.appearance.value()) {
                 if (spawning) {
                     native_pass = true;
                     p.applied_cosmetics = 0; // the new actor wears no recipe yet
@@ -563,8 +593,11 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                     remove_remote(s.base);
                     p.next_spawn = now + 3000000;
                 }
-                p.native_status =
-                    sampled ? "Waiting for the player's cosmetic recipe." : "Waiting for player poses.";
+                p.native_status = !p.shown_wanted ? "Further away than players are shown."
+                                  : sampled       ? "Waiting for the player's cosmetic recipe."
+                                                  : "Waiting for player poses.";
+                // No skater for them, but still their name or dot where they are.
+                if (!p.shown_wanted && sampled && labels) label(p);
             }
         }
         update_developer_hoodie(s.base, p.visible ? remote_skater_entity() : 0, developer_id(p),
@@ -597,7 +630,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     if (labels)
         publish_custom_nametags(s.base, std::move(nametags),
                                 local.ready ? std::optional(local.pose.root.position) : std::nullopt,
-                                s.nametags && s.custom_nametags, bubbles, s.chat_bubbles_distance);
+                                s.nametags, bubbles, s.chat_bubbles_distance, s.nametag_distance,
+                                s.nametag_dots);
 }
 } // namespace
 MultiplayerModel model() {

@@ -4,6 +4,7 @@
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Engine/Game/World/world_names.h"
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -22,9 +23,16 @@ Json to_json(const ServerConfig &c) {
     root["map_pool"] = std::move(pool);
     root["map_rotation_minutes"] = c.map_rotation;
     root["max_players"] = c.max_players;
+    root["reserved_slots"] = c.reserved_slots;
+    root["crowd_budget"] = c.crowd_budget;
+    root["send_rate"] = c.send_rate;
+    auto reserved = Json::array();
+    for (const auto id : c.reserved) reserved.push_back(std::to_string(id)); // as strings, like the admins
+    root["reserved"] = std::move(reserved);
     root["password"] = c.password;
     root["welcome"] = c.welcome;
     root["listed"] = c.listed;
+    root["steam_token"] = c.steam_token;
     root["auto_update"] = c.auto_update;
     root["global_bans"] = c.global_bans;
     root["activity_log"] = c.activity_log;
@@ -48,6 +56,7 @@ Json to_json(const ServerConfig &c) {
     distances["low_rate_start"] = c.distances.low_rate_start;
     root["distances"] = std::move(distances);
     root["object_placement"] = placement_text(c.object_placement);
+    root["object_limit"] = c.object_limit;
     root["noclip"] = c.noclip;
     root["no_bail"] = c.no_bail;
     root["boosts"] = c.boosts;
@@ -121,9 +130,15 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
             if (map.is_string() && !map.string().empty()) c.map_pool.push_back(map.string());
     c.map_rotation = std::min(root.value("map_rotation_minutes", c.map_rotation), max_map_rotation);
     c.max_players = root.value("max_players", c.max_players);
+    c.reserved_slots = root.value("reserved_slots", c.reserved_slots);
+    c.crowd_budget = root.value("crowd_budget", c.crowd_budget);
+    c.send_rate = root.value("send_rate", c.send_rate);
+    if (root.contains("reserved") && root.at("reserved").is_array())
+        for (const auto &id : root.at("reserved")) c.reserved.push_back(steam_id(id));
     c.password = root.value("password", c.password);
     c.welcome = root.value("welcome", c.welcome);
     c.listed = root.value("listed", c.listed);
+    c.steam_token = root.value("steam_token", c.steam_token);
     c.auto_update = root.value("auto_update", c.auto_update);
     c.global_bans = root.value("global_bans", c.global_bans);
     c.activity_log = root.value("activity_log", c.activity_log);
@@ -148,7 +163,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     };
     c.port = read_port("port", c.port);
     c.query_port = read_port("query_port", c.query_port);
-    c.tps = root.value("tps", c.tps);
+    c.tps = dedicated_tps; // not the file's (see ServerConfig::tps)
     c.voice_chat = root.value("voice_chat", c.voice_chat);
     c.voice_range = root.value("voice_range", c.voice_range);
     if (root.contains("distances")) {
@@ -176,6 +191,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
         c.votes.seconds = std::clamp(votes.value("seconds", c.votes.seconds), 10U, 300U);
         c.votes.cooldown = std::clamp(votes.value("cooldown_seconds", c.votes.cooldown), 0U, 3600U);
     }
+    c.object_limit = root.value("object_limit", c.object_limit);
     const auto placement = root.value("object_placement", placement_text(c.object_placement));
     // On a dedicated server the protocol's "host only" means its admins.
     c.object_placement = placement == "nobody" ? ObjectPlacement::nobody
@@ -229,11 +245,26 @@ std::optional<std::uint64_t> parse_scoring(std::string_view text) {
     if (!value) return std::nullopt;
     return value;
 }
+bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noexcept {
+    if (on >= config.max_players) return false;
+    const auto listed = [&](const std::vector<std::uint64_t> &ids) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
+    return on + config.reserved_slots < config.max_players || listed(config.reserved) || listed(config.admins);
+}
 std::string config_error(const ServerConfig &c) {
     using namespace multiplayer;
     if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
-    if (c.map.empty() || !valid_map_destination(map_destination(c.map)))
-        return "map \"" + c.map + "\" is not a known map. Use a name like \"San Vansterdam\", or put the map's mod "
+    for (const auto id : c.reserved)
+        if (!individual_steam_id(id)) return "reserved must be SteamID64s (17 digits starting 7656119).";
+    if (c.reserved_slots >= c.max_players) return "reserved_slots must be less than max_players, so that anyone can join at all.";
+    if (c.reserved.size() > 1024) return "reserved holds at most 1024 players.";
+    if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
+    if (!valid_crowd_budget(c.crowd_budget))
+        return "crowd_budget must be 0 (no limit) or " + std::to_string(min_crowd_budget) + " to " +
+               std::to_string(max_crowd_budget) + ".";
+    if (c.steam_token.size() > 64 || !std::all_of(c.steam_token.begin(), c.steam_token.end(), [](unsigned char ch) { return std::isalnum(ch); }))
+        return "steam_token must be a game server login token (letters and digits), or empty to sign in anonymously.";
+    if (c.map.empty() || !valid_map_destination(map_destination(c.map)) || !installed_map(c.map))
+        return "map \"" + c.map + "\" is not a map this server has. Use a name like \"San Vansterdam\", or put the map's mod "
                "folder in Mods next to the server.";
     for (const auto &map : c.map_pool)
         if (!find_level(map) || !valid_map_destination(map_destination(map)))
@@ -243,8 +274,9 @@ std::string config_error(const ServerConfig &c) {
         return "max_players must be 1 to " + std::to_string(max_players - 1) + ".";
     if (c.password.size() > 64) return "password must be at most 64 characters.";
     if (!c.welcome.empty() && !valid_chat_text(c.welcome)) return "welcome must be one chat line (at most 200 bytes).";
-    if (!valid_multiplayer_tps(c.tps)) return "tps must be 20, 30, 60 or 120.";
+    if (c.tps != dedicated_tps) return "tps is " + std::to_string(dedicated_tps) + " on dedicated servers.";
     if (!valid_voice_range(c.voice_range)) return "voice_range must be 50 to 1000.";
+    if (!valid_object_limit(c.object_limit)) return "object_limit must be 0 (no limit) to " + std::to_string(max_object_limit) + ".";
     if (!c.distances.valid()) return "distances must be ordered: full_rate_return < half_rate_start <= half_rate_return < low_rate_start <= 10000.";
     for (unsigned lot = 0; lot < park_lots.size(); ++lot)
         if (c.parks[lot].empty() || !valid_park(lot, c.parks[lot]))
@@ -323,6 +355,11 @@ const ServerLevel *find_level(std::string_view map) {
         if (result) return result;
     }
     return nullptr;
+}
+bool installed_map(std::string_view map) {
+    const auto destination = map_destination(map);
+    const auto asset = world_destination_asset(destination);
+    return !asset.empty() && std::any_of(level_list().begin(), level_list().end(), [&](const auto &level) { return same(level.asset, asset); });
 }
 std::string map_destination(std::string_view map) {
     if (map.find('|') != std::string_view::npos) return std::string(map);

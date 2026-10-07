@@ -42,7 +42,7 @@ straight away (players are told to rejoin). Turn this off with
 
 ReSkateServer.json
 ------------------
-name               Shown in the browser: 1-64 letters, numbers, spaces and - _ [ ] ( ).
+name               Shown in the browser: 1-64 letters, numbers, spaces and - _ / [ ] ( ).
 map                The map everyone skates, named like the game's load command:
                    "San Vansterdam", "Isle of Grom", "Super Ultra Mega Resort",
                    "Stadium 1", or a custom map such as "bbcity" (see Custom maps).
@@ -55,9 +55,39 @@ map_rotation_minutes  Minutes on each map before the server moves to the next
                    warning; the clock waits while nobody is on, and starts
                    over whenever the map changes (by a vote or an admin too).
 max_players        1-249.
+send_rate          The most the server sends one player, in KB/s (default 900,
+                   128-16384). About 1100 is what reaches a player through
+                   Steam's relays: set higher, what is lost is resent until the
+                   connection is full of resends and half of everything is
+                   lost. Console: rate <KB/s>, also for the players already on.
+crowd_budget       The most position updates a second one player is sent
+                   (default 600, 0 for no limit). Players near each other are
+                   sent at the full rate (tps); this only matters once more are
+                   in one place than budget / tps, about 30 at 20 TPS. Then the
+                   nearest stay at the full rate and the farthest of the crowd
+                   drop to 10 and 5 a second, instead of everyone's connection
+                   filling up. About 1000 is what reaches a player through
+                   Steam's relays; more than that was seen to lose half.
+                   Console: crowd <n>|off.
+reserved_slots     How many of those are kept for the players in "reserved" and
+                   the admins (default 0). With 64 players and 4 reserved slots,
+                   anyone can join until 60 are on; the last 4 only they can
+                   take. The browser still shows 64, and everyone else is told
+                   the remaining slots are reserved.
+reserved           SteamID64s of the players with a reserved slot, e.g.
+                   ["76561198000000000"]. Admins always have one.
 password           Empty for anyone; otherwise players type it to join.
 welcome            A chat line sent to each player as they join.
 listed             false hides the server; players then need the code.
+steam_token        A Steam game server login token, or empty (default). Without one
+                   the server signs in anonymously and gets a new Steam ID every
+                   start. With one it keeps the same Steam ID, printed at startup.
+                   Make a token at steamcommunity.com/dev/managegameservers with
+                   App ID 3354750; each running server needs its own. Keep it
+                   private: anyone with it can sign in as your server.
+                   The ReSkate team can set the in-game server browser to show
+                   only servers that have one; the server says so in its log when
+                   that hides it. Players can always join with the code.
 auto_update        Install new ReSkate releases when nobody is on (default true).
 global_bans        Turn away players the ReSkate team has banned from multiplayer
                    (default true). The list is read from api.reskate.dev at startup
@@ -86,7 +116,7 @@ speed_check        Catch players whose game runs faster than normal (Cheat
                    Engine's speedhack and the like), measured from the timing
                    of what their game sends: "warn" (default) takes them out of
                    throwdowns and coop challenges until their speed is normal
-                   again and tells the admins, "kick" removes them from the
+                   again and tells them so (the log has it for the admins), "kick" removes them from the
                    server, "off" does not check.
 score_check        Catch players whose mods change how many points tricks
                    score (per-trick points, the scoring multipliers, the
@@ -105,11 +135,15 @@ activity_log       Log what players do (default true): throwdown drops placed,
                    joins, starts, turns and results; objects placed or removed;
                    how long players take to load.
 port, query_port   Steam game server ports (default 27015, 27016).
-tps                Network updates per second: 20, 30, 60 or 120.
+tps                Network updates per second. Fixed at 20 on dedicated servers
+                   for now: whatever is set here is read as 20.
 voice_chat         Allow voice chat.
 voice_range        How far proximity voice reaches, 50-1000 m.
 distances          When far-away players update less often (metres).
 object_placement   everyone, admins (only admins can build), or nobody.
+object_limit       How many objects each player may have placed, 1-1024
+                   (default 100), or 0 for no limit. Admins are not limited.
+                   A player at the limit deletes one to place another.
 noclip, no_bail,   Let players use noclip (and tp) / No Bail / the forward and up
 boosts             boosts (default true; admins always can).
 enforce_tuning     Players skate with the game's own Gameplay/SkatePhysicsTuning,
@@ -136,6 +170,15 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   help                          A short list of every command.
   status                        Name, map, players, code.
   players                       Connected players and their SteamID64s.
+  reserved                      Who has a reserved slot and how many are kept.
+  reserved slots <n>            Keep n slots for them (console only), 0 for none.
+  reserved add|remove <player or id>   (console only)
+  net [player]                  How the connections are doing right now: traffic,
+                                queues, the server's own loop timing, and the twelve
+                                connections doing worst. With a player, that one's
+                                ping, delivery, queue and when it was last heard from.
+                                The log also gets a [network] line every minute and,
+                                when a player's connection ends, how Steam says it ended.
   say <text>                    Chat as the server (console only).
   msg <player> <text>           Private message, shown to them as "[DM from <you>] ...".
                                 Name start (one word) or SteamID64.
@@ -151,9 +194,10 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
                                 rotation uses (see map_pool).
   rotation [<minutes>|off]      Change the map on a timer (see map_rotation_minutes).
   name <text>   password <text|off>   welcome <text|off>   listed on|off
-  tps 20|30|60|120   voice on|off   voice-range <m>
+  voice on|off   voice-range <m>
   distances <full> <half> <half-return> <low>
   placement everyone|admins|nobody   clear-objects
+  objects <number>|off          How many objects each player may have placed.
   noclip on|off   nobail on|off   boosts on|off
                                 What players may use (admins always can).
   tuning on|off                 Everyone on the game's own physics tuning.

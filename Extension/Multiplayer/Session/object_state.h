@@ -49,6 +49,16 @@ inline bool valid_object_chunk(const ObjectChunk &chunk) {
             return false;
     return true;
 }
+// What of an owner's uploaded `layout` everyone else is shown under a limit of `limit` objects
+// (0: all of it). The objects already shown (`shared`) keep their place, so placing one too
+// many never takes away one that is there; the rest fill what room is left, oldest ID first.
+inline std::vector<NetworkObject> limited_layout(std::vector<NetworkObject> layout, const std::map<std::uint64_t, NetworkObject> &shared,
+                                                 std::size_t limit) {
+    if (!limit || layout.size() <= limit) return layout;
+    std::stable_partition(layout.begin(), layout.end(), [&](const NetworkObject &object) { return shared.contains(object.id); });
+    layout.resize(limit);
+    return layout;
+}
 // Per-owner state. A multipart replacement/delta becomes visible only after all
 // parts validate. Reliable delivery keeps parts ordered; stale revisions cannot
 // resurrect deleted objects. No wire IDs are native entity handles.

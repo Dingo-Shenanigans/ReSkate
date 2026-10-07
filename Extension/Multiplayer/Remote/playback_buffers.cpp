@@ -314,6 +314,9 @@ void PoseBuffer::correct(Pose &pose, std::uint64_t now) const {
     }
     offset_pose(pose, offset);
 }
+bool PoseBuffer::heard_within(std::uint64_t now, std::uint64_t age) const {
+    return !frames_.empty() && (now < frames_.back().arrival || now - frames_.back().arrival <= age);
+}
 bool PoseBuffer::sample_remote(std::uint64_t now, Pose &pose) {
     if (playback_at_ && (now < playback_at_ || now - playback_at_ > 200000)) {
         correction_start_ = correction_end_ = 0;

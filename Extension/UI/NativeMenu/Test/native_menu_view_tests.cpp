@@ -57,6 +57,7 @@ int main() {
         check(missing_tabs({1, 2, 3, 4}, 8, false) == std::vector<unsigned>{0},
             "The Multiplayer page does not wait for the overlay's tool callbacks");
         MultiplayerModel model;
+        const BrowserOptions by_name{{}, false, Sort::name};
         model.local_id = 77; model.map = "Levels/San_Vansterdam";
         for (unsigned i = 0; i < 14; ++i) {
             MultiplayerLobby lobby;
@@ -66,7 +67,7 @@ int main() {
             lobby.players = static_cast<int>(i + 1); lobby.capacity = 16;
             model.lobbies.push_back(lobby);
         }
-        auto result = browse(model, {});
+        auto result = browse(model, by_name);
         check(result.total == 14 && result.lobbies.size() == 14, "All matching lobbies remain scrollable");
         check(result.lobbies.front()->id == 100 && result.lobbies[6]->id == 112 && result.lobbies.back()->id == 113,
               "Stable ordering of duplicate names across the full list");
@@ -78,6 +79,27 @@ int main() {
         check(browse(model, options).total == 5, "Combine name and current-map filters");
         options = {}; options.sort = Sort::players;
         check(browse(model, options).lobbies.front()->players == 14, "Most populated first");
+        // The team's own servers lead the list under every sort, in that sort's order among themselves.
+        model.lobbies[2].dedicated = model.lobbies[2].official = true;
+        model.lobbies[5].dedicated = model.lobbies[5].official = true;
+        result = browse(model, options);
+        check(result.lobbies[0]->id == 105 && result.lobbies[1]->id == 102 && result.lobbies[2]->players == 14,
+              "Official servers are not first when sorting by players");
+        result = browse(model, by_name);
+        check(result.lobbies[0]->id == 102 && result.lobbies[1]->id == 105 && result.lobbies[2]->id == 100,
+              "Official servers are not first when sorting by name");
+        // Then the servers friends are in, which a search for a friend's name finds too.
+        model.lobbies[9].friends = {"Ana"};
+        result = browse(model, by_name);
+        check(result.lobbies[0]->id == 102 && result.lobbies[1]->id == 105 && result.lobbies[2]->id == 109 && result.lobbies[3]->id == 100,
+              "A friend's server is not next after the official ones");
+        BrowserOptions by_friend;
+        by_friend.query = "ANA";
+        result = browse(model, by_friend);
+        check(result.total == 1 && result.lobbies.front()->id == 109, "A friend's name did not find their server");
+        model.lobbies[9].friends.clear();
+        model.lobbies[2].dedicated = model.lobbies[2].official = false;
+        model.lobbies[5].dedicated = model.lobbies[5].official = false;
         options.query = "missing";
         result = browse(model, options);
         check(result.total == 0 && result.lobbies.empty(), "Empty search");
@@ -87,9 +109,19 @@ int main() {
         check(!can_join(model, lobby), "Full lobby must not join");
         lobby.players = 1; lobby.owner = model.local_id;
         check(!can_join(model, lobby), "Own lobby must not join");
-        lobby.owner = 123; model.active = true;
-        check(!can_join(model, lobby), "Active session must not join");
-        model.active = false; model.lobby_joining = true;
+        // A guest hops straight to another server; a host ends their session first, and nobody
+        // joins the one they are in.
+        lobby.owner = 123; model.active = true; model.hosting = true;
+        check(!can_join(model, lobby), "A host must end their session before joining");
+        model.hosting = false; model.public_lobby = 999;
+        check(can_join(model, lobby), "A guest could not hop to another server");
+        model.public_lobby = lobby.id;
+        check(!can_join(model, lobby), "The server a player is in must not join");
+        lobby.friends = {"Ana", "Ben", "Cy", "Di"};
+        check(lobby_friends_text(lobby) == "Ana, Ben and 2 more" && lobby_friends_text(lobby, 4) == "Ana, Ben, Cy, Di",
+              "Friends in a server were not named");
+        lobby.friends.clear();
+        model.active = false; model.public_lobby = 0; model.lobby_joining = true;
         check(!can_join(model, lobby), "Pending connection must not join");
         MultiplayerPlayer player;
         player.id = 88; player.epoch = 7; player.connected = true; player.name = "Skater";

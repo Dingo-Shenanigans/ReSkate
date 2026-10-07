@@ -1,15 +1,16 @@
 # ReSkate dedicated server on Linux
 
 Native x86_64 build. Same lobby protocol as `ReSkateServer.exe`; needs no game install.
-Self-update is disabled on Linux (V1) — update by replacing the binary.
+A release build updates itself, like the Windows server: see [Updating](#updating).
 
 ## Requirements
 
 - 64-bit Linux (tested: CachyOS/Arch, Ubuntu 22.04+ should work).
 - `cmake >= 3.24`, `g++ >= 12` (C++20), `libssl-dev` (OpenSSL), `libcurl` headers optional (not needed for V1).
 - `curl` on the machine that runs the server: it is how the server reads the ReSkate team's
-  global ban list (`api.reskate.dev`). Without it the server says so in its log and enforces
-  only its own bans. Not needed with `"global_bans": false`.
+  global ban list (`api.reskate.dev`) and how it downloads its own updates. Without it the
+  server says so in its log, enforces only its own bans and stays on its version.
+- `tar` (with gzip) on that machine too, to unpack an update.
 - Steam shared libs beside the binary: `libsteam_api.so` + `steamclient.so`
   (Valve proprietary, not in git — but bundled in the CI/release assets,
   like the Windows zip bundles its DLLs; otherwise fetch them, see below).
@@ -110,10 +111,31 @@ sudo systemctl enable --now reskate-server
 The server writes its own `ReSkateServer.log` next to the binary; the console
 output goes to the journal (`journalctl -u reskate-server -f`).
 
+## Updating
+
+A server from a release tarball updates itself the way the Windows one does: at startup and
+every half hour it asks GitHub for the latest release, and when that holds a newer Linux
+server it installs it once nobody is on, then carries on as the new version. `update` in
+the console does it straight away. `"auto_update": false` in `ReSkateServer.json`, or
+`--no-update`, turns it off. A server you built yourself never replaces itself.
+
+- The release's `launcher.json` pins the tarball and the `ReSkateServer` inside it by
+  SHA-256; nothing else is installed. The download is `curl` over HTTPS and the unpacking
+  is `tar`, so both must be on the machine.
+- Everything in the tarball is replaced in the server's folder (the server, the Steam
+  libraries, the readmes, `world-layers.json`). Your own files are not in it and are kept:
+  `ReSkateServer.json`, `Mods`, the logs.
+- The user the server runs as must be able to write to the server's folder. With the
+  systemd unit below that is `reskate` and `/opt/reskate-server`:
+  `sudo chown -R reskate: /opt/reskate-server`.
+- The updated server takes over the same process, so systemd (or your terminal) keeps the
+  server it started; nothing restarts the service.
+- A release made before this (1.1.3 and older) has no Linux entry in `launcher.json`: the
+  server logs that the latest release has no Linux server and stays as it is. To get onto
+  a self-updating version from one of those, replace the files once by hand.
+
 ## Notes / limits (V1)
 
-- `auto_update` / `update` command: `updates_enabled()==false` on Linux.
-  `check_for_update` reports “self-update is not supported on Linux”.
 - `--export-world-layers` on Linux: the reader works, the scanner needs the
   Windows game (`Data/layout.toc` + CAS) and `oo2core_9_win64.dll` (Oodle).
   Oodle blocks throw `Oodle CAS data is only supported on Windows` (caught,

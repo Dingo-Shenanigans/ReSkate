@@ -721,6 +721,7 @@ void dedicated_server_codec() {
     roster.members = {{server, 10, "My server"}, {player, 20, "Skater", true}, {other, 30, "Other"}};
     roster.voice_range = 450;
     roster.guest_noclip = false;
+    roster.object_limit = 50;
     Packet teleport;
     teleport.kind = PacketKind::teleport; teleport.session = 9; teleport.epoch = 10; teleport.map = 11; teleport.source = server;
     teleport.teleport = {612.5f, 199.25f, -1075.75f};
@@ -744,6 +745,47 @@ void dedicated_server_codec() {
           "Server roster, admin flags or voice range lost");
     check(decoded && !decoded->guest_noclip && decoded->guest_no_bail && decoded->guest_boosts,
           "Guest noclip / No Bail / boost permissions lost");
+    // The limit on each player's objects rides in the roster too; one past the protocol's own is refused.
+    check(decoded && decoded->object_limit == 50, "The object limit was lost");
+    {
+        auto unlimited = roster;
+        unlimited.object_limit = 0;
+        const auto back = decode(encode(unlimited));
+        check(back && back->object_limit == 0, "No object limit did not stay none");
+        auto over = roster;
+        over.object_limit = dingosdk::max_object_limit + 1;
+        bool refused{};
+        try {
+            encode(over);
+        } catch (const std::exception &) {
+            refused = true;
+        }
+        check(refused, "An object limit past the protocol's was sent");
+        check(dingosdk::parse_object_limit("25") == 25U && dingosdk::parse_object_limit("off") == 0U &&
+                  dingosdk::parse_object_limit("1024") == 1024U && !dingosdk::parse_object_limit("1025") &&
+                  !dingosdk::parse_object_limit("") && !dingosdk::parse_object_limit("-1") && !dingosdk::parse_object_limit("ten"),
+              "Object limits were not read");
+        // What a host shows of a layout under a limit: what is already shown stays, the rest fills up in order.
+        const auto object = [](std::uint64_t id) {
+            dingosdk::NetworkObject value;
+            value.id = id;
+            value.item = "own_bk_test";
+            return value;
+        };
+        const auto ids = [](const std::vector<dingosdk::NetworkObject> &layout) {
+            std::vector<std::uint64_t> out;
+            for (const auto &entry : layout) out.push_back(entry.id);
+            return out;
+        };
+        const std::vector<dingosdk::NetworkObject> uploaded{object(1), object(2), object(3), object(4), object(5)};
+        std::map<std::uint64_t, dingosdk::NetworkObject> shown{{4, object(4)}, {5, object(5)}};
+        check(ids(limited_layout(uploaded, {}, 0)) == std::vector<std::uint64_t>{1, 2, 3, 4, 5} &&
+                  ids(limited_layout(uploaded, {}, 9)) == std::vector<std::uint64_t>{1, 2, 3, 4, 5},
+              "A layout within the limit was cut");
+        check(ids(limited_layout(uploaded, {}, 3)) == std::vector<std::uint64_t>{1, 2, 3}, "A layout over the limit was not cut to it");
+        check(ids(limited_layout(uploaded, shown, 3)) == std::vector<std::uint64_t>{4, 5, 1},
+              "Objects already shown lost their place to newer ones");
+    }
     // Parties ride in the roster: each has one leader and at least two members; a server is in none.
     auto party = roster;
     party.members[1].party = party.members[2].party = 7;

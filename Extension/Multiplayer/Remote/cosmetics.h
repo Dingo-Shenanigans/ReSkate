@@ -43,6 +43,12 @@ inline constexpr std::array<std::string_view, 12> mark_item_names{
     "Top", "Bottoms", "Shoes", "Socks", "Hat", "Glasses", "Outfit", "Costume", "Deck", "Grip tape", "Trucks", "Wheels"};
 inline constexpr std::size_t mark_items = mark_item_names.size(), skater_mark_items = 8;
 using MarkStyles = std::array<MarkStyle, mark_items>;
+// The rainbow, as a style a developer or a member of staff picks (a developer's standard is
+// the rainbow already). Players on builds from before it could be picked must be able to read
+// the style, so it travels as one they know: a solid colour, with this in the second colour a
+// solid does not use. They show the solid colour; nobody else's item takes the rainbow from it.
+inline constexpr std::array<std::uint8_t, 3> rainbow_marker{0x52, 0x42, 0x57}; // "RBW"
+inline bool rainbow_style(const MarkStyle &style) noexcept { return style.mode == MarkMode::solid && style.to == rainbow_marker; }
 inline bool valid_mark_style(const MarkStyle &style) noexcept {
     return style.mode <= MarkMode::solid && style.speed <= 2;
 }

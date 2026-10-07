@@ -10,8 +10,8 @@ WorkingDirectory=/opt/reskate-server
 ExecStart=/opt/reskate-server/ReSkateServer
 Restart=always
 RestartSec=5
-# Server uses restart_for_update internally; V1 Linux has self-update off,
-# so any non-zero exit still restarts here.
+# The server updates itself in place (the new version takes over this same process), so
+# its user must be able to write to WorkingDirectory. Any exit still restarts it here.
 # The server already appends every line to ReSkateServer.log next to itself;
 # appending stdout there too wrote each line twice. The journal keeps the console copy.
 StandardOutput=journal

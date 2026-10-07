@@ -6,6 +6,7 @@
 #include "server_config.h"
 #include "server_host.h"
 #include "server_update.h"
+#include "Extension/Multiplayer/developer_identity.h"
 #include "steam_server.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -364,16 +365,19 @@ int run(int argc, char **argv, bool skip_update) {
 
     SteamServer steam;
     std::string error;
-    if (!steam.start(here, config.port, config.query_port, error)) {
+    if (!steam.start(here, config.port, config.query_port, config.steam_token, error)) {
         write_log(error);
         return 1;
     }
-    write_log("Signing in to Steam...");
+    write_log(config.steam_token.empty() ? "Signing in to Steam..." : "Signing in to Steam with steam_token...");
     const auto login_started = std::chrono::steady_clock::now();
     while (!steam.logged_on() && !stopping) {
         steam.run_callbacks();
         if (std::chrono::steady_clock::now() - login_started > std::chrono::seconds(60)) {
-            write_log("Steam sign-in timed out after 60 s. Check the internet connection and try again.");
+            write_log(config.steam_token.empty()
+                          ? "Steam sign-in timed out after 60 s. Check the internet connection and try again."
+                          : "Steam sign-in timed out after 60 s. Steam may not have accepted steam_token: it must be a token for "
+                            "app 3354750 that no other running server is using. Or check the internet connection.");
             return 1;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -391,8 +395,14 @@ int run(int argc, char **argv, bool skip_update) {
         return 1;
     }
     write_log(config.name + " is up on " + host.map_name() + " for " + std::to_string(config.max_players) + " players.");
-    write_log("Steam ID " + std::to_string(steam.steam_id()) + ", public IP " + steam.public_ip() + ".");
+    write_log("Steam ID " + std::to_string(steam.steam_id()) +
+              (config.steam_token.empty() ? " (anonymous: new every start; set steam_token to keep one)" : " (from steam_token: the same every start)") +
+              ", public IP " + steam.public_ip() + ".");
     write_log("Join code: " + host.invite() + (config.password.empty() ? "" : " (password required)"));
+    if (config.steam_token.empty() && config.listed)
+        write_log("No steam_token: the server browser can be set to show only servers that have one, and then "
+                  "this server is not in it (players can still join with the code). It takes a minute to make "
+                  "one: see steam_token in README.");
     write_log(config.admins.empty() ? "No admins yet: type \"admin add <SteamID64>\" to add one."
                               : std::to_string(config.admins.size()) + " admin(s). Type help for commands.");
 
@@ -402,6 +412,7 @@ int run(int argc, char **argv, bool skip_update) {
 #endif
     auto next_advertise = std::chrono::steady_clock::now();
     std::optional<bool> name_allowed; // last seen: whether the name may be listed
+    bool tokens_required{};           // last seen: whether the browser wants a steam_token
     auto next_update_check = next_advertise + update_interval;
     std::future<UpdateCheck> update_check;
     bool update_now{}, update_waiting{}, restart{};
@@ -484,6 +495,14 @@ int run(int argc, char **argv, bool skip_update) {
         }
         if (const auto now = std::chrono::steady_clock::now(); now >= next_advertise) {
             next_advertise = now + std::chrono::seconds(2);
+            // The ReSkate team's rule, read with its ban list: say when it starts or stops hiding this server.
+            if (const bool required = multiplayer::server_tokens_required(); required != tokens_required) {
+                tokens_required = required;
+                if (config.steam_token.empty() && config.listed)
+                    write_log(required ? "The server browser now shows only servers with a steam_token, so this server is "
+                                         "hidden from it. Add a steam_token (see README) to be listed again."
+                                       : "The server browser shows servers without a steam_token again.");
+            }
             // A name with a bad word in it is never listed (clients hide one too); the
             // server still runs and players can join with its code.
             const bool allowed = !text::contains_bad_words(config.name);

@@ -1,5 +1,6 @@
 #include "steam_server_browser.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Extension/Multiplayer/developer_identity.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Text/word_filter.h"
 #include <Windows.h>
@@ -158,10 +159,18 @@ const MultiplayerLobby *SteamServerBrowser::find(std::uint64_t id) const {
 }
 void SteamServerBrowser::refresh(std::uint64_t now) {
     if (!api().open()) return;
+    // Steam stops answering a game that asks often (an empty list, for minutes): one search at a
+    // time, a quarter of a minute apart, and three quarters after one that came back empty.
+    // Opening or refreshing the browser sooner shows what the last search found.
+    if (started_ && (!searches_.empty() || now - started_ < (internet_listed_ ? 15000000 : 45000000))) return;
     servers_ = api().servers();
     if (!servers_) return;
     release();
-    found_.clear();
+    // What the last search found stays until this one has an internet list of its own; what
+    // it says about a server replaces the old copy.
+    ++search_;
+    internet_listed_ = false;
+    for (auto &[id, entry] : found_) entry.answered = false;
     // The internet list, filtered by Steam on the tags; and the LAN list, whose
     // servers answer directly (live map and ping) and show up at once.
     static Filter filter{"gametagsand", {}};
@@ -172,21 +181,25 @@ void SteamServerBrowser::refresh(std::uint64_t now) {
         auto *response = new Response;
         void *request = lan ? (api().lan ? api().lan(servers_, skate_app, response) : nullptr)
                             : api().request(servers_, skate_app, filters, 1, response);
-        if (request) searches_.push_back({request, response});
+        if (request) searches_.push_back({request, response, !lan});
         else delete response;
     }
     started_ = now;
     next_poll_ = now;
 }
-void SteamServerBrowser::read() {
+void SteamServerBrowser::read(std::uint64_t now) {
     for (const auto &search : searches_) {
         const int count = api().count(servers_, search.request);
+        if (search.internet && count > 0) internet_listed_ = true;
         for (int i = 0; i < count && i < 512; ++i) {
             const auto *item = api().details(servers_, search.request, i);
             if (!item) continue;
             auto row = read_server_tags(bounded(item->tags, sizeof item->tags), item->steam_id.value);
             if (!row) continue;
             auto &entry = found_[row->id];
+            entry.search = search_;
+            entry.listed = now;
+            if (!search.internet) entry.lan = true;
             // A direct answer is live; the tags come from Steam's master list, which
             // can lag behind a change of map.
             const bool answered = item->had_successful_response;
@@ -204,15 +217,18 @@ void SteamServerBrowser::read() {
                 entry.addresses.push_back(address);
         }
     }
-    // A restarted server gets a new, higher Steam ID, while Steam lists the old
-    // one for a while. Only one can hold an address and port: keep the newest.
+    // A restarted anonymous server gets a new, higher Steam ID, while Steam lists the old
+    // one for a while. Only one can hold an address and port: keep the newest, or the one
+    // signed in with a login token (its ID never changes, and is lower than any anonymous one).
     // Servers named with bad words, or with characters a server name cannot have, are
     // never shown (a server refuses such a name too, but anyone can list one).
     std::vector<MultiplayerLobby> rows;
     for (const auto &[id, entry] : found_) {
         if (!valid_server_name(entry.row.name) || text::contains_bad_words(entry.row.name)) continue;
+        if (blocked_server(id) || (server_tokens_required() && !persistent_server_steam_id(id) && !entry.lan)) continue;
         const bool replaced = std::any_of(found_.begin(), found_.end(), [&](const auto &other) {
-            return other.first > id && std::any_of(entry.addresses.begin(), entry.addresses.end(), [&](const auto &a) {
+            const bool kept = persistent_server_steam_id(id), other_kept = persistent_server_steam_id(other.first);
+            return (kept != other_kept ? other_kept : other.first > id) && std::any_of(entry.addresses.begin(), entry.addresses.end(), [&](const auto &a) {
                 return std::find(other.second.addresses.begin(), other.second.addresses.end(), a) != other.second.addresses.end();
             });
         });
@@ -223,17 +239,30 @@ void SteamServerBrowser::read() {
 void SteamServerBrowser::tick(std::uint64_t now) {
     if (searches_.empty() || now < next_poll_) return;
     next_poll_ = now + 250000;
-    read();
+    read(now);
     // Pings of servers behind a NAT never answer; stop waiting after 15 s.
+    // Steam can hold an internet search back for seconds before it starts (it does when another
+    // was made shortly before), and it is not "refreshing" while it waits: an internet search
+    // with nothing listed yet is given six seconds before that counts as finished.
     const bool done = std::all_of(searches_.begin(), searches_.end(), [&](const auto &search) {
-        return static_cast<Response *>(search.response)->done ||
-               (now - started_ > 1000000 && !api().refreshing(servers_, search.request));
+        if (static_cast<Response *>(search.response)->done) return true;
+        const std::uint64_t patience = search.internet && !internet_listed_ ? 6000000 : 1000000;
+        return now - started_ > patience && !api().refreshing(servers_, search.request);
     }) || now - started_ > 15000000;
     if (done) {
         release();
+        // An internet list with servers in it is the whole truth: what it left out is gone.
+        // An empty one is Steam not answering (see the header), and it has stayed that way for
+        // minutes for a player who searched often: keep what was listed in the last quarter
+        // of an hour. A server that closed meanwhile only fails to join.
+        const auto before = found_.size();
+        std::erase_if(found_, [&](const auto &entry) {
+            return entry.second.search != search_ && (internet_listed_ || now - entry.second.listed > 900000000);
+        });
+        if (found_.size() != before) read(now);
         std::string list;
         for (const auto &row : rows_)
-            list += (list.empty() ? ": " : "; ") + row.name + " (" + row.map + ", " + std::to_string(row.players) + "/" +
+            list += (list.empty() ? ": " : "; ") + row.name + (official_server(row.id) ? " [official]" : "") + " (" + row.map + ", " + std::to_string(row.players) + "/" +
                     std::to_string(row.capacity) + (row.ping >= 0 ? ", " + std::to_string(row.ping) + " ms" : std::string{}) + ")";
         logging::log(logging::Level::info, logging::Channel::runtime, "Server browser: {} ReSkate server{} found{}.",
                      rows_.size(), rows_.size() == 1 ? "" : "s", list);

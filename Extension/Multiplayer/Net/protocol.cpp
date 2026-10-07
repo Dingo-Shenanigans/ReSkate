@@ -315,6 +315,37 @@ std::string_view greeting_error(const Packet &p, std::uint64_t session, std::uin
         return "Peer changed level or session. Join again.";
     return {};
 }
+namespace {
+void coarsen(Transform &t, unsigned bits) noexcept {
+    if (!bits) return;
+    unsigned largest{};
+    float norm{};
+    for (unsigned i = 0; i < 4; ++i) {
+        norm += t.rotation[i] * t.rotation[i];
+        if (std::abs(t.rotation[i]) > std::abs(t.rotation[largest])) largest = i;
+    }
+    if (!(norm > 0.f) || !std::isfinite(norm)) return;
+    // As Writer::compact_transform packs it: the three smaller components, the largest positive.
+    constexpr float scale = 46339.5358f;
+    const float factor = (t.rotation[largest] < 0 ? -1.f : 1.f) * scale / std::sqrt(norm);
+    const float step = static_cast<float>(1U << bits);
+    const float most = std::floor(32767.f / step) * step; // a rounded value must still fit 16 bits
+    float sum{};
+    for (unsigned i = 0; i < 4; ++i) {
+        if (i == largest) continue;
+        const float packed = std::clamp(std::round(t.rotation[i] * factor / step) * step, -most, most);
+        t.rotation[i] = packed / scale;
+        sum += t.rotation[i] * t.rotation[i];
+    }
+    t.rotation[largest] = std::sqrt(std::max(0.f, 1.f - sum));
+}
+} // namespace
+void coarsen_rotations(Pose &pose, unsigned bits) noexcept {
+    bits = std::min(bits, 12U);
+    coarsen(pose.root, std::min(bits, 6U)); // which way they face matters from further off than a finger does
+    for (auto &t : pose.skater) coarsen(t, bits);
+    for (auto &t : pose.board) coarsen(t, bits);
+}
 std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose) {
     return encode(p, compact_pose, p.pose_interval_us);
 }
@@ -558,6 +589,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         if (!valid_multiplayer_tps(p.tps)) throw std::invalid_argument("Invalid session TPS");
         w.integer(p.tps, 1);
         w.integer(static_cast<std::uint8_t>(p.object_placement), 1);
+        if (!valid_object_limit(p.object_limit)) throw std::invalid_argument("Invalid object limit");
+        w.integer(p.object_limit, 2);
         w.integer(p.force_world_layers, 1);
         // One mode per world-layer catalog row; both peers read the same catalog
         // from the same game build.
@@ -864,6 +897,9 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             const auto placement = r.integer(1);
             if (!valid_object_placement(placement)) return {};
             p.object_placement = static_cast<ObjectPlacement>(placement);
+            const auto object_limit = r.integer(2);
+            if (!valid_object_limit(object_limit)) return {};
+            p.object_limit = static_cast<unsigned>(object_limit);
             const auto forced = r.integer(1);
             if (forced > 1) return {};
             p.force_world_layers = forced != 0;

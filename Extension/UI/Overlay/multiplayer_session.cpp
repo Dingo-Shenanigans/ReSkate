@@ -608,6 +608,28 @@ void session_page(SkateMenu &menu, const Model &model) {
                              : "Only the host can build. Your editor and object tools are locked.")
              : mp.dedicated ? "Nobody can build. Existing objects stay."
                             : "Nobody can build, including the host. Existing objects stay.");
+    // How many objects each player may have placed: a few round numbers, and whatever the
+    // server's file or console set that is not one of them.
+    {
+        static constexpr std::array<unsigned, 7> limits{0, 10, 25, 50, 100, 250, 500};
+        const auto found = std::find(limits.begin(), limits.end(), mp.object_limit);
+        const std::string custom = std::to_string(mp.object_limit);
+        std::array<const char *, 8> labels{"No limit", "10", "25", "50", "100", "250", "500", custom.c_str()};
+        int picked = static_cast<int>(found - limits.begin());
+        field(menu, "Objects per player");
+        ImGui::BeginDisabled(!controls_session(mp));
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##object-limit", &picked, labels.data(), found == limits.end() ? 8 : 7) && picked < 7)
+            send_private(menu, "object-limit", picked ? std::to_string(limits[static_cast<std::size_t>(picked)]) : std::string("off"), unused, false);
+        ImGui::EndDisabled();
+        const char *exempt = mp.dedicated ? "Admins" : "The host";
+        if (!mp.object_limit) note("Everyone can place as many objects as they like.");
+        else if (mp.object_limit_own)
+            note(("You have placed " + std::to_string(mp.objects_placed) + " of " + std::to_string(mp.object_limit_own) +
+                  " objects. Delete one to place another once you reach the limit.").c_str());
+        else note((std::string("Each player can have ") + std::to_string(mp.object_limit) + " objects placed. " + exempt +
+                   (mp.dedicated ? " are not limited." : " is not limited.")).c_str());
+    }
     if (controls_session(mp)) {
         note(mp.dedicated ? "Enforced by the server, so modified clients cannot get around it."
                           : "Enforced by the host, so modified clients cannot get around it.");

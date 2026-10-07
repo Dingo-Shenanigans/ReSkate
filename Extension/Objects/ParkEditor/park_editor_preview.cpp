@@ -66,6 +66,11 @@ bool queue_local_park_paste(const EditorPasteRequest &request) {
         auto target = r.document.maps[r.map];
         if (target.size() + request.objects.size() > 1024 || r.next_id > UINT64_MAX - request.objects.size())
             return false;
+        // The session's own limit on each player: copies that would pass it are not made.
+        if (const auto limit = lobby_object_limit(); limit && target.size() + request.objects.size() > limit) {
+            e.status = object_limit_notice;
+            return false;
+        }
         auto next_id = r.next_id;
         for (const auto &copy : request.objects) {
             if (std::none_of(e.assets->begin(), e.assets->end(),
@@ -103,6 +108,10 @@ bool queue_local_park_preview(const EditorPreviewRequest &request) {
             profile::PlacedObject object;
             std::uint64_t entity{};
             if (placing) {
+                if (const auto limit = lobby_object_limit(); limit && layout.size() >= limit) {
+                    e.status = object_limit_notice;
+                    return false;
+                }
                 if (layout.size() >= 1024 || r.next_id == UINT64_MAX || !e.assets ||
                     std::none_of(e.assets->begin(), e.assets->end(),
                                  [&](const auto &asset) { return asset.key == request.item; }))

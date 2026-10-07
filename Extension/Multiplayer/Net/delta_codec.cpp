@@ -43,7 +43,8 @@ WireUpdate DeltaSender::build(const Packet &p, std::span<const std::uint8_t> raw
     }
     const auto found = bases_.find({p.source, p.kind});
     if (found == bases_.end() || found->second.epoch != p.epoch || found->second.world != p.world || p.time_us < found->second.time ||
-        (p.kind != PacketKind::cosmetics && p.time_us - found->second.time >= 2000000)) {
+        (p.kind != PacketKind::cosmetics &&
+         (aligned_ ? p.time_us / refresh_us_ != found->second.time / refresh_us_ : p.time_us - found->second.time >= refresh_us_))) {
         if (wire.size() + 4 > max_packet)
             return out;
         out.bytes.assign(wire.begin(), wire.end());

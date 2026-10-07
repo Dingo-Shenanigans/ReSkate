@@ -18,4 +18,10 @@ constexpr bool valid_pose_interval(std::uint32_t interval) noexcept {
         if (interval == multiplayer_pose_interval(rate)) return true;
     return false;
 }
+// The most poses a second one player is sent on a dedicated server, whatever the crowd
+// around them (Extension/Multiplayer/Session/room.h, crowd_limits); 0: no limit.
+inline constexpr unsigned crowd_pose_budget = 600, min_crowd_budget = 300, max_crowd_budget = 20000;
+constexpr bool valid_crowd_budget(unsigned budget) noexcept {
+    return !budget || (budget >= min_crowd_budget && budget <= max_crowd_budget);
+}
 } // namespace dingosdk

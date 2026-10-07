@@ -12,6 +12,14 @@ void set_park_mod_list_visible(bool visible) noexcept;
 // on disconnect; existing placed objects remain in the world.
 void set_lobby_object_placement_allowed(bool enabled);
 bool lobby_object_placement_allowed() noexcept;
+// The session's limit on this player's objects (object_placement.h), 0 for none: the host's
+// own game and a server admin's are given none. Adding an object is refused at the limit.
+void set_lobby_object_limit(unsigned limit) noexcept;
+unsigned lobby_object_limit() noexcept;
+// Objects this player has on the current map, and whether one more would pass the limit.
+std::size_t lobby_object_count();
+bool lobby_object_limit_reached();
+inline constexpr char object_limit_notice[] = "You have placed as many objects as this session allows each player.";
 bool queue_local_park_surface(const EditorSurfaceRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);

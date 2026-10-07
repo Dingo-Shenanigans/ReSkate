@@ -122,24 +122,28 @@ inline std::pair<std::array<std::uint8_t, 3>, std::array<std::uint8_t, 3>> stand
     if (mark == IdentityList::content_creator) return {{0x88, 0x23, 0x23}, {0xff, 0x48, 0x70}};
     if (mark == IdentityList::homie) return {{0xad, 0x6c, 0x1c}, {0xff, 0xe6, 0x67}};
     if (mark == IdentityList::centrix) return {{0x1f, 0x7b, 0xff}, {0xff, 0xff, 0xff}};
+    if (mark == IdentityList::staff) return {{0x10, 0x80, 0x38}, {0x6a, 0xf0, 0x8c}};
     return {{0x6e, 0x20, 0xff}, {0xb4, 0x78, 0xff}};
 }
 // What a cosmetic does for a player on `mark`'s list (nobody else's does anything) with the
 // style they chose on the Special page. Left standard, a developer's cycles the rainbow, a
 // content creator's goes from deep red through bright red to a reddish pink and back, and a
-// homie's from deep gold through bright gold to yellow and back, and Centrix's from blue
-// through light blue to white and back. No style asks for the rainbow:
-// it is a developer's standard, and nobody else's.
+// homie's from deep gold through bright gold to yellow and back, Centrix's from blue
+// through light blue to white and back, and the staff's from deep green through bright green
+// to a light one and back. The rainbow is a developer's standard, and a style a developer or
+// a member of staff can pick (rainbow_style); nobody else's item takes it.
 inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mark, const multiplayer::MarkStyle &style) noexcept {
     using multiplayer::IdentityList;
     using multiplayer::MarkMode;
     ItemAnimation out;
     if (!mark || style.mode == MarkMode::off) return out;
     out.on = true;
-    out.rainbow = style.mode == MarkMode::standard && *mark == IdentityList::developer;
+    out.rainbow = (style.mode == MarkMode::standard && *mark == IdentityList::developer) ||
+                  (multiplayer::rainbow_style(style) && (*mark == IdentityList::developer || *mark == IdentityList::staff));
     const std::uint64_t normal = out.rainbow ? 8000 : 3000;
     out.period = style.speed == 1 ? normal * 2 : style.speed == 2 ? normal / 2 : normal;
-    if (style.mode == MarkMode::solid) {
+    if (out.rainbow) {
+    } else if (style.mode == MarkMode::solid) {
         out.stops.fill(material_color(style.from));
     } else if (style.mode == MarkMode::gradient) {
         const auto from = material_color(style.from), to = material_color(style.to);
@@ -150,7 +154,9 @@ inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mar
         constexpr std::array<Color, 3> red{{{.2f, .004f, .01f}, {.8f, .03f, .03f}, {.8f, .05f, .13f}}};
         constexpr std::array<Color, 3> gold{{{.34f, .12f, .006f}, {.8f, .5f, .06f}, {.8f, .64f, .11f}}};
         constexpr std::array<Color, 3> blue{{{.01f, .16f, .8f}, {.3f, .5f, .8f}, {.8f, .8f, .8f}}};
-        out.stops = *mark == IdentityList::content_creator ? red : *mark == IdentityList::centrix ? blue : gold;
+        constexpr std::array<Color, 3> green{{{.006f, .2f, .04f}, {.05f, .8f, .2f}, {.35f, .8f, .4f}}};
+        out.stops = *mark == IdentityList::content_creator ? red : *mark == IdentityList::centrix ? blue :
+                    *mark == IdentityList::staff ? green : gold;
     }
     return out;
 }
