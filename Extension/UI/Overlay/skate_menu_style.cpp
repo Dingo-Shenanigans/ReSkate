@@ -19,6 +19,8 @@ constexpr ImU32 track_colour = IM_COL32(38, 40, 46, 255), track_alternate = IM_C
                 selected_colour = IM_COL32(70, 150, 255, 255), playhead_colour = IM_COL32(255, 196, 64, 255),
                 tail_colour = IM_COL32(236, 232, 220, 80), default_tail_colour = IM_COL32(236, 232, 220, 36),
                 cut_tail_colour = IM_COL32(255, 128, 72, 120);
+// The editor lists flip tricks 1 to 30.
+constexpr int editable_tricks = 30;
 std::atomic<StylePlayheadFeed> playhead_feed{};
 // Queues a command without a reply line, because sliders and drags send many commands.
 void quiet(const CallbacksV3& callbacks, const std::string& command) {
@@ -55,7 +57,7 @@ Editing begin_editing(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     // The timeline follows the clip on the stand-in.
     const auto feed = playhead_feed.load();
     Editing e{menu, model, callbacks, feed ? feed() : style::Playhead{}};
-    menu.styling.trick = std::clamp(menu.styling.trick, 1, static_cast<int>(style::flip_trick_names.size()) - 1);
+    menu.styling.trick = std::clamp(menu.styling.trick, 1, editable_tricks);
     e.trick_id = static_cast<std::uint8_t>(menu.styling.trick);
     e.trick = style::flip_trick_names[e.trick_id];
     const auto found = model.style.times.find(e.trick_id);
@@ -168,9 +170,9 @@ void send_blend_out(Editing& e, std::size_t key, float ms, bool final) {
 }
 void trick_picker(Editing& e) {
     auto& menu = e.menu;
-    // Tricks 16 to 30 and 32 are the nollie versions of 1 to 15 and 31.
-    constexpr int listed = static_cast<int>(style::flip_trick_titles.size());
-    const auto nollie = [](int trick) { return (trick >= 16 && trick <= 30) || trick == 32; };
+    // Tricks 16 to 30 are the nollie versions of 1 to 15. The quick ollie and nollie (31, 32) are not listed: their capture fails.
+    constexpr int listed = editable_tricks + 1;
+    const auto nollie = [](int trick) { return trick >= 16 && trick <= 30; };
     const auto preview = std::format("Flip tricks  /  {}", style::flip_trick_titles[e.trick_id]);
     if (!ImGui::BeginCombo("##style-trick", preview.c_str(), ImGuiComboFlags_HeightLargest)) return;
     const auto soon = [](const char* label) {
@@ -196,6 +198,7 @@ void trick_picker(Editing& e) {
     ImGui::SeparatorText("FLIP TRICKS");
     group("Regular", false);
     group("Nollie", true);
+    soon("Quick ollie and quick nollie  (coming soon)");
     soon("Switch  (coming soon)");
     soon("Fakie  (coming soon)");
     ImGui::SeparatorText("MORE");
@@ -429,27 +432,40 @@ bool style_editor_wanted() noexcept {
 
 // The style editor screen: the stand-in in the middle, the timeline at the bottom, the joints at the side.
 // Presets: pick the one in use, make an empty one, or copy the one in use to a new name.
-void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool manage) {
+// Auto save, and with it off, Save and Discard. Discard reverts every unsaved edit, so it takes a second click within three seconds.
+const char* discard_label(const SkateMenu& menu) { return ImGui::GetTime() < menu.styling.discard_until ? "Click again to discard" : "Discard changes"; }
+float save_row_width(const SkateMenu& menu, const Model& model) {
+    const auto& look = ImGui::GetStyle();
+    const auto button = [&](const char* text) { return ImGui::CalcTextSize(text).x + look.FramePadding.x * 2; };
+    float width = ImGui::GetFrameHeight() + look.ItemInnerSpacing.x + ImGui::CalcTextSize("Auto save").x;
+    if (!model.style.auto_save) width += button("Save") + button(discard_label(menu)) + look.ItemSpacing.x * 2;
+    return width;
+}
+void save_row(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& style = model.style;
     bool auto_save = style.auto_save;
     if (ImGui::Checkbox("Auto save", &auto_save)) send_console(menu, callbacks, auto_save ? "style autosave 1" : "style autosave 0");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: each edit saves 750 ms after it is made. Off: edits wait for Save.");
-    if (!style.auto_save) {
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!style.unsaved);
-        if (ImGui::Button("Save")) send_console(menu, callbacks, "style save");
-        ImGui::SameLine();
-        // Discard reverts every unsaved edit, so the second click within three seconds does it.
-        const bool armed = ImGui::GetTime() < menu.styling.discard_until;
-        if (ImGui::Button(armed ? "Click again to discard" : "Discard changes")) {
-            if (armed) {
-                send_console(menu, callbacks, "style reload");
-                menu.styling.edit_until = menu.styling.drag_until = menu.styling.blend_until = 0;
-            }
-            menu.styling.discard_until = armed ? 0.0 : ImGui::GetTime() + 3.0;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: each edit saves 750 ms after it is made. Off: edits wait for Save (Ctrl+S in the editor).");
+    if (style.auto_save) return;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!style.unsaved);
+    if (ImGui::Button("Save")) send_console(menu, callbacks, "style save");
+    ImGui::SameLine();
+    const bool armed = ImGui::GetTime() < menu.styling.discard_until;
+    if (ImGui::Button(discard_label(menu))) {
+        if (armed) {
+            send_console(menu, callbacks, "style reload");
+            menu.styling.edit_until = menu.styling.drag_until = menu.styling.blend_until = 0;
         }
-        ImGui::EndDisabled();
+        menu.styling.discard_until = armed ? 0.0 : ImGui::GetTime() + 3.0;
     }
+    ImGui::EndDisabled();
+}
+
+void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool manage) {
+    const auto& style = model.style;
+    // The editor has this row next to its Close button.
+    if (manage) save_row(menu, model, callbacks);
     // A switch away from unsaved changes: the editor asks first, and this page waits for Save or Discard.
     const auto switch_to = [&](const std::string& command) {
         if (!style.unsaved) {
@@ -556,7 +572,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
             }
             if (!has_clip) {
                 warn("Loading this trick...");
-                note("About ten seconds, the first time only.");
+                note("A few seconds, the first time only.");
             }
         }
         if (!model.style.editor_note.empty()) ImGui::TextDisabled("%s", model.style.editor_note.c_str());
@@ -648,8 +664,12 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s", redo_name.empty() ? "Nothing to redo" : ("Redo: " + redo_name + "  (Ctrl+Y or Ctrl+Shift+Z)").c_str());
         ImGui::EndDisabled();
-        const float closing = ImGui::CalcTextSize("Close").x + ImGui::GetStyle().FramePadding.x * 2;
-        ImGui::SameLine(ImGui::GetWindowWidth() - closing - ImGui::GetStyle().WindowPadding.x);
+        // The save row and Close sit together at the right end.
+        const auto& look = ImGui::GetStyle();
+        const float right = save_row_width(menu, model) + look.ItemSpacing.x + ImGui::CalcTextSize("Close").x + look.FramePadding.x * 2;
+        ImGui::SameLine(ImGui::GetWindowWidth() - right - look.WindowPadding.x);
+        save_row(menu, model, callbacks);
+        ImGui::SameLine();
         if (ImGui::Button("Close")) menu.styling.leave = leave_close;
         timeline(e, px(52));
         const auto saving = !model.style.save_issue.empty() ? "Not saved: " + model.style.save_issue
@@ -724,7 +744,7 @@ void style_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
 
     begin_card(menu, "style-editor", "EDITOR", "Edit each trick of the preset on a timeline.");
     if (primary_button(menu, "Open the style editor", true)) send_console(menu, callbacks, "style editor open");
-    note("A trick that you open for the first time takes about ten seconds to load.");
+    note("A trick that you open for the first time takes a few seconds to load.");
     if (!style.editor_note.empty()) info(menu, "Last", style.editor_note);
     end_card();
     ImGui::EndChild();
