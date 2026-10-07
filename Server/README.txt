@@ -26,12 +26,14 @@ Radio
 -----
 Off unless you turn it on ("radio": true, or "radio allow on" in the console).
 Then admins play music to everyone on the map with /radio play <source>, and
-each player sets its volume or mutes it in the game's Multiplayer menus.
+each player sets their volume or mutes it in the game's Multiplayer menus.
 
 A source is an http(s) URL of an audio stream (an internet radio station, an
 MP3), or a file or folder in a Radio folder next to the server. The server
 needs ffmpeg installed to decode it. With yt-dlp installed too, a URL can also
-be a page or playlist yt-dlp reads, such as a YouTube video or channel.
+be a page or playlist yt-dlp reads, such as a YouTube video or channel. On
+Windows both must be on PATH as ffmpeg.exe and yt-dlp.exe. Installing either
+takes effect on the next play, without a restart.
 
 The server sends the audio to every player itself, so you are the one
 redistributing it. Only play what you may share with them: your own files,

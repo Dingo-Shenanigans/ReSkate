@@ -19,7 +19,8 @@ namespace dingosdk::server {
 // runs from an argument list, URLs come after "--", yt-dlp ignores its config files (which can
 // run commands), and ffmpeg only opens the protocols the source needs.
 //
-// Linux only for now (the tools run as child processes); on Windows every command says so.
+// Runs on Linux and Windows servers. On Windows only ffmpeg.exe and yt-dlp.exe from a folder on
+// PATH are started, never a .bat or .cmd (server_radio.cpp, find_program).
 class Radio {
   public:
     explicit Radio(std::filesystem::path folder);
