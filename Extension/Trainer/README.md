@@ -21,7 +21,7 @@ Controller, once switched on: hold **LB + RB**, then D-pad **up** saves the mark
 Everything is also a console command (`~`): `trainer open [tune|practice|map|realistic|fun|everything]`, `trainer status`, `trainer set <id> <value>`,
 `trainer find <words>`, `trainer preset apply|remove <name>`, `trainer dial <multiplier> <preset name>`,
 `trainer reset <id>|all|tricks|presets|everything`, `trainer marker save|go|clear [slot]`,
-`trainer tp <x> <y> <z>`, `trainer waypoint [info]`, `trainer ground <x> <z>`, `trainer where`, `trainer jumps`, `trainer dump`, `trainer selftest`.
+`trainer tp <x> <y> <z>`, `trainer waypoint [info]`, `trainer ground <x> <z>`, `trainer option fall_guard 0|1`, `trainer where`, `trainer jumps`, `trainer dump`, `trainer selftest`.
 
 ## For map makers: `trainer.json`
 
@@ -80,6 +80,10 @@ It unlocks no cosmetics or entitlements.
   editor's downward ray through the client physics world and land on the topmost surface; if
   collision there is still streaming in, a short watch puts the skater back on it once it arrives.
   The decisions are in `trainer_landing.h`, tested by `dingosdk_trainer_landing_tests`.
+- The fall-through guard (off until switched on) remembers the last spot the skater stood on. A fast
+  fall far below it, with nothing at all within 1000 m underneath, is a fall through the map: the
+  skater goes back onto the surface above, or to that spot. It stands down with noclip on and when a
+  session's host has turned teleporting off (`trainer_fall_guard.h`, `dingosdk_trainer_fall_guard_tests`).
 - Settings, presets, markers: `%LOCALAPPDATA%\ReSkate\trainer\trainer.json`.
 
 ## Checking a build
@@ -91,7 +95,7 @@ ReSkateLauncher.exe --no-gui --no-update
 
 then read the `trainer selftest:` lines in `logs\ReSkate.log`. `dingosdk_trainer_tuning_dump <Skate
 folder>` (CMake option `DINGOSDK_BUILD_TRAINER_TESTS`) lists the tuning values without the game;
-the same option builds the `trainer_session_extras` and `trainer_landing` tests (`ctest -R trainer`).
+the same option builds the `trainer_session_extras`, `trainer_landing` and `trainer_fall_guard` tests (`ctest -R trainer`).
 
 ## Known limits
 

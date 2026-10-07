@@ -67,6 +67,8 @@ struct View {
     int slot{};
     std::array<Marker, marker_slots> markers{};
     bool auto_return{};
+    bool fall_guard{};       // put back on the surface after falling through the map
+    unsigned fall_rescues{}; // this run
     float return_delay{1.5f};
     bool pad_shortcuts{};
     // Height of the hippy jump, which the game scripts instead of tuning (x of its own height).

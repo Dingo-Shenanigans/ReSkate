@@ -25,6 +25,9 @@ Changes made when the trainer moved into ReSkate itself.
   through the map. If collision there is still loading, a short watch puts you back on the
   surface once it arrives. `trainer ground <x> <z>` does the same for any spot.
   The map's registry is only read while the TELEPORT card is on screen or the command runs.
+- **Fall-through guard**, off until switched on (PRACTICE > TELEPORT, `trainer option fall_guard 1`).
+  Drop through the map into nothing and you're put back on the surface above, or where you last
+  stood. It stands down with noclip on and when the host has turned teleporting off.
 
 ## v0.3.0 - 2026-10-04
 

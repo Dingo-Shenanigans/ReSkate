@@ -4,6 +4,7 @@
 #include "trainer_presets.h"
 #include "trainer_session.h"
 #include "trainer_landing.h"
+#include "trainer_fall_guard.h"
 #include "trainer_waypoint.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -116,6 +117,10 @@ struct State {
     MapFile map_file;
     int slot{};
     bool auto_return{}, pad_shortcuts{}, hud{}, hud_jump{}, logging{};
+    // Fall-through guard (`option fall_guard`, off until asked for): the last spot the skater
+    // stood on, and a rescue to the surface when they drop through the map into nothing.
+    bool fall_guard{};
+    struct Guard { std::optional<Vec3> safe; std::uint64_t next_safe{}, next_check{}, quiet_until{}; unsigned rescues{}; } guard;
     // The hippy jump's height is set by the game's trick scripts, not by tuning: the trainer
     // scales the upward velocity when it sees one start.
     float hippy_height{1};
@@ -245,6 +250,7 @@ void load_store() {
         if (json->contains("options") && json->at("options").is_object()) {
             const auto &o = json->at("options");
             s.auto_return = o.value("auto_return", false);
+            s.fall_guard = o.value("fall_guard", false);
             s.pad_shortcuts = o.value("pad_shortcuts", false);
             s.hud = o.value("hud", false);
             s.hud_jump = o.value("hud_jump", false);
@@ -291,6 +297,7 @@ void save_store() {
         json["schema"] = 1;
         Json options = Json::object();
         options["auto_return"] = s.auto_return;
+        options["fall_guard"] = s.fall_guard;
         options["pad_shortcuts"] = s.pad_shortcuts;
         options["hud"] = s.hud;
         options["hud_jump"] = s.hud_jump;
@@ -941,6 +948,8 @@ void enter_map(const std::string &level) {
     s.telemetry.last = {};
     s.telemetry.best = {};
     s.landing = {};
+    s.guard = {};
+    s.guard.quiet_until = GetTickCount64() + fall_guard::settle_ms; // the skater spawns and settles
     s.telemetry.top_speed = 0;
     s.return_at = 0;
     s.profile_due = false;
@@ -1029,6 +1038,36 @@ void update_landing(std::uint64_t now) {
         break;
     case landing::Step::wait: break;
     }
+}
+
+// A fast fall with nothing at all below went through the map, not off a ledge: back to the
+// surface above the skater, or else the last place they stood.
+void update_fall_guard(std::uint64_t now) {
+    auto &s = state();
+    auto &g = s.guard;
+    const auto &t = s.telemetry;
+    if (!s.fall_guard || !t.skater || now < g.quiet_until || client_source::detail::source_state().trial.debug.noclip) return;
+    std::string why;
+    if (!teleport_allowed(why)) return; // a host who turned teleporting off turned this off too
+    const auto &p = t.position;
+    if (now >= g.next_safe && fall_guard::steady(t.vertical, t.airborne)) {
+        g.next_safe = now + fall_guard::safe_every_ms;
+        if (const auto below = local_ground_height(p[0], p[2], p[1] + 1.0f, p[1] - 3.0f)) g.safe = Vec3{p[0], *below, p[2]};
+    }
+    if (now < g.next_check) return;
+    g.next_check = now + fall_guard::check_every_ms;
+    if (!fall_guard::suspect(p[1], t.vertical, g.safe ? std::optional<float>((*g.safe)[1]) : std::nullopt)) return;
+    if (local_ground_height(p[0], p[2], p[1], p[1] - 1000.0f)) return; // something to land on
+    const float top = (g.safe ? std::max((*g.safe)[1], p[1]) : p[1]) + 50.0f;
+    const auto above = local_ground_height(p[0], p[2], std::max(top, landing::ray_ceiling), p[1]);
+    if (!above && !g.safe) return;
+    const Vec3 to = above ? Vec3{p[0], *above + landing::stand_height, p[2]} : Vec3{(*g.safe)[0], (*g.safe)[1] + landing::stand_height, (*g.safe)[2]};
+    g.quiet_until = now + fall_guard::after_rescue_ms;
+    if (go_to(to, "solid ground").starts_with("error")) return;
+    ++g.rescues;
+    s.view_due = true;
+    say(logging::Level::info, std::format("Trainer fall guard: fell through the map at {:.1f}, {:.1f}, {:.1f}; back to {} at {:.1f}, {:.1f}, {:.1f}.",
+                                          p[0], p[1], p[2], above ? "the surface above" : "the last safe spot", to[0], to[1], to[2]));
 }
 
 void refresh_waypoint() {
@@ -1431,6 +1470,8 @@ void build_view() {
     for (const auto &[name, values] : s.user) next->presets.push_back({name, std::format("{} values", values.size()), false, is_active(name)});
     next->slot = s.slot;
     next->auto_return = s.auto_return;
+    next->fall_guard = s.fall_guard;
+    next->fall_rescues = s.guard.rescues;
     next->hippy_height = s.hippy_height;
     next->nocomply_height = s.nocomply_height;
     next->offboard_height = s.offboard_height;
@@ -1493,6 +1534,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
             observe(base, client, now);
             shortcuts();
             update_landing(now);
+            update_fall_guard(now);
             if (s.return_at && now >= s.return_at) {
                 s.return_at = 0;
                 const auto &marker = current_map().markers[static_cast<std::size_t>(s.slot)];
@@ -1738,10 +1780,11 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (!value) return "error: return_delay needs seconds.";
             s.return_delay = std::clamp(static_cast<float>(*value), 0.0f, 10.0f);
         } else if (!flag(arg(1), on)) {
-            return "error: usage: trainer option hud|hud_jump|auto_return|pad|log 0|1";
+            return "error: usage: trainer option hud|hud_jump|auto_return|fall_guard|pad|log 0|1";
         } else if (name == "hud") s.hud = on;
         else if (name == "hud_jump") s.hud_jump = on;
         else if (name == "auto_return") s.auto_return = on;
+        else if (name == "fall_guard") s.fall_guard = on;
         else if (name == "pad") s.pad_shortcuts = on;
         else if (name == "log") {
             set_logging(on);

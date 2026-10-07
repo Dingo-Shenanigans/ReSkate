@@ -477,6 +477,11 @@ void practice_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
     ImGui::BeginDisabled(!view.waypoint_set || !telemetry.skater);
     if (ImGui::Button("Go to map waypoint")) trainer_command(menu, callbacks, "waypoint");
     ImGui::EndDisabled();
+    bool guard = view.fall_guard;
+    if (toggle_row(menu, "Fall-through guard", "If you drop through the map into nothing, you're put back on the surface above "
+                   "(or the last place you stood).", guard))
+        trainer_command(menu, callbacks, std::format("option fall_guard {}", guard ? 1 : 0));
+    if (view.fall_rescues) info(menu, "Rescued", std::format("{} time(s) on this run", view.fall_rescues));
     if (telemetry.skater)
         info(menu, "You are at", std::format("{:.2f}, {:.2f}, {:.2f}", telemetry.position[0], telemetry.position[1], telemetry.position[2]));
     field(menu, "X, Y, Z");
