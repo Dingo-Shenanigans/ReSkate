@@ -1,6 +1,7 @@
 #include "commands.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/path_text.h"
+#include <fstream>
 #include <memory>
 
 namespace dingosdk::console {
@@ -100,6 +101,25 @@ void register_console_commands(Commands &registry) {
         out(std::to_string(rows.size()) + " matching entries.");
     };
     registry.add(std::move(list));
+    // Same rows as `commands`, written to commands.txt beside ReSkate.log so the full list can be shared.
+    auto export_list = action("exportcommands", "Write every command and variable to commands.txt beside ReSkate.log", Group::console);
+    export_list.execution = Execution::local;
+    export_list.run = [&registry](const Model &model, const Values &, const Output &out) {
+        std::vector<const Entry *> rows;
+        for (const auto &e : registry.entries())
+            rows.push_back(&e);
+        std::sort(rows.begin(), rows.end(), [](auto *a, auto *b) { return lower(a->name) < lower(b->name); });
+        const auto path = logging::status().directory / L"commands.txt";
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            out("error: Cannot write " + path_utf8(path));
+            return;
+        }
+        for (const auto *e : rows)
+            file << registry.describe(*e, model) << '\n';
+        out(std::to_string(rows.size()) + " entries written to " + path_utf8(path));
+    };
+    registry.add(std::move(export_list));
     for (const auto &name : {"clear", "history"}) {
         auto entry =
             action(name, equal(name, "clear") ? "Clear console scrollback" : "Show recent commands", Group::console);

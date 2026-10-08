@@ -4,6 +4,7 @@
 #include "Extension/Settings/job_spin.h"
 #include "Extension/UI/ui_pointer_skip.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Log/logging.h"
 #include <Windows.h>
 #include <Psapi.h>
 #include <algorithm>
@@ -13,6 +14,8 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 // The performance profiler's console commands (Engine/Core/Profiling/profiler.h). Everything but
 // the saved HUD switch runs on the overlay's thread: the profiler is thread-safe.
@@ -23,7 +26,7 @@ std::string narrow(const std::filesystem::path& path) {
     for (const auto c : path.wstring()) result.push_back(c < 128 ? static_cast<char>(c) : '?');
     return result;
 }
-void print_summary(const Output& out) {
+void print_summary(const Output& out, std::size_t zone_limit = 12) {
     if (!profiler::active()) {
         out("The profiler is off: `perf hud on` or `perf window on` starts it (figures follow a second later).");
         return;
@@ -41,7 +44,7 @@ void print_summary(const Output& out) {
     out("ReSkate zones (busiest first):");
     std::size_t shown{};
     for (const auto& zone : s->zones) {
-        if (shown++ == 12) break;
+        if (shown++ == zone_limit) break;
         out(std::format("  {:<48} {:7.2f} ms/s  {:7.0f}/s  {:8.1f} us avg  {:6.2f} ms longest", zone.name,
             zone.milliseconds_per_second, zone.calls_per_second, zone.average_microseconds, zone.longest_milliseconds));
     }
@@ -57,6 +60,15 @@ void print_report(const Output& out) {
     if (!r || (!r->running && !r->samples && r->error.empty())) { out("No sample yet: `perf sample` takes one."); return; }
     if (r->running) { out(std::format("Sampling {}: {:.0f}%, {} samples so far.", r->target, r->progress * 100, r->samples)); return; }
     if (!r->error.empty()) out("error: " + r->error);
+    if (r->spike_ms > 0) {
+        if (!r->spikes) {
+            out(std::format("No frame took longer than {:.0f} ms in {:.0f} s. Play normally during `perf spikes`, or try a lower "
+                "threshold.", r->spike_ms, r->seconds));
+            return;
+        }
+        out(std::format("{} frames took longer than {:.0f} ms (longest {:.0f} ms). Only what ran during them is counted below.",
+            r->spikes, r->spike_ms, r->spike_longest_ms));
+    }
     if (!r->samples) return;
     out(std::format("{} (thread {}): {} samples over {:.1f} s, busy {:.1f}%.", r->target, r->thread_id, r->samples,
         r->seconds, r->busy_percent));
@@ -335,6 +347,30 @@ void register_perf_commands(Commands& registry) {
     };
     registry.add(std::move(sample));
 
+    // Hitches: what every busy thread was doing during the frames that took too long, and nothing else.
+    auto spike_seconds = argument("seconds", Type::number, true);
+    spike_seconds.minimum = 5;
+    spike_seconds.maximum = 180;
+    auto spike_threshold = argument("milliseconds", Type::number, true);
+    spike_threshold.minimum = 20;
+    spike_threshold.maximum = 2000;
+    auto spikes = action("perf spikes",
+        "Find what causes hitches: sample all busy threads (default 90 s) and report only frames longer than a threshold (default 80 ms)",
+        Group::console, {spike_seconds, spike_threshold});
+    spikes.execution = Execution::local;
+    spikes.run = [](const Model&, const Values& args, const Output& out) {
+        profiler::SampleRequest request;
+        request.target = profiler::Target::all;
+        request.rate = 100; // 10 ms apart: a 100 ms hitch still gets ten samples per busy thread
+        request.seconds = args.size() > 0 ? std::get<double>(args[0]) : 90;
+        request.spike_ms = args.size() > 1 ? std::get<double>(args[1]) : 80;
+        std::string error;
+        if (!profiler::start_sampling(request, error)) { out("error: " + error); return; }
+        out(std::format("Watching for frames over {:.0f} ms for {:.0f} s. Close the console and play normally; "
+            "`perf report` shows the result.", request.spike_ms, request.seconds));
+    };
+    registry.add(std::move(spikes));
+
     auto stop = action("perf stop", "Stop the running sample early (it still reports)", Group::console);
     stop.execution = Execution::local;
     stop.run = [](const Model&, const Values&, const Output& out) {
@@ -553,5 +589,40 @@ void register_perf_commands(Commands& registry) {
     status.execution = Execution::local;
     status.run = [](const Model&, const Values&, const Output& out) { print_summary(out); };
     registry.add(std::move(status));
+
+    // The console and menu cost frames themselves (drawing, the mouse hit-test), so `perf status`
+    // typed into the console measures them too. This writes the same report to ReSkate.log a while
+    // later, with every zone, once the console is closed and the game is being played.
+    auto delay = argument("seconds", Type::number, true);
+    delay.minimum = 3;
+    delay.maximum = 120;
+    auto later = action("perf log", "Write `perf status` (every zone) to ReSkate.log after a delay (default 10 s), "
+        "so it measures play with the console closed", Group::console, {delay});
+    later.execution = Execution::local;
+    later.run = [](const Model&, const Values& args, const Output& out) {
+        const double log_delay = args.empty() ? 10.0 : std::get<double>(args[0]);
+        // The figures need the profiler running; the window keeps it running without drawing
+        // anything while the menu and console are closed.
+        const bool started = !profiler::active();
+        if (started) profiler::set_window(true);
+        try {
+            std::thread([log_delay, started] {
+                std::this_thread::sleep_for(std::chrono::duration<double>(log_delay));
+                Output log;
+                log.write = [](const std::string& line) {
+                    logging::write(logging::Level::info, logging::Channel::diagnostics, line);
+                };
+                log("perf log: the figures for the last second");
+                print_summary(log, 64);
+                if (started) profiler::set_window(false);
+            }).detach();
+        } catch (...) {
+            if (started) profiler::set_window(false);
+            out("error: Cannot start the timer.");
+            return;
+        }
+        out(std::format("In {:.0f} s the report goes to ReSkate.log. Close the console and skate normally until then.", log_delay));
+    };
+    registry.add(std::move(later));
 }
 } // namespace dingosdk::console
