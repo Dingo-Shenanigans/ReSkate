@@ -5,6 +5,7 @@
 #include "Extension/Assets/map_download.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
+#include "Extension/Settings/graphics_tuning.h"
 #include "Extension/Settings/job_spin.h"
 #include "Engine/Game/World/client_state.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
@@ -285,6 +286,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     apply_performance_settings();
     dingosdk::job_spin::apply_default();
     apply_mesh_streaming_pool();
+    dingosdk::graphics_tuning::tick(state);
     dingosdk::multiplayer::apply_throwdown_strings(r.base);
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {

@@ -3,12 +3,128 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Settings/engine_tweaks.h"
+#include "Extension/Settings/graphics_tuning.h"
+#include "Extension/Settings/job_spin.h"
+#include "Extension/UI/ui_pointer_skip.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 // The SETTINGS and DEVELOPER pages.
 namespace dingosdk::overlay::menu {
+// SETTINGS > PERFORMANCE: a preset, then one card per kind of setting. The saved settings belong to
+// graphics_tuning (applied on the game update thread at launch, on level loads and on change); this
+// page only edits them. Each row's explanation is its hover tooltip, so the cards stay short. The
+// advanced engine tweaks send the same `perf ...` console commands as typing them, and are not saved.
+void performance_page(SkateMenu& menu, const CallbacksV3& callbacks) {
+    namespace gt = dingosdk::graphics_tuning;
+    namespace et = dingosdk::engine_tweaks;
+    using et::Tweak;
+    const bool can_run = callbacks.queue_console_command != nullptr;
+    const bool ready = gt::loaded();
+    const auto options = gt::options();
+
+    // A saved option's row: a switch, or a slider that commits once on release.
+    static std::array<float, 32> edits{};
+    static std::array<bool, 32> editing{};
+    const auto option_row = [&](std::size_t i) {
+        if (i >= options.size() || i >= edits.size()) return;
+        const auto& o = options[i];
+        ImGui::PushID(o.key);
+        if (o.kind == gt::Kind::toggle) {
+            bool on = gt::value(i) >= 0.5f;
+            if (toggle_row(menu, o.label, o.hint, on, ready, "Loading"))
+                gt::set_value(i, on ? 1.0f : 0.0f);
+        } else {
+            if (!editing[i]) edits[i] = gt::value(i);
+            field(menu, o.label, o.hint);
+            ImGui::BeginDisabled(!ready);
+            ImGui::SliderFloat("##value", &edits[i], o.minimum, o.maximum,
+                std::lround(edits[i]) == std::lround(o.stock) ? o.stock_format : o.format, ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", o.hint);
+            editing[i] = ImGui::IsItemActive();
+            if (ImGui::IsItemDeactivatedAfterEdit()) gt::set_value(i, edits[i]);
+            ImGui::EndDisabled();
+        }
+        ImGui::PopID();
+    };
+    const auto card = [&](const char* id, const char* title, const char* subtitle, gt::Group group) {
+        begin_card(menu, id, title, subtitle);
+        for (std::size_t i = 0; i < options.size(); ++i)
+            if (options[i].group == group) option_row(i);
+    };
+
+    begin_card(menu, "performance-preset", "PRESET", "Saved with your profile and applied at every launch.");
+    info(menu, "Current", !ready ? "Loading..." : gt::is_low_spec() ? "Low-spec" : gt::is_default() ? "Defaults" : "Custom");
+    if (primary_button(menu, "Apply low-spec preset", ready)) {
+        gt::apply_low_spec();
+        if (can_run) for (const char* command : {"pedestrians 0", "traffic 0"}) send_console(menu, callbacks, command);
+    }
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Button("Restore defaults")) {
+        gt::restore_defaults();
+        if (can_run) for (const char* command : {"pedestrians -1", "traffic -1"}) send_console(menu, callbacks, command);
+    }
+    ImGui::EndDisabled();
+    note("Low-spec turns off what costs the most and also removes pedestrians and traffic. Hover any setting "
+         "for what it does.");
+    end_card();
+
+    card("performance-smoothness", "SMOOTHNESS", "Against stutter.", gt::Group::smoothness);
+    end_card();
+    card("performance-lighting", "LIGHTING AND SHADOWS", nullptr, gt::Group::lighting_shadows);
+    end_card();
+    card("performance-image", "IMAGE AND EFFECTS", nullptr, gt::Group::image_effects);
+    end_card();
+    card("performance-world", "WORLD", nullptr, gt::Group::world);
+    note("Pedestrians and traffic are on the WORLD page.");
+    end_card();
+
+    card("performance-cpu", "CPU", nullptr, gt::Group::cpu);
+    // ReSkate's own engine tweaks. Their defaults are already the fast choice, so they are tucked away.
+    if (ImGui::TreeNode("Engine tweaks (advanced, until you quit)")) {
+        const auto tweak_toggle = [&](const char* label, const char* hint, Tweak tweak, const char* command) {
+            bool on = et::value(tweak) > 0;
+            if (toggle_row(menu, label, hint, on, can_run && et::available(tweak)))
+                send_console(menu, callbacks, std::string(command) + (on ? " on" : " off"));
+        };
+        tweak_toggle("Octree mesh culling", "Experimental: an extra visibility test the game ships turned off.",
+            Tweak::mesh_tree, "perf meshtree");
+        tweak_toggle("Precise frame pacing", "Times each frame with a fine timer. On by default.",
+            Tweak::main_sleep, "perf mainsleep");
+        tweak_toggle("Skip idle locks", "Skips a lock the engine takes when there is nothing to clear. On by default.",
+            Tweak::dirty_skip, "perf dirtyskip");
+        bool pointer = dingosdk::ui_pointer::skip();
+        if (toggle_row(menu, "Skip hidden-cursor checks", "Skips the game's mouse checks while no cursor is shown. On by default.",
+                pointer, can_run))
+            send_console(menu, callbacks, pointer ? "perf uipointer on" : "perf uipointer off");
+
+        static float spin = 0.0f;
+        static bool spin_editing = false;
+        const auto current_spin = dingosdk::job_spin::microseconds();
+        if (!spin_editing && current_spin) spin = static_cast<float>(*current_spin);
+        field(menu, "Idle worker wait", "How long idle engine threads wait for work before sleeping. Lower uses less CPU.");
+        ImGui::BeginDisabled(!can_run || !current_spin);
+        ImGui::SliderFloat("##perf-jobspin", &spin, 0.0f, 250.0f, "%.0f us", ImGuiSliderFlags_AlwaysClamp);
+        spin_editing = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            send_console(menu, callbacks, "perf jobspin " + std::to_string(std::lround(spin)));
+        ImGui::EndDisabled();
+
+        ImGui::BeginDisabled(!can_run);
+        if (ImGui::Button("Reset engine tweaks")) {
+            for (const char* command : {"perf meshtree off", "perf mainsleep on", "perf dirtyskip on", "perf uipointer on"})
+                send_console(menu, callbacks, command);
+            send_console(menu, callbacks, "perf jobspin " + std::to_string(std::lround(dingosdk::job_spin::default_microseconds)));
+        }
+        ImGui::EndDisabled();
+        ImGui::TreePop();
+    }
+    end_card();
+}
+
 void ui_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     begin_card(menu, "music-playback", "MUSIC PLAYBACK");
     bool shuffle = dingosdk::profile_runtime::music_shuffle_enabled();
@@ -149,14 +265,15 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
 }
 
 void settings_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    menu.settings_tab = std::min(menu.settings_tab, 2); // Mods moved to its own page
-    category_tabs(menu, menu.settings_tab, {"CONTROLS", "INTERFACE", "POST FX"}, "settings-tabs");
+    menu.settings_tab = std::min(menu.settings_tab, 3); // Mods moved to its own page
+    category_tabs(menu, menu.settings_tab, {"CONTROLS", "INTERFACE", "POST FX", "PERFORMANCE"}, "settings-tabs");
     ImGui::PushID(menu.settings_tab);
     ImGui::BeginChild("settings-tab", ImVec2(0, page_body_height(menu)));
     switch (menu.settings_tab) {
     case 0: binds_page(menu, model, callbacks); break;
     case 1: ui_page(menu, model, callbacks); break;
     case 2: graphics_page(menu, model, callbacks); break;
+    case 3: performance_page(menu, callbacks); break;
     }
     ImGui::EndChild();
     ImGui::PopID();
