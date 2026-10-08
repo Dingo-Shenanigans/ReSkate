@@ -37,6 +37,10 @@ struct MultiplayerLobby {
     // A dedicated server the ReSkate team runs (developer_identity.h): first in the browser.
     bool official{};
     int ping = -1; // ms, when the server answered directly
+    // A dedicated server that takes direct connections: its address (host byte order) and UDP
+    // port, 0 for none.
+    std::uint32_t direct_ip{};
+    int direct_port{};
     // Steam friends skating there now, by name (steam_social.h).
     std::vector<std::string> friends;
 };
@@ -154,6 +158,9 @@ struct MultiplayerModel {
     // it they keep their nametag or dot. Each skater costs memory and frame time, in view or
     // not. `player_distance_unlimited` and above: every player, however far.
     float player_distance{120.f};
+    // Local: connect straight to dedicated servers that offer it (their "connection": "direct")
+    // instead of through Steam's relays. Off: always the relays, and no server sees this PC's address.
+    bool prefer_direct{true};
     float nametag_distance{120.f};
     bool nametag_dots{true};
     bool nametags_friends{};

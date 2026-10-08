@@ -46,6 +46,27 @@ struct ServerConfig {
     // inverse the least): 1, the default, shows every skater at the game's own proportions;
     // 0 is no limit.
     float bone_scale_limit = 1;
+    // How players reach the server: "relay", through Steam's relay network only, or "direct",
+    // straight to `port` (UDP). A direct server still answers through the relays, for a player
+    // the port does not reach, one who has turned direct connections off, or an older game.
+    std::string connection = "relay";
+    // The address players connect straight to, a.b.c.d, when it is not the one Steam lists the
+    // server under (a host that sends from one address and takes connections on another).
+    // Empty: the listed one. And the port, when it is not `port`; 0: `port`.
+    std::string direct_address;
+    // Logs what Steam's networking says it is doing, to find out why connections fail.
+    bool steam_debug = false;
+    // For testing with few players: poses go through the server even between players whose
+    // games have linked to each other.
+    bool relay_everything = false;
+    std::uint16_t direct_port = 0;
+    // How long a message to a player may wait to share a packet with the next ones, in
+    // milliseconds (0: each goes at once in a packet of its own). Fewer, fuller packets:
+    // less sent for the same updates, and less work sending it.
+    unsigned pack_ms = 10;
+    // Past this many metres a player's fingers are not sent moving (0: always). A skater's
+    // forty finger bones turn in nearly every pose and are half of what a pose carries.
+    unsigned finger_distance = 25;
     // What the server may send each player, in KB/s (128-16384).
     unsigned send_rate = 900;
     std::vector<std::uint64_t> reserved;
@@ -129,6 +150,8 @@ const ServerLevel *find_level(std::string_view map);
 // Whether the server has this map (a name, level path or destination): one of the game's own,
 // or one a mod folder in its Mods lists. It only moves players to a map it has itself.
 bool installed_map(std::string_view map);
+// "a.b.c.d" as a number (a the highest byte), or 0 when it is not an IPv4 address.
+std::uint32_t direct_ipv4(std::string_view text) noexcept;
 // What players load for a map, as the protocol carries it ("<root>|<level>").
 // Empty when the map is unknown (a full level path is always accepted).
 std::string map_destination(std::string_view map);

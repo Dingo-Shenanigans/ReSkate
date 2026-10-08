@@ -13,14 +13,18 @@
 #include "room.h"
 #include "party_book.h"
 #include "Extension/Multiplayer/Net/delta_codec.h"
+#include "Extension/Multiplayer/Net/pose_batch.h"
+#include "Extension/Multiplayer/Net/sound_codec.h"
 #include "password.h"
 #include "client_timing.h"
 #include "monotonic_clock.h"
 #include <algorithm>
+#include <fstream>
 #include <array>
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -234,6 +238,24 @@ struct Session {
     float nametag_distance = 120.f; // names within this many metres, dots past it
     // Only players within this many metres have a skater (session.cpp); checked a few times a second.
     float player_distance = 120.f;
+    bool prefer_direct = true; // straight to servers that offer it, not through the relays
+    // Poses from a dedicated server (pose_batch.h): each player's stream as this game holds it,
+    // and which of the server's messages were read in full, which it is told once a tick.
+    std::unordered_map<std::uint16_t, pose_batch::Stream> pose_streams;
+    pose_batch::Ack pose_ack;
+    bool pose_ack_due{};
+    // This game's own poses go to a dedicated server the same way: what was sent and what the
+    // server acked, and the last poses sent, to build the next on.
+    pose_batch::Sender pose_upload;
+    std::deque<pose_batch::Stream::Held> own_poses;
+    // Skaters' sound to and from a dedicated server (sound_codec.h).
+    std::unordered_map<std::uint16_t, sound_codec::In> sound_streams;
+    sound_codec::Sender sound_upload;
+    // pose-dump: this player's own poses, as encoded for sending, written to a file for a
+    // while. Real poses to measure encodings against (tools/research).
+    std::ofstream pose_dump;
+    std::uint64_t pose_dump_until{};
+    std::size_t pose_dump_count{};
     std::uint64_t next_shown_rank{};
     bool nametag_dots = true, nametags_friends{};
     bool chat_filter = true;     // bad words in chat show as **** (Engine/Core/Text/word_filter.h)

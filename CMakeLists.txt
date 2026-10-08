@@ -101,6 +101,12 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Net/delta_codec.cpp)
     target_link_libraries(dingosdk_multiplayer_bandwidth_tests PRIVATE dingosdk_lz4 dingosdk_zstd)
     add_test(NAME multiplayer_bandwidth COMMAND dingosdk_multiplayer_bandwidth_tests)
+    # With a pose-dump recording as its argument it prints what each encoding costs on real play.
+    add_executable(dingosdk_pose_codec_tests
+        Extension/Multiplayer/Test/pose_codec_tests.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
+        Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Net/delta_codec.cpp)
+    target_link_libraries(dingosdk_pose_codec_tests PRIVATE dingosdk_lz4 dingosdk_zstd)
+    add_test(NAME multiplayer_pose_codec COMMAND dingosdk_pose_codec_tests)
     add_executable(dingosdk_multiplayer_lane_tests Extension/Multiplayer/Test/steam_lanes_tests.cpp)
     target_include_directories(dingosdk_multiplayer_lane_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     add_test(NAME multiplayer_lanes COMMAND dingosdk_multiplayer_lane_tests)

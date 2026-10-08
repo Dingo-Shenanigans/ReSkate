@@ -414,6 +414,32 @@ std::string edit_player_distance(Session &s, std::string_view argument) {
     return value >= player_distance_unlimited ? std::string("Every player is shown as a skater, however far.")
                                               : "Players within " + std::to_string(static_cast<int>(value)) + " m are shown as skaters.";
 }
+std::string start_pose_dump(Session &s, std::string_view argument) {
+    int seconds{};
+    const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), seconds);
+    if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || seconds < 1 || seconds > 600)
+        return "pose-dump <seconds> (1-600): records your own poses while in a session.";
+    std::error_code error;
+    const auto folder = std::filesystem::current_path(error) / "logs";
+    std::filesystem::create_directories(folder, error);
+    const auto file = folder / ("poses-" + std::to_string(now_us() / 1000000) + ".bin");
+    s.pose_dump.close();
+    s.pose_dump.clear();
+    s.pose_dump.open(file, std::ios::binary | std::ios::trunc);
+    if (!s.pose_dump) return "Could not write " + file.string() + ".";
+    s.pose_dump.write("RSPD1\n", 6);
+    s.pose_dump_until = now_us() + static_cast<std::uint64_t>(seconds) * 1000000;
+    s.pose_dump_count = 0;
+    return "Recording your poses for " + std::to_string(seconds) + " s to " + file.string() + ". Skate as you normally would.";
+}
+std::string edit_direct_connections(Session &s, std::string_view argument) {
+    const auto enabled = parse_switch(argument, s.prefer_direct);
+    if (!enabled) return "Use on, off, or toggle for direct connections.";
+    s.prefer_direct = *enabled;
+    profile_runtime::set_local_preference("DirectConnections", s.prefer_direct);
+    return s.prefer_direct ? "Servers that offer it are connected to directly (from the next join)."
+                                : "Every server is reached through Steam's relays (from the next join).";
+}
 std::string edit_nametag_distance(Session &s, std::string_view argument) {
     float value{};
     const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
@@ -590,7 +616,7 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
     if ((action != "host" && action != "host-config" && action != "join" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
          action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
-         action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" &&
+         action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" &&
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
          !own_mark_command(action) &&
@@ -773,7 +799,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             {"world-layer-sync", edit_world_layer_sync},   {"distances", edit_distances},
             {"nametags", edit_nametags},
             {"nametag-distance", edit_nametag_distance}, {"nametag-dots", edit_nametag_dots},
-            {"nametags-friends", edit_nametags_friends}, {"player-distance", edit_player_distance},
+            {"nametags-friends", edit_nametags_friends}, {"player-distance", edit_player_distance}, {"direct-connections", edit_direct_connections}, {"pose-dump", start_pose_dump},
             {"mark-tag", edit_own_tag}, {"mark-items", edit_own_items}, {"mark-style", edit_mark_style},
             {"chat-visible", edit_chat_visible}, {"chat-filter", edit_chat_filter},
             {"chat-bubbles", edit_chat_bubbles}, {"chat-bubbles-own", edit_chat_bubbles_own},
@@ -980,7 +1006,22 @@ std::string command(std::string_view action, std::string_view argument, std::str
             save_host_preferences(s);
             s.status = "Hosting for up to " + std::to_string(capacity) + " players at " + std::to_string(s.tps) + " TPS.";
         } else {
-            if (!s.transport.join(invitation->steam_id)) {
+            // A server that listens on its own address is connected to directly, with Steam's
+            // relays as the fallback (steam_transport.h). The server sees the address of a
+            // player who connects this way, as any dedicated server does, so the player may
+            // turn it off (direct-connections). Preferences load with the first session frame,
+            // so read this one here.
+            const bool direct_allowed = s.display_preferences_loaded
+                                            ? s.prefer_direct
+                                            : profile_runtime::local_preference("DirectConnections").value_or(true);
+            std::uint32_t direct_ip{};
+            std::uint16_t direct_port{};
+            if (const auto *listed = s.servers.find(invitation->steam_id);
+                listed && direct_allowed && listed->direct_ip && listed->direct_port > 0) {
+                direct_ip = listed->direct_ip;
+                direct_port = static_cast<std::uint16_t>(listed->direct_port);
+            }
+            if (!s.transport.join(invitation->steam_id, direct_ip, direct_port)) {
                 s.status = s.transport.status().detail;
                 publish(s);
                 return s.status;

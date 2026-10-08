@@ -130,6 +130,73 @@ void proven_chat(Session &s, Peer &sender, const Packet &p, std::uint64_t now) {
 // of one stream in a batch can be dropped undecoded. Keep the newest ones playback may
 // still interpolate between (its delay plus a frame each side) among those whose baseline
 // is already here; baselines and every other kind are always read.
+// The poses in one message from a dedicated server (pose_batch.h), each as the packet it would
+// have been had it come alone. A message read in full is noted for the ack; one with a pose
+// this game could not rebuild (it never got what that pose builds on) is not, so the server
+// goes on building on what this game does hold.
+std::vector<Packet> unpack_poses(Session &s, std::span<const std::uint8_t> bytes) {
+    std::vector<Packet> out;
+    const auto batch = pose_batch::read(bytes);
+    if (!batch || batch->world != static_cast<std::uint32_t>(s.world) || batch->map != static_cast<std::uint32_t>(s.map)) return out;
+    // Streams of players who left are dropped once there are many more than there are players.
+    if (s.pose_streams.size() > 2 * max_players)
+        std::erase_if(s.pose_streams, [&](const auto &stream) { return !find_peer(s, stream.second.source); });
+    bool complete = true;
+    out.reserve(batch->entries.size());
+    for (const auto &entry : batch->entries) {
+        auto rebuilt = pose_batch::rebuild(s.pose_streams, entry);
+        if (!rebuilt) {
+            complete = false;
+            continue;
+        }
+        if (rebuilt->repeat) continue;
+        Packet p;
+        p.kind = PacketKind::pose;
+        p.session = s.secret;
+        p.map = s.map;
+        p.world = s.world;
+        p.source = rebuilt->source;
+        p.epoch = rebuilt->epoch;
+        p.sequence = rebuilt->sequence;
+        p.time_us = rebuilt->time_us;
+        p.player_collision = rebuilt->collision;
+        p.pose_interval_us = rebuilt->rate == pose_batch::Rate::full   ? multiplayer_pose_interval(s.tps)
+                             : rebuilt->rate == pose_batch::Rate::half ? 100000U
+                                                                       : 200000U;
+        p.pose = pose_codec::restore(rebuilt->pose);
+        out.push_back(std::move(p));
+    }
+    if (complete) {
+        s.pose_ack.note(batch->number);
+        s.pose_ack_due = true;
+    }
+    return out;
+}
+// The skaters' sound in one message from a dedicated server (sound_codec.h), each player's as
+// the packet it would have been had it come alone.
+std::vector<Packet> unpack_sound(Session &s, std::span<const std::uint8_t> bytes) {
+    std::vector<Packet> out;
+    if (s.sound_streams.size() > 2 * max_players)
+        std::erase_if(s.sound_streams, [&](const auto &stream) { return !find_peer(s, stream.second.source); });
+    auto heard = sound_codec::read(s.sound_streams, bytes, s.world, s.map);
+    if (!heard) return out;
+    out.reserve(heard->size());
+    for (auto &one : *heard) {
+        if (!valid_audio_batch(one.samples)) continue;
+        Packet p;
+        p.kind = PacketKind::audio;
+        p.session = s.secret;
+        p.map = s.map;
+        p.world = s.world;
+        p.source = one.source;
+        p.epoch = one.epoch;
+        p.sequence = one.sequence;
+        p.time_us = one.time_us;
+        p.audio = std::move(one.samples);
+        out.push_back(std::move(p));
+    }
+    return out;
+}
 std::vector<bool> stale_pose_deltas(Session &s, const std::vector<TransportMessage> &messages) {
     std::vector<bool> stale(messages.size());
     struct Stream {
@@ -412,12 +479,23 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
     }
     const auto messages = s.transport.receive();
     const auto stale = stale_pose_deltas(s, messages);
-    for (std::size_t index = 0; index < messages.size(); ++index) {
+    // A message of several poses from a dedicated server is taken apart, and the loop goes
+    // round once for each pose in it as if it had come alone.
+    std::vector<Packet> batch;
+    std::size_t batch_at{};
+    for (std::size_t index = 0; index < messages.size(); batch_at < batch.size() ? index : ++index) {
         const auto &message = messages[index];
         auto *link = find_peer(s, message.peer);
-        if (!link)
+        if (!link) {
+            batch.clear();
+            batch_at = 0;
             continue;
+        }
         const bool direct_link = s.mode == Mode::join && message.peer != s.host_id;
+        const bool resumed = batch_at < batch.size();
+        if (!resumed) {
+            batch.clear();
+            batch_at = 0;
         if (!link->budget.accept(message.arrived ? message.arrived : now, message.bytes.size(),
                                  s.mode == Mode::join && !direct_link ? max_remote_players : 1U)) {
             disconnect(s, message.peer, "Peer exceeded the multiplayer packet limit.");
@@ -427,8 +505,25 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
         if (stale[index])
             continue;
+            // The server saying which of this game's own pose messages it read.
+            if (const auto ack = pose_batch::Ack::read(message.bytes)) {
+                if (s.mode == Mode::join && !direct_link && dedicated_host(s)) s.pose_upload.ack(*ack);
+                continue;
+            }
+            if (sound_codec::is_sound(message.bytes)) {
+                if (s.mode == Mode::join && !direct_link && dedicated_host(s)) batch = unpack_sound(s, message.bytes);
+                if (batch.empty()) continue;
+            }
+            if (pose_batch::is_batch(message.bytes)) {
+                // Only a dedicated server sends these, and only to its players.
+                if (s.mode == Mode::join && !direct_link && dedicated_host(s)) batch = unpack_poses(s, message.bytes);
+                if (batch.empty()) continue;
+            }
+        }
         bool missing_reference{};
-        auto decoded = link->receiver.receive(message.bytes, missing_reference, s.world);
+        std::optional<Packet> decoded;
+        if (batch_at < batch.size()) decoded = std::move(batch[batch_at++]);
+        else decoded = link->receiver.receive(message.bytes, missing_reference, s.world);
         if (missing_reference)
             continue;
         if (!decoded || decoded->session != s.secret ||
@@ -879,6 +974,12 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 (p.kind == PacketKind::audio && std::any_of(p.audio.begin(), p.audio.end(),
                     [](const auto &sample) { return sample.event; })),
                 p.kind != PacketKind::cosmetics, now, p.source);
+    }
+    // Tell the server which of its pose messages arrived, once for everything read this tick.
+    if (s.pose_ack_due && s.mode == Mode::join) {
+        const auto ack = s.pose_ack.bytes();
+        s.transport.send(s.host_id, ack, false, true, TrafficLane::gameplay);
+        s.pose_ack_due = false;
     }
     receive_cosmetics(s, local, now);
     for (std::size_t i = 0; i < s.used_slots; ++i) {

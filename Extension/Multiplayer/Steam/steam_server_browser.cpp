@@ -127,6 +127,30 @@ std::optional<MultiplayerLobby> read_server_tags(std::string_view tags, std::uin
         case 'p': if (!integer(value, row.players)) row.players = 0; break;
         case 'c': if (!integer(value, row.capacity)) row.capacity = 0; break;
         case 'w': row.password_required = value == "1"; break;
+        case 'd': {
+            // A port, or "a.b.c.d:port" when the server is reached at another address than it is listed under.
+            const auto colon = value.find(':');
+            std::uint32_t address{};
+            bool ok = true;
+            if (colon != std::string_view::npos) {
+                auto rest = value.substr(0, colon);
+                unsigned parts{};
+                while (ok && parts < 4) {
+                    const auto dot = rest.find('.');
+                    int part{};
+                    ok = integer(rest.substr(0, dot), part) && part >= 0 && part <= 255;
+                    address = (address << 8) | static_cast<std::uint32_t>(part & 255);
+                    ++parts;
+                    if (dot == std::string_view::npos) break;
+                    rest = rest.substr(dot + 1);
+                }
+                ok = ok && parts == 4 && address;
+            }
+            const auto port = colon == std::string_view::npos ? value : value.substr(colon + 1);
+            if (!ok || !integer(port, row.direct_port) || row.direct_port < 1 || row.direct_port > 65535) row.direct_port = 0;
+            else row.direct_ip = address; // 0: the address the server is listed under
+            break;
+        }
         case 'm': row.map = std::string(value); break;
         // The name is last and may itself contain anything but commas.
         case 'n': row.name = std::string(value) + (tags.empty() ? "" : "," + std::string(tags)); tags = {}; break;
@@ -196,6 +220,7 @@ void SteamServerBrowser::read(std::uint64_t now) {
             if (!item) continue;
             auto row = read_server_tags(bounded(item->tags, sizeof item->tags), item->steam_id.value);
             if (!row) continue;
+            if (row->direct_port && !row->direct_ip) row->direct_ip = item->ip; // the address Steam lists the server at
             auto &entry = found_[row->id];
             entry.search = search_;
             entry.listed = now;

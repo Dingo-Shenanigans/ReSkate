@@ -4,12 +4,15 @@
 #include "speed_check.h"
 #include "Engine/Game/Multiplayer/chat_rate.h"
 #include "Extension/Multiplayer/Net/delta_codec.h"
+#include "Extension/Multiplayer/Net/pose_batch.h"
+#include "Extension/Multiplayer/Net/sound_codec.h"
 #include "Extension/Multiplayer/Session/object_state.h"
 #include "Extension/Multiplayer/Session/party_book.h"
 #include "Extension/Multiplayer/Session/password.h"
 #include "Extension/Multiplayer/Session/room.h"
 #include "Extension/Multiplayer/Steam/steam_transport.h"
 #include "Engine/Game/World/world_layers.h"
+#include <unordered_map>
 #include <functional>
 #include <map>
 #include <memory>
@@ -39,6 +42,9 @@ class Host {
     std::string map_name() const;
     unsigned players() const;
     std::uint64_t secret() const { return secret_; }
+    // The UDP port players may connect straight to, or 0 (config connection).
+    std::uint16_t direct_port() const { return direct_port_; }
+    const std::string &direct_address() const { return config_.direct_address; }
 
     enum class VoteKind { map, kick, time };
 
@@ -85,6 +91,42 @@ class Host {
         // and a second (measure_pose).
         struct Earlier { std::vector<std::uint8_t> raw; std::uint64_t time{}; };
         Earlier pose_last, pose_quarter, pose_second;
+        // Their own last poses, rounded (pose_codec.h): what the others' differences are built
+        // on. `keep` is how long one stays, by the slowest rate anyone was sent it at: a
+        // player sent this one once a second must still find it here when their ack arrives.
+        struct KeptPose {
+            std::uint32_t sequence{};
+            std::uint64_t time_us{}, kept_at{};
+            std::uint8_t keep{};
+            pose_codec::QuantPose pose;
+        };
+        std::deque<KeptPose> kept_poses;
+        // What this player is being sent of each other one, and what of it they acked.
+        pose_batch::Sender pose_sender;
+        // Their own poses arrive the same way (receive_poses): the last ones rebuilt, and which
+        // of their messages were read in full, which they are told once a pass.
+        std::unordered_map<std::uint16_t, pose_batch::Stream> upload_streams;
+        pose_batch::Ack upload_ack;
+        bool upload_ack_due{};
+        // Poses due to them this pass (flush_poses).
+        struct QueuedPose {
+            std::uint64_t source{};
+            std::uint32_t sequence{};
+            pose_batch::Rate rate{};
+            bool collision{}, hold_fingers{};
+            std::uint8_t tier{}; // 0 full rate, 1 half, 2 low, 3 out of sight
+        };
+        std::vector<QueuedPose> queued_poses;
+        // Skaters' sound (sound_codec.h): what this player holds of each other one's, the
+        // samples due to them this pass, and what is held here of their own.
+        sound_codec::Sender sound_sender;
+        struct QueuedSound {
+            std::uint64_t source{}, time_us{};
+            std::uint32_t sequence{};
+            std::shared_ptr<const std::vector<AudioSample>> samples;
+        };
+        std::vector<QueuedSound> queued_sound;
+        std::unordered_map<std::uint16_t, sound_codec::In> sound_in;
         Transform still_at;
         std::uint64_t moved_at{};
         std::uint64_t pose_arrival{};
@@ -163,6 +205,9 @@ class Host {
     bool roster_dirty_ = true, running_{};
     std::uint64_t bans_revision_ = 1; // bumped whenever the ban list or the admins change
     std::uint64_t now_{}, last_roster_{}, last_world_state_{}, next_object_update_{}, travel_started_{};
+    std::string relay_status_; // Steam's relay network as last logged
+    std::uint16_t direct_port_{};
+    std::uint64_t next_relay_check_{};
     std::uint64_t next_crowd_{}; // when the crowd limits are worked out again
     std::uint64_t next_network_log_{}; // the log's once-a-minute line about the connections
     // How the server's own loop is keeping up, for `net` and that line: passes of tick() in a
@@ -178,9 +223,18 @@ class Host {
     // smaller: this says by how much, before the server is made to send them that way.
     struct PoseSizes {
         std::uint64_t samples{}, whole{}, last{}, quarter{}, second{};
-        std::array<std::uint64_t, 4> sent{}, sent_bytes{}; // differences sent, by precision (pose_precision)
+        std::array<std::uint64_t, 4> sent{}, sent_bytes{}; // differences sent, by rate: full, half, low, out of sight
+        std::uint64_t whole_sent{}, whole_sent_bytes{}, held{}; // whole poses sent; differences sent without fingers
+        // Of the poses measured, what had changed since the pose before, by the kind of field:
+        // how many, and the bytes they take before packing. Says what a pose's size is made of.
+        struct Changed { std::uint64_t fields{}, bytes{}; };
+        std::array<Changed, 4> changed{}; // positions as floats, positions in mm, rotations, scales
+        std::uint64_t bones{};
     } pose_sizes_;
     void measure_pose(Guest &from, const Packet &packet);
+    Guest::KeptPose *keep_pose(Guest &from, const Packet &packet);
+    void flush_poses();
+    void pose_ack(Guest &guest, const pose_batch::Ack &ack);
     std::uint64_t traffic_mark_{}, traffic_window_us_{}; // when `mark` was taken, and how long `last` covers
     void meet_later(Guest &guest);
     void introduce();
@@ -212,7 +266,9 @@ class Host {
     bool same_map(std::string_view asset) const { return map_hash(map_destination(asset)) == map_; }
     bool accept_data(Guest &source, const Packet &);
     // `received_at`: the transport's arrival time for the message (TransportMessage::arrived).
-    void receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at);
+    void receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at, const Packet *ready = nullptr);
+    void receive_poses(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at);
+    void receive_sound(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at);
     void receive_cosmetics();
     void sync_objects();
     void apply_layers();

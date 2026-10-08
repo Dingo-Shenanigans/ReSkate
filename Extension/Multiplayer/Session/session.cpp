@@ -155,6 +155,13 @@ void stop(Session &s, std::string reason) {
     s.next_send = s.last_hello = s.last_roster = s.last_cosmetic_capture = s.last_routes =
         s.last_network_log = 0;
     s.sequence = s.roster_sequence = 0;
+    s.pose_streams.clear();
+    s.pose_ack = {};
+    s.pose_ack_due = false;
+    s.pose_upload = {};
+    s.own_poses.clear();
+    s.sound_streams.clear();
+    s.sound_upload = {};
     s.local_pose_count = s.logged_local_pose_count = 0;
     s.status = std::move(reason);
 }
@@ -162,6 +169,14 @@ void stop(Session &s, std::string reason) {
 // admission, password challenges and stable member slots intact.
 void clear_world(Session &s, std::uint64_t now) {
     s.voice.reset();
+    // The server starts its pose streams and message numbers over with the world.
+    s.pose_streams.clear();
+    s.pose_ack = {};
+    s.pose_ack_due = false;
+    s.pose_upload.restart();
+    s.own_poses.clear();
+    s.sound_streams.clear();
+    s.sound_upload.restart();
     clear_remote_network_objects();
     s.object_owners_valid = false;
     s.local_objects = {}; s.next_object_update = 0;
@@ -264,6 +279,7 @@ void publish_party(Session &s) {
         if (const auto saved = profile_runtime::local_value("NametagDistance"); saved && saved->is_number())
             s.nametag_distance = std::clamp(saved->get<float>(), 10.f, 500.f);
         s.nametag_dots = profile_runtime::local_preference("NametagDots").value_or(true);
+        s.prefer_direct = profile_runtime::local_preference("DirectConnections").value_or(true);
         if (const auto saved = profile_runtime::local_value("PlayerDistance"); saved && saved->is_number())
             s.player_distance = std::clamp(saved->get<float>(), player_distance_least, player_distance_unlimited);
         s.nametags_friends = profile_runtime::local_preference("NametagsFriendsOnly").value_or(false);
@@ -889,6 +905,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
         s.client_timing.record(ClientTiming::capture, now, receive_at);
         if (s.mode != Mode::echo)
             networking(s, local, receive_at);
+        for (const auto &note : s.transport.take_direct_notes())
+            logging::log(logging::Level::info, logging::Channel::runtime, "Multiplayer: {}", note);
         relay_throwdowns(s, world_playing(s, local));
         // A S.K.A.T.E. player waiting for their turn stays off the board.
         update_board_lock(client, local.entity, local.ready && throwdown_relay_waits_offboard());

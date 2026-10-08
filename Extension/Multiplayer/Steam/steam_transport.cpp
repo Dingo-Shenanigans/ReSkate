@@ -79,6 +79,7 @@ struct SteamTransport::Impl {
     TransportStatus state;
     SteamLanes lanes;
     HSteamListenSocket listener{};
+    HSteamListenSocket direct_listener{}; // a dedicated server's, on its own address (listen_direct)
     struct Link {
         HSteamNetConnection handle{};
         ULONGLONG connecting_since{};
@@ -92,6 +93,7 @@ struct SteamTransport::Impl {
         std::uint64_t status_frame{};
         bool status_ok{};
         bool recheck{}; // a status callback named this connection: read its state this poll
+        bool direct{};  // straight to or from an address, not through Steam's relays
     };
     std::map<std::uint64_t, Link> links;
     // How the connections Steam closed ended (take_closed). A handful at most wait here.
@@ -101,6 +103,46 @@ struct SteamTransport::Impl {
     void *utils{};
     bool (*set_config)(void *, ESteamNetworkingConfigValue, ESteamNetworkingConfigScope, intptr_t,
                        ESteamNetworkingConfigDataType, const void *){};
+    // Steam's SteamRelayNetworkStatus_t, which the bundled header only names: how its relay
+    // network looks from here. Room to spare after the message, should Steam's grow.
+    struct RelayNetwork {
+        ESteamNetworkingAvailability available{};
+        int measuring{};
+        ESteamNetworkingAvailability config{}, any_relay{};
+        char message[256]{};
+        char spare[256]{};
+    };
+    ESteamNetworkingAvailability (*relay_network)(void *, RelayNetwork *){};
+    void (*debug_output)(void *, ESteamNetworkingSocketsDebugOutputType, void (*)(ESteamNetworkingSocketsDebugOutputType, const char *)){};
+    // The options of a connection by address: as options(), without the one about relays.
+    std::array<SteamNetworkingConfigValue_t, 5> direct_options() {
+        std::array<SteamNetworkingConfigValue_t, 5> out{};
+        out[4].SetInt32(k_ESteamNetworkingConfig_NagleTime, packing_us ? packing_us : 5000);
+        out[0] = callback_option();
+        out[1].SetInt32(k_ESteamNetworkingConfig_SendRateMax, send_rate);
+        out[2].SetInt32(k_ESteamNetworkingConfig_SendRateMin, send_rate);
+        out[3].SetInt32(k_ESteamNetworkingConfig_SendBufferSize, 4 * 1024 * 1024);
+        return out;
+    }
+    // A guest's direct attempt at its host did not come up (no answer, refused, or not the
+    // server it should be): the same link carries on through Steam's relays.
+    void fall_back(std::uint64_t id, Link &link, const std::string &why) {
+        if (link.handle && close) close(sockets, link.handle, 0, "Direct connection not used", false);
+        SteamNetworkingIdentity identity{};
+        identity.SetSteamID64(id);
+        auto relayed = options();
+        const auto connection = connect(sockets, &identity, virtual_port, static_cast<int>(relayed.size()), relayed.data());
+        const auto name = std::move(link.name);
+        link = Link{connection, GetTickCount64(), false, name, connection ? lanes.setup(sockets, connection) : false};
+        state.detail = "Direct connection not available (" + why + "): connecting through Steam's relays...";
+        direct_note = state.detail;
+        note_direct("Direct connection to the server did not come up (" + why + "); using Steam's relays.");
+    }
+    std::string direct_note; // how the last direct attempt went
+    std::vector<std::string> direct_notes; // take_direct_notes
+    void note_direct(std::string text) {
+        if (direct_notes.size() < 64) direct_notes.push_back(std::move(text));
+    }
     // Gives one open connection the current send rate. A connection a listen socket
     // accepts starts with the rate the socket was opened with, so each one is given it.
     bool apply_rate(HSteamNetConnection handle) {
@@ -141,6 +183,9 @@ struct SteamTransport::Impl {
     std::deque<SteamNetConnectionStatusChangedCallback_t> events;
     static inline std::atomic<Impl *> callback_owner{};
     HSteamListenSocket (*listen)(void *, int, int, const SteamNetworkingConfigValue_t *){};
+    // By address instead of through the relays; absent from a Steam too old to have them.
+    HSteamListenSocket (*listen_ip)(void *, const SteamNetworkingIPAddr *, int, const SteamNetworkingConfigValue_t *){};
+    HSteamNetConnection (*connect_ip)(void *, const SteamNetworkingIPAddr *, int, const SteamNetworkingConfigValue_t *){};
     HSteamNetConnection (*connect)(void *, const SteamNetworkingIdentity *, int, int,
                                    const SteamNetworkingConfigValue_t *){};
     EResult (*accept)(void *, HSteamNetConnection){};
@@ -179,8 +224,9 @@ struct SteamTransport::Impl {
                       reinterpret_cast<void *>(&changed));
         return option;
     }
-    std::array<SteamNetworkingConfigValue_t, 5> options() {
-        std::array<SteamNetworkingConfigValue_t, 5> out{};
+    std::array<SteamNetworkingConfigValue_t, 6> options() {
+        std::array<SteamNetworkingConfigValue_t, 6> out{};
+        out[5].SetInt32(k_ESteamNetworkingConfig_NagleTime, packing_us ? packing_us : 5000); // 5000: Steam's own
         out[0] = callback_option();
         // This connection's send rate. Steam asks for the minimum and the maximum to be set
         // to the same value: with only the maximum raised a connection stays at the 256 KB/s
@@ -276,7 +322,12 @@ struct SteamTransport::Impl {
         }
         return true;
     }
-    static int send_flags(bool reliable, TrafficLane lane) {
+    int packing_us{}; // set_packing: how long a message may wait for company, 0 for not at all
+    int send_flags(bool reliable, TrafficLane lane) const {
+        // Packing: without "no Nagle" Steam fills a packet with what follows within the time
+        // above, and without "no delay" it queues instead of dropping (admit() has already
+        // turned away what a slow connection cannot take).
+        if (packing_us && lane != TrafficLane::voice) return reliable ? k_nSteamNetworkingSend_Reliable : k_nSteamNetworkingSend_Unreliable;
         return reliable ? (lane == TrafficLane::cosmetics ? k_nSteamNetworkingSend_Reliable
                                                           : k_nSteamNetworkingSend_ReliableNoNagle)
                         : k_nSteamNetworkingSend_UnreliableNoDelay;
@@ -345,6 +396,23 @@ bool SteamTransport::bind(void *library, void *sockets, void *networking_utils) 
         p.lanes = {};
     }
     p.utils = networking_utils;
+    try {
+        p.listen_ip = symbol<decltype(p.listen_ip)>(module, "SteamAPI_ISteamNetworkingSockets_CreateListenSocketIP");
+        p.connect_ip = symbol<decltype(p.connect_ip)>(module, "SteamAPI_ISteamNetworkingSockets_ConnectByIPAddress");
+    } catch (...) {
+        p.listen_ip = nullptr;
+        p.connect_ip = nullptr;
+    }
+    try {
+        p.debug_output = symbol<decltype(p.debug_output)>(module, "SteamAPI_ISteamNetworkingUtils_SetDebugOutputFunction");
+    } catch (...) {
+        p.debug_output = nullptr;
+    }
+    try {
+        p.relay_network = symbol<decltype(p.relay_network)>(module, "SteamAPI_ISteamNetworkingUtils_GetRelayNetworkStatus");
+    } catch (...) {
+        p.relay_network = nullptr;
+    }
     try {
         p.set_config = symbol<decltype(p.set_config)>(module, "SteamAPI_ISteamNetworkingUtils_SetConfigValue");
     } catch (...) {
@@ -466,6 +534,8 @@ void SteamTransport::stop() {
     auto &p = *impl_;
     const auto listener = p.listener;
     p.listener = 0;
+    if (p.direct_listener && p.close_listener) p.close_listener(p.sockets, p.direct_listener);
+    p.direct_listener = 0;
     p.state.hosting = false;
     p.allowed.clear();
     p.host_id = 0;
@@ -495,7 +565,7 @@ bool SteamTransport::host(unsigned capacity) {
     p.state.detail = p.listener ? "Waiting for players to join." : "Steam could not open the P2P listener.";
     return p.listener != 0;
 }
-bool SteamTransport::join(std::uint64_t id) {
+bool SteamTransport::join(std::uint64_t id, std::uint32_t direct_ip, std::uint16_t direct_port) {
     stop();
     if (!open())
         return false;
@@ -511,9 +581,64 @@ bool SteamTransport::join(std::uint64_t id) {
     // Guests listen only for identities admitted in the host's reliable roster.
     // Failure to listen leaves the host-forwarded path usable.
     p.listener = p.listen(p.sockets, virtual_port, static_cast<int>(options.size()), options.data());
+    // A dedicated server's own address first, when it has one (the header).
+    if (direct_ip && direct_port && p.connect_ip) {
+        SteamNetworkingIPAddr address{};
+        address.Clear();
+        address.SetIPv4(direct_ip, direct_port);
+        auto by_address = p.direct_options();
+        if (const auto connection = p.connect_ip(p.sockets, &address, static_cast<int>(by_address.size()), by_address.data())) {
+            p.closed.erase(id);
+            auto &link = p.links.emplace(id, Impl::Link{connection, GetTickCount64(), false, name(id),
+                                                       p.lanes.setup(p.sockets, connection)}).first->second;
+            link.direct = true;
+            p.note_direct("Connecting straight to the server at " + std::to_string(direct_ip >> 24) + "." + std::to_string((direct_ip >> 16) & 255) +
+                          "." + std::to_string((direct_ip >> 8) & 255) + "." + std::to_string(direct_ip & 255) + ":" + std::to_string(direct_port) + ".");
+            p.direct_note = "Connecting straight to the server...";
+            p.state.detail = p.direct_note;
+            p.publish_links();
+            return true;
+        }
+    }
     const bool connected = connect_peer(id);
     p.state.detail = connected ? "Connecting through Steam..." : "Steam rejected the connection request.";
     return connected;
+}
+namespace {
+// Steam calls this from its own threads.
+std::mutex steam_debug_mutex;
+std::vector<std::string> steam_debug_lines;
+void steam_debug_output(ESteamNetworkingSocketsDebugOutputType, const char *text) {
+    std::lock_guard lock(steam_debug_mutex);
+    if (text && steam_debug_lines.size() < 400) steam_debug_lines.emplace_back(text);
+}
+} // namespace
+bool SteamTransport::set_steam_debug(bool on) {
+    auto &p = *impl_;
+    if (!p.debug_output || !p.utils) return false;
+    p.debug_output(p.utils, on ? k_ESteamNetworkingSocketsDebugOutputType_Verbose : k_ESteamNetworkingSocketsDebugOutputType_None,
+                   on ? &steam_debug_output : nullptr);
+    return true;
+}
+std::vector<std::string> SteamTransport::take_direct_notes() {
+    auto notes = std::exchange(impl_->direct_notes, {});
+    std::lock_guard lock(steam_debug_mutex);
+    for (auto &line : steam_debug_lines) notes.push_back("Steam: " + std::move(line));
+    steam_debug_lines.clear();
+    return notes;
+}
+void SteamTransport::set_packing(unsigned milliseconds) { impl_->packing_us = static_cast<int>(std::min(milliseconds, 50U) * 1000); }
+bool SteamTransport::listen_direct(std::uint16_t port) {
+    auto &p = *impl_;
+    if (!p.state.hosting || !port || !p.listen_ip) return false;
+    if (p.direct_listener) return true;
+    SteamNetworkingIPAddr address{};
+    address.Clear(); // every address of this machine
+    address.m_port = port;
+    auto options = p.direct_options();
+    p.listen_rate = p.send_rate;
+    p.direct_listener = p.listen_ip(p.sockets, &address, static_cast<int>(options.size()), options.data());
+    return p.direct_listener != 0;
 }
 bool SteamTransport::connect_peer(std::uint64_t id) {
     auto &p = *impl_;
@@ -579,7 +704,10 @@ void SteamTransport::poll() {
         const auto existing = p.links.find(id);
         if (existing != p.links.end() && existing->second.handle == event.m_hConn)
             continue;
-        if (event.m_info.m_hListenSocket != p.listener || !p.listener || !id || id == p.state.local_id ||
+        const bool direct = p.direct_listener && event.m_info.m_hListenSocket == p.direct_listener;
+        if (direct) p.note_direct("Direct connection asked for by " + std::to_string(id) + ".");
+        // (A connection by address names a Steam ID only when Steam has vouched for it.)
+        if ((event.m_info.m_hListenSocket != p.listener && !direct) || !p.listener || !id || id == p.state.local_id ||
             (!p.state.hosting && !p.allowed.contains(id)) || p.links.size() >= p.capacity - 1 ||
             existing != p.links.end() ||
             event.m_info.m_identityRemote.m_eType != k_ESteamNetworkingIdentityType_SteamID) {
@@ -592,7 +720,7 @@ void SteamTransport::poll() {
         }
         p.closed.erase(id);
         p.links.emplace(id, Impl::Link{event.m_hConn, now, false, name(id),
-                                      p.lanes.setup(p.sockets, event.m_hConn)});
+                                      p.lanes.setup(p.sockets, event.m_hConn)}).first->second.direct = direct;
         if (p.send_rate != p.listen_rate) p.apply_rate(event.m_hConn);
     }
     // Connected links report changes through the status callback (above), so read their
@@ -606,12 +734,40 @@ void SteamTransport::poll() {
         if (link.connected && !link.recheck && !sweep)
             continue;
         link.recheck = false;
+        // A guest's direct attempt gets a few seconds; the relays take that long themselves.
+        const bool trying_direct = link.direct && !link.connected && !p.state.hosting;
+        if (trying_direct && now - link.connecting_since > 5000) {
+            p.fall_back(id, link, "no answer");
+            continue;
+        }
         SteamNetConnectionInfo_t info{};
         if (!p.get_info(p.sockets, link.handle, &info)) {
+            if (trying_direct) {
+                p.fall_back(id, link, "it went away");
+                continue;
+            }
             disconnect(id, "Steam connection disappeared.");
             continue;
         }
+        if (trying_direct && info.m_eState == k_ESteamNetworkingConnectionState_Connected &&
+            (info.m_identityRemote.m_eType != k_ESteamNetworkingIdentityType_SteamID || info.m_identityRemote.GetSteamID64() != id)) {
+            // Something else answers at that address: not the server that was asked for.
+            p.fall_back(id, link, "another server answered there");
+            continue;
+        }
+        // (A server that answers and closes the connection itself, 1000 to 1999, has given its
+        // answer: full, banned, wrong password. That is not a route to try another way.)
+        if (trying_direct && !(info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer && info.m_eEndReason >= 1000 && info.m_eEndReason < 2000) &&
+            (info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer ||
+             info.m_eState == k_ESteamNetworkingConnectionState_ProblemDetectedLocally)) {
+            p.fall_back(id, link, "Steam reason " + std::to_string(info.m_eEndReason));
+            continue;
+        }
         if (info.m_eState == k_ESteamNetworkingConnectionState_Connected) {
+            if (trying_direct) {
+                p.direct_note = "Connected straight to the server.";
+                p.note_direct(p.direct_note);
+            }
             if (!link.connected && !link.prioritized) link.prioritized = p.lanes.setup(p.sockets, link.handle);
             link.connected = true;
             p.state.detail = "Steam connected.";
@@ -653,6 +809,19 @@ bool SteamTransport::set_send_rate(int rate) {
         if (link.handle) all &= p.apply_rate(link.handle);
     return all;
 }
+std::string SteamTransport::relay_status() const {
+    const auto &p = *impl_;
+    if (!p.relay_network || !p.utils) return "unknown (this Steam does not say)";
+    Impl::RelayNetwork status;
+    const auto available = p.relay_network(p.utils, &status);
+    status.message[sizeof(status.message) - 1] = 0;
+    std::string text = available == k_ESteamNetworkingAvailability_Current ? "OK"
+                       : static_cast<int>(available) < 0                    ? "FAILED"
+                                                                            : "not ready";
+    if (status.measuring) text += ", measuring pings to the relays";
+    if (status.message[0] && std::string_view(status.message) != "OK") text += std::string(": ") + status.message;
+    return text;
+}
 std::int64_t SteamTransport::pending(std::uint64_t id) const {
     const auto found = impl_->links.find(id);
     if (found == impl_->links.end() || !found->second.status_ok) return 0;
@@ -685,6 +854,7 @@ std::vector<TransportLink> SteamTransport::links() {
             row.out_bps = s.m_flOutBytesPerSec;
             row.in_bps = s.m_flInBytesPerSec;
             row.queue_us = queue_time(s);
+            row.direct = link.direct;
             SteamNetConnectionInfo_t info{};
             if (p.get_info && p.get_info(p.sockets, link.handle, &info)) {
                 // A location's ID is its name's characters packed into a number.
@@ -740,7 +910,7 @@ bool SteamTransport::send(std::uint64_t id, std::span<const std::uint8_t> bytes,
     const auto found = p.links.find(id);
     if (found == p.links.end() || !p.admit(found->second, bytes, fresh, lane))
         return false;
-    const int flags = Impl::send_flags(reliable, lane);
+    const int flags = p.send_flags(reliable, lane);
     const auto result = found->second.prioritized
         ? p.lanes.transmit(p.sockets, found->second.handle, bytes, flags, lane)
         : p.send_message(p.sockets, found->second.handle, bytes.data(), static_cast<uint32>(bytes.size()), flags, nullptr);
@@ -758,7 +928,7 @@ void SteamTransport::send_batch(std::span<TransportSend> messages) {
         const auto found = p.links.find(m.id);
         if (found == p.links.end() || !p.admit(found->second, m.bytes, m.fresh, m.lane))
             continue;
-        const int flags = Impl::send_flags(m.reliable, m.lane);
+        const int flags = p.send_flags(m.reliable, m.lane);
         const auto &link = found->second;
         if (!link.prioritized || m.bytes.empty()) {
             // Without lanes (older Steam adapters) each message goes out as send() sends it.

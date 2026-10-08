@@ -258,6 +258,25 @@ void send_throwdown(Session &s, std::vector<std::uint8_t> message) {
     p.throwdown = std::move(message);
     broadcast(s, p, true, false, now);
 }
+// This game's pose to a dedicated server: its differences from a pose of its own the server has
+// said it holds (pose_batch.h), as the server sends everyone else's.
+void upload_pose(Session &s, const Packet &packet, std::uint64_t now) {
+    auto &kept = s.own_poses;
+    if (!kept.empty() && kept.back().sequence >= packet.sequence) return;
+    kept.push_back({packet.sequence, packet.time_us, pose_codec::quantize(packet.pose)});
+    while (kept.size() > 64) kept.pop_front();
+    const auto find = [&](std::uint32_t sequence) -> std::optional<pose_batch::KeptView> {
+        for (auto it = kept.rbegin(); it != kept.rend(); ++it)
+            if (it->sequence == sequence) return pose_batch::KeptView{it->sequence, it->time_us, &it->pose};
+        return {};
+    };
+    const auto emit = [&](std::span<const std::uint8_t> message, bool reliable) {
+        return s.transport.send(s.host_id, message, reliable, !reliable, TrafficLane::gameplay);
+    };
+    s.pose_upload.begin(s.world, s.map);
+    s.pose_upload.add(packet.source, packet.epoch, *find(packet.sequence), find, false, packet.player_collision, pose_batch::Rate::full, now, emit);
+    s.pose_upload.flush(emit);
+}
 void broadcast(Session &s, const Packet &packet, bool reliable, bool fresh, std::uint64_t now,
                std::uint64_t except) {
     const auto *source = find_peer(s, packet.source);
@@ -316,6 +335,19 @@ void broadcast(Session &s, const Packet &packet, bool reliable, bool fresh, std:
             (packet.kind == PacketKind::pose || packet.kind == PacketKind::audio) &&
             !needs_relay(p.direct_routes, p.route_reported, source->member, now))
             continue;
+        if (packet.kind == PacketKind::pose && dedicated_host(s) && p.member.id == s.host_id) {
+            upload_pose(s, packet, now);
+            continue;
+        }
+        // This game's skater's sound to a dedicated server (sound_codec.h): what changed since
+        // the last samples it was sent.
+        if (packet.kind == PacketKind::audio && dedicated_host(s) && p.member.id == s.host_id) {
+            s.sound_upload.begin(s.world, s.map);
+            s.sound_upload.add(packet.source, packet.epoch, packet.sequence, packet.time_us, packet.audio, now);
+            if (s.sound_upload.pending())
+                s.sound_upload.sent(s.transport.send(s.host_id, s.sound_upload.message(), true, fresh, traffic_lane(packet.kind)));
+            continue;
+        }
         PoseDelivery *delivery{};
         std::uint32_t interval = multiplayer_pose_interval(s.tps);
         if (packet.kind == PacketKind::pose) {
@@ -635,11 +667,34 @@ void send_local(Session &s, const NativeFrame &local, std::uint64_t now, std::ui
     if (captured_at) p.time_us = captured_at;
     p.pose = local.pose;
     ++s.local_pose_count;
+    if (s.pose_dump.is_open()) {
+        // A record: when it was captured (8 bytes), its length (4), and the compact encoding.
+        const auto raw = encode(p, true);
+        const std::uint64_t time = p.time_us;
+        const auto length = static_cast<std::uint32_t>(raw.size());
+        s.pose_dump.write(reinterpret_cast<const char *>(&time), sizeof time);
+        s.pose_dump.write(reinterpret_cast<const char *>(&length), sizeof length);
+        s.pose_dump.write(reinterpret_cast<const char *>(raw.data()), static_cast<std::streamsize>(raw.size()));
+        ++s.pose_dump_count;
+        if (now >= s.pose_dump_until) {
+            s.pose_dump.close();
+            logging::log(logging::Level::info, logging::Channel::runtime, "Multiplayer: pose dump finished, {} poses.", s.pose_dump_count);
+        }
+    }
     deliver(p, false, true);
     auto samples = drain_audio_capture(now);
     if (!samples.empty()) {
         auto a = packet(s, PacketKind::audio, now);
         a.audio = std::move(samples);
+        if (s.pose_dump.is_open()) {
+            // The skater's sound is recorded with the poses, in the same records.
+            const auto raw = encode(a, true);
+            const std::uint64_t time = a.time_us;
+            const auto length = static_cast<std::uint32_t>(raw.size());
+            s.pose_dump.write(reinterpret_cast<const char *>(&time), sizeof time);
+            s.pose_dump.write(reinterpret_cast<const char *>(&length), sizeof length);
+            s.pose_dump.write(reinterpret_cast<const char *>(raw.data()), static_cast<std::streamsize>(raw.size()));
+        }
         deliver(a, std::any_of(a.audio.begin(), a.audio.end(), [](const auto &sample) { return sample.event; }), true);
     }
 }

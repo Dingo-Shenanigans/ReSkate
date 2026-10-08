@@ -60,6 +60,50 @@ send_rate          The most the server sends one player, in KB/s (default 900,
                    Steam's relays: set higher, what is lost is resent until the
                    connection is full of resends and half of everything is
                    lost. Console: rate <KB/s>, also for the players already on.
+finger_distance    Past this many metres (default 25) a player's fingers are not
+                   sent moving: they stay as they were, and move again when the
+                   player is nearer. Fingers are nearly half of every position
+                   update and cannot be made out at that distance. 0 always
+                   sends them.
+pack_ms            How long a message to a player may wait to go in the same
+                   packet as the next ones, in milliseconds (default 10, 0 to
+                   50). A full server sends each player hundreds of small
+                   messages a second, each in a packet of its own with its own
+                   headers; packed, the same updates take fewer packets, less
+                   bandwidth and less CPU. It adds up to that long to when an
+                   update arrives. Voice is never held back. 0 sends every
+                   message at once, as before. Takes effect on restart.
+connection         How players reach the server: "relay" (default) or "direct".
+                   relay   Through Steam's relay network. Nothing to open, and
+                           the server never sees a player's address. The route
+                           is Steam's choice and can be a long way round.
+                   direct  Straight to this server's "port" over UDP, which
+                           must be open to the internet. The shortest route,
+                           so the lowest ping. The server sees the addresses
+                           of the players who connect this way, as any
+                           dedicated server does; players never see each
+                           other's.
+                   A direct server still answers through the relays: a game
+                   tries the port first and uses the relays if it gets no
+                   answer in a few seconds, and a player can turn direct
+                   connections off in their own settings. So "direct" never
+                   keeps anyone out. Steam vouches for who each player is
+                   either way. "net" shows who is direct, and the log has a
+                   [direct] line for each player who asks to connect that way.
+direct_address     For "direct": the address players connect to, like
+                   203.0.113.7, when it is not the one the server's start-up
+                   line calls its public IP. Some hosts send from one address
+                   and take connections on another; use the one your panel
+                   shows for the server. Empty (default): the public IP.
+steam_debug        true logs what Steam's own networking says it is doing: each
+                   connection asked for, and what it refused or ignored and
+                   why. For finding out why players cannot connect; it is a
+                   lot of text, so turn it off again afterwards.
+relay_everything   true sends poses through the server even between players
+                   whose games have linked to each other. For testing with a
+                   few players; leave it false otherwise.
+direct_port        For "direct": the UDP port to listen on when it is not
+                   "port" (default 0: "port"). Must differ from query_port.
 bone_scale_limit   How far a mod may resize part of a skater for the other
                    players (a "big head" mod and the like): the most a bone may
                    be scaled, 1 to 8. 1 (default) shows every skater at the

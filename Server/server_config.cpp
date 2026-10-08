@@ -26,6 +26,13 @@ Json to_json(const ServerConfig &c) {
     root["reserved_slots"] = c.reserved_slots;
     root["crowd_budget"] = c.crowd_budget;
     root["bone_scale_limit"] = c.bone_scale_limit;
+    root["connection"] = c.connection;
+    root["direct_address"] = c.direct_address;
+    root["steam_debug"] = c.steam_debug;
+    root["relay_everything"] = c.relay_everything;
+    root["direct_port"] = c.direct_port;
+    root["pack_ms"] = c.pack_ms;
+    root["finger_distance"] = c.finger_distance;
     root["send_rate"] = c.send_rate;
     auto reserved = Json::array();
     for (const auto id : c.reserved) reserved.push_back(std::to_string(id)); // as strings, like the admins
@@ -134,6 +141,13 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.reserved_slots = root.value("reserved_slots", c.reserved_slots);
     c.crowd_budget = root.value("crowd_budget", c.crowd_budget);
     c.bone_scale_limit = root.value("bone_scale_limit", c.bone_scale_limit);
+    c.connection = root.value("connection", c.connection);
+    c.direct_address = root.value("direct_address", c.direct_address);
+    c.steam_debug = root.value("steam_debug", c.steam_debug);
+    c.relay_everything = root.value("relay_everything", c.relay_everything);
+    c.direct_port = root.value("direct_port", c.direct_port);
+    c.pack_ms = root.value("pack_ms", c.pack_ms);
+    c.finger_distance = root.value("finger_distance", c.finger_distance);
     c.send_rate = root.value("send_rate", c.send_rate);
     if (root.contains("reserved") && root.at("reserved").is_array())
         for (const auto &id : root.at("reserved")) c.reserved.push_back(steam_id(id));
@@ -262,6 +276,11 @@ std::string config_error(const ServerConfig &c) {
     if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
     if (c.bone_scale_limit != 0 && !(c.bone_scale_limit >= 1.f && c.bone_scale_limit <= 8.f))
         return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";
+    if (c.connection != "relay" && c.connection != "direct") return "connection must be \"relay\" or \"direct\".";
+    if (!c.direct_address.empty() && !direct_ipv4(c.direct_address)) return "direct_address must be an address like 203.0.113.7, or empty.";
+    if (c.direct_port && c.direct_port == c.query_port) return "direct_port and query_port must differ.";
+    if (c.pack_ms > 50) return "pack_ms must be 0 (off) to 50.";
+    if (c.finger_distance > 10000) return "finger_distance must be 0 (fingers always sent) to 10000.";
     if (!valid_crowd_budget(c.crowd_budget))
         return "crowd_budget must be 0 (no limit) or " + std::to_string(min_crowd_budget) + " to " +
                std::to_string(max_crowd_budget) + ".";
@@ -359,6 +378,22 @@ const ServerLevel *find_level(std::string_view map) {
         if (result) return result;
     }
     return nullptr;
+}
+std::uint32_t direct_ipv4(std::string_view text) noexcept {
+    std::uint32_t address{};
+    unsigned parts{};
+    while (!text.empty() && parts < 4) {
+        const auto dot = text.find('.');
+        const auto part = text.substr(0, dot);
+        unsigned value{};
+        const auto parsed = std::from_chars(part.data(), part.data() + part.size(), value);
+        if (part.empty() || part.size() > 3 || parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size() || value > 255) return 0;
+        address = (address << 8) | value;
+        ++parts;
+        text = dot == std::string_view::npos ? std::string_view{} : text.substr(dot + 1);
+        if (dot != std::string_view::npos && text.empty()) return 0; // a trailing dot
+    }
+    return parts == 4 && text.empty() ? address : 0;
 }
 bool installed_map(std::string_view map) {
     const auto destination = map_destination(map);

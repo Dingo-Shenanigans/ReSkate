@@ -229,6 +229,7 @@ void publish(Session &s, const NativeFrame *local) {
         view.server_map_votes = (s.server_votes & server_vote_map) != 0;
     }
     view.player_distance = s.player_distance;
+    view.prefer_direct = s.prefer_direct;
     view.nametag_distance = s.nametag_distance;
     view.nametag_dots = s.nametag_dots;
     view.nametags_friends = s.nametags_friends;

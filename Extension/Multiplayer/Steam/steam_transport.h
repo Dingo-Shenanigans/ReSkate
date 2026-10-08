@@ -25,6 +25,7 @@ struct TransportLink {
     // ("ord", "fra"...): the one this side uses and the one the other side uses. A ping far
     // above the direct one is the route, and these say which way it went.
     std::string relay, remote_relay;
+    bool direct{}; // not through the relays at all
 };
 struct TransportMessage {
     std::uint64_t peer{};
@@ -70,7 +71,26 @@ class SteamTransport {
     // steam_api64.dll module handle it was started with.
     bool open_game_server(void *steam_api);
     bool host(unsigned capacity);
-    bool join(std::uint64_t steam_id);
+    // `direct_ip` and `direct_port` (host byte order; 0 for none): the address a dedicated server
+    // listens on for direct connections. It is tried first, and the connection goes through
+    // Steam's relays as usual if it has not come up in a few seconds. Either way Steam vouches
+    // for who is at the other end, and only a server with this Steam ID is taken.
+    bool join(std::uint64_t steam_id, std::uint32_t direct_ip = 0, std::uint16_t direct_port = 0);
+    // A host that also takes connections straight to this UDP port, without Steam's relays.
+    // For a dedicated server with a public address. False when Steam could not open it.
+    bool listen_direct(std::uint16_t port);
+    // Lets Steam hold a message back for up to this many milliseconds to send it in the same
+    // packet as the next ones (0: every message is its own packet, at once, as a game sends
+    // them). A dedicated server sends each player hundreds of small messages a second, and
+    // every packet carries the same headers again. Voice is never held. Set before host().
+    void set_packing(unsigned milliseconds);
+    // What happened to direct connections since this was last asked, a line each, for a log:
+    // a guest's attempt at its host (where to, and how it went), or a host's incoming ones.
+    std::vector<std::string> take_direct_notes();
+    // Has Steam's networking say what it is doing (connections asked for, refused, packets it
+    // would not take and why), as lines for take_direct_notes. For finding out why a
+    // connection does not come up; a lot of text on a busy server. False when Steam cannot.
+    bool set_steam_debug(bool on);
     bool connect_peer(std::uint64_t steam_id);
     void allow_peers(std::span<const Member>);
     bool socket_test();
@@ -91,6 +111,10 @@ class SteamTransport {
     std::string link_report(std::uint64_t id);
     // Bytes waiting to go out to a player, as last measured (a few times a second).
     std::int64_t pending(std::uint64_t id) const;
+    // What Steam says of its relay network from here, in its own words ("OK", or what it is
+    // waiting for or failed at). Every connection goes through the relays: while this is not
+    // OK, players time out joining ("negotiate rendezvous") or come by a long way round.
+    std::string relay_status() const;
     // What each connection may send a second from now on, the open ones included. False when
     // out of range, or when an open connection could not be changed (new ones still get it).
     bool set_send_rate(int bytes_per_second);

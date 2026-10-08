@@ -256,6 +256,15 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
             (*menu.player_distance_pending == mp.player_distance || ImGui::GetTime() >= menu.player_distance_until))
             menu.player_distance_pending.reset();
     }
+    bool direct = mp.prefer_direct;
+    if (toggle_row(menu, "Direct connections",
+                   "Connect straight to dedicated servers that offer it: the shortest route, so the lowest ping. The server can then "
+                   "see your IP address, as with any game's dedicated servers; other players never can. Off: always through Steam's "
+                   "relays. Applies from the next server you join.",
+                   direct)) {
+        std::array<char, 65> unused{};
+        send_private(menu, "direct-connections", direct ? "on" : "off", unused, false);
+    }
     bool nametags = mp.nametags;
     if (toggle_row(menu, "Player nametags",
                    "The name above each skater, with their distance: purple for ReSkate developers, red for content creators, "

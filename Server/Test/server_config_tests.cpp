@@ -70,6 +70,12 @@ int run() {
         ServerConfig scaled;
         scaled.bone_scale_limit = 0.5f;
         check(config_error(scaled).find("bone_scale_limit") != std::string::npos, "A bone scale limit under 1 was accepted");
+        check(has("pack_ms") && config.pack_ms == 10, "pack_ms is not a new setting of 10");
+        check(has("finger_distance") && config.finger_distance == 25, "finger_distance is not a new setting of 25");
+        check(has("connection") && config.connection == "relay", "connection is not a new setting of relay");
+        ServerConfig how;
+        how.connection = "carrier pigeon";
+        check(config_error(how).find("connection") != std::string::npos, "An unknown connection was accepted");
         ServerConfig crowd;
         crowd.crowd_budget = 50;
         check(config_error(crowd).find("crowd_budget") != std::string::npos, "A crowd budget too small to play with was accepted");
