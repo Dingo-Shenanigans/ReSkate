@@ -60,6 +60,12 @@ send_rate          The most the server sends one player, in KB/s (default 900,
                    Steam's relays: set higher, what is lost is resent until the
                    connection is full of resends and half of everything is
                    lost. Console: rate <KB/s>, also for the players already on.
+bone_scale_limit   How far a mod may resize part of a skater for the other
+                   players (a "big head" mod and the like): the most a bone may
+                   be scaled, 1 to 8. 1 (default) shows every skater at the
+                   game's own proportions; 0 is no limit. The player with the
+                   mod still sees it on their own screen. Console:
+                   bone-scale <1-8>|off.
 crowd_budget       The most position updates a second one player is sent
                    (default 600, 0 for no limit). Players near each other are
                    sent at the full rate (tps); this only matters once more are

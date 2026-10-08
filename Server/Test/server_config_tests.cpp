@@ -66,6 +66,10 @@ int run() {
         ServerConfig rate;
         rate.send_rate = 64;
         check(config_error(rate).find("send_rate") != std::string::npos, "A send rate too low to play with was accepted");
+        check(has("bone_scale_limit") && config.bone_scale_limit == 1, "bone_scale_limit is not a new setting of 1");
+        ServerConfig scaled;
+        scaled.bone_scale_limit = 0.5f;
+        check(config_error(scaled).find("bone_scale_limit") != std::string::npos, "A bone scale limit under 1 was accepted");
         ServerConfig crowd;
         crowd.crowd_budget = 50;
         check(config_error(crowd).find("crowd_budget") != std::string::npos, "A crowd budget too small to play with was accepted");

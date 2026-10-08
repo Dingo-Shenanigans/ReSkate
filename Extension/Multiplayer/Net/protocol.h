@@ -232,6 +232,10 @@ std::vector<std::uint8_t> encode(const Packet &, bool compact_pose = false);
 // zero and pack away. One step is about 0.0025 degrees times 2^bits: 4 bits is 0.04 degrees,
 // 7 bits a third of a degree.
 void coarsen_rotations(Pose &pose, unsigned bits) noexcept;
+// Keeps every bone's scale within 1/limit to limit on each axis (1: no scaling at all). A mod
+// that resizes part of a skater (a head four times the size) does it with a bone's scale,
+// which travels in the pose and so shows to everyone, mod or not.
+void limit_bone_scale(Pose &pose, float limit) noexcept;
 // The same, with a pose encoded at another update interval (a recipient thinned by
 // distance) instead of the packet's own, so the packet need not be copied for it.
 std::vector<std::uint8_t> encode(const Packet &, bool compact_pose, std::uint32_t pose_interval_us);

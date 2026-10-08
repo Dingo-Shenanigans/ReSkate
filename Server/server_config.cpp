@@ -25,6 +25,7 @@ Json to_json(const ServerConfig &c) {
     root["max_players"] = c.max_players;
     root["reserved_slots"] = c.reserved_slots;
     root["crowd_budget"] = c.crowd_budget;
+    root["bone_scale_limit"] = c.bone_scale_limit;
     root["send_rate"] = c.send_rate;
     auto reserved = Json::array();
     for (const auto id : c.reserved) reserved.push_back(std::to_string(id)); // as strings, like the admins
@@ -132,6 +133,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.max_players = root.value("max_players", c.max_players);
     c.reserved_slots = root.value("reserved_slots", c.reserved_slots);
     c.crowd_budget = root.value("crowd_budget", c.crowd_budget);
+    c.bone_scale_limit = root.value("bone_scale_limit", c.bone_scale_limit);
     c.send_rate = root.value("send_rate", c.send_rate);
     if (root.contains("reserved") && root.at("reserved").is_array())
         for (const auto &id : root.at("reserved")) c.reserved.push_back(steam_id(id));
@@ -258,6 +260,8 @@ std::string config_error(const ServerConfig &c) {
     if (c.reserved_slots >= c.max_players) return "reserved_slots must be less than max_players, so that anyone can join at all.";
     if (c.reserved.size() > 1024) return "reserved holds at most 1024 players.";
     if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
+    if (c.bone_scale_limit != 0 && !(c.bone_scale_limit >= 1.f && c.bone_scale_limit <= 8.f))
+        return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";
     if (!valid_crowd_budget(c.crowd_budget))
         return "crowd_budget must be 0 (no limit) or " + std::to_string(min_crowd_budget) + " to " +
                std::to_string(max_crowd_budget) + ".";

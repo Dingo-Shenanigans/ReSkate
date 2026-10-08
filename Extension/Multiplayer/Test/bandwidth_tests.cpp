@@ -173,6 +173,18 @@ void coarse_checks() {
         for (std::size_t i = 0; i < std::min(first.size(), second.size()); ++i) different += first[i] != second[i];
         check(first.size() == second.size() && different < first.size() / 20, "A turn far below the step still changed the pose's bytes");
     }
+    // A resized bone is held to the limit both ways, and at 1 is not resized at all.
+    auto big = fixture();
+    big.pose.skater[5].scale = {4, 4, 4};
+    big.pose.skater[6].scale = {.1f, 1, 1};
+    auto held = big.pose, plain = big.pose, free = big.pose;
+    limit_bone_scale(held, 1.5f);
+    limit_bone_scale(plain, 1.f);
+    limit_bone_scale(free, 0.f);
+    check(held.skater[5].scale == std::array<float, 3>{1.5f, 1.5f, 1.5f} && std::abs(held.skater[6].scale[0] - 1.f / 1.5f) < 1e-5f &&
+              plain.skater[5].scale == std::array<float, 3>{1, 1, 1} && plain.skater[6].scale == std::array<float, 3>{1, 1, 1} &&
+              free.skater[5].scale == std::array<float, 3>{4, 4, 4},
+          "A bone's scale was not held to the limit");
     std::cout << "Coarse rotations: valid poses, within a step, small turns unchanged.\n";
 }
 void rate_checks() {

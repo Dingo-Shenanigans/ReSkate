@@ -46,7 +46,7 @@ std::uint64_t nonce() {
 constexpr std::string_view help_text =
     "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
     "map <name, e.g. San Vansterdam> | maps | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
-    "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s>\n"
+    "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off\n"
     "placement everyone|admins|nobody | objects <number>|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
     "tpall [player] | tphere <player> | votes [map|kick|tod on|off|<percent>] | vote-cancel\n"
     "map-pool [add|remove <map>|clear] | rotation [<minutes>|off]\n"
@@ -342,7 +342,11 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
         if (data.raw.empty()) {
             data.packet = packet;
             data.packet.pose_interval_us = interval;
-            if (packet.kind == PacketKind::pose) coarsen_rotations(data.packet.pose, pose_precision[precision]);
+            if (packet.kind == PacketKind::pose) {
+                // What a mod resized on its player's skater reaches the others only as far as the server allows.
+                if (config_.bone_scale_limit >= 1.f) limit_bone_scale(data.packet.pose, config_.bone_scale_limit);
+                coarsen_rotations(data.packet.pose, pose_precision[precision]);
+            }
             data.raw = encode(data.packet, true);
             data.wire = encode_wire_bytes(data.raw);
         }
@@ -1569,6 +1573,22 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         const bool applied = transport_.set_send_rate(static_cast<int>(config_.send_rate * 1024));
         return changed("Each player is sent at most " + std::to_string(config_.send_rate) + " KB/s" +
                        (applied ? "." : ": players who join from now on. Steam did not change the connections already open."));
+    }
+    if (name == "bone-scale") {
+        // bone-scale <1-8>|off: how far a mod may resize part of a skater for the other players.
+        float value{};
+        const bool off = argument == "off" || argument == "0";
+        const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+        if (!off && (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !(value >= 1.f && value <= 8.f)))
+            return "bone-scale <1-8>|off: 1 shows every skater at the game's own proportions, off allows anything (now " +
+                   (config_.bone_scale_limit >= 1.f ? std::to_string(config_.bone_scale_limit).substr(0, 4) : std::string("off")) + ")";
+        config_.bone_scale_limit = off ? 0.f : value;
+        // Whole states go again so that nobody keeps a reference with the old sizes in it.
+        for (auto &[id, guest] : guests_)
+            for (const auto &[other, unused] : guests_) guest->sender.forget(other, PacketKind::pose);
+        return changed(off ? std::string("Mods may resize skaters' body parts freely.")
+                           : value == 1.f ? std::string("Skaters show at the game's own proportions: resized body parts are not passed on.")
+                                          : "Resized body parts show at up to " + std::to_string(value).substr(0, 4) + "x.");
     }
     if (name == "crowd") {
         // crowd <poses a second>|off: the most one player is sent (crowd_limits).

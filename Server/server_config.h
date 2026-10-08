@@ -42,6 +42,10 @@ struct ServerConfig {
     unsigned reserved_slots = 0;
     // The most poses a second one player is sent (crowd_limits); 0: no limit.
     unsigned crowd_budget = crowd_pose_budget;
+    // The most a mod may resize part of a skater for the other players, as a factor (and its
+    // inverse the least): 1, the default, shows every skater at the game's own proportions;
+    // 0 is no limit.
+    float bone_scale_limit = 1;
     // What the server may send each player, in KB/s (128-16384).
     unsigned send_rate = 900;
     std::vector<std::uint64_t> reserved;

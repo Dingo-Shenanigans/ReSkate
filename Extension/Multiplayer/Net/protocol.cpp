@@ -340,6 +340,15 @@ void coarsen(Transform &t, unsigned bits) noexcept {
     t.rotation[largest] = std::sqrt(std::max(0.f, 1.f - sum));
 }
 } // namespace
+void limit_bone_scale(Pose &pose, float limit) noexcept {
+    if (!(limit >= 1.f)) return;
+    const auto hold = [&](Transform &t) {
+        for (float &axis : t.scale) axis = std::isfinite(axis) ? std::clamp(axis, 1.f / limit, limit) : 1.f;
+    };
+    hold(pose.root);
+    for (auto &t : pose.skater) hold(t);
+    for (auto &t : pose.board) hold(t);
+}
 void coarsen_rotations(Pose &pose, unsigned bits) noexcept {
     bits = std::min(bits, 12U);
     coarsen(pose.root, std::min(bits, 6U)); // which way they face matters from further off than a finger does
