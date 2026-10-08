@@ -44,7 +44,6 @@ class Host {
     std::uint64_t secret() const { return secret_; }
     // The UDP port players may connect straight to, or 0 (config connection).
     std::uint16_t direct_port() const { return direct_port_; }
-    const std::string &direct_address() const { return config_.direct_address; }
 
     enum class VoteKind { map, kick, time };
 
@@ -244,6 +243,9 @@ class Host {
     Guest *find(std::uint64_t id);
     Packet packet(PacketKind kind, std::uint64_t now);
     unsigned capacity() const { return config_.max_players + 1; }
+    // What the connection layer is opened for: every extra slot there could be as well, since
+    // the reserved players and admins change while the server runs. Who gets in is may_join's.
+    unsigned connection_capacity() const { return static_cast<unsigned>(multiplayer::max_players); }
     std::string guest_name(const Guest &) const;
     std::string player_name(std::string_view wanted, std::uint64_t id) const;
     bool is_admin(std::uint64_t id) const;

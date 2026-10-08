@@ -206,6 +206,8 @@ std::vector<bool> stale_pose_deltas(Session &s, const std::vector<TransportMessa
     std::vector<Stream> streams;
     for (auto i = messages.size(); i-- > 0;) {
         const auto &bytes = messages[i].bytes;
+        // (A dedicated server sends none of these: what it sends that starts the same is sound.)
+        if (dedicated_host(s) && messages[i].peer == s.host_id) continue;
         // Sparse pose patches (delta_codec.cpp): "RMS1"/"RMS2", source at 4, kind at 20.
         if (bytes.size() <= 34 || bytes[0] != 'R' || bytes[1] != 'M' || bytes[2] != 'S' ||
             (bytes[3] != '1' && bytes[3] != '2'))
@@ -505,19 +507,23 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
         if (stale[index])
             continue;
-            // The server saying which of this game's own pose messages it read.
-            if (const auto ack = pose_batch::Ack::read(message.bytes)) {
-                if (s.mode == Mode::join && !direct_link && dedicated_host(s)) s.pose_upload.ack(*ack);
-                continue;
-            }
-            if (sound_codec::is_sound(message.bytes)) {
-                if (s.mode == Mode::join && !direct_link && dedicated_host(s)) batch = unpack_sound(s, message.bytes);
-                if (batch.empty()) continue;
-            }
-            if (pose_batch::is_batch(message.bytes)) {
-                // Only a dedicated server sends these, and only to its players.
-                if (s.mode == Mode::join && !direct_link && dedicated_host(s)) batch = unpack_poses(s, message.bytes);
-                if (batch.empty()) continue;
+            // A dedicated server's own messages (pose_batch.h, sound_codec.h). Only what comes
+            // from the server is read as one: sound_codec's first four bytes are also those of
+            // the pose updates games send each other directly (delta_codec's "RMS1"), which
+            // must go on to be decoded as what they are.
+            if (s.mode == Mode::join && !direct_link && dedicated_host(s)) {
+                // The server saying which of this game's own pose messages it read.
+                if (const auto ack = pose_batch::Ack::read(message.bytes)) {
+                    s.pose_upload.ack(*ack);
+                    continue;
+                }
+                if (sound_codec::is_sound(message.bytes)) {
+                    batch = unpack_sound(s, message.bytes);
+                    if (batch.empty()) continue;
+                } else if (pose_batch::is_batch(message.bytes)) {
+                    batch = unpack_poses(s, message.bytes);
+                    if (batch.empty()) continue;
+                }
             }
         }
         bool missing_reference{};

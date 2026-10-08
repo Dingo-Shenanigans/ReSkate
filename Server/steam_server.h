@@ -13,7 +13,6 @@ struct Advertisement {
     bool password{}, listed{true};
     std::uint64_t secret{};
     std::uint16_t direct_port{}; // players may connect straight to this UDP port; 0: relays only
-    std::string direct_address;  // at this address, when it is not the one Steam lists the server under
 };
 std::string server_tags(const Advertisement &);
 

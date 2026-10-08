@@ -37,29 +37,18 @@ struct ServerConfig {
     std::vector<std::string> map_pool; // maps for votes and the rotation, in order; empty: every map
     unsigned map_rotation = 0;         // minutes per map before the next pool map (0: off)
     unsigned max_players = 16; // players; the server itself is not one
-    // Of those, how many are kept for the players in `reserved` and the admins: everyone else
-    // is told the server is full once only these are left. 0: none are kept.
-    unsigned reserved_slots = 0;
     // The most poses a second one player is sent (crowd_limits); 0: no limit.
     unsigned crowd_budget = crowd_pose_budget;
     // The most a mod may resize part of a skater for the other players, as a factor (and its
-    // inverse the least): 1, the default, shows every skater at the game's own proportions;
-    // 0 is no limit.
-    float bone_scale_limit = 1;
-    // How players reach the server: "relay", through Steam's relay network only, or "direct",
-    // straight to `port` (UDP). A direct server still answers through the relays, for a player
-    // the port does not reach, one who has turned direct connections off, or an older game.
-    std::string connection = "relay";
-    // The address players connect straight to, a.b.c.d, when it is not the one Steam lists the
-    // server under (a host that sends from one address and takes connections on another).
-    // Empty: the listed one. And the port, when it is not `port`; 0: `port`.
-    std::string direct_address;
+    // inverse the least). The game's own skater height is a scale as well, so 1 shows every
+    // skater at one height and build; 2, the default, leaves height alone. 0 is no limit.
+    float bone_scale_limit = 2;
+    // How players reach the server: true, through Steam's relay network only; false, straight
+    // to `port` (UDP). A direct server still answers through the relays, for a player the port
+    // does not reach, one who has turned direct connections off, or an older game.
+    bool use_steam_relay = true;
     // Logs what Steam's networking says it is doing, to find out why connections fail.
     bool steam_debug = false;
-    // For testing with few players: poses go through the server even between players whose
-    // games have linked to each other.
-    bool relay_everything = false;
-    std::uint16_t direct_port = 0;
     // How long a message to a player may wait to share a packet with the next ones, in
     // milliseconds (0: each goes at once in a packet of its own). Fewer, fuller packets:
     // less sent for the same updates, and less work sending it.
@@ -69,6 +58,7 @@ struct ServerConfig {
     unsigned finger_distance = 25;
     // What the server may send each player, in KB/s (128-16384).
     unsigned send_rate = 900;
+    // The players with a reserved slot: they can join a full server, as the admins can.
     std::vector<std::uint64_t> reserved;
     std::string password;      // empty: anyone may join
     std::string welcome;       // sent to each player as they join
@@ -125,8 +115,13 @@ struct ServerConfig {
 // their names go to `added` ("votes.seconds" for a nested one).
 ServerConfig load_config(const std::filesystem::path &file, std::vector<std::string> *added = nullptr);
 void save_config(const ServerConfig &config);
-// Whether a player who is not yet on may join a server with `on` players on it: anyone while
-// an unreserved slot is free, then only the reserved players and the admins until it is full.
+// Where the bans are kept: data/bans.json, beside the config.
+std::filesystem::path bans_file(const ServerConfig &config);
+// How many players may be on beyond max_players: one for each reserved player and each admin.
+std::size_t extra_slots(const ServerConfig &config) noexcept;
+// Whether a player who is not yet on may join a server with `on` players on it. Anyone, until
+// max_players are on; the reserved players and the admins after that too, in the extra slots
+// (a full server of 32 shows 33/32 with one of them on).
 bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noexcept;
 // Why `config` cannot run, or empty.
 std::string config_error(const ServerConfig &config);

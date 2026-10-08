@@ -482,7 +482,7 @@ int run(int argc, char **argv, bool skip_update) {
     std::future<BanListCheck> ban_check;
     auto next_ban_check = next_advertise;
     bool bans_unread{};
-    if (!config.global_bans) write_log("Global bans are off (\"global_bans\": false): only this server's own bans apply.");
+    if (!config.global_bans) write_log("Global bans are off (\"use_global_bans\": false): only this server's own bans apply.");
     // Signed in to Steam, as last logged, and when it is looked at again. Players already on stay
     // connected through a lost sign-in, but nobody new can join: Steam carries the first messages
     // of a connection, and theirs time out ("negotiate rendezvous").
@@ -592,7 +592,7 @@ int run(int argc, char **argv, bool skip_update) {
                 name_allowed = allowed;
             }
             steam.advertise({config.name, host.map_name(), host.players(), config.max_players, !config.password.empty(),
-                             config.listed && allowed, host.secret(), host.direct_port(), host.direct_address()});
+                             config.listed && allowed, host.secret(), host.direct_port()});
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }

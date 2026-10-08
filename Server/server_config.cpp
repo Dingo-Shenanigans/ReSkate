@@ -4,6 +4,8 @@
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Engine/Game/World/world_names.h"
 #include <algorithm>
+#include <initializer_list>
+#include <array>
 #include <cctype>
 #include <fstream>
 #include <sstream>
@@ -14,85 +16,130 @@ namespace {
 std::string placement_text(ObjectPlacement policy) {
     return policy == ObjectPlacement::everyone ? "everyone" : policy == ObjectPlacement::host_only ? "admins" : "nobody";
 }
-Json to_json(const ServerConfig &c) {
-    auto root = Json::object();
-    root["name"] = c.name;
-    root["map"] = c.map;
+// The config file as it is written: sections, and the settings in each, in the order an owner
+// reads them (a Json object alone would put them in alphabetical order).
+struct Layout {
+    std::vector<std::string> names;
+    std::vector<Layout> members;
+    Json value;
+    bool leaf{};
+    Layout &section(std::string name) {
+        names.push_back(std::move(name));
+        return members.emplace_back();
+    }
+    void set(std::string name, Json json) {
+        names.push_back(std::move(name));
+        auto &member = members.emplace_back();
+        member.value = std::move(json);
+        member.leaf = true;
+    }
+};
+void write(std::string &out, const Layout &layout, std::size_t depth) {
+    const std::string inner(2 * (depth + 1), ' ');
+    out += "{\n";
+    for (std::size_t i = 0; i < layout.names.size(); ++i) {
+        out += inner + Json(layout.names[i]).dump() + ": ";
+        if (layout.members[i].leaf) {
+            // A list or an object of its own spans lines: each goes in by this setting's depth.
+            for (const char c : layout.members[i].value.dump(2)) {
+                out += c;
+                if (c == '\n') out += inner;
+            }
+        } else {
+            write(out, layout.members[i], depth + 1);
+        }
+        out += i + 1 < layout.names.size() ? ",\n" : "\n";
+    }
+    out += std::string(2 * depth, ' ') + "}";
+}
+Layout layout(const ServerConfig &c) {
+    // SteamID64s are written as strings: JSON readers often lose 64-bit precision.
+    const auto ids = [](const std::vector<std::uint64_t> &list) {
+        auto out = Json::array();
+        for (const auto id : list) out.push_back(std::to_string(id));
+        return out;
+    };
+    Layout root;
+    auto &server = root.section("server");
+    server.set("name", c.name);
+    server.set("password", c.password);
+    server.set("welcome_message", c.welcome);
+    server.set("listed", c.listed);
+    server.set("max_players", c.max_players);
+    server.set("port", static_cast<unsigned>(c.port));
+    server.set("query_port", static_cast<unsigned>(c.query_port));
+    server.set("steam_token", c.steam_token);
+    server.set("auto_update", c.auto_update);
+    server.set("activity_log", c.activity_log);
+
+    auto &access = root.section("access");
+    access.set("admins", ids(c.admins));
+    access.set("reserved_players_slots", ids(c.reserved));
+    access.set("use_global_bans", c.global_bans);
+
+    auto &maps = root.section("maps");
+    maps.set("map", c.map);
     auto pool = Json::array();
     for (const auto &map : c.map_pool) pool.push_back(map);
-    root["map_pool"] = std::move(pool);
-    root["map_rotation_minutes"] = c.map_rotation;
-    root["max_players"] = c.max_players;
-    root["reserved_slots"] = c.reserved_slots;
-    root["crowd_budget"] = c.crowd_budget;
-    root["bone_scale_limit"] = c.bone_scale_limit;
-    root["connection"] = c.connection;
-    root["direct_address"] = c.direct_address;
-    root["steam_debug"] = c.steam_debug;
-    root["relay_everything"] = c.relay_everything;
-    root["direct_port"] = c.direct_port;
-    root["pack_ms"] = c.pack_ms;
-    root["finger_distance"] = c.finger_distance;
-    root["send_rate"] = c.send_rate;
-    auto reserved = Json::array();
-    for (const auto id : c.reserved) reserved.push_back(std::to_string(id)); // as strings, like the admins
-    root["reserved"] = std::move(reserved);
-    root["password"] = c.password;
-    root["welcome"] = c.welcome;
-    root["listed"] = c.listed;
-    root["steam_token"] = c.steam_token;
-    root["auto_update"] = c.auto_update;
-    root["global_bans"] = c.global_bans;
-    root["activity_log"] = c.activity_log;
-    root["announce_throwdowns"] = c.announce_throwdowns;
-    root["parties"] = c.parties;
-    root["party_size"] = c.party_size;
-    root["speed_check"] = c.speed_check;
-    root["score_check"] = c.score_check;
-    auto allowed = Json::array();
-    for (const auto fingerprint : c.score_allow) allowed.push_back(scoring_text(fingerprint));
-    root["score_allow"] = std::move(allowed);
-    root["port"] = static_cast<unsigned>(c.port);
-    root["query_port"] = static_cast<unsigned>(c.query_port);
-    root["tps"] = c.tps;
-    root["voice_chat"] = c.voice_chat;
-    root["voice_range"] = static_cast<double>(c.voice_range);
-    auto distances = Json::object();
-    distances["full_rate_return"] = c.distances.full_rate_return;
-    distances["half_rate_start"] = c.distances.half_rate_start;
-    distances["half_rate_return"] = c.distances.half_rate_return;
-    distances["low_rate_start"] = c.distances.low_rate_start;
-    root["distances"] = std::move(distances);
-    root["object_placement"] = placement_text(c.object_placement);
-    root["object_limit"] = c.object_limit;
-    root["noclip"] = c.noclip;
-    root["no_bail"] = c.no_bail;
-    root["boosts"] = c.boosts;
-    root["enforce_tuning"] = c.enforce_tuning;
-    auto votes = Json::object();
-    const auto vote = [](const VoteSetting &v) {
-        auto item = Json::object();
-        item["enabled"] = v.enabled;
-        item["percent"] = v.percent;
-        return item;
-    };
-    votes["map"] = vote(c.votes.map);
-    votes["kick"] = vote(c.votes.kick);
-    votes["time_of_day"] = vote(c.votes.time);
-    votes["seconds"] = c.votes.seconds;
-    votes["cooldown_seconds"] = c.votes.cooldown;
-    root["votes"] = std::move(votes);
+    maps.set("pool", std::move(pool));
+    maps.set("rotation_minutes", c.map_rotation);
     auto parks = Json::object();
     for (unsigned lot = 0; lot < park_lots.size(); ++lot) parks[park_lots[lot].key] = c.parks[lot];
-    root["parks"] = std::move(parks);
-    root["world_layer_sync"] = c.world_layer_sync;
+    maps.set("parks", std::move(parks));
+    maps.set("world_layer_sync", c.world_layer_sync);
     auto layers = Json::object();
     for (const auto &[key, mode] : c.layers) layers[key] = mode;
-    root["layers"] = std::move(layers);
-    // SteamID64s are written as strings: JSON readers often lose 64-bit precision.
-    auto admins = Json::array();
-    for (const auto id : c.admins) admins.push_back(std::to_string(id));
-    root["admins"] = std::move(admins);
+    maps.set("layers", std::move(layers));
+
+    auto &players = root.section("players");
+    players.set("allow_boosts", c.boosts);
+    players.set("allow_no_bail", c.no_bail);
+    players.set("allow_noclip", c.noclip);
+    players.set("allow_parties", c.parties);
+    players.set("party_size", c.party_size);
+    players.set("allow_voice_chat", c.voice_chat);
+    players.set("voice_range", static_cast<double>(c.voice_range));
+    players.set("object_placement", placement_text(c.object_placement));
+    players.set("object_limit", c.object_limit);
+    players.set("announce_throwdowns", c.announce_throwdowns);
+
+    auto &anti_cheat = root.section("anti_cheat");
+    anti_cheat.set("speed_hack", c.speed_check);
+    anti_cheat.set("modified_scoring", c.score_check);
+    auto allowed = Json::array();
+    for (const auto fingerprint : c.score_allow) allowed.push_back(scoring_text(fingerprint));
+    anti_cheat.set("allowed_scoring_mods", std::move(allowed));
+    anti_cheat.set("enforce_tuning", c.enforce_tuning);
+    anti_cheat.set("bone_scale_limit", c.bone_scale_limit);
+
+    auto &network = root.section("network");
+    network.set("use_steam_relay", c.use_steam_relay);
+    network.set("send_rate", c.send_rate);
+    network.set("crowd_budget", c.crowd_budget);
+    network.set("pack_ms", c.pack_ms);
+    network.set("finger_distance", c.finger_distance);
+    auto &distances = network.section("distances");
+    distances.set("full_rate_return", c.distances.full_rate_return);
+    distances.set("half_rate_start", c.distances.half_rate_start);
+    distances.set("half_rate_return", c.distances.half_rate_return);
+    distances.set("low_rate_start", c.distances.low_rate_start);
+    network.set("steam_debug", c.steam_debug);
+
+    auto &votes = root.section("votes");
+    const auto vote = [&](const char *name, const VoteSetting &v) {
+        auto &item = votes.section(name);
+        item.set("enabled", v.enabled);
+        item.set("percent", v.percent);
+    };
+    vote("map", c.votes.map);
+    vote("kick", c.votes.kick);
+    vote("time_of_day", c.votes.time);
+    votes.set("seconds", c.votes.seconds);
+    votes.set("cooldown_seconds", c.votes.cooldown);
+    return root;
+}
+// Bans have a file of their own, beside the config.
+Json bans_json(const ServerConfig &c) {
     auto bans = Json::array();
     for (const auto &ban : c.bans) {
         auto row = Json::object();
@@ -101,19 +148,21 @@ Json to_json(const ServerConfig &c) {
         row["added"] = ban.added;
         bans.push_back(std::move(row));
     }
-    root["bans"] = std::move(bans);
-    return root;
+    return bans;
+}
+void write_file(const std::filesystem::path &file, const std::string &text) {
+    if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
+    const auto temporary = std::filesystem::path(file).concat(".tmp");
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out << text << '\n';
+        if (!out) throw std::runtime_error("Cannot write " + path_utf8(temporary));
+    }
+    std::filesystem::rename(temporary, file);
 }
 std::uint64_t steam_id(const Json &value) {
     if (value.is_string()) return std::stoull(value.string());
     return value.get<std::uint64_t>();
-}
-// The settings `expected` has that `file` lacks, nested objects included.
-void missing_settings(const Json &file, const Json &expected, const std::string &prefix, std::vector<std::string> &out) {
-    for (const auto &[key, value] : expected.items()) {
-        if (!file.contains(key)) out.push_back(prefix + key);
-        else if (value.is_object() && file.at(key).is_object()) missing_settings(file.at(key), value, prefix + key + ".", out);
-    }
 }
 } // namespace
 ServerConfig load_config(const std::filesystem::path &file, std::vector<std::string> *added) {
@@ -131,118 +180,162 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     }
     const auto root = Json::parse(text.str());
     if (!root.is_object()) throw std::runtime_error("The server config must be a JSON object.");
-    c.name = root.value("name", c.name);
-    c.map = root.value("map", c.map);
-    if (root.contains("map_pool") && root.at("map_pool").is_array())
-        for (const auto &map : root.at("map_pool"))
-            if (map.is_string() && !map.string().empty()) c.map_pool.push_back(map.string());
-    c.map_rotation = std::min(root.value("map_rotation_minutes", c.map_rotation), max_map_rotation);
-    c.max_players = root.value("max_players", c.max_players);
-    c.reserved_slots = root.value("reserved_slots", c.reserved_slots);
-    c.crowd_budget = root.value("crowd_budget", c.crowd_budget);
-    c.bone_scale_limit = root.value("bone_scale_limit", c.bone_scale_limit);
-    c.connection = root.value("connection", c.connection);
-    c.direct_address = root.value("direct_address", c.direct_address);
-    c.steam_debug = root.value("steam_debug", c.steam_debug);
-    c.relay_everything = root.value("relay_everything", c.relay_everything);
-    c.direct_port = root.value("direct_port", c.direct_port);
-    c.pack_ms = root.value("pack_ms", c.pack_ms);
-    c.finger_distance = root.value("finger_distance", c.finger_distance);
-    c.send_rate = root.value("send_rate", c.send_rate);
-    if (root.contains("reserved") && root.at("reserved").is_array())
-        for (const auto &id : root.at("reserved")) c.reserved.push_back(steam_id(id));
-    c.password = root.value("password", c.password);
-    c.welcome = root.value("welcome", c.welcome);
-    c.listed = root.value("listed", c.listed);
-    c.steam_token = root.value("steam_token", c.steam_token);
-    c.auto_update = root.value("auto_update", c.auto_update);
-    c.global_bans = root.value("global_bans", c.global_bans);
-    c.activity_log = root.value("activity_log", c.activity_log);
-    c.announce_throwdowns = root.value("announce_throwdowns", c.announce_throwdowns);
-    c.parties = root.value("parties", c.parties);
-    c.party_size = std::clamp(root.value("party_size", c.party_size), 2U, 8U);
-    c.speed_check = root.value("speed_check", c.speed_check);
-    if (c.speed_check != "off" && c.speed_check != "warn" && c.speed_check != "kick") c.speed_check = "warn";
-    c.score_check = root.value("score_check", c.score_check);
-    if (c.score_check != "off" && c.score_check != "warn" && c.score_check != "kick") c.score_check = "warn";
-    if (root.contains("score_allow") && root.at("score_allow").is_array())
-        for (const auto &value : root.at("score_allow"))
-            if (value.is_string())
-                if (const auto fingerprint = parse_scoring(value.string()))
-                    c.score_allow.push_back(*fingerprint);
+    // A setting is in its section under its name. A config from before the sections has it at the
+    // top, under that name or an older one: it is read from there, and the file is written back
+    // as it is laid out now. A setting found nowhere is new, and the owner is told of it.
+    std::vector<std::string> missing;
+    bool moved{};
+    using Old = std::initializer_list<std::string_view>;
+    const auto find = [&](std::string_view section, std::string_view key, Old old = {}) -> const Json * {
+        if (root.contains(section) && root.at(section).is_object() && root.at(section).contains(key)) return &root.at(section).at(key);
+        if (root.contains(key) && !root.at(key).is_null() && key != "votes") {
+            moved = true;
+            return &root.at(key);
+        }
+        for (const auto name : old)
+            if (root.contains(name)) {
+                moved = true;
+                return &root.at(name);
+            }
+        missing.push_back(std::string(section) + "." + std::string(key));
+        return nullptr;
+    };
+    const auto get = [&]<typename T>(std::string_view section, std::string_view key, T fallback, Old old = {}) {
+        const auto *found = find(section, key, old);
+        return found ? found->template get<T>() : fallback;
+    };
+    c.name = get("server", "name", c.name);
+    c.password = get("server", "password", c.password);
+    c.welcome = get("server", "welcome_message", c.welcome, {"welcome"});
+    c.listed = get("server", "listed", c.listed);
+    c.max_players = get("server", "max_players", c.max_players);
     // Checked here, not in config_error: once narrowed, 70000 is just port 4464, and the
     // next save would write that over the owner's typo.
     const auto read_port = [&](const char *key, std::uint16_t fallback) {
-        const auto value = root.value(key, static_cast<unsigned>(fallback));
+        const auto value = get("server", key, static_cast<unsigned>(fallback));
         if (value < 1 || value > 65535) throw std::runtime_error(std::string(key) + " must be 1 to 65535.");
         return static_cast<std::uint16_t>(value);
     };
     c.port = read_port("port", c.port);
     c.query_port = read_port("query_port", c.query_port);
-    c.tps = dedicated_tps; // not the file's (see ServerConfig::tps)
-    c.voice_chat = root.value("voice_chat", c.voice_chat);
-    c.voice_range = root.value("voice_range", c.voice_range);
-    if (root.contains("distances")) {
-        const auto &d = root.at("distances");
-        c.distances.full_rate_return = d.value("full_rate_return", c.distances.full_rate_return);
-        c.distances.half_rate_start = d.value("half_rate_start", c.distances.half_rate_start);
-        c.distances.half_rate_return = d.value("half_rate_return", c.distances.half_rate_return);
-        c.distances.low_rate_start = d.value("low_rate_start", c.distances.low_rate_start);
-    }
-    c.noclip = root.value("noclip", c.noclip);
-    c.no_bail = root.value("no_bail", c.no_bail);
-    c.boosts = root.value("boosts", c.boosts);
-    c.enforce_tuning = root.value("enforce_tuning", c.enforce_tuning);
-    if (root.contains("votes") && root.at("votes").is_object()) {
-        const auto &votes = root.at("votes");
-        const auto read_vote = [&](const char *key, VoteSetting &v) {
-            if (!votes.contains(key) || !votes.at(key).is_object()) return;
-            const auto &item = votes.at(key);
-            v.enabled = item.value("enabled", v.enabled);
-            v.percent = std::clamp(item.value("percent", v.percent), 1U, 100U);
-        };
-        read_vote("map", c.votes.map);
-        read_vote("kick", c.votes.kick);
-        read_vote("time_of_day", c.votes.time);
-        c.votes.seconds = std::clamp(votes.value("seconds", c.votes.seconds), 10U, 300U);
-        c.votes.cooldown = std::clamp(votes.value("cooldown_seconds", c.votes.cooldown), 0U, 3600U);
-    }
-    c.object_limit = root.value("object_limit", c.object_limit);
-    const auto placement = root.value("object_placement", placement_text(c.object_placement));
+    c.steam_token = get("server", "steam_token", c.steam_token);
+    c.auto_update = get("server", "auto_update", c.auto_update);
+    c.activity_log = get("server", "activity_log", c.activity_log);
+
+    if (const auto *admins = find("access", "admins"); admins && admins->is_array())
+        for (const auto &id : *admins) c.admins.push_back(steam_id(id));
+    if (const auto *reserved = find("access", "reserved_players_slots", {"reserved"}); reserved && reserved->is_array())
+        for (const auto &id : *reserved) c.reserved.push_back(steam_id(id));
+    c.global_bans = get("access", "use_global_bans", c.global_bans, {"global_bans"});
+
+    c.map = get("maps", "map", c.map);
+    if (const auto *pool = find("maps", "pool", {"map_pool"}); pool && pool->is_array())
+        for (const auto &map : *pool)
+            if (map.is_string() && !map.string().empty()) c.map_pool.push_back(map.string());
+    c.map_rotation = std::min(get("maps", "rotation_minutes", c.map_rotation, {"map_rotation_minutes"}), max_map_rotation);
+    if (const auto *parks = find("maps", "parks"); parks && parks->is_object())
+        for (unsigned lot = 0; lot < park_lots.size(); ++lot) c.parks[lot] = parks->value(park_lots[lot].key, c.parks[lot]);
+    c.world_layer_sync = get("maps", "world_layer_sync", c.world_layer_sync);
+    if (const auto *layers = find("maps", "layers"); layers && layers->is_object())
+        for (const auto &[key, mode] : layers->items())
+            if (mode.is_string()) c.layers[key] = mode.string();
+
+    c.boosts = get("players", "allow_boosts", c.boosts, {"boosts"});
+    c.no_bail = get("players", "allow_no_bail", c.no_bail, {"no_bail"});
+    c.noclip = get("players", "allow_noclip", c.noclip, {"noclip"});
+    c.parties = get("players", "allow_parties", c.parties, {"parties"});
+    c.party_size = std::clamp(get("players", "party_size", c.party_size), 2U, 8U);
+    c.voice_chat = get("players", "allow_voice_chat", c.voice_chat, {"voice_chat"});
+    c.voice_range = get("players", "voice_range", c.voice_range);
+    const auto placement = get("players", "object_placement", placement_text(c.object_placement));
     // On a dedicated server the protocol's "host only" means its admins.
     c.object_placement = placement == "nobody" ? ObjectPlacement::nobody
                        : placement == "admins" || placement == "host" ? ObjectPlacement::host_only : ObjectPlacement::everyone;
-    if (root.contains("parks"))
-        for (unsigned lot = 0; lot < park_lots.size(); ++lot)
-            c.parks[lot] = root.at("parks").value(park_lots[lot].key, c.parks[lot]);
-    c.world_layer_sync = root.value("world_layer_sync", c.world_layer_sync);
-    if (root.contains("layers") && root.at("layers").is_object())
-        for (const auto &[key, mode] : root.at("layers").items())
-            if (mode.is_string()) c.layers[key] = mode.string();
-    if (root.contains("admins"))
-        for (const auto &id : root.at("admins")) c.admins.push_back(steam_id(id));
-    if (root.contains("bans"))
-        for (const auto &row : root.at("bans"))
-            c.bans.push_back({steam_id(row.at("id")), row.value("name", std::string{}),
-                              row.value("added", std::int64_t{})});
-    // A config from an older version: write the new settings into it so owners can see them.
-    std::vector<std::string> missing;
-    missing_settings(root, to_json(c), {}, missing);
-    if (!missing.empty()) {
+    c.object_limit = get("players", "object_limit", c.object_limit);
+    c.announce_throwdowns = get("players", "announce_throwdowns", c.announce_throwdowns);
+
+    c.speed_check = get("anti_cheat", "speed_hack", c.speed_check, {"speed_check"});
+    if (c.speed_check != "off" && c.speed_check != "warn" && c.speed_check != "kick") c.speed_check = "warn";
+    c.score_check = get("anti_cheat", "modified_scoring", c.score_check, {"score_check"});
+    if (c.score_check != "off" && c.score_check != "warn" && c.score_check != "kick") c.score_check = "warn";
+    if (const auto *allowed = find("anti_cheat", "allowed_scoring_mods", {"score_allow"}); allowed && allowed->is_array())
+        for (const auto &value : *allowed)
+            if (value.is_string())
+                if (const auto fingerprint = parse_scoring(value.string())) c.score_allow.push_back(*fingerprint);
+    c.enforce_tuning = get("anti_cheat", "enforce_tuning", c.enforce_tuning);
+    c.bone_scale_limit = get("anti_cheat", "bone_scale_limit", c.bone_scale_limit);
+
+    c.use_steam_relay = get("network", "use_steam_relay", c.use_steam_relay);
+    c.send_rate = get("network", "send_rate", c.send_rate);
+    c.crowd_budget = get("network", "crowd_budget", c.crowd_budget);
+    c.pack_ms = get("network", "pack_ms", c.pack_ms);
+    c.finger_distance = get("network", "finger_distance", c.finger_distance);
+    if (const auto *d = find("network", "distances"); d && d->is_object()) {
+        c.distances.full_rate_return = d->value("full_rate_return", c.distances.full_rate_return);
+        c.distances.half_rate_start = d->value("half_rate_start", c.distances.half_rate_start);
+        c.distances.half_rate_return = d->value("half_rate_return", c.distances.half_rate_return);
+        c.distances.low_rate_start = d->value("low_rate_start", c.distances.low_rate_start);
+    }
+    c.steam_debug = get("network", "steam_debug", c.steam_debug);
+
+    // Votes were a section from the start.
+    const Json no_votes = Json::object();
+    const auto &votes = root.contains("votes") && root.at("votes").is_object() ? root.at("votes") : no_votes;
+    const auto read_vote = [&](const char *key, VoteSetting &v) {
+        if (!votes.contains(key) || !votes.at(key).is_object()) return missing.push_back(std::string("votes.") + key);
+        const auto &item = votes.at(key);
+        v.enabled = item.value("enabled", v.enabled);
+        v.percent = std::clamp(item.value("percent", v.percent), 1U, 100U);
+    };
+    read_vote("map", c.votes.map);
+    read_vote("kick", c.votes.kick);
+    read_vote("time_of_day", c.votes.time);
+    if (!votes.contains("seconds")) missing.push_back("votes.seconds");
+    if (!votes.contains("cooldown_seconds")) missing.push_back("votes.cooldown_seconds");
+    c.votes.seconds = std::clamp(votes.value("seconds", c.votes.seconds), 10U, 300U);
+    c.votes.cooldown = std::clamp(votes.value("cooldown_seconds", c.votes.cooldown), 0U, 3600U);
+
+    const auto read_bans = [&](const Json &rows) {
+        if (!rows.is_array()) throw std::runtime_error("The bans must be a JSON list.");
+        for (const auto &row : rows) {
+            const auto id = steam_id(row.at("id"));
+            if (std::none_of(c.bans.begin(), c.bans.end(), [&](const auto &ban) { return ban.id == id; }))
+                c.bans.push_back({id, row.value("name", std::string{}), row.value("added", std::int64_t{})});
+        }
+    };
+    if (const auto bans = bans_file(c); std::filesystem::exists(bans)) {
+        std::stringstream held;
+        {
+            std::ifstream in(bans, std::ios::binary);
+            held << in.rdbuf();
+        }
+        try {
+            read_bans(Json::parse(held.str()));
+        } catch (const std::exception &e) {
+            // Never started without its bans because their file has a typo in it.
+            throw std::runtime_error("Cannot read " + path_utf8(bans) + ": " + e.what());
+        }
+    }
+    // A config from an older version holds the bans itself: they are moved to their own file.
+    const bool bans_moved = root.contains("bans");
+    if (bans_moved) read_bans(root.at("bans"));
+    // New settings, an older layout, or settings that are no longer any: the file is written
+    // as it is now, so owners see what there is.
+    const bool gone = root.contains("tps") || root.contains("reserved_slots") || root.contains("relay_everything") ||
+                      (root.contains("network") && root.at("network").contains("relay_everything"));
+    if (!missing.empty() || moved || bans_moved || gone) {
         save_config(c);
         if (added) *added = std::move(missing);
     }
     return c;
 }
+std::filesystem::path bans_file(const ServerConfig &c) { return c.file.parent_path() / "data" / "bans.json"; }
 void save_config(const ServerConfig &c) {
-    if (c.file.has_parent_path()) std::filesystem::create_directories(c.file.parent_path());
-    const auto temporary = std::filesystem::path(c.file).concat(".tmp");
-    {
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        out << to_json(c).dump(2) << '\n';
-        if (!out) throw std::runtime_error("Cannot write " + path_utf8(temporary));
-    }
-    std::filesystem::rename(temporary, c.file);
+    // The bans first: a config that held them is only rewritten without them once they are safe.
+    write_file(bans_file(c), bans_json(c).dump(2));
+    std::string text;
+    write(text, layout(c), 0);
+    write_file(c.file, text);
 }
 std::string scoring_text(std::uint64_t fingerprint) {
     static constexpr char digits[] = "0123456789abcdef";
@@ -261,24 +354,29 @@ std::optional<std::uint64_t> parse_scoring(std::string_view text) {
     if (!value) return std::nullopt;
     return value;
 }
+std::size_t extra_slots(const ServerConfig &config) noexcept {
+    // (An admin who is also listed has one slot, not two.)
+    std::size_t slots = config.reserved.size();
+    for (const auto id : config.admins)
+        if (std::find(config.reserved.begin(), config.reserved.end(), id) == config.reserved.end()) ++slots;
+    // Never more players than a session can hold, the server itself being one of them.
+    const std::size_t room = multiplayer::max_players - 1;
+    return config.max_players >= room ? 0 : std::min<std::size_t>(slots, room - config.max_players);
+}
 bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noexcept {
-    if (on >= config.max_players) return false;
+    if (on < config.max_players) return true;
     const auto listed = [&](const std::vector<std::uint64_t> &ids) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
-    return on + config.reserved_slots < config.max_players || listed(config.reserved) || listed(config.admins);
+    return (listed(config.reserved) || listed(config.admins)) && on < config.max_players + extra_slots(config);
 }
 std::string config_error(const ServerConfig &c) {
     using namespace multiplayer;
     if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
     for (const auto id : c.reserved)
-        if (!individual_steam_id(id)) return "reserved must be SteamID64s (17 digits starting 7656119).";
-    if (c.reserved_slots >= c.max_players) return "reserved_slots must be less than max_players, so that anyone can join at all.";
-    if (c.reserved.size() > 1024) return "reserved holds at most 1024 players.";
+        if (!individual_steam_id(id)) return "reserved_players_slots must be SteamID64s (17 digits starting 7656119).";
+    if (c.reserved.size() > 1024) return "reserved_players_slots holds at most 1024 players.";
     if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
     if (c.bone_scale_limit != 0 && !(c.bone_scale_limit >= 1.f && c.bone_scale_limit <= 8.f))
         return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";
-    if (c.connection != "relay" && c.connection != "direct") return "connection must be \"relay\" or \"direct\".";
-    if (!c.direct_address.empty() && !direct_ipv4(c.direct_address)) return "direct_address must be an address like 203.0.113.7, or empty.";
-    if (c.direct_port && c.direct_port == c.query_port) return "direct_port and query_port must differ.";
     if (c.pack_ms > 50) return "pack_ms must be 0 (off) to 50.";
     if (c.finger_distance > 10000) return "finger_distance must be 0 (fingers always sent) to 10000.";
     if (!valid_crowd_budget(c.crowd_budget))
