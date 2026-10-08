@@ -73,6 +73,33 @@ struct SkateMenu {
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu.cpp.
     int map_tab = 0, world_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
+    // The style editor screen. The slider and the dragged keyframe keep their own value until the game has it.
+    struct Styling {
+        int trick = 2, key = 0, edit_joint = -1, drag_key = -1;
+        float time = 0.5f, drag_time{};
+        double drag_until{}, pending_until{}, preview_off_sent{}, asked_at{}, closing_until{}, drawn_at{};
+        std::string asked; // the trick that the editor last asked to show
+        std::array<char, 41> preset_name{}; // typed for a new preset
+        double delete_until{};              // a first click on delete counts until then
+        double discard_until{};             // the same for discard
+        int pending_key = -1;               // a new keyframe, selected when the game has it
+        std::array<float, 4> orbit{};       // camera turn, zoom and lift not yet sent
+        style::Target edit_target;
+        std::array<float, 3> edit{};
+        double edit_until{}, edit_sent{};
+        int blend_key = -1;  // a changed blend out, shown until the game has it
+        float blend_ms{};
+        double blend_until{}, blend_sent{};
+        bool blend_drag{};   // the selected keyframe's blend out is dragged on the timeline
+        int speed{};         // index into the playback speeds
+        std::optional<float> hold; // a playhead move not yet sent
+        double controls_sent{};
+        bool grouping{};   // a drag's undo group is open
+        bool popup_open{}; // a popup was open in the last frame
+        int leave{};       // the action that waits for the leave prompt: 0 none, 1 close, 2 trick, 3 preset
+        int leave_trick{};
+        std::string leave_command;
+    } styling;
     bool loose_files_settings_loaded{}, loose_files_saved{true};
     bool custom_scripts_scanned{};
     std::vector<custom_scripts::Script> custom_script_rows;
@@ -106,6 +133,10 @@ struct SkateMenu {
     ImFont* mono = nullptr;
 };
 void load_skate_fonts(SkateMenu& menu);
+// The style editor screen, shown while Model::debug.style_editor is set.
+void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested);
+// True while the style editor screen is asked for or open.
+bool style_editor_wanted() noexcept;
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible);
 }

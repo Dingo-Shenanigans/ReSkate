@@ -334,6 +334,8 @@ void observe_destruction(std::uintptr_t entity) {
 }
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
     const bool result = shared().original_render_pose(animation_interface, render_data);
+    if (const auto listener = shared().style_render_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface);
     if (const auto listener = shared().render_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface);
     // A board holder's animation interface is holder + 0xc0.
@@ -519,6 +521,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 std::lock_guard hidden_lock(hidden.mutex);
                 if (hidden.component == component && hidden.joint < frame.pose.skater.size())
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
+                if (const auto filter = shared().pose_filter.load(std::memory_order_acquire))
+                    filter(component, frame.pose.skater);
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -565,6 +569,12 @@ NativeAnimationStats remote_animation_stats() noexcept {
 std::uintptr_t remote_skater_entity() noexcept {
     return watched().entity[peer_slot].load(std::memory_order_acquire);
 }
+bool other_remote_skaters(std::size_t except) noexcept {
+    const auto bound = std::min(watched().bound.load(std::memory_order_acquire), max_remote_players);
+    for (std::size_t slot = 0; slot < bound; ++slot)
+        if (slot != except && watched().entity[slot].load(std::memory_order_acquire)) return true;
+    return false;
+}
 std::uintptr_t remote_board_entity() noexcept {
     return watched().board[peer_slot].load(std::memory_order_acquire);
 }
@@ -592,8 +602,14 @@ void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
     hidden.joint = joint;
     hidden.scale = scale;
 }
+void set_render_pose_style_listener(RenderPosePublished listener) noexcept {
+    shared().style_render_listener.store(listener, std::memory_order_release);
+}
 void set_render_pose_listener(RenderPosePublished listener) noexcept {
     shared().render_listener.store(listener, std::memory_order_release);
+}
+void set_local_pose_filter(LocalPoseFilter filter) noexcept {
+    shared().pose_filter.store(filter, std::memory_order_release);
 }
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
     shared().evaluated_listener.store(listener, std::memory_order_release);

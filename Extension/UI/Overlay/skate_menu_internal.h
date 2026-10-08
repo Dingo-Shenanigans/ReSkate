@@ -7,6 +7,8 @@ namespace dingosdk::overlay::menu {
 // The menu chrome is laid out in pixels; px() applies the user's menu scale to
 // one of those measurements. Only valid while the menu is drawing.
 float px(float value);
+// For a screen drawn outside the menu, such as the style editor.
+void set_scale(float scale);
 void section(SkateMenu& menu, const char* text);
 void feedback(SkateMenu& menu, const char* text);
 bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& value,
@@ -52,6 +54,7 @@ void map_page(SkateMenu&, const Model&, const CallbacksV3&);
 void world_page(SkateMenu&, const Model&, const CallbacksV3&);
 void build_page(SkateMenu&, const Model&, const CallbacksV3&);
 void skater_page(SkateMenu&, const Model&, const CallbacksV3&);
+void style_page(SkateMenu&, const Model&, const CallbacksV3&);
 void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);

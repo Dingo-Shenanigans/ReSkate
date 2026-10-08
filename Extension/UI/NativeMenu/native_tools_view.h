@@ -170,6 +170,8 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         s.parks[s.lot] = family == park_families.size() ? "empty" : park_id(family, 1);
     } else if (command == "load-park") {
         console("park " + std::string(park_lots[s.lot].key) + " " + s.parks[s.lot], can_park(m, cb) && valid_park(s.lot, s.parks[s.lot]));
+    } else if (command == "style-editor") {
+        console("style editor open", true);
     } else if (command == "noclip" || command == "no-bail" || command == "freecam" || command == "speed") {
         const auto& d = m.debug;
         overlay::DebugRequest request;
@@ -276,6 +278,7 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
             : m.parks.controlled_by_host ? "You are an admin: layouts you load change for the whole server." : "");
     } else if (section == player_section) {
         text(p.main, "player-title", "SKATE YOUR WAY");
+        button(p.main, "style-editor", m.multiplayer.active ? "Style editor (experimental)" : "Style editor", "style-editor", m.debug.available && cb.queue_console_command);
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);

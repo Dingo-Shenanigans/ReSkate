@@ -43,6 +43,9 @@ void set_native_party_changes(bool allowed) noexcept;
 // A party invite from `from` (a session player) as the game's own invite toast, whose Accept and
 // Decline come back through the request hooks. False when it could not be shown. Game thread.
 bool post_native_party_invite(std::uint64_t from) noexcept;
+// Raises a native UI event of the type object at `type`, as the natives do. The dispatcher copies the
+// payload, so it may be freed after. False when the dispatcher does not accept events. Game thread.
+bool post_native_ui_event(std::uintptr_t base, std::uintptr_t type, const void *payload) noexcept;
 // The game's group id for a ReSkate party number (stable across promotions; 0 = none).
 constexpr std::uint64_t native_party_group_id(std::uint32_t party) noexcept {
     return party ? 0x5253500000000000ULL | party : 0;
