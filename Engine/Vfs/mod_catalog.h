@@ -19,8 +19,8 @@ struct Catalog {
     std::vector<Mod> mods;
     // Folders present on disk that mods.json disables, in folder-name order.
     std::vector<std::string> disabled;
-    // Disabled mods that ship a layout. Their archives are placed in the
-    // launch's merge too, so one can be enabled while the game runs.
+    // Disabled mods that ship a layout, retained for UI and compatibility checks.
+    // They contribute no archives, registrations, or root data to the merge.
     std::vector<Mod> inactive;
     // True once Mods/.reskate holds the merged patch every mod was combined
     // into. Empty catalogues never generate one.

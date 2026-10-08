@@ -149,7 +149,7 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
         std::sort(result.disabled.begin(), result.disabled.end(),
             [](const std::string& a, const std::string& b) { return lower(a) < lower(b); });
         // Mods built for another Skate.exe (or not stamped with one) never load until they are
-        // updated, enabled or not (a disabled mod's layout is merged too). They are checked on every
+        // updated, enabled or not. Disabled entries still need an accurate UI warning on every
         // launch, so they never enter the exclusions file.
         for (std::size_t i = result.mods.size(); i-- > 0;) {
             if (result.mods[i].outdated.empty()) continue;

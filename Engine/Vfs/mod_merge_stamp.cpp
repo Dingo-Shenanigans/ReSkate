@@ -18,7 +18,8 @@ namespace {
 // from and every file it holds.
 
 constexpr const wchar_t* stamp_name = stamp_file;
-constexpr char stamp_header[] = "ReSkate merge 1";
+// Version 2 excludes disabled mods, including their launch-only root data.
+constexpr char stamp_header[] = "ReSkate merge 2";
 
 std::string utf8(const fs::path& path) {
     const auto text = path.generic_u8string();

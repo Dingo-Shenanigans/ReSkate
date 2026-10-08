@@ -66,15 +66,15 @@ bool unshift(const ArchivePlacement& placement, std::string_view directory, std:
 
 fb::Sha1 sha1_of(std::span<const std::byte> bytes);
 
-// Where the launch's merge put every installed mod's archives, and which
+// Where the merge put enabled mods' archives, and which
 // superbundle TOCs the patch holds: Mods/.reskate/reskate-placements.json.
 inline constexpr wchar_t placements_file[] = L"reskate-placements.json";
 struct PlacementRecord {
     std::map<std::string, ArchivePlacement, std::less<>> mods;
     std::vector<std::string> tocs;
     // The mods the root level's TOC was last merged from, in merge order.
-    // A live merge keeps that order, so enabling or disabling a map leaves the
-    // root exactly as the game has already read it.
+    // A live merge keeps that order. Changing the contributor set requires
+    // a restart, so the root stays exactly as the renderer has already read it.
     std::vector<std::string> root;
 };
 PlacementRecord read_placements(const fs::path& file);

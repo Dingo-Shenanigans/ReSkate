@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -423,9 +424,111 @@ void carried_into_another_bundle_with_the_list(bool music_first) {
     expect(own == built, order + ": the music mod's own bundle is as it built it (" + std::to_string(own) + " files, " +
            std::to_string(built) + " built)");
 }
+
+// Disabled maps used to inject their root bundles and archives even on a fresh launch.
+// Keep a changed asset in the shared root so this catches more than the map list filtering it.
+constexpr char root_toc[] = "levels/game/dingolevel_root/dingolevel_root.toc";
+void add_root_map(Fixture& fixture) {
+    write(fixture.catalog.data_root / "Data/Win32" / root_toc,
+          read(fixture.catalog.data_root / "Data/Win32/test_shared.toc"));
+    fixture.add("root-map", true, root_toc, {"Win32/levels/game/dingolevel_root/dingolevel_root"},
+                {{"test/playlist", 1, ebx_document(guid(1), {})},
+                 {"test/other", 0, ebx_document(guid(2), {})}});
+}
+void disable_last_mod(Fixture& fixture) {
+    fixture.catalog.inactive.push_back(std::move(fixture.catalog.mods.back()));
+    fixture.catalog.mods.pop_back();
+}
+void disabled_map_stays_out_of_launch_patch() {
+    Fixture fixture("disabled-root-map");
+    add_root_map(fixture);
+    disable_last_mod(fixture);
+    auto report = mods::merge_mods(fixture.catalog);
+    expect(report.built && report.issue.empty(), "disabled map: launch succeeds\n" + describe(report));
+    expect(fixture.merged_files(root_toc) == -1, "disabled map: no root TOC is published");
+    expect(report.archives == 0, "disabled map: no archives are placed");
+    // A disabled download/update must not invalidate or contaminate the enabled patch.
+    const auto archive = fixture.catalog.inactive.front().directory / "Win32/pkg/cas_01.cas";
+    const auto original = read(archive);
+    write(archive, Bytes{std::byte{0}});
+    report = mods::merge_mods(fixture.catalog);
+    expect(report.reused, "disabled map: changing its files does not rebuild the patch");
+    fixture.catalog.mods.push_back(std::move(fixture.catalog.inactive.back()));
+    fixture.catalog.inactive.clear();
+    // Restore the valid archive, then prove enabling it on a NEW launch still works.
+    write(archive, original);
+    report = mods::merge_mods(fixture.catalog);
+    expect(report.built && !report.reused && report.issue.empty(), "enabled map: fresh launch rebuilds\n" + describe(report));
+    expect(fixture.merged_files(root_toc) > 0, "enabled map: its root TOC is present");
+}
+// An enabled map must not pull a disabled neighbour back into the shared root.
+void disabled_map_stays_out_beside_enabled_map() {
+    Fixture fixture("mixed-root-maps");
+    write(fixture.catalog.data_root / "Data/Win32" / root_toc,
+          read(fixture.catalog.data_root / "Data/Win32/test_shared.toc"));
+    auto disabled = game_copy();
+    disabled.push_back({"test/disabled-only", 0, ebx_document(guid(33), {})});
+    fixture.add("off-map", true, root_toc, {}, disabled);
+    disable_last_mod(fixture);
+    fixture.add("on-map", true, root_toc, {}, game_copy());
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.built && report.issue.empty(), "mixed maps: launch succeeds\n" + describe(report));
+    expect(report.archives == 1, "mixed maps: only the enabled archive is placed");
+    expect(fixture.merged_files(root_toc) == 3,
+           "mixed maps: enabled root has only its manifest and two assets, without the disabled addition");
+}
+// Asset-only mods keep their live enable path; excluding disabled archives must not
+// turn every checkbox into a restart. Archive 1 is reserved for later appends.
+void disabled_asset_can_still_be_enabled_live() {
+    Fixture fixture("live-enable-asset");
+    fixture.add("music", false, shared_toc, {}, music_assets(), music_resources());
+    disable_last_mod(fixture);
+    auto report = mods::merge_mods(fixture.catalog);
+    expect(report.built && report.issue.empty() && report.archives == 0,
+           "disabled asset: launch excludes its archives\n" + describe(report));
+    fixture.catalog.mods.push_back(std::move(fixture.catalog.inactive.back()));
+    fixture.catalog.inactive.clear();
+    report = mods::merge_mods(fixture.catalog, {}, {.live = true});
+    expect(report.built && report.issue.empty(), "asset live enable still works\n" + describe(report));
+    expect(fixture.merged_files(shared_toc) == static_cast<int>(1 + music_assets().size() + music_resources().size()),
+           "asset live enable: all of its payloads are published");
+}
+void root_changes_require_restart_before_writing(bool enable) {
+    Fixture fixture(enable ? "live-enable-root-map" : "live-disable-root-map");
+    add_root_map(fixture);
+    if (enable) disable_last_mod(fixture);
+    const auto launch = mods::merge_mods(fixture.catalog);
+    expect(launch.built && launch.issue.empty(), "live root change: launch succeeds\n" + describe(launch));
+    const auto output = fixture.catalog.root / mods::generated_folder;
+    std::map<fs::path, Bytes> before;
+    for (const auto& entry : fs::recursive_directory_iterator(output))
+        if (entry.is_regular_file()) before.emplace(fs::relative(entry.path(), output), read(entry.path()));
+    if (enable) {
+        fixture.catalog.mods.push_back(std::move(fixture.catalog.inactive.back()));
+        fixture.catalog.inactive.clear();
+    } else {
+        disable_last_mod(fixture);
+    }
+    const auto live = mods::merge_mods(fixture.catalog, {}, {.live = true});
+    expect(!live.built && live.issue.find("restart") != std::string::npos,
+           "live root change: reports the required restart\n" + describe(live));
+    std::map<fs::path, Bytes> after;
+    for (const auto& entry : fs::recursive_directory_iterator(output))
+        if (entry.is_regular_file()) after.emplace(fs::relative(entry.path(), output), read(entry.path()));
+    expect(after == before, "live root change: all generated files remain byte-for-byte unchanged");
+    expect((fixture.merged_files(root_toc) > 0) == !enable, "live root change: mounted root stays unchanged");
+    const auto restarted = mods::merge_mods(fixture.catalog);
+    expect(restarted.built && restarted.issue.empty(), "root change: next launch succeeds\n" + describe(restarted));
+    expect((fixture.merged_files(root_toc) > 0) == enable, "root change: next launch reflects the checkbox");
+}
 } // namespace
 
 int main() try {
+    disabled_map_stays_out_of_launch_patch();
+    disabled_map_stays_out_beside_enabled_map();
+    disabled_asset_can_still_be_enabled_live();
+    root_changes_require_restart_before_writing(true);
+    root_changes_require_restart_before_writing(false);
     const auto baseline = map_only();
     expect(baseline > 0, "map only: the map's copy exists (" + std::to_string(baseline) + ")");
     carried_into_the_maps_copy(true, baseline);
