@@ -6,6 +6,7 @@
 #include "server_config.h"
 #include "server_host.h"
 #include "server_update.h"
+#include "Extension/Multiplayer/developer_identity.h"
 #include "steam_server.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -14,6 +15,8 @@
 #include "Engine/Game/World/world_names.h"
 #include "Engine/Vfs/world_layer_scan.h"
 #ifdef _WIN32
+#include <charconv>
+#include <cstdlib>
 #include <Windows.h>
 #include <timeapi.h>
 #else
@@ -364,16 +367,19 @@ int run(int argc, char **argv, bool skip_update) {
 
     SteamServer steam;
     std::string error;
-    if (!steam.start(here, config.port, config.query_port, error)) {
+    if (!steam.start(here, config.port, config.query_port, config.steam_token, error)) {
         write_log(error);
         return 1;
     }
-    write_log("Signing in to Steam...");
+    write_log(config.steam_token.empty() ? "Signing in to Steam..." : "Signing in to Steam with steam_token...");
     const auto login_started = std::chrono::steady_clock::now();
     while (!steam.logged_on() && !stopping) {
         steam.run_callbacks();
         if (std::chrono::steady_clock::now() - login_started > std::chrono::seconds(60)) {
-            write_log("Steam sign-in timed out after 60 s. Check the internet connection and try again.");
+            write_log(config.steam_token.empty()
+                          ? "Steam sign-in timed out after 60 s. Check the internet connection and try again."
+                          : "Steam sign-in timed out after 60 s. Steam may not have accepted steam_token: it must be a token for "
+                            "app 3354750 that no other running server is using. Or check the internet connection.");
             return 1;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -385,14 +391,79 @@ int run(int argc, char **argv, bool skip_update) {
         write_log("Steam networking failed: " + transport.status().detail);
         return 1;
     }
+    // A check of another server's direct connections, from here: RESKATE_PROBE_DIRECT set to
+    // "<its SteamID64>,<its address a.b.c.d>,<its port>". Signs in as this server would, connects
+    // as a game does (the address first, Steam's relays after five seconds), says which it got,
+    // and exits. Run it from a machine outside the other server's network.
+    std::string probe;
+#ifdef _WIN32
+    {
+        char *value{};
+        std::size_t length{};
+        if (!_dupenv_s(&value, &length, "RESKATE_PROBE_DIRECT") && value) probe = value;
+        std::free(value);
+    }
+#else
+    if (const char *value = std::getenv("RESKATE_PROBE_DIRECT")) probe = value;
+#endif
+    if (!probe.empty()) {
+        unsigned long long id{};
+        unsigned port{};
+        const auto first = probe.find(','), second = probe.find(',', first == std::string::npos ? 0 : first + 1);
+        const auto address = first != std::string::npos && second != std::string::npos ? direct_ipv4(std::string_view(probe).substr(first + 1, second - first - 1)) : 0;
+        const bool parsed = address && std::from_chars(probe.data(), probe.data() + first, id).ec == std::errc{} &&
+                            std::from_chars(probe.data() + second + 1, probe.data() + probe.size(), port).ec == std::errc{};
+        if (!parsed || !id || !port || port > 65535) {
+            write_log("RESKATE_PROBE_DIRECT must be <SteamID64>,<a.b.c.d>,<port>.");
+            return 1;
+        }
+        const unsigned a = address >> 24, b = (address >> 16) & 255, c = (address >> 8) & 255, d = address & 255;
+        write_log("Probe: connecting straight to " + std::to_string(a) + "." + std::to_string(b) + "." + std::to_string(c) + "." +
+                  std::to_string(d) + ":" + std::to_string(port) + " as a game would...");
+        if (!transport.join(id, address, static_cast<std::uint16_t>(port))) {
+            write_log("Probe: Steam would not start the connection: " + transport.status().detail);
+            return 1;
+        }
+        std::string said;
+        const auto started = std::chrono::steady_clock::now();
+        while (!stopping && std::chrono::steady_clock::now() - started < std::chrono::seconds(30)) {
+            steam.run_callbacks();
+            transport.poll();
+            if (const auto &detail = transport.status().detail; detail != said) {
+                said = detail;
+                write_log("Probe: " + said);
+            }
+            const auto links = transport.links();
+            if (links.empty()) {
+                write_log("Probe: no connection either way. " + transport.take_closed(id));
+                return 1;
+            }
+            if (links.front().connected && links.front().measured) {
+                write_log(links.front().direct
+                              ? "Probe: CONNECTED DIRECTLY, ping " + std::to_string(links.front().ping_ms) + " ms."
+                              : "Probe: the address did not answer; connected through Steam's relays (" + links.front().relay + "-" +
+                                    links.front().remote_relay + "), ping " + std::to_string(links.front().ping_ms) + " ms.");
+                return 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        write_log("Probe: nothing after 30 s.");
+        return 1;
+    }
     Host host(config, transport, write_log);
     if (!host.start(error)) {
         write_log("Could not open the server: " + error);
         return 1;
     }
     write_log(config.name + " is up on " + host.map_name() + " for " + std::to_string(config.max_players) + " players.");
-    write_log("Steam ID " + std::to_string(steam.steam_id()) + ", public IP " + steam.public_ip() + ".");
+    write_log("Steam ID " + std::to_string(steam.steam_id()) +
+              (config.steam_token.empty() ? " (anonymous: new every start; set steam_token to keep one)" : " (from steam_token: the same every start)") +
+              ", public IP " + steam.public_ip() + ".");
     write_log("Join code: " + host.invite() + (config.password.empty() ? "" : " (password required)"));
+    if (config.steam_token.empty() && config.listed)
+        write_log("No steam_token: the server browser can be set to show only servers that have one, and then "
+                  "this server is not in it (players can still join with the code). It takes a minute to make "
+                  "one: see steam_token in README.");
     write_log(config.admins.empty() ? "No admins yet: type \"admin add <SteamID64>\" to add one."
                               : std::to_string(config.admins.size()) + " admin(s). Type help for commands.");
 
@@ -402,6 +473,7 @@ int run(int argc, char **argv, bool skip_update) {
 #endif
     auto next_advertise = std::chrono::steady_clock::now();
     std::optional<bool> name_allowed; // last seen: whether the name may be listed
+    bool tokens_required{};           // last seen: whether the browser wants a steam_token
     auto next_update_check = next_advertise + update_interval;
     std::future<UpdateCheck> update_check;
     bool update_now{}, update_waiting{}, restart{};
@@ -410,9 +482,24 @@ int run(int argc, char **argv, bool skip_update) {
     std::future<BanListCheck> ban_check;
     auto next_ban_check = next_advertise;
     bool bans_unread{};
-    if (!config.global_bans) write_log("Global bans are off (\"global_bans\": false): only this server's own bans apply.");
+    if (!config.global_bans) write_log("Global bans are off (\"use_global_bans\": false): only this server's own bans apply.");
+    // Signed in to Steam, as last logged, and when it is looked at again. Players already on stay
+    // connected through a lost sign-in, but nobody new can join: Steam carries the first messages
+    // of a connection, and theirs time out ("negotiate rendezvous").
+    bool signed_in = true;
+    auto next_sign_in_check = std::chrono::steady_clock::now();
     while (!stopping && !restart) {
         steam.run_callbacks();
+        if (const auto now = std::chrono::steady_clock::now(); now >= next_sign_in_check) {
+            next_sign_in_check = now + std::chrono::seconds(5);
+            if (const bool on = steam.logged_on(); on != signed_in) {
+                signed_in = on;
+                write_log(on ? "[steam] Signed in to Steam again: players can join."
+                             : "[steam] No longer signed in to Steam: players already on stay, but nobody can join until it is back. "
+                               "Steam signs a server out when another one signs in with the same steam_token, and for its own "
+                               "maintenance or a lost connection.");
+            }
+        }
         try {
             host.tick(multiplayer::now_us());
         } catch (const std::exception &e) {
@@ -484,6 +571,14 @@ int run(int argc, char **argv, bool skip_update) {
         }
         if (const auto now = std::chrono::steady_clock::now(); now >= next_advertise) {
             next_advertise = now + std::chrono::seconds(2);
+            // The ReSkate team's rule, read with its ban list: say when it starts or stops hiding this server.
+            if (const bool required = multiplayer::server_tokens_required(); required != tokens_required) {
+                tokens_required = required;
+                if (config.steam_token.empty() && config.listed)
+                    write_log(required ? "The server browser now shows only servers with a steam_token, so this server is "
+                                         "hidden from it. Add a steam_token (see README) to be listed again."
+                                       : "The server browser shows servers without a steam_token again.");
+            }
             // A name with a bad word in it is never listed (clients hide one too); the
             // server still runs and players can join with its code.
             const bool allowed = !text::contains_bad_words(config.name);
@@ -497,7 +592,7 @@ int run(int argc, char **argv, bool skip_update) {
                 name_allowed = allowed;
             }
             steam.advertise({config.name, host.map_name(), host.players(), config.max_players, !config.password.empty(),
-                             config.listed && allowed, host.secret()});
+                             config.listed && allowed, host.secret(), host.direct_port()});
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }

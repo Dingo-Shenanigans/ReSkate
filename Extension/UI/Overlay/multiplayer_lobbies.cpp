@@ -49,7 +49,7 @@ LobbyRows &lobby_rows() {
 bool same_lobby(const MultiplayerLobby &a, const MultiplayerLobby &b) {
     return a.id == b.id && a.owner == b.owner && a.name == b.name && a.map == b.map && a.code == b.code &&
            a.password_required == b.password_required && a.players == b.players && a.capacity == b.capacity &&
-           a.dedicated == b.dedicated && a.ping == b.ping;
+           a.dedicated == b.dedicated && a.official == b.official && a.ping == b.ping && a.friends == b.friends;
 }
 bool rows_current(const LobbyRows &cache, const SkateMenu &menu, const Model &model) {
     const auto &mp = model.multiplayer;
@@ -91,12 +91,19 @@ const std::vector<Row> &lobby_list(const SkateMenu &menu, const Model &model) {
         row.map_key = lowercase(row.map);
         if (menu.multiplayer_same_map_only && !row.same_map) continue;
         if (menu.multiplayer_dedicated_only && !lobby.dedicated) continue;
-        if (!filter.empty() && (row.host_key + " " + row.map_key + " " + lowercase(lobby.map)).find(filter) == std::string::npos)
-            continue;
+        if (!filter.empty()) {
+            auto text = row.host_key + " " + row.map_key + " " + lowercase(lobby.map);
+            for (const auto &name : lobby.friends) text += " " + lowercase(name);
+            if (text.find(filter) == std::string::npos) continue;
+        }
         rows.push_back(std::move(row));
     }
     std::sort(rows.begin(), rows.end(), [&](const Row &a, const Row &b) {
         const auto &first = mp.lobbies[a.lobby], &second = mp.lobbies[b.lobby];
+        // The ReSkate team's own servers lead the list, however the rest is sorted.
+        if (first.official != second.official) return first.official;
+        // Then where friends are.
+        if (first.friends.empty() != second.friends.empty()) return !first.friends.empty();
         switch (menu.multiplayer_lobby_sort) {
         case 1:
             if (first.players != second.players) return first.players > second.players;
@@ -325,9 +332,18 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
             ImGui::PushID(id.c_str());
             const auto top = ImGui::GetCursorScreenPos();
             const float width = ImGui::GetContentRegionAvail().x;
-            const bool joinable = !mp.active && !mp.lobby_joining && !row.self && !row.full;
-            skate_theme::rough_rect(draw, top, ImVec2(top.x + width, top.y + tile_height), skate_theme::tile,
+            // From a session they joined a player can hop straight to another; a host ends theirs first.
+            const bool here = mp.active && lobby.id == mp.public_lobby;
+            const bool hop = mp.active && !mp.hosting && !mp.echo && !here;
+            const bool joinable = (!mp.active || hop) && !mp.lobby_joining && !row.self && !row.full;
+            // The team's own servers are ReSkate blue, and the ones friends are skating in green.
+            const bool with_friends = !lobby.friends.empty() && !lobby.official;
+            skate_theme::rough_rect(draw, top, ImVec2(top.x + width, top.y + tile_height),
+                                    lobby.official ? skate_theme::official_tile : with_friends ? skate_theme::friends_tile : skate_theme::tile,
                                     static_cast<unsigned>(i + 41), px(1));
+            if (lobby.official || with_friends)
+                draw->AddRect(top, ImVec2(top.x + width, top.y + tile_height), lobby.official ? skate_theme::official : skate_theme::good, 0, 0,
+                              px(1.5f));
             if (row.same_map) draw->AddRectFilled(top, ImVec2(top.x + px(4), top.y + tile_height), skate_theme::blue);
 
             // Right: Join, then the player count and tags leading into it.
@@ -336,7 +352,7 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
             ImGui::BeginDisabled(!joinable);
             skate_theme::push_primary_button();
             ImGui::PushFont(menu.bold);
-            if (ImGui::Button(row.self ? "YOURS" : row.full ? "FULL" : "JOIN", ImVec2(join_width, 0))) {
+            if (ImGui::Button(row.self ? "YOURS" : here ? "HERE" : row.full ? "FULL" : "JOIN", ImVec2(join_width, 0))) {
                 if (lobby.password_required) prompt_password(menu, &lobby);
                 else send_private(menu, "join-lobby", id, menu.multiplayer_join_password, false);
             }
@@ -344,11 +360,14 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
             skate_theme::pop_primary_button();
             ImGui::EndDisabled();
             if (!joinable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("%s", row.self ? "This is your lobby." : row.full ? "This server is full."
+                ImGui::SetTooltip("%s", row.self ? "This is your lobby." : here ? "You are skating here."
+                                        : row.full ? "This server is full."
                                         : mp.lobby_joining ? "A lobby join is in progress."
-                                                           : "Leave your current session before joining.");
-            } else if (joinable && !row.same_map && ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Joining loads %s for you.", row.map.c_str());
+                                                           : "End your session before joining another.");
+            } else if (joinable && ImGui::IsItemHovered()) {
+                if (hop && row.same_map) ImGui::SetTooltip("Leaves your current session and joins this one.");
+                else if (hop) ImGui::SetTooltip("Leaves your current session, loads %s and joins this one.", row.map.c_str());
+                else if (!row.same_map) ImGui::SetTooltip("Joining loads %s for you.", row.map.c_str());
             }
             const auto players = std::to_string(lobby.players) + " / " + std::to_string(lobby.capacity);
             const auto players_size = menu.bold->CalcTextSizeA(px(18), FLT_MAX, 0, players.c_str());
@@ -362,11 +381,11 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
                 tag(menu, "PASSWORD", skate_theme::warning);
             }
             {
-                const char *kind = lobby.dedicated ? "DEDICATED" : "PLAYER";
+                const char *kind = lobby.official ? "OFFICIAL" : lobby.dedicated ? "DEDICATED" : "PLAYER";
                 const auto size = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, kind);
                 right -= size.x + px(14) + px(12);
                 ImGui::SetCursorScreenPos(ImVec2(right, top.y + (tile_height - ImGui::GetFrameHeight()) * .5f));
-                tag(menu, kind, lobby.dedicated ? skate_theme::blue : skate_theme::tile_light);
+                tag(menu, kind, lobby.official ? skate_theme::official : lobby.dedicated ? skate_theme::blue : skate_theme::tile_light);
             }
 
             // Left: lobby name over its map.
@@ -376,12 +395,21 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
             ImGui::PushFont(menu.bold);
             ImGui::PushClipRect(ImGui::GetCursorScreenPos(),
                                 ImVec2(ImGui::GetCursorScreenPos().x + text_width, top.y + tile_height), true);
+            if (lobby.official || with_friends)
+                ImGui::PushStyleColor(ImGuiCol_Text, lobby.official ? skate_theme::official_text : skate_theme::friends_text);
             ImGui::TextUnformatted(lobby.name.c_str());
+            if (lobby.official || with_friends) ImGui::PopStyleColor();
             ImGui::PopFont();
             ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
             ImGui::TextUnformatted((row.map + (row.same_map ? "  -  your map" : "") +
                                     (lobby.ping >= 0 ? "  -  " + std::to_string(lobby.ping) + " ms" : std::string{})).c_str());
             ImGui::PopStyleColor();
+            if (!lobby.friends.empty()) {
+                ImGui::SameLine(0, 0);
+                ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::good);
+                ImGui::TextUnformatted(("  -  with " + lobby_friends_text(lobby)).c_str());
+                ImGui::PopStyleColor();
+            }
             ImGui::PopClipRect();
             ImGui::EndGroup();
 

@@ -14,7 +14,9 @@ class SpeedCheck {
     static constexpr std::uint64_t block_us = 2000000;   // one minimum per block
     static constexpr std::uint64_t window_us = 20000000; // speed measured across this
     static constexpr std::uint64_t gap_us = 2500000;     // longer without poses (loading): start over
-    static constexpr double limit = 1.06;                // a real clock never runs this far ahead
+    // Half as fast again and more is flagged. A little under 1.5, since a game at exactly 1.5x
+    // measures a hair either side of it; nothing but a speed hack comes near.
+    static constexpr double limit = 1.45;
     static constexpr unsigned strikes_needed = 3;        // consecutive fast measurements (one per block)
 
     // One pose: the sender's timestamp and when it arrived, both in microseconds. Returns true

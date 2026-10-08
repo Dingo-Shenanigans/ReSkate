@@ -32,6 +32,8 @@ class DeltaSender {
     };
     std::map<StreamKey, Base> bases_;
     std::uint64_t clock_{};
+    std::uint64_t refresh_us_ = 2000000;
+    bool aligned_{};
     WireUpdate build(const Packet &, std::span<const std::uint8_t> raw, std::span<const std::uint8_t> wire,
                      DeltaCache *cache) const;
 
@@ -44,6 +46,18 @@ class DeltaSender {
     WireUpdate prepare(const Packet &, std::span<const std::uint8_t> raw, std::span<const std::uint8_t> wire,
                        DeltaCache &cache) const;
     void sent(const Packet &, WireUpdate &&);
+    // Drops a stream's reference: the next packet of it goes as a whole state.
+    void forget(std::uint64_t source, PacketKind kind) { bases_.erase(StreamKey{source, kind}); }
+    // How old a pose or sound reference may get before a whole state replaces it. Each one
+    // is sent reliably, so Steam resends it until it arrives: a dedicated server, with a
+    // stream for every pair of players, keeps them rarer than the two seconds a game does.
+    // `aligned`: on the source's own clock, at each multiple of the time, instead of that
+    // long after this recipient's last one. Every recipient of a source then takes the same
+    // packet as its reference, and one patch serves them all (DeltaCache).
+    void set_refresh(std::uint64_t microseconds, bool aligned = false) {
+        refresh_us_ = microseconds;
+        aligned_ = aligned;
+    }
 };
 class DeltaReceiver {
     struct Base {

@@ -1,4 +1,5 @@
 #pragma once
+#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -26,5 +27,22 @@ inline std::optional<ObjectPlacement> parse_object_placement(std::string_view ar
         return current == ObjectPlacement::everyone ? ObjectPlacement::host_only
              : current == ObjectPlacement::host_only ? ObjectPlacement::nobody : ObjectPlacement::everyone;
     return {};
+}
+// How many objects each player may have placed in a session, set by the host or the server:
+// 0 is no limit beyond the protocol's own (max_object_limit). The host and a server's admins
+// are not held to it. A player over it keeps what everyone already sees of theirs; only the
+// objects past the limit are left out.
+inline constexpr unsigned max_object_limit = 1024;
+// What a server or a host starts with, until they choose otherwise.
+inline constexpr unsigned default_object_limit = 100;
+inline constexpr bool valid_object_limit(std::uint64_t value) noexcept { return value <= max_object_limit; }
+// Accepts a number from 1 to max_object_limit, and off|none|0 for no limit.
+inline std::optional<unsigned> parse_object_limit(std::string_view argument) noexcept {
+    if (argument == "off" || argument == "none") return 0U;
+    unsigned value{};
+    const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+    if (argument.empty() || parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !valid_object_limit(value))
+        return {};
+    return value;
 }
 } // namespace dingosdk

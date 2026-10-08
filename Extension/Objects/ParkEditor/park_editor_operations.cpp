@@ -105,6 +105,9 @@ std::string edit_local_park(std::string_view operation, std::string_view map, st
             auto object = supplied;
             if (r.next_id == UINT64_MAX || target.size() >= 1024)
                 throw std::runtime_error("Park object limit reached.");
+            // The session's own limit on each player (the mutex is held: count here).
+            if (const auto limit = lobby_object_limit(); limit && target.size() >= limit)
+                throw std::runtime_error(object_limit_notice);
             object.id = r.next_id++;
             if (!e.assets || std::none_of(e.assets->begin(), e.assets->end(),
                                           [&](const auto &item) { return item.key == object.item; }))

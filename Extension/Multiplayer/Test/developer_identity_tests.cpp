@@ -44,6 +44,28 @@ void parsing() {
         R"({"updated":"2026-10-04","categories":{"moderator":["76561198000000005"],"dev":["76561198000000001"]}})");
     check(partial[0] == std::vector{dev} && partial[1].empty() && partial[2].empty(),
           "An unknown category was read, or a missing one was not empty");
+    // The team's own servers come beside them too: servers signed in with a login token, whose
+    // Steam ID stays. Nobody is on it when the answer leaves it out.
+    const auto servers = parse_identity_lists(
+        R"({"categories":{},"official_servers":["85568392924040002","85568392924040001","85568392924040002"]})");
+    check(servers[static_cast<std::size_t>(L::official_server)] == std::vector<std::uint64_t>{85568392924040001ULL, 85568392924040002ULL} &&
+              bans[static_cast<std::size_t>(L::official_server)].empty(),
+          "The official server list was not read");
+    for (const char *wrong : {R"({"categories":{},"official_servers":["76561198000000001"]})",  // a player
+                              R"({"categories":{},"official_servers":["90071992551410001"]})",  // an anonymous server
+                              R"({"categories":{},"official_servers":["85568392920039424"]})",  // account 0
+                              R"({"categories":{"dev":["85568392924040001"]}})"})                 // a server as a player
+        check(rejected(wrong), "A list with the wrong kind of Steam ID was accepted: " + std::string(wrong));
+    // Blocked servers: any server's ID, an anonymous one too; and the rule about login tokens.
+    const auto blocks = parse_identity_lists(R"({"categories":{},"blocked_servers":["90071992551410001","85568392924040001"]})");
+    check(blocks[static_cast<std::size_t>(L::blocked_server)] == std::vector<std::uint64_t>{85568392924040001ULL, 90071992551410001ULL} &&
+              blocks[static_cast<std::size_t>(L::official_server)].empty() && servers[static_cast<std::size_t>(L::blocked_server)].empty(),
+          "The blocked server list was not read");
+    check(rejected(R"({"categories":{},"blocked_servers":["76561198000000001"]})"), "A player was accepted as a blocked server");
+    check(parse_server_tokens_required(R"({"categories":{},"server_tokens_required":true})") &&
+              !parse_server_tokens_required(R"({"categories":{},"server_tokens_required":false})") &&
+              !parse_server_tokens_required(R"({"categories":{}})") && !parse_server_tokens_required(R"({"server_tokens_required":"yes"})"),
+          "The login token rule was not read");
     // The ends of the range players' SteamID64s come from.
     check(!rejected(R"({"categories":{"dev":["76561197960265729","76561202255233023"]}})"), "A valid SteamID64 was refused");
 
@@ -91,6 +113,30 @@ void lookup() {
               identity_mark(dev) == L::developer && identity_mark(stranger) == L::centrix && identity_mark(creator) == L::centrix &&
               identity_mark(homie) == L::homie && !reskate_banned(stranger),
           "Centrix is not marked after a developer and before a content creator");
+    // Staff: its own list too, marked after a developer and before everyone else.
+    const auto staff = parse_identity_lists(R"({"categories":{"staff":["76561198000000005"],"centrix":["76561198000000005"]}})");
+    check(staff[static_cast<std::size_t>(L::staff)] == std::vector{stranger} && staff[static_cast<std::size_t>(L::centrix)] == std::vector{stranger} &&
+              staff[static_cast<std::size_t>(L::developer)].empty(),
+          "The staff list was not read as its own");
+    check(publish_identity_lists({{{dev}, {homie}, {creator}, {stranger}, {}, {}, {dev, homie, stranger}}}) &&
+              identity_mark(dev) == L::developer && identity_mark(stranger) == L::staff && identity_mark(homie) == L::staff &&
+              identity_mark(creator) == L::content_creator,
+          "Staff is not marked after a developer and before the other lists");
+    {
+        // Their items go green, and the rainbow is a style they (and a developer) can pick: it
+        // travels as a solid colour older builds show, and nobody else's item takes it.
+        const MarkStyle usual{}, rainbow{MarkMode::solid, {0x10, 0x80, 0x38}, rainbow_marker, 0};
+        const auto green = dingosdk::developer_hoodie_detail::item_animation(L::staff, usual);
+        check(green.on && !green.rainbow && green.stops[1][1] > green.stops[1][0] && green.stops[1][1] > green.stops[1][2],
+              "The staff's items are not green");
+        check(valid_mark_style(rainbow) && rainbow_style(rainbow) && !rainbow_style(usual) &&
+                  !rainbow_style({MarkMode::gradient, {}, rainbow_marker, 0}),
+              "The rainbow style is not a solid colour with its marker");
+        check(dingosdk::developer_hoodie_detail::item_animation(L::staff, rainbow).rainbow && dingosdk::developer_hoodie_detail::item_animation(L::developer, rainbow).rainbow,
+              "A member of staff or a developer could not pick the rainbow");
+        const auto homies = dingosdk::developer_hoodie_detail::item_animation(L::homie, rainbow);
+        check(homies.on && !homies.rainbow && homies.stops[0] == homies.stops[2], "Someone else's item took the rainbow");
+    }
     check(publish_identity_lists({{{dev}, {dev, homie, creator}, {dev, creator}}}), "The lists did not go back");
     // Their tag and their items are each their own to hide.
     check(own_tag_shown() && own_items_shown(), "A player's tag or items start hidden");

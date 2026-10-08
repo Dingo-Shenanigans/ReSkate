@@ -24,7 +24,6 @@ using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
 namespace {
 // Nearer than this a player gets their name; further, only a dot.
-constexpr float name_range = 150.0f;
 // How far in from the screen's edge the dots of players off screen sit (1080p pixels).
 constexpr float edge_margin = 28.0f;
 
@@ -221,8 +220,10 @@ void draw_nametags() {
     const auto frame = static_cast<std::uint64_t>(ImGui::GetFrameCount());
     // Far first, so nearer names draw over them.
     std::sort(value.tags.begin(), value.tags.end(), [](const Nametag &a, const Nametag &b) { return a.distance > b.distance; });
+    const float name_range = std::max(1.0f, value.name_distance);
     for (const auto &tag : value.tags) {
         const auto animated_colour = animated_nametag_colour(tag.color, animation_time);
+        const bool unnamed = tag.self || tag.nameless; // bubbles only: no name, no dot
         const Vec3 delta{tag.position[0] - origin[0], tag.position[1] - origin[1], tag.position[2] - origin[2]};
         const float depth = -dot(delta, back), side = dot(delta, right), height = dot(delta, up);
         bool on_screen = false;
@@ -233,7 +234,7 @@ void draw_nametags() {
         }
         if (!on_screen) {
             // The local player has no name or edge dot, only a bubble when they are visible.
-            if (!tag.self && value.show_names) {
+            if (!unnamed && value.show_names && value.dots) {
                 // The direction to them from the middle of the screen, pushed out to the edge.
                 float dx = depth > 0.1f ? at.x - centre.x : side, dy = depth > 0.1f ? at.y - centre.y : -height;
                 if (depth <= 0.1f && std::abs(dx) < 1e-3f && std::abs(dy) < 1e-3f) dy = 1.0f; // straight behind
@@ -246,10 +247,12 @@ void draw_nametags() {
         }
         // Where a bubble's tail should point: the top of the name, or the head itself.
         float bubble_bottom = at.y;
-        if (!tag.self && value.show_names) {
+        if (!unnamed && value.show_names) {
             if (tag.distance > name_range) {
-                outlined_dot(draw, at, 4.0f * k, animated_colour);
-                bubble_bottom = at.y - 6.0f * k;
+                if (value.dots) {
+                    outlined_dot(draw, at, 4.0f * k, animated_colour);
+                    bubble_bottom = at.y - 6.0f * k;
+                }
             } else {
                 // Names shrink a little with distance and fade slightly towards the name range.
                 const float nearness = 1.0f - std::clamp(tag.distance / name_range, 0.0f, 1.0f);
@@ -287,7 +290,7 @@ void draw_nametags() {
                                                  animated_colour, frame);
             // When the name itself is not shown (nametags off, or a player past the name range),
             // label the stack so each bubble is still attributed.
-            const bool named = !tag.self && value.show_names && tag.distance <= name_range;
+            const bool named = !unnamed && value.show_names && tag.distance <= name_range;
             if (!named && !tag.name.empty() && stack_top < bubble_bottom - 1.0f) {
                 const float nearness = 1.0f - std::clamp(tag.distance / name_range, 0.0f, 1.0f);
                 const float label_size = std::clamp((12.0f + 3.0f * nearness) * k, 9.0f, 30.0f);

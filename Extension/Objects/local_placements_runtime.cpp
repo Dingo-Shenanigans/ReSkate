@@ -311,6 +311,14 @@ void placement_message_hook(std::uintptr_t manager, const void* message) {
     PlacementBatch batch;
     batch.native = true;
     { PreserveError preserve; read(reinterpret_cast<std::uintptr_t>(message) + 0xc, batch.type); }
+    if (placement_adds_objects(batch.type) && lobby_object_placement_allowed() && lobby_object_limit_reached()) {
+        // As below: the request never reaches the server, so nothing is created.
+        PreserveError preserve;
+        placements_runtime().status = object_limit_notice;
+        dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{
+            {"event", "local_placement_over_limit"}, {"type", batch.type}, {"limit", lobby_object_limit()}}.dump().c_str());
+        return;
+    }
     if (placement_adds_objects(batch.type) && !lobby_object_placement_allowed()) {
         // Drop the request before the server sees it: no entity is created.
         PreserveError preserve;

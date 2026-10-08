@@ -26,8 +26,8 @@ struct State {
     std::vector<overlay::Nametag> tags;
     Clock::time_point published;
     bool hidden{}; // the game hides its own nametags (menus, hidden UI; game_ui_state.h)
-    bool show_names{true}, show_bubbles{};
-    float bubble_distance{40.f};
+    bool show_names{true}, show_bubbles{}, dots{true};
+    float bubble_distance{40.f}, name_distance{120.f};
 };
 State &state() {
     static auto *value = new State;
@@ -37,7 +37,7 @@ State &state() {
 
 void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> players,
                              std::optional<std::array<float, 3>> local, bool show_names,
-                             bool show_bubbles, float bubble_distance) noexcept {
+                             bool show_bubbles, float bubble_distance, float name_distance, bool dots) noexcept {
     auto &s = state();
     if (!s.enabled.load(std::memory_order_acquire)) return;
     s.base.store(base, std::memory_order_release);
@@ -61,6 +61,7 @@ void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> pla
             for (auto &line : player.bubbles)
                 tag.bubbles.push_back({std::move(line.text), std::move(line.raw), line.appear, line.fade});
             tag.self = player.self;
+            tag.nameless = player.nameless;
             if (local) {
                 const float dx = player.head[0] - (*local)[0], dy = player.head[1] - (*local)[1], dz = player.head[2] - (*local)[2];
                 tag.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
@@ -72,6 +73,8 @@ void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> pla
         s.show_names = show_names;
         s.show_bubbles = show_bubbles;
         s.bubble_distance = bubble_distance;
+        s.name_distance = name_distance;
+        s.dots = dots;
         if (!view) {
             s.tags.clear();
             return;
@@ -126,6 +129,8 @@ overlay::Nametags custom_nametags() {
         result.show_names = s.show_names;
         result.show_bubbles = s.show_bubbles;
         result.bubble_distance = s.bubble_distance;
+        result.name_distance = s.name_distance;
+        result.dots = s.dots;
         view = s.view;
     }
     read_live_view(s.base.load(std::memory_order_acquire), view);

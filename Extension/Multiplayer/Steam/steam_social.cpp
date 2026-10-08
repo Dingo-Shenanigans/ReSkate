@@ -1,4 +1,5 @@
 #include "steam_social.h"
+#include "steam_friend_join.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include <Windows.h>
 #include <algorithm>
@@ -37,6 +38,7 @@ struct Api {
     int (*presence)(void *, std::uint64_t){};
     struct Game { std::uint64_t id{}; std::uint32_t ip{}; std::uint16_t port{}, query{}; std::uint64_t lobby{}; };
     bool (*game)(void *, std::uint64_t, Game *){};
+    const char *(*rich)(void *, std::uint64_t, const char *){};
     void load() {
         const auto loaded = GetModuleHandleW(L"steam_api64.dll");
         if (!loaded || loaded == module) return;
@@ -52,7 +54,7 @@ struct Api {
 #define BIND(member, suffix) member = symbol<decltype(member)>(loaded, "SteamAPI_ISteamFriends_" suffix)
         BIND(self_name, "GetPersonaName"); BIND(count, "GetFriendCount"); BIND(at, "GetFriendByIndex");
         BIND(friend_name, "GetFriendPersonaName"); BIND(presence, "GetFriendPersonaState");
-        BIND(game, "GetFriendGamePlayed");
+        BIND(game, "GetFriendGamePlayed"); BIND(rich, "GetFriendRichPresence");
 #undef BIND
         module = loaded;
     }
@@ -138,7 +140,14 @@ std::shared_ptr<const SteamSocialSnapshot> steam_social_snapshot() {
             const auto presence = api.presence(refresh.friends, id);
             Api::Game game;
             const bool playing = api.game(refresh.friends, id, &game) && (game.id & 0xffffff) == 3354750;
-            result.friends.push_back({id, name(api.friend_name(refresh.friends, id)), presence > 0 && presence < 7, playing});
+            // Where they skate: what their game says for this, or (a build before it did) the
+            // joinable session it offers friends.
+            std::uint64_t session{};
+            if (playing) {
+                session = steam_session_target(name(api.rich(refresh.friends, id, steam_session_key.data()))).value_or(0);
+                if (!session) session = steam_join_target(name(api.rich(refresh.friends, id, "connect"))).value_or(0);
+            }
+            result.friends.push_back({id, name(api.friend_name(refresh.friends, id)), presence > 0 && presence < 7, playing, session});
         }
         if (refresh.index < refresh.count) return current;
         // The list changed during the pass, so an index may have shifted past a friend:

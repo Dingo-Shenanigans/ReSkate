@@ -12,16 +12,20 @@ struct Advertisement {
     unsigned players{}, max_players{};
     bool password{}, listed{true};
     std::uint64_t secret{};
+    std::uint16_t direct_port{}; // players may connect straight to this UDP port; 0: relays only
 };
 std::string server_tags(const Advertisement &);
 
-// A Steam game server for Skate's app, signed in anonymously. Its SteamID is
-// new each start, so invite codes last only while the server runs.
+// A Steam game server for Skate's app. Signed in anonymously its SteamID is new each
+// start, so invite codes last only while the server runs; signed in with a game server
+// login token it is the token's account, with the same SteamID every start.
 class SteamServer {
   public:
     ~SteamServer();
     // Loads steam_api64.dll from `folder`, next to the Steam client files it needs.
-    bool start(const std::filesystem::path &folder, std::uint16_t port, std::uint16_t query_port, std::string &error);
+    // `token`: a game server login token, or empty to sign in anonymously.
+    bool start(const std::filesystem::path &folder, std::uint16_t port, std::uint16_t query_port, const std::string &token,
+               std::string &error);
     void run_callbacks();
     bool logged_on();
     std::uint64_t steam_id();

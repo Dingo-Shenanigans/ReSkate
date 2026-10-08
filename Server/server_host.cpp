@@ -1,6 +1,8 @@
 #include "server_host.h"
 #include "server_text.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
+#include "Extension/Multiplayer/Net/block_codec.h"
+#include "Extension/Multiplayer/Net/pose_delta.h"
 #include "Extension/Multiplayer/developer_identity.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Engine/Core/Text/word_filter.h"
@@ -42,17 +44,17 @@ std::uint64_t nonce() {
     return value;
 }
 constexpr std::string_view help_text =
-    "status | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
+    "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
     "map <name, e.g. San Vansterdam> | maps | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
-    "tps 20|30|60|120 | voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low>\n"
-    "placement everyone|admins|nobody | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
+    "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off\n"
+    "placement everyone|admins|nobody | objects <number>|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
     "tpall [player] | tphere <player> | votes [map|kick|tod on|off|<percent>] | vote-cancel\n"
     "map-pool [add|remove <map>|clear] | rotation [<minutes>|off]\n"
     "park <lot> <layout> | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | speed-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>]\n"
     "radio play <URL or file in Radio> | radio skip | radio stop | radio | radio allow on|off (console only)\n"
-    "admin add|remove <SteamID64> | admins | update | quit";
+    "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | update | quit";
 } // namespace
 
 Host::Host(ServerConfig &config, SteamTransport &transport, Log log)
@@ -139,9 +141,28 @@ unsigned Host::players() const {
 }
 
 bool Host::start(std::string &error) {
-    if (!transport_.host(capacity())) {
+    transport_.set_send_rate(static_cast<int>(config_.send_rate * 1024));
+    transport_.set_packing(config_.pack_ms);
+    if (config_.steam_debug)
+        log_(transport_.set_steam_debug(true) ? "Steam networking debug output is on (\"steam_debug\"): its lines are marked [direct] Steam:."
+                                             : "steam_debug: this Steam has no debug output.");
+    if (!transport_.host(connection_capacity())) {
         error = transport_.status().detail;
         return false;
+    }
+    direct_port_ = 0;
+    if (!config_.use_steam_relay) {
+        const auto port = config_.port;
+        if (transport_.listen_direct(port)) {
+            direct_port_ = port;
+            log_("Connection: direct, on UDP port " + std::to_string(port) +
+                 ". The port must be open to the internet; players it does not reach come through Steam's relays.");
+        } else {
+            log_("Connection: direct was asked for, but Steam could not listen on UDP port " + std::to_string(port) +
+                 " (in use, or not allowed here). Players connect through Steam's relays only.");
+        }
+    } else {
+        log_("Connection: through Steam's relays (\"use_steam_relay\": false lets players connect straight to the server).");
     }
     id_ = transport_.status().local_id;
     secret_ = nonce();
@@ -176,6 +197,25 @@ void Host::apply_layers() {
 }
 
 // ---- Sending ---------------------------------------------------------------------------------
+namespace {
+// How often a stream's whole state is sent again. A whole pose measured 3.7 KB against 0.7 KB
+// for a difference from one, however old the reference (net's pose size line), so they are
+// kept rare: at every 8 seconds they were a seventh of everything a busy server sent.
+constexpr std::uint64_t whole_state_refresh = 60000000;
+// Rotations were rounded more coarsely for far recipients for a while (coarsen_rotations).
+// Measured on a full server it saved 0 to 7% of a pose (24% out of sight), because a pose is
+// sent as a difference from a reference up to a minute old, from which every animated bone
+// has turned by far more than any step; and renewing the reference whenever a recipient
+// crossed from one precision to another cost more than that saved. So poses go as they come.
+constexpr std::array<const char *, 4> pose_rate_names{"full rate", "half rate", "low rate", "out of sight"};
+// How long a kept pose stays (KeptPose::keep), in microseconds: by the slowest rate it went out at.
+constexpr std::array<std::uint64_t, 4> pose_kept_for{1500000, 3000000, 5000000, 15000000};
+constexpr std::array<const char *, 7> traffic_names{"poses", "sound", "voice", "outfits", "objects", "radio", "other"};
+constexpr std::size_t traffic_kind(PacketKind kind) noexcept {
+    return kind == PacketKind::pose ? 0 : kind == PacketKind::audio ? 1 : kind == PacketKind::voice ? 2
+         : kind == PacketKind::cosmetics ? 3 : kind == PacketKind::objects ? 4 : kind == PacketKind::radio ? 5 : 6;
+}
+} // namespace
 bool Host::send_packet(Guest &g, const Packet &p, bool reliable, bool fresh, std::span<const std::uint8_t> raw,
                        std::span<const std::uint8_t> wire) {
     auto update = raw.empty() ? g.sender.prepare(p) : g.sender.prepare(p, raw, wire);
@@ -185,6 +225,10 @@ bool Host::send_packet(Guest &g, const Packet &p, bool reliable, bool fresh, std
     // A stream and its reliable delta references must always use the same lane.
     if (!transport_.send(g.member.id, update.bytes, reliable || update.establishes_baseline(), fresh, traffic_lane(p.kind)))
         return false;
+    for (auto *counted : {&g.traffic, &traffic_}) {
+        counted->total.out[traffic_kind(p.kind)] += update.bytes.size();
+        counted->total.snapshots += update.establishes_baseline();
+    }
     g.sender.sent(p, std::move(update));
     return true;
 }
@@ -194,10 +238,147 @@ void Host::send_required(Guest &g, const std::vector<std::uint8_t> &bytes) {
     if (!p || !send_packet(g, *p, true, false))
         transport_.disconnect(g.member.id, "Cannot deliver required session data. Join again.");
 }
+void Host::measure_pose(Guest &from, const Packet &packet) {
+    auto raw = encode(packet, true);
+    // As DeltaSender would send it: the patch packed, behind its 34 byte header.
+    const auto cost = [&](const Guest::Earlier &reference) -> std::uint64_t {
+        if (reference.raw.empty()) return 0;
+        const auto patch = pose_delta::encode(raw, reference.raw);
+        return patch.empty() ? 0 : 34 + compress_block(patch).bytes.size();
+    };
+    if (packet.sequence % 4 == 0) {
+        const auto last = cost(from.pose_last), quarter = cost(from.pose_quarter), second = cost(from.pose_second);
+        if (last && quarter && second) {
+            ++pose_sizes_.samples;
+            // What changed since the pose before, field by field, as pose_delta walks them.
+            try {
+                constexpr auto prefix = packet_header_size + 6;
+                const auto bones = pose_delta::count(raw);
+                if (bones && bones == pose_delta::count(from.pose_last.raw)) {
+                    pose_delta::Cursor now_at{raw, prefix}, before_at{from.pose_last.raw, prefix};
+                    pose_sizes_.bones += bones;
+                    for (unsigned bone = 0; bone < bones; ++bone) {
+                        const auto current = pose_delta::fields(now_at), earlier = pose_delta::fields(before_at);
+                        // Fields: flags, position (12 bytes as floats, 6 in mm), rotation, scale.
+                        for (unsigned field = 1; field < 4; ++field) {
+                            if (std::equal(current[field].begin(), current[field].end(), earlier[field].begin(), earlier[field].end())) continue;
+                            auto &kind = pose_sizes_.changed[field == 1 ? (current[1].size() == 12 ? 0 : 1) : field];
+                            ++kind.fields;
+                            kind.bytes += current[field].size();
+                        }
+                    }
+                }
+            } catch (...) {
+            }
+            pose_sizes_.whole += encode_wire_bytes(raw).size() + 4;
+            pose_sizes_.last += last;
+            pose_sizes_.quarter += quarter;
+            pose_sizes_.second += second;
+        }
+    }
+    // Each kept reference is replaced once it is its age old, as a whole state sent that often would be.
+    for (auto [kept, age] : {std::pair{&from.pose_quarter, 250000ULL}, std::pair{&from.pose_second, 1000000ULL}})
+        if (kept->raw.empty() || packet.time_us < kept->time || packet.time_us - kept->time >= age) *kept = {raw, packet.time_us};
+    from.pose_last = {std::move(raw), packet.time_us};
+}
+Host::Guest::KeptPose *Host::keep_pose(Guest &from, const Packet &packet) {
+    auto &kept = from.kept_poses;
+    std::erase_if(kept, [&](const Guest::KeptPose &pose) { return now_ - pose.kept_at > pose_kept_for[std::min<std::size_t>(pose.keep, 3)]; });
+    while (kept.size() >= 96) kept.pop_front();
+    if (!kept.empty() && kept.back().sequence == packet.sequence) return &kept.back();
+    // What a mod resized on its player's skater reaches the others only as far as the server allows.
+    if (config_.bone_scale_limit >= 1.f) {
+        auto pose = packet.pose;
+        limit_bone_scale(pose, config_.bone_scale_limit);
+        kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(pose)});
+    } else {
+        kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(packet.pose)});
+    }
+    return &kept.back();
+}
+// Sends each player the poses queued for them this pass (broadcast): their differences from a
+// pose of the same player the recipient is known to hold, packed several to a message.
+void Host::flush_poses() {
+    for (auto &[id, guest] : guests_) {
+        auto &g = *guest;
+        // Which of their own pose messages arrived, once for all read this pass.
+        if (std::exchange(g.upload_ack_due, false)) {
+            const auto ack = g.upload_ack.bytes();
+            if (transport_.send(id, ack, false, true, TrafficLane::gameplay))
+                for (auto *counted : {&g.traffic, &traffic_}) counted->total.out[traffic_kind(PacketKind::pose)] += ack.size();
+        }
+        // The sound of the skaters they can hear, in one message, reliably: each builds on the
+        // last, and many samples are a pulse that must not be lost.
+        if (!g.queued_sound.empty()) {
+            const auto sounds = std::exchange(g.queued_sound, {});
+            if (g.handshaken && g.world_ready) {
+                g.sound_sender.begin(world_, map_);
+                for (const auto &q : sounds)
+                    if (const auto *from = find(q.source)) g.sound_sender.add(q.source, from->member.epoch, q.sequence, q.time_us, *q.samples, now_);
+                if (g.sound_sender.pending()) {
+                    const auto message = g.sound_sender.message();
+                    const bool went = transport_.send(id, message, true, true, traffic_lane(PacketKind::audio));
+                    if (went)
+                        for (auto *counted : {&g.traffic, &traffic_}) counted->total.out[traffic_kind(PacketKind::audio)] += message.size();
+                    g.sound_sender.sent(went);
+                }
+            }
+        }
+        if (g.queued_poses.empty()) continue;
+        const auto queued = std::exchange(g.queued_poses, {});
+        if (!g.handshaken || !g.world_ready) continue;
+        const auto emit = [&](std::span<const std::uint8_t> message, bool reliable) {
+            if (!transport_.send(id, message, reliable, !reliable, TrafficLane::gameplay)) return false;
+            for (auto *counted : {&g.traffic, &traffic_}) counted->total.out[traffic_kind(PacketKind::pose)] += message.size();
+            return true;
+        };
+        g.pose_sender.begin(world_, map_);
+        for (const auto &q : queued) {
+            auto *from = find(q.source);
+            if (!from) continue;
+            const auto find_kept = [&](std::uint32_t sequence) -> std::optional<pose_batch::KeptView> {
+                for (auto it = from->kept_poses.rbegin(); it != from->kept_poses.rend(); ++it)
+                    if (it->sequence == sequence) return pose_batch::KeptView{it->sequence, it->time_us, &it->pose};
+                return {};
+            };
+            const auto pose = find_kept(q.sequence);
+            if (!pose) continue;
+            const auto added = g.pose_sender.add(q.source, from->member.epoch, *pose, find_kept, q.hold_fingers, q.collision, q.rate, now_, emit);
+            if (added.did == pose_batch::Sender::Did::whole) {
+                // Kept long enough for the ack of it to find it here.
+                for (auto &kept : from->kept_poses)
+                    if (kept.sequence == q.sequence) kept.keep = 3;
+                for (auto *counted : {&g.traffic, &traffic_}) ++counted->total.snapshots;
+                ++pose_sizes_.whole_sent;
+                pose_sizes_.whole_sent_bytes += added.bytes;
+            } else if (added.did == pose_batch::Sender::Did::difference) {
+                const auto tier = std::min<std::size_t>(q.tier, 3);
+                ++pose_sizes_.sent[tier];
+                pose_sizes_.sent_bytes[tier] += added.bytes + 8;
+                pose_sizes_.held += q.hold_fingers;
+            }
+        }
+        g.pose_sender.flush(emit);
+    }
+}
+// A player said which messages of poses they read in full: the poses in those are ones they hold.
+void Host::pose_ack(Guest &g, const pose_batch::Ack &ack) { g.pose_sender.ack(ack); }
 void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint64_t except) {
+    // A pose is rounded once and kept (keep_pose); each recipient is then sent its differences
+    // from a pose of this player they hold, several players to a message (flush_poses).
+    auto *kept = packet.kind == PacketKind::pose ? [&]() -> Guest::KeptPose * {
+        auto *from = find(packet.source);
+        return from ? keep_pose(*from, packet) : nullptr;
+    }() : nullptr;
     const auto *source = find(packet.source);
-    struct Encoded { Packet packet; std::vector<std::uint8_t> raw, wire; };
-    std::array<Encoded, 3> encoded;
+    // Recipients holding the same delta reference share one patch and compression
+    // (DeltaCache): every update is built first, then all are sent and recorded.
+    struct Encoded { Packet packet; std::vector<std::uint8_t> raw, wire; DeltaCache deltas; };
+    std::array<Encoded, 12> encoded; // by the interval the pose carries, then by precision
+    struct Outgoing { Guest *guest; std::uint64_t id; WireUpdate update; PoseDelivery *delivery; std::uint32_t interval; unsigned variant; };
+    std::vector<Outgoing> outgoing;
+    outgoing.reserve(guests_.size());
+    std::shared_ptr<const std::vector<AudioSample>> sound; // a skater's samples, shared by everyone sent them
     const bool gameplay = packet.kind == PacketKind::pose || packet.kind == PacketKind::audio ||
                           packet.kind == PacketKind::voice || packet.kind == PacketKind::cosmetics ||
                           packet.kind == PacketKind::radio;
@@ -216,11 +397,37 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
                     continue;
             }
         }
-        // Frequent gameplay streams skip the server once the receiver confirms a direct route.
-        if (source && (packet.kind == PacketKind::pose || packet.kind == PacketKind::audio) &&
-            !needs_relay(p.direct_routes, p.route_reported, source->member, now_))
+        // Not before they have been shown this player (introduce).
+        if (!p.unmet.empty() && (packet.kind == PacketKind::pose || packet.kind == PacketKind::audio || packet.kind == PacketKind::cosmetics) &&
+            p.unmet.contains(packet.source))
             continue;
+        // A skater's sound goes to those who would hear it: within the full pose rate's reach,
+        // and in a crowd only from the nearest (the same players sent at the full rate).
+        // A game stops a sound it hears nothing more of after a second.
+        if (packet.kind == PacketKind::audio && source && source->latest_root && source->pose_arrival &&
+            now_ - source->pose_arrival <= 1000000 && p.latest_root && p.pose_arrival && now_ - p.pose_arrival <= 1000000) {
+            float distance{};
+            for (unsigned i = 0; i < 3; ++i) {
+                const auto d = p.latest_root->position[i] - source->latest_root->position[i];
+                distance += d * d;
+            }
+            const auto reach = static_cast<float>(config_.distances.half_rate_start);
+            if (distance > p.crowd.half || (config_.distances.valid() && distance > reach * reach)) continue;
+        }
+        // Poses and sound go through the server to everyone, whether or not two games have linked
+        // to each other: what they send each other directly is the older, larger format, and
+        // games of 1.1.6 as first released discard most of it (they took its first four bytes
+        // for sound_codec's).
+        // Sound is sent with everyone else's they hear, once a pass (flush_poses).
+        if (packet.kind == PacketKind::audio) {
+            if (!sound) sound = std::make_shared<const std::vector<AudioSample>>(packet.audio);
+            p.queued_sound.push_back({packet.source, packet.time_us, packet.sequence, sound});
+            continue;
+        }
         PoseDelivery *delivery{};
+        std::uint32_t slot{}; // how often this source's poses go to them, when not every `interval`
+        bool out_of_sight{};
+        unsigned precision{};
         std::uint32_t interval = multiplayer_pose_interval(config_.tps);
         if (packet.kind == PacketKind::pose) {
             auto entry = std::find_if(p.pose_delivery.begin(), p.pose_delivery.end(),
@@ -230,33 +437,145 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
                                          [](const auto &a, const auto &b) { return a.last_sent < b.last_sent; });
             delivery = &*entry;
             if (delivery->source != packet.source || delivery->epoch != packet.epoch)
-                *delivery = {packet.source, packet.epoch, 0, interval};
+                *delivery = {packet.source, packet.epoch, 0, interval, 0, 0};
             if (p.latest_root && p.pose_arrival && now_ >= p.pose_arrival && now_ - p.pose_arrival <= 1000000) {
                 float distance{};
                 for (unsigned i = 0; i < 3; ++i) {
                     const auto d = p.latest_root->position[i] - packet.pose.root.position[i];
                     distance += d * d;
                 }
-                interval = pose_interval(distance, delivery->interval_us, config_.distances, config_.tps);
+                delivery->by_distance = pose_interval(distance, delivery->by_distance, config_.distances, config_.tps);
+                interval = crowd_interval(delivery->by_distance, distance, p.crowd);
+                // Half as far again as the low rate starts: nothing of a skater can be made out
+                // there, only where they are (their dot, the map).
+                // (A little nearer to come back into sight than to leave it.)
+                const auto sight = static_cast<float>(config_.distances.low_rate_start) * ((delivery->precision & 1) ? 1.4f : 1.5f);
+                out_of_sight = config_.distances.valid() && distance > sight * sight;
+                // Too far to make out a hand: the fingers are not sent (pose_codec's Fingers). A
+                // little nearer to get them back than to lose them.
+                const auto hands = static_cast<float>(config_.finger_distance) * ((delivery->precision & 2) ? 0.9f : 1.1f);
+                const bool held = config_.finger_distance && packet.pose.skater.size() == pose_codec::finger_skeleton && distance > hands * hands;
+                precision = held ? 1U : 0U;
+                delivery->precision = static_cast<std::uint8_t>((out_of_sight ? 1U : 0U) | (held ? 2U : 0U)); // which side of each they are on
+            } else {
+                delivery->by_distance = 0;
             }
+            // Standing still for a few seconds: five poses a second carry it to anyone. The
+            // rate is back at once when they move (the change of rate sends the next pose).
+            if (source && source->moved_at && now_ - source->moved_at > 3000000) interval = std::max<std::uint32_t>(interval, 200000);
             if (delivery->interval_us != interval) delivery->next_source_time = 0;
             delivery->interval_us = interval;
             if (interval > multiplayer_pose_interval(config_.tps) && packet.time_us < delivery->next_source_time) continue;
+            // Out of sight, one pose a second is sent (as low-rate poses, a game holds a skater
+            // it hears nothing of for several seconds). On a full server most players are out
+            // of each other's sight, and at five a second each they were most of what was sent.
+            slot = out_of_sight && interval == 200000 ? 1000000U : interval;
+            if (kept) {
+                const std::uint8_t tier = slot == 1000000 ? 3 : interval == 200000 ? 2 : interval == 100000 ? 1 : 0;
+                p.queued_poses.push_back({packet.source, packet.sequence,
+                                          tier >= 2 ? pose_batch::Rate::low : tier == 1 ? pose_batch::Rate::half : pose_batch::Rate::full,
+                                          packet.player_collision, precision == 1, tier});
+                kept->keep = std::max(kept->keep, tier);
+                delivery->last_sent = now_;
+                // The next slot on the source's own clock: everyone sent a source at a slower rate
+                // is sent the same poses of it, so few of them need keeping to build on.
+                delivery->next_source_time = (packet.time_us / slot + 1) * slot;
+                continue;
+            }
         }
-        const auto variant = interval == 200000 ? 2U : interval == 100000 ? 1U : 0U;
+        const auto variant = (interval == 200000 ? 2U : interval == 100000 ? 1U : 0U) * 4 + precision;
         auto &data = encoded[variant];
         if (data.raw.empty()) {
             data.packet = packet;
             data.packet.pose_interval_us = interval;
+            if (packet.kind == PacketKind::pose) {
+                // What a mod resized on its player's skater reaches the others only as far as the server allows.
+                if (config_.bone_scale_limit >= 1.f) limit_bone_scale(data.packet.pose, config_.bone_scale_limit);
+            }
             data.raw = encode(data.packet, true);
             data.wire = encode_wire_bytes(data.raw);
         }
-        const bool sent = send_packet(p, data.packet, reliable, fresh, data.raw, data.wire);
-        if (sent && delivery) {
-            delivery->last_sent = now_;
-            advance_pose_deadline(delivery->next_source_time, packet.time_us, interval);
+        outgoing.push_back({&p, id, p.sender.prepare(data.packet, data.raw, data.wire, data.deltas), delivery, slot ? slot : interval, variant});
+    }
+    for (auto &out : outgoing) {
+        // A packet that cannot be built for anyone is its source's fault, never this
+        // recipient's: nothing is sent, and the recipient is not treated as unreachable.
+        bool sent = true;
+        if (!out.update.bytes.empty()) {
+            const auto &sending = encoded[out.variant].packet;
+            const bool whole = out.update.establishes_baseline();
+            sent = transport_.send(out.id, out.update.bytes, reliable || whole, fresh, traffic_lane(sending.kind));
+            if (sent) {
+                for (auto *counted : {&out.guest->traffic, &traffic_}) {
+                    counted->total.out[traffic_kind(sending.kind)] += out.update.bytes.size();
+                    counted->total.snapshots += whole;
+                }
+                if (sending.kind == PacketKind::pose && !whole) {
+                    ++pose_sizes_.sent[out.variant / 4];
+                    pose_sizes_.sent_bytes[out.variant / 4] += out.update.bytes.size();
+                }
+                out.guest->sender.sent(sending, std::move(out.update));
+            }
         }
-        if (!sent && reliable && !fresh) transport_.disconnect(id, "Cannot deliver required session data. Join again.");
+        if (sent && out.delivery) {
+            out.delivery->last_sent = now_;
+            // The next slot on the source's own clock, not this long after this send: everyone
+            // sent a source at a slower rate is then sent the same packets of it, and shares
+            // their encoding and patch.
+            out.delivery->next_source_time = (packet.time_us / out.interval + 1) * out.interval;
+        }
+        // Refused by a full queue: a connection that is only behind keeps its player (a chat
+        // line or an outfit change is lost to them); one that takes nothing for a while does not.
+        if (reliable && !fresh) {
+            auto &since = out.guest->undelivered_since;
+            if (sent) since = 0;
+            else if (!since) since = now_;
+            else if (now_ - since > 15000000) transport_.disconnect(out.id, "Cannot deliver required session data. Join again.");
+        }
+    }
+}
+// A player who has just arrived in this world is shown the others a few at a time (introduce).
+void Host::meet_later(Guest &guest) {
+    guest.unmet.clear();
+    for (const auto &[id, other] : guests_)
+        if (other->handshaken && id != guest.member.id) guest.unmet.insert(id);
+    guest.next_introduction = now_;
+}
+// Shows each arriving player one more of the others: that player's outfit, after which their
+// poses and sound follow. The nearest first, about seven a second, and none while what
+// they have already been sent is still on its way. A busy server's eighty outfits and
+// streams in one burst is what a joining game, building every skater at once, fell over on.
+void Host::introduce() {
+    for (auto &[id, guest] : guests_) {
+        auto &g = *guest;
+        if (g.unmet.empty() || !g.handshaken || !g.world_ready || now_ < g.next_introduction) continue;
+        if (transport_.pending(id) > 96 * 1024) continue;
+        const Guest *next{};
+        float nearest{};
+        for (auto it = g.unmet.begin(); it != g.unmet.end();) {
+            const auto *other = find(*it);
+            if (!other || !other->handshaken) {
+                it = g.unmet.erase(it);
+                continue;
+            }
+            ++it;
+            float distance = std::numeric_limits<float>::max();
+            if (g.latest_root && other->latest_root) {
+                distance = 0;
+                for (unsigned i = 0; i < 3; ++i) {
+                    const auto d = g.latest_root->position[i] - other->latest_root->position[i];
+                    distance += d * d;
+                }
+            }
+            if (!next || distance < nearest) {
+                next = other;
+                nearest = distance;
+            }
+        }
+        if (!next) continue;
+        g.unmet.erase(next->member.id);
+        g.next_introduction = now_ + 150000;
+        send_required(g, next->cosmetic_packet);
     }
 }
 void Host::send_roster() {
@@ -265,6 +584,7 @@ void Host::send_roster() {
     p.voice_range = config_.voice_range;
     p.distances = config_.distances;
     p.object_placement = config_.object_placement;
+    p.object_limit = config_.object_limit;
     p.guest_noclip = config_.noclip;
     p.guest_no_bail = config_.no_bail;
     p.guest_boosts = config_.boosts;
@@ -354,10 +674,13 @@ void Host::send_maps(Guest &guest) { // admins: every map and the pool; players:
 void Host::change_map(std::string_view map) {
     if (!valid_map_destination(map_destination(map_setting(map))))
         throw std::invalid_argument("That map does not name a destination.");
+    if (!installed_map(map)) throw std::invalid_argument("This server does not have that map.");
     // Everything tied to the old world goes; admission and player slots stay.
     for (auto &[id, guest] : guests_) {
         auto &g = *guest;
         auto old = std::exchange(g, Guest{});
+        g.sender.set_refresh(whole_state_refresh, true); // as for a new player (tick): a new world's streams start over
+        g.traffic = old.traffic;
         g.member = std::move(old.member);
         g.handshaken = old.handshaken;
         g.map_authorized = old.map_authorized;
@@ -390,23 +713,28 @@ void Host::change_map(std::string_view map) {
     send_world_state();
     roster_dirty_ = true;
 }
-void Host::drop(std::uint64_t id, const std::string &reason) {
+void Host::drop(std::uint64_t id, const std::string &reason, const std::string &detail) {
     transport_.disconnect(id, reason.c_str());
     const auto found = guests_.find(id);
     if (found == guests_.end()) return;
     const auto name = guest_name(*found->second);
     if (found->second->handshaken) {
         roster_dirty_ = true;
-        log_(name + " left (" + reason + ")");
+        log_(name + " left (" + reason + ")" + (detail.empty() ? std::string{} : " [" + detail + "]"));
         activity_.left(id);
     } else {
         // Never admitted: it held a player slot meanwhile, so it shows in the log, and an ID
         // that keeps failing waits longer each time before its connection is taken again.
         const auto failures = join_backoff_.failed(id, now_);
         log_("[join] " + std::to_string(id) + " did not finish joining (" + reason + ")" +
-             (failures > 1 ? ", attempt " + std::to_string(failures) : std::string{}));
+             (failures > 1 ? ", attempt " + std::to_string(failures) : std::string{}) +
+             (detail.empty() ? std::string{} : " [" + detail + "]"));
     }
     guests_.erase(found);
+    for (auto &[other, guest] : guests_) {
+        guest->pose_sender.forget(id);
+        guest->sound_sender.forget(id);
+    }
     party_left(id, name);
     // Their vote cooldown stays (tick() drops it once it has run out): leaving and coming
     // back does not let a player start another vote sooner.
@@ -435,22 +763,115 @@ bool Host::accept_data(Guest &source, const Packet &p) {
     if (p.kind == PacketKind::pose) {
         source.pose_arrival = now_;
         source.latest_root = p.pose.root;
+        {
+            const auto &root = p.pose.root, &was = source.still_at;
+            float moved{}, facing{};
+            for (unsigned i = 0; i < 3; ++i) moved += (root.position[i] - was.position[i]) * (root.position[i] - was.position[i]);
+            for (unsigned i = 0; i < 4; ++i) facing += root.rotation[i] * was.rotation[i];
+            if (!source.moved_at || moved > 0.05f * 0.05f || std::abs(facing) < 0.9995f) {
+                source.still_at = root;
+                source.moved_at = now_;
+            }
+        }
         return check_speed(source, p.time_us); // last: a speed-check kick frees `source`
     }
     return true;
 }
-void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at) {
+// A player's own poses (pose_batch.h): each is rebuilt from one of theirs held here and taken as
+// the packet it would have been. A message read in full is acked (flush_poses); one with a pose
+// that could not be rebuilt is not, so their game goes on building on what is held here.
+void Host::receive_poses(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at) {
+    auto *link = find(peer);
+    if (!link || !link->handshaken) return;
+    const auto batch = pose_batch::read(bytes);
+    if (!batch || batch->world != static_cast<std::uint32_t>(world_) || batch->map != static_cast<std::uint32_t>(map_)) return;
+    bool complete = true, first = true;
+    for (const auto &entry : batch->entries) {
+        if (entry.whole) {
+            // Only themselves, and one stream at a time: a new one replaces the last.
+            if (entry.source != peer || entry.epoch != link->member.epoch) {
+                complete = false;
+                continue;
+            }
+            if (!link->upload_streams.contains(entry.stream)) link->upload_streams.clear();
+        }
+        const auto rebuilt = pose_batch::rebuild(link->upload_streams, entry);
+        if (!rebuilt) {
+            complete = false;
+            continue;
+        }
+        if (rebuilt->repeat) continue;
+        Packet p;
+        p.kind = PacketKind::pose;
+        p.session = secret_;
+        p.map = map_;
+        p.world = world_;
+        p.source = peer;
+        p.epoch = rebuilt->epoch;
+        p.sequence = rebuilt->sequence;
+        p.time_us = rebuilt->time_us;
+        p.player_collision = rebuilt->collision;
+        p.pose = pose_codec::restore(rebuilt->pose);
+        // The message's bytes are counted once, with its first pose.
+        receive(peer, first ? bytes : bytes.first(0), received_at, &p);
+        first = false;
+        link = find(peer); // a pose can be what gets its player removed
+        if (!link) return;
+    }
+    if (complete) {
+        link->upload_ack.note(batch->number);
+        link->upload_ack_due = true;
+    }
+}
+// A player's own skater's sound (sound_codec.h), taken as the packet it would have been.
+void Host::receive_sound(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at) {
+    auto *link = find(peer);
+    if (!link || !link->handshaken) return;
+    if (link->sound_in.size() > 2) link->sound_in.clear(); // only their own, one stream at a time
+    const auto heard = sound_codec::read(link->sound_in, bytes, world_, map_);
+    if (!heard) return;
+    bool first = true;
+    for (const auto &one : *heard) {
+        if (one.source != peer || one.epoch != link->member.epoch || !valid_audio_batch(one.samples)) continue;
+        Packet p;
+        p.kind = PacketKind::audio;
+        p.session = secret_;
+        p.map = map_;
+        p.world = world_;
+        p.source = peer;
+        p.epoch = one.epoch;
+        p.sequence = one.sequence;
+        p.time_us = one.time_us;
+        p.audio = one.samples;
+        receive(peer, first ? bytes : bytes.first(0), received_at, &p);
+        first = false;
+        link = find(peer);
+        if (!link) return;
+    }
+}
+void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std::uint64_t received_at, const Packet *ready) {
     auto *link = find(peer);
     if (!link) return;
-    // Counted by arrival: after the server was held up, everyone's packets are read at once.
-    if (!link->budget.accept(received_at ? received_at : now_, bytes.size(), 1U))
-        return drop(peer, "Peer exceeded the multiplayer packet limit.");
+    if (!ready) {
+        // Counted by arrival: after the server was held up, everyone's packets are read at once.
+        if (!link->budget.accept(received_at ? received_at : now_, bytes.size(), 1U))
+            return drop(peer, "Peer exceeded the multiplayer packet limit.");
+        // Which messages of poses they read (pose_batch.h): not a packet, and says nothing else.
+        if (const auto ack = pose_batch::Ack::read(bytes)) {
+            if (link->handshaken) pose_ack(*link, *ack);
+            return;
+        }
+        if (pose_batch::is_batch(bytes)) return receive_poses(peer, bytes, received_at);
+        if (sound_codec::is_sound(bytes)) return receive_sound(peer, bytes, received_at);
+    }
     bool missing_reference{};
-    const auto decoded = link->receiver.receive(bytes, missing_reference, world_);
+    const auto decoded = ready ? std::optional<Packet>(*ready) : link->receiver.receive(bytes, missing_reference, world_);
     if (missing_reference) return;
     if (!decoded || decoded->session != secret_ || decoded->source != peer)
         return drop(peer, "Join code, sender identity, or multiplayer protocol did not match.");
     const auto &p = *decoded;
+    link->traffic.total.in[traffic_kind(p.kind)] += bytes.size();
+    traffic_.total.in[traffic_kind(p.kind)] += bytes.size();
     switch (p.kind) {
     case PacketKind::world_state: return drop(peer, "Only the server may change the room's map.");
     // Sent once the player's game knows, and again if a mod enabled later changes it; not tied to
@@ -477,9 +898,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
                 log_("[map] " + guest_name(*link) + " finished loading (" + std::to_string((now_ - since) / 1000000) + " s)");
         link->world_ready = p.world_ready;
         if (p.world_ready) link->travel_since = link->loading_since = 0;
-        if (arrived)
-            for (auto &[id, other] : guests_)
-                if (other->handshaken && id != peer) send_required(*link, other->cosmetic_packet);
+        if (arrived) meet_later(*link);
         return;
     }
     case PacketKind::map_request: {
@@ -551,8 +970,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
         send_required(*link, encode_wire(packet(PacketKind::welcome, now_)));
         if (joined) {
             send_roster();
-            for (auto &[id, other] : guests_)
-                if (other->handshaken && id != peer) send_required(*link, other->cosmetic_packet);
+            meet_later(*link);
             if (!config_.welcome.empty()) send_chat(config_.welcome, link);
             log_(guest_name(*link) + " joined (" + std::to_string(peer) + (is_admin(peer) ? ", admin" : "") + "), " +
                  std::to_string(players()) + "/" + std::to_string(config_.max_players) + " players" +
@@ -702,6 +1120,8 @@ void Host::sync_objects() {
              (config_.object_placement == ObjectPlacement::host_only && is_admin(id)))) {
             auto layout = guest->objects.layout();
             std::erase_if(layout, [&](const auto &object) { return guest->cleared.contains(object.id); });
+            // No more of a player's objects than the server allows each of them; admins are not limited.
+            if (!is_admin(id)) layout = limited_layout(std::move(layout), guest->shared.objects(), config_.object_limit);
             if (config_.activity_log) activity_.objects(id, guest->shared.layout(), layout);
             guest->shared.replace(layout);
             guest->shared_from = guest->objects.revision();
@@ -713,6 +1133,9 @@ void Host::sync_objects() {
     for (auto &[id, guest] : guests_) {
         auto &peer = *guest;
         if (!peer.handshaken || !peer.world_ready || sources.empty()) continue;
+        // Objects wait for a connection that is behind: they must arrive, so they would only
+        // queue up behind the poses and push those out.
+        if (transport_.pending(id) > 128 * 1024) continue;
         auto &delivery = peer.object_delivery;
         const auto find_source = [&](std::uint64_t source, std::uint64_t epoch) {
             return std::find_if(sources.begin(), sources.end(), [&](const auto &s) { return s.id == source && s.epoch == epoch; });
@@ -741,9 +1164,14 @@ void Host::sync_objects() {
             update.epoch = delivery.epoch;
             update.objects = delivery.chunks[delivery.next];
             if (!send_packet(peer, update, true, false)) {
-                transport_.disconnect(id, "Cannot deliver shared object state. Join again.");
+                // Refused for now (a full queue): the same part is tried again. Only a
+                // connection that takes none for a long while is given up on.
+                if (!delivery.failing_since) delivery.failing_since = now_;
+                if (now_ - delivery.failing_since > 30000000)
+                    transport_.disconnect(id, "Cannot deliver shared object state. Join again.");
                 break;
             }
+            delivery.failing_since = 0;
             if (++delivery.next == delivery.chunks.size()) {
                 delivery.sent[delivery.source] = {delivery.epoch, update.objects.revision};
                 delivery.chunks.clear();
@@ -752,10 +1180,195 @@ void Host::sync_objects() {
     }
 }
 
+// `net`: how the connections and the server's own loop are doing right now. With a player's
+// name or SteamID64, that player alone. In-game admins get the first line: a reply has to fit
+// one chat-sized message.
+std::string Host::network_report(std::string_view player, bool console) {
+    const auto links = transport_.links();
+    const auto &net = transport_.status();
+    const auto kb = [](float bytes) { return std::to_string(static_cast<int>(bytes / 1024.f + .5f)); };
+    const auto percent = [](float quality) { return quality < 0 ? std::string("?") : std::to_string(static_cast<int>(quality * 100.f + .5f)) + "%"; };
+    const auto row = [&](const multiplayer::TransportLink &link) {
+        const auto *guest = find(link.id);
+        std::string name = guest ? guest_name(*guest) : std::to_string(link.id);
+        if (name.size() > 20) name.resize(20);
+        name.resize(21, ' ');
+        if (!link.measured) return "  " + name + (link.connected ? "not measured yet" : "connecting");
+        const auto silent = guest && guest->last_packet && now_ > guest->last_packet ? (now_ - guest->last_packet) / 100000 : 0; // tenths of a second
+        return "  " + name + "ping " + std::to_string(link.ping_ms) + " ms, quality " + percent(link.quality_local) + " here / " +
+               percent(link.quality_remote) + " there, queued " + std::to_string(link.pending_bytes) + " B (" +
+               std::to_string(link.queue_us / 1000) + " ms), out " + kb(link.out_bps) + " of " + kb(static_cast<float>(link.send_rate)) +
+               " KB/s, in " + kb(link.in_bps) + " KB/s, last heard " + std::to_string(silent / 10) + "." + std::to_string(silent % 10) + " s ago" +
+               (guest && !guest->handshaken ? ", joining" : guest && !guest->world_ready ? ", loading" : "");
+    };
+    // By what it carries, in KB/s: the last whole half minute, or the one so far.
+    const bool whole = traffic_window_us_ != 0;
+    const double seconds = whole ? static_cast<double>(traffic_window_us_) / 1e6
+                                 : std::max(1.0, static_cast<double>(now_ - traffic_mark_) / 1e6);
+    const auto rate = [&](const Counted &c, bool out, std::size_t kind) {
+        const auto bytes = whole ? (out ? c.last.out[kind] : c.last.in[kind])
+                                 : out ? c.total.out[kind] - c.mark.out[kind] : c.total.in[kind] - c.mark.in[kind];
+        return static_cast<double>(bytes) / 1024.0 / seconds;
+    };
+    const auto number = [](double value) {
+        char text[32];
+        std::snprintf(text, sizeof(text), value < 10 ? "%.1f" : "%.0f", value);
+        return std::string(text);
+    };
+    const auto by_kind = [&](const Counted &c) {
+        std::string text = "KB/s out / in:";
+        for (std::size_t kind = 0; kind < traffic_names.size(); ++kind)
+            text += std::string(kind ? ", " : " ") + traffic_names[kind] + " " + number(rate(c, true, kind)) + " / " + number(rate(c, false, kind));
+        const auto snapshots = whole ? c.last.snapshots : c.total.snapshots - c.mark.snapshots;
+        return text + "; " + number(static_cast<double>(snapshots) / seconds) + " whole states a second";
+    };
+    if (!player.empty()) {
+        const auto wanted = lower(player);
+        for (const auto &link : links) {
+            const auto *guest = find(link.id);
+            if (std::to_string(link.id) == player || (guest && lower(guest_name(*guest)).starts_with(wanted)))
+                return row(link).substr(2) + (guest ? "\n" + by_kind(guest->traffic) : std::string{}) +
+                       (link.direct ? std::string("\nroute: direct, not through Steam's relays")
+                                    : "\nroute: through Steam's relay " + (link.relay.empty() ? std::string("(unknown)") : link.relay) +
+                                          " on this side and " + (link.remote_relay.empty() ? std::string("(unknown)") : link.remote_relay) + " on theirs");
+        }
+        return "No connected player matches \"" + std::string(player) + "\".";
+    }
+    float out{}, in{};
+    std::uint64_t queued{}, longest_queue{};
+    std::size_t waiting{}, poor{};
+    int worst_ping{};
+    for (const auto &link : links) {
+        if (!link.measured) continue;
+        out += link.out_bps;
+        in += link.in_bps;
+        queued += static_cast<std::uint64_t>(std::max(0, link.pending_bytes));
+        longest_queue = std::max(longest_queue, link.queue_us);
+        waiting += link.queue_us > 50000;
+        poor += (link.quality_local >= 0 && link.quality_local < .9f) || (link.quality_remote >= 0 && link.quality_remote < .9f);
+        worst_ping = std::max(worst_ping, link.ping_ms);
+    }
+    std::string text = std::to_string(players()) + " players (" + std::to_string(links.size()) + " connections), " + std::to_string(config_.tps) +
+                       " TPS | " + kb(out) + " KB/s out, " + kb(in) + " KB/s in | worst ping " + std::to_string(worst_ping) + " ms | " +
+                       std::to_string(queued / 1024) + " KB queued, longest wait " + std::to_string(longest_queue / 1000) + " ms, " +
+                       std::to_string(waiting) + " waiting over 50 ms | " + std::to_string(poor) + " under 90% quality";
+    if (!console) return text;
+    {
+        // The relay locations in use, most connections first: everyone through one far away is a route problem.
+        std::map<std::string, unsigned> relays;
+        for (const auto &link : links)
+            if (link.measured)
+                ++relays[link.direct ? std::string("direct")
+                                     : (link.relay.empty() ? "?" : link.relay) + "-" + (link.remote_relay.empty() ? "?" : link.remote_relay)];
+        std::vector<std::pair<std::string, unsigned>> order(relays.begin(), relays.end());
+        std::stable_sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+        text += "\nSteam relay network: " + transport_.relay_status();
+        text += "\nrelays (ours-theirs):";
+        for (std::size_t i = 0; i < std::min<std::size_t>(order.size(), 10); ++i)
+            text += " " + order[i].first + " x" + std::to_string(order[i].second);
+    }
+    text += "\nloop: " + loop_report();
+    text += "\n" + by_kind(traffic_);
+    {
+        std::uint64_t poses{};
+        for (const auto count : pose_sizes_.sent) poses += count;
+        if (poses) {
+            text += "\npose sizes:";
+            for (std::size_t i = 0; i < pose_sizes_.sent.size(); ++i)
+                if (pose_sizes_.sent[i])
+                    text += std::string(" ") + pose_rate_names[i] + " " + std::to_string(pose_sizes_.sent_bytes[i] / pose_sizes_.sent[i]) + " B x" +
+                            std::to_string(pose_sizes_.sent[i]);
+            text += "; " + std::to_string(pose_sizes_.held * 100 / poses) + "% without fingers; whole poses " + std::to_string(pose_sizes_.whole_sent) +
+                    (pose_sizes_.whole_sent ? " at " + std::to_string(pose_sizes_.whole_sent_bytes / pose_sizes_.whole_sent) + " B" : std::string{});
+        }
+    }
+    {
+        // Who uploads most, and what most of it is: one player's outfit or objects can cost
+        // every other player's connection.
+        struct Upload { const Guest *guest; double total; std::size_t most; };
+        std::vector<Upload> uploads;
+        for (const auto &[id, guest] : guests_) {
+            Upload upload{guest.get(), 0, 0};
+            for (std::size_t kind = 0; kind < traffic_names.size(); ++kind) {
+                upload.total += rate(guest->traffic, false, kind);
+                if (rate(guest->traffic, false, kind) > rate(guest->traffic, false, upload.most)) upload.most = kind;
+            }
+            uploads.push_back(upload);
+        }
+        std::stable_sort(uploads.begin(), uploads.end(), [](const auto &a, const auto &b) { return a.total > b.total; });
+        if (!uploads.empty()) text += "\nmost uploaded:";
+        for (std::size_t i = 0; i < std::min<std::size_t>(uploads.size(), 6); ++i)
+            text += std::string(i ? ", " : " ") + guest_name(*uploads[i].guest) + " " + number(uploads[i].total) + " KB/s (" +
+                    traffic_names[uploads[i].most] + " " + number(rate(uploads[i].guest->traffic, false, uploads[i].most)) + ")";
+    }
+    text += "\nsends: " + std::to_string(net.send_failures) + " failed, " + std::to_string(net.skipped) + " skipped, " +
+            std::to_string(net.dropped) + " dropped (since the server started)";
+    // The connections doing worst first: a long queue, poor delivery, silence, then ping.
+    auto order = links;
+    const auto badness = [&](const multiplayer::TransportLink &link) {
+        const auto *guest = find(link.id);
+        const double silent = guest && guest->handshaken && now_ > guest->last_packet ? static_cast<double>(now_ - guest->last_packet) / 1000.0 : 0;
+        const double lost = 1.0 - std::min(link.quality_local < 0 ? 1.f : link.quality_local, link.quality_remote < 0 ? 1.f : link.quality_remote);
+        return static_cast<double>(link.queue_us) / 1000.0 + lost * 2000.0 + silent + link.ping_ms;
+    };
+    std::stable_sort(order.begin(), order.end(), [&](const auto &a, const auto &b) { return badness(a) > badness(b); });
+    const std::size_t shown = std::min<std::size_t>(order.size(), 12);
+    if (shown) text += "\nworst " + std::to_string(shown) + " of " + std::to_string(order.size()) + " (net <player> for one):";
+    for (std::size_t i = 0; i < shown; ++i) text += "\n" + row(order[i]);
+    return text;
+}
+
 // ---- Tick ------------------------------------------------------------------------------------
+namespace {
+std::uint64_t clock_us() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+} // namespace
+std::string Host::loop_report() const {
+    // The last whole minute when there is one, or the minute so far.
+    const auto &l = last_loop_.passes ? last_loop_ : loop_;
+    const auto seconds = std::max<std::uint64_t>(1, last_loop_.passes ? 60 : (clock_us() - l.since) / 1000000);
+    const auto ms = [](std::uint64_t us) {
+        char text[32];
+        std::snprintf(text, sizeof(text), "%.1f", static_cast<double>(us) / 1000.0);
+        return std::string(text);
+    };
+    return std::to_string(l.passes / seconds) + " passes/s, " +
+           std::to_string(l.passes ? l.busy_us * 100 / (seconds * 1000000) : 0) + "% busy, longest pass " + ms(l.longest_pass_us) +
+           " ms, longest gap " + ms(l.longest_gap_us) + " ms (worst since start: " + ms(worst_loop_.longest_pass_us) + " ms pass, " +
+           ms(worst_loop_.longest_gap_us) + " ms gap)";
+}
 void Host::tick(std::uint64_t now) {
     if (!running_) return;
     now_ = now;
+    // Timed on a clock of its own, from the start of one pass to the start of the next.
+    struct Timed {
+        Host &host;
+        std::uint64_t started = clock_us();
+        explicit Timed(Host &h) : host(h) {
+            auto &l = host.loop_;
+            if (!l.since) l.since = started;
+            if (host.pass_started_) {
+                const auto gap = started - host.pass_started_;
+                l.longest_gap_us = std::max(l.longest_gap_us, gap);
+                host.worst_loop_.longest_gap_us = std::max(host.worst_loop_.longest_gap_us, gap);
+            }
+            host.pass_started_ = started;
+        }
+        ~Timed() {
+            auto &l = host.loop_;
+            const auto took = clock_us() - started;
+            ++l.passes;
+            l.busy_us += took;
+            l.longest_pass_us = std::max(l.longest_pass_us, took);
+            host.worst_loop_.longest_pass_us = std::max(host.worst_loop_.longest_pass_us, took);
+            if (started - l.since >= 60000000) {
+                host.last_loop_ = l;
+                l = {};
+            }
+        }
+    } timed{*this};
     transport_.poll();
     const auto links = transport_.status().peers;
     const auto linked = [&](std::uint64_t id) {
@@ -763,7 +1376,11 @@ void Host::tick(std::uint64_t now) {
     };
     for (auto it = guests_.begin(); it != guests_.end();) {
         const auto id = (it++)->first;
-        if (!linked(id)) drop(id, "Disconnected.");
+        if (linked(id)) continue;
+        // Steam closed it: the log says how (the player's game closing it, or the connection
+        // failing at one end or the other), which "Disconnected." alone does not.
+        const auto how = transport_.take_closed(id);
+        drop(id, "Disconnected.", how);
     }
     for (const auto &link : links) {
         if (kicked_.contains(link.id)) {
@@ -785,11 +1402,12 @@ void Host::tick(std::uint64_t now) {
             continue;
         }
         if (!guest) {
-            if (!individual_steam_id(link.id) || guests_.size() >= config_.max_players) {
+            if (!individual_steam_id(link.id) || !may_join(config_, link.id, guests_.size())) {
                 transport_.disconnect(link.id, "The server is full.");
                 continue;
             }
             auto created = std::make_unique<Guest>();
+            created->sender.set_refresh(whole_state_refresh, true);
             created->member.id = link.id;
             created->last_packet = now_;
             guest = created.get();
@@ -798,7 +1416,9 @@ void Host::tick(std::uint64_t now) {
         if (link.connected && !guest->connected_at) guest->connected_at = now_;
     }
     for (const auto &message : transport_.receive()) receive(message.peer, message.bytes, message.arrived);
+    flush_poses();
     receive_cosmetics();
+    introduce();
     for (auto it = guests_.begin(); it != guests_.end();) {
         auto &g = *(it++)->second;
         // Authorized arrivals get time for loading; this deadline is absolute, so
@@ -808,11 +1428,76 @@ void Host::tick(std::uint64_t now) {
             if (now_ - g.travel_since > 180000000) drop(g.member.id, "Could not finish loading the new map.");
             continue;
         }
+        // The connection is still open but nothing came over it: what Steam measures of it says
+        // whether the link went bad or the player's game just stopped sending.
         if ((!g.handshaken && g.connected_at && now_ - g.connected_at > handshake_timeout) ||
             (g.handshaken && now_ - g.last_packet > 10000000))
-            drop(g.member.id, "Timed out waiting for gameplay data.");
+            drop(g.member.id, "Timed out waiting for gameplay data.",
+                 "nothing for " + std::to_string((now_ - g.last_packet) / 1000000) + " s; " + transport_.link_report(g.member.id));
+    }
+    for (auto note : transport_.take_direct_notes()) {
+        while (!note.empty() && (note.back() == '\n' || note.back() == '\r')) note.pop_back();
+        log_("[direct] " + note);
+    }
+    // Steam's relay network, whenever what it says of itself changes: every connection goes
+    // through it, and joins time out while it is not ready.
+    if (now_ >= next_relay_check_) {
+        next_relay_check_ = now_ + 10000000;
+        if (auto status = transport_.relay_status(); status != relay_status_) {
+            log_("[steam] Relay network: " + status);
+            relay_status_ = std::move(status);
+        }
+    }
+    // Every half minute, what was sent and received in it (net).
+    if (now_ >= traffic_mark_ + 30000000) {
+        const auto roll = [](Counted &c) {
+            for (std::size_t i = 0; i < c.total.out.size(); ++i) {
+                c.last.out[i] = c.total.out[i] - c.mark.out[i];
+                c.last.in[i] = c.total.in[i] - c.mark.in[i];
+            }
+            c.last.snapshots = c.total.snapshots - c.mark.snapshots;
+            c.mark = c.total;
+        };
+        roll(traffic_);
+        for (auto &[id, guest] : guests_) roll(guest->traffic);
+        traffic_window_us_ = traffic_mark_ ? now_ - traffic_mark_ : 0;
+        traffic_mark_ = now_;
+    }
+    // In a crowd, how far the full and half pose rates reach for each player (crowd_limits).
+    if (now_ >= next_crowd_) {
+        next_crowd_ = now_ + 500000;
+        std::vector<float> squared;
+        for (auto &[id, guest] : guests_) {
+            auto &g = *guest;
+            g.crowd = {};
+            if (!g.latest_root || !config_.crowd_budget || guests_.size() * config_.tps <= config_.crowd_budget) continue;
+            squared.clear();
+            for (const auto &[other_id, other] : guests_) {
+                if (other_id == id || !other->handshaken || !other->world_ready) continue;
+                float distance{};
+                if (other->latest_root)
+                    for (unsigned i = 0; i < 3; ++i) {
+                        const auto d = g.latest_root->position[i] - other->latest_root->position[i];
+                        distance += d * d;
+                    }
+                squared.push_back(distance); // not placed yet: counted as beside them
+            }
+            g.crowd = crowd_limits(squared, config_.tps, config_.crowd_budget);
+        }
     }
     tick_parties();
+    // Once a minute while anyone is on: how the connections are doing as a whole. A queue that
+    // grows with the player count, or sends that fail, is the server not getting data out.
+    if (config_.activity_log && now_ >= next_network_log_ && !guests_.empty()) {
+        next_network_log_ = now_ + 60000000;
+        const auto &net = transport_.status();
+        if (net.telemetry)
+            log_("[network] " + std::to_string(guests_.size()) + " players, " + std::to_string(static_cast<int>(net.outgoing_bps / 1024.f + .5f)) +
+                 " KB/s out, " + std::to_string(static_cast<int>(net.incoming_bps / 1024.f + .5f)) + " KB/s in, worst ping " +
+                 std::to_string(net.ping_ms) + " ms, " + std::to_string(net.pending_bytes / 1024) + " KB queued (longest " +
+                 std::to_string(net.queue_us / 1000) + " ms), " + std::to_string(net.send_failures) + " failed sends, " +
+                 std::to_string(net.skipped) + " skipped, " + std::to_string(net.dropped) + " dropped | loop " + loop_report());
+    }
     if (roster_dirty_ || now_ - last_roster_ > 2000000) send_roster();
     for (auto &[id, guest] : guests_)
         if (guest->handshaken) {
@@ -856,6 +1541,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     const auto verb = lower(action);
     // The in-game menu's names for the same settings.
     const std::string name = verb == "voice-allow" ? "voice" : verb == "object-placement" ? "placement"
+                           : verb == "object-limit" ? "objects"
                            : verb == "world-layer-sync" ? "layer-sync" : verb == "noclip-allow" ? "noclip"
                            : verb == "nobail-allow" ? "nobail" : verb == "boosts-allow" ? "boosts"
                            : verb == "tuning-enforce" ? "tuning" : verb;
@@ -888,6 +1574,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
                std::to_string(config_.max_players) + " players | " + std::to_string(config_.tps) + " TPS | voice " +
                (voice_policy_.allowed ? "on" : "off") + " (" + std::to_string(static_cast<int>(config_.voice_range)) +
                " m) | password " + (password_ ? "on" : "off") + " | code " + invite();
+    if (name == "net") return network_report(argument, console);
     if (name == "players") {
         std::string text = std::to_string(players()) + " players";
         for (const auto &[id, guest] : guests_)
@@ -980,6 +1667,9 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (argument.empty() || !valid_map_destination(map_destination(argument)) ||
             !valid_map_destination(map_destination(map_setting(argument))))
             return "No single map is called \"" + std::string(argument) + "\". Type maps for the list.";
+        // Only a map the server has: the game's own, or one from a mod in its Mods folder.
+        if (!installed_map(argument))
+            return "This server does not have that map. Put the map's mod folder in Mods next to the server, then restart it.";
         if (map_hash(map_destination(argument)) == map_) return "The server is already on that map.";
         change_map(argument);
         save();
@@ -1135,6 +1825,45 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(remove ? "Scoring " + scoring_text(*fingerprint) + " is no longer accepted."
                               : "Scoring " + scoring_text(*fingerprint) + " is accepted like the game's own.");
     }
+    if (name == "rate") {
+        // rate <KB/s>: what the server may send each player, from now on and to those on.
+        const auto value = number(argument);
+        if (!value || *value < 128 || *value > 16384)
+            return "rate <128-16384> (KB/s for each player, now " + std::to_string(config_.send_rate) + ")";
+        config_.send_rate = static_cast<unsigned>(*value);
+        const bool applied = transport_.set_send_rate(static_cast<int>(config_.send_rate * 1024));
+        return changed("Each player is sent at most " + std::to_string(config_.send_rate) + " KB/s" +
+                       (applied ? "." : ": players who join from now on. Steam did not change the connections already open."));
+    }
+    if (name == "bone-scale") {
+        // bone-scale <1-8>|off: how far a mod may resize part of a skater for the other players.
+        float value{};
+        const bool off = argument == "off" || argument == "0";
+        const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+        if (!off && (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !(value >= 1.f && value <= 8.f)))
+            return "bone-scale <1-8>|off: 1 shows every skater at the game's own proportions, off allows anything (now " +
+                   (config_.bone_scale_limit >= 1.f ? std::to_string(config_.bone_scale_limit).substr(0, 4) : std::string("off")) + ")";
+        config_.bone_scale_limit = off ? 0.f : value;
+        // Whole states go again so that nobody keeps a reference with the old sizes in it.
+        for (auto &[id, guest] : guests_)
+            for (const auto &[other, unused] : guests_) guest->sender.forget(other, PacketKind::pose);
+        return changed(off ? std::string("Mods may resize skaters' body parts freely.")
+                           : value == 1.f ? std::string("Skaters show at the game's own proportions: resized body parts are not passed on.")
+                                          : "Resized body parts show at up to " + std::to_string(value).substr(0, 4) + "x.");
+    }
+    if (name == "crowd") {
+        // crowd <poses a second>|off: the most one player is sent (crowd_limits).
+        auto value = number(argument);
+        if (argument == "off") value = 0;
+        if (!value || *value > max_crowd_budget || !valid_crowd_budget(static_cast<unsigned>(*value)))
+            return "crowd <" + std::to_string(min_crowd_budget) + "-" + std::to_string(max_crowd_budget) + ">|off (now " +
+                   (config_.crowd_budget ? std::to_string(config_.crowd_budget) : std::string("off")) + ")";
+        config_.crowd_budget = static_cast<unsigned>(*value);
+        next_crowd_ = 0;
+        return changed(*value ? "Each player is sent at most " + std::to_string(*value) + " poses a second: about " +
+                                    std::to_string(*value / config_.tps) + " players near them at the full rate."
+                              : std::string("No crowd limit: every player near is sent at the full rate."));
+    }
     if (name == "party-size") {
         const auto value = number(argument);
         if (!value || *value < 2 || *value > 8) return "party-size <2-8> (now " + std::to_string(config_.party_size) + ")";
@@ -1157,11 +1886,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(*value ? "The server is listed in the server browser." : "The server is hidden; players need the code.");
     }
     if (name == "tps") {
-        const auto value = number(argument);
-        if (!value || !valid_multiplayer_tps(static_cast<unsigned>(*value))) return "tps 20|30|60|120";
-        config_.tps = static_cast<unsigned>(*value);
-        for (auto &[id, guest] : guests_) guest->pose_delivery = {};
-        return changed("Network updates set to " + std::to_string(config_.tps) + " TPS.");
+        return "Dedicated servers run at " + std::to_string(dedicated_tps) + " TPS for now; it cannot be changed.";
     }
     if (name == "voice") {
         const auto value = on_off(argument);
@@ -1205,6 +1930,14 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(*policy == ObjectPlacement::everyone ? "Everyone can place objects."
                        : *policy == ObjectPlacement::host_only ? "Only admins can place objects. Everyone else's are frozen."
                                                                : "Object placement is off. Existing objects stay.");
+    }
+    if (name == "objects") {
+        const auto limit = parse_object_limit(argument);
+        if (!limit) return "objects <1-" + std::to_string(max_object_limit) + ">|off";
+        config_.object_limit = *limit;
+        for (auto &[id, guest] : guests_) guest->shared_from = 0; // look at every layout again
+        return changed(*limit ? "Each player can place up to " + std::to_string(*limit) + " objects. Admins are not limited."
+                              : std::string("Players can place as many objects as they like."));
     }
     if (name == "votes") {
         // votes | votes <map|kick|tod> on|off|<percent> | votes seconds|cooldown <n>
@@ -1405,13 +2138,38 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
                                   : "The radio is off: admins cannot play music.");
         }
         if (!config_.radio)
-            return "The radio is off on this server. The owner turns it on with \"radio\": true in ReSkateServer.json "
-                   "or radio allow on in the server console.";
+            return "The radio is off on this server. The owner turns it on with \"enabled\": true in the \"radio\" "
+                   "section of ReSkateServer.json, or radio allow on in the server console.";
         if (what.empty() || what == "status") return radio_.status();
         if (what == "play") return radio_.play(source);
         if (what == "skip" || what == "next") return radio_.skip();
         if (what == "stop" || what == "off") return radio_.stop();
         return "radio play <URL, or a file or folder in the server's Radio folder> | radio skip | radio stop | radio";
+    }
+    if (name == "reserved") {
+        // reserved | reserved add|remove <player or SteamID64>
+        if (!console) return "Only the server console manages reserved slots.";
+        const auto [sub, who] = split(argument);
+        if (sub.empty()) {
+            std::string text = std::to_string(extra_slots(config_)) + " extra slots beyond the " + std::to_string(config_.max_players) +
+                               ": the admins and these players can join when the server is full";
+            for (const auto id : config_.reserved) {
+                const auto *guest = find(id);
+                text += "\n  " + std::to_string(id) + (guest ? "  " + guest_name(*guest) : std::string{});
+            }
+            return text;
+        }
+        auto *guest = target(who);
+        const auto id = guest ? guest->member.id : number(who).value_or(0);
+        if (!individual_steam_id(id) || (sub != "add" && sub != "remove")) return "reserved | reserved add|remove <player or SteamID64>";
+        const bool listed = std::find(config_.reserved.begin(), config_.reserved.end(), id) != config_.reserved.end();
+        if (sub == "add") {
+            if (!listed && config_.reserved.size() >= 1024) return "The reserved list is full.";
+            if (!listed) config_.reserved.push_back(id);
+            return changed(std::to_string(id) + " has a reserved slot: they can join when the server is full.");
+        }
+        std::erase(config_.reserved, id);
+        return changed(std::to_string(id) + " no longer has a reserved slot.");
     }
     if (name == "admins" || name == "admin") {
         if (!console) return "Only the server console manages admins.";
@@ -1487,9 +2245,7 @@ bool Host::check_speed(Guest &guest, std::uint64_t sent) {
         guest.speed_normal_since = 0;
         roster_dirty_ = true;
         send_chat("The server measured your game running faster than normal: throwdowns and challenges are off for you until it's back to normal speed.", &guest);
-        for (auto &[id, other] : guests_)
-            if (other->handshaken && is_admin(id) && other.get() != &guest)
-                send_chat(std::string(text) + " They were taken out of throwdowns and challenges.", other.get());
+        // Only the player is told in the game; for the admins it is in the log.
         return true;
     }
     if (!guest.speeding) return true;

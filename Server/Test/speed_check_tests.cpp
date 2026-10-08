@@ -56,8 +56,9 @@ int main() {
     check(fast.flagged && std::abs(fast.speed - 1.5) < 0.02, "A 1.5x speedhack was not caught");
     const auto slight = run(1.03, 120, false);
     check(!slight.flagged, "A 3% difference was flagged");
-    const auto subtle = run(1.1, 60, false);
-    check(subtle.flagged, "A 1.1x speedhack was not caught");
+    // Under half as fast again is left alone; from there up it is caught.
+    check(!run(1.1, 60, false).flagged && !run(1.3, 60, false).flagged, "A game under 1.5x speed was flagged");
+    check(run(2.0, 60, false).flagged, "A 2x speedhack was not caught");
     const auto slow = run(0.5, 60, false);
     check(!slow.flagged, "A slowed-down client was flagged");
     // Loading (no poses for a while) starts the measurement over.
@@ -65,5 +66,5 @@ int main() {
     for (int i = 0; i < 30 * 15; ++i) gaps.sample(1000000 + i * 50000, 1000000 + i * 33333);
     gaps.sample(1000000 + 30 * 15 * 50000, 1000000 + 30 * 15 * 33333 + 5000000);
     check(!gaps.flagged() && gaps.speed() == 1.0, "A pause did not restart the measurement");
-    std::cout << "Speed check: real time, lag, 1.5x and 1.1x speedhacks, small drift, slow motion and pauses passed.\n";
+    std::cout << "Speed check: real time, lag, 1.5x and 2x speedhacks, 1.1x and 1.3x left alone, small drift, slow motion and pauses passed.\n";
 }

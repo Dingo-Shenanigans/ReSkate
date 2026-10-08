@@ -108,8 +108,9 @@ if(WIN32)
         list(APPEND launcher_resources "LAUNCHER_BACKGROUND RCDATA \"${launcher_background}\"\n")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${launcher_background}")
     endif()
-    # Tile icons: the skate tool on MODS, the wheel on SETTINGS.
-    foreach(tile_icon mods settings)
+    # Tile icons: the skate tool on MODS, the wheel on SETTINGS; and Thunderstore's mark for the
+    # mod manager's Thunderstore button.
+    foreach(tile_icon mods settings thunderstore)
         set(tile_icon_path "${PROJECT_SOURCE_DIR}/assets/launcher/icon_${tile_icon}.png")
         if(EXISTS "${tile_icon_path}")
             string(TOUPPER "${tile_icon}" tile_icon_name)
@@ -160,10 +161,10 @@ endif()
 
 # ReSkate dedicated server: a headless session host. It runs from its own folder
 # next to steam_api64.dll and the Steam client files; no game install needed.
-# On Linux next to libsteam_api.so; self-update is disabled there (see server_update.cpp).
+# On Linux next to libsteam_api.so; it updates itself there too, with the machine's curl and tar.
 add_executable(dingosdk_server Server/main.cpp Server/server_host.cpp Server/server_party.cpp
     Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
-    Server/server_update.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
+    Server/server_update.cpp Server/server_release.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
     Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
     Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
     Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp

@@ -564,10 +564,17 @@ std::string steam_persona_name() {
 // injection (seen as "Cannot sample the executable primary thread", Windows
 // error 5, once the suspended thread tears down). dbghelp.dll exports
 // MiniDumpWriteDump under the same name, so a copy of it beside Skate.exe under
-// the API set's file name satisfies the import. On Windows the schema is used
-// instead and a same-named file is ignored, so creating it there is harmless.
+// the API set's file name satisfies the import. On Windows the schema handles
+// this import without a shim, so do not create one there.
 void ensure_minidump_apiset_shim(const fs::path& game_directory) noexcept {
     try {
+        // Windows resolves this API set itself. Only Wine/Proton needs a file
+        // beside Skate.exe; copying a system DLL under an API-set name on
+        // Windows creates an unnecessary executable that looks suspicious.
+        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+        if (!(ntdll && GetProcAddress(ntdll, "wine_get_version")) &&
+            !(kernel32 && GetProcAddress(kernel32, "wine_get_dos_file_name"))) return;
         const auto shim = game_directory / L"api-ms-win-core-debug-minidump-l1-1-0.dll";
         std::error_code ec;
         if (fs::exists(shim, ec)) return;
@@ -601,8 +608,7 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         throw std::runtime_error(
             "Skate.exe, ReSkate.dll, and the original steam_api64.dll must be beside ReSkateLauncher.exe");
 
-    // Satisfy Skate.exe's MiniDumpWriteDump API-set import before it is created,
-    // so the game loads under Wine/Proton instead of aborting in the loader.
+    // Satisfy Skate.exe's MiniDumpWriteDump API-set import under Wine/Proton.
     ensure_minidump_apiset_shim(paths.directory);
 
     logging::write(logging::Level::info, logging::Channel::launcher, L"Validating exact Skate.exe SHA-256 and PE identity");

@@ -15,6 +15,12 @@ std::optional<MultiplayerLobby> read_server_tags(std::string_view tags, std::uin
 // Dedicated ReSkate servers from Steam's server list for Skate. Rows come from
 // Steam's master list, so a server shows even when a NAT hides its query port;
 // what a server answers directly (name, ping) replaces the tag copy.
+// Not shown: a server the ReSkate team has blocked, and, while the team requires login
+// tokens (developer_identity.h), one that signed in to Steam without one, unless it is on
+// the player's own network.
+// Steam answers a search made soon after another with an empty internet list (seen
+// 2026-10-06: every refresh within about 40 s of a full one). A search that lists no
+// internet server therefore keeps the servers the last one found, for a while.
 class SteamServerBrowser {
   public:
     ~SteamServerBrowser();
@@ -27,19 +33,24 @@ class SteamServerBrowser {
   private:
     struct Search {
         void *request{}, *response{};
+        bool internet{};
     };
     struct Found {
         MultiplayerLobby row;
         // Every address it was listed at: its public one, and a LAN one nearby.
         std::vector<std::pair<std::uint32_t, std::uint16_t>> addresses;
         bool answered{};
+        std::uint64_t search{}, listed{}; // the search that last listed it, and when
+        bool lan{};                       // answered on the player's own network
     };
     void *servers_{};
     std::vector<Search> searches_; // the internet and LAN lists
     std::map<std::uint64_t, Found> found_;
     std::uint64_t started_{}, next_poll_{};
+    std::uint64_t search_{};  // counts refreshes
+    bool internet_listed_{}; // this search's internet list had a server in it
     std::vector<MultiplayerLobby> rows_;
     void release();
-    void read();
+    void read(std::uint64_t now);
 };
 } // namespace dingosdk::multiplayer

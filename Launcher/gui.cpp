@@ -391,7 +391,8 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         }
     }
     for (auto [name, icon] : {std::pair{L"LAUNCHER_ICON_MODS", &g_icon_mods},
-                              std::pair{L"LAUNCHER_ICON_SETTINGS", &g_icon_settings}}) {
+                              std::pair{L"LAUNCHER_ICON_SETTINGS", &g_icon_settings},
+                              std::pair{L"LAUNCHER_ICON_THUNDERSTORE", &g_icon_thunderstore}}) {
         std::vector<unsigned char> pixels;
         UINT icon_width{}, icon_height{};
         const auto bytes = resource_bytes(name);

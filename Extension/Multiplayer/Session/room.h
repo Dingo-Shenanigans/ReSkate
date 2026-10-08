@@ -1,7 +1,9 @@
 #pragma once
 #include "Extension/Multiplayer/Net/protocol.h"
 #include <algorithm>
+#include <limits>
 #include <map>
+#include <span>
 #include <stdexcept>
 
 namespace dingosdk::multiplayer {
@@ -76,7 +78,47 @@ struct PoseDelivery {
     std::uint64_t source{}, epoch{}, last_sent{};
     std::uint32_t interval_us = 50000;
     std::uint64_t next_source_time{};
+    std::uint32_t by_distance{}; // what the distance alone asked for, before any crowd limit
+    std::uint8_t precision{};    // how finely the source's rotations are sent to them (a dedicated server's pose_precision)
 };
+// A crowd in one place: every player there is within full-rate distance of every other, and
+// what one player is sent grows with the crowd until their connection cannot carry it. The
+// default budget is what was seen to arrive through Steam's relays (about 1 MB/s a player,
+// whatever the send rate): nobody near is slowed until about 20 players are in one place at
+// 30 TPS; past that the farthest of them are. A
+// player is sent at most `budget` poses a second: everyone at the low rate at least, the
+// nearest at the full rate with two thirds of what is left, the next nearest at the half
+// rate with the rest. These are the squared distances beyond which a player is sent at the
+// half and at the low rate; `squared` (the distances to the others) is sorted here.
+inline constexpr unsigned crowd_always_full = 8, crowd_always_half = 12;
+struct CrowdLimits {
+    float half = std::numeric_limits<float>::infinity(), low = std::numeric_limits<float>::infinity();
+};
+inline CrowdLimits crowd_limits(std::span<float> squared, unsigned tps, unsigned budget = crowd_pose_budget) {
+    const unsigned full = 1000000U / multiplayer_pose_interval(tps), half = 10, low = 5;
+    const auto count = static_cast<unsigned>(squared.size());
+    if (count * full <= budget) return {};
+    std::sort(squared.begin(), squared.end());
+    const unsigned spare = budget > count * low ? budget - count * low : 0;
+    // Whatever the budget, the nearest few are sent at the full rate and the next few at the
+    // half rate: with enough players on, the low rate for everyone is the whole budget, and
+    // without this nobody at all was left at the full rate (and so nobody was heard).
+    const unsigned wanted_full = spare * 2 / 3 / (full - low);
+    const unsigned at_full = std::min(count, std::max(wanted_full, crowd_always_full));
+    const unsigned left = spare > at_full * (full - low) ? spare - at_full * (full - low) : 0;
+    const unsigned at_half = std::min(count - at_full, std::max(left / (half - low), crowd_always_half));
+    CrowdLimits limits;
+    // Between two players the limit falls halfway, so that neither sits on it.
+    const auto after = [&](unsigned sent) {
+        return sent >= count ? std::numeric_limits<float>::infinity() : sent ? (squared[sent - 1] + squared[sent]) / 2 : -1.f;
+    };
+    limits.half = after(at_full);
+    limits.low = after(at_full + at_half);
+    return limits;
+}
+inline std::uint32_t crowd_interval(std::uint32_t interval, float distance_squared, const CrowdLimits &limits) noexcept {
+    return distance_squared > limits.low ? 200000U : distance_squared > limits.half ? std::max(interval, 100000U) : interval;
+}
 // Preserve the timer phase across variable client frames/packet arrivals. Only
 // the newest state is sent; elapsed slots are skipped without catch-up packets.
 inline void advance_pose_deadline(std::uint64_t &next, std::uint64_t now, std::uint64_t interval) {

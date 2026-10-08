@@ -8,7 +8,8 @@
 
 namespace dingosdk::multiplayer::menu_view {
 enum class Sort { name, players, map };
-struct BrowserOptions { std::string query; bool same_map{}; Sort sort{}; };
+// The busiest servers first, until the player picks another order.
+struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; };
 
 // Owned pages: Multiplayer and Custom Stuff (needs the overlay's tool callbacks).
 inline constexpr unsigned page_count = 2, tools_page = 1;
@@ -47,7 +48,9 @@ struct BrowserResults {
     std::size_t total{};
 };
 inline bool can_join(const MultiplayerModel& model, const MultiplayerLobby& lobby) {
-    return !model.active && !model.lobby_joining && lobby.players < lobby.capacity && lobby.owner != model.local_id;
+    // From a session they joined a player can hop straight to another; a host ends theirs first.
+    const bool free = !model.active || (!model.hosting && !model.echo && lobby.id != model.public_lobby);
+    return free && !model.lobby_joining && lobby.players < lobby.capacity && lobby.owner != model.local_id;
 }
 inline std::string player_identity(const MultiplayerPlayer& player) {
     return std::to_string(player.id) + " " + std::to_string(player.epoch);
@@ -66,10 +69,16 @@ inline BrowserResults browse(const MultiplayerModel& model, const BrowserOptions
         // Servers advertise their map's name rather than its destination.
         if (options.same_map && lobby.map != model.map &&
             !(lobby.dedicated && map_name(lobby.map, levels) == map_name(model.map, levels))) continue;
-        if (!query.empty() && fold(lobby.name + " " + map_name(lobby.map, levels) + " " + lobby.map).find(query) == std::string::npos) continue;
+        auto text = lobby.name + " " + map_name(lobby.map, levels) + " " + lobby.map;
+        for (const auto& name : lobby.friends) text += " " + name;
+        if (!query.empty() && fold(text).find(query) == std::string::npos) continue;
         result.lobbies.push_back(&lobby);
     }
     std::sort(result.lobbies.begin(), result.lobbies.end(), [&](const auto* a, const auto* b) {
+        // The ReSkate team's own servers lead the list, however the rest is sorted.
+        if (a->official != b->official) return a->official;
+        // Then where friends are.
+        if (a->friends.empty() != b->friends.empty()) return !a->friends.empty();
         if (options.sort == Sort::players && a->players != b->players) return a->players > b->players;
         if (options.sort == Sort::map) {
             const auto an = fold(map_name(a->map, levels)), bn = fold(map_name(b->map, levels));

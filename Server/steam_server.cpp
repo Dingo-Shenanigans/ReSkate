@@ -127,13 +127,14 @@ std::string server_tags(const Advertisement &a) {
     for (int shift = 60; shift >= 0; shift -= 4) secret += hex[(a.secret >> shift) & 15];
     auto tags = "reskate,v" + std::to_string(multiplayer::protocol_version) + ",k" + secret + ",p" +
                 std::to_string(a.players) + ",c" + std::to_string(a.max_players) + (a.password ? ",w1" : ",w0");
+    if (a.direct_port) tags += ",d" + std::to_string(a.direct_port);
     tags += ",m" + tag_text(a.map, 24);
     tags += ",n" + tag_text(a.name, 127 - tags.size() - 2);
     return tags;
 }
 SteamServer::~SteamServer() { stop(); }
 bool SteamServer::start(const std::filesystem::path &folder, std::uint16_t port, std::uint16_t query_port,
-                        std::string &error) {
+                        const std::string &token, std::string &error) {
     try {
         std::optional<QuietSteam> quiet{std::in_place};
 #ifdef _WIN32
@@ -199,7 +200,8 @@ bool SteamServer::start(const std::filesystem::path &folder, std::uint16_t port,
         text("SteamAPI_ISteamGameServer_SetProduct", "reskate");
         text("SteamAPI_ISteamGameServer_SetGameDescription", "ReSkate dedicated server");
         symbol<void (*)(void *, bool)>(module_, "SteamAPI_ISteamGameServer_SetDedicatedServer")(server_, true);
-        symbol<void (*)(void *)>(module_, "SteamAPI_ISteamGameServer_LogOnAnonymous")(server_);
+        if (token.empty()) symbol<void (*)(void *)>(module_, "SteamAPI_ISteamGameServer_LogOnAnonymous")(server_);
+        else text("SteamAPI_ISteamGameServer_LogOn", token.c_str());
         return true;
     } catch (const std::exception &e) {
         error = e.what();

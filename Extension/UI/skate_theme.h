@@ -16,6 +16,13 @@ inline constexpr ImU32 tile_light = IM_COL32(61, 62, 66, 240);
 inline constexpr ImU32 blue = IM_COL32(1, 131, 255, 255);
 inline constexpr ImU32 blue_hover = IM_COL32(40, 152, 255, 255);
 inline constexpr ImU32 blue_active = IM_COL32(0, 110, 215, 255);
+// The ReSkate team's own servers: the logo's blue, a server tile tinted with it, and their name on it.
+inline constexpr ImU32 official = IM_COL32(0, 145, 255, 255);
+inline constexpr ImU32 official_tile = IM_COL32(8, 44, 82, 240);
+inline constexpr ImU32 official_text = IM_COL32(110, 190, 255, 255);
+// A server Steam friends are skating in: a tile tinted green, and its name on it.
+inline constexpr ImU32 friends_tile = IM_COL32(14, 58, 32, 240);
+inline constexpr ImU32 friends_text = IM_COL32(120, 226, 156, 255);
 inline constexpr ImU32 black = IM_COL32(0, 0, 0, 255);
 inline constexpr ImU32 white = IM_COL32(245, 245, 245, 255);
 inline constexpr ImU32 grey_text = IM_COL32(150, 152, 158, 255);
