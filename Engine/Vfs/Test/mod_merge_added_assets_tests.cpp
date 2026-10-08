@@ -493,6 +493,18 @@ void disabled_asset_can_still_be_enabled_live() {
     expect(fixture.merged_files(shared_toc) == static_cast<int>(1 + music_assets().size() + music_resources().size()),
            "asset live enable: all of its payloads are published");
 }
+// Contributor names also key the archive placements and the preserved root order.
+// Treat a case-only rename as a change, even on a case-insensitive filesystem.
+void renamed_root_contributor_requires_restart() {
+    Fixture fixture("renamed-root-map");
+    add_root_map(fixture);
+    const auto launch = mods::merge_mods(fixture.catalog);
+    expect(launch.built && launch.issue.empty(), "renamed map: launch succeeds\n" + describe(launch));
+    fixture.catalog.mods.front().name = "ROOT-MAP";
+    const auto live = mods::merge_mods(fixture.catalog, {}, {.live = true});
+    expect(!live.built && live.issue.find("restart") != std::string::npos,
+           "renamed root contributor requires restart\n" + describe(live));
+}
 void root_changes_require_restart_before_writing(bool enable) {
     Fixture fixture(enable ? "live-enable-root-map" : "live-disable-root-map");
     add_root_map(fixture);
@@ -527,6 +539,7 @@ int main() try {
     disabled_map_stays_out_of_launch_patch();
     disabled_map_stays_out_beside_enabled_map();
     disabled_asset_can_still_be_enabled_live();
+    renamed_root_contributor_requires_restart();
     root_changes_require_restart_before_writing(true);
     root_changes_require_restart_before_writing(false);
     const auto baseline = map_only();

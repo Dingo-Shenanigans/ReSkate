@@ -71,8 +71,8 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             std::set<std::string> requested, mounted;
             for (const auto& [mod, files] : modFiles)
                 if (std::ranges::any_of(files.tocs, [](const std::string& toc) { return lower(toc) == root_level; }))
-                    requested.insert(lower(mod->name));
-            for (const auto& name : record.root) mounted.insert(lower(name));
+                    requested.insert(mod->name);
+            for (const auto& name : record.root) mounted.insert(name);
             if (requested != mounted) {
                 report.issue = "These mods change shared map resources; restart the game to apply the saved selection.";
                 return report;
