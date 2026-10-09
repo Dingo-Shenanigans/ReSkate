@@ -177,6 +177,14 @@ bone_scale_limit   How far a mod may resize part of a skater for the other
                    leaves height alone and still halves the largest heads.
                    The player with the mod still sees it on their own screen.
                    Console: bone-scale <1-8>|off.
+bone_reach_limit   How far, in metres, a bone of a skater's body or board may
+                   be from the one it hangs from for the other players: 0.5
+                   to 20 (default 1); 0 is no limit. The game never moves
+                   them (the longest, a thigh, is 0.44), so the default
+                   changes nothing for an ordinary player and stops a hacked
+                   game from stretching its skater across the map. Every
+                   player's own game also holds what it is shown to 2.
+                   Console: bone-reach <0.5-20>|off.
 
 "network" - How players connect and how much they are sent. The defaults suit most servers.
 use_steam_relay    How players reach the server: true (default) or false.
@@ -272,6 +280,17 @@ polls              Who may ask everyone a question with up to six answers:
                    Players answer on the card or with /1, /2... A poll runs
                    nothing; it ends after "poll_seconds" (default 60), or when
                    whoever started it (or an admin) types /poll end.
+Server votes       The console (and scripts that talk to it) starts the same
+                   votes and polls: "vote tod night", "vote map grom",
+                   "vote noclip off", "poll Next map? | Grom | Stadium" and
+                   "poll end". A vote still has to be on, and its "min_players"
+                   met; a poll may be asked whatever "polls" says. The server has
+                   no vote of its own and no cooldown. Chat reads "The server
+                   started a vote to ..." or "The server asks: ...".
+                   "poll-run <command> | <question> | <answer>..." also runs a
+                   command for the answer that wins, {answer} replaced by it
+                   (nothing on a tie or when nobody answered), e.g.
+                     poll-run tod {answer} | Time of day? | morning | noon | night
 
 "announcements" - Messages from the server.
 messages           Lines the server posts in turn, one every "interval_minutes"
@@ -344,6 +363,12 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
                                 is map, kick, tod or a custom vote's name, which
                                 also takes on|off|<percent>.
   votes polls off|admins|everyone   votes poll-seconds <n>   votes starter-yes on|off
+  vote <map|kick|tod|<custom vote>> [argument]   Start a vote as the server
+                                (see Server votes).
+  poll <question> | <answer> | <answer>...   Ask everyone (2 to 6 answers).
+  poll end                      End the running poll now.
+  poll-run <command with {answer}> | <question> | <answer>...   A poll whose
+                                winning answer runs the command (console only).
   announce <text>               Tell everyone, in chat and on a card.
   announcements [list | add <text> | remove <n> | clear | interval <minutes>|off | card on|off]
                                 The messages posted on a timer.

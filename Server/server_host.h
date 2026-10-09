@@ -191,7 +191,7 @@ class Host {
     Log log_;
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
     // The running player vote (server_votes.cpp), and when each player may start another.
-    // A poll is one too: it has answers instead of yes and no, and runs nothing.
+    // A poll is one too: it has answers instead of yes and no, and runs nothing (but the console's poll-run).
     struct Vote {
         VoteKind kind{};
         std::size_t custom{}; // custom: which of config_.votes.custom
@@ -201,6 +201,7 @@ class Host {
         std::set<std::uint64_t> yes, no;
         std::vector<std::string> answers;            // poll
         std::map<std::uint64_t, std::size_t> chosen; // poll: each voter's answer
+        std::string run;                             // poll-run: the console command for the winner ("{answer}")
         std::uint64_t ends{};
     };
     std::optional<Vote> vote_;
@@ -332,11 +333,12 @@ class Host {
     void apply_layers();
     // Chat commands and votes (server_votes.cpp).
     void chat_command(Guest &, std::string_view line);
-    void start_vote(Guest &, VoteKind, std::string_view argument, std::size_t custom = 0);
-    void start_poll(Guest &, std::string_view text);
+    // Starting a vote or poll: nullptr is the server console; the text says why it did not start ("" = it did).
+    std::string start_vote(Guest *starter, VoteKind, std::string_view argument, std::size_t custom = 0);
+    std::string start_poll(Guest *starter, std::string_view text, std::string run = {});
     void cast_vote(Guest &, bool yes);
     void answer_poll(Guest &, std::size_t answer);
-    void end_poll(Guest &);
+    std::string end_poll(Guest *by);
     void check_vote(bool expired);
     void cancel_vote(const std::string &why);
     const VoteSetting &vote_setting(VoteKind, std::size_t custom = 0) const;

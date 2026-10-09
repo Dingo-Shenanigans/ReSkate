@@ -97,6 +97,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/level_loading.cpp
     Extension/World/loading_screen.cpp
     Extension/Customization/preset_lookup_guard.cpp
+    Extension/Boot/exit_watch.cpp
     Extension/Customization/developer_hoodie.cpp
     Extension/Customization/developer_board.cpp
     Extension/Skater/skater_model.cpp

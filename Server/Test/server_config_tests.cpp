@@ -77,6 +77,10 @@ int run() {
         ServerConfig scaled;
         scaled.bone_scale_limit = 0.5f;
         check(config_error(scaled).find("bone_scale_limit") != std::string::npos, "A bone scale limit under 1 was accepted");
+        check(has("anti_cheat.bone_reach_limit") && config.bone_reach_limit == 1, "bone_reach_limit is not a new setting of 1");
+        ServerConfig reached;
+        reached.bone_reach_limit = 0.1f;
+        check(config_error(reached).find("bone_reach_limit") != std::string::npos, "A bone reach limit under half a metre was accepted");
         check(has("network.pack_ms") && config.pack_ms == 10, "pack_ms is not a new setting of 10");
         check(has("network.threads") && config.threads == 0, "threads is not a new setting of 0");
         check(has("network.finger_distance") && config.finger_distance == 25, "finger_distance is not a new setting of 25");

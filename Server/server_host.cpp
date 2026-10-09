@@ -284,9 +284,10 @@ Host::Guest::KeptPose *Host::keep_pose(Guest &from, const Packet &packet) {
     while (kept.size() >= 96) kept.pop_front();
     if (!kept.empty() && kept.back().sequence == packet.sequence) return &kept.back();
     // What a mod resized on its player's skater reaches the others only as far as the server allows.
-    if (config_.bone_scale_limit >= 1.f) {
+    if (config_.bone_scale_limit >= 1.f || config_.bone_reach_limit > 0.f) {
         auto pose = packet.pose;
         limit_bone_scale(pose, config_.bone_scale_limit);
+        limit_bone_reach(pose, config_.bone_reach_limit);
         kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(pose)});
     } else {
         kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(packet.pose)});
@@ -536,6 +537,7 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
             if (packet.kind == PacketKind::pose) {
                 // What a mod resized on its player's skater reaches the others only as far as the server allows.
                 if (config_.bone_scale_limit >= 1.f) limit_bone_scale(data.packet.pose, config_.bone_scale_limit);
+                limit_bone_reach(data.packet.pose, config_.bone_reach_limit);
             }
             data.raw = encode(data.packet, true);
             data.wire = encode_wire_bytes(data.raw);

@@ -116,6 +116,7 @@ Layout layout(const ServerConfig &c) {
     anti_cheat.set("allowed_scoring_mods", std::move(allowed));
     anti_cheat.set("enforce_tuning", c.enforce_tuning);
     anti_cheat.set("bone_scale_limit", c.bone_scale_limit);
+    anti_cheat.set("bone_reach_limit", c.bone_reach_limit);
 
     auto &network = root.section("network");
     network.set("use_steam_relay", c.use_steam_relay);
@@ -305,6 +306,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
                 if (const auto fingerprint = parse_scoring(value.string())) c.score_allow.push_back(*fingerprint);
     c.enforce_tuning = get("anti_cheat", "enforce_tuning", c.enforce_tuning);
     c.bone_scale_limit = get("anti_cheat", "bone_scale_limit", c.bone_scale_limit);
+    c.bone_reach_limit = get("anti_cheat", "bone_reach_limit", c.bone_reach_limit);
 
     c.use_steam_relay = get("network", "use_steam_relay", c.use_steam_relay);
     c.send_rate = get("network", "send_rate", c.send_rate);
@@ -509,6 +511,8 @@ std::string config_error(const ServerConfig &c) {
     if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
     if (c.bone_scale_limit != 0 && !(c.bone_scale_limit >= 1.f && c.bone_scale_limit <= 8.f))
         return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";
+    if (c.bone_reach_limit != 0 && !(c.bone_reach_limit >= .5f && c.bone_reach_limit <= 20.f))
+        return "bone_reach_limit must be 0 (no limit) or 0.5 to 20 metres.";
     if (c.pack_ms > 50) return "pack_ms must be 0 (off) to 50.";
     if (c.threads > 32) return "threads must be 0 (one for each processor but one) to 32.";
     if (c.finger_distance > 10000) return "finger_distance must be 0 (fingers always sent) to 10000.";

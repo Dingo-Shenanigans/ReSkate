@@ -352,6 +352,29 @@ void limit_bone_scale(Pose &pose, float limit) noexcept {
     for (auto &t : pose.skater) hold(t);
     for (auto &t : pose.board) hold(t);
 }
+void limit_bone_reach(Pose &pose, float limit) noexcept {
+    if (!(limit > 0.f)) return;
+    const auto hold = [](std::array<float, 3> &position, const std::array<float, 3> &from, float most) {
+        float squared{};
+        for (unsigned i = 0; i < 3; ++i) squared += (position[i] - from[i]) * (position[i] - from[i]);
+        if (!(squared > most * most)) return;
+        const float factor = most / std::sqrt(squared);
+        for (unsigned i = 0; i < 3; ++i) position[i] = from[i] + (position[i] - from[i]) * factor;
+    };
+    constexpr std::array<float, 3> parent{};
+    // Bone 1 is the rig's place in the world (offset_pose): it goes with the root.
+    for (std::size_t i = 0; i < pose.skater.size(); ++i) {
+        if (i == 1) continue;
+        const bool free = std::find(free_skater_bones.begin(), free_skater_bones.end(), i) != free_skater_bones.end();
+        hold(pose.skater[i].position, parent, free ? std::max(limit, free_bone_reach) : limit);
+    }
+    // The board is its own actor (0) with its rig's place in the world (2): wherever it was
+    // left, but in one piece.
+    for (std::size_t i = 1; i < pose.board.size(); ++i) {
+        if (i == 2) hold(pose.board[i].position, pose.board[0].position, std::max(limit, 5.f));
+        else hold(pose.board[i].position, parent, limit);
+    }
+}
 void coarsen_rotations(Pose &pose, unsigned bits) noexcept {
     bits = std::min(bits, 12U);
     coarsen(pose.root, std::min(bits, 6U)); // which way they face matters from further off than a finger does

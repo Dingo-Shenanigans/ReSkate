@@ -34,6 +34,43 @@ void **lookup(void **out, const char *name, void *table, std::uint8_t flag, void
                      text.empty() ? "unnamed" : text);
     return out;
 }
+// item:addEsShaderPreset(material, preset) with a preset that is not there: nothing is added,
+// and the script goes on as it does after any other call.
+using ScriptFunction = int (*)(void *state);
+std::atomic<ScriptFunction> original_add_preset{};
+std::uintptr_t image{};
+int add_preset(void *state) {
+    const auto reference = reinterpret_cast<void *(*)(void *, int)>(image + native::script_preset_reference)(state, 3);
+    if (reference && reinterpret_cast<void *(*)(void *, int)>(image + native::referenced_preset)(reference, 0))
+        return original_add_preset.load()(state);
+    static std::atomic<unsigned> seen{};
+    const auto count = seen.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 5 || count % 500 == 0)
+        logging::log(logging::Level::warning, logging::Channel::customization,
+                     "An item's shader preset was not loaded when its script used it ({} so far); the item is shown without it.",
+                     count);
+    return 0;
+}
+template<std::size_t Size> bool matches(std::uintptr_t address, const std::array<unsigned char, Size> &prefix) {
+    std::array<unsigned char, Size> bytes{};
+    return memory::read_bytes(address, bytes.data(), bytes.size()) && bytes == prefix;
+}
+bool start_add_preset(std::uintptr_t base) {
+    if (!matches(base + native::add_shader_preset, native::add_shader_preset_prefix) ||
+        !matches(base + native::script_preset_reference, native::script_preset_reference_prefix) ||
+        !matches(base + native::referenced_preset, native::referenced_preset_prefix))
+        return false;
+    image = base;
+    auto *target = reinterpret_cast<void *>(base + native::add_shader_preset);
+    void *previous{};
+    if (hook_prepare(target, reinterpret_cast<void *>(&add_preset), &previous) != HookOk) return false;
+    original_add_preset = reinterpret_cast<ScriptFunction>(previous);
+    if (hook_enable(target) != HookOk) {
+        hook_remove(target);
+        return false;
+    }
+    return true;
+}
 } // namespace
 
 bool start(std::uintptr_t base) noexcept {
@@ -50,7 +87,7 @@ bool start(std::uintptr_t base) noexcept {
             hook_remove(target);
             return false;
         }
-        return true;
+        return start_add_preset(base);
     } catch (...) {
         return false;
     }
