@@ -1,0 +1,19 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Wine\Mac Driver]
+"RetinaMode"="N"
+"AllowSetGamma"=dword:00000000
+
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Skate.exe\Mac Driver]
+"RetinaMode"="Y"
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"LogPixels"=dword:00000060
+
+[HKEY_CURRENT_USER\Software\Wine\Fonts]
+"LogPixels"=dword:00000060
+
+[HKEY_CURRENT_USER\Software\Wine\DllOverrides]
+"d3d11"="builtin"
+"d3d12"="builtin"
+"dxgi"="builtin"
