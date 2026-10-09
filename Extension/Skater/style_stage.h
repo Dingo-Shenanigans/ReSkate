@@ -11,6 +11,8 @@ void open(std::function<void()> then);
 void leave() noexcept;
 // Makes Skatepedia's skater perform this trick, so that the editor can learn the clip. Skatepedia must be open.
 void fetch(std::uint8_t trick);
+// Stops the fetch of a trick. The highlighted entry stays.
+void cancel_fetch();
 // Sets the board-only entry (true), or restores the highlighted entry. Returns false on failure. Client thread only.
 bool park(std::uintptr_t base, bool park) noexcept;
 // The flip trick that Skatepedia shows, 0 for none. `title` gets the highlighted entry's name, empty when Skatepedia is closed.

@@ -135,6 +135,12 @@ int main() {
             smooth &= std::abs(trimmed->frames[i].pose.root.position[0] - trimmed->frames[i - 1].pose.root.position[0]) < teleport_metres;
         check(smooth, "so the clip has no jump in it");
     }
+    // The laser flip's demonstration starts again with the skater 0.9 m lower for one frame, the first one the clip would keep.
+    auto lower = shown;
+    lower[21].joints[1].position[1] -= 0.9f;
+    const auto short_jump = clip_from_capture(3, lower, joints, board, {}, why);
+    check(short_jump && short_jump->frames.size() == 135 - 23 && close_to(short_jump->frames.front().pose.root.position[1], 0),
+          "a start again that moves the skater less than a metre is also cut off");
     auto broken = shown;
     for (std::size_t i = 70; i < broken.size(); ++i) broken[i].joints[1].position[0] -= 10;
     check(!clip_from_capture(3, broken, joints, board, {}, why) && !why.empty(), "a restart in the air spoils the jump");

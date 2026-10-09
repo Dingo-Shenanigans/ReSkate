@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 // The style editor plays clips learned from Skatepedia's demonstration on a stand-in, with the current style. Solo play only.
 namespace dingosdk::style_editor {
@@ -21,6 +22,8 @@ void request_speed(float speed) noexcept;
 [[nodiscard]] bool has_clip(std::uint8_t trick);
 // Skatepedia's skater now performs this trick for a learn. 0 cancels.
 void expect(std::uint8_t trick);
+// The fetch from Skatepedia stopped, and the trick that was loading did not load.
+void fetch_failed(std::string_view why);
 // Deletes the saved clip of a trick. 0 deletes all clips.
 void request_forget(std::uint8_t trick);
 // Opens the editor screen. Nothing shows until the player selects a trick.

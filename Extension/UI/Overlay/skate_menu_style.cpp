@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <format>
 #include <optional>
@@ -517,6 +518,34 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     ImGui::SameLine();
     if (ImGui::Button("Open the presets folder", ImVec2(half, 0))) send_console(menu, callbacks, "style preset folder");
 }
+// The load of the selected trick, until the stand-in shows it.
+void load_status(Editing& e) {
+    using Phase = style::EditorLoad::Phase;
+    const auto& load = e.model.style.editor_load;
+    // The game has not seen the selection yet: a trick with a clip shows at once.
+    if (load.trick != e.trick_id) {
+        if (!(e.model.style.clips >> e.trick_id & 1)) warn("Loading this trick...");
+        return;
+    }
+    const auto sentence = [](std::string text) {
+        if (!text.empty()) text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
+        return text + ".";
+    };
+    if (load.phase == Phase::failed) {
+        warn("This trick did not load.");
+        note(sentence(load.reason).c_str());
+        if (ImGui::Button("Try again")) send_console(e.menu, e.callbacks, "style editor show " + e.trick);
+    } else if (load.phase == Phase::loading || load.phase == Phase::recording) {
+        if (load.reason.empty()) {
+            warn("Loading this trick...");
+            note("A few seconds, the first time only.");
+        } else {
+            // A failed attempt: the next recording has the next number.
+            warn(std::format("Trying again (attempt {})...", load.attempt + (load.phase == Phase::loading ? 1 : 0)).c_str());
+            note(sentence("the last attempt failed: " + load.reason).c_str());
+        }
+    }
+}
 void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested) {
     auto& io = ImGui::GetIO();
     // After the screen opens again, ask for the selected trick again. A close by another path can leave a prompt or a drag behind.
@@ -562,27 +591,21 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         ImGui::TextDisabled("Trick");
         ImGui::SetNextItemWidth(-1);
         trick_picker(e);
-        const bool has_clip = (model.style.clips >> e.trick_id & 1) != 0;
         if (!e.standing_in) {
             // A selected trick is shown. A trick without a clip is first fetched from Skatepedia.
-            if (e.now >= menu.styling.closing_until && (menu.styling.asked != e.trick || e.now > menu.styling.asked_at + 20.0)) {
+            if (e.now >= menu.styling.closing_until && menu.styling.asked != e.trick) {
                 menu.styling.asked = e.trick;
-                menu.styling.asked_at = e.now;
                 send_console(menu, callbacks, "style editor show " + e.trick);
             }
-            if (!has_clip) {
-                warn("Loading this trick...");
-                note("A few seconds, the first time only.");
-            }
+            load_status(e);
         }
-        if (!model.style.editor_note.empty()) ImGui::TextDisabled("%s", model.style.editor_note.c_str());
         if (menu.styling.key >= 0) {
             section(menu, std::format("KEYFRAME {} OF {}", menu.styling.key + 1, e.times.size()).c_str());
             blend_slider(e);
             ImGui::BeginChild("##style-editor-joints", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoNavInputs);
             joints(e);
             ImGui::EndChild();
-        } else note("This trick has no keyframes. Add one at the playhead.");
+        } else if (e.standing_in) note("This trick has no keyframes. Add one at the playhead.");
     }
     ImGui::End();
 
@@ -745,7 +768,6 @@ void style_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     begin_card(menu, "style-editor", "EDITOR", "Edit each trick of the preset on a timeline.");
     if (primary_button(menu, "Open the style editor", true)) send_console(menu, callbacks, "style editor open");
     note("A trick that you open for the first time takes a few seconds to load.");
-    if (!style.editor_note.empty()) info(menu, "Last", style.editor_note);
     end_card();
     ImGui::EndChild();
 }

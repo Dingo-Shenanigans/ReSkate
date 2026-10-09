@@ -11,6 +11,7 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
 #include "Extension/Profile/local_profile.h"
+#include "Extension/UI/Overlay/overlay.h"
 #include <windows.h>
 #include <algorithm>
 #include <array>
@@ -29,6 +30,7 @@
 namespace dingosdk::style_editor {
 namespace {
 using style::Clip;
+using Phase = style::EditorLoad::Phase;
 // The stand-in uses the last remote-player slot. No session uses that slot in solo play.
 constexpr std::size_t stand_in_slot = multiplayer::max_remote_players - 1;
 // The loop blends the last pose into the first over this time.
@@ -87,7 +89,8 @@ struct State {
     int step_request{};
     std::optional<float> speed_request;
     bool spawned{}, dressed{}, anchored_on_stage{};
-    std::string detail, note;
+    std::string detail;
+    style::EditorLoad load; // the load of the trick that the menu selected
     std::vector<style::JointDelta> rotations;
     // The editor camera orbits the stand-in.
     std::array<std::atomic<std::uint32_t>, 3> target{};
@@ -115,9 +118,23 @@ std::filesystem::path folder() { return profile::default_path().parent_path() / 
 std::filesystem::path file_of(std::uint8_t trick) {
     return folder() / (std::string(style::flip_trick_names[trick]) + ".clip");
 }
-void say(State &s, std::string text) {
+// A message that is not about the selected trick's load.
+void tell(overlay::NoticeLevel level, const std::string &text) {
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {}.", text);
-    s.note = std::move(text);
+    overlay::notify(level, "Style editor", text + ".");
+}
+// An attempt to get the clip of `trick` failed. Only the load of that trick shows it.
+void attempt_failed(State &s, std::uint8_t trick, std::string reason) {
+    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: could not learn the {}: {}.", style::flip_trick_names[trick], reason);
+    if (s.load.trick != trick || s.load.phase == Phase::ready || s.load.phase == Phase::failed) return;
+    s.load.phase = Phase::loading;
+    s.load.reason = std::move(reason);
+}
+// Stops the learn and the fetch of a trick that the menu no longer selects.
+void drop_fetch(State &s) {
+    s.learn = s.fetching = 0;
+    s.spoiled = false;
+    s.retry_after = 0;
 }
 // Finds the tricks that have a learned clip on disk.
 void list(State &s) {
@@ -163,7 +180,7 @@ const Clip *reference(State &s, std::uint8_t trick) {
     } catch (const std::exception &failure) {
         s.on_disk &= ~(1ull << trick);
         s.learned &= ~(1ull << trick);
-        say(s, std::format("could not read the saved {} clip: {}", style::flip_trick_names[trick], failure.what()));
+        attempt_failed(s, trick, std::format("the saved clip could not be read ({})", failure.what()));
         return nullptr;
     }
 }
@@ -184,7 +201,7 @@ void keep(State &s, Clip clip) {
         if (!MoveFileExW(temporary.c_str(), file_of(trick).c_str(), MOVEFILE_REPLACE_EXISTING)) throw std::runtime_error("the file replace failed");
         s.on_disk |= 1ull << trick;
     } catch (const std::exception &failure) {
-        say(s, std::format("could not save the {} clip: {}", style::flip_trick_names[trick], failure.what()));
+        tell(overlay::NoticeLevel::warning, std::format("Could not save the {} clip: {}", style::flip_trick_titles[trick], failure.what()));
     }
     if (clip.learned) s.learned |= 1ull << trick;
     else s.learned &= ~(1ull << trick);
@@ -210,7 +227,7 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
     const auto rig = style_layer::rig();
     if (!trick) return;
     if (!rig.parents) {
-        say(s, "nothing was learned: the skater skeleton is not read yet");
+        attempt_failed(s, trick, "the skater skeleton is not read yet");
         return;
     }
     struct Bone {
@@ -239,7 +256,7 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         at += count * sizeof(Bone);
     }
     if (rigs.empty()) {
-        say(s, "nothing was learned: no other skater was on screen. Open the editor on the trick first");
+        attempt_failed(s, trick, "Skatepedia's skater was not on screen");
         return;
     }
     // The clip borrows the player's board. A measured deck offset of 1 m or more is ignored.
@@ -280,7 +297,7 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         }
     }
     if (!clip) {
-        say(s, std::format("could not learn the {}: {}", style::flip_trick_names[trick], why));
+        attempt_failed(s, trick, why);
         return;
     }
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} skater(s) were on screen. The learned skater was {:.0f} m away.",
@@ -337,7 +354,6 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
                  clip->frames.size(), s.views.size(), unviewed);
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: learned the {} from the game's demonstration ({} frames).",
                  style::flip_trick_names[trick], clip->frames.size());
-    s.note.clear();
     s.retry_after = 0;
     keep(s, std::move(*clip));
 }
@@ -414,6 +430,8 @@ void request_show(std::uint8_t trick) {
     std::lock_guard lock(s.mutex);
     if (trick && trick < style::flip_trick_names.size() && s.show != trick && s.fetching != trick)
         logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the {} was picked.", style::flip_trick_names[trick]);
+    // A new trick, or another try after a failure, starts a new load.
+    if (trick != s.load.trick || s.load.phase == Phase::failed) s.load = {trick, trick ? Phase::loading : Phase::none};
     s.show = trick;
     s.hide = false;
 }
@@ -423,6 +441,7 @@ void request_hide() {
     s.hide = true;
     s.show.reset();
     s.fetching = 0;
+    s.load = {};
     s.wanted.store(false, std::memory_order_relaxed);
 }
 void request_hold(float time) noexcept {
@@ -481,6 +500,15 @@ void expect(std::uint8_t trick) {
     // Skatepedia starts the demonstration again at the change. The next tick reads the highlight, so the recording starts with it.
     s.next_named = 0;
     s.switched = true;
+}
+void fetch_failed(std::string_view why) {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    drop_fetch(s);
+    if (s.load.phase != Phase::loading && s.load.phase != Phase::recording) return;
+    s.load.phase = Phase::failed;
+    // The reason of the last attempt says more than the reason of the fetch. The fetch's reason follows its colon.
+    if (const auto colon = why.find(": "); s.load.reason.empty()) s.load.reason = colon == why.npos ? why : why.substr(colon + 2);
 }
 bool has_clip(std::uint8_t trick) {
     auto &s = state();
@@ -541,7 +569,7 @@ void fill(style::StyleModel &model) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     model.clips = s.on_disk;
-    model.editor_note = s.note;
+    model.editor_load = s.load;
     model.pace = s.pace;
 }
 std::string status() {
@@ -555,7 +583,8 @@ std::string status() {
     result += s.shown ? std::format(". Showing the {}, {}", style::flip_trick_names[s.shown->trick], s.playing ? "playing" : "held")
                       : std::string(". Nothing shown");
     if (!s.detail.empty()) result += " (" + s.detail + ")";
-    if (!s.note.empty()) result += ". " + s.note;
+    if (s.load.phase == Phase::failed) result += std::format(". The {} did not load: {}", style::flip_trick_names[s.load.trick], s.load.reason);
+    else if (!s.load.reason.empty()) result += std::format(". The last attempt for the {} failed: {}", style::flip_trick_names[s.load.trick], s.load.reason);
     return result;
 }
 
@@ -568,7 +597,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         if (s.wanted.load(std::memory_order_relaxed) && !s.screen.load(std::memory_order_relaxed) && clock_ms() > s.wanted_until.load(std::memory_order_relaxed)) {
             s.wanted.store(false, std::memory_order_relaxed);
             style_stage::leave();
-            say(s, "the editor screen did not open");
+            tell(overlay::NoticeLevel::warning, "The editor screen did not open");
         }
         if (!ready || !base || !style_layer::enabled()) {
             remove(base, s);
@@ -595,11 +624,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                         if (frame.time >= 0 && frame.time <= style::trick_end) (void)style_layer::add_demo(trick, frame.time, frame.pose.skater);
             }
         }
-        if (const auto recorded = style_layer::collect_learned(); !recorded.empty()) {
+        // A recording with no learn is for a trick that the menu no longer selects.
+        if (const auto recorded = style_layer::collect_learned(); !recorded.empty() && s.learn) {
             if (std::exchange(s.spoiled, false)) {
                 // The recording contains part of a different trick.
-                say(s, std::format("could not learn the {}: the editor's stage changed to a different trick during the recording", style::flip_trick_names[s.learn]));
-                s.learn = 0;
+                attempt_failed(s, std::exchange(s.learn, std::uint8_t{}), "Skatepedia changed to a different trick during the recording");
             } else {
                 const auto wanted = s.learn;
                 s.retry_after = now + 60000;
@@ -621,7 +650,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.retry_after = 0;
             style_layer::clear_demos();
             s.demos_wanted = s.learned;
-            say(s, "the clip was deleted. The editor learns it again the next time it loads that trick");
+            tell(overlay::NoticeLevel::info, "The clip was deleted. The editor learns it again the next time it loads that trick");
         }
         // Read Skatepedia's highlighted trick two times each second.
         const bool checked = now >= s.next_named;
@@ -650,6 +679,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             named && !(s.learned >> named & 1) && named == s.fetching) {
             s.spoiled = false;
             s.learn = named;
+            if (s.load.trick == named) {
+                s.load.phase = Phase::recording;
+                ++s.load.attempt;
+            }
             logging::log(logging::Level::info, logging::Channel::skater, "Style editor: watching the game's demonstration of the {}.", style::flip_trick_names[named]);
             style_layer::request_learn(s.switched);
         }
@@ -660,9 +693,16 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.shown.reset();
         }
         if (s.show) {
-            const auto trick = *std::exchange(s.show, std::nullopt);
+            const auto trick = *s.show;
             const Clip *clip = trick ? reference(s, trick) : nullptr;
+            // A fetch or a learn of another trick stops.
+            if (s.fetching != trick && (s.fetching || s.learn)) {
+                drop_fetch(s);
+                style_stage::cancel_fetch();
+            }
             if (clip) {
+                s.show.reset();
+                if (s.load.trick == trick) s.load = {trick, Phase::ready, s.load.attempt};
                 s.shown = *clip;
                 const float flick = style::ms_at(*clip, 0), caught = style::ms_at(*clip, 1), touchdown = style::ms_at(*clip, 2);
                 s.low_ms = flick;
@@ -675,18 +715,21 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 s.detail.clear();
             } else if (trick && style_layer::stage_present()) {
                 // Skatepedia is open, so fetch the trick from it. A fetch of the same trick continues.
+                s.show.reset();
                 s.shown.reset();
                 if (std::exchange(s.fetching, trick) != trick) style_stage::fetch(trick);
                 s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
-            } else if (trick && s.wanted.load(std::memory_order_relaxed) && (s.parked || s.open)) {
-                // Parked Skatepedia has no skater on its stage. Unpark now, and fetch when the skater is back.
+            } else if (trick && s.wanted.load(std::memory_order_relaxed)) {
+                // Skatepedia's skater is not on its stage: Skatepedia is parked, opening, or between two loops.
+                // The request stays until the skater is back. A parked Skatepedia is unparked now.
                 s.shown.reset();
-                s.show = trick;
-                s.next_park = 0;
+                if (s.parked) s.next_park = 0;
                 s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
             } else {
+                s.show.reset();
                 s.shown.reset();
                 s.detail = trick ? std::format("no clip of the {} yet", style::flip_trick_names[trick]) : std::string();
+                if (trick && s.load.trick == trick) s.load = {trick, Phase::failed, s.load.attempt, "the editor is not open"};
             }
         }
         if (s.fetching && (s.learned >> s.fetching & 1)) {
@@ -714,6 +757,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         if (!s.spawned && slot_taken) {
             s.shown.reset();
             s.detail = "the lobby is full, so there is no slot for the stand-in";
+            if (s.load.trick && s.load.phase == Phase::ready) s.load = {s.load.trick, Phase::failed, s.load.attempt, s.detail};
             return;
         }
         advance(s, playback_ms());

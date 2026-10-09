@@ -1056,7 +1056,9 @@ std::vector<std::uint8_t> collect_learned() {
 void request_learn(bool at_switch) {
     auto &l = live();
     std::lock_guard lock(l.pose_mutex);
+    // A finished recording that the editor did not collect is for an earlier learn.
     l.learned.clear();
+    l.learned_done.clear();
     l.stage_holder = 0;
     l.learn_restarts = at_switch ? 1 : 0;
     l.learn_frames = l.learn_seen = 0;

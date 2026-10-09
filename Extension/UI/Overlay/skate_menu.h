@@ -77,7 +77,7 @@ struct SkateMenu {
     struct Styling {
         int trick = 2, key = 0, edit_joint = -1, drag_key = -1;
         float time = 0.5f, drag_time{};
-        double drag_until{}, pending_until{}, preview_off_sent{}, asked_at{}, closing_until{}, drawn_at{};
+        double drag_until{}, pending_until{}, preview_off_sent{}, closing_until{}, drawn_at{};
         std::string asked; // the trick that the editor last asked to show
         std::array<char, 41> preset_name{}; // typed for a new preset
         double delete_until{};              // a first click on delete counts until then

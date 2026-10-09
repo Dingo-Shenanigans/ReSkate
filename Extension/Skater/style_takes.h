@@ -30,7 +30,8 @@ struct Clip {
     std::uint32_t began{}; // the recording-clock time of the first frame. Not saved
 };
 // A root move longer than this between two frames is a jump of the demonstration back to its start.
-inline constexpr float teleport_metres = 1.0f;
+// The laser flip's demonstration starts again only 0.9 m from where it ends.
+inline constexpr float teleport_metres = 0.5f;
 
 // Sets the exact timeline time of each frame from its part number. Returns false if the trick has no catch or no landing.
 bool retime(Clip &clip);
@@ -47,7 +48,7 @@ bool unwarp(Clip &clip);
 [[nodiscard]] std::uint32_t duration(const Clip &clip) noexcept;
 
 // A clip as a file. decode_clip throws on invalid data. A file of another version is refused, and the editor learns that clip again.
-inline constexpr std::uint32_t clip_version = 5;
+inline constexpr std::uint32_t clip_version = 6;
 [[nodiscard]] std::vector<std::uint8_t> encode_clip(const Clip &clip);
 [[nodiscard]] Clip decode_clip(std::span<const std::uint8_t> bytes);
 

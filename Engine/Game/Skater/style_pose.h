@@ -188,6 +188,15 @@ struct StyleRotation {
     std::array<float, 3> degrees{};
     bool operator==(const StyleRotation &) const = default;
 };
+// The load of the trick that the editor shows. A new trick starts a new load.
+struct EditorLoad {
+    enum class Phase : std::uint8_t { none, loading, recording, failed, ready };
+    std::uint8_t trick{};
+    Phase phase{};
+    int attempt{};      // recordings of the game's demonstration started for this trick
+    std::string reason; // why the last attempt failed. Empty: no failure
+    bool operator==(const EditorLoad &) const = default;
+};
 struct StyleModel {
     bool enabled{}, share{true}, saved{true};
     bool auto_save{true}, unsaved{};  // unsaved: without auto save, edits that are not in the file
@@ -204,7 +213,7 @@ struct StyleModel {
     BlendOuts blend_outs;
     Pace pace{even_pace}; // the shown clip's pop, fall and landing
     std::uint64_t clips{}; // the tricks that have a clip, one bit for each trick
-    std::string editor_note; // the last message from the editor
+    EditorLoad editor_load;
     bool operator==(const StyleModel &) const = default;
 };
 

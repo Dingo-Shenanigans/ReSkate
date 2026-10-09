@@ -277,7 +277,7 @@ void fail(State &s, std::string_view why) {
     s.seek = Seek::none;
     s.seek_trick = 0;
     s.then = nullptr;
-    style_editor::expect(0);
+    style_editor::fetch_failed(why);
     overlay::cover({}, 0);
     logging::log(logging::Level::warning, logging::Channel::skater, "Style editor: {}.", why);
     overlay::notify(overlay::NoticeLevel::warning, "Style editor", std::string(why) + ".");
@@ -424,7 +424,14 @@ void open(std::function<void()> then) {
     overlay::cover("Opening the style editor", 45000);
     const auto now = GetTickCount64();
     std::lock_guard lock(s.mutex);
-    if (!style_layer::stage_present()) s.nudged = false;
+    // A new visit starts on Skatepedia's first tab, where flip tricks have no animations: find the entry and the tab again.
+    if (!style_layer::stage_present()) {
+        s.nudged = false;
+        current_entry = 0;
+        forced_trick = 0;
+        written_name.clear();
+        forced_title.clear();
+    }
     s.leave.store(0, std::memory_order_relaxed);
     s.scans = 0;
     s.then = std::move(then);
@@ -451,6 +458,13 @@ void fetch(std::uint8_t trick) {
     s.seek_presses = s.seek_tabs = s.seek_retries = 0;
     s.seek_at = GetTickCount64();
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: finding the {} in Skatepedia.", style::flip_trick_names[trick]);
+}
+void cancel_fetch() {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.seek_trick) return;
+    s.seek = Seek::none;
+    s.seek_trick = 0;
 }
 void tick(std::uintptr_t base, bool ready) noexcept {
     auto &s = state();
