@@ -53,6 +53,7 @@ struct State {
     double break_real{-1};
     std::size_t breaks_seen{};
     std::uint32_t breaks_serial{};
+    bool whoosh_pending{}; // the slow motion's sound, once the game really slows
     std::uint32_t last_state{};
     double last_time{-1};
     double heartbeat{};
@@ -236,6 +237,27 @@ void draw_block(ImDrawList *draw, const Result &r, float total_shown, float fade
         y -= row_h;
     }
 
+    // Skate 3's bonus chips on top: cars, then the bones.
+    if (r.car_points > 0) {
+        const float chip_h = row_h * 0.9f;
+        const ImVec2 a0(left + slide, y + (row_h - chip_h) * 0.5f);
+        draw->AddRectFilled(a0, ImVec2(left + 112.0f * scale + slide, a0.y + chip_h), alpha(chip_blue, a), 3.0f * scale);
+        {
+            // A car side on: body, cabin, wheels.
+            const float u = chip_h / 32.0f, x0 = a0.x + 4.0f * u, yb = a0.y + 22.0f * u;
+            const ImU32 c = alpha(IM_COL32_WHITE, a);
+            draw->AddRectFilled(ImVec2(x0, yb - 8.0f * u), ImVec2(x0 + 26.0f * u, yb), c, 2.0f * u);
+            draw->AddRectFilled(ImVec2(x0 + 6.0f * u, yb - 14.0f * u), ImVec2(x0 + 19.0f * u, yb - 7.0f * u), c, 2.0f * u);
+            draw->AddCircleFilled(ImVec2(x0 + 6.5f * u, yb + 1.0f * u), 3.5f * u, alpha(chip_blue, a), 12);
+            draw->AddCircleFilled(ImVec2(x0 + 19.5f * u, yb + 1.0f * u), 3.5f * u, alpha(chip_blue, a), 12);
+            draw->AddCircleFilled(ImVec2(x0 + 6.5f * u, yb + 1.0f * u), 2.5f * u, c, 12);
+            draw->AddCircleFilled(ImVec2(x0 + 19.5f * u, yb + 1.0f * u), 2.5f * u, c, 12);
+        }
+        if (r.car_count >= 2)
+            shadowed(draw, font, 22.0f * scale, ImVec2(a0.x + chip_h + 4.0f * scale, a0.y + 4.0f * scale), alpha(white, a), std::format("x{}", r.car_count));
+        shadowed(draw, font, text_size, ImVec2(left + 122.0f * scale + slide, a0.y + 2.0f * scale), alpha(white, a), with_commas(r.car_points));
+        y -= row_h;
+    }
     // The bone chip on top: icon, count, points.
     if (r.bone_points > 0) {
         const float chip_h = row_h * 0.9f;
@@ -526,6 +548,7 @@ void skate3_hom_tick(bool stand_down) {
         in.bones_valid = true;
         in.upright = skate3_hom::rig_upright().load();
         in.lying = skate3_hom::rig_lying().load();
+        in.vehicle = skate3_hom::vehicle_contact().load();
         for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i)
             for (std::size_t k = 0; k < 3; ++k) in.bone_centres[i][k] = (rig.bones[i].a[k] + rig.bones[i].b[k]) * 0.5f;
     }
@@ -593,7 +616,11 @@ void skate3_hom_tick(bool stand_down) {
                 s.breaks_serial = live.serial;
                 s.breaks_seen = 0;
             }
-            if (live.broken.size() > s.breaks_seen) s.break_real = real_seconds();
+            if (live.broken.size() > s.breaks_seen) {
+                // Its sound once per slow motion: a break inside one already running only extends it.
+                if (s.break_real < 0 || real_seconds() - s.break_real > 2.15) s.whoosh_pending = true;
+                s.break_real = real_seconds();
+            }
             s.breaks_seen = live.broken.size();
         }
     }
@@ -636,7 +663,18 @@ float skate3_hom_game_speed() {
     return s.break_real < 0 ? 1.0f : slow_motion_curve(real_seconds() - s.break_real);
 }
 
-void skate3_hom_set_applied_speed(float speed) { applied_speed().store(std::isfinite(speed) ? std::clamp(speed, 0.05f, 1.0f) : 1.0f); }
+void skate3_hom_set_applied_speed(float speed) {
+    applied_speed().store(std::isfinite(speed) ? std::clamp(speed, 0.05f, 1.0f) : 1.0f);
+    auto &s = state();
+    bool whoosh = false;
+    {
+        std::lock_guard lock(s.mutex);
+        if (s.whoosh_pending && speed < 1.0f) whoosh = true;
+        // Refused (a multiplayer session): no slow motion, no sound for it.
+        if (whoosh || real_seconds() - s.break_real > 0.3) s.whoosh_pending = false;
+    }
+    if (whoosh) skate3_hom::play_slow_motion_sound();
+}
 
 bool skate3_hom_hud_pending() {
     auto &s = state();

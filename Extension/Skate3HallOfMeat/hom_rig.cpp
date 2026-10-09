@@ -5,6 +5,9 @@
 #include "Extension/Skater/client_source_spawn_internal.h"
 #include "Engine/Game/Build/20260929/client_source_spawn.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Skater/no_bail.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/skater_body.h"
 #include <Windows.h>
 #include <array>
 #include <chrono>
@@ -369,7 +372,45 @@ void apply_ui_hide(std::uintptr_t base) noexcept {
 }
 } // namespace
 
+namespace {
+// Skate 3's car bonus needs to know when the skater hits a car: skate.'s contact records say which
+// body touched a vehicle in the last physics step (the layout ReSkate's own Hall of Meat reads,
+// Engine/Game/Build/20260929/skater_body.h), checked against its code before it is trusted.
+bool contacts_readable(std::uintptr_t base) noexcept {
+    static int verdict = -1;
+    if (verdict < 0) {
+        verdict = 1;
+        for (const auto &contract : addr::skater_body::contracts) {
+            std::array<unsigned char, 32> actual{};
+            if (!first_person_read(base + contract.rva, actual.data(), actual.size()) || actual != contract.bytes) {
+                verdict = 0;
+                logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: skater contacts not readable here, no car bonus.");
+                break;
+            }
+        }
+    }
+    return verdict == 1;
+}
+void read_vehicle_contact(std::uintptr_t base) noexcept {
+    namespace body = addr::skater_body;
+    bool touched = false;
+    NoBailSkater skater;
+    std::uintptr_t holder{}, contacts{};
+    std::array<unsigned char, body::body_bone_count * body::bone_record_size> records{};
+    std::array<std::uint8_t, body::body_bone_count> touching{};
+    if (contacts_readable(base) && no_bail_skater(skater) && skater.rig &&
+        first_person_read(skater.rig + body::contact_holder_offset, &holder, sizeof(holder)) && holder &&
+        first_person_read(holder + body::contact_struct_offset, &contacts, sizeof(contacts)) && contacts &&
+        first_person_read(contacts + body::bone_records_offset, records.data(), records.size()) &&
+        first_person_read(contacts + body::bone_touching_offset, touching.data(), touching.size()))
+        for (std::size_t i = 0; i < body::body_bone_count; ++i)
+            if (touching[i] && records[i * body::bone_record_size + body::bone_hit_vehicle_offset]) touched = true;
+    vehicle_contact().store(touched);
+}
+} // namespace
+
 void rig_tick(std::uintptr_t base, std::uintptr_t client) noexcept {
+    read_vehicle_contact(base);
     try {
         const auto component = client_source::detail::first_person_component(base, client);
         std::uintptr_t holder{};

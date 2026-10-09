@@ -23,6 +23,7 @@ struct Sample {
     bool upright{}; // head well above the hips
     bool lying{};   // head no higher than ~0.3 m above the hips: the body is down, not crouched
     std::array<std::array<float, 3>, 19> bone_centres{};
+    bool vehicle{}; // the body touched a car or truck
 };
 
 // Skate 3's own HoM damage model (Sk8::Score::HoM in its attribute database): 25 body parts, each
@@ -85,6 +86,8 @@ struct Result {
     float rotation{}; // degrees turned about the vertical during the bail
     // Points per row of the original HUD: the bone chip on top, then the metrics.
     int bone_points{}, rotation_points{}, air_points{}, drop_points{}, duration_points{}, speed_points{};
+    // Skate 3's car bonus (Sk8::Score::HoM VehicleData): each car hit, apart by its gap.
+    int car_count{}, car_points{};
     int total{};
     std::string title;
     // When each HUD row first appeared (rotation, air, drop, bail time, speed; -1 = not yet). The
@@ -106,6 +109,9 @@ struct Config {
     float settle_speed = 0.6f;         // below this for settle_time ends the bail
     float settle_time = 1.0f;
     float min_duration = 0.4f; // shorter wipeouts are not worth scoring
+    // Skate 3's VehicleData: 2,000 a car; its 1,500 beside it read as the gap (ms) before the next.
+    int car_bonus = 2000;
+    double car_gap = 1.5;
     float max_duration = 30.0f;
     // The metrics pay by Skate 3's own score graphs (metric_points in hom_core.cpp).
 };
@@ -199,6 +205,8 @@ private:
     // The last bail as it ended, so a crash straight after it (still falling, a second drop) carries
     // on as the same bail instead of starting another.
     double ended_at_{-1};
+    double vehicle_time_{-1}; // last tick the body touched a vehicle
+    double car_awarded_{-1e9}; // when this bail last paid a car bonus
     bool carried_on_{};
     Sample ended_start_{};
     float ended_turn_{};

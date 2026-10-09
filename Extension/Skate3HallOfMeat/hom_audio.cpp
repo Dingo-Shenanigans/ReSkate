@@ -31,6 +31,7 @@ struct Player {
     IXAudio2 *engine{};
     IXAudio2MasteringVoice *master{};
     std::vector<Sound> sounds;
+    std::vector<Sound> slow; // hom_slo_mo
     std::vector<IXAudio2SourceVoice *> voices;
     std::mt19937 rng{20100511u};
     std::chrono::steady_clock::time_point last{};
@@ -76,7 +77,13 @@ bool start(Player &p) {
         std::error_code error;
         for (const auto &entry : fs::directory_iterator(dir, error)) {
             const auto name = entry.path().filename().string();
-            if (name.rfind("HOM_Set_", 0) != 0 || entry.path().extension() != ".wav") continue;
+            if (entry.path().extension() != ".wav") continue;
+            if (name.rfind("hom_slo_mo_", 0) == 0) {
+                Sound sound;
+                if (load_wav(entry.path(), sound)) p.slow.push_back(std::move(sound));
+                continue;
+            }
+            if (name.rfind("HOM_Set_", 0) != 0) continue;
             Sound sound;
             sound.set = name.size() > 8 ? name[8] - '0' : 0;
             if (load_wav(entry.path(), sound) && sound.seconds > 0.04f) p.sounds.push_back(std::move(sound));
@@ -140,6 +147,28 @@ void play_bone_sound(float strength, bool broken) noexcept {
         buffer.pAudioData = sound.pcm.data();
         buffer.Flags = XAUDIO2_END_OF_STREAM;
         voice->SetVolume(std::clamp(broken ? 1.0f : 0.35f + 0.5f * strength, 0.0f, 1.0f));
+        if (FAILED(voice->SubmitSourceBuffer(&buffer)) || FAILED(voice->Start())) {
+            voice->DestroyVoice();
+            return;
+        }
+        p.voices.push_back(voice);
+    } catch (...) {
+    }
+}
+void play_slow_motion_sound() noexcept {
+    try {
+        auto &p = player();
+        std::lock_guard lock(p.mutex);
+        if (!p.ready && std::chrono::steady_clock::now() >= p.retry) p.ready = start(p);
+        if (!p.ready || p.slow.empty()) return;
+        const Sound &sound = p.slow[std::uniform_int_distribution<std::size_t>(0, p.slow.size() - 1)(p.rng)];
+        IXAudio2SourceVoice *voice{};
+        if (FAILED(p.engine->CreateSourceVoice(&voice, &sound.format))) return;
+        XAUDIO2_BUFFER buffer{};
+        buffer.AudioBytes = static_cast<UINT32>(sound.pcm.size());
+        buffer.pAudioData = sound.pcm.data();
+        buffer.Flags = XAUDIO2_END_OF_STREAM;
+        voice->SetVolume(0.9f);
         if (FAILED(voice->SubmitSourceBuffer(&buffer)) || FAILED(voice->Start())) {
             voice->DestroyVoice();
             return;

@@ -279,13 +279,14 @@ void Tracker::score(Result &r) const {
     r.drop_points = metric_points(2, r.drop);
     r.duration_points = metric_points(3, r.duration);
     r.speed_points = metric_points(4, r.peak_speed);
-    r.total = r.bone_points + r.air_points + r.drop_points + r.duration_points + r.speed_points + r.rotation_points;
+    r.total = r.bone_points + r.air_points + r.drop_points + r.duration_points + r.speed_points + r.rotation_points + r.car_points;
     r.title = title_for(r.total, r.broken.size());
 }
 
 bool Tracker::update(const Sample &s) {
     bool finished = false;
     if (phase_ == Phase::finished) phase_ = Phase::idle;
+    if (s.vehicle) vehicle_time_ = s.time;
     if (have_previous_ && previous_.physics_state != s.physics_state) {
         const auto off = [&](std::uint32_t state) { return state == config_.wipeout_state || state == 504; };
         if (off(previous_.physics_state) != off(s.physics_state) || s.physics_state == config_.wipeout_state) switch_time_ = s.time;
@@ -432,6 +433,7 @@ bool Tracker::update(const Sample &s) {
             phase_ = Phase::bailing;
             live_ = {};
             live_.serial = ++serial_;
+            car_awarded_ = -1e9;
             riding_since_ = -1;
             carried_on_ = false;
             rng_ = 0xC0FFEEull * live_.serial + 17;
@@ -475,6 +477,12 @@ bool Tracker::update(const Sample &s) {
         ++cancelled_;
     } else if (have_previous_) {
         if (pending_until_ >= 0 && s.time >= pending_until_) pending_until_ = -1; // stayed down: a crash
+        // A car hit (the one that knocked the skater down counts too, a moment before the bail began).
+        if (vehicle_time_ >= 0 && s.time - vehicle_time_ <= 0.6 && vehicle_time_ - car_awarded_ >= config_.car_gap) {
+            car_awarded_ = vehicle_time_;
+            ++live_.car_count;
+            live_.car_points += config_.car_bonus;
+        }
         const double dt = s.time - previous_.time;
         const double elapsed = s.time - start_.time;
         {
