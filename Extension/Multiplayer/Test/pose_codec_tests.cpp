@@ -392,7 +392,7 @@ int bench(const char *path) {
             for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
             std::sort(order.begin(), order.end(), [&](auto a, auto b) { return reach[a] > reach[b]; });
             std::cout << what << " bones furthest from their parent:";
-            for (std::size_t i = 0; i < std::min<std::size_t>(order.size(), 40); ++i) std::cout << ' ' << order[i] << '=' << reach[order[i]] << "m";
+            for (std::size_t i = 0; i < std::min<std::size_t>(order.size(), 16); ++i) std::cout << ' ' << order[i] << '=' << reach[order[i]] << "m";
             std::cout << '\n';
         };
         furthest(skater_reach, "skater");

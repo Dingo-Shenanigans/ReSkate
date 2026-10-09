@@ -69,6 +69,9 @@ struct ServerConfig {
     // inverse the least). The game's own skater height is a scale as well, so 1 shows every
     // skater at one height and build; 2, the default, leaves height alone. 0 is no limit.
     float bone_scale_limit = 2;
+    // How far (metres) a bone of a skater's body or board may be from the one it hangs from
+    // for the other players (limit_bone_reach). 0: no limit.
+    float bone_reach_limit = 1;
     // How players reach the server: true, through Steam's relay network only; false, straight
     // to `port` (UDP). A direct server still answers through the relays, for a player the port
     // does not reach, one who has turned direct connections off, or an older game.

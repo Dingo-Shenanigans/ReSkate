@@ -15,7 +15,7 @@ namespace {
 constexpr std::string_view help_text =
     "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
     "map <name, e.g. San Vansterdam> | maps | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
-    "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off\n"
+    "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off | bone-reach <0.5-20>|off\n"
     "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
     "tpall [player] | tphere <player> | votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>] | vote-cancel\n"
     "votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off\n"
@@ -356,6 +356,20 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(off ? std::string("Mods may resize skaters' body parts freely.")
                            : value == 1.f ? std::string("Skaters show at the game's own proportions: resized body parts are not passed on.")
                                           : "Resized body parts show at up to " + std::to_string(value).substr(0, 4) + "x.");
+    }
+    if (name == "bone-reach") {
+        const bool off = argument == "off";
+        float value{};
+        const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+        if (!off && (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !(value >= .5f && value <= 20.f)))
+            return "bone-reach <0.5-20>|off: how many metres a bone of a skater may be from the one it hangs from (now " +
+                   (config_.bone_reach_limit > 0.f ? std::to_string(config_.bone_reach_limit).substr(0, 4) : std::string("off")) + ")";
+        config_.bone_reach_limit = off ? 0.f : value;
+        // Whole states go again so that nobody keeps a reference with the old places in it.
+        for (auto &[id, guest] : guests_)
+            for (const auto &[other, unused] : guests_) guest->sender.forget(other, PacketKind::pose);
+        return changed(off ? std::string("Skaters' bones may be moved any distance.")
+                           : "Skaters' bones show at most " + std::to_string(value).substr(0, 4) + " m from where they hang.");
     }
     if (name == "crowd") {
         // crowd <poses a second>|off: the most one player is sent (crowd_limits).

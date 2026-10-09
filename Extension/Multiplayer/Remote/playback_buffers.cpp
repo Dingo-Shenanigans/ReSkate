@@ -169,6 +169,10 @@ template <class P> bool PoseBuffer::push_frame(P &&p, std::uint64_t arrival) {
     }
     const auto source = sender_clock_ ? p.time_us : arrival;
     frames_.push_back({std::forward<P>(p).pose, arrival, source});
+    // Whatever sent it (a server that checks nothing, or a player's own game): a skater is
+    // never shown stretched across the map or blown up past what any server allows.
+    limit_bone_reach(frames_.back().pose, client_bone_reach);
+    limit_bone_scale(frames_.back().pose, client_bone_scale);
     interpolation_delay_us_ = std::max(100000U, p.pose_interval_us + 50000);
     while (frames_.size() > 64)
         frames_.pop_front();
