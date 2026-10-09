@@ -506,11 +506,17 @@ void update_model(std::uintptr_t client, TickState& frame) {
         r.next_offline = now + 500;
         auto offline = dingosdk::update_gameplay_settings_override(
             offline_request ? &*offline_request : nullptr);
-        if (offline_request)
+        if (offline_request) {
+            using dingosdk::overlay::OfflineFeatureGroup;
+            if (offline_request->group == OfflineFeatureGroup::board_wear)
+                dingosdk::profile_runtime::set_local_preference("BoardWear", offline_request->enabled);
+            else if (offline_request->group == OfflineFeatureGroup::restore_all)
+                dingosdk::profile_runtime::set_local_preference("BoardWear", false);
             dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
                 "Offline feature %d -> %d applied: %s (board wear available %d, effective %d).",
                 static_cast<int>(offline_request->group), offline_request->enabled, offline.model.status.c_str(),
                 offline.model.board_wear.available, offline.model.board_wear.effective);
+        }
         auto slot_action = dingosdk::SkaterSlotOverrideAction::tick;
         if (offline_request &&
             offline_request->group == dingosdk::overlay::OfflineFeatureGroup::restore_all)
@@ -522,17 +528,24 @@ void update_model(std::uintptr_t client, TickState& frame) {
         }
         // Saved access owns these prerequisites. This runs on the recorded
         // game-update thread and reacquires/validates each native settings object.
-        const auto enable_saved_feature = [&](const char* name, bool requested) {
+        const auto enable_saved_feature = [&](const char* name, bool requested, const char* reapplied_log = nullptr) {
             if (!requested) return;
             const auto variable = std::find_if(offline.model.variables.begin(), offline.model.variables.end(),
                 [&](const auto& field) { return field.name == name; });
-            if (variable != offline.model.variables.end() && variable->available && !variable->value)
+            if (variable != offline.model.variables.end() && variable->available && !variable->value) {
                 offline = dingosdk::update_gameplay_engine_variable({name, dingosdk::EngineVariableAction::set, true});
+                if (reapplied_log)
+                    dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+                        "%s", reapplied_log);
+            }
         };
         enable_saved_feature("FastTravelPointsEnabled", profile_access.bus_stops);
         enable_saved_feature("EnableNeighborhoodRank", profile_access.neighborhoods || profile_access.neighborhood_ranks);
         enable_saved_feature("EnableCASArtistSandbox", profile_access.cosmetics);
         enable_saved_feature("EnableMyStuffMenu", profile_access.cosmetics);
+        enable_saved_feature("BoardWearEnabled",
+            dingosdk::profile_runtime::local_preference("BoardWear").value_or(false),
+            "Re-applied saved board wear preference (BoardWearEnabled).");
         if (profile_access.preset_slots) slot_action = dingosdk::SkaterSlotOverrideAction::enable;
         const auto slots = dingosdk::update_skater_slot_override(slot_action, dingosdk::local_customization_selected_preset(),
             dingosdk::local_customization_outfits_loadable());

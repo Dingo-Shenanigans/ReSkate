@@ -488,9 +488,11 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         SourceReader reader;
         source_require(reader.value<std::uint8_t>(skater.skater_identity, 0x7e0) == 0,
             "Wait for the current teleport before using velocity boosts.");
+        const auto board_velocity = up ? std::array<float, 3>{} :
+            reader.value<std::array<float, 3>>(bodies.parts[0], 0x70);
         reader.verify();
         const auto velocity = velocity_boost_delta(transform, up ? debug.up_velocity_speed : debug.forward_velocity_speed,
-            up ? VelocityBoostDirection::up : VelocityBoostDirection::forward);
+            up ? VelocityBoostDirection::up : VelocityBoostDirection::forward, board_velocity);
         source_require(velocity.has_value(), "Velocity boost direction or speed is invalid.");
         auto& boost = up ? debug.up_velocity : debug.forward_velocity;
         source_require(!boost.valid, "Velocity boost is already queued.");

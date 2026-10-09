@@ -507,17 +507,30 @@ void relaunch(const fs::path& self, const std::vector<std::wstring>& arguments) 
     CloseHandle(process.hProcess);
 }
 
-bool steam_signed_in() {
+std::wstring steam_offline_reason() {
     const auto pid = registry_dword(steam_process_key, L"pid");
-    if (!pid || !*pid || !active_steam_id()) return false;
+    if (!pid || !*pid) return L"no Steam client is registered as running (ActiveProcess pid is 0)";
+    if (!active_steam_id()) return L"Steam reports no signed-in account (ActiveProcess ActiveUser is 0)";
     Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, *pid));
+    if (!process.get())
+        return std::format(L"the registered Steam process {} cannot be opened (Windows error {})", *pid, GetLastError());
     DWORD code{};
-    if (!process.get() || !GetExitCodeProcess(process.get(), &code) || code != STILL_ACTIVE) return false;
+    if (!GetExitCodeProcess(process.get(), &code) || code != STILL_ACTIVE)
+        return std::format(L"the registered Steam process {} is no longer running", *pid);
     std::wstring image(MAX_PATH, L'\0');
     DWORD length = static_cast<DWORD>(image.size());
-    if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &length)) return false;
+    if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &length))
+        return std::format(L"the registered Steam process {} cannot be identified (Windows error {})", *pid,
+                           GetLastError());
     image.resize(length);
-    return _wcsicmp(fs::path(image).filename().c_str(), L"steam.exe") == 0;
+    const auto name = fs::path(image).filename().wstring();
+    if (_wcsicmp(name.c_str(), L"steam.exe") != 0)
+        return std::format(L"the registered Steam process {} is {}, not steam.exe", *pid, name);
+    return {};
+}
+
+bool steam_signed_in() {
+    return steam_offline_reason().empty();
 }
 
 std::string steam_persona_name() {
@@ -702,13 +715,15 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         throw std::runtime_error("The menu and console need different keys. Change one in Settings.");
     set_environment(L"RESKATE_MENU_KEY", std::to_wstring(options.menu_key).c_str());
     set_environment(L"RESKATE_CONSOLE_KEY", std::to_wstring(options.console_key).c_str());
-    const bool offline = options.offline || !launcher_app::steam_signed_in();
+    const auto steam_reason = options.offline ? std::wstring{} : launcher_app::steam_offline_reason();
+    const bool offline = options.offline || !steam_reason.empty();
     set_environment(L"RESKATE_OFFLINE", offline ? L"1" : L"0");
     const auto steam_id = offline ? last_steam_id() : std::nullopt;
     set_environment(L"RESKATE_OFFLINE_STEAM_ID", steam_id ? std::to_wstring(*steam_id).c_str() : nullptr);
     if (offline)
         logging::write(logging::Level::info, logging::Channel::launcher, options.offline ?
-            L"Offline mode: requested; Steam is not used" : L"Offline mode: Steam is not running or not signed in");
+            std::wstring(L"Offline mode: requested; Steam is not used") :
+            L"Offline mode: Steam is not running or not signed in: " + steam_reason);
     logging::write(logging::Level::info, logging::Channel::launcher, std::wstring(L"Graphics options: DRED=") +
         (options.gpu_diagnostics ? L"enabled" : L"default"));
     if (options.force_windowed)

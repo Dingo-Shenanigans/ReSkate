@@ -25,7 +25,9 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 45;
+constexpr std::uint16_t protocol_version = 46;
+// A dedicated server's chat lines unless its owner says otherwise: violet (#8E5CFF) and lavender (#D9C8FF).
+inline constexpr std::uint32_t default_server_chat_badge = 0xffff5c8eU, default_server_chat_text = 0xffffc8d9U;
 constexpr std::size_t max_throwdown_message = 4096;
 // Packet::tuning: the host's SkatePhysicsTuning differences (Extension/Skater/physics_tuning.h).
 constexpr std::size_t max_physics_tuning = 16384;
@@ -179,6 +181,9 @@ struct Packet {
     // Bumped each time the host deletes all guest objects. Guests delete their
     // own session objects when it changes after their first roster.
     std::uint32_t object_clears{};
+    // Roster: the colours of a dedicated server's own chat lines, its badge and name and the
+    // text after them (IM_COL32 layout; the server's owner chooses them).
+    std::uint32_t chat_badge = default_server_chat_badge, chat_text = default_server_chat_text;
     bool force_world_layers{};
     WorldLayerState layers = WorldLayerState(world_layers().size()); // all "default"
     ParkChoices parks; // One allowlisted selection byte per shared native park slot.

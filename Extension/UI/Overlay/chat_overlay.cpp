@@ -78,6 +78,7 @@ Clock::time_point arrived(const ChatState& c, std::uint64_t sequence) {
 // The sender's role colour, as their nametag shows it; ReSkate's notices muted. Lines without
 // a role (older sessions) fall back to a steady colour per sender.
 ImU32 name_colour(const MultiplayerChatLine& line) {
+    if (line.server) return line.color ? line.color : multiplayer::nametag_server;
     if (!line.sender) return theme::muted;
     if (line.color) return line.color;
     if (line.local) return theme::blue;
@@ -87,6 +88,11 @@ ImU32 name_colour(const MultiplayerChatLine& line) {
     auto mixed = line.sender * 0x9E3779B97F4A7C15ull;
     mixed ^= mixed >> 29;
     return palette[mixed % palette.size()];
+}
+
+// A message's own colour: the server's lines in lavender, everyone else's white.
+ImU32 text_colour(const MultiplayerChatLine& line) {
+    return line.text_color ? line.text_color : line.server ? multiplayer::nametag_server_text : theme::paper;
 }
 
 // "name:"; a role tag is drawn in its own box before it (role_badge.h).
@@ -491,6 +497,7 @@ void draw_chat() {
                 ImGui::SameLine(0.0f, 6.0f * scale);
                 const auto& drawn = layout_for(layout, line, ImGui::GetFont(), ImGui::GetFontSize(), line_width,
                                                ImGui::GetCursorScreenPos().x - line_start.x);
+                ImGui::PushStyleColor(ImGuiCol_Text, text_colour(line));
                 if (drawn.emotes) {
                     draw_rich(ImGui::GetWindowDrawList(), ImGui::GetFont(), ImGui::GetFontSize(), line_start, drawn.text,
                               drawn.rich, ImGui::GetColorU32(ImGuiCol_Text), 1.0f);
@@ -499,6 +506,7 @@ void draw_chat() {
                 } else {
                     ImGui::TextUnformatted(drawn.text.c_str());
                 }
+                ImGui::PopStyleColor();
             }
             if (c.feed.lines.empty()) {
                 ImGui::PushStyleColor(ImGuiCol_Text, theme::muted);
@@ -603,8 +611,9 @@ void draw_chat() {
         draw->AddText(heading, name_size, ImVec2(at.x + badge, at.y), with_alpha(name_colour(*line), alpha), label.c_str());
         shade_nametag_gradient(draw, name_vertices, at.x + badge, name_extent.x, name_colour(*line), ImGui::GetTime());
         const ImVec2 text_at = beside ? ImVec2(at.x + indent, at.y) : ImVec2(at.x, at.y + name_extent.y);
-        if (emotes) draw_rich(draw, body, size, text_at, drawn.text, drawn.rich, with_alpha(theme::paper, alpha), alpha);
-        else draw->AddText(body, size, text_at, with_alpha(theme::paper, alpha), drawn.text.c_str(), nullptr, wrap);
+        const auto text = with_alpha(text_colour(*line), alpha);
+        if (emotes) draw_rich(draw, body, size, text_at, drawn.text, drawn.rich, text, alpha);
+        else draw->AddText(body, size, text_at, text, drawn.text.c_str(), nullptr, wrap);
         bottom = top_left.y - gap;
     }
 }

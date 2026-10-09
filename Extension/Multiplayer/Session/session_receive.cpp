@@ -307,6 +307,8 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     }
     s.capacity = p.capacity;
     s.roster_voice_range = p.voice_range;
+    s.server_chat_badge = p.chat_badge;
+    s.server_chat_text = p.chat_text;
     ++s.party_revision; // anyone's party may have changed
     // A dedicated server knows players only by the name each sent in their hello.
     for (auto &peer : active_peers(s))

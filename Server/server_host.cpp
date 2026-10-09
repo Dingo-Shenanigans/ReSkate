@@ -582,6 +582,8 @@ void Host::send_roster() {
     auto p = packet(PacketKind::roster, now_);
     p.voice_policy = voice_policy_;
     p.voice_range = config_.voice_range;
+    p.chat_badge = parse_colour(config_.chat_color).value_or(multiplayer::default_server_chat_badge);
+    p.chat_text = parse_colour(config_.chat_text_color).value_or(multiplayer::default_server_chat_text);
     p.distances = config_.distances;
     p.object_placement = config_.object_placement;
     p.object_limit = config_.object_limit;
@@ -1742,6 +1744,15 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (argument != "off" && !argument.empty() && !valid_chat_text(argument)) return "The welcome message is one chat line.";
         config_.welcome = argument == "off" ? std::string{} : std::string(argument);
         return changed(config_.welcome.empty() ? "Welcome message removed." : "Welcome message set.");
+    }
+    if (name == "chat-color" || name == "chat-colour") {
+        // chat-color <#badge> [<#text>]: the server's own lines in chat.
+        const auto [badge, text] = split(argument);
+        if (badge.empty() || !parse_colour(badge) || (!text.empty() && !parse_colour(text)))
+            return "chat-color <#RRGGBB badge> [<#RRGGBB text>] (now " + config_.chat_color + " " + config_.chat_text_color + ")";
+        config_.chat_color = std::string(badge);
+        if (!text.empty()) config_.chat_text_color = std::string(text);
+        return changed("The server's chat lines are " + config_.chat_color + " with " + config_.chat_text_color + " text.");
     }
     if (name == "announce-throwdowns") {
         const auto value = on_off(argument);

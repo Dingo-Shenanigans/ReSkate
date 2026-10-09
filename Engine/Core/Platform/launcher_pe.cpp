@@ -6,6 +6,7 @@
 #include <Windows.h>
 #include <bcrypt.h>
 #else
+#include <cerrno>
 #include <fstream>
 #include <openssl/sha.h>
 #endif
@@ -221,8 +222,15 @@ std::string sha256_file(const fs::path& path) {
     }
     return output;
 #else
+    // Name the file and the reason, as open_to_read does on Windows: a server admin reading
+    // "cannot open file" in the log has no idea which file, or what to fix.
     std::ifstream input(path, std::ios::binary);
-    if (!input) detail::fail("Cannot open file for SHA-256");
+    if (!input) {
+        const int error = errno;
+        throw std::runtime_error("Cannot open " + path_utf8(path.filename()) + " in " +
+            path_utf8(path.parent_path()) + " for SHA-256: " +
+            (error ? std::strerror(error) : "unknown error"));
+    }
     SHA256_CTX context;
     if (!SHA256_Init(&context)) detail::fail("Cannot initialize SHA-256");
     std::vector<unsigned char> bytes(1024 * 1024);

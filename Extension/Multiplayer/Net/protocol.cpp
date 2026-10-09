@@ -605,6 +605,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.object_clears, 4);
         if (!valid_multiplayer_tps(p.tps)) throw std::invalid_argument("Invalid session TPS");
         w.integer(p.tps, 1);
+        w.integer(p.chat_badge & 0xffffff, 3); // red, green, blue
+        w.integer(p.chat_text & 0xffffff, 3);
         w.integer(static_cast<std::uint8_t>(p.object_placement), 1);
         if (!valid_object_limit(p.object_limit)) throw std::invalid_argument("Invalid object limit");
         w.integer(p.object_limit, 2);
@@ -917,6 +919,8 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             p.object_clears = static_cast<std::uint32_t>(r.integer(4));
             p.tps = static_cast<unsigned>(r.integer(1));
             if (!valid_multiplayer_tps(p.tps)) return {};
+            p.chat_badge = 0xff000000U | static_cast<std::uint32_t>(r.integer(3));
+            p.chat_text = 0xff000000U | static_cast<std::uint32_t>(r.integer(3));
             const auto placement = r.integer(1);
             if (!valid_object_placement(placement)) return {};
             p.object_placement = static_cast<ObjectPlacement>(placement);

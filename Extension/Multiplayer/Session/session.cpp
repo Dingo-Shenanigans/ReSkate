@@ -156,6 +156,8 @@ void stop(Session &s, std::string reason) {
     s.next_send = s.last_hello = s.last_roster = s.last_cosmetic_capture = s.last_routes =
         s.last_network_log = 0;
     s.sequence = s.roster_sequence = 0;
+    s.server_chat_badge = default_server_chat_badge;
+    s.server_chat_text = default_server_chat_text;
     s.pose_streams.clear();
     s.pose_ack = {};
     s.pose_ack_due = false;

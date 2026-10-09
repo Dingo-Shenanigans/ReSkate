@@ -85,6 +85,11 @@ time the server starts.
 name               Shown in the browser: 1-64 letters, numbers, spaces and - _ / [ ] ( ).
 password           Empty for anyone; otherwise players type it to join.
 welcome_message    A chat line sent to each player as they join.
+chat_color         The colour of the server's own lines in chat: its "Server" badge
+                   and name, as "#RRGGBB" (default "#8E5CFF", violet).
+chat_text_color    The colour of the text of those lines (default "#D9C8FF",
+                   lavender). Pick one that reads on a dark background.
+                   Console: chat-color <#badge> [<#text>].
 listed             false hides the server; players then need the code.
 max_players        1-249.
 port, query_port   Steam game server ports (default 27015, 27016).

@@ -64,6 +64,8 @@ Layout layout(const ServerConfig &c) {
     server.set("name", c.name);
     server.set("password", c.password);
     server.set("welcome_message", c.welcome);
+    server.set("chat_color", c.chat_color);
+    server.set("chat_text_color", c.chat_text_color);
     server.set("listed", c.listed);
     server.set("max_players", c.max_players);
     server.set("port", static_cast<unsigned>(c.port));
@@ -211,6 +213,8 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.name = get("server", "name", c.name);
     c.password = get("server", "password", c.password);
     c.welcome = get("server", "welcome_message", c.welcome, {"welcome"});
+    c.chat_color = get("server", "chat_color", c.chat_color);
+    c.chat_text_color = get("server", "chat_text_color", c.chat_text_color);
     c.listed = get("server", "listed", c.listed);
     c.max_players = get("server", "max_players", c.max_players);
     // Checked here, not in config_error: once narrowed, 70000 is just port 4464, and the
@@ -373,8 +377,22 @@ bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noex
     const auto listed = [&](const std::vector<std::uint64_t> &ids) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
     return (listed(config.reserved) || listed(config.admins)) && on < config.max_players + extra_slots(config);
 }
+std::optional<std::uint32_t> parse_colour(std::string_view text) noexcept {
+    if (!text.empty() && text.front() == '#') text.remove_prefix(1);
+    if (text.size() != 6) return std::nullopt;
+    std::uint32_t rgb{};
+    for (const char c : text) {
+        const int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (digit < 0) return std::nullopt;
+        rgb = rgb << 4 | static_cast<std::uint32_t>(digit);
+    }
+    // Written red first; held with red lowest and opaque.
+    return 0xff000000U | (rgb & 0xff) << 16 | (rgb & 0xff00) | rgb >> 16;
+}
 std::string config_error(const ServerConfig &c) {
     using namespace multiplayer;
+    if (!parse_colour(c.chat_color)) return "chat_color must be a colour like #8E5CFF.";
+    if (!parse_colour(c.chat_text_color)) return "chat_text_color must be a colour like #D9C8FF.";
     if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
     for (const auto id : c.reserved)
         if (!individual_steam_id(id)) return "reserved_players_slots must be SteamID64s (17 digits starting 7656119).";

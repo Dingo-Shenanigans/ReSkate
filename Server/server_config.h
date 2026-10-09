@@ -62,6 +62,9 @@ struct ServerConfig {
     std::vector<std::uint64_t> reserved;
     std::string password;      // empty: anyone may join
     std::string welcome;       // sent to each player as they join
+    // The colours of the server's own lines in chat, as "#RRGGBB": its badge and name, and the
+    // text after them.
+    std::string chat_color = "#8E5CFF", chat_text_color = "#D9C8FF";
     bool listed = true;        // shown in the in-game server browser
     // A Steam game server login token (steamcommunity.com/dev/managegameservers, app 3354750).
     // With one the server signs in to its own account and keeps the same Steam ID every start,
@@ -126,6 +129,8 @@ std::size_t extra_slots(const ServerConfig &config) noexcept;
 // max_players are on; the reserved players and the admins after that too, in the extra slots
 // (a full server of 32 shows 33/32 with one of them on).
 bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noexcept;
+// "#RRGGBB" (or "RRGGBB") as a colour in the layout the protocol and the overlay use, or nothing.
+std::optional<std::uint32_t> parse_colour(std::string_view text) noexcept;
 // Why `config` cannot run, or empty.
 std::string config_error(const ServerConfig &config);
 // A scoring fingerprint as the config and console write it (16 hex digits), and read back

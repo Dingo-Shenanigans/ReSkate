@@ -48,6 +48,30 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 4. Press **PLAY**.
 
 ReSkate supports one game build at a time (Steam build `25414733`).
+
+### Linux (Proton)
+
+1. Install skate. with Steam and put `ReSkateLauncher.exe` and `ReSkate.dll` beside `Skate.exe`
+   (step 2 above, first option).
+2. In Steam → skate. → Properties → Launch Options, enter:
+
+   ```
+   bash -c 'exec "${@/EAAntiCheat.GameServiceLauncher.exe/ReSkateLauncher.exe}"' -- %command%
+   ```
+
+3. Press **Play** on skate. in your Steam library.
+
+Steam starts EA's anti-cheat launcher (`EAAntiCheat.GameServiceLauncher.exe`), not `Skate.exe`, and the
+anti-cheat refuses to run under Proton (*E111000B … Wine, Proton, and Steam Deck are not supported*).
+The launch option swaps it for ReSkate's launcher, which starts the game itself. Launching from the game's
+own Steam entry, rather than adding the launcher as a non-Steam game, keeps skate.'s app ID and its
+Proton prefix.
+
+Tested with ReSkate 1.1.3 and Proton Experimental on CachyOS: the launcher, the server browser, joining
+a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
+custom map and then join a server on another map, the screen can stay black
+([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
+
 ### Controls
 
 | Key | Opens |

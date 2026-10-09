@@ -580,7 +580,7 @@ std::pair<std::uint32_t, std::string> mark_role(IdentityList list) {
 std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t sender, bool local, bool marks) {
     if (!sender) return {};
     const bool dedicated = dedicated_host(s);
-    if (dedicated && sender == s.host_id) return {nametag_admin, {}}; // the server itself
+    if (dedicated && sender == s.host_id) return {s.server_chat_badge, "Server"}; // the server itself
     const auto *peer = local ? nullptr : find_peer(s, sender);
     const bool vouched = local || (peer && steam_vouched(s, *peer));
     // Who the backend says a player is comes before what they are in this lobby, unless they
@@ -598,7 +598,14 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local, bool marks) {
     if (name.empty()) name = sender ? "Player" : "ReSkate";
     auto [color, tag] = player_role(s, sender, local, marks);
-    s.chat.push_back({++s.chat_sequence, sender, now_us(), std::move(name), std::move(text), local, color, std::move(tag)});
+    // The dedicated server's own lines (its chat, and its answers sent to this player alone) stand out.
+    const bool server = dedicated_host(s) && (sender ? sender == s.host_id : name == "Server");
+    if (server && !sender) {
+        color = s.server_chat_badge;
+        tag = "Server";
+    }
+    s.chat.push_back({++s.chat_sequence, sender, now_us(), std::move(name), std::move(text), local, color, std::move(tag), {}, server,
+                      server ? s.server_chat_text : 0U});
     while (s.chat.size() > multiplayer_chat_history) s.chat.pop_front();
     publish_chat(s);
 }

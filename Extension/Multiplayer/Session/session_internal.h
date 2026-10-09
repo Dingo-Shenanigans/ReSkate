@@ -214,6 +214,8 @@ struct Session {
     // and the server's voice range from it.
     bool server_admin{};
     float roster_voice_range = default_voice_range;
+    // The colours of the dedicated server's own chat lines, as its roster gives them.
+    std::uint32_t server_chat_badge = default_server_chat_badge, server_chat_text = default_server_chat_text;
     // The server's ban list, as sent to us while we are one of its admins.
     std::vector<MultiplayerBan> server_bans;
     std::uint32_t server_ban_total{};

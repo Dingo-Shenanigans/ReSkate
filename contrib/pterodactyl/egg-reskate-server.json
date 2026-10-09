@@ -1,0 +1,62 @@
+{
+    "_comment": "Pterodactyl egg for the ReSkate dedicated server (Linux). See contrib/pterodactyl/README.md.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": "https://raw.githubusercontent.com/Dingo-Shenanigans/ReSkate/main/contrib/pterodactyl/egg-reskate-server.json"
+    },
+    "exported_at": "2026-10-07T00:00:00+00:00",
+    "name": "ReSkate Server",
+    "author": "68642699+wildesPepega@users.noreply.github.com",
+    "description": "ReSkate dedicated server for skate. (Linux). Players find it in the in-game server browser or join with its code. Needs a primary UDP allocation (game port) and a second one for the query port. Updates itself from the ReSkate releases.",
+    "features": null,
+    "docker_images": {
+        "Debian 13": "ghcr.io/parkervcp/yolks:debian"
+    },
+    "file_denylist": [],
+    "startup": "./ReSkateServer",
+    "config": {
+        "files": "{\n    \"ReSkateServer.json\": {\n        \"parser\": \"json\",\n        \"find\": {\n            \"port\": \"{{server.build.default.port}}\",\n            \"query_port\": \"{{server.build.env.QUERY_PORT}}\",\n            \"steam_token\": \"{{server.build.env.STEAM_TOKEN}}\"\n        }\n    }\n}",
+        "startup": "{\n    \"done\": \"is up on \"\n}",
+        "logs": "{}",
+        "stop": "quit"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# ReSkate dedicated server (Linux) for Pterodactyl: the tarball the release's launcher.json\n# names (\"server_linux\"), checked against its SHA-256 and unpacked into the server's folder.\n# ReSkateServer.json, Mods and the logs are not in the tarball, so a reinstall keeps them.\nset -euo pipefail\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl jq tar\n\nrepo=\"https://github.com/Dingo-Shenanigans/ReSkate\"\nif [ -z \"${RELEASE:-}\" ] || [ \"${RELEASE}\" = \"latest\" ]; then\n    base=\"${repo}/releases/latest/download\"\nelse\n    base=\"${repo}/releases/download/${RELEASE}\"\nfi\nserver=\"${SERVER_DIR:-/mnt/server}\"\nmkdir -p \"${server}\"\nwork=\"$(mktemp -d)\"\ntrap 'rm -rf \"${work}\"' EXIT\n\necho \"Reading ${base}/launcher.json\"\ncurl -fsSL --retry 3 -o \"${work}/launcher.json\" \"${base}/launcher.json\"\nurl=\"$(jq -r '.server_linux.url // empty' \"${work}/launcher.json\")\"\nsha=\"$(jq -r '.server_linux.sha256 // empty' \"${work}/launcher.json\")\"\nversion=\"$(jq -r '.server_linux.version // empty' \"${work}/launcher.json\")\"\nif [ -z \"${url}\" ] || [ -z \"${sha}\" ]; then\n    echo \"This release has no Linux server (no \\\"server_linux\\\" in launcher.json). Use 1.1.4 or newer.\"\n    exit 1\nfi\ncase \"${url}\" in\n    asset:*) url=\"${base}/${url#asset:}\" ;;\n    https://*) ;;\n    *) echo \"launcher.json names no usable download: ${url}\"; exit 1 ;;\nesac\n\necho \"Downloading the ReSkate Linux server ${version}\"\ncurl -fSL --retry 3 -o \"${work}/server.tar.gz\" \"${url}\"\necho \"${sha}  ${work}/server.tar.gz\" | sha256sum -c -\ntar -xzf \"${work}/server.tar.gz\" -C \"${server}\" --strip-components=1\nchmod +x \"${server}/ReSkateServer\"\n\n# Steam looks for steamclient.so in ~/.steam/sdk64 too (HOME is the server's folder in the\n# container); a link keeps pointing at the copy the self-update replaces.\nmkdir -p \"${server}/.steam/sdk64\"\nln -sf ../../steamclient.so \"${server}/.steam/sdk64/steamclient.so\"\n\n# First install: the panel's ports. The server adds every other setting with its default on\n# its first start; the panel writes the ports (and steam_token) again before each start.\nif [ ! -f \"${server}/ReSkateServer.json\" ]; then\n    printf '{\\n  \"port\": %s,\\n  \"query_port\": %s\\n}\\n' \"${SERVER_PORT:-27015}\" \"${QUERY_PORT:-27016}\" > \"${server}/ReSkateServer.json\"\nfi\necho \"Installed the ReSkate Linux server ${version}.\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Query Port",
+            "description": "UDP port for Steam server queries (ping in the server browser). Add it as a second allocation; it must differ from the game port.",
+            "env_variable": "QUERY_PORT",
+            "default_value": "27016",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Token",
+            "description": "Optional Steam game server login token (steamcommunity.com/dev/managegameservers, App ID 3354750; one per server). With it the server keeps the same Steam ID every start and stays in the server browser when it shows only servers with a token. Empty: anonymous. Written to steam_token in ReSkateServer.json before each start.",
+            "env_variable": "STEAM_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|alpha_num|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Release",
+            "description": "The ReSkate release to install: latest, or a tag such as v1.1.4 (1.1.4 or newer). Reinstall the server to apply. The server also updates itself to the latest release when nobody is on (auto_update in ReSkateServer.json).",
+            "env_variable": "RELEASE",
+            "default_value": "latest",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|regex:/^(latest|v[0-9][0-9A-Za-z.\\-]*)$/|max:32",
+            "field_type": "text"
+        }
+    ]
+}

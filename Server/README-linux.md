@@ -111,6 +111,12 @@ sudo systemctl enable --now reskate-server
 The server writes its own `ReSkateServer.log` next to the binary; the console
 output goes to the journal (`journalctl -u reskate-server -f`).
 
+## Pterodactyl
+
+`contrib/pterodactyl/egg-reskate-server.json` is an egg for Pterodactyl (and Pelican): it installs
+the server from the latest release and keeps the panel's ports and `steam_token` in
+`ReSkateServer.json`. See `contrib/pterodactyl/README.md`.
+
 ## Updating
 
 A server from a release tarball updates itself the way the Windows one does: at startup and

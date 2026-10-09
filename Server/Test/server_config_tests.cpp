@@ -193,6 +193,15 @@ int run() {
               "A config in sections did not read back as it was written");
         std::filesystem::remove_all(folder / "data");
     }
+    // The server's chat colours: violet and lavender unless set, red first as written.
+    {
+        ServerConfig colours;
+        check(colours.chat_color == "#8E5CFF" && parse_colour(colours.chat_color) == 0xffff5c8eU && parse_colour("d9c8ff") == 0xffffc8d9U,
+              "The default chat colours are not violet and lavender");
+        check(!parse_colour("#12345") && !parse_colour("#12345G") && !parse_colour("") && !parse_colour("#1234567"), "A bad colour was read");
+        colours.chat_text_color = "blue";
+        check(config_error(colours).find("chat_text_color") != std::string::npos, "A chat colour that is not one was accepted");
+    }
     // Bans have a file of their own; a config that still holds them has them moved there.
     {
         std::filesystem::remove_all(folder / "data");

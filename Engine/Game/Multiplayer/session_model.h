@@ -101,12 +101,16 @@ struct MultiplayerChatLine {
     std::string name, text;
     bool local{};               // sent by this player
     // The sender's role, as their nametag shows it: its colour (IM_COL32 layout, 0 = none)
-    // and a tag shown in a box before the name ("Dev", "Staff", "Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or empty).
+    // and a tag shown in a box before the name ("Dev", "Staff", "Creator", "Centrix", "Homie", "Admin", "Host", "Friend", "Server" or empty).
     std::uint32_t color{};
     std::string tag;
     // With the chat filter on, `text` is masked and this is the line as sent (same length), so
     // the overlay can keep emote names the filter caught; empty when nothing was masked.
     std::string unmasked;
+    bool server{}; // said by the dedicated server itself: its console, welcome or answers
+    // The colour of the line's own text when it is not the usual one (IM_COL32 layout, 0 = usual):
+    // a dedicated server's lines, in the colour its owner chose.
+    std::uint32_t text_color{};
 };
 // A command typed into chat with a leading "/" (shown as the player types "/").
 struct MultiplayerChatCommand {
