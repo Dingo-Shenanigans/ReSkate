@@ -28,3 +28,4 @@ analysis/raw/**/*.res
 /analysis/
 /docs/
 /release
+/External/.vs
