@@ -357,7 +357,10 @@ bool Tracker::update(const Sample &s) {
         const bool supported = (free_fall_time_ < 0 || s.time - free_fall_time_ > 0.25) && hips_velocity_[1] < 1.0f;
         const bool thrown = armed_ && grounded && stopping && came_down && supported && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
-        const bool slammed = armed_ && slam_now_ && came_down && !thrown;
+        // Coming off the board, skate. switches the skater's pose over in a tick or two: that jump is
+        // no impact. Crashes at that moment are the knocked-off and crash-landing cases below.
+        const bool switching = left_board_time_ >= 0 && s.time - left_board_time_ <= 0.15;
+        const bool slammed = armed_ && slam_now_ && came_down && !thrown && !switching;
         // Skate 3 starts its Hall of Meat on the bail itself. skate. takes the skater off the board at the
         // moment of a crash, so that moment (and the next tick or two, while the hit registers) is the
         // bail when it comes with:
