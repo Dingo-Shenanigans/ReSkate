@@ -527,7 +527,7 @@ std::vector<std::string> applied_mods() {
 bool placed_at_launch(const std::string &name) {
     const auto &launch = mods::catalog();
     const auto named = [&](const mods::Mod &mod) { return _stricmp(mod.name.c_str(), name.c_str()) == 0; };
-    return std::ranges::any_of(launch.mods, named) || std::ranges::any_of(launch.inactive, named);
+    return std::ranges::any_of(launch.mods, named);
 }
 std::optional<std::vector<std::filesystem::path>> take_level_manifests() {
     std::lock_guard lock(state_mutex);
