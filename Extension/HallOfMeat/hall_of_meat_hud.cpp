@@ -1,6 +1,7 @@
 #include "hall_of_meat_hud.h"
 #include "hom_art.h"
 #include "hom_audio.h"
+#include "hom_grade.h"
 #include "hom_bones.h"
 #include "hom_core.h"
 #include "hom_rig.h"
@@ -284,9 +285,9 @@ void draw_grade(ImDrawList *draw, ImVec2 centre, float strength) {
     const auto display = ImGui::GetIO().DisplaySize;
     // Measured against Skate 3's own footage (its settled X-ray): the lit ground around the skater is a
     // cool, near-neutral grey-blue (about 37, 36, 45), falling to black by the corners, with no haze.
-    // A blue-grey wash at about that level takes most of the colour out (Skate 3's colour matrix for
-    // HoM: half saturation, blue x1.2) without lifting the picture much; a black spotlight closes in.
-    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(30, 36, 58, static_cast<int>(0.62f * strength * 255.0f)));
+    // Skate 3's colour matrix (half saturation, blue x1.2) is run on the game picture itself
+    // (hom_grade.cpp); here a dark blue wash brings it down to that level and a black spotlight closes in.
+    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(8, 12, 24, static_cast<int>(0.55f * strength * 255.0f)));
     const float h = display.y;
     const float radii[]{0.22f * h, 0.42f * h, 0.70f * h, 1.7f * std::max(display.x, display.y)};
     const float alphas[]{0.0f, 0.35f, 0.90f, 1.0f};
@@ -364,6 +365,7 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
         if (projector.project(middle, at, spot_depth)) spot = at;
     }
     draw_grade(draw, spot, darkness * fade);
+    hom_colour_strength().store(std::clamp(darkness * fade, 0.0f, 1.0f));
     {
         // A break flashes the picture with the tint of Skate 3's hom_slomo_effect (0.4, 0.2, 0.2).
         double last_break = -1;
@@ -534,6 +536,7 @@ void draw_hall_of_meat_hud() {
     const float scale = std::clamp(display.y / 1080.0f, 0.75f, 2.5f);
     auto *draw = ImGui::GetBackgroundDrawList();
     std::lock_guard lock(s.mutex);
+    hom_colour_strength().store(0.0f);
     const double now = clock_seconds();
     const bool live = s.tracker.showing();
     if (!live && now >= s.visible_until) return;

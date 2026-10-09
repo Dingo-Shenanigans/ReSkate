@@ -2,6 +2,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
+#include "Extension/HallOfMeat/hom_grade.h"
 #include "Extension/Trainer/trainer_page.h"
 #include "Extension/HallOfMeat/hall_of_meat_hud.h"
 #include "Extension/HallOfMeat/hom_art.h"
@@ -48,6 +49,7 @@ void destroy_graphics() {
     s.win32_ready = s.dx12_ready = s.ready = false;
     s.ui_was_interactive = false;
     s.frames.clear();
+    hom_grade_release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -553,7 +555,10 @@ void render(IDXGISwapChain* presented, UINT flags) {
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    s.commands->ResourceBarrier(1, &barrier);
+    // Hall of Meat's colour pass (Skate 3's colour matrix on the game picture) leaves the buffer
+    // as a render target itself; otherwise it becomes one here.
+    if (!hom_grade_record(s.device.Get(), s.commands.Get(), frame.buffer.Get(), frame.rtv, hom_colour_strength().load()))
+        s.commands->ResourceBarrier(1, &barrier);
     s.commands->OMSetRenderTargets(1, &frame.rtv, FALSE, nullptr);
     ID3D12DescriptorHeap* heaps[] = {s.srvs.Get()};
     s.commands->SetDescriptorHeaps(1, heaps);
