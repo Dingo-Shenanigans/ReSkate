@@ -37,8 +37,7 @@ class Host {
     // Opens the listener and starts a session under the given server identity.
     bool start(std::string &error);
     void tick(std::uint64_t now);
-
-    // Script loader
+    // The Lua scripts in `folder` (server_scripts.h); their errors, one a line.
     std::string load_scripts(const std::string &folder) { return scripts_.load(folder); }
 
     // A console line, or an admin's request (`admin` = their SteamID64, 0 for the console).
@@ -55,7 +54,8 @@ class Host {
     enum class VoteKind { map, kick, time, custom, poll };
 
   private:
-    Scripts scripts_; // Lua scripts
+    friend class Scripts; // the scripts' `server` table works on the Host directly
+    Scripts scripts_{*this};
 
     struct ChatBudget {
         std::uint64_t since{};

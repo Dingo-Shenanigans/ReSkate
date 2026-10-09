@@ -40,6 +40,51 @@ ReSkateServer.json, Mods and its logs. Type "update" to check and install
 straight away (players are told to rejoin). Turn this off with
 "auto_update": false, or start the server with --no-update.
 
+Scripts
+-------
+Lua files (.lua, Lua 5.4) in a scripts folder next to the server add your own
+chat commands. They are loaded in name order when the server starts; errors are
+logged and that file is skipped. Example, scripts/hello.lua:
+
+  server.command("hello", function(player, args)
+    return "hi " .. player.name .. ": " .. args
+  end)
+
+A player typing /hello world gets "hi <name>: world". The console can run script
+commands too (as "hello world"), and so can admins. Commands the server already
+has always win over a script's.
+
+  server.command(name, function(player, args) ... end [, {admin = true}])
+                         A /name command: what the function returns is the reply.
+                         admin = true: only admins and the console. Names are
+                         1-32 letters, digits, - or _.
+  server.players()       Every connected player, as tables (below).
+  server.player(who)     One player's table, or nil.
+  server.say(text)       A chat line to everyone.
+  server.tell(who, text) Chat lines to one player; false if nobody matches.
+  server.announce(text)  Chat and the announcement card.
+  server.kick(who)       Like the kick command; returns the server's answer.
+  server.ban(who)        Like ban; also takes the SteamID64 of a player who left.
+  server.teleport(who, x, y, z)   Sends a player there; true if sent.
+  server.map([name])     The map's name, or change it (like the map command).
+  server.tod(time)       Like the tod command.
+  server.clear_objects() Deletes every placed object.
+  server.log(...), print(...)   A line in the server's log.
+
+A player table has id (SteamID64), name, admin, objects (how many they have
+placed) and x, y, z once their game has sent a position. "who" is a SteamID64,
+a player table or the start of a player's name. The console's table is
+{id = 0, name = "Server", admin = true}.
+
+Scripts get Lua's string, table, math and utf8 libraries and os.time, os.clock
+and os.date; nothing that reads or writes files, runs programs or loads other
+code (only source files load, never compiled Lua), and no __gc finalizers.
+All scripts share 32 MB, and a command that runs too long (a few milliseconds
+of Lua) is stopped; either way the player is told the command failed and the
+log says why. Search players'
+text with string.find(text, word, 1, true): a pattern a player typed can take
+the server a very long time to match.
+
 ReSkateServer.json
 ------------------
 The settings are in sections; each setting below is listed under the section it is in,

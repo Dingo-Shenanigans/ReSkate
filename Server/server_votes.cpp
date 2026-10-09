@@ -207,9 +207,12 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (auto *still = find(id)) reply(*still, answer_text.empty() ? std::string("Done.") : answer_text);
         return;
     }
-
-    // a /command from a script in `scripts/`. its return value is the reply
-    if (const auto answer = scripts_.run(verb, guest_name(guest), rest)) return reply(guest, *answer);
+    // A script's command (server_scripts.cpp), which may have kicked the player who typed it.
+    const auto id = guest.member.id;
+    if (const auto answer = scripts_.run(verb, id, rest)) {
+        if (auto *still = find(id)) reply(*still, *answer);
+        return;
+    }
     reply(guest, "Unknown command /" + verb + ". Type /help for the list.");
 }
 

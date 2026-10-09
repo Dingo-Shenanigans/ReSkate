@@ -719,6 +719,8 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         }
         return "admin add|remove <player or SteamID64>";
     }
+    // A script's command (server_scripts.cpp): the console and admins may run the admin-only ones too.
+    if (auto answer = scripts_.run(verb, admin, argument)) return std::move(*answer);
     return "Unknown command \"" + std::string(action) + "\". Type help.";
 }
 // A player's mods change how tricks score (their report; Engine/Vfs/mod_scoring.h): flagged
