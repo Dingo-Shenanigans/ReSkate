@@ -122,6 +122,16 @@ void load() {
         for (const auto index : m.indices)
             if (index >= vertices) return;
     }
+    // Skate 3 names its two calf meshes the wrong way round (Bones_Calf_Left sits on the skater's
+    // right). Every left/right pair is put on its own side here: the left one on +X, as binds() has
+    // it, else the bone is drawn its body's width away from its joint.
+    const auto centre_x = [](const Mesh &m) {
+        float sum = 0;
+        for (const auto &p : m.positions) sum += p[0];
+        return m.positions.empty() ? 0.0f : sum / static_cast<float>(m.positions.size());
+    };
+    for (std::size_t left = 5; left + 1 < meshes.size(); left += 2)
+        if (centre_x(meshes[left]) < 0.0f && centre_x(meshes[left + 1]) > 0.0f) std::swap(meshes[left], meshes[left + 1]);
     lib.meshes = std::move(meshes);
     lib.ready = true;
     logging::log(logging::Level::info, logging::Channel::graphics, "Hall Of Meat: {} X-ray bone meshes loaded.", lib.meshes.size());
