@@ -178,6 +178,10 @@ private:
     bool have_offboard_start_{};
     float pre_air_{};
     bool slam_now_{};
+    // The tick the skater came off the board (state 1xx or 2xx into 504) and from which, so the
+    // crash that caused it can be recognised over the next few ticks.
+    double left_board_time_{-1};
+    std::uint32_t left_board_from_{};
     float turn_{}; // signed turn of the body during the bail (degrees); rotation is its size
     // Off the board since leaving it in the air (a dive, a spread eagle, a jump off): only a
     // falling impact makes that a crash, not the jolts of steering a glide.

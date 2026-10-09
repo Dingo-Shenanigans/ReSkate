@@ -300,6 +300,10 @@ bool Tracker::update(const Sample &s) {
         const bool off_board = s.physics_state == config_.wipeout_state || s.physics_state == 504;
         if (s.physics_state == 504 && have_previous_ && previous_.physics_state >= 200 && previous_.physics_state < 300) from_air_ = true;
         if (!off_board) from_air_ = false;
+        if (s.physics_state == 504 && have_previous_ && previous_.physics_state >= 100 && previous_.physics_state < 300) {
+            left_board_time_ = s.time;
+            left_board_from_ = previous_.physics_state;
+        }
         // Leaving the board (or the feet): where a crash would start from.
         const bool was_off_board = have_previous_ && (previous_.physics_state == config_.wipeout_state || previous_.physics_state == 504);
         // Standing or walking about off the board is not the start of anything; falling upright is.
@@ -354,10 +358,28 @@ bool Tracker::update(const Sample &s) {
         const bool thrown = armed_ && grounded && stopping && came_down && supported && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
         const bool slammed = armed_ && slam_now_ && came_down && !thrown;
+        // Skate 3 starts its Hall of Meat on the bail itself. skate. takes the skater off the board at the
+        // moment of a crash, so that moment (and the next tick or two, while the hit registers) is the
+        // bail when it comes with:
+        //  - knocked off while riding: a hit to the body as the board goes (a hippy jump or stepping off
+        //    leaves upright and unhurt);
+        //  - coming down from the air onto something: still falling fast as the board goes, and hit (a
+        //    dive leaves the board slowly, or rising, and with nothing hitting it).
+        bool knocked = false, crash_landed = false;
+        if (armed_ && left_board_time_ >= 0 && s.time - left_board_time_ <= 0.1 && s.physics_state == 504 && s.bones_valid) {
+            float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
+            for (const float c : bone_change_) any = std::max(any, c);
+            if (left_board_from_ < 200) knocked = !s.upright && (torso >= 5.0f || any >= 10.0f);
+            else crash_landed = hips_vertical_ <= -12.0f && any >= 2.5f;
+        }
+        if (!wipeout && !thrown && !slammed) {
+            if (knocked) trigger_ = "knocked off";
+            else if (crash_landed) trigger_ = "crash landing";
+        }
         if (wipeout) trigger_ = "wipeout state";
         else if (thrown) trigger_ = "hit and down";
         else if (slammed) trigger_ = "slam";
-        if (wipeout || thrown || slammed) {
+        if (wipeout || thrown || slammed || knocked || crash_landed) {
             armed_ = false;
             hit_time_ = -1;
             down_since_ = -1;
@@ -370,7 +392,8 @@ bool Tracker::update(const Sample &s) {
             upright_since_ = -1;
             start_ = thrown ? down_start_ : s;
             // The bail started where the skater left the board or their feet, if that was just now.
-            if ((thrown || slammed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
+            left_board_time_ = -1;
+            if ((thrown || slammed || knocked || crash_landed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
                 start_ = offboard_start_;
                 live_.air_time = pre_air_;
             }
@@ -381,7 +404,7 @@ bool Tracker::update(const Sample &s) {
             frozen_ = false;
             still_since_ = -1;
             // The impact that showed this was a crash came before the bail was recognised: count it.
-            if (thrown || slammed) {
+            if (thrown || slammed || knocked || crash_landed) {
                 const auto &list = bones();
                 for (std::size_t i = 0; i < list.size() && i < 19; ++i) {
                     if (s.time - recent_hit_time_[i] > 3.0 || recent_hit_[i] <= 0) continue;
