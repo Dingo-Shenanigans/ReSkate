@@ -552,46 +552,48 @@ void skate3_hom_tick(bool stand_down) {
         for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i)
             for (std::size_t k = 0; k < 3; ++k) in.bone_centres[i][k] = (rig.bones[i].a[k] + rig.bones[i].b[k]) * 0.5f;
     }
-    // Calibration log: every physics state change, and a heartbeat, so a missed bail can be traced.
-    if (in.physics_state != s.last_state && s.tracker.phase() != Phase::bailing)
-        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: state {} -> {} ({:.1f} km/h, airborne {}).",
+    // Tuning logs (--log-level=debug): every physics state change, a heartbeat, and what the crash
+    // test sees off the board, so a missed bail can be traced. Nothing is formatted otherwise.
+    const bool tracing = logging::enabled(logging::Level::debug);
+    if (tracing && in.physics_state != s.last_state && s.tracker.phase() != Phase::bailing)
+        logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: state {} -> {} ({:.1f} km/h, airborne {}).",
                      s.last_state, in.physics_state, in.speed * 3.6f, in.airborne);
-    if (now - s.heartbeat > 10.0) {
+    if (tracing && now - s.heartbeat > 10.0) {
         s.heartbeat = now;
-        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: watching, state {}, skeleton {}.", in.physics_state,
+        logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: watching, state {}, skeleton {}.", in.physics_state,
                      in.bones_valid ? "read" : "not read");
     }
-    if (s.tracker.phase() == Phase::bailing && in.physics_state != s.last_state)
-        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: physics state {} -> {} at {:.1f} km/h.",
+    if (tracing && s.tracker.phase() == Phase::bailing && in.physics_state != s.last_state)
+        logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: physics state {} -> {} at {:.1f} km/h.",
                      s.last_state, in.physics_state, in.speed * 3.6f);
     s.last_state = in.physics_state;
     // Off the board and not bailing: four times a second, what the crash test sees (for tuning).
-    if (s.tracker.phase() != Phase::bailing && in.physics_state == 504 && !in.upright && now - s.watch_logged >= 0.25) {
+    if (tracing && s.tracker.phase() != Phase::bailing && in.physics_state == 504 && !in.upright && now - s.watch_logged >= 0.25) {
         s.watch_logged = now;
-        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: off board, {}.", s.tracker.watch_line());
+        logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: off board, {}.", s.tracker.watch_line());
     }
     const bool was_bailing = s.tracker.phase() == Phase::bailing;
     const bool done = s.tracker.update(in);
     skate3_hom::hide_game_ui().store(s.tracker.showing() || now < s.visible_until);
     if (s.tracker.cancelled() != s.cancelled_seen) {
         s.cancelled_seen = s.tracker.cancelled();
-        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: that was a glide landing, not a crash: taken back.");
+        logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: that was a glide landing, not a crash: taken back.");
     }
     if (!was_bailing && s.tracker.phase() == Phase::bailing && s.tracker.carried_on()) {
         // The same crash carrying on (a second drop): the panel stays up and the X-ray comes back.
         s.upright_since = s.getting_up_at = -1;
-        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: bail {} carries on.", s.tracker.live().serial);
+        logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: bail {} carries on.", s.tracker.live().serial);
     } else if (!was_bailing && s.tracker.phase() == Phase::bailing) {
         s.started = now;
         s.shown_total = 0;
         // Calibration: the X-ray skull and pelvis against the skater's own position.
         if (const auto rig = skate3_hom::latest_rig(); rig.valid)
-            logging::log(logging::Level::info, logging::Channel::assets,
+            logging::log(logging::Level::debug, logging::Channel::assets,
                          "Hall Of Meat: bail started by {}: skater ({:.2f}, {:.2f}, {:.2f}), skull ({:.2f}, {:.2f}, {:.2f}), hips ({:.2f}, {:.2f}, {:.2f}).",
                          s.tracker.trigger(), in.position[0], in.position[1], in.position[2], rig.bones[0].a[0], rig.bones[0].a[1], rig.bones[0].a[2],
                          rig.bones[4].a[0], rig.bones[4].a[1], rig.bones[4].a[2]);
         else
-            logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: skeleton not readable at bail start.");
+            logging::log(logging::Level::debug, logging::Channel::assets, "Hall Of Meat: skeleton not readable at bail start.");
     }
     {
         // Each new damage level is heard, as Skate 3 plays its HoM bone sounds.
@@ -633,7 +635,7 @@ void skate3_hom_tick(bool stand_down) {
             s.best = r.total;
             if (s.best_known && !s.level.empty()) profile_runtime::set_local_values({{best_key(s.level), static_cast<double>(s.best)}});
         }
-        logging::log(logging::Level::info, logging::Channel::assets,
+        logging::log(logging::Level::debug, logging::Channel::assets,
                      "Hall Of Meat: bail {} scored {} (bones {} {}, air {:.2f}s {}, drop {:.1f}m {}, time {:.2f}s {}, speed {:.1f}m/s {}, rot {:.0f} {}) - {}.",
                      r.serial, r.total, r.broken.size(), r.bone_points, r.air_time, r.air_points, r.drop, r.drop_points, r.duration,
                      r.duration_points, r.peak_speed, r.speed_points, r.rotation, r.rotation_points, r.title);
@@ -675,6 +677,8 @@ void skate3_hom_set_applied_speed(float speed) {
     }
     if (whoosh) skate3_hom::play_slow_motion_sound();
 }
+
+bool skate3_hom_installed() { return !hom_directory().empty(); }
 
 bool skate3_hom_hud_pending() {
     auto &s = state();

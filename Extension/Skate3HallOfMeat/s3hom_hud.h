@@ -10,6 +10,8 @@ namespace dingosdk::overlay {
 void skate3_hom_tick(bool stand_down = false);
 // True while a bail is live or a result is on screen (also keeps frames coming so bails are seen).
 bool skate3_hom_hud_pending();
+// Its asset pack is installed and switched on (nothing is read from the game otherwise).
+bool skate3_hom_installed();
 // Game thread, with the map being played (empty without one): loads that map's best bail.
 void skate3_hom_set_level(std::string_view level);
 // Skate 3's broken-bone slow motion (IsBrokenBoneSlowMo): the game speed a break asks for now

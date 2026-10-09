@@ -1259,7 +1259,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/Skate 3 Hall Of Meat");
             // Stands down while ReSkate's own Hall of Meat is switched on: one at a time.
-            const bool official = dingosdk::hall_of_meat::enabled();
+            // Off (ReSkate's own Hall of Meat on, or the asset pack off): nothing of the skater is read.
+            const bool official = dingosdk::hall_of_meat::enabled() || !dingosdk::overlay::skate3_hom_installed();
             dingosdk::overlay::skate3_hom_set_level(r.catalog_level.empty() ? r.last_level : r.catalog_level);
             if (!official) dingosdk::skate3_hom::rig_tick(r.base, client);
             dingosdk::overlay::skate3_hom_tick(official);
