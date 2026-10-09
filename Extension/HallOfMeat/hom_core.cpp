@@ -1,6 +1,7 @@
 #include "hom_core.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace dingosdk::hall_of_meat {
 const std::array<BodyPart, body_parts> &body_parts_table() {
@@ -117,6 +118,16 @@ const char *title_for(int total, std::size_t n) {
     return total > 0 ? "JUST A TUMBLE" : "NO DAMAGE";
 }
 
+std::string Tracker::watch_line() const {
+    float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
+    for (const float c : bone_change_) any = std::max(any, c);
+    char text[200];
+    std::snprintf(text, sizeof(text), "state %u%s, speed %.1f (peak %.1f), hips %+.1f m/s, lying %d, hit torso %.1f any %.1f, fell %.2fs ago",
+                  previous_.physics_state, from_air_ ? " from the air" : "", body_speed_, recent_peak_speed_, hips_vertical_,
+                  previous_.lying ? 1 : 0, torso, any, fast_fall_time_ < 0 ? -1.0 : previous_.time - fast_fall_time_);
+    return text;
+}
+
 void Tracker::reset() {
     phase_ = Phase::idle;
     live_ = {};
@@ -167,6 +178,8 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
     body_speed_ = sum / 19.0f;
     const float vertical = static_cast<float>((now.bone_centres[4][1] - previous.bone_centres[4][1]) / dt);
     hips_vertical_ += (vertical - hips_vertical_) * std::min(1.0f, static_cast<float>(dt) * 8.0f);
+    if (vertical <= -3.0f && vertical > -60.0f) fast_fall_time_ = now.time;
+    recent_peak_speed_ = std::max(body_speed_, recent_peak_speed_ - 12.0f * static_cast<float>(dt));
 }
 
 // A hit on a body part: it reaches every damage level whose impact the hit meets, and each part
@@ -270,6 +283,8 @@ bool Tracker::update(const Sample &s) {
         //    wipeout state. Coming off the board for a hippy jump, a plant or a dive does none of it:
         //    there is no hit, or the skater is back on their feet at once.
         const bool off_board = s.physics_state == config_.wipeout_state || s.physics_state == 504;
+        if (s.physics_state == 504 && have_previous_ && previous_.physics_state >= 200 && previous_.physics_state < 300) from_air_ = true;
+        if (!off_board) from_air_ = false;
         if (s.bones_valid && s.upright) {
             if (upright_idle_since_ < 0) upright_idle_since_ = s.time;
             if (s.time - upright_idle_since_ >= 0.3) armed_ = true;
@@ -297,8 +312,12 @@ bool Tracker::update(const Sample &s) {
         const bool wipeout = s.physics_state == config_.wipeout_state && (!have_previous_ || previous_.physics_state != config_.wipeout_state);
         // On the ground: a spread-eagle glide or a dive is down and can jolt, but it keeps sinking.
         const bool grounded = std::abs(hips_vertical_) < 1.5f;
-        const bool thrown = armed_ && grounded && down_since_ >= 0 && s.time - down_since_ >= config_.down_time && hit_time_ >= 0 && s.time - hit_time_ <= 0.8 &&
-                            hit_time_ >= down_since_ - 0.4;
+        // A crash stops the body; a glide or a dive sails on at speed whatever it brushes.
+        const bool stopping = body_speed_ < 5.0f || body_speed_ < 0.65f * recent_peak_speed_;
+        // Off the board since the air: the body must have come down onto something.
+        const bool came_down = !from_air_ || (fast_fall_time_ >= 0 && hit_time_ >= 0 && hit_time_ - fast_fall_time_ <= 0.6);
+        const bool thrown = armed_ && grounded && stopping && came_down && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
+                            hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
         if (wipeout) trigger_ = "wipeout state";
         else if (thrown) trigger_ = "hit and down";
         if (wipeout || thrown) {
@@ -338,9 +357,9 @@ bool Tracker::update(const Sample &s) {
                 if (still_since_ < 0) still_since_ = s.time;
                 if (s.time - still_since_ >= config_.still_time) frozen_ = true;
             } else {
+                // Once the body has stopped the bail's numbers are final, as in Skate 3: getting up
+                // (or being dragged by the ragdoll) does not count on.
                 still_since_ = -1;
-                // Set off again (rolling down a ramp after a pause): the bail carries on counting.
-                if (frozen_ && moving > 2.0f) frozen_ = false;
             }
         }
         if (!frozen_ && dt > 0 && dt < 0.25) {

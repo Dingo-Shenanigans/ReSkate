@@ -46,6 +46,7 @@ struct State {
     double last_time{-1};
     double heartbeat{};
     float darkness{};
+    double watch_logged{};
     std::uint32_t sounded_serial{};
     std::size_t sounded{}; // damage events of the live bail already heard
 };
@@ -441,6 +442,11 @@ void hall_of_meat_tick() {
         logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: physics state {} -> {} at {:.1f} km/h.",
                      s.last_state, in.physics_state, in.speed * 3.6f);
     s.last_state = in.physics_state;
+    // Off the board and not bailing: four times a second, what the crash test sees (for tuning).
+    if (s.tracker.phase() != Phase::bailing && in.physics_state == 504 && !in.upright && now - s.watch_logged >= 0.25) {
+        s.watch_logged = now;
+        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: off board, {}.", s.tracker.watch_line());
+    }
     const bool was_bailing = s.tracker.phase() == Phase::bailing;
     const bool done = s.tracker.update(in);
     hall_of_meat::hide_game_ui().store(s.tracker.phase() == Phase::bailing || now < s.visible_until);

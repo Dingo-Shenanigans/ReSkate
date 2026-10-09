@@ -126,6 +126,8 @@ public:
     const Result &result() const { return last_; } // the last finished bail
     void reset();
     const Config &config() const { return config_; }
+    // Off the board and not bailing: what the crash test sees, for the log (tuning glides and dives).
+    std::string watch_line() const;
 
 private:
     void score(Result &r) const;
@@ -161,6 +163,11 @@ private:
     std::array<float, 19> recent_hit_{};
     std::array<double, 19> recent_hit_time_{};
     float hips_vertical_{}; // smoothed up/down speed of the hips (m/s)
+    float recent_peak_speed_{}; // the body's top speed lately, decaying (m/s)
+    double fast_fall_time_{-1}; // when the hips last fell at 3 m/s or more
+    // Off the board since leaving it in the air (a dive, a spread eagle, a jump off): only a
+    // falling impact makes that a crash, not the jolts of steering a glide.
+    bool from_air_{};
     // Once the body has stopped moving the bail's numbers are final, like the original's
     // wipeout-over: the X-ray stays until the skater is up, the score no longer counts.
     bool frozen_{};
