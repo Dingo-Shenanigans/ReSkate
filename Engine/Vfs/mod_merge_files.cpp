@@ -40,7 +40,7 @@ void write_file(const fs::path& path, std::span<const std::byte> bytes) {
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output || !output.write(reinterpret_cast<const char*>(bytes.data()),
-                                     static_cast<std::streamsize>(bytes.size())))
+                                     static_cast<std::streamsize>(bytes.size())) || !output.flush()) // ~ofstream ignores a failed flush
             throw std::runtime_error("Cannot write " + path_utf8(temporary));
     }
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {

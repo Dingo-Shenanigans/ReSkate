@@ -1,6 +1,7 @@
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
+#include "offboard_flight.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -212,7 +213,9 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         arm.thread.store(GetCurrentThreadId(), std::memory_order_release);
         if (debug.first_person_waiting) {
             debug.first_person_waiting = false;
-            debug.status = "First person on. The camera follows the skater's head.";
+            debug.status = debug.first_person_settings.stabilize
+                ? "First person on. True first person keeps the view level and steady."
+                : "First person on. The camera follows the skater's head.";
         }
     } else {
         next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
@@ -242,12 +245,17 @@ constexpr const char* no_bail = "NoBail";
 constexpr const char* flight_speed = "FlightSpeed";
 constexpr const char* forward_velocity = "ForwardVelocity";
 constexpr const char* up_velocity = "UpVelocity";
+constexpr const char* offboard_up_velocity = "OffboardUpVelocity";
 constexpr const char* first_person_fov = "FirstPerson.Fov";
 constexpr const char* free_camera_fov = "FreeCamera.Fov";
 constexpr const char* spring = "FirstPerson.Spring";
 constexpr std::array<const char*, 3> offset{"FirstPerson.OffsetX", "FirstPerson.OffsetY", "FirstPerson.OffsetZ"};
 constexpr std::array<const char*, 3> rotation{"FirstPerson.Pitch", "FirstPerson.Yaw", "FirstPerson.Roll"};
 constexpr std::array<const char*, 4> strength{"FirstPerson.Up", "FirstPerson.Down", "FirstPerson.Left", "FirstPerson.Right"};
+constexpr const char* stabilize = "FirstPerson.Stabilize";
+constexpr const char* follow_flips = "FirstPerson.FollowFlips";
+constexpr const char* board_only = "FirstPerson.ThirdPersonOnFoot";
+constexpr std::array<const char*, 4> steady{"FirstPerson.Smoothing", "FirstPerson.HeadPitch", "FirstPerson.HeadRoll", "FirstPerson.Bob"};
 constexpr ULONGLONG delay_ms = 750;
 
 std::optional<float> number(const char* key) {
@@ -272,6 +280,7 @@ void save_debug(InteractiveDebug& debug) noexcept {
             {saved::flight_speed, static_cast<double>(debug.flight_speed)},
             {saved::forward_velocity, static_cast<double>(debug.forward_velocity_speed)},
             {saved::up_velocity, static_cast<double>(debug.up_velocity_speed)},
+            {saved::offboard_up_velocity, static_cast<double>(debug.offboard_up_velocity_speed)},
             {saved::first_person_fov, static_cast<double>(debug.first_person_fov)},
             {saved::free_camera_fov, static_cast<double>(debug.free_camera_fov)},
             {saved::spring, arm.enabled}};
@@ -281,6 +290,11 @@ void save_debug(InteractiveDebug& debug) noexcept {
         }
         const std::array<float, 4> strengths{arm.up, arm.down, arm.left, arm.right};
         for (std::size_t i = 0; i < 4; ++i) values.emplace_back(saved::strength[i], static_cast<double>(strengths[i]));
+        values.emplace_back(saved::stabilize, arm.stabilize);
+        values.emplace_back(saved::follow_flips, arm.follow_flips);
+        values.emplace_back(saved::board_only, arm.board_only);
+        const std::array<float, 4> steady{arm.smoothing, arm.head_pitch, arm.head_roll, arm.bob};
+        for (std::size_t i = 0; i < 4; ++i) values.emplace_back(saved::steady[i], static_cast<double>(steady[i]));
         profile_runtime::set_local_values(values);
     } catch (...) { /* Saving is best effort; the choices already apply. */ }
 }
@@ -300,6 +314,8 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
             debug.forward_velocity_speed = *speed;
         if (const auto speed = saved::number(saved::up_velocity); speed && *speed >= 1.0f && *speed <= 25.0f)
             debug.up_velocity_speed = *speed;
+        if (const auto speed = saved::number(saved::offboard_up_velocity); speed && *speed >= 1.0f && *speed <= 25.0f)
+            debug.offboard_up_velocity_speed = *speed;
         if (const auto fov = saved::number(saved::first_person_fov);
             fov && *fov >= first_person_fov_min && *fov <= first_person_fov_max) {
             debug.first_person_fov = *fov;
@@ -317,6 +333,12 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         const std::array<float*, 4> strengths{&arm.up, &arm.down, &arm.left, &arm.right};
         for (std::size_t i = 0; i < 4; ++i)
             if (const auto value = saved::number(saved::strength[i])) *strengths[i] = *value;
+        if (const auto enabled = profile_runtime::local_preference(saved::stabilize)) arm.stabilize = *enabled;
+        if (const auto enabled = profile_runtime::local_preference(saved::follow_flips)) arm.follow_flips = *enabled;
+        if (const auto enabled = profile_runtime::local_preference(saved::board_only)) arm.board_only = *enabled;
+        const std::array<float*, 4> steady{&arm.smoothing, &arm.head_pitch, &arm.head_roll, &arm.bob};
+        for (std::size_t i = 0; i < 4; ++i)
+            if (const auto value = saved::number(saved::steady[i])) *steady[i] = *value;
         if (first_person::valid(arm)) {
             debug.first_person_settings = arm;
             first_person_arm().settings = arm;
@@ -372,6 +394,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
     source_require(!debug.park_editor || debug.editor_transition || request.action == overlay::DebugAction::restore_debug ||
         request.action == overlay::DebugAction::set_camera_speed || request.action == overlay::DebugAction::set_forward_velocity_speed ||
         request.action == overlay::DebugAction::set_up_velocity_speed ||
+        request.action == overlay::DebugAction::set_offboard_up_velocity_speed ||
         request.action == overlay::DebugAction::set_first_person_fov ||
         request.action == overlay::DebugAction::set_free_camera_fov ||
         (request.action >= overlay::DebugAction::set_first_person_spring && request.action <= overlay::DebugAction::reset_first_person_arm) ||
@@ -393,17 +416,29 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         case Action::set_first_person_spring_down: settings.down = request.value; break;
         case Action::set_first_person_spring_left: settings.left = request.value; break;
         case Action::set_first_person_spring_right: settings.right = request.value; break;
+        case Action::set_first_person_stabilize: settings.stabilize = request.enabled; break;
+        case Action::set_first_person_follow_flips: settings.follow_flips = request.enabled; break;
+        case Action::set_first_person_smoothing: settings.smoothing = request.value; break;
+        case Action::set_first_person_head_pitch: settings.head_pitch = request.value; break;
+        case Action::set_first_person_head_roll: settings.head_roll = request.value; break;
+        case Action::set_first_person_bob: settings.bob = request.value; break;
+        case Action::set_first_person_board_only: settings.board_only = request.enabled; break;
         case Action::reset_first_person_arm: settings = {}; break;
         default: break;
         }
         source_require(first_person::valid(settings), "First-person arm setting is outside its supported range.");
         auto& arm = first_person_arm();
-        if (settings.enabled != debug.first_person_settings.enabled || request.action == Action::reset_first_person_arm)
+        if (settings.enabled != debug.first_person_settings.enabled ||
+            settings.stabilize != debug.first_person_settings.stabilize || request.action == Action::reset_first_person_arm)
             arm.spring.reset();
         debug.first_person_settings = settings;
         arm.settings = settings;
         mark_debug_changed(debug);
-        debug.status = "First-person arm settings updated.";
+        debug.status = request.action == Action::set_first_person_stabilize
+            ? (settings.stabilize ? "True first person on: level horizon, steady view." : "True first person off: the view follows the raw head.")
+            : request.action == Action::set_first_person_board_only
+            ? (settings.board_only ? "Third person while walking; first person on the board." : "First person while walking too.")
+            : "First-person settings updated.";
         return;
     }
     if (request.action == overlay::DebugAction::set_free_camera_fov) {
@@ -424,13 +459,21 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         return;
     }
     if (request.action == overlay::DebugAction::set_forward_velocity_speed ||
-        request.action == overlay::DebugAction::set_up_velocity_speed) {
-        const bool up = request.action == overlay::DebugAction::set_up_velocity_speed;
-        source_require(std::isfinite(request.value) && request.value >= 1.0f && request.value <= (up ? 25.0f : 300.0f),
-            up ? "Up Boost speed must be between 1 and 25." : "Forward Boost speed must be between 1 and 300.");
-        (up ? debug.up_velocity_speed : debug.forward_velocity_speed) = request.value;
+        request.action == overlay::DebugAction::set_up_velocity_speed ||
+        request.action == overlay::DebugAction::set_offboard_up_velocity_speed) {
+        if (request.action == overlay::DebugAction::set_offboard_up_velocity_speed) {
+            source_require(std::isfinite(request.value) && request.value >= 1.0f && request.value <= 25.0f,
+                "Off-board Up Boost speed must be between 1 and 25.");
+            debug.offboard_up_velocity_speed = request.value;
+            debug.status = "Off-board Up Boost speed updated.";
+        } else {
+            const bool up = request.action == overlay::DebugAction::set_up_velocity_speed;
+            source_require(std::isfinite(request.value) && request.value >= 1.0f && request.value <= (up ? 25.0f : 300.0f),
+                up ? "Up Boost speed must be between 1 and 25." : "Forward Boost speed must be between 1 and 300.");
+            (up ? debug.up_velocity_speed : debug.forward_velocity_speed) = request.value;
+            debug.status = up ? "Up Boost speed updated." : "Forward Boost speed updated.";
+        }
         mark_debug_changed(debug);
-        debug.status = up ? "Up Boost speed updated." : "Forward Boost speed updated.";
         return;
     }
     if (request.action == overlay::DebugAction::restore_debug) {
@@ -443,7 +486,9 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         debug.forward_velocity_speed = 20.0f;
         debug.forward_velocity.valid = false;
         debug.up_velocity_speed = 20.0f;
+        debug.offboard_up_velocity_speed = 20.0f;
         debug.up_velocity.valid = false;
+        debug.offboard_up_velocity.valid = false;
         debug.no_bail = false;
         debug_stop_noclip(debug);
         clear_no_bail();
@@ -475,29 +520,63 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         return;
     }
     source_require(can_control, "Wait for an active local level before changing debug settings.");
-    if (request.action == overlay::DebugAction::add_forward_velocity || request.action == overlay::DebugAction::add_up_velocity) {
+    if (request.action == overlay::DebugAction::add_forward_velocity || request.action == overlay::DebugAction::add_up_velocity || request.action == overlay::DebugAction::add_offboard_up_velocity) {
         source_require(session_boosts_allowed(), "The host has turned off boosts in this session.");
-        const bool up = request.action == overlay::DebugAction::add_up_velocity;
+        const bool offboard_boost = request.action == overlay::DebugAction::add_offboard_up_velocity;
+        const bool up = request.action == overlay::DebugAction::add_up_velocity || offboard_boost;
         source_require(!debug.noclip, "Disable Noclip before using velocity boosts.");
         source_require(source_state().velocity_guard_active.load(std::memory_order_acquire),
             "Velocity boosts are unavailable for this game build.");
         overlay::DebugModel skater;
         const auto transform = debug_skater(trial.base, client, skater);
         const auto bodies = debug_noclip_bodies(trial.base, client, skater.skater_identity);
-        source_require(!bodies.offboard, "Velocity boosts require the skater to be on the board.");
+        if (offboard_boost) {
+            source_require(bodies.offboard || bodies.wipeout, "Off-board Up Boost requires walking, falling or gliding.");
+        } else {
+            source_require(!bodies.offboard, "Velocity boosts require the skater to be on the board.");
+        }
         SourceReader reader;
         source_require(reader.value<std::uint8_t>(skater.skater_identity, 0x7e0) == 0,
             "Wait for the current teleport before using velocity boosts.");
         const auto board_velocity = up ? std::array<float, 3>{} :
             reader.value<std::array<float, 3>>(bodies.parts[0], 0x70);
         reader.verify();
-        const auto velocity = velocity_boost_delta(transform, up ? debug.up_velocity_speed : debug.forward_velocity_speed,
+        const float speed = offboard_boost ? debug.offboard_up_velocity_speed : (up ? debug.up_velocity_speed : debug.forward_velocity_speed);
+        const auto velocity = velocity_boost_delta(transform, speed,
             up ? VelocityBoostDirection::up : VelocityBoostDirection::forward, board_velocity);
         source_require(velocity.has_value(), "Velocity boost direction or speed is invalid.");
-        auto& boost = up ? debug.up_velocity : debug.forward_velocity;
-        source_require(!boost.valid, "Velocity boost is already queued.");
+        auto& boost = offboard_boost ? debug.offboard_up_velocity : (up ? debug.up_velocity : debug.forward_velocity);
+        source_require(offboard_boost || !boost.valid, "Velocity boost is already queued.");
         boost = {client, skater.skater_identity, bodies.core, GetTickCount64() + 1000, *velocity, true};
-        debug.status = up ? "Up Boost queued." : "Forward Boost queued.";
+        if (offboard_boost) source_state().offboard_boost_core.store(bodies.core, std::memory_order_release);
+        if (offboard_boost) {
+            // Give the player the impulse on this client tick. The motion hook
+            // keeps its upward speed briefly if native off-board drive rewrites it.
+            const float current_up = reader.value<float>(bodies.parts[9], 0x74);
+            const float target_up = std::max(speed, current_up + speed);
+            source_require(std::isfinite(target_up) && target_up <= 100000,
+                "Off-board boost produced an invalid upward speed.");
+            std::array<std::array<float, 3>, 32> velocities{};
+            std::array<std::uint32_t, 32> flags{};
+            for (std::size_t i = 9; i < bodies.parts.size(); ++i) {
+                velocities[i] = reader.value<std::array<float, 3>>(bodies.parts[i], 0x70);
+                flags[i] = reader.value<std::uint32_t>(bodies.parts[i], 0x60);
+                velocities[i][1] = std::max(velocities[i][1], target_up);
+            }
+            reader.verify();
+            if (bodies.offboard)
+                source_require(ensure_offboard_up_velocity(trial.base, bodies.core, bodies.context,
+                    bodies.rig_wrapper, target_up), "Off-board boost motion ownership changed.");
+            for (std::size_t i = 9; i < bodies.parts.size(); ++i) {
+                debug_write(bodies.parts[i] + 0x70, velocities[i]);
+                debug_write(bodies.parts[i] + 0x60, flags[i] | 8u);
+            }
+            boost.velocity[1] = target_up;
+            boost.applied = true;
+            boost.expires = GetTickCount64() + 180;
+            ++debug.offboard_up_velocity_updates;
+            debug.status = "Off-board up velocity added.";
+        } else debug.status = up ? "Up Boost queued." : "Forward Boost queued.";
         return;
     }
     if (request.action == overlay::DebugAction::set_no_bail) {
@@ -532,6 +611,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         source_require(session_noclip_allowed(), "The host has turned off noclip in this session.");
         debug.forward_velocity.valid = false;
         debug.up_velocity.valid = false;
+        debug.offboard_up_velocity.valid = false;
         source_require(no_bail_available(), "Noclip requires the native No Bail hooks.");
         source_require(source_state().velocity_guard_active.load(std::memory_order_acquire),
             "Velocity flight is unavailable for this game build.");
@@ -660,6 +740,42 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
     }
     source_require(false, "Unknown debug request.");
 }
+// "Third person on foot": runs only while first person is on or this paused
+// it, so players who never use first person are untouched. Switches through
+// the same actions as the menu toggle, after the state has held briefly.
+void first_person_board_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
+    auto& debug = trial.debug;
+    // Choosing Freecam or the Park Editor while handed back ends the hand-back.
+    if (debug.first_person_paused && (debug.park_editor || (debug.camera_owned && !debug.first_person)))
+        debug.first_person_paused = false;
+    // With the option off, a hand-back still in progress resumes below.
+    if (!debug.first_person_paused && !(debug.first_person && debug.first_person_settings.board_only)) return;
+    if (!can_control || !phase || debug.park_editor || debug.noclip || debug.editor_transition) return;
+    const auto now = GetTickCount64();
+    const auto on_foot = debug.first_person_settings.board_only ? first_person_on_foot(trial.base, client) : std::optional<bool>(false);
+    if (!on_foot) return;
+    if (*on_foot != debug.first_person_last_on_foot) {
+        debug.first_person_last_on_foot = *on_foot;
+        debug.first_person_foot_since = now;
+    }
+    const auto held = now - debug.first_person_foot_since;
+    if (now < debug.first_person_retry_after) return;
+    try {
+        if (debug.first_person && *on_foot && held >= 250) {
+            debug_action(trial, client, can_control, phase, {overlay::DebugAction::set_first_person, false}, error);
+            debug.first_person_paused = true;
+            debug.status = "On foot: third person until you are back on the board.";
+        } else if (debug.first_person_paused && !*on_foot && held >= 120) {
+            debug_action(trial, client, can_control, phase, {overlay::DebugAction::set_first_person, true}, error);
+            debug.first_person_paused = !debug.first_person;
+        }
+    } catch (const SourceGuard& guard) {
+        debug.status = guard.message;
+        debug.first_person_retry_after = now + 500;
+    } catch (...) {
+        debug.first_person_retry_after = now + 500;
+    }
+}
 }
 }
 
@@ -671,6 +787,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     SourceLastError error;
     overlay::DebugModel model;
     auto& state = source_state();
+    model.free_camera = state.free_camera_active.load(std::memory_order_acquire);
     if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return model;
     SourceBusyScope scope{state.busy};
     auto& trial = state.trial;
@@ -689,6 +806,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     if (!can_control) {
         debug.forward_velocity.valid = false;
         debug.up_velocity.valid = false;
+        debug.offboard_up_velocity.valid = false;
     }
     if (debug.park_editor && !lobby_object_placement_allowed() && can_control && camera_phase_observed) {
         try {
@@ -706,10 +824,18 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     }
     const bool no_bail_allowed = session_no_bail_allowed();
     if (request) {
+        // The player's own First person choice replaces any on-foot hand-back.
+        if (request->action == overlay::DebugAction::set_first_person || request->action == overlay::DebugAction::restore_debug)
+            debug.first_person_paused = false;
         try { debug_action(trial, client, can_control, camera_phase_observed, *request, error.value); }
         catch (const SourceGuard& guard) { debug.status = guard.message; }
         catch (...) { debug.status = "Debug action failed; inspect the current state before retrying."; }
     }
+    first_person_board_tick(trial, client, can_control, camera_phase_observed, error.value);
+    // Camera ownership survives a busy tick or a failed presentation snapshot.
+    // Input capture must follow the lease, not those transient model failures.
+    state.free_camera_active.store(debug.camera_owned && !debug.first_person, std::memory_order_release);
+    model.free_camera = debug.camera_owned && !debug.first_person;
     std::optional<SourceCameraSnapshot> flight_camera;
     try { debug_flight_tick(trial, client, can_control, camera_phase_observed, flight_input, error.value, flight_camera); }
     catch (const SourceGuard& guard) { debug_stop_noclip(debug); debug.status = guard.message; }
@@ -728,7 +854,8 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         const auto camera = flight_camera ? *flight_camera : source_camera_snapshot(trial, client);
         const bool owned_view = camera.mode == 1 && camera.active == camera.identity.camera;
         model.free_camera = owned_view && !debug.first_person;
-        model.first_person = owned_view && debug.first_person;
+        // Handed back on foot still reads as on, so the toggle can switch it off.
+        model.first_person = (owned_view && debug.first_person) || debug.first_person_paused;
         model.first_person_fov = debug.first_person_fov;
         model.free_camera_fov = debug.free_camera_fov;
         model.camera_available = can_control && camera_phase_observed && !debug.camera_ambiguous;
@@ -769,6 +896,11 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         debug.noclip ? "Disable Noclip before using Up Boost." :
         !state.velocity_guard_active.load(std::memory_order_acquire) ? "Up Boost is unavailable for this game build." :
         "Local skater physics could not be read.";
+    model.offboard_up_velocity_unavailable = !can_control ? "Waiting for active local controls." :
+        debug.park_editor ? "Close Park Editor before using Off-board Up Boost." :
+        debug.noclip ? "Disable Noclip before using Off-board Up Boost." :
+        !state.velocity_guard_active.load(std::memory_order_acquire) ? "Off-board Up Boost is unavailable for this game build." :
+        "Local skater physics could not be read.";
     try {
         (void)debug_skater(base, client, model);
         const auto bodies = debug_noclip_bodies(base, client, model.skater_identity);
@@ -800,6 +932,22 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         } else if (debug.up_velocity.valid) {
             model.up_velocity_unavailable = "Up Boost is being applied.";
         }
+        if (debug.offboard_up_velocity.valid && (GetTickCount64() >= debug.offboard_up_velocity.expires ||
+            debug.offboard_up_velocity.entity != model.skater_identity || debug.offboard_up_velocity.core != bodies.core ||
+            (!debug.offboard_up_velocity.applied && !bodies.offboard && !bodies.wipeout))) {
+            const bool applied = debug.offboard_up_velocity.applied;
+            debug.offboard_up_velocity.valid = false;
+            if (!applied) debug.status = "Off-board Up Boost cancelled because skater physics changed.";
+        }
+        if (can_control && !debug.park_editor && !debug.noclip &&
+            state.velocity_guard_active.load(std::memory_order_acquire) && (bodies.offboard || bodies.wipeout)) {
+            model.offboard_up_velocity_available = true;
+            model.offboard_up_velocity_unavailable.clear();
+        } else if (!bodies.offboard && !bodies.wipeout) {
+            model.offboard_up_velocity_unavailable = "Off-board Up Boost requires walking, falling or gliding.";
+        } else if (debug.offboard_up_velocity.valid) {
+            model.offboard_up_velocity_unavailable = "Off-board Up Boost is being applied.";
+        }
         model.no_bail_available = can_control && update_no_bail(client, model.skater_identity, debug.no_bail && no_bail_allowed,
             debug.noclip && debug.noclip_velocity.valid, debug.noclip_velocity.expires);
         if (model.camera_available) {
@@ -816,14 +964,16 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         if (model.camera_available) model.noclip_unavailable = guard.message;
         model.forward_velocity_unavailable = guard.message;
         model.up_velocity_unavailable = guard.message;
+        model.offboard_up_velocity_unavailable = guard.message;
     } catch (...) {
         if (model.camera_available) model.noclip_unavailable = "Local skater physics could not be read.";
         model.forward_velocity_unavailable = "Local skater physics could not be read.";
         model.up_velocity_unavailable = "Local skater physics could not be read.";
+        model.offboard_up_velocity_unavailable = model.up_velocity_unavailable;
     }
     if (!session_boosts_allowed()) {
-        model.forward_velocity_available = model.up_velocity_available = false;
-        model.forward_velocity_unavailable = model.up_velocity_unavailable = "The host has turned off boosts in this session.";
+        model.forward_velocity_available = model.up_velocity_available = model.offboard_up_velocity_available = false;
+        model.forward_velocity_unavailable = model.up_velocity_unavailable = model.offboard_up_velocity_unavailable = "The host has turned off boosts in this session.";
     }
     if (!model.no_bail_available) {
         clear_no_bail();
@@ -850,7 +1000,14 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     model.forward_velocity_updates = debug.forward_velocity_updates;
     model.up_velocity_speed = debug.up_velocity_speed;
     model.up_velocity_updates = debug.up_velocity_updates;
+    model.offboard_up_velocity_speed = debug.offboard_up_velocity_speed;
+    model.offboard_up_velocity_updates = debug.offboard_up_velocity_updates;
+    state.offboard_boost_core.store(debug.offboard_up_velocity.valid ? debug.offboard_up_velocity.core : 0,
+        std::memory_order_release);
     return model;
+}
+bool client_free_camera_active() noexcept {
+    return source_state().free_camera_active.load(std::memory_order_acquire);
 }
 bool restore_client_debug(std::uintptr_t base, std::uintptr_t client, bool camera_phase_observed) {
     const overlay::DebugRequest request{overlay::DebugAction::restore_debug};

@@ -1,6 +1,7 @@
 #include "gui_internal.h"
 
-#include "mod_manager.h"
+#include "mod_manager.h"
+
 #include "problem.h"
 
 #include <cmath>
@@ -463,6 +464,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         ? (ui.mods_pending == 1 ? std::string("1 MOD UPDATE") : std::format("{} MOD UPDATES", ui.mods_pending))
         : std::string();
     if (action_tile(draw, fonts, primary, primary_size, label, detail, enabled && !modal, secondary, play_mark)) act();
+    // A controller starts on PLAY.
+    if (!modal) default_focus();
     if (settings_tile(draw, fonts, settings, ImVec2(column, S(84)), !modal)) ui.settings = true;
     if (time - ui.mods_checked > 5 && !ui.mods) {
         std::size_t enabled_mods = 0, installed = 0;

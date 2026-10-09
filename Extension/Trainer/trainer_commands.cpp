@@ -22,6 +22,8 @@ void register_trainer_commands(Commands &registry) {
         {"slot", "Select a marker slot", "<1-5>", false},
         {"marker", "Save, go to or clear a marker", "save|go|clear [slot]", false},
         {"tp", "Teleport the skater", "<x> <y> <z>", false},
+        {"waypoint", "Teleport to the waypoint placed on the pause map, onto the surface there", "[info]", false},
+        {"ground", "Teleport to the topmost surface at a map position", "<x> <z>", false},
         {"spot", "Go to one of the map author's spots", "<number>", false},
         {"option", "Trainer options", "hud|hud_jump|auto_return|pad|log 0|1, return_delay <seconds>, hippy_height|nocomply_height|boneless_height|offboard_height|flip_speed <x>", true},
         {"profile", "The preset this map applies on load", "set <preset>|clear", false},

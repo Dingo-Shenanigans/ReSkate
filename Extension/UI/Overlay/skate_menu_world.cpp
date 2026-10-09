@@ -302,6 +302,24 @@ void parks(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
              : model.parks.controlled_by_host ? "You are an admin of this server: a layout you load changes for everyone."
                                               : "Choose a layout for each slot. Choices save and are shared when you host.");
         note("Construction controls both the construction site and the Hedgemont park.");
+        const auto park_command = [&](const char* command) {
+            std::array<char, 512> result{};
+            callbacks.queue_console_command(callbacks.user, command, result.data(), result.size());
+            result.back() = '\0'; feedback(menu, result.data());
+        };
+        ImGui::BeginDisabled(!model.parks.available || tools::parks_locked(model) || !callbacks.queue_console_command);
+        if (ImGui::Button("Load Random Parks")) {
+            park_command("park random");
+            menu.park_edit = {}; // Discard staged dropdown edits, including slots that reroll the same layout.
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!model.parks.available || !callbacks.queue_console_command);
+        auto random_on_launch = model.parks.randomize_on_launch;
+        if (ImGui::Checkbox("Randomize on Launch", &random_on_launch))
+            park_command(random_on_launch ? "park random-on-launch 1" : "park random-on-launch 0");
+        ImGui::EndDisabled();
+        note("Pick a random layout for each slot. Randomize on Launch runs once per game launch; multiplayer follows the host.");
         ImGui::BeginDisabled(!model.parks.available || tools::parks_locked(model) || !callbacks.queue_console_command);
         if (ImGui::BeginTable("park-layouts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_WidthStretch, 0.9f);

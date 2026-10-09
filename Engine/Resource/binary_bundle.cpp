@@ -167,6 +167,8 @@ BinaryBundle read_binary_bundle(const std::span<const std::byte> data) {
     const auto metadataOffset = reader.u32(endian);
     const auto metadataSize = reader.u32(endian);
     if (strings > data.size()) throw std::out_of_range("Binary bundle string table is out of range");
+    const auto tables = std::uint64_t{ebxCount} * 28 + std::uint64_t{resourceCount} * 56 + std::uint64_t{chunkCount} * 44; // SHA-1 plus entry bytes
+    if (tables > reader.remaining()) throw std::out_of_range("Binary bundle asset counts exceed the file");
 
     std::vector<Sha1> hashes(total);
     for (auto& hash : hashes) hash = reader.sha1();

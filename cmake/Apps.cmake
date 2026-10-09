@@ -2,9 +2,10 @@ if(WIN32)
     add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
         Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
         Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp
+        Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp
         Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/thunderstore.cpp Launcher/problem.h)
     target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
-        dingosdk_mod_list dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui winhttp shell32 dwmapi windowscodecs ole32)
+        dingosdk_mod_list dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui dingosdk_playstation_input winhttp shell32 dwmapi windowscodecs ole32)
     set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
     dingosdk_version_info(dingosdk_launcher "ReSkate launcher" "ReSkateLauncher.exe" VFT_APP)
 endif()
@@ -19,6 +20,10 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_link_libraries(dingosdk_thunderstore_tests PRIVATE dingosdk_json dingosdk_miniz)
     target_include_directories(dingosdk_thunderstore_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME launcher_thunderstore COMMAND dingosdk_thunderstore_tests)
+    add_executable(dingosdk_gamepad_input_tests Launcher/Test/gamepad_input_tests.cpp Launcher/gamepad_input.cpp)
+    target_link_libraries(dingosdk_gamepad_input_tests PRIVATE dingosdk_imgui)
+    target_include_directories(dingosdk_gamepad_input_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME launcher_gamepad_input COMMAND dingosdk_gamepad_input_tests)
     add_executable(dingosdk_content_catalogs_tests Engine/Vfs/Test/content_catalogs_tests.cpp)
     target_link_libraries(dingosdk_content_catalogs_tests PRIVATE dingosdk_content_cache)
     add_test(NAME content_catalogs COMMAND dingosdk_content_catalogs_tests)
@@ -169,7 +174,8 @@ add_executable(dingosdk_server Server/main.cpp Server/server_host.cpp Server/ser
     Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
     Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
     Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-    Server/server_activity.cpp Server/server_votes.cpp Server/server_radio.cpp Extension/Throwdowns/throwdown_wire.cpp)
+    Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_radio.cpp
+    Extension/Throwdowns/throwdown_wire.cpp)
 target_include_directories(dingosdk_server SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
 if(WIN32)
     target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json

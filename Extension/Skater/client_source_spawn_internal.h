@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -102,6 +103,10 @@ struct InteractiveDebug {
     // Shares Freecam's owned mode-1 camera; each tick publishes the head pose
     // instead of a flight step.
     bool first_person{}, first_person_waiting{};
+    // "Third person on foot": first person handed the camera back while the
+    // skater walks and takes it again once they are back on the board.
+    bool first_person_paused{}, first_person_last_on_foot{};
+    ULONGLONG first_person_foot_since{}, first_person_retry_after{};
     // FreeCamera vertical FOV (+0xac): chosen value (0 = unchanged) and the value
     // it held before first person took it, restored when first person ends.
     float first_person_fov{}, first_person_saved_fov{};
@@ -123,14 +128,18 @@ struct InteractiveDebug {
         ULONGLONG expires{};
         std::array<float, 3> velocity{};
         bool valid{};
+        bool applied{};
     } noclip_velocity;
     VelocityRequest forward_velocity;
     VelocityRequest up_velocity;
+    VelocityRequest offboard_up_velocity;
     std::uint64_t noclip_velocity_updates{}, noclip_motion_updates{};
     std::uint64_t forward_velocity_updates{};
     float forward_velocity_speed = 20.0f;
     std::uint64_t up_velocity_updates{};
+    std::uint64_t offboard_up_velocity_updates{};
     float up_velocity_speed = 20.0f;
+    float offboard_up_velocity_speed = 20.0f;
     float noclip_altitude{};
     bool noclip_altitude_valid{}, noclip_altitude_offboard{};
     // Player choices kept in the local profile (see load_saved_debug):
@@ -158,6 +167,8 @@ struct SourceState {
     std::atomic_flag busy = ATOMIC_FLAG_INIT;
     bool velocity_guard_attempted{}; // Protected by initialization_mutex.
     std::atomic<bool> velocity_guard_active{};
+    std::atomic<bool> free_camera_active{};
+    std::atomic<std::uintptr_t> offboard_boost_core{};
     std::atomic<SourcePhysicsUpdate> velocity_update_original{};
     std::atomic<SourceSkaterMotion> motion_original{};
     SourceTrial trial;
@@ -172,6 +183,7 @@ struct NoclipBodies {
     std::uintptr_t core{}, context{}, rig_wrapper{};
     float seconds{}, board_height{};
     bool offboard{};
+    bool wipeout{}; // Spread-eagle/torpedo use the native wipeout physics path.
     std::array<float, 3> root{}; // Entity root: the camera target and the idle motion target.
     std::array<std::uintptr_t, 32> parts{}; // Board 0..8, native skeleton velocity parts 1..23.
 };
@@ -215,6 +227,8 @@ bool first_person_write_fov(std::uintptr_t camera, float fov) noexcept;
 void first_person_restore_fov(InteractiveDebug& debug) noexcept;
 void free_camera_restore_fov(InteractiveDebug& debug) noexcept;
 std::uintptr_t first_person_component(std::uintptr_t base, std::uintptr_t client);
+// Whether the local skater is walking (physics state Offboard); empty if unreadable.
+std::optional<bool> first_person_on_foot(std::uintptr_t base, std::uintptr_t client) noexcept;
 first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t component, std::array<float, 16>& matrix);
 void first_person_on_render(std::uintptr_t animation_interface) noexcept;
 void first_person_on_animation(std::uintptr_t component) noexcept;

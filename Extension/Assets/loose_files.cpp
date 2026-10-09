@@ -47,7 +47,7 @@ struct State {
 // Hooks and the native mount live until process exit, like the pinned runtime.
 State& state() { static auto* value = new State; return *value; }
 
-// Supported September 8 build, checked after runtime image validation.
+// Supported game build, checked after runtime image validation.
 bool validate_contract(std::uintptr_t base) {
     struct Contract { std::uintptr_t rva; std::span<const unsigned char> bytes; };
     const Contract contracts[]{
@@ -58,7 +58,8 @@ bool validate_contract(std::uintptr_t base) {
     for (const auto& contract : contracts) {
         std::array<unsigned char, 32> actual{};
         SIZE_T count{};
-        if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(base + contract.rva),
+        if (contract.bytes.size() > actual.size() || // a longer prefix would overrun actual
+            !ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(base + contract.rva),
                 actual.data(), contract.bytes.size(), &count) || count != contract.bytes.size() ||
             std::memcmp(actual.data(), contract.bytes.data(), contract.bytes.size())) return false;
     }

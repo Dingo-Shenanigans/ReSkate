@@ -981,8 +981,10 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         for (const auto& [index, guids] : left) {
                             // Name the mod whose asset took the item's name, when that is why.
                             const Asset* taken{};
-                            for (const auto& guid : guids)
-                                if ((taken = held.replacement(guid))) break;
+                            for (const auto& guid : guids) {
+                                taken = held.replacement(guid);
+                                if (taken) break;
+                            }
                             report.notes.push_back(mod_of(index) + ": " + entry.asset.name +
                                 ": " + std::to_string(guids.size()) + (itemList ? " item(s)" : " entry(ies)") +
                                 " left out of the list because the merged "

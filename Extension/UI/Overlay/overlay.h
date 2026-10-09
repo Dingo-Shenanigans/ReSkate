@@ -52,6 +52,8 @@ enum class DebugAction {
     set_park_editor,
     add_up_velocity,
     set_up_velocity_speed,
+    add_offboard_up_velocity,
+    set_offboard_up_velocity_speed,
     set_first_person,
     set_first_person_fov,
     set_first_person_spring,
@@ -65,6 +67,13 @@ enum class DebugAction {
     set_first_person_spring_down,
     set_first_person_spring_left,
     set_first_person_spring_right,
+    set_first_person_stabilize,
+    set_first_person_follow_flips,
+    set_first_person_smoothing,
+    set_first_person_head_pitch,
+    set_first_person_head_roll,
+    set_first_person_bob,
+    set_first_person_board_only,
     reset_first_person_arm,
     set_free_camera_fov,  // 0 = the game's own FOV
     // Keep the last action in sync with the bound in request_scheduler.h.
@@ -100,20 +109,24 @@ struct DebugModel {
     bool noclip = false, noclip_available = false;
     bool forward_velocity_available = false;
     bool up_velocity_available = false;
+    bool offboard_up_velocity_available = false;
     std::string camera_unavailable = "Waiting for local controls.";
     std::string noclip_unavailable = "Waiting for local controls.";
     std::string forward_velocity_unavailable = "Waiting for local controls.";
     std::string up_velocity_unavailable = "Waiting for local controls.";
+    std::string offboard_up_velocity_unavailable = "Waiting for local controls.";
     bool no_bail = false, no_bail_available = false, no_bail_active = false;
     std::uint64_t noclip_velocity_updates = 0, noclip_motion_updates = 0;
     std::uint64_t forward_velocity_updates = 0;
     std::uint64_t up_velocity_updates = 0;
+    std::uint64_t offboard_up_velocity_updates = 0;
     bool game_ui_hidden = false;
     bool settings_owned = false;
     // ReSkate free-flight speed in world units per second.
     float camera_speed = 15.0f;
     float forward_velocity_speed = 20.0f;
     float up_velocity_speed = 20.0f;
+    float offboard_up_velocity_speed = 20.0f;
     bool camera_position_valid = false;
     bool skater_position_valid = false;
     std::array<float, 3> camera_position{};
@@ -391,6 +404,7 @@ extern "C" __declspec(dllexport) void DingoSDKOverlayGetStatus(dingosdk::overlay
 // Poll only on the client update thread. Returns no input while either overlay
 // surface is open, the game is unfocused, or the overlay has stopped.
 extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* input, bool flight_active, bool player_flight = false);
+extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active);
 // allow_menu is used only by the Binds page while recording. Focus and lifetime
 // gates still apply. Gameplay callers leave it false.
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* input, bool allow_menu = false);

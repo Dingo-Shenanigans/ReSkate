@@ -217,11 +217,12 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             }
             for (const auto& relative : files.archives) {
                 const auto path = fs::path(relative);
-                const auto stem = path.stem().string();
-                const auto digits = stem.find_last_not_of("0123456789");
-                if (digits == std::string::npos || digits + 1 >= stem.size())
-                    throw std::runtime_error("Unexpected archive name: " + relative);
-                const auto number = static_cast<std::uint16_t>(std::stoul(stem.substr(digits + 1)));
+                const auto index = vfs::GameArchives::archive_index(path.stem().string());
+                if (!index) { // the mod's problem: the catalog merges again without it
+                    report.problems[mod->name].push_back("Unexpected archive name: " + relative);
+                    continue;
+                }
+                const auto number = *index;
                 // CasStore keys its directories relative to Win32, so the mod's
                 // own Win32/ prefix comes off before the two are matched up.
                 auto directory = lower(path.parent_path().generic_string());
@@ -339,7 +340,12 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 Source source;
                 source.root = mod->directory;
                 source.placement = &placements[mod];
-                source.toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
+                try {
+                    source.toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
+                } catch (const std::exception& failure) { // the mod's problem: the catalog merges again without it
+                    report.problems[mod->name].push_back(relative + " could not be read: " + failure.what());
+                    continue;
+                }
                 sources.push_back(std::move(source));
             }
             auto merged = combine(baseRoot / fs::path(relative), baseRoot, sources, report,

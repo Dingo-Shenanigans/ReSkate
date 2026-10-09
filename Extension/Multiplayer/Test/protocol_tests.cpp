@@ -5,6 +5,7 @@
 #include "Extension/Multiplayer/Net/wire_codec.h"
 #include "Extension/Multiplayer/Steam/steam_transport.h"
 #include "Extension/Throwdowns/throwdown_wire.h"
+#include "Engine/Game/World/park_randomization.h"
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -48,6 +49,23 @@ void tick_rates_codec() {
             check(decoded && decoded->tps == rate, "Roster lost host TPS");
         }
     }
+}
+void random_parks_codec() {
+    std::mt19937 generator{9147};
+    auto p = frame(1, 0);
+    p.kind = PacketKind::roster;
+    p.members = {{76561198000000001ULL, p.epoch, "Host"}};
+    for (unsigned roll = 0; roll < 1000; ++roll) {
+        p.parks = dingosdk::random_park_choices(generator);
+        const auto decoded = decode_wire(encode_wire(p));
+        check(decoded && decoded->parks == p.parks, "A random park selection changed in the host roster");
+    }
+    // This variant exists at Historic, but not Construction: lot-specific
+    // validation must also hold when sharing randomized layouts.
+    p.parks[0] = "flumppark_10";
+    bool rejected{};
+    try { (void)encode(p); } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "A park layout for another lot was shared");
 }
 void compressed_codec() {
     auto p = frame(1, 125);
@@ -997,6 +1015,7 @@ int main() {
     try {
         codec();
         tick_rates_codec();
+        random_parks_codec();
         compressed_codec();
         sender_timeline();
         greetings();

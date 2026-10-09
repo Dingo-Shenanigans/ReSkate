@@ -380,7 +380,6 @@ void draw_menu() {
             // than copying every retained log string a second time each poll.
             ingest_console_log(std::move(next.console_log));
             s.model = std::move(next);
-
         }
     }
     // Nothing but the chat: the held model may be old, so it must not reopen the editor.

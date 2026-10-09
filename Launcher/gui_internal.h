@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gamepad_input.h"
 #include "launch.h"
 #include "text_encoding.h"
 #include "thunderstore.h"
@@ -138,7 +139,9 @@ void virtual_rows(int count, Height height, Row row) {
     float y = start.y;
     for (int index = 0; index < count; ++index) {
         const float tall = height(index);
-        if (y + tall >= scroll && y <= scroll + view) {
+        // One row past each edge too: a controller moving off the last row
+        // shown needs the next one there to move to.
+        if (y + 2 * tall >= scroll && y <= scroll + view + tall) {
             ImGui::SetCursorPos(ImVec2(start.x, y));
             row(index, tall);
         }
@@ -162,6 +165,11 @@ inline std::atomic<unsigned> g_captured_key{};
 // Paths dropped on the window, picked up by the next frame.
 inline std::mutex g_dropped_mutex;
 inline std::vector<fs::path> g_dropped;
+// Every connected controller merged into one: XInput pads (Xbox, and Steam
+// Input's virtual pad on a Steam Deck), else a DualShock 4 / DualSense over HID.
+PadState read_pad();
+// The window's controller input, told about mouse moves by the window procedure.
+inline PadFeed* g_pad_feed{};
 
 // ---------------------------------------------------------------- settings
 

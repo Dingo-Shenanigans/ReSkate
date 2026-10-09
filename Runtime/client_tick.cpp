@@ -375,18 +375,57 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto camera_phase_ready = [&] { return camera_phase_issue() == nullptr; };
     std::optional<dingosdk::overlay::DebugRequest> debug_request;
     bool debug_busy{}, controller_busy{};
-    std::uint32_t noclip_combo{}, forward_velocity_combo{}, up_velocity_combo{};
+    std::uint32_t freecam_controller_combo{}, freecam_combo{}, tp_to_freecam_combo{}, noclip_combo{}, forward_velocity_combo{}, up_velocity_combo{}, offboard_up_velocity_combo{};
+    bool freecam_controller = dingosdk::local_freecam_controller();
     {
         std::lock_guard lock(r.mutex);
         debug_busy = r.requests.loading();
         controller_busy = !r.requests.idle();
+        freecam_controller_combo = r.model.bindings.available ? r.model.bindings.freecam_controller_combo : 0;
+        freecam_combo = r.model.bindings.available ? r.model.bindings.freecam_combo : 0;
+        tp_to_freecam_combo = r.model.bindings.available ? r.model.bindings.tp_to_freecam_combo : 0;
         noclip_combo = r.model.bindings.available ? r.model.bindings.noclip_combo : 0;
         forward_velocity_combo = r.model.bindings.available ? r.model.bindings.forward_velocity_combo : 0;
         up_velocity_combo = r.model.bindings.available ? r.model.bindings.up_velocity_combo : 0;
+        offboard_up_velocity_combo = r.model.bindings.available ? r.model.bindings.offboard_up_velocity_combo : 0;
         debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
     }
+    // Capture belongs to the freecam state itself. Keep it active across brief
+    // request/loading phases instead of opening a path back to player input.
+    DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
     dingosdk::ControllerInput controller;
-    if (noclip_combo || forward_velocity_combo || up_velocity_combo) DingoSDKOverlayReadControllerInput(&controller);
+    if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo) DingoSDKOverlayReadControllerInput(&controller);
+    
+    if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
+        if (dingosdk::set_local_freecam_controller(!freecam_controller))
+            freecam_controller = !freecam_controller;
+        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
+        record("{\"event\":\"controller_binding_triggered\",\"action\":\"freecam_controller\"}");
+    }
+    
+    if (r.tp_to_freecam_bind_latch.update(tp_to_freecam_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera || !r.debug_model.camera_position_valid || debug_request.has_value())) {
+        if (dingosdk::teleport_local_skater(r.debug_model.camera_position)) {
+            std::lock_guard lock(r.mutex);
+            const dingosdk::overlay::DebugRequest request{dingosdk::overlay::DebugAction::set_free_camera, false};
+            if (r.requests.enqueue(request, request_context(r), GetCurrentThreadId()))
+                debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
+        }
+        record("{\"event\":\"controller_binding_triggered\",\"action\":\"tp_to_freecam\"}");
+    }
+    
+    const bool freecam_bind_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+        (state != 13 && state != 21) || !r.debug_model.camera_available ||
+        (freecam_combo && !camera_phase_ready());
+    if (r.freecam_bind_latch.update(freecam_combo, controller, freecam_bind_blocked)) {
+        {
+            std::lock_guard lock(r.mutex);
+            const dingosdk::overlay::DebugRequest request{dingosdk::overlay::DebugAction::set_free_camera, !r.debug_model.free_camera};
+            if (r.requests.enqueue(request, request_context(r), GetCurrentThreadId()))
+                debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
+        }
+        record("{\"event\":\"controller_binding_triggered\",\"action\":\"freecam\"}");
+    }
+
     const bool bind_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
         (state != 13 && state != 21) || !r.debug_model.noclip_available ||
         (noclip_combo && !camera_phase_ready());
@@ -401,6 +440,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"noclip\"}");
     }
     const bool forward_velocity_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+        (r.debug_model.offboard_up_velocity_available && forward_velocity_combo == offboard_up_velocity_combo) ||
+        (r.debug_model.free_camera && freecam_controller) ||
         (state != 13 && state != 21) || !r.debug_model.forward_velocity_available ||
         (forward_velocity_combo && forward_velocity_combo == noclip_combo);
     if (r.forward_velocity_bind_latch.update(forward_velocity_combo, controller, forward_velocity_blocked)) {
@@ -413,6 +454,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"forward_velocity\"}");
     }
     const bool up_velocity_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+        (r.debug_model.offboard_up_velocity_available && up_velocity_combo == offboard_up_velocity_combo) ||
+        (r.debug_model.free_camera && freecam_controller) ||
         (state != 13 && state != 21) || !r.debug_model.up_velocity_available ||
         (up_velocity_combo && (up_velocity_combo == noclip_combo || up_velocity_combo == forward_velocity_combo));
     if (r.up_velocity_bind_latch.update(up_velocity_combo, controller, up_velocity_blocked)) {
@@ -423,6 +466,19 @@ void update_model(std::uintptr_t client, TickState& frame) {
             record("{\"event\":\"controller_binding_triggered\",\"action\":\"up_velocity\"}");
         }
     }
+
+    const bool offboard_up_velocity_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+        (r.debug_model.free_camera && freecam_controller) ||
+        (state != 13 && state != 21) || !r.debug_model.offboard_up_velocity_available ||
+        (offboard_up_velocity_combo && offboard_up_velocity_combo == noclip_combo);
+    if (r.offboard_up_velocity_bind_latch.update(offboard_up_velocity_combo, controller, offboard_up_velocity_blocked)) {
+        std::lock_guard lock(r.mutex);
+        const dingosdk::overlay::DebugRequest request{dingosdk::overlay::DebugAction::add_offboard_up_velocity};
+        if (r.requests.enqueue(request, request_context(r), GetCurrentThreadId())) {
+            debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
+            record("{\"event\":\"controller_binding_triggered\",\"action\":\"offboard_up_velocity\"}");
+        }
+    }
     if (debug_request || r.debug_model.free_camera || r.debug_model.first_person || r.debug_model.noclip ||
         now >= r.next_debug) {
         ScheduledWorkScope work{r, debug_request.has_value()};
@@ -430,11 +486,13 @@ void update_model(std::uintptr_t client, TickState& frame) {
         const bool debug_ready = !r.observer_failed && !debug_busy && (state == 13 || state == 21) && native_context_ready();
         dingosdk::overlay::FlightInput flight_input;
         DingoSDKOverlayReadFlightInput(&flight_input, (r.debug_model.free_camera || r.debug_model.noclip) && debug_ready,
-            r.debug_model.noclip);
+            r.debug_model.noclip || (r.debug_model.free_camera && freecam_controller));
         const auto phase_issue = camera_phase_issue();
         auto debug = dingosdk::on_client_debug_tick(r.base, client, debug_ready,
             phase_issue == nullptr,
             debug_request ? &*debug_request : nullptr, &flight_input);
+        // Input ownership must follow the live camera even with every overlay closed.
+        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
         // A debug action, or a mode the tick ended by itself (host policy, lost
         // camera), can have replaced the native camera: validate it again.
         if (debug_request || debug.free_camera != r.debug_model.free_camera ||
@@ -470,6 +528,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
             record("{\"event\":\"forward_velocity_applied\",\"count\":" + std::to_string(debug.forward_velocity_updates) + "}");
         if (debug.up_velocity_updates != r.debug_model.up_velocity_updates)
             record("{\"event\":\"up_velocity_applied\",\"count\":" + std::to_string(debug.up_velocity_updates) + "}");
+        if (debug.offboard_up_velocity_updates != r.debug_model.offboard_up_velocity_updates)
+            record("{\"event\":\"offboard_up_velocity_applied\",\"count\":" + std::to_string(debug.offboard_up_velocity_updates) + "}");
         if (r.debug_model.noclip && !debug.noclip && !debug_request) {
             std::ostringstream stopped;
             stopped << "{\"event\":\"noclip_stopped\",\"reason\":" << std::quoted(debug.status) << '}';
@@ -911,6 +971,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // Validated afresh for the restore, which may itself change the camera.
     frame.camera_issue.reset();
     const bool restored = dingosdk::restore_client_debug(r.base, client, camera_phase_ready());
+    DingoSDKOverlaySetFreecamInputCapture(false);
     frame.camera_issue.reset();
     if (!restored) {
         std::lock_guard lock(r.mutex);

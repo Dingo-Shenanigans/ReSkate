@@ -82,6 +82,20 @@ custom map and then join a server on another map, the screen can stay black
 
 The menu and console keys can be changed in the launcher's Settings.
 
+In **MAP → ROTATING PARKS** and the controller-friendly **CUSTOM STUFF → PARKS** screen,
+**Load Random Parks** chooses and loads one random layout for each of
+San Vansterdam's three slots. Each supported layout has an equal chance; empty lots are excluded and
+a roll can pick a layout already loaded. Choices save with your profile and are shared when you host.
+**Randomize on Launch** is off by default. Turn it on to pick fresh layouts once on each subsequent
+game launch, when the park controller is ready. Changing maps does not roll again. Guests follow the
+host's layouts; a dedicated server admin can use the button to randomize the server's parks for everyone.
+Both menus share the same launch preference. It only affects your own parks, including when you host
+a lobby. Joining a host cancels any pending startup roll, so leaving the lobby restores your saved
+layouts without unexpectedly randomizing them.
+
+The console equivalents are `park random` and `park random-on-launch 0|1`. A dedicated server also
+accepts `park random` from its console or an admin.
+
 ### Where things are
 
 | What | Where |

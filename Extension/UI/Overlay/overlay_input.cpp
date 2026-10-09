@@ -241,7 +241,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             }
         }
         const bool capture = owns_pointer();
-        if (capture && is_input(message)) {
+        const bool freecam_capture = s.freecam_controller_active.load(std::memory_order_relaxed);
+        if (freecam_capture) release_game_buttons(window, previous);
+        if ((capture || freecam_capture) && is_input(message)) {
             // Foreground raw-input packets still need DefWindowProc cleanup.
             return message == WM_INPUT ? DefWindowProcW(window, message, wp, lp) : 0;
         }
@@ -390,9 +392,25 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
     const auto sample = read_controller_sample();
     if (!sample.device) return {};
     const auto& pad = sample.pad;
-    return dingosdk::controller_flight_input(pad.sThumbLX, pad.sThumbLY, pad.bLeftTrigger, pad.bRightTrigger,
+    auto input = dingosdk::controller_flight_input(pad.sThumbLX, pad.sThumbLY, pad.bLeftTrigger, pad.bRightTrigger,
         (pad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0);
+    const float rx = static_cast<float>(pad.sThumbRX), ry = static_cast<float>(pad.sThumbRY);
+    const float magnitude = std::sqrt(rx * rx + ry * ry);
+    constexpr float deadzone = 8689.0f;
+    if (magnitude > deadzone) {
+        const float scale = std::clamp((magnitude - deadzone) / (32767.0f - deadzone), 0.0f, 1.0f) / magnitude;
+        input.look_x = rx * scale * 25.0f;
+        input.look_y = ry * scale * -25.0f;
+    }
+    return input;
 }
+}
+
+extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active) {
+    const bool previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
+    if (previous != active)
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::input,
+            "Freecam controller input capture %s.", active ? "enabled" : "disabled");
 }
 
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* output, bool allow_menu) {
@@ -403,6 +421,15 @@ extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* ou
     const HWND window = s.window.load();
     if (!window || s.stop.load() || s.failed.load() || (!allow_menu && interactive_visible(s)) ||
         !game_window_foreground(window)) return;
+    // Read through the overlay's bypass: freecam capture hides keys from the game.
+    {
+        OverlayInputAccess access;
+        for (unsigned key = 0; key < 256; ++key) {
+            if (dingosdk::bindable_keyboard_key(key) && (GetAsyncKeyState(key) & 0x8000)) {
+                output->keys[key / 64] |= std::uint64_t{1} << (key % 64);
+            }
+        }
+    }
     const auto sample = read_controller_sample();
     output->style = sample.style;
     if (!sample.device) return;
@@ -455,6 +482,8 @@ extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* o
         output->forward = std::clamp(output->forward + controller.forward, -1.0f, 1.0f);
         output->up = std::clamp(output->up + controller.up, -1.0f, 1.0f);
         output->boost = output->boost || controller.boost;
+        output->look_x = controller.look_x;
+        output->look_y = controller.look_y;
         looking = false;
         return; // Native camera owns look input; do not sample or recenter the cursor.
     }

@@ -40,8 +40,10 @@ inline std::ptrdiff_t peek_cstring(std::uintptr_t address, char* destination, st
     if (!destination || !capacity || address < 0x10000 || address > highest_user_address - capacity) return -1;
     __try {
         const auto* source = reinterpret_cast<const char*>(address);
-        for (std::size_t i = 0; i < capacity; ++i)
-            if (!(destination[i] = source[i])) return static_cast<std::ptrdiff_t>(i);
+        for (std::size_t i = 0; i < capacity; ++i) {
+            destination[i] = source[i];
+            if (destination[i] == '\0') return static_cast<std::ptrdiff_t>(i);
+        }
         return -1;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1;

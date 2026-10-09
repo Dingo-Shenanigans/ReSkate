@@ -117,6 +117,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_classes.cpp
     Extension/Trainer/trainer_commands.cpp
     Extension/Trainer/trainer_session.cpp
+    Extension/Trainer/trainer_waypoint.cpp
     Extension/Skater/offboard_flight.cpp
     Extension/Skater/camera_observer.cpp
     Extension/Boot/offline_boot.cpp

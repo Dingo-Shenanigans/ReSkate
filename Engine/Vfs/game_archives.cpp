@@ -1,6 +1,7 @@
 #include "game_archives.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Core/Platform/path_text.h"
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -151,8 +152,10 @@ const std::string& GameArchives::directory(std::uint32_t installChunk) const {
 std::optional<std::uint16_t> GameArchives::archive_index(const std::string& stem) {
     const auto digits = stem.find_last_not_of("0123456789");
     if (digits == std::string::npos || digits + 1 >= stem.size()) return {};
-    const auto value = std::stoul(stem.substr(digits + 1));
-    if (value > 0xFFFF) return {};
-    return static_cast<std::uint16_t>(value);
+    std::uint16_t value{};
+    const auto end = stem.data() + stem.size();
+    const auto [last, error] = std::from_chars(stem.data() + digits + 1, end, value); // range error past 65535, never throws
+    if (error != std::errc{} || last != end) return {};
+    return value;
 }
 }

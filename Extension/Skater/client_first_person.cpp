@@ -3,6 +3,7 @@
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/no_bail.h"
 #include "free_flight.h"
 #include <cmath>
 
@@ -139,6 +140,20 @@ std::uintptr_t first_person_component(std::uintptr_t base, std::uintptr_t client
         first_person_read(component, &component_type, 8) && component_type == base + addr::engine::skater_component_vtable,
         "Skater animation is unavailable.");
     return component;
+}
+// The physics state selector's current state: skater component +0x70 is the
+// physics core, core +0x3c0 its context, context +0x1414 the state (no_bail.cpp).
+std::optional<bool> first_person_on_foot(std::uintptr_t base, std::uintptr_t client) noexcept {
+    try {
+        const auto component = first_person_component(base, client);
+        std::uintptr_t core{}, core_type{}, context{};
+        std::uint32_t state{};
+        if (!first_person_read(component + 0x70, &core, 8) || !first_person_read(core, &core_type, 8) ||
+            core_type != base + addr::no_bail::bail_core_vtable ||
+            !first_person_read(core + 0x3c0, &context, 8) || !first_person_read(context + 0x1414, &state, 4))
+            return std::nullopt;
+        return state == addr::no_bail::offboard_physics_state;
+    } catch (...) { return std::nullopt; }
 }
 // Writes the head camera into the rows (right, up, backward, position) of a
 // native camera matrix, leaving each row's fourth lane as the camera had it.

@@ -201,6 +201,7 @@ ScoringCheck check_scoring(const Catalog& catalog, std::vector<std::string>* not
             result.assets.push_back(key.substr(4));
             for (const auto& sha1 : versions) hash = fnv(hash, key + ' ' + hex(sha1) + '\n');
         }
+        std::ranges::sort(result.assets); // "ebx "/"res " keys sort apart once the prefix is gone
         result.assets.erase(std::unique(result.assets.begin(), result.assets.end()), result.assets.end());
         result.fingerprint = hash ? hash : 1;
     } catch (const std::exception& failure) {

@@ -46,6 +46,21 @@ int main() {
             "the music shuffle preference is saved as a Boolean profile option");
         store.set_selected_cosmetic_preset(3);
         check(announced(), "a save outside the settings is announced");
+        const ParkChoices parks{"megapark_04", "flumppark_10", "streetpark_06"};
+        store.save_park_choices(parks);
+        check(announced() && profile::park_choices(store.snapshot()) == parks, "all park slots save together");
+        store.save_park_choices(parks);
+        check(!announced(), "saving the same park choices announces nothing");
+        auto invalid = parks;
+        invalid[0] = "skatepark_01";
+        invalid[2] = "flumppark_10"; // Historic-only variant, invalid for Financial.
+        bool rejected{};
+        try { store.save_park_choices(invalid); } catch (const std::runtime_error&) { rejected = true; }
+        check(rejected && !announced() && profile::park_choices(store.snapshot()) == parks,
+              "an invalid batch never saves earlier slots");
+        check(!store.user_value("ReSkate.RandomizeParksOnLaunch"), "existing profiles have no launch randomization preference");
+        store.set_user_value("ReSkate.RandomizeParksOnLaunch", true);
+        check(announced(), "the launch preference is saved and announced");
     }
     {
         // A restart: the saved values and their types (a whole number saved as a float stays one).
@@ -56,6 +71,8 @@ int main() {
             store.user_value("ReSkate.MusicShuffle") == Json(true) &&
             number && number->is_number_float() && number->get<double>() == 20.0 &&
             store.selected_cosmetic_preset() == 3, "saved settings come back after a restart");
+        check(profile::park_choices(store.snapshot()) == ParkChoices{"megapark_04", "flumppark_10", "streetpark_06"} &&
+              store.user_value("ReSkate.RandomizeParksOnLaunch") == Json(true), "parks and launch preference survive a restart");
     }
     std::filesystem::remove_all(folder, error);
     if (failures) return 1;

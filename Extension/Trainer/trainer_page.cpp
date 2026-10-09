@@ -470,6 +470,13 @@ void practice_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
     end_card();
 
     begin_card(menu, "teleport", "TELEPORT");
+    // The waypoint line is why the map's registry is read at all: only while this is drawn.
+    trainer::note_teleport_card_shown();
+    info(menu, "Map waypoint", view.waypoint_set ? std::format("{:.1f}, {:.1f}, {:.1f}", view.waypoint[0], view.waypoint[1], view.waypoint[2])
+                                                 : "none - place one on the pause map");
+    ImGui::BeginDisabled(!view.waypoint_set || !telemetry.skater);
+    if (ImGui::Button("Go to map waypoint")) trainer_command(menu, callbacks, "waypoint");
+    ImGui::EndDisabled();
     if (telemetry.skater)
         info(menu, "You are at", std::format("{:.2f}, {:.2f}, {:.2f}", telemetry.position[0], telemetry.position[1], telemetry.position[2]));
     field(menu, "X, Y, Z");

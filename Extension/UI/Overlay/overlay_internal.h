@@ -138,6 +138,7 @@ struct State {
     std::atomic<bool> failed{false};
     bool win32_ready = false;
     bool dx12_ready = false;
+    std::atomic<bool> freecam_controller_active{false};
     bool show_on_ready = false;
     bool force_windowed = false;
     HANDLE stop_event = nullptr;

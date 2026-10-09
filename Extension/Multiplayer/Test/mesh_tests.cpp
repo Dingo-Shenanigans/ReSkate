@@ -6,19 +6,25 @@
 #include "Extension/Multiplayer/Session/session_receive.cpp"
 #include "Extension/Multiplayer/Session/session_commands.cpp"
 #include "Extension/Multiplayer/Session/session_party.cpp"
+#include "Engine/Game/World/park_randomization.h"
 #include <iostream>
 #include <set>
 
 namespace dingosdk {
 bool read_local_camera_transform(std::uintptr_t, std::uintptr_t, std::array<float, 16>&) noexcept { return false; }
-ParksModel local_profile_parks() { return {}; }
+ParksModel simulated_parks;
+std::vector<std::pair<std::uint64_t, ParkChoices>>* simulated_park_receives{};
+std::uint64_t simulated_park_receiver{};
+ParksModel local_profile_parks() { return simulated_parks; }
 void set_lobby_park_mode(bool, bool) {}
 bool simulated_object_guest{};
 void set_lobby_object_guest(bool guest) { simulated_object_guest = guest; }
 WorldLayersModel simulated_host_layers;
 WorldLayersModel local_profile_world_layers() { return simulated_host_layers; }
 void apply_host_world_layers(bool, const WorldLayerChoices &) {}
-void apply_host_park_choices(const ParkChoices &) {}
+void apply_host_park_choices(const ParkChoices& choices) {
+    if (simulated_park_receives) simulated_park_receives->emplace_back(simulated_park_receiver, choices);
+}
 std::optional<NetworkObjectSnapshot> capture_local_network_objects() { return {}; }
 void set_remote_network_objects(std::string_view, std::span<const NetworkObjectOwner>) {}
 void clear_remote_network_objects() {}
@@ -141,7 +147,7 @@ bool SteamTransport::host(unsigned capacity) {
     impl_->state.hosting = true;
     return true;
 }
-bool SteamTransport::join(std::uint64_t id) {
+bool SteamTransport::join(std::uint64_t id, std::uint32_t, std::uint16_t) {
     if (SimulatedNetwork::slow_join) Sleep(2);
     stop();
     open();
@@ -241,6 +247,7 @@ std::vector<TransportMessage> SteamTransport::receive() {
 const TransportStatus &SteamTransport::status() const { return impl_->state; }
 std::string SteamTransport::name(std::uint64_t id) { return "Player " + std::to_string(id); }
 bool SteamTransport::socket_test() { return true; }
+std::vector<std::string> SteamTransport::take_direct_notes() { return {}; }
 
 // No native/game/UI calls in this harness.
 NativeFrame tick_frame;
@@ -540,6 +547,7 @@ struct Simulation {
                 local.pose.root.position[0] = static_cast<float>(now - 10000000) / 1000000;
                 local.pose.root.position[2] = n < positions.size() ? positions[n] : static_cast<float>(n);
                 refresh_host_choices(s, now);
+                simulated_park_receiver = s.transport.status().local_id;
                 networking(s, local, now);
                 if (s.mode != Mode::off) {
                     sync_objects(s, local, now);
@@ -2179,6 +2187,54 @@ void mesh_checks() {
     for (const auto &s : sim.nodes)
         check(s->mode == Mode::off, "Guest remained after host departure");
 }
+void random_park_sync_checks() {
+    std::mt19937 generator{7821};
+    std::vector<std::pair<std::uint64_t, ParkChoices>> received;
+    simulated_park_receives = &received;
+    simulated_parks.choices = random_park_choices(generator);
+    Simulation sim;
+    for (unsigned i = 0; i < 3; ++i) sim.add();
+    sim.run(60); sim.fresh(3);
+    const auto all_received = [&] {
+        return !received.empty() && std::all_of(received.begin(), received.end(), [](const auto& entry) {
+            return entry.second == simulated_parks.choices;
+        });
+    };
+    const auto received_by = [&](const Session& node) {
+        return std::any_of(received.begin(), received.end(), [&](const auto& entry) {
+            return entry.first == node.transport.status().local_id && entry.second == simulated_parks.choices;
+        });
+    };
+    check(received_by(*sim.nodes[1]) && received_by(*sim.nodes[2]) && all_received(),
+          "Guests did not receive the host's initial random park choices");
+    received.clear();
+    simulated_parks.choices = random_park_choices(generator);
+    sim.run(12); sim.fresh(3);
+    check(received_by(*sim.nodes[1]) && received_by(*sim.nodes[2]) && all_received(),
+          "A new host roll did not reach existing guests intact");
+    received.clear();
+    sim.add(); sim.run(30); sim.fresh(4);
+    check(received_by(*sim.nodes.back()) && all_received(),
+          "A late joiner did not receive the host's current random parks");
+
+    auto& host = *sim.nodes[0];
+    auto& sender = *sim.nodes[2];
+    auto forged = packet(host, PacketKind::roster, sim.now);
+    forged.parks = random_park_choices(generator);
+    check(forged.parks != simulated_parks.choices, "Spoof fixture must use different park choices");
+    forged.source = sender.transport.status().local_id;
+    forged.epoch = sender.epoch;
+    for (const auto& node : sim.nodes)
+        forged.members.push_back({node->transport.status().local_id, node->epoch, "Player"});
+    received.clear();
+    check(send_packet(sender, sim.nodes[1]->transport.status().local_id, forged, true, false), "Guest park spoof fixture failed to send");
+    sim.run(2); sim.fresh(4);
+    check(std::all_of(received.begin(), received.end(), [&](const auto& entry) { return entry.second == simulated_parks.choices; }) &&
+          host.parks == simulated_parks.choices, "A guest's forged roster replaced the host's park choices");
+    simulated_park_receives = nullptr;
+    simulated_parks = {};
+    std::cout << "Random parks: host rolls, current guests, late join and guest spoof rejection passed.\n";
+}
 } // namespace
 } // namespace dingosdk::multiplayer
 int main(int argc, char **argv) {
@@ -2195,6 +2251,9 @@ int main(int argc, char **argv) {
         dingosdk::simulated_host_layers = {};
         dingosdk::multiplayer::join_tick_checks();
         dingosdk::multiplayer::tick_settings_checks();
+        if (argc == 2 && std::string_view(argv[1]) == "--parks-only") {
+            dingosdk::multiplayer::random_park_sync_checks(); return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--objects-only") {
             dingosdk::multiplayer::object_sync_checks(); return 0;
         }
@@ -2236,6 +2295,7 @@ int main(int argc, char **argv) {
         dingosdk::multiplayer::session_controls_checks();
         dingosdk::multiplayer::guest_building_checks();
         dingosdk::multiplayer::world_layer_sync_checks();
+        dingosdk::multiplayer::random_park_sync_checks();
         std::cout << "Mesh admission, 2-8 players, relay fallback, route loss, packet loss, reconnect and "
                      "password checks passed.\n";
         return 0;

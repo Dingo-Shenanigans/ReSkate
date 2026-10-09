@@ -49,6 +49,7 @@ inline std::string park_label(std::string_view id) {
 }
 struct ParksModel {
     bool available{}, ready{}, controlled_by_host{};
+    bool randomize_on_launch{};
     ParkChoices choices;
     std::string feedback;
 };

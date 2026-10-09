@@ -86,9 +86,9 @@ void exact_fields(const Json& object, std::initializer_list<std::string_view> ex
 CustomLevelManifest parse(std::string_view text) {
     if (text.size() > custom_level_manifest_max_bytes)
         throw std::runtime_error("custom-level manifest exceeds 64 KiB");
-    if (text.starts_with("\xef\xbb\xbf"))
-        throw std::runtime_error("custom-level manifest must not contain a UTF-8 BOM");
 
+    // Json::parse skips a byte-order mark, which several Windows editors still
+    // write. The launcher and the server accept one, so the game must too.
     const auto root = Json::parse(text, JsonLimits{
         custom_level_manifest_max_bytes, 8, 8192});
     exact_fields(root, {"schema", "levels"}, "custom-level manifest");

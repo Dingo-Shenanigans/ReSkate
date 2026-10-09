@@ -135,11 +135,67 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::add_forward_velocity);
     };
     registry.add(std::move(boost));
-    auto mask = argument("controller_mask", Type::unsigned_integer);
+    auto mask = argument("button_or_key", Type::unsigned_integer);
     mask.minimum = 0;
     mask.maximum = UINT32_MAX;
+    auto freecamcontroller =
+        action("freecam_controller", "Block input and use controller for Freecam", Group::movement, {argument("enabled", Type::boolean)});
+    freecamcontroller.inspect = [](const Model &m) {
+        return boolean_state(m.bindings.available, m.bindings.freecam_controller, "Controller bindings are unavailable.");
+    };
+    freecamcontroller.run = [](const Model &, const Values &args, const Output &out) {
+        const bool saved = set_local_freecam_controller(std::get<bool>(args[0]));
+        out(saved ? "" : "error: Invalid setting or save failed.");
+    };
+    registry.add(std::move(freecamcontroller));
+
+    auto freecamcontroller_bind =
+        action("bind freecamcontroller", "Bind a controller combo or keyboard key to freecam controller toggle; 0 clears the binding", Group::movement, {mask});
+    freecamcontroller_bind.inspect = [](const Model &m) {
+        return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
+    };
+    freecamcontroller_bind.run = [](const Model &, const Values &args, const Output &out) {
+        const bool saved = set_local_freecam_controller_binding(static_cast<std::uint32_t>(std::get<std::uint64_t>(args[0])));
+        out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
+    };
+    registry.add(std::move(freecamcontroller_bind));
+
+    auto tp_to_freecam =
+        action("tp_to_freecam", "Teleport to freecam position and disable freecam", Group::movement);
+    tp_to_freecam.inspect = [](const Model &m) {
+        return boolean_state(m.debug.camera_available && m.debug.camera_position_valid, m.debug.free_camera, 
+            !m.debug.camera_position_valid ? "Camera position unavailable" : "Camera controls unavailable");
+    };
+    tp_to_freecam.run = [](const Model &m, const Values &, const Output &) {
+        if (!m.debug.camera_position_valid) return;
+        teleport_local_skater(m.debug.camera_position);
+        if (m.debug.free_camera)
+            request_debug(overlay::DebugAction::set_free_camera, false);
+    };
+    registry.add(std::move(tp_to_freecam));
+
+    auto tp_to_freecam_bind =
+        action("bind tptofreecam", "Bind a controller combo or keyboard key to TP to Freecam; 0 clears the binding", Group::movement, {mask});
+    tp_to_freecam_bind.inspect = [](const Model &m) {
+        return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
+    };
+    tp_to_freecam_bind.run = [](const Model &, const Values &args, const Output &out) {
+        const bool saved = set_local_tp_to_freecam_binding(static_cast<std::uint32_t>(std::get<std::uint64_t>(args[0])));
+        out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
+    };
+    registry.add(std::move(tp_to_freecam_bind));
+    auto freecam_bind =
+        action("bind freecam", "Bind a controller combo or keyboard key to freecam; 0 clears the binding", Group::movement, {mask});
+    freecam_bind.inspect = [](const Model &m) {
+        return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
+    };
+    freecam_bind.run = [](const Model &, const Values &args, const Output &out) {
+        const bool saved = set_local_freecam_binding(static_cast<std::uint32_t>(std::get<std::uint64_t>(args[0])));
+        out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
+    };
+    registry.add(std::move(freecam_bind));
     auto bind =
-        action("bind noclip", "Bind controller buttons to noclip; 0 clears the binding", Group::movement, {mask});
+        action("bind noclip", "Bind a controller combo or keyboard key to noclip; 0 clears the binding", Group::movement, {mask});
     bind.inspect = [](const Model &m) {
         return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
     };
@@ -149,7 +205,7 @@ void register_movement_commands(Commands &registry) {
     };
     registry.add(std::move(bind));
     auto boost_bind =
-        action("bind forwardvelocity", "Bind controller buttons to Forward Boost; 0 clears the binding", Group::movement, {mask});
+        action("bind forwardvelocity", "Bind a controller combo or keyboard key to Forward Boost; 0 clears the binding", Group::movement, {mask});
     boost_bind.inspect = [](const Model &m) {
         return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
     };
@@ -159,7 +215,7 @@ void register_movement_commands(Commands &registry) {
     };
     registry.add(std::move(boost_bind));
     auto up_bind =
-        action("bind upvelocity", "Bind controller buttons to Up Boost; 0 clears the binding", Group::movement, {mask});
+        action("bind upvelocity", "Bind a controller combo or keyboard key to Up Boost; 0 clears the binding", Group::movement, {mask});
     up_bind.inspect = [](const Model &m) {
         return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
     };
@@ -168,6 +224,16 @@ void register_movement_commands(Commands &registry) {
         out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
     };
     registry.add(std::move(up_bind));
+    auto offboard_up_bind =
+        action("bind offboardupvelocity", "Bind a controller combo or keyboard key to Off-board Up Boost; 0 clears the binding", Group::movement, {mask});
+    offboard_up_bind.inspect = [](const Model &m) {
+        return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
+    };
+    offboard_up_bind.run = [](const Model &, const Values &args, const Output &out) {
+        const bool saved = set_local_offboard_up_velocity_binding(static_cast<std::uint32_t>(std::get<std::uint64_t>(args[0])));
+        out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
+    };
+    registry.add(std::move(offboard_up_bind));
 }
 void register_ai_commands(Commands &registry) {
     const auto ready = [](const Model &m) {

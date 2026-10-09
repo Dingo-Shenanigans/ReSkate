@@ -114,6 +114,8 @@ void update_park_rotation(std::uintptr_t manager, std::uint64_t now) {
     if (!park_owner_ready(manager, context)) { reset_park_session(); return; }
     if (r.owner != manager || r.context != context) reset_park_session();
     r.owner = manager; r.context = context; r.model.ready = true;
+    if (r.launch_randomization.consume(r.model.ready, r.model.controlled_by_host))
+        load_random_local_parks();
     // Serialize clear/load across ticks. The native graph's empty-name branch
     // unloads every family at this lot, including a previously selected family.
     if (now < r.next_request) return;
@@ -180,6 +182,8 @@ void start_park_rotation() noexcept {
     std::vector<void*> created;
     try {
         r.model.choices = profile::park_choices(*local_runtime().store->shared_snapshot());
+        r.model.randomize_on_launch = local_preference("RandomizeParksOnLaunch").value_or(false);
+        r.launch_randomization.pending = r.model.randomize_on_launch;
         for (const auto& site : sites) {
             std::array<unsigned char, 16> bytes{};
             if (!read(base + site.rva, bytes) || bytes != site.bytes)

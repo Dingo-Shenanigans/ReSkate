@@ -611,31 +611,38 @@ int run(int argc, char **argv, bool skip_update) {
     return restart ? restart_for_update : 0;
 }
 
+namespace {
+// Both entry points: run the server, and install an update and start it when run() asks.
+int serve(int argc, auto **argv) {
 #ifdef _WIN32
-int wmain(int argc, wchar_t **argv) {
+    constexpr const char *exe = "ReSkateServer.exe";
+#else
+    constexpr const char *exe = "ReSkateServer";
+#endif
     bool skip_update{};
-    int code{};
     for (;;) {
-        code = run(argc, argv, skip_update);
-        if (code != restart_for_update) break;
+        const int code = run(argc, argv, skip_update);
+        if (code != restart_for_update) return code;
         // Steam has shut down, so every server file can be replaced now.
         try {
             write_log("Installing server update " + update_version + "...");
             install_update(folder());
             write_log("Server update " + update_version + " installed; starting it.");
             console().flush(std::chrono::seconds(2));
-            if (relaunch()) {
-                code = 0;
-                break;
-            }
-            write_log("Could not start the updated server; start ReSkateServer.exe again.");
-            code = 1;
-            break;
+            if (relaunch()) return 0;
+            write_log(std::string("Could not start the updated server; start ") + exe + " again.");
+            return 1;
         } catch (const std::exception &e) {
             write_log(std::string("Server update failed (") + e.what() + "); carrying on with this version.");
             skip_update = true;
         }
     }
+}
+} // namespace
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t **argv) {
+    const int code = serve(argc, argv);
     finished = true;
     // Keep a failure on screen until the host has read it, instead of the window
     // vanishing with it. Closing the window or Ctrl+C still ends it at once.
@@ -650,28 +657,7 @@ int wmain(int argc, wchar_t **argv) {
 }
 #else
 int main(int argc, char **argv) {
-    bool skip_update{};
-    int code{};
-    for (;;) {
-        code = run(argc, argv, skip_update);
-        if (code != restart_for_update) break;
-        try {
-            write_log("Installing server update " + update_version + "...");
-            install_update(folder());
-            write_log("Server update " + update_version + " installed; starting it.");
-            console().flush(std::chrono::seconds(2));
-            if (relaunch()) {
-                code = 0;
-                break;
-            }
-            write_log("Could not start the updated server; start ReSkateServer again.");
-            code = 1;
-            break;
-        } catch (const std::exception &e) {
-            write_log(std::string("Server update failed (") + e.what() + "); carrying on with this version.");
-            skip_update = true;
-        }
-    }
+    const int code = serve(argc, argv);
     finished = true;
     console().flush(std::chrono::seconds(2));
     return code;

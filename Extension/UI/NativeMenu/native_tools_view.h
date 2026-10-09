@@ -137,7 +137,9 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         s.feedback = accepted ? "" : "Couldn't apply that change. Try again when the game is ready.";
     };
     const auto console = [&](const std::string& text, bool enabled) {
-        report(enabled && cb.queue_console_command && cb.queue_console_command(cb.user, text.c_str(), result.data(), result.size()));
+        const bool accepted = enabled && cb.queue_console_command && cb.queue_console_command(cb.user, text.c_str(), result.data(), result.size());
+        report(accepted);
+        return accepted;
     };
     if (command == "select-level") {
         if (multiplayer_controls_level(m.multiplayer)) { s.feedback = "Only the lobby host can change levels."; return; }
@@ -170,6 +172,14 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         s.parks[s.lot] = family == park_families.size() ? "empty" : park_id(family, 1);
     } else if (command == "load-park") {
         console("park " + std::string(park_lots[s.lot].key) + " " + s.parks[s.lot], can_park(m, cb) && valid_park(s.lot, s.parks[s.lot]));
+    } else if (command == "load-random-parks") {
+        // Use the shared command path: hosts load locally, server admins request
+        // one server roll, and guests cannot replace the host's layouts.
+        if (console("park random", can_park(m, cb))) s.parks = {};
+    } else if (command == "park-random-on-launch") {
+        // This is a personal preference, including while following a host.
+        console(m.parks.randomize_on_launch ? "park random-on-launch 0" : "park random-on-launch 1",
+            m.parks.available);
     } else if (command == "noclip" || command == "no-bail" || command == "freecam" || command == "speed") {
         const auto& d = m.debug;
         overlay::DebugRequest request;
@@ -264,6 +274,10 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         for (unsigned i = 0; i < park_lots.size(); ++i)
             button(p.main, "park-lot-" + std::to_string(i), std::string(park_lots[i].label) + (s.lot == i ? "  /  SELECTED" : ""),
                 "park-lot", true, std::string(park_lots[i].key));
+        text(p.main, "park-random-title", "ALL THREE PARK LOCATIONS");
+        button(p.main, "load-random-parks", "Load Random Parks", "load-random-parks", can_park(m, cb));
+        toggle(p.main, "park-random-on-launch", "Randomize on Launch", m.parks.randomize_on_launch,
+            m.parks.available && cb.queue_console_command);
         text(p.side, "park-options", "PARK LAYOUT");
         const bool available = can_park(m, cb);
         std::string family = "Empty lot";

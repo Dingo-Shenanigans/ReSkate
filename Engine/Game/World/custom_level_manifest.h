@@ -23,7 +23,7 @@ struct CustomLevelManifest {
     std::string issue;
 };
 
-// Parse the Studio-authored Patch/dingosdk-levels.json contract. Invalid input
+// Parse a mod's or the Patch folder's reskate-levels.json. Invalid input
 // fails closed: no partial set of destinations is returned.
 CustomLevelManifest parse_custom_level_manifest(std::string_view text) noexcept;
 CustomLevelManifest read_custom_level_manifest(const std::filesystem::path& path) noexcept;

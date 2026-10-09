@@ -133,6 +133,10 @@ std::string c_string_at(const std::span<const std::byte> data, const std::size_t
     throw std::runtime_error("TOC name is unterminated");
 }
 
+void expect_table(const BinaryReader& reader, std::size_t count, std::size_t entrySize, const char* what) { // before sizing by a file's count
+    if (count > reader.remaining() / entrySize) throw std::out_of_range(what);
+}
+
 class HuffmanNames final {
 public:
     HuffmanNames(const std::span<const std::byte> data,
@@ -142,6 +146,7 @@ public:
                  const std::size_t tableCount) {
         BinaryReader reader(data);
         reader.seek(namesOffset);
+        expect_table(reader, namesCount, 4, "TOC name count exceeds the file");
         words_.reserve(namesCount);
         for (std::size_t index = 0; index < namesCount; ++index) words_.push_back(reader.u32(Endian::big));
         reader.seek(tableOffset);
@@ -364,9 +369,11 @@ TocDocument read_toc(const std::span<const std::byte> data,
     TocDocument result;
     result.flags = flags;
     reader.seek(bundleHashOffset);
+    expect_table(reader, bundlesSize, 4, "TOC bundle count exceeds the file");
     result.bundleHashMap.reserve(bundlesSize);
     for (std::size_t index = 0; index < bundlesSize; ++index) result.bundleHashMap.push_back(reader.i32(Endian::big));
     reader.seek(bundleDataOffset);
+    expect_table(reader, bundlesSize, 16, "TOC bundle count exceeds the file");
     result.bundles.reserve(bundlesSize);
     for (std::size_t index = 0; index < bundlesSize; ++index) {
         const auto nameOffset = reader.u32(Endian::big);
@@ -389,12 +396,15 @@ TocDocument read_toc(const std::span<const std::byte> data,
     }
     if (chunksSize) {
         reader.seek(chunkHashOffset);
+        expect_table(reader, chunksSize, 4, "TOC chunk count exceeds the file");
         result.chunkHashMap.reserve(chunksSize);
         for (std::size_t index = 0; index < chunksSize; ++index) result.chunkHashMap.push_back(reader.i32(Endian::big));
-        std::vector<std::uint32_t> words(static_cast<std::size_t>(dataCount));
         reader.seek(chunkDataOffset);
+        expect_table(reader, static_cast<std::size_t>(dataCount), 4, "TOC chunk data count exceeds the file");
+        std::vector<std::uint32_t> words(static_cast<std::size_t>(dataCount));
         for (auto& value : words) value = reader.u32(Endian::big);
         reader.seek(chunkGuidOffset);
+        expect_table(reader, chunksSize, 20, "TOC chunk count exceeds the file");
         result.chunks.reserve(chunksSize);
         for (std::size_t index = 0; index < chunksSize; ++index) {
             const auto guidBytes = reader.view(16);

@@ -18,6 +18,19 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     if (toggle_row(menu, "Freecam", "Detach the camera and explore.", flight,
             debug.available && debug.camera_available && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_free_camera, flight});
+    bool freecam_controller = model.bindings.freecam_controller;
+    if (toggle_row(menu, "Block Input(Enable Controller Support)", "Block player input and use the controller for the Freecam.", freecam_controller,
+            model.bindings.available && callbacks.queue_debug)) {
+        std::array<char, 512> result{};
+        callbacks.queue_console_command(callbacks.user, freecam_controller ? "freecam_controller true" : "freecam_controller false", result.data(), result.size());
+    }
+    field(menu, "Teleport to Freecam");
+    ImGui::BeginDisabled(!debug.free_camera || !debug.camera_position_valid || !callbacks.queue_console_command);
+    if (ImGui::Button("Teleport", ImVec2(-1, 0))) {
+        std::array<char, 512> result{};
+        callbacks.queue_console_command(callbacks.user, "tp_to_freecam", result.data(), result.size());
+    }
+    ImGui::EndDisabled();
     {
         field(menu, "Field of view");
         const bool custom = debug.free_camera_fov > 0;
@@ -51,7 +64,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
 
     begin_card(menu, "first-person", "FIRST PERSON");
     bool first_person = debug.first_person;
-    if (toggle_row(menu, "First person", "Attach the camera to the skater's head.", first_person,
+    if (toggle_row(menu, "First person", "See the world through the skater's eyes.", first_person,
             debug.available && debug.camera_available && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_first_person, first_person});
     field(menu, "Field of view");
@@ -60,6 +73,33 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     if (ImGui::SliderInt("##first-person-fov", &fov, 40, 120, "%d degrees", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_first_person_fov, false, static_cast<float>(fov)});
     ImGui::EndDisabled();
+    {
+        auto settings = debug.first_person_arm;
+        const bool can_edit = debug.available && callbacks.queue_debug;
+        if (toggle_row(menu, "True first person",
+                "Keep the horizon level and the view steady; the head's heading is still followed.", settings.stabilize, can_edit))
+            debug_request(menu, callbacks, {DebugAction::set_first_person_stabilize, settings.stabilize});
+        ImGui::BeginDisabled(!settings.stabilize || !can_edit);
+        const auto percent = [&](const char* label, const char* id, float value, DebugAction action) {
+            field(menu, label);
+            if (ImGui::SliderFloat(id, &value, 0, dingosdk::first_person::strength_limit, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+                debug_request(menu, callbacks, {action, false, value});
+        };
+        percent("Smoothing", "##fp-smoothing", settings.smoothing, DebugAction::set_first_person_smoothing);
+        percent("Head nod (up / down)", "##fp-head-pitch", settings.head_pitch, DebugAction::set_first_person_head_pitch);
+        percent("Head tilt (horizon roll)", "##fp-head-roll", settings.head_roll, DebugAction::set_first_person_head_roll);
+        percent("Head bob", "##fp-bob", settings.bob, DebugAction::set_first_person_bob);
+        if (toggle_row(menu, "Follow flips", "Turn the view with the skater during flips and bails.", settings.follow_flips,
+                can_edit && settings.stabilize))
+            debug_request(menu, callbacks, {DebugAction::set_first_person_follow_flips, settings.follow_flips});
+        ImGui::EndDisabled();
+        if (toggle_row(menu, "Third person on foot",
+                "Use the game's camera while walking; first person comes back when you get on the board.",
+                settings.board_only, can_edit))
+            debug_request(menu, callbacks, {DebugAction::set_first_person_board_only, settings.board_only});
+        note("Nod, tilt and bob are the share of the head's own movement kept. Use Spring arm > Pitch to look "
+             "further down at the board.");
+    }
     if (ImGui::TreeNode("Spring arm")) {
         namespace fp = dingosdk::first_person;
         auto settings = debug.first_person_arm;
@@ -126,6 +166,10 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     float up_velocity = debug.up_velocity_speed;
     if (ImGui::SliderFloat("##up-velocity", &up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_up_velocity_speed, false, up_velocity});
+    field(menu, "Off-board up boost");
+    float offboard_up_velocity = debug.offboard_up_velocity_speed;
+    if (ImGui::SliderFloat("##offboard-up-velocity", &offboard_up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+        debug_request(menu, callbacks, {DebugAction::set_offboard_up_velocity_speed, false, offboard_up_velocity});
     ImGui::EndDisabled();
     note("Controller: left stick moves, right stick looks, RT / LT rise and fall, click the left stick to boost.");
     note("Keyboard: WASD / Q E, Shift to boost. Close the menu to fly.");

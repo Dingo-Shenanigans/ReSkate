@@ -248,6 +248,32 @@ void register_world_commands(Commands &registry) {
         out((saved ? "" : "error: ") + local_profile_world_layers().feedback);
     };
     registry.add(std::move(defaults));
+    auto random_parks = action("park random", "Load a random layout in every park slot", Group::world);
+    random_parks.inspect = [](const Model &m) {
+        return State{m.parks.available && (!m.parks.controlled_by_host || m.multiplayer.server_admin), {},
+                     "The host controls park layouts, or park controls are unavailable.", {}, false};
+    };
+    random_parks.run = [](const Model &, const Values &, const Output &out) {
+        if (multiplayer::model().server_admin) {
+            const bool sent = multiplayer::queue_command("server", "park random", "");
+            out(sent ? "Sent to the server." : "error: The request queue is busy; try again.");
+            return;
+        }
+        const bool saved = load_random_local_parks();
+        out((saved ? "" : "error: ") + local_profile_parks().feedback);
+    };
+    registry.add(std::move(random_parks));
+    auto random_on_launch = variable("park random-on-launch", "Randomize local parks on the next game launch",
+                                     Group::world, argument("0|1", Type::boolean));
+    random_on_launch.inspect = [](const Model &m) {
+        return boolean_state(m.parks.available, m.parks.randomize_on_launch, "Park controls are unavailable.",
+                             "Local preference; the host still controls multiplayer layouts");
+    };
+    random_on_launch.run = [](const Model &, const Values &args, const Output &out) {
+        const bool saved = set_local_park_randomize_on_launch(std::get<bool>(args[0]));
+        out((saved ? "" : "error: ") + local_profile_parks().feedback);
+    };
+    registry.add(std::move(random_on_launch));
     for (unsigned lot = 0; lot < park_lots.size(); ++lot) {
         auto layout = argument("layout|empty");
         layout.choices = {"empty"};
