@@ -10,6 +10,13 @@ namespace dingosdk::overlay {
 void skate3_hom_tick(bool stand_down = false);
 // True while a bail is live or a result is on screen (also keeps frames coming so bails are seen).
 bool skate3_hom_hud_pending();
+// Game thread, with the map being played (empty without one): loads that map's best bail.
+void skate3_hom_set_level(std::string_view level);
+// Skate 3's broken-bone slow motion (IsBrokenBoneSlowMo): the game speed a break asks for now
+// (1 when none), and the speed the game actually runs at (the slow motion may be refused, as in a
+// multiplayer session). The bail is timed on the game's clock.
+float skate3_hom_game_speed();
+void skate3_hom_set_applied_speed(float speed);
 void draw_skate3_hom_hud();
 // `hom <verb> ...` console commands (any thread).
 std::string skate3_hom_command(std::string_view verb, const std::vector<std::string> &words);

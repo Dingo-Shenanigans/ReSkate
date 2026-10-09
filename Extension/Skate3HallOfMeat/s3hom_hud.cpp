@@ -12,6 +12,8 @@
 #include "Engine/Game/UI/game_view.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/Profile/local_profile_runtime.h"
+#include <atomic>
 #include <algorithm>
 #include <utility>
 #include <chrono>
@@ -42,7 +44,15 @@ struct State {
     double visible_until{};
     double started{};
     float shown_total{};
+    // Each map's best bail, saved with the profile.
+    std::string level;
+    bool best_known{};
     int best{};
+    bool new_best{}; // the bail on screen beat the map's best
+    // The last break, on the real clock (the slow motion it starts is timed on that).
+    double break_real{-1};
+    std::size_t breaks_seen{};
+    std::uint32_t breaks_serial{};
     std::uint32_t last_state{};
     double last_time{-1};
     double heartbeat{};
@@ -59,7 +69,41 @@ State &state() {
     return value;
 }
 
-double clock_seconds() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
+double real_seconds() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
+std::atomic<float> &applied_speed() {
+    static std::atomic<float> value{1.0f};
+    return value;
+}
+// The game's clock: real time run at the speed the game runs at, so a bail in slow motion is timed,
+// and its bones' speeds read, as the game plays it.
+double clock_seconds() {
+    static std::mutex mutex;
+    static double real_from = -1, game_from = 0;
+    static float speed = 1.0f;
+    const double real = real_seconds();
+    std::lock_guard lock(mutex);
+    if (real_from < 0) real_from = game_from = real;
+    const double game = game_from + (real - real_from) * speed;
+    if (const float now = applied_speed().load(); now != speed) {
+        game_from = game;
+        real_from = real;
+        speed = now;
+    }
+    return game;
+}
+// Skate 3's slow motion on a break: down to 0.3 in 0.15 s, held 1 s, back over 1 s.
+float slow_motion_curve(double since) {
+    constexpr double rise = 0.15, hold = 1.0, fall = 1.0;
+    constexpr float slowest = 0.3f;
+    if (since < 0 || since >= rise + hold + fall) return 1.0f;
+    const double k = since < rise ? since / rise : since < rise + hold ? 1.0 : 1.0 - (since - rise - hold) / fall;
+    return 1.0f - (1.0f - slowest) * static_cast<float>(k);
+}
+std::string best_key(std::string_view level) {
+    std::string key("Skate3HallOfMeat.Best.");
+    for (const char c : level) key += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    return key;
+}
 
 std::string with_commas(int value) {
     auto text = std::to_string(value);
@@ -103,7 +147,7 @@ struct Row {
     std::string value, points;
 };
 
-void draw_block(ImDrawList *draw, const Result &r, float total_shown, float fade, float scale, double now, double started) {
+void draw_block(ImDrawList *draw, const Result &r, float total_shown, float fade, float scale, double now, double started, int best, bool new_best) {
     const auto display = ImGui::GetIO().DisplaySize;
     auto *font = hom_font(28) ? hom_font(28) : ImGui::GetFont();
     auto *score_font = hom_font(60) ? hom_font(60) : font;
@@ -122,6 +166,15 @@ void draw_block(ImDrawList *draw, const Result &r, float total_shown, float fade
     const float score_y = bottom - score_size - 2.0f * scale;
     shadowed(draw, score_font, score_size, ImVec2(cx - extent.x * 0.5f, score_y), alpha(white, a), score);
     draw->AddRectFilled(ImVec2(left + slide, bottom), ImVec2(right + slide, bottom + 2.0f * scale), alpha(IM_COL32(170, 220, 235, 190), a));
+    // The map's best under the rule: NEW BEST in Skate 3's break orange, else the score to beat.
+    if (new_best || best > 0) {
+        const float size = 20.0f * scale;
+        const auto text = new_best ? std::string("NEW BEST") : "BEST " + with_commas(best);
+        const auto e = small_font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
+        const float pulse = new_best ? 0.8f + 0.2f * std::sin(static_cast<float>(ImGui::GetTime()) * 6.0f) : 1.0f;
+        shadowed(draw, small_font, size, ImVec2(cx - e.x * 0.5f, bottom + 6.0f * scale),
+                 alpha(new_best ? IM_COL32(255, 140, 50, 255) : IM_COL32(200, 214, 222, 255), a * pulse), text);
+    }
 
     const float hom_size = 22.0f * scale;
     const auto hom = std::string("Hall of Meat");
@@ -373,6 +426,16 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
         const float since = last_break < 0 ? 1e9f : static_cast<float>(clock_seconds() - last_break);
         if (since >= 0 && since < 0.8f)
             draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(102, 51, 51, static_cast<int>(0.2f * (1.0f - since / 0.8f) * fade * 255.0f)));
+        // And the screen's edges pulse red, strongest at the snap.
+        if (since >= 0 && since < 1.2f) {
+            const float k = (1.0f - since / 1.2f) * (0.75f + 0.25f * std::cos(since * 18.0f)) * fade;
+            const ImU32 edge = IM_COL32(190, 25, 15, static_cast<int>(std::clamp(k, 0.0f, 1.0f) * 200.0f)), clear = IM_COL32(190, 25, 15, 0);
+            const float bx = display.x * 0.16f, by = display.y * 0.18f;
+            draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x, by), edge, edge, clear, clear);
+            draw->AddRectFilledMultiColor(ImVec2(0, display.y - by), display, clear, clear, edge, edge);
+            draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(bx, display.y), edge, clear, clear, edge);
+            draw->AddRectFilledMultiColor(ImVec2(display.x - bx, 0), display, clear, edge, edge, clear);
+        }
     }
     draw_grain(draw, 0.5f * darkness * fade);
     if (!camera) return;
@@ -382,6 +445,30 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
     const bool meshes = hom_bones_ready();
     // Getting up, or the bail is over: the original's X-ray is gone (only the grade fades out).
     if (bones_alpha <= 0.0f) return;
+    // Skate 3's hurt bones glow orange through the body, hotter the worse the damage; a break
+    // burns red-orange and throbs. Measured from the original: core (255, 190, 170), glow
+    // (250, 150, 126) out to (146, 45, 36) at its edge, through its colour matrix.
+    for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i) {
+        const float heat = broken[i] ? 1.0f : std::clamp((r.damage[i] - 0.25f) / 0.75f, 0.0f, 1.0f);
+        if (heat <= 0.0f) continue;
+        const auto &seg = rig.bones[i];
+        ImVec2 a, b;
+        float da{}, db{};
+        if (!projector.project(seg.a, a, da) || !projector.project(seg.b, b, db)) continue;
+        const float px = std::clamp(seg.radius * projector.focal * 2.0f / (da + db), 1.5f, 80.0f);
+        const float throb = broken[i] ? 0.8f + 0.2f * std::sin(static_cast<float>(ImGui::GetTime()) * 7.0f) : 1.0f;
+        const ImU32 glow = broken[i] ? IM_COL32(255, 80, 30, 255) : IM_COL32(255, 130, 45, 255);
+        for (int layer = 4; layer >= 1; --layer) {
+            const float w = px * (1.4f + 0.9f * layer);
+            const float k = (0.05f + 0.07f * heat) * throb * fade * bones_alpha;
+            if (i == 0) draw->AddCircleFilled(ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), w, alpha(glow, k), 24);
+            else {
+                draw->AddLine(a, b, alpha(glow, k), w * 2.0f);
+                draw->AddCircleFilled(a, w, alpha(glow, k * 0.6f), 16);
+                draw->AddCircleFilled(b, w, alpha(glow, k * 0.6f), 16);
+            }
+        }
+    }
     for (int pass = 0; pass < 2; ++pass)
         for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i) {
             const float damage = r.damage[i];
@@ -400,7 +487,10 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
             const float strength = broken[i] ? 1.0f : std::clamp(0.35f + 0.65f * damage, 0.35f, 1.0f);
             // Skate 3's colours, measured from the original: hurt (223, 212, 214), broken (198, 87, 64),
             // fracture (158, 43, 23), after its bone map; these tints give those through the map.
-            const ImU32 tint = broken[i] ? IM_COL32(235, 103, 75, 255) : IM_COL32(255, 244, 246, 255);
+            // Lightly hurt stays bone white; from sprained on it heats up to orange, broken burns red-orange.
+            const float heat = std::clamp((damage - 0.25f) / 0.75f, 0.0f, 1.0f);
+            const auto mix = [](int x, int y, float t) { return static_cast<int>(static_cast<float>(x) + (static_cast<float>(y) - static_cast<float>(x)) * t); };
+            const ImU32 tint = broken[i] ? IM_COL32(255, 110, 55, 255) : IM_COL32(255, mix(244, 160, heat), mix(246, 90, heat), 255);
             const auto &facing = seg.has_front && skate3_hom::roll_from_joints().load() ? seg.front : rig.forward;
             draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade * bones_alpha, broken[i] ? 0.85f : 0.0f);
         }
@@ -495,16 +585,58 @@ void skate3_hom_tick(bool stand_down) {
             skate3_hom::play_bone_sound(static_cast<float>(e.level) / static_cast<float>(n), e.top);
         }
     }
+    {
+        // A new break (once the bail is known to be a crash) starts Skate 3's slow motion.
+        const Result &live = s.tracker.live();
+        if (s.tracker.showing()) {
+            if (live.serial != s.breaks_serial) {
+                s.breaks_serial = live.serial;
+                s.breaks_seen = 0;
+            }
+            if (live.broken.size() > s.breaks_seen) s.break_real = real_seconds();
+            s.breaks_seen = live.broken.size();
+        }
+    }
+    if (!was_bailing && s.tracker.phase() == Phase::bailing && !s.tracker.carried_on()) s.new_best = false;
     if (done) {
         const auto &r = s.tracker.result();
         s.visible_until = now + linger_seconds + fade_seconds;
-        s.best = std::max(s.best, r.total);
+        if (r.total > s.best) {
+            s.new_best = s.best_known && r.total > 0;
+            s.best = r.total;
+            if (s.best_known && !s.level.empty()) profile_runtime::set_local_values({{best_key(s.level), static_cast<double>(s.best)}});
+        }
         logging::log(logging::Level::info, logging::Channel::assets,
                      "Hall Of Meat: bail {} scored {} (bones {} {}, air {:.2f}s {}, drop {:.1f}m {}, time {:.2f}s {}, speed {:.1f}m/s {}, rot {:.0f} {}) - {}.",
                      r.serial, r.total, r.broken.size(), r.bone_points, r.air_time, r.air_points, r.drop, r.drop_points, r.duration,
                      r.duration_points, r.peak_speed, r.speed_points, r.rotation, r.rotation_points, r.title);
     }
 }
+
+void skate3_hom_set_level(std::string_view level) {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    if (level == s.level) return;
+    s.level = level;
+    s.best_known = !level.empty();
+    s.best = 0;
+    s.new_best = false;
+    if (s.best_known)
+        if (const auto saved = profile_runtime::local_value(best_key(level))) {
+            try {
+                const double best = saved->get<double>();
+                if (std::isfinite(best) && best > 0 && best < 1e9) s.best = static_cast<int>(best);
+            } catch (...) {}
+        }
+}
+
+float skate3_hom_game_speed() {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    return s.break_real < 0 ? 1.0f : slow_motion_curve(real_seconds() - s.break_real);
+}
+
+void skate3_hom_set_applied_speed(float speed) { applied_speed().store(std::isfinite(speed) ? std::clamp(speed, 0.05f, 1.0f) : 1.0f); }
 
 bool skate3_hom_hud_pending() {
     auto &s = state();
@@ -573,6 +705,6 @@ void draw_skate3_hom_hud() {
                                                  : std::clamp(1.0f - static_cast<float>(now - s.getting_up_at) / 0.25f, 0.0f, 1.0f);
         if (live || s.darkness > 0.02f) draw_xray(draw, r, bones_alpha, live ? 1.0f : fade, s.darkness);
     }
-    draw_block(draw, r, s.shown_total, fade, scale, now, s.started);
+    draw_block(draw, r, s.shown_total, fade, scale, now, s.started, s.best_known ? s.best : 0, s.new_best);
 }
 } // namespace dingosdk::overlay
