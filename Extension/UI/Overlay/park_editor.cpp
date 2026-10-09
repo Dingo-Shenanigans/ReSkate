@@ -120,6 +120,13 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
         } else
             leave(ui, callbacks, visible, escape_closes); // Esc goes straight back to the game
     }
+    // A server that has turned object scaling off shares everything at its own size: nothing is
+    // resized here either, so what this player sees is what everyone else does.
+    ui.scaling_allowed = model.multiplayer.object_scaling;
+    if (!ui.scaling_allowed) {
+        ui.scale = 1;
+        if (ui.mode == ParkTransformMode::scale) ui.mode = ParkTransformMode::move;
+    }
     namespace skate = dingosdk::skate_theme;
     const float k = std::clamp(ui.ui_scale, .5f, 3.0f);
     const auto P = [k](float value) { return value * k; };
@@ -216,6 +223,7 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
     for (std::size_t i = 0; i < modes.size(); ++i) {
         if (i)
             ImGui::SameLine(0, P(6));
+        if (modes[i].second == ParkTransformMode::scale && !ui.scaling_allowed) continue; // the server has it off
         if (mode_tile(frame, bold_font, modes[i].first, ui.mode == modes[i].second, k, static_cast<unsigned>(41 + i))) {
             ui.mode = modes[i].second;
             ui.dragging = -1;
@@ -493,7 +501,7 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
                     ui.mode = ParkTransformMode::move;
                 if (ImGui::IsKeyPressed(ImGuiKey_R, false))
                     ui.mode = ParkTransformMode::rotate;
-                if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
+                if (ImGui::IsKeyPressed(ImGuiKey_Y, false) && ui.scaling_allowed)
                     ui.mode = ParkTransformMode::scale;
             }
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false))

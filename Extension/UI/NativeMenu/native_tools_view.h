@@ -199,6 +199,8 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const overlay::OfflineFeatureRequest request{overlay::OfflineFeatureGroup::board_wear, !wear.effective};
         report(wear.available && cb.queue_offline_feature &&
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
+    } else if (command == "hall-of-meat") {
+        console(m.hall_of_meat.enabled ? "hallofmeat 0" : "hallofmeat 1", m.hall_of_meat.available);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -293,6 +295,7 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
+        toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",

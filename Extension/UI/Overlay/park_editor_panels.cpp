@@ -194,9 +194,12 @@ void inspector(ParkEditorUI &ui, const Model &model, const CallbacksV3 &callback
         ui.inspector_dirty = true;
     ImGui::TextUnformatted(ui.selection.size() > 1 ? "Scale multiplier" : "Uniform scale");
     ImGui::SetNextItemWidth(-1);
+    ImGui::BeginDisabled(!ui.scaling_allowed);
     if (ImGui::DragFloat("##scale", &ui.scale, .01f, .01f, 100, "%.3f",
                          ImGuiSliderFlags_AlwaysClamp))
         ui.inspector_dirty = true;
+    ImGui::EndDisabled();
+    if (!ui.scaling_allowed) ImGui::TextDisabled("This server has object scaling off.");
     ImGui::BeginDisabled(!selected && ui.surface_mode && !ui.surface_valid && !ui.inspector_dirty);
     skate_theme::push_primary_button();
     ImGui::PushFont(font_or(ui.bold_font));

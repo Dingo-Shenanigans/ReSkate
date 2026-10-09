@@ -144,6 +144,20 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_test(NAME physics_tuning COMMAND dingosdk_physics_tuning_tests "${DINGOSDK_TEST_GAME_ROOT}")
     add_executable(dingosdk_camera_observer_tests Extension/Skater/Test/camera_observer_tests.cpp)
     add_test(NAME camera_observer_recovery COMMAND dingosdk_camera_observer_tests)
+    add_executable(dingosdk_linear_transform_tests Engine/Game/Abi/Test/linear_transform_tests.cpp)
+    target_include_directories(dingosdk_linear_transform_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME linear_transform COMMAND dingosdk_linear_transform_tests)
+    add_executable(dingosdk_draw_packet_tests Engine/Game/Rendering/Test/draw_packet_tests.cpp)
+    target_include_directories(dingosdk_draw_packet_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME draw_packet COMMAND dingosdk_draw_packet_tests)
+    add_executable(dingosdk_skinned_mesh_tests Engine/Resource/Test/skinned_mesh_tests.cpp)
+    target_include_directories(dingosdk_skinned_mesh_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_skinned_mesh_tests PRIVATE dingosdk_frostbite)
+    add_test(NAME skinned_mesh COMMAND dingosdk_skinned_mesh_tests)
+    add_executable(dingosdk_game_textures_tests Engine/Vfs/Test/game_textures_tests.cpp)
+    target_include_directories(dingosdk_game_textures_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_game_textures_tests PRIVATE dingosdk_game_archives)
+    add_test(NAME game_textures COMMAND dingosdk_game_textures_tests "${DINGOSDK_TEST_GAME_ROOT}")
     add_executable(dingosdk_native_menu_view_tests Extension/UI/NativeMenu/Test/native_menu_view_tests.cpp)
     add_executable(dingosdk_loading_screen_tests Extension/World/Test/loading_screen_tests.cpp)
     target_include_directories(dingosdk_loading_screen_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -194,8 +208,28 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_settings_lock_tests Engine/Game/Settings/Test/multiplayer_settings_lock_tests.cpp)
     target_include_directories(dingosdk_settings_lock_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME multiplayer_settings_lock COMMAND dingosdk_settings_lock_tests)
+    add_executable(dingosdk_simulation_time_tests Engine/Game/Settings/Test/simulation_time_tests.cpp)
+    target_include_directories(dingosdk_simulation_time_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME simulation_time COMMAND dingosdk_simulation_time_tests)
     add_executable(dingosdk_held_input_tests Extension/UI/Overlay/Test/held_input_tests.cpp)
     add_test(NAME overlay_held_input COMMAND dingosdk_held_input_tests)
+    add_executable(dingosdk_ea_service_block_tests Extension/Boot/Test/ea_service_block_tests.cpp)
+    target_include_directories(dingosdk_ea_service_block_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME ea_service_block COMMAND dingosdk_ea_service_block_tests)
+    # The dedicated server's host under a full server of simulated players, over a transport
+    # that is not Steam's: what its passes cost, and a hash of what it sent (not run by ctest).
+    add_executable(dingosdk_server_load_tests Server/Test/server_load_tests.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
+        Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
+        Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
+        Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp)
+    target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+    target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
 endif()
 # The route and logging tests live in the local, untracked tests/ folder.
 option(DINGOSDK_BUILD_ROUTE_TESTS "Build native route cycle regression tests" OFF)
@@ -238,6 +272,21 @@ if(DINGOSDK_BUILD_TRAINER_TESTS)
     add_executable(dingosdk_trainer_asset_list Extension/Trainer/Test/asset_list.cpp)
     target_include_directories(dingosdk_trainer_asset_list PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_trainer_asset_list PRIVATE dingosdk_game_archives)
+endif()
+option(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS "Build Hall of Meat regression tests" OFF)
+if(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS)
+    enable_testing()
+    # The bail: its phases, what each hit did, the Meat it scores and the card that shows it.
+    add_executable(dingosdk_hall_of_meat_tests Extension/HallOfMeat/Test/hall_of_meat_tests.cpp
+        Extension/HallOfMeat/hall_of_meat_model.cpp Extension/HallOfMeat/hall_of_meat_card.cpp)
+    target_include_directories(dingosdk_hall_of_meat_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME hall_of_meat COMMAND dingosdk_hall_of_meat_tests)
+    # skate.'s own skeleton mesh, read from the game's data and posed (with a Skate folder).
+    add_executable(dingosdk_hall_of_meat_skeleton_tests Extension/HallOfMeat/Test/hall_of_meat_skeleton_tests.cpp
+        Extension/HallOfMeat/hall_of_meat_skeleton.cpp)
+    target_include_directories(dingosdk_hall_of_meat_skeleton_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_hall_of_meat_skeleton_tests PRIVATE dingosdk_game_archives dingosdk_logging)
+    add_test(NAME hall_of_meat_skeleton COMMAND dingosdk_hall_of_meat_skeleton_tests "${DINGOSDK_TEST_GAME_ROOT}")
 endif()
 get_property(project_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(target IN LISTS project_targets)

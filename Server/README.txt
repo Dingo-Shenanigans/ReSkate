@@ -149,12 +149,33 @@ allow_parties      Let players form parties (default true): invite each other
                    members join each other's coop challenges, see each other on
                    the map and talk with /p <message>.
 party_size         Most players in one party, 2-8 (default 8).
+afk_kick_minutes   Remove a player who has been away this many minutes, 1-1440
+                   (default 0: never). Away is not moving, speaking, typing
+                   in chat or changing their objects. They are warned in chat
+                   a minute before and can join again at once. Admins are
+                   never removed for it. Console: afk-kick <minutes>|off.
 allow_voice_chat   Allow voice chat.
 voice_range        How far proximity voice reaches, 50-1000 m.
 object_placement   everyone, admins (only admins can build), or nobody.
 object_limit       How many objects each player may have placed, 1-1024
                    (default 100), or 0 for no limit. Admins are not limited.
                    A player at the limit deletes one to place another.
+                   A player who places more than twice the limit plus 100
+                   in a minute (a modified game animating objects by
+                   respawning them) has theirs deleted for everyone, and
+                   nothing they place is shared for a minute; the log
+                   says who. Admins are exempt.
+allow_object_scaling  Let players place objects bigger or smaller than their
+                   own size (default true). false shares every player's
+                   objects at their own size and turns the size controls
+                   off in their park editor. Admins can still resize
+                   theirs. Console: object-scaling on|off.
+sync_effects       Let players see each other's skater effects (default true):
+                   sparks and dust where a skater touches the world, and
+                   the trails and fire of costumes and skateboards. false
+                   relays none and players' games show each other without
+                   them, which saves a little traffic and drawing on a busy
+                   server. Console: effects on|off.
 announce_throwdowns  Tell everyone in chat when a throwdown drop is placed
                    (default true).
 
@@ -235,6 +256,14 @@ pack_ms            How long a message to a player may wait to go in the same
                    bandwidth and less CPU. It adds up to that long to when an
                    update arrives. Voice is never held back. 0 sends every
                    message at once, as before. Takes effect on restart.
+threads            How many threads share the sending of each pass (default 0:
+                   one for each of the machine's processors but one, up to
+                   8; 1: a single thread, as before). Most of a full
+                   server's work is building each player's update of everyone
+                   else, which the threads do for several players at once.
+                   What is sent is the same whatever the number. The server
+                   says how many it uses when it starts. Takes effect on
+                   restart.
 finger_distance    Past this many metres (default 25) a player's fingers are not
                    sent moving: they stay as they were, and move again when the
                    player is nearer. Fingers are nearly half of every position
@@ -258,6 +287,47 @@ votes              Player votes, each off until turned on:
                    "cooldown_seconds" (default 60) how long a player waits before
                    starting another. Players vote with /yes and /no in chat;
                    admins cannot be vote-kicked.
+                   Each vote may also have its own "seconds" and
+                   "cooldown_seconds" (0: the ones above) and "min_players", the
+                   players who must be on before anyone can start it (default 1).
+starter_votes_yes  Whoever starts a vote has voted yes (default true).
+custom             Votes of your own: a list, each running a server command
+                   when it passes. {map} in the command is the current map,
+                   {arg} the choice the player picked (one of "choices"; without
+                   choices the vote takes no argument). For example:
+                     {"name": "restart", "description": "Reload the current map",
+                      "command": "map {map}", "percent": 60}
+                     {"name": "noclip", "description": "Turn noclip on or off",
+                      "command": "noclip {arg}", "choices": ["on", "off"]}
+                   Players start them with /vote restart, /vote noclip off; /vote
+                   list shows them. A name and each choice is 1-16 of a-z, 0-9,
+                   - and _, and not one of the server's own (map, kick, tod,
+                   list...). Each takes "enabled", "percent", "seconds",
+                   "cooldown_seconds" and "min_players" as the others do. Up to 16.
+polls              Who may ask everyone a question with up to six answers:
+                   "off", "admins" (default) or "everyone".
+                     /poll Next map? | Grom | San Vansterdam | Stadium
+                   Players answer on the card or with /1, /2... A poll runs
+                   nothing; it ends after "poll_seconds" (default 60), or when
+                   whoever started it (or an admin) types /poll end.
+Server votes       The console (and scripts that talk to it) starts the same
+                   votes and polls: "vote tod night", "vote map grom",
+                   "vote noclip off", "poll Next map? | Grom | Stadium" and
+                   "poll end". A vote still has to be on, and its "min_players"
+                   met; a poll may be asked whatever "polls" says. The server has
+                   no vote of its own and no cooldown. Chat reads "The server
+                   started a vote to ..." or "The server asks: ...".
+                   "poll-run <command> | <question> | <answer>..." also runs a
+                   command for the answer that wins, {answer} replaced by it
+                   (nothing on a tie or when nobody answered), e.g.
+                     poll-run tod {answer} | Time of day? | morning | noon | night
+
+"announcements" - Messages from the server.
+messages           Lines the server posts in turn, one every "interval_minutes"
+                   (0: off) while players are on. Each is one chat line.
+card               Also show each announcement as a card at the top of every
+                   player's screen, not only in chat (default true).
+                   Admins announce something once with: announce <text>.
 
 Every change made from the console or by an admin is saved back to this file.
 
@@ -304,6 +374,8 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   distances <full> <half> <half-return> <low>
   placement everyone|admins|nobody   clear-objects
   objects <number>|off          How many objects each player may have placed.
+  object-scaling on|off         Whether players may resize the objects they place.
+  effects on|off                Whether players see each other's skater effects.
   noclip on|off   nobail on|off   boosts on|off
                                 What players may use (admins always can).
   tuning on|off                 Everyone on the game's own physics tuning.
@@ -317,10 +389,24 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
                                 Time of day on every map (needs layer-sync on).
   votes [map|kick|tod on|off|<percent>]   The vote settings (see votes).
   votes seconds <n>   votes cooldown <n>   vote-cancel
+  votes <vote> seconds|cooldown|min-players <n>   One vote's own limits; <vote>
+                                is map, kick, tod or a custom vote's name, which
+                                also takes on|off|<percent>.
+  votes polls off|admins|everyone   votes poll-seconds <n>   votes starter-yes on|off
+  vote <map|kick|tod|<custom vote>> [argument]   Start a vote as the server
+                                (see Server votes).
+  poll <question> | <answer> | <answer>...   Ask everyone (2 to 6 answers).
+  poll end                      End the running poll now.
+  poll-run <command with {answer}> | <question> | <answer>...   A poll whose
+                                winning answer runs the command (console only).
+  announce <text>               Tell everyone, in chat and on a card.
+  announcements [list | add <text> | remove <n> | clear | interval <minutes>|off | card on|off]
+                                The messages posted on a timer.
   activity-log on|off           Log player activity (see activity_log).
   announce-throwdowns on|off    Chat message when a throwdown is placed.
   parties [on|off]              List the parties, or allow them (off ends them all).
   party-size <2-8>              Most players in one party.
+  afk-kick <minutes>|off        Remove players who have been away that long.
   speed-check off|warn|kick     What happens to players whose game runs fast.
   score-check [off|warn|kick]   What happens to players whose mods change scoring
                                 or physics; with no argument, every player's result.

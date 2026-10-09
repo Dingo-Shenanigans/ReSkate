@@ -1,5 +1,6 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Boot/exit_watch.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
 #include "playstation_input.h"
@@ -120,6 +121,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     if (window != s.window.load())
         return previous ? CallWindowProcW(previous, window, message, wp, lp)
                         : DefWindowProcW(window, message, wp, lp);
+    // The player closing the game: it is ended if it does not finish by itself.
+    dingosdk::exit_watch::note_window_message(window, message, wp);
     struct ReleaseOnOpen {
         HWND window; WNDPROC previous; bool was_visible;
         ~ReleaseOnOpen() {

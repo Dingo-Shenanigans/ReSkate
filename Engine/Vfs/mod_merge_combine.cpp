@@ -11,6 +11,8 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <stdexcept>
 #include <tuple>
 
@@ -106,13 +108,15 @@ struct BundleState {
     std::size_t gameMetadata{ChunkRecord::none};
     std::vector<fb::Guid> shippedChunks;
     // Keyed position of each asset, so replacing one stays constant time: these
-    // bundles hold tens of thousands of entries.
-    std::map<std::string, std::size_t, std::less<>> seen;
+    // bundles hold tens of thousands of entries. Hashed, here and below: the keys
+    // are asset paths that share long beginnings, which an ordered map compares
+    // byte by byte at every step, and nothing reads these in key order.
+    std::unordered_map<std::string, std::size_t> seen;
     // Every copy of an asset more than one source supplies, base included.
-    std::map<std::string, std::vector<Contribution>, std::less<>> history;
+    std::unordered_map<std::string, std::vector<Contribution>> history;
     // The base's own sha1 for each asset, so a mod that merely carries an
     // unchanged copy can be told apart from one that changed it.
-    std::map<std::string, fb::Sha1, std::less<>> baseSha;
+    std::unordered_map<std::string, fb::Sha1> baseSha;
     // Assets a mod added that a higher-priority mod's different asset of the
     // same name then replaced: the key, and the sha1 of the copy that went.
     std::vector<std::pair<std::string, fb::Sha1>> displaced;
@@ -369,6 +373,10 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     // Where an addition's payload already went in this superbundle's patch
     // archive, by install chunk: every copy that is given it reads the one.
     std::map<std::pair<std::uint32_t, const AssetAddition*>, fb::BundleFileInfo> carriedAt;
+    // The names any mod changed, to rule the rest out without a copy of each (name_hash).
+    std::unordered_set<std::uint64_t> changedNames, scriptNames;
+    for (const auto& [name, versions] : overrides.changed) changedNames.insert(name_hash(name));
+    for (const auto& [name, versions] : overrides.scripts) scriptNames.insert(name_hash(name));
 
     const auto absorb = [&](const fb::TocBundle& bundle, const ArchivePlacement* placement,
                             bool isBase, const fs::path& root) {
@@ -523,9 +531,11 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         if (propagate && (casBacked || !region.inlineManifest.empty())) {
             std::string example;
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
-            const auto replace = [&](std::vector<fb::BundleAsset>& assets, const auto& changes, std::size_t first) {
+            const auto replace = [&](std::vector<fb::BundleAsset>& assets, const auto& changes,
+                                     const std::unordered_set<std::uint64_t>& names, std::size_t first) {
                 for (std::size_t index = 0; index < assets.size(); ++index) {
                     auto& asset = assets[index];
+                    if (!names.contains(name_hash(asset.name))) continue;
                     const auto named = changes.find(lower(asset.name));
                     if (named == changes.end()) continue;
                     const auto change = named->second.find(asset.sha1);
@@ -550,8 +560,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     }
                 }
             };
-            replace(manifest.ebx, overrides.changed, 0);
-            replace(manifest.resources, overrides.scripts, manifest.ebx.size());
+            replace(manifest.ebx, overrides.changed, changedNames, 0);
+            replace(manifest.resources, overrides.scripts, scriptNames, manifest.ebx.size());
             if (casBacked) casManifest = std::move(manifest);
             else if (!overridden.empty()) region.inlineManifest = fb::write_binary_bundle(manifest);
             if (!overridden.empty())

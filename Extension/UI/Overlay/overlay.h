@@ -204,6 +204,11 @@ struct MissionRow {
     int completed = -1;
 };
 
+// Hall of Meat's switch (Extension/HallOfMeat/hall_of_meat.h): started, and switched on.
+struct HallOfMeatModel {
+    bool available = false, enabled = false;
+};
+
 struct Model {
     std::string state = "Waiting for native state";
     std::string detail;
@@ -222,6 +227,7 @@ struct Model {
     WorldControlsModel world_controls;
     ProgressionModel progression;
     PlayerCardModel player_card;
+    HallOfMeatModel hall_of_meat;
     ObjectPersistenceModel object_persistence;
     ParkEditorModel editor;
     float menu_scale = default_menu_scale;
@@ -325,7 +331,7 @@ struct Nametag {
     std::array<float, 3> position{}; // above the skater's head, world space
     std::string name;
     std::uint32_t color{0xffffffffU}; // R, G, B, A bytes (IM_COL32)
-    std::string tag;                  // role badge before the name ("Dev", "Staff", "Creator", "Centrix", "Homie", "Admin", "Host", "Friend")
+    std::string tag;                  // role badge before the name ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend")
     float distance{};                 // metres from the local skater
     bool talking{};
     // Recent chat lines to show as bubbles above the head, oldest first ("" = none).

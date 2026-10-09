@@ -139,7 +139,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
 
 void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
-    begin_card(menu, "movement", "MOVEMENT");
+    begin_card(menu, "movement", "FLIGHT & BAILS");
     bool noclip = debug.noclip;
     if (toggle_row(menu, "Noclip", "Fly with the normal player camera. Includes No Bail; uses the Freecam flight speed.", noclip,
             (debug.noclip_available || debug.noclip) && callbacks.queue_debug))
@@ -154,6 +154,16 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
     if (toggle_row(menu, "No Bail", bail_help, no_bail,
             (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_no_bail, no_bail});
+    bool hall_of_meat = model.hall_of_meat.enabled;
+    // No Bail (and noclip, which includes it) stops the bails Hall of Meat scores.
+    const bool bails_off = debug.no_bail || debug.no_bail_active;
+    const char* meat_help = hall_of_meat && bails_off
+        ? "On, but No Bail is stopping your bails, so nothing shows. Turn No Bail (and noclip) off to use it."
+        : bails_off
+        ? "Your bails show the bones they hurt and score a Meat card. Needs No Bail (and noclip) off."
+        : "Your bails show the bones they hurt and score a Meat card. A break slows the game in single player.";
+    if (toggle_row(menu, "Hall of Meat", meat_help, hall_of_meat, model.hall_of_meat.available && callbacks.queue_console_command))
+        send_console(menu, callbacks, hall_of_meat ? "hallofmeat 1" : "hallofmeat 0");
     end_card();
 
     begin_card(menu, "boosts", "BOOSTS", "Buttons are set in Settings > Controls");
@@ -177,7 +187,7 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
 }
 
 void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.skater_tab, {"CAMERA", "MOVEMENT"}, "skater-tabs");
+    category_tabs(menu, menu.skater_tab, {"CAMERA", "GAMEPLAY"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
     ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)));
     if (menu.skater_tab == 0) camera_controls(menu, model, callbacks);

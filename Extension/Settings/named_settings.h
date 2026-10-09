@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine/Game/Settings/named_settings.h"
 #include <cstdint>
+#include <optional>
 #include <string_view>
 namespace dingosdk {
 // Initialize before installing the client update hook. All other functions
@@ -13,6 +14,8 @@ const std::vector<NamedSettingModel> &named_settings_model();
 // Increases whenever any row of named_settings_model() changes.
 std::uint64_t named_settings_revision();
 std::string change_named_setting(std::string_view name, std::string_view value, bool restore);
+// The setting's value now, as the console shows it; nothing when it cannot be read.
+std::optional<std::string> named_setting_value(std::string_view name);
 // The same for a player's own change (the console): one that changes how the game plays is
 // refused during a multiplayer session (Engine/Game/Settings/multiplayer_settings_lock.h), and
 // any such change made before a session is put back when it starts.

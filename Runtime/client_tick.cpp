@@ -6,9 +6,11 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/job_spin.h"
 #include "Engine/Game/World/client_state.h"
+#include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
+#include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/developer_identity.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
@@ -93,6 +95,9 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
 // Engine settings that cost simulation time for nothing here, set once through the named
 // setter (retried until the settings registry answers):
 // - telemetry and the performance tracker only feed EA's backend, absent offline;
+// - EA's error reporting (EadpErrorsData) only builds reports for EA's servers, which
+//   ea_service_block keeps unreachable. Set here because the same values given on the game's
+//   command line do not take;
 // - the world-transform update, which grows with every remote player's entities, is split
 //   over more jobs than Game.cfg's 2.
 void apply_performance_settings() {
@@ -104,11 +109,14 @@ void apply_performance_settings() {
     next_attempt = now + 500;
     try {
         const auto jobs = std::to_string(std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u));
-        const std::array<std::pair<const char*, std::string>, 7> settings{{
+        const std::array<std::pair<const char*, std::string>, 10> settings{{
             {"DingoTelemetry.Enable", "0"},
             {"DingoTelemetry.EnablePlayerTickEvents", "0"},
             {"DingoTelemetry.EnablePerformanceEvents", "0"},
             {"DingoTelemetry.EnableCPUBenchmark", "0"},
+            {"EadpErrorsData.DisableAllEventsReporting", "1"},
+            {"EadpErrorsData.EnableReportCrashes", "0"},
+            {"EadpErrorsData.AutoSendEventFromPersistence", "0"},
             {"PerformanceTracker.Enabled", "0"},
             {"PerformanceTracker.JuiceLogPerformance", "0"},
             {"EcsWorldTransform.ParallelWorldTransformUpdateJobCount", jobs},
@@ -376,6 +384,12 @@ void update_model(std::uintptr_t client, TickState& frame) {
     std::optional<dingosdk::overlay::DebugRequest> debug_request;
     bool debug_busy{}, controller_busy{};
     std::uint32_t freecam_controller_combo{}, freecam_combo{}, tp_to_freecam_combo{}, noclip_combo{}, forward_velocity_combo{}, up_velocity_combo{}, offboard_up_velocity_combo{};
+    // Yes and No in a dedicated server's vote: read only while one is running.
+    std::uint32_t vote_yes_combo{}, vote_no_combo{};
+    // The switches on buttons (action_binds): each runs its console command.
+    std::array<std::uint32_t, dingosdk::action_binds.size()> action_combos{};
+    const bool vote_open = dingosdk::multiplayer::server_vote_open();
+    const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
     bool freecam_controller = dingosdk::local_freecam_controller();
     {
         std::lock_guard lock(r.mutex);
@@ -388,13 +402,41 @@ void update_model(std::uintptr_t client, TickState& frame) {
         forward_velocity_combo = r.model.bindings.available ? r.model.bindings.forward_velocity_combo : 0;
         up_velocity_combo = r.model.bindings.available ? r.model.bindings.up_velocity_combo : 0;
         offboard_up_velocity_combo = r.model.bindings.available ? r.model.bindings.offboard_up_velocity_combo : 0;
+        if (r.model.bindings.available) action_combos = r.model.bindings.action_combos;
+        if (vote_open && r.model.bindings.available) {
+            vote_yes_combo = r.model.bindings.vote_yes_combo;
+            vote_no_combo = r.model.bindings.vote_no_combo;
+        }
         debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
     }
     // Capture belongs to the freecam state itself. Keep it active across brief
     // request/loading phases instead of opening a path back to player input.
     DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
     dingosdk::ControllerInput controller;
-    if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo) DingoSDKOverlayReadControllerInput(&controller);
+    if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
+        vote_yes_combo || vote_no_combo || poll_answers || std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
+        DingoSDKOverlayReadControllerInput(&controller);
+    for (std::size_t i = 0; i < action_combos.size(); ++i)
+        if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
+            std::array<char, 256> result{};
+            const std::string command(dingosdk::action_binds[i].command);
+            if (queue_console_command(nullptr, command.c_str(), result.data(), result.size()))
+                record(("{\"event\":\"controller_binding_triggered\",\"action\":\"" + std::string(dingosdk::action_binds[i].key) + "\"}").c_str());
+        }
+    // (The input reads as nothing while the menu, the console or the chat box is open, so typing
+    // a bound key answers no vote.)
+    if (r.vote_yes_bind_latch.update(vote_yes_combo, controller, !vote_open) && dingosdk::multiplayer::queue_command("vote", "yes", ""))
+        record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_yes\"}");
+    if (r.vote_no_bind_latch.update(vote_no_combo, controller, !vote_open) && dingosdk::multiplayer::queue_command("vote", "no", ""))
+        record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_no\"}");
+    // A poll's answers are on the number keys, 1 for the first: only while one is running, so
+    // the keys are the game's own the rest of the time.
+    for (unsigned answer = 0; answer < r.poll_answer_latches.size(); ++answer) {
+        const std::uint32_t key = answer < poll_answers ? dingosdk::keyboard_binding_tag | ('1' + answer) : 0U;
+        const char number[2]{static_cast<char>('1' + answer), 0};
+        if (r.poll_answer_latches[answer].update(key, controller, !poll_answers) && dingosdk::multiplayer::queue_command("vote", number, ""))
+            record("{\"event\":\"controller_binding_triggered\",\"action\":\"poll_answer\"}");
+    }
     
     if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
         if (dingosdk::set_local_freecam_controller(!freecam_controller))
@@ -678,6 +720,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         dingosdk::tick_network_objects();
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
+    dingosdk::hall_of_meat::on_client_tick();
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;
     DINGO_PROFILE_ZONE("tick/update_model/world model (500 ms)");
@@ -685,6 +728,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     r.multiplayer_map = description.level.empty() ? std::string{} : description.level + "|" + description.lm_level;
     const auto& current_level = description.lm_level.empty() ? description.level : description.lm_level;
     dingosdk::live_mods::set_current_level(current_level);
+    dingosdk::hall_of_meat::set_level(current_level);
     // A live mod apply hands over the destinations its mods declare. A map
     // being played that is no longer among them (its mod disabled or deleted)
     // cannot stay loaded: the player goes to San Van.
@@ -813,6 +857,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto missions_model = dingosdk::local_profile_missions();
     model.progression = dingosdk::local_profile_progression();
     model.player_card = dingosdk::local_profile_player_card();
+    model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
     model.bindings = dingosdk::local_profile_controller_bindings();
     model.parks = dingosdk::local_profile_parks();
     model.world = dingosdk::local_profile_world_layers();

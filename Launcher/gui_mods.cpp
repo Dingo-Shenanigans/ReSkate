@@ -669,7 +669,7 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         ImGui::OpenPopup("##mod_overview");
         panel.overview = true;
     }
-    const ImVec2 extent(std::min(S(680), size.x - S(80)), std::min(S(560), size.y - S(80)));
+    const ImVec2 extent(std::min(S(1080), size.x - S(80)), std::min(S(740), size.y - S(60)));
     ImGui::SetNextWindowPos(ImVec2((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f));
     ImGui::SetNextWindowSize(extent);
     if (!ImGui::BeginPopupModal("##mod_overview", nullptr,
@@ -683,13 +683,24 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         panel.selected = -1;
         ImGui::CloseCurrentPopup();
     };
-    ImGui::PushFont(fonts.heading);
+    // The icon (the package's, when the mod is on Thunderstore), with the name, a line of what
+    // it is and its description beside it.
+    const float icon = S(104), header_top = ImGui::GetCursorPosY();
+    mod_icon(panel, package, ImGui::GetCursorScreenPos(), icon);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon + S(20));
+    ImGui::BeginGroup();
     ImGui::PushTextWrapPos(0);
+    ImGui::PushFont(fonts.heading);
     ImGui::TextUnformatted(mod.title.c_str());
-    ImGui::PopTextWrapPos();
     ImGui::PopFont();
     ImGui::TextDisabled("%s", summary(panel, mod).c_str());
-    ImGui::Spacing();
+    if (!mod.description.empty()) {
+        ImGui::Dummy(ImVec2(0, S(4)));
+        ImGui::TextUnformatted(mod.description.c_str());
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndGroup();
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), header_top + icon) + S(14));
     if (update) {
         ImGui::BeginDisabled(installing);
         push_primary_button();
@@ -719,9 +730,9 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     ImGui::EndDisabled();
     ImGui::Spacing();
 
-    ImGui::BeginChild("##mod_overview_body",
-        ImVec2(0, std::max(S(80), extent.y - ImGui::GetCursorPosY() - S(24) - ImGui::GetFrameHeight())),
-        ImGuiChildFlags_NavFlattened);
+    ImGui::Dummy(ImVec2(0, S(6)));
+    const auto columns = overview_columns(extent.y);
+    ImGui::BeginChild("##mod_overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
     ImGui::PushTextWrapPos(0);
     if (!mod.outdated.empty())
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
@@ -733,28 +744,32 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
             "mod folder, or rebuild it with a current ReSkate Studio.");
         if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
     }
-    field(fonts, "AUTHOR", mod.author);
-    field(fonts, "VERSION", mod.version);
-    field(fonts, "DESCRIPTION", mod.description);
-    field(fonts, "FOLDER", "Mods\\" + mod.name);
+    if (!mod.provides_layout && !mod.provides_levels && mod.park_maps.empty())
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+            "This folder has no layout.toc or reskate-levels.json, so the game has nothing to load from it.");
+    if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+
+    begin_overview_details("##mod_overview_details", columns);
+    overview_fact(fonts, "VERSION", mod.version.empty() ? std::string() : "v" + mod.version);
+    overview_fact(fonts, "AUTHOR", mod.author);
     if (package)
-        field(fonts, "THUNDERSTORE", package->full_name + (update ? "  (v" + package->latest().number + " available)"
-                                                                  : std::string("  (up to date)")));
+        overview_fact(fonts, "THUNDERSTORE", package->full_name + (update ? "\nv" + package->latest().number + " available"
+                                                                          : std::string("\nUp to date")));
+    overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
     if (!mod.tool.empty() || !mod.built.empty())
-        field(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
+        overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
     std::string levels;
     for (const auto& level : mod.levels) {
         const auto slash = level.rfind('/');
         levels += (levels.empty() ? "" : "\n") + (slash == std::string::npos ? level : level.substr(slash + 1));
     }
-    field(fonts, "MAPS", levels);
+    overview_fact(fonts, "MAPS", levels);
     std::string parks;
     for (const auto& map : mod.park_maps) parks += (parks.empty() ? "" : ", ") + map;
-    field(fonts, "PARKS", parks);
-    if (!mod.provides_layout && !mod.provides_levels && mod.park_maps.empty())
-        field(fonts, "NOTE", "This folder has no layout.toc or reskate-levels.json, so the game has nothing to load from it.");
-    ImGui::PopTextWrapPos();
-    ImGui::EndChild();
+    overview_fact(fonts, "PARKS", parks);
+    end_overview_details();
 
     ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
     bool enabled = entry.enabled;

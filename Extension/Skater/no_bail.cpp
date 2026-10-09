@@ -59,6 +59,7 @@ struct Protection {
     std::atomic<bool> ready{};
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
+    std::atomic<NoBailStepObserver> step_observer{};
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
 struct StateWatch {
@@ -117,6 +118,19 @@ bool protected_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owne
     Owner current;
     if (!resolve(lease.owner.client, lease.owner.entity, current) || current != lease.owner) return false;
     if (owner) *owner = current;
+    return true;
+}
+// The published owner, its chain resolved again now; when `rig` is given, only if it is that owner's.
+bool published_skater(std::uintptr_t rig, NoBailSkater& skater) noexcept {
+    auto& p = protection();
+    if (!p.ready.load(std::memory_order_acquire)) return false;
+    AcquireSRWLockShared(&p.lock);
+    const auto published = p.lease.owner;
+    ReleaseSRWLockShared(&p.lock);
+    Owner current;
+    if (!published.entity || (rig && rig != published.rig) || !resolve(published.client, published.entity, current) ||
+        current != published) return false;
+    skater = {p.base, current.entity, current.core, current.context, current.rig};
     return true;
 }
 bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
@@ -214,6 +228,11 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
+    if (const auto observer = protection().step_observer.load(std::memory_order_acquire)) {
+        LastError error;
+        NoBailSkater skater;
+        if (published_skater(rig, skater)) observer(skater, seconds, wipeout);
+    }
     protection().skeleton_original(rig, seconds, wipeout);
 }
 bool clear_contact_output(std::uintptr_t contacts) noexcept {
@@ -390,6 +409,10 @@ void clear_no_bail() noexcept {
     AcquireSRWLockExclusive(&p.lock);
     p.lease = {};
     ReleaseSRWLockExclusive(&p.lock);
+}
+bool no_bail_skater(NoBailSkater& skater) noexcept { return published_skater(0, skater); }
+void set_no_bail_step_observer(NoBailStepObserver observer) noexcept {
+    protection().step_observer.store(observer, std::memory_order_release);
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();

@@ -57,6 +57,24 @@ struct Package {
     bool in_category(std::string_view category) const;
 };
 
+// A package's README, as its page on the site shows it:
+// /api/experimental/package/<owner>/<name>/<version>/readme/, a JSON object with "markdown".
+std::wstring readme_url(const Package& package);
+// The markdown in that answer; empty when the package has none.
+std::string parse_readme(std::string_view json);
+// A README laid out for plain drawing: one entry a line, with markdown's own marks, images and
+// HTML taken out. Links keep their text. At most `max_lines` lines; `cut` says more were left out.
+struct ReadmeLine {
+    enum class Kind { text, heading, bullet, code, rule, gap } kind{};
+    std::string text;
+    bool operator==(const ReadmeLine&) const = default;
+};
+struct Readme {
+    std::vector<ReadmeLine> lines;
+    bool cut{};
+};
+Readme readme_lines(std::string_view markdown, std::size_t max_lines = 400);
+
 // One listing chunk (or the whole plain listing): a JSON array of packages.
 // Rows that are malformed or have no active version are skipped.
 std::vector<Package> parse_listing(std::string_view json);

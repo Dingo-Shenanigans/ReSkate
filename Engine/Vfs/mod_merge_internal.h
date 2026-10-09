@@ -26,6 +26,16 @@ namespace fb = frostbite;
 std::string lower(std::string_view text);
 
 std::vector<std::byte> read_file(const fs::path& path);
+// A hash of `name` that ignores case (ASCII), to rule a name out before a lower-case copy of
+// it is made to look it up: most names a merge looks at are in no table.
+constexpr std::uint64_t name_hash(std::string_view name) noexcept {
+    std::uint64_t value = 0xCBF29CE484222325ULL;
+    for (char c : name) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        value = (value ^ static_cast<unsigned char>(c)) * 0x100000001B3ULL;
+    }
+    return value;
+}
 void write_file(const fs::path& path, std::span<const std::byte> bytes);
 using vfs::archive_file;
 void unshare(const fs::path& path);
@@ -105,16 +115,47 @@ public:
     CasStore(fs::path baseRoot, fs::path output, const native_db::Node& layout);
 
     // Appends an encoded payload to the merged patch's own archive for that
-    // install chunk, returning where it landed.
+    // install chunk, returning where it landed. A waiting store (below) keeps it
+    // instead and says where it is among what it holds.
     [[nodiscard]] fb::BundleFileInfo write(std::uint32_t installChunk, std::uint16_t archive,
                                            std::span<const std::byte> encoded);
+
+    // Superbundles are merged on several threads, and what each writes has to land
+    // where it would have had they been merged one after another. So each is merged
+    // with a waiting copy of the store. It reads as the store does and keeps what it
+    // is given, placing it in an archive index no file has (waiting_archive) at the
+    // offset within what it holds for that file. When every superbundle before its
+    // own has been settled, settle() appends what it holds to the real archives, and
+    // settled() then moves a placement that points into it to where that went.
+    static constexpr std::uint16_t waiting_archive = 0xFFFF;
+    [[nodiscard]] CasStore waiting() const;
+    [[nodiscard]] bool holding() const noexcept { return !held_.empty(); }
+    [[nodiscard]] static bool waits(const fb::CasIdentifier& location) noexcept {
+        return location.patch && location.archive == waiting_archive;
+    }
+    void settle(CasStore& waiting);
+    // True when the placement was one of this waiting store's; it now names the archive.
+    bool settled(fb::CasIdentifier& location, std::uint32_t& offset) const;
 
     void shift(fb::CasIdentifier& location, std::uint32_t& offset,
                const ArchivePlacement* placement) const;
 
 private:
+    // Appends to one of the patch's own archives; returns where the bytes start.
+    std::uint64_t append(const fs::path& path, std::span<const std::byte> encoded);
+    [[nodiscard]] fs::path archive_path(std::uint32_t installChunk, std::uint16_t archive) const;
+
     fs::path output_;
     std::map<std::wstring, std::uint64_t> offsets_;
+    // A waiting store: what it holds for each archive file, the one archive index it
+    // was asked to write to, and where each file's bytes went once settled.
+    struct Held {
+        std::vector<std::byte> bytes;
+        std::uint64_t at{};
+    };
+    bool waiting_{};
+    std::optional<std::uint16_t> archive_;
+    std::map<std::wstring, Held> held_;
 };
 
 using ArchiveUse = std::set<std::pair<std::uint32_t, std::uint16_t>>;

@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <string>
 
-// The role badge ("Dev", "Staff", "Creator", "Centrix", "Homie", "Admin", "Host", "Friend") before a player's name, in chat
+// The role badge ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend") before a player's name, in chat
 // and on nametags: a pill in the role's colour (animated for the roles in nametag_gradient.h) with dark text.
 namespace dingosdk::overlay::detail {
 inline float role_badge_width(ImFont *font, float size, const std::string &tag) {

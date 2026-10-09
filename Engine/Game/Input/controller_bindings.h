@@ -13,6 +13,8 @@ inline constexpr std::uint32_t controller_button_mask = 0x3f3ff;
 // into the remaining 30 bits of a distinct tag in the same profile field.
 inline constexpr std::uint32_t keyboard_binding_tag = 0x80000000u;
 inline constexpr std::uint32_t keyboard_chord_tag = 0x40000000u;
+// Yes and No in a server's vote until the player binds them otherwise: F1 and F2.
+inline constexpr std::uint32_t default_vote_yes_binding = keyboard_binding_tag | 0x70u, default_vote_no_binding = keyboard_binding_tag | 0x71u;
 inline constexpr std::uint8_t keyboard_key_id(std::uint32_t key) noexcept {
     if (key >= '0' && key <= '9') return static_cast<std::uint8_t>(key - '0' + 1);
     if (key >= 'A' && key <= 'Z') return static_cast<std::uint8_t>(key - 'A' + 11);
@@ -82,6 +84,21 @@ struct ControllerInput {
     ControllerStyle style{};
     std::array<std::uint64_t, 4> keys{};
 };
+// Switches a player can put on a button or key: each runs a console command when pressed.
+// `key` is its name in the profile, `name` what "bind <name>" takes.
+struct ActionBind {
+    std::string_view key, name, label, command;
+};
+inline constexpr std::array<ActionBind, 8> action_binds{{
+    {"first_person", "firstperson", "First person", "firstperson toggle"},
+    {"hide_hud", "hidehud", "Hide HUD", "hideui toggle"},
+    {"voice_chat", "voicechat", "Voice chat on / off", "mp voice-chat toggle"},
+    {"time_of_day", "tod", "Next time of day", "tod next"},
+    {"no_bail", "nobail", "No Bail", "nobail toggle"},
+    {"challenges", "challenges", "Show / hide challenges", "challenges toggle"},
+    {"nametags", "nametags", "Player nametags", "mp nametags toggle"},
+    {"nametag_dots", "nametagdots", "Player dots", "mp nametag-dots toggle"},
+}};
 struct ControllerBindingsModel {
     bool available{};
     bool freecam_controller{};
@@ -92,6 +109,8 @@ struct ControllerBindingsModel {
     std::uint32_t forward_velocity_combo{};
     std::uint32_t up_velocity_combo{};
     std::uint32_t offboard_up_velocity_combo{};
+    std::uint32_t vote_yes_combo{}, vote_no_combo{}; // answering a dedicated server's vote
+    std::array<std::uint32_t, action_binds.size()> action_combos{}; // by action_binds
     std::string status;
 };
 inline std::string controller_combo_label(std::uint32_t value, ControllerStyle style = ControllerStyle::xbox) {

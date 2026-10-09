@@ -356,13 +356,49 @@ int bench(const char *path) {
         return 2;
     }
     std::vector<QuantPose> poses;
+    // How far each bone is ever put from where it is measured from: the figures the reach
+    // limit (limit_bone_reach) has to leave room for.
+    std::vector<float> skater_reach, board_reach;
+    float anchor_reach{}, board_from_root{}, board_anchor_reach{};
+    const auto length_of = [](const std::array<float, 3> &v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
+    const auto between = [&](const std::array<float, 3> &a, const std::array<float, 3> &b) {
+        return length_of({a[0] - b[0], a[1] - b[1], a[2] - b[2]});
+    };
     for (;;) {
         std::uint64_t time{};
         std::uint32_t length{};
         if (!in.read(reinterpret_cast<char *>(&time), 8) || !in.read(reinterpret_cast<char *>(&length), 4) || length > 1 << 20) break;
         std::vector<std::uint8_t> raw(length);
         if (!in.read(reinterpret_cast<char *>(raw.data()), length)) break;
-        if (const auto packet = dingosdk::multiplayer::decode(raw); packet && packet->kind == PacketKind::pose) poses.push_back(quantize(packet->pose));
+        // A recording made by an earlier version: poses are laid out as they were.
+        if (raw.size() > 6) raw[4] = static_cast<std::uint8_t>(dingosdk::multiplayer::protocol_version), raw[5] = static_cast<std::uint8_t>(dingosdk::multiplayer::protocol_version >> 8);
+        if (const auto packet = dingosdk::multiplayer::decode(raw); packet && packet->kind == PacketKind::pose) {
+            poses.push_back(quantize(packet->pose));
+            const auto &pose = packet->pose;
+            skater_reach.resize(std::max(skater_reach.size(), pose.skater.size()));
+            board_reach.resize(std::max(board_reach.size(), pose.board.size()));
+            for (std::size_t i = 0; i < pose.skater.size(); ++i)
+                if (i != 1) skater_reach[i] = std::max(skater_reach[i], length_of(pose.skater[i].position));
+            if (pose.skater.size() > 1) anchor_reach = std::max(anchor_reach, between(pose.skater[1].position, pose.root.position));
+            for (std::size_t i = 0; i < pose.board.size(); ++i)
+                if (i != 0 && i != 2) board_reach[i] = std::max(board_reach[i], length_of(pose.board[i].position));
+            if (!pose.board.empty()) board_from_root = std::max(board_from_root, between(pose.board[0].position, pose.root.position));
+            if (pose.board.size() > 2) board_anchor_reach = std::max(board_anchor_reach, between(pose.board[2].position, pose.board[0].position));
+        }
+    }
+    {
+        const auto furthest = [](const std::vector<float> &reach, const char *what) {
+            std::vector<std::size_t> order(reach.size());
+            for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+            std::sort(order.begin(), order.end(), [&](auto a, auto b) { return reach[a] > reach[b]; });
+            std::cout << what << " bones furthest from their parent:";
+            for (std::size_t i = 0; i < std::min<std::size_t>(order.size(), 40); ++i) std::cout << ' ' << order[i] << '=' << reach[order[i]] << "m";
+            std::cout << '\n';
+        };
+        furthest(skater_reach, "skater");
+        furthest(board_reach, "board");
+        std::cout << "skater anchor from root " << anchor_reach << " m; board from root " << board_from_root << " m; board anchor from board "
+                  << board_anchor_reach << " m\n";
     }
     if (poses.size() < 100) {
         std::cerr << "Too few poses in " << path << '\n';

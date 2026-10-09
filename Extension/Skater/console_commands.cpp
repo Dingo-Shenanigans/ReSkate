@@ -20,6 +20,8 @@ void register_movement_commands(Commands &registry) {
          &overlay::DebugModel::no_bail, &overlay::DebugModel::no_bail_available},
         {"freecam", "debug.freecam", "Move the camera independently of the skater", Debug::set_free_camera,
          &overlay::DebugModel::free_camera, &overlay::DebugModel::camera_available},
+        {"firstperson", "debug.first_person", "See through the skater's eyes", Debug::set_first_person,
+         &overlay::DebugModel::first_person, &overlay::DebugModel::camera_available},
         {"hideui", "debug.game_ui_hidden", "Hide the game's interface", Debug::set_game_ui_hidden,
          &overlay::DebugModel::game_ui_hidden, &overlay::DebugModel::ui_available}};
     for (const auto &setting : settings) {
@@ -234,6 +236,34 @@ void register_movement_commands(Commands &registry) {
         out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
     };
     registry.add(std::move(offboard_up_bind));
+    for (const bool yes : {true, false}) {
+        auto vote_bind = action(yes ? "bind voteyes" : "bind voteno",
+            yes ? "Bind a controller combo or keyboard key to Yes in a server's vote; 0 clears the binding"
+                : "Bind a controller combo or keyboard key to No in a server's vote; 0 clears the binding", Group::movement, {mask});
+        vote_bind.inspect = [](const Model &m) {
+            return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
+        };
+        vote_bind.run = [yes](const Model &, const Values &args, const Output &out) {
+            const bool saved = set_local_vote_binding(yes, static_cast<std::uint32_t>(std::get<std::uint64_t>(args[0])));
+            out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
+        };
+        registry.add(std::move(vote_bind));
+    }
+    // The switches a player can put on a button (action_binds): each bind runs its command.
+    for (std::size_t i = 0; i < action_binds.size(); ++i) {
+        const auto &slot = action_binds[i];
+        auto entry = action("bind " + std::string(slot.name),
+            "Bind a controller combo or keyboard key to: " + std::string(slot.label) + " (" + std::string(slot.command) + "); 0 clears the binding",
+            Group::movement, {mask});
+        entry.inspect = [](const Model &m) {
+            return State{m.bindings.available, {}, "Controller bindings are unavailable.", {}, false};
+        };
+        entry.run = [i](const Model &, const Values &args, const Output &out) {
+            const bool saved = set_local_action_binding(i, static_cast<std::uint32_t>(std::get<std::uint64_t>(args[0])));
+            out(saved ? local_profile_controller_bindings().status : "error: Invalid binding or save failed.");
+        };
+        registry.add(std::move(entry));
+    }
 }
 void register_ai_commands(Commands &registry) {
     const auto ready = [](const Model &m) {

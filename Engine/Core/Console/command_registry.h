@@ -215,6 +215,8 @@ template <class Context> class Registry {
                     token += ' ';
                     token += args[index++];
                 }
+            // "toggle" on an on/off switch: the other of what it is now.
+            if (arg.type == Type::boolean && equal(token, "toggle")) token = current.value && *current.value == "1" ? "0" : "1";
             auto value = parse_value(arg.type, token);
             if (!value) {
                 output("error: Invalid " + arg.name + ": '" + token + "'. Usage: " + usage(*entry));

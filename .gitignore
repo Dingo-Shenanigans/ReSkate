@@ -3,6 +3,7 @@
 /artifacts/
 /logs/
 /.vs/
+/CMakeUserPresets.json
 __pycache__/
 *.log
 *.dll

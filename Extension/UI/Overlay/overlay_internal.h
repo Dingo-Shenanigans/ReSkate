@@ -135,6 +135,7 @@ struct State {
     std::atomic<bool> started{false};
     bool ready = false;
     bool ui_was_interactive = false;
+    std::uint32_t mapped_mouse_event = 0; // Render thread: the last queued mouse position mapped into the back buffer.
     std::atomic<bool> failed{false};
     bool win32_ready = false;
     bool dx12_ready = false;

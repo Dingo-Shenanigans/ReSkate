@@ -19,11 +19,37 @@ namespace dingosdk::server {
 struct VoteSetting {
     bool enabled{};
     unsigned percent = 60;
+    unsigned seconds{};       // how long it runs; 0: VoteSettings::seconds
+    unsigned cooldown{};      // seconds before its starter may start another vote; 0: VoteSettings::cooldown
+    unsigned min_players = 1; // players on before anyone may start it
+};
+// A vote the server's owner defines: "/vote <name> [choice]" runs `command` (any server
+// command, as the console) when it passes. In the command {map} is the current map and {arg}
+// the choice the starter picked, one of `choices`; without choices the vote takes no argument.
+struct CustomVote {
+    std::string name;        // 1-16 of a-z 0-9 - _
+    std::string description; // shown in /help and the "/" menu
+    std::string command;     // "map {map}", "noclip {arg}"...
+    std::vector<std::string> choices;
+    VoteSetting setting{true, 60};
 };
 struct VoteSettings {
     VoteSetting map, kick, time{false, 50};
+    std::vector<CustomVote> custom;
     unsigned seconds = 30;  // how long a vote runs
     unsigned cooldown = 60; // seconds before the same player may start another
+    bool starter_votes_yes = true; // whoever starts a vote has voted yes
+    // Polls: questions with up to six answers that run nothing. "off", "admins" or "everyone".
+    std::string polls = "admins";
+    unsigned poll_seconds = 60;
+};
+inline constexpr std::size_t max_announcements = 32;
+inline constexpr unsigned max_announcement_interval = 1440; // minutes
+// Messages the server posts by itself, one every `interval` minutes in turn while players are on.
+struct Announcements {
+    std::vector<std::string> messages;
+    unsigned interval{}; // minutes; 0: off
+    bool card = true;   // also as a card on each player's screen, not only in chat
 };
 // ReSkateServer.json. Every setting an admin or the console changes is saved
 // back, so a restart keeps it.
@@ -53,6 +79,9 @@ struct ServerConfig {
     // milliseconds (0: each goes at once in a packet of its own). Fewer, fuller packets:
     // less sent for the same updates, and less work sending it.
     unsigned pack_ms = 10;
+    // How many threads share the sending of each pass, this one included (1: the one thread,
+    // as before 2.0.2). 0: one for each of the machine's processors but one, up to 8.
+    unsigned threads = 0;
     // Past this many metres a player's fingers are not sent moving (0: always). A skater's
     // forty finger bones turn in nearly every pose and are half of what a pose carries.
     unsigned finger_distance = 25;
@@ -81,6 +110,9 @@ struct ServerConfig {
     // panel has eight rows). Off, nobody can be in one.
     bool parties = true;
     unsigned party_size = 8;
+    // Minutes a player may be away (not moving, talking, typing or building) before the server
+    // removes them, 1 to 1440; 0: never. Admins are never removed for it.
+    unsigned afk_kick = 0;
     // Players whose game runs fast (a speedhack; Server/speed_check.h): "warn" takes them out of
     // throwdowns and coop challenges and tells the admins, "kick" also removes them, "off" does not check.
     std::string speed_check = "warn";
@@ -103,11 +135,19 @@ struct ServerConfig {
     ObjectPlacement object_placement = ObjectPlacement::everyone;
     // Objects each player may have placed (object_placement.h); 0: no limit. Admins are not held to it.
     unsigned object_limit = default_object_limit;
+    // Players may place objects at another size than their own. Off: every player's objects
+    // are shared at their own size; admins may still resize theirs.
+    bool object_scaling = true;
+    // Players see each other's skater effects: sparks and dust where a skater touches the world,
+    // and the trails and fire of costumes and skateboards. Off: nothing of them is relayed and
+    // players' games show each other without them.
+    bool sync_effects = true;
     // Whether players may use noclip (and teleport) / No Bail / the boosts (admins always may).
     bool noclip = true, no_bail = true, boosts = true;
     // Players skate with the game's own physics tuning, not copies they edited.
     bool enforce_tuning = true;
     VoteSettings votes; // all off until the owner turns them on
+    Announcements announcements;
     ParkChoices parks{"skatepark_01", "megapark_05", "flumppark_08"};
     // Forced on every player while world_layer_sync is on: layer key -> mode.
     // Needs world-layers.json (the players' catalog) next to the server.
@@ -133,6 +173,10 @@ bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noex
 std::optional<std::uint32_t> parse_colour(std::string_view text) noexcept;
 // Why `config` cannot run, or empty.
 std::string config_error(const ServerConfig &config);
+// Why the owner's custom votes cannot run, or empty; and whether a custom vote may be called
+// `name` (not a word "/vote" already takes: map, kick, tod, yes, poll...).
+std::string custom_votes_error(const std::vector<CustomVote> &votes);
+bool custom_vote_name_free(std::string_view name) noexcept;
 // A scoring fingerprint as the config and console write it (16 hex digits), and read back
 // (nothing for text that is not one, or for 0: the game's own scoring needs no entry).
 std::string scoring_text(std::uint64_t fingerprint);

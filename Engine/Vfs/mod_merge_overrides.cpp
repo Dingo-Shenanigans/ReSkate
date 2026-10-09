@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 
@@ -16,6 +17,9 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                                        const CasStore& store, const fs::path& baseRoot,
                                        const fs::path& gameRoot, MergeReport& report) {
     AssetOverrides out;
+    // Where in `out.added` each bundle's addition of a kind and (lower-case) name is: looked up
+    // for every addition and companion, which a search of the list made quadratic.
+    std::map<std::string, std::map<std::pair<fb::AssetKind, std::string>, std::size_t>, std::less<>> addedAt;
     // Highest priority first: an asset a higher mod already changed keeps that change.
     for (const auto* mod : mods) {
         // A map's edits to the game's assets serve its own levels; asset mods
@@ -161,10 +165,10 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         std::set<fb::Guid> lost;
         const auto keep = [&](const std::string& bundle, AssetAddition addition) {
             auto& list = out.added[bundle];
-            const auto name = lower(addition.asset.name);
-            const auto holder = std::ranges::find_if(list, [&](const AssetAddition& other) {
-                return other.asset.kind == addition.asset.kind && lower(other.asset.name) == name; });
-            if (holder != list.end()) {
+            auto& index = addedAt[bundle];
+            const auto [place, fresh] = index.try_emplace({addition.asset.kind, lower(addition.asset.name)}, list.size());
+            if (!fresh) {
+                const auto holder = list.begin() + static_cast<std::ptrdiff_t>(place->second);
                 if (holder->mod != addition.mod && holder->asset.sha1 != addition.asset.sha1) {
                     auto& [count, example] = shadowed[holder->mod];
                     if (!count++) example = addition.asset.name;
@@ -204,11 +208,10 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
             // Looked up, not made: a bundle with nothing carried must stay out of `added`.
             const auto found = out.added.find(bundle);
             if (found == out.added.end()) continue;
-            const auto name = lower(companion.asset.name);
-            if (std::ranges::any_of(found->second, [&](const AssetAddition& addition) {
-                    return addition.mod == mod->name && addition.asset.kind == fb::AssetKind::ebx &&
-                           lower(addition.asset.name) == name; }))
-                keep(bundle, std::move(companion));
+            // One addition per kind and name in a bundle (keep): this mod's, or not.
+            const auto& index = addedAt[bundle];
+            const auto held = index.find({fb::AssetKind::ebx, lower(companion.asset.name)});
+            if (held != index.end() && found->second[held->second].mod == mod->name) keep(bundle, std::move(companion));
         }
         for (auto& change : changes) {
             // What the change names of the assets the mod added beside it. The mod
@@ -282,15 +285,25 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                     if (addition.mod == mod->name && addition.asset.kind == fb::AssetKind::ebx) try {
                         carried.push_back(fb::decode_cas(addition.encoded, {gameRoot}));
                     } catch (const std::exception&) {}
-            std::set<fb::Guid> taken;
+            // Each carried asset is gone through once, for all the chunks together: looking for
+            // every chunk in every asset in turn took most of a merge with many of either.
+            std::set<fb::Guid> wanted, named, taken;
+            std::vector<bool> starts(0x10000); // the two bytes a wanted chunk's id starts with
             for (const auto& chunk : newChunks) {
-                const auto& id = chunk.guid.bytes;
-                if (!taken.contains(chunk.guid) && std::ranges::any_of(carried, [&](const std::vector<std::byte>& bytes) {
-                        return std::search(bytes.begin(), bytes.end(), id.begin(), id.end()) != bytes.end(); })) {
-                    out.chunks[mod->name].push_back(chunk);
-                    taken.insert(chunk.guid);
-                }
+                wanted.insert(chunk.guid);
+                starts[std::to_integer<std::size_t>(chunk.guid.bytes[0]) << 8 |
+                       std::to_integer<std::size_t>(chunk.guid.bytes[1])] = true;
             }
+            for (const auto& bytes : carried)
+                for (std::size_t at = 0; at + sizeof(fb::Guid) <= bytes.size(); ++at) {
+                    if (!starts[std::to_integer<std::size_t>(bytes[at]) << 8 | std::to_integer<std::size_t>(bytes[at + 1])])
+                        continue;
+                    fb::Guid id;
+                    std::memcpy(id.bytes.data(), bytes.data() + at, id.bytes.size());
+                    if (wanted.contains(id)) named.insert(id);
+                }
+            for (const auto& chunk : newChunks)
+                if (named.contains(chunk.guid) && taken.insert(chunk.guid).second) out.chunks[mod->name].push_back(chunk);
             if (!taken.empty())
                 report.notes.push_back(mod->name + ": " + std::to_string(taken.size()) +
                     " added chunk(s) follow its added assets into other mods' superbundles");

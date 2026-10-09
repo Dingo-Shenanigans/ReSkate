@@ -65,6 +65,10 @@ bool local_freecam_controller();
 bool set_local_freecam_controller_binding(std::uint32_t);
 bool set_local_freecam_binding(std::uint32_t);
 bool set_local_tp_to_freecam_binding(std::uint32_t);
+// The player's binding for Yes (or No) in a dedicated server's vote; 0 clears it.
+bool set_local_vote_binding(bool yes, std::uint32_t);
+// One of action_binds (controller_bindings.h), by its place there; 0 clears it.
+bool set_local_action_binding(std::size_t index, std::uint32_t);
 bool set_local_noclip_binding(std::uint32_t);
 bool set_local_forward_velocity_binding(std::uint32_t);
 bool set_local_up_velocity_binding(std::uint32_t);

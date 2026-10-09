@@ -18,6 +18,7 @@ struct ParkEditorUI {
     std::string category, placing, feedback, queued_status;
     editor::Vec3 position{}, angles{}, drag_start{}, drag_axis{};
     editor::Quat drag_rotation{0, 0, 0, 1};
+    bool scaling_allowed{true}; // off: the server shares objects at their own size, so none is resized here
     float scale{1}, grid{.5f}, angle_snap{15}, scale_snap{.1f}, plane_height{}, distance{10},
         drag_parameter{}, drag_angle{}, drag_scale{1}, drag_gizmo_scale{1};
     ParkTransformMode mode{ParkTransformMode::move};

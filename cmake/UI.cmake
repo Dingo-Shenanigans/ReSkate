@@ -37,6 +37,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/multiplayer_session.cpp
     Extension/Trainer/trainer_page.cpp
     Extension/Trainer/trainer_view.cpp
+    Extension/HallOfMeat/hall_of_meat_overlay.cpp
 )
 target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 

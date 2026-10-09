@@ -21,6 +21,7 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - World: time of day, population, district levels, rotating parks.
   - The **Park Editor**: place, move and save objects with freecam, snapping and undo.
   - Skater options: first person, movement, boosts, noclip.
+  - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
@@ -277,6 +278,10 @@ login name.
 
 To turn it off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
 environment variable `RESKATE_CRASH_REPORTING=0`.
+
+ReSkate also keeps the game off EA's online services: the game's own crash reports, telemetry and
+remote configuration requests are turned off and blocked. Fast-travel artwork still comes from EA's
+image CDN (`dingo-dev-assets.akamaized.net`), which only downloads images.
 
 ## Third-party code
 

@@ -190,8 +190,9 @@ void register_world_commands(Commands &registry) {
     // and the rest off, or all seven go back to the level's own choice.
     static constexpr std::array<std::string_view, 8> times{"default", "morning",   "noon",       "afternoon",
                                                            "evening", "night",     "weatherday", "weathernight"};
-    auto time = argument("default|morning|noon|afternoon|evening|night|weatherday|weathernight");
+    auto time = argument("default|morning|noon|afternoon|evening|night|weatherday|weathernight|next");
     time.choices.assign(times.begin(), times.end());
+    time.choices.emplace_back("next"); // the one after the current: for a button that steps through them
     auto tod = variable("tod", "Time of day on the current map", Group::world, time);
     // The current map's time layers in slot order, or empty when it has none.
     const auto time_layers = [](const Model &m) {
@@ -219,7 +220,18 @@ void register_world_commands(Commands &registry) {
                      "Saved for this map", value != "default"};
     };
     tod.run = [time_layers](const Model &m, const Values &args, const Output &out) {
-        const auto wanted = lower(std::get<std::string>(args[0]));
+        auto wanted = lower(std::get<std::string>(args[0]));
+        if (wanted == "next") {
+            // As inspect reads it: the one layer forced on, or the level's own.
+            const auto now_layers = time_layers(m);
+            std::size_t forced{};
+            for (std::size_t i = 0; i < now_layers.size(); ++i) {
+                const auto &choice = m.world.choices[now_layers[i]];
+                if (choice == "on") forced = forced ? times.size() : i + 1;
+                else if (choice != "off") forced = times.size();
+            }
+            wanted = std::string(times[forced >= times.size() ? 1 : (forced + 1) % times.size()]);
+        }
         const auto found = std::find(times.begin(), times.end(), wanted);
         if (found == times.end()) { out("error: Choose default, morning, noon, afternoon, evening, night, weatherday or weathernight."); return; }
         const auto slot = static_cast<std::size_t>(found - times.begin());

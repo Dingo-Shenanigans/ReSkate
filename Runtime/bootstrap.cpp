@@ -6,6 +6,7 @@
 #include "Extension/Boot/steam_restart_guard.h"
 #include "Extension/Boot/user_data_redirect.h"
 #include "Extension/Boot/ea_app_block.h"
+#include "Extension/Boot/ea_service_block.h"
 #include "Extension/Assets/native_patch_support.h"
 #include "Extension/Assets/mod_layers.h"
 #include "Extension/Assets/loose_files.h"
@@ -56,11 +57,17 @@ bool initialize_bootstrap(std::uintptr_t base) {
     if (!stage(Channel::world, "Physics world pools (65000 static bodies)", ready, error)) return false;
     error.clear(); ready = start_native_route_lookahead(base, error);
     if (!stage(Channel::world, "NPC route cycle and endpoint guards", ready, error)) return false;
+    // The level unload guard (unload_guard.h) is not installed: stepping over an entry with no
+    // asset stopped the crash, but that entry had been registered when the level loaded, and
+    // left registered it kept the level from ever finishing its unload (a map change that never
+    // ends, which is worse than the crash). It goes back in once it can release what it skips.
     if (!stage(Channel::graphics, "Display startup settings", start_display_settings(base), {})) return false;
     error.clear(); ready = start_user_data_redirect(error);
     if (!stage(Channel::runtime, "Separate game user data", ready, error)) return false;
     error.clear(); ready = start_ea_app_block(error);
     if (!stage(Channel::runtime, "EA app launch block", ready, error)) return false;
+    error.clear(); ready = start_ea_service_block(error);
+    if (!stage(Channel::runtime, "EA online services block", ready, error)) return false;
     error.clear(); ready = start_steam_restart_guard(error);
     return stage(Channel::runtime, launcher::offline_mode() ? "Offline Steam" : "Steam restart guard", ready, error);
 }

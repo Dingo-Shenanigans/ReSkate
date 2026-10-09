@@ -72,7 +72,7 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     const auto save = [&](int action, std::uint32_t combo) {
         std::array<char, 512> result{};
         const auto command = std::string("bind ") +
-            (action == 1 ? "freecamcontroller " : action == 2 ? "freecam " : action == 3 ? "noclip " : action == 4 ? "forwardvelocity " : action == 5 ? "upvelocity " : action == 6 ? "tptofreecam " : "offboardupvelocity ") + std::to_string(combo);
+            (action >= 10 ? std::string(action_binds[static_cast<std::size_t>(action - 10)].name) + " " : action == 1 ? "freecamcontroller " : action == 2 ? "freecam " : action == 3 ? "noclip " : action == 4 ? "forwardvelocity " : action == 5 ? "upvelocity " : action == 6 ? "tptofreecam " : action == 8 ? "voteyes " : action == 9 ? "voteno " : "offboardupvelocity ") + std::to_string(combo);
         const bool queued = callbacks.queue_console_command(callbacks.user, command.c_str(), result.data(), result.size());
         result.back() = '\0';
         feedback(menu, result[0] ? result.data() : queued ? "Saving binding..." : "Could not queue binding.");
@@ -127,6 +127,10 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         row(5, "Up Boost", model.bindings.up_velocity_combo);
         row(6, "TP to Freecam", model.bindings.tp_to_freecam_combo);
         row(7, "Off-board Up Boost", model.bindings.offboard_up_velocity_combo);
+        row(8, "Vote yes", model.bindings.vote_yes_combo);
+        row(9, "Vote no", model.bindings.vote_no_combo);
+        for (std::size_t i = 0; i < action_binds.size(); ++i)
+            row(10 + static_cast<int>(i), action_binds[i].label.data(), model.bindings.action_combos[i]);
         ImGui::EndTable();
     }
     ImGui::EndDisabled();

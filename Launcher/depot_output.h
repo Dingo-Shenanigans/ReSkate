@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -42,9 +43,13 @@ public:
         const auto sign = trimmed.find('%');
         if (sign != std::string_view::npos && sign <= 6 && sign + 1 < trimmed.size() && trimmed[sign + 1] == ' ') {
             try {
-                percent = std::stof(std::string(trimmed.substr(0, sign)));
-                file = filename(trimmed.substr(sign + 2));
-                return;
+                std::size_t consumed{};
+                const float value = std::stof(std::string(trimmed.substr(0, sign)), &consumed);
+                if (consumed == sign && std::isfinite(value) && value >= 0.0f && value <= 100.0f) {
+                    percent = value;
+                    file = filename(trimmed.substr(sign + 2));
+                    return;
+                }
             } catch (...) {}
         }
         message = std::string(trimmed.substr(0, 160));

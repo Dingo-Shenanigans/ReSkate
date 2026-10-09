@@ -285,6 +285,12 @@ void set_native_compass_enabled(bool) noexcept {}
 void prepare_native_indicators(std::uintptr_t) noexcept {}
 void prepare_player_ui(std::uintptr_t) noexcept {}
 void prepare_remote_audio(std::uintptr_t) noexcept {}
+void prepare_effects(std::uintptr_t) noexcept {}
+std::vector<Impact> drain_impacts() { return {}; }
+void play_impact(const Impact &) noexcept {}
+void note_remote_outfit(std::uint64_t) noexcept {}
+void tick_remote_effects(std::uint64_t) noexcept {}
+void reset_effects() noexcept {}
 bool install_entity_hooks(std::uintptr_t, std::string &) noexcept { return true; }
 void publish_custom_nametags(std::uintptr_t, std::vector<NametagPlayer>, std::optional<std::array<float, 3>>, bool, bool, float, float, bool) noexcept {}
 void set_custom_nametags_enabled(bool) noexcept {}
@@ -698,12 +704,12 @@ void role_checks() {
     check(player_role(first, id(host), false) == Role{nametag_homie, "Homie"} &&
               player_role(host, id(host), true) == Role{nametag_homie, "Homie"},
           "A homie who hosts is not shown as a homie");
-    check(player_role(host, id(first), false) == Role{nametag_creator, "Creator"} &&
-              player_role(first, id(first), true) == Role{nametag_creator, "Creator"},
+    check(player_role(host, id(first), false) == Role{nametag_creator, "Content Creator"} &&
+              player_role(first, id(first), true) == Role{nametag_creator, "Content Creator"},
           "A content creator is not shown as one");
     check(player_role(host, id(second), false) == Role{nametag_developer, "Dev"},
           "A developer on every list is not shown as a developer");
-    check(player_role(host, id(third), false) == Role{nametag_creator, "Creator"},
+    check(player_role(host, id(third), false) == Role{nametag_creator, "Content Creator"},
           "A content creator who is also a homie is not shown as a creator");
     // A special tag comes before every lobby role: a Centrix player who hosts is Centrix, not Host.
     simulated_identities.insert({id(host), L::centrix});
@@ -739,20 +745,20 @@ void role_checks() {
           "A homie who turned their tag off still shows as a homie");
     const auto *shown = find_peer(first, id(host));
     check(shown && shows_items(*shown), "Turning their tag off turned a player's items off");
-    check(player_role(host, id(first), false) == Role{nametag_creator, "Creator"}, "One player's choice hid another's tag");
+    check(player_role(host, id(first), false) == Role{nametag_creator, "Content Creator"}, "One player's choice hid another's tag");
     show_own_items(false);
-    check(player_role(first, id(first), true) == Role{nametag_creator, "Creator"}, "Turning their items off hid a player's own tag");
+    check(player_role(first, id(first), true) == Role{nametag_creator, "Content Creator"}, "Turning their items off hid a player's own tag");
     show_own_items(true);
     show_own_tag(false);
     check(player_role(first, id(first), true) == Role{nametag_white, {}} &&
-              player_role(host, id(first), false) == Role{nametag_creator, "Creator"},
+              player_role(host, id(first), false) == Role{nametag_creator, "Content Creator"},
           "A player's own choice did not hide their tag from themselves, or hid it from others before they were told");
     show_own_tag(true);
     // A chat line carries its sender's role.
     check(send_chat(first, "new video is up").empty(), "A guest's chat was refused");
     sim.run(20);
     const auto said = std::find_if(host.chat.begin(), host.chat.end(), [](const auto &line) { return line.text == "new video is up"; });
-    check(said != host.chat.end() && said->color == nametag_creator && said->tag == "Creator",
+    check(said != host.chat.end() && said->color == nametag_creator && said->tag == "Content Creator",
           "A content creator's chat line does not carry their role");
 
     // None of it can be claimed. A badge goes to a Steam identity this PC is itself connected to:
@@ -805,7 +811,7 @@ void role_checks() {
     check(send_chat(third, "clip is on my channel").empty(), "A content creator's chat was refused");
     sim.run(6);
     const auto *clip = line_of(first, "clip is on my channel");
-    check(clip && clip->color == nametag_creator && clip->tag == "Creator", "A content creator's own line lost its badge");
+    check(clip && clip->color == nametag_creator && clip->tag == "Content Creator", "A content creator's own line lost its badge");
     // A player on no list stays plain whatever their own packets ask for: the styles only shape
     // what a list already gives.
     simulated_identities.erase({id(first), L::content_creator});

@@ -8,6 +8,8 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include <mutex>
+#include <map>
 #include <algorithm>
 #include <cstring>
 #include <intrin.h>
@@ -474,6 +476,22 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
         detail = "Cosmetics: peer skater and skateboard recipes applied.";
     } catch (const std::exception &e) {
         detail = std::string("Cosmetics: ") + e.what();
+        // A player whose outfit cannot be put on is left looking like this one. Say why in the
+        // log, a few times per reason: waiting for their actors is the ordinary start of every
+        // player, and a reason that goes on would otherwise fill it.
+        const std::string_view why = e.what();
+        if (why != "Waiting for the remote cosmetic actors.") {
+            static std::mutex mutex;
+            static std::map<std::string, unsigned, std::less<>> seen;
+            std::lock_guard lock(mutex);
+            if (const auto found = seen.find(why); found != seen.end() || seen.size() < 32) {
+                auto &count = found != seen.end() ? found->second : seen.emplace(why, 0U).first->second;
+                if (++count <= 3 || count % 200 == 0)
+                    logging::log(logging::Level::warning, logging::Channel::runtime,
+                                 "Multiplayer: a player's outfit could not be shown, so they look like you ({} so far): {}",
+                                 count, why);
+            }
+        }
     }
 }
 } // namespace dingosdk::multiplayer

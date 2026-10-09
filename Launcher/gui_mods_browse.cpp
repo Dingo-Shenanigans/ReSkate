@@ -583,6 +583,159 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     ImGui::EndChild();
 }
 
+namespace {
+
+// ---------------------------------------------------------------- READMEs
+
+constexpr std::uint64_t max_readme_bytes = 512 * 1024;
+
+void readme_worker(Readmes& readmes) {
+    std::atomic<bool> never{};
+    for (;;) {
+        Readmes::Job job;
+        {
+            std::unique_lock lock(readmes.mutex);
+            readmes.wake.wait(lock, [&] { return readmes.stop || !readmes.queue.empty(); });
+            if (readmes.stop) break;
+            job = std::move(readmes.queue.front());
+            readmes.queue.pop_front();
+        }
+        Readmes::Done done{job.key, {}, false};
+        try {
+            done.markdown = ts::parse_readme(fetch(job.url, max_readme_bytes, never));
+        } catch (const std::exception& failure) {
+            done.failed = true;
+            logging::write(logging::Level::warning, logging::Channel::launcher,
+                std::string("Could not get the README of ") + job.key + ": " + failure.what());
+        }
+        std::lock_guard lock(readmes.mutex);
+        readmes.done.push_back(std::move(done));
+    }
+}
+
+// The entry to draw, asked for or read the first time. Null: nothing to show.
+const Readmes::Entry* readme_for(ModsPanel& panel, const ts::Package* package, const mods::Mod* mod) {
+    auto& readmes = panel.readmes;
+    {
+        std::lock_guard lock(readmes.mutex);
+        for (auto& done : readmes.done) {
+            auto& entry = readmes.entries[done.key];
+            entry.loading = false;
+            entry.failed = done.failed;
+            entry.readme = ts::readme_lines(done.markdown);
+        }
+        readmes.done.clear();
+    }
+    // An installed mod's own README.md is what is on this PC, so it comes first.
+    if (mod) {
+        const auto key = "folder:" + mod->name + ":" + mod->version;
+        auto found = readmes.entries.find(key);
+        if (found == readmes.entries.end()) {
+            Readmes::Entry entry;
+            std::error_code error;
+            const auto file = mod->directory / "README.md";
+            if (const auto size = fs::file_size(file, error); !error && size > 0 && size <= max_readme_bytes) {
+                const auto bytes = read_bytes(file);
+                std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
+                entry.readme = ts::readme_lines(text);
+            }
+            found = readmes.entries.emplace(key, std::move(entry)).first;
+        }
+        if (!found->second.readme.lines.empty()) return &found->second;
+    }
+    if (!package) return nullptr;
+    const auto key = package->latest().full_name;
+    auto found = readmes.entries.find(key);
+    if (found == readmes.entries.end()) {
+        found = readmes.entries.emplace(key, Readmes::Entry{true, false, {}}).first;
+        {
+            std::lock_guard lock(readmes.mutex);
+            readmes.queue.push_back({key, ts::readme_url(*package)});
+        }
+        if (!readmes.worker.joinable()) readmes.worker = std::thread([&readmes] { readme_worker(readmes); });
+        readmes.wake.notify_one();
+    }
+    return &found->second;
+}
+
+} // namespace
+
+// The two columns of an overview, under its header: the README on the left, the facts in a panel
+// of their own on the right. Both are as tall as the room above the overview's last row.
+OverviewColumns overview_columns(float popup_height) {
+    OverviewColumns columns;
+    columns.gap = S(18);
+    columns.height = std::max(S(140), popup_height - ImGui::GetCursorPosY() - S(24) - ImGui::GetFrameHeight() - S(12));
+    const float room = ImGui::GetContentRegionAvail().x;
+    columns.details = std::clamp(room * 0.32f, S(220), S(320));
+    columns.readme = room - columns.details - columns.gap;
+    return columns;
+}
+
+void begin_overview_details(const char* id, const OverviewColumns& columns) {
+    ImGui::SameLine(0, columns.gap);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(rgba(31, 31, 34)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(6));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(16), S(14)));
+    ImGui::BeginChild(id, ImVec2(columns.details, columns.height),
+        ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
+    ImGui::PushTextWrapPos(0);
+}
+
+void end_overview_details() {
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+}
+
+void overview_fact(const Fonts& fonts, const char* name, const std::string& value) {
+    if (value.empty()) return;
+    field(fonts, name, value);
+    ImGui::Dummy(ImVec2(0, S(6)));
+}
+
+bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod) {
+    const auto* entry = readme_for(panel, package, mod);
+    if (!entry || (!entry->loading && !entry->failed && entry->readme.lines.empty())) return false;
+    if (entry->loading) {
+        ImGui::TextDisabled("Loading the README...");
+        return true;
+    }
+    if (entry->failed) {
+        ImGui::TextDisabled("Could not load the README. It is on the mod's Thunderstore page.");
+        return true;
+    }
+    using Kind = ts::ReadmeLine::Kind;
+    ImGui::PushTextWrapPos(0);
+    for (const auto& line : entry->readme.lines) {
+        switch (line.kind) {
+        case Kind::heading:
+            if (&line != &entry->readme.lines.front()) ImGui::Dummy(ImVec2(0, S(8)));
+            ImGui::PushFont(fonts.bold);
+            ImGui::TextUnformatted(line.text.c_str());
+            ImGui::PopFont();
+            break;
+        case Kind::bullet:
+            ImGui::Bullet();
+            ImGui::TextUnformatted(line.text.c_str());
+            break;
+        case Kind::code:
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextUnformatted(line.text.c_str());
+            ImGui::PopStyleColor();
+            break;
+        case Kind::rule: ImGui::Separator(); break;
+        case Kind::gap: ImGui::Spacing(); break;
+        case Kind::text: ImGui::TextUnformatted(line.text.c_str()); break;
+        }
+    }
+    if (entry->readme.cut) ImGui::TextDisabled("The rest is on the mod's Thunderstore page.");
+    ImGui::PopTextWrapPos();
+    return true;
+}
+
 void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool installing) {
     auto& store = panel.store;
     if (store.selected.empty()) return;
@@ -602,7 +755,7 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
         ImGui::OpenPopup("##package_overview");
         store.overview = true;
     }
-    const ImVec2 extent(std::min(S(680), size.x - S(80)), std::min(S(560), size.y - S(80)));
+    const ImVec2 extent(std::min(S(1080), size.x - S(80)), std::min(S(740), size.y - S(60)));
     ImGui::SetNextWindowPos(ImVec2((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f));
     ImGui::SetNextWindowSize(extent);
     if (!ImGui::BeginPopupModal("##package_overview", nullptr,
@@ -616,21 +769,23 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
         store.selected.clear();
         ImGui::CloseCurrentPopup();
     };
-    mod_icon(panel, &package, ImGui::GetCursorScreenPos(), S(84));
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + S(84) + S(16));
+    // The icon, with the name, who made it and its one-line description beside it.
+    const float icon = S(104), header_top = ImGui::GetCursorPosY();
+    mod_icon(panel, &package, ImGui::GetCursorScreenPos(), icon);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon + S(20));
     ImGui::BeginGroup();
-    ImGui::PushFont(fonts.heading);
     ImGui::PushTextWrapPos(0);
+    ImGui::PushFont(fonts.heading);
     ImGui::TextUnformatted(package.title().c_str());
-    ImGui::PopTextWrapPos();
     ImGui::PopFont();
     ImGui::TextDisabled("by %s", package.owner.c_str());
-    const auto facts = std::format("v{}{}  /  {} downloads  /  updated {}", version.number,
-        version.file_size ? "  /  " + size_text(version.file_size) : std::string(),
-        count_text(package.downloads), date_text(package.date_updated));
-    ImGui::TextDisabled("%s", facts.c_str());
+    if (!version.description.empty()) {
+        ImGui::Dummy(ImVec2(0, S(4)));
+        ImGui::TextUnformatted(version.description.c_str());
+    }
+    ImGui::PopTextWrapPos();
     ImGui::EndGroup();
-    ImGui::Spacing();
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), header_top + icon) + S(14));
 
     const bool tool = package.in_category("Tools") && !package.in_category("Mods");
     if (tool) {
@@ -657,24 +812,31 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
     }
     ImGui::Spacing();
 
-    ImGui::BeginChild("##overview_body",
-        ImVec2(0, std::max(S(80), extent.y - ImGui::GetCursorPosY() - S(24) - ImGui::GetFrameHeight())),
-        ImGuiChildFlags_NavFlattened);
+    ImGui::Dummy(ImVec2(0, S(6)));
+    const auto columns = overview_columns(extent.y);
+    ImGui::BeginChild("##overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
     ImGui::PushTextWrapPos(0);
     if (package.deprecated)
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
             "Deprecated: its author no longer supports it.");
     if (package.nsfw)
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning), "Marked as not safe for work.");
-    field(fonts, "DESCRIPTION", version.description);
-    if (found != installed.end())
-        field(fonts, "INSTALLED", found->second.empty() ? std::string("yes") : "v" + found->second);
-    std::string names;
-    for (const auto& category : package.categories) names += (names.empty() ? "" : ", ") + category;
-    field(fonts, "CATEGORIES", names);
-    field(fonts, "FOLDER", "Mods\\" + ts::folder_for(package.full_name));
+    if (!readme_field(fonts, panel, &package, nullptr)) ImGui::TextDisabled("This mod has no README.");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
+
+    begin_overview_details("##overview_details", columns);
+    overview_fact(fonts, "VERSION", "v" + version.number);
+    if (found != installed.end())
+        overview_fact(fonts, "INSTALLED", found->second.empty() ? std::string("yes") : "v" + found->second);
+    overview_fact(fonts, "DOWNLOADS", count_text(package.downloads));
+    overview_fact(fonts, "UPDATED", date_text(package.date_updated));
+    if (version.file_size) overview_fact(fonts, "SIZE", size_text(version.file_size));
+    std::string names;
+    for (const auto& category : package.categories) names += (names.empty() ? "" : ", ") + category;
+    overview_fact(fonts, "CATEGORIES", names);
+    overview_fact(fonts, "FOLDER", "Mods\\" + ts::folder_for(package.full_name));
+    end_overview_details();
 
     ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
     bool ticked = picked(store, package.full_name);

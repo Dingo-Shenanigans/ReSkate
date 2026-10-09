@@ -5,7 +5,11 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace dingosdk::vfs {
 namespace fs = std::filesystem;
@@ -40,6 +44,29 @@ std::vector<std::uint32_t> GameArchives::chunks_in(const std::string& directory)
         if (name == directory) chunks.push_back(chunk);
     return chunks;
 }
+
+#ifdef _WIN32
+struct GameArchives::Open {
+    std::mutex mutex;
+    std::map<std::wstring, HANDLE> files;
+    ~Open() {
+        for (const auto& [path, file] : files) CloseHandle(file);
+    }
+};
+void GameArchives::forget(const fs::path& file) const {
+    if (!open_) return;
+    std::lock_guard lock(open_->mutex);
+    if (const auto found = open_->files.find(file.wstring()); found != open_->files.end()) {
+        CloseHandle(found->second);
+        open_->files.erase(found);
+    }
+}
+#else
+struct GameArchives::Open {};
+void GameArchives::forget(const fs::path&) const {}
+#endif
+void GameArchives::keep_open() { if (!open_) open_ = std::make_shared<Open>(); }
+
 
 GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_(std::move(root)) {
     std::map<std::set<std::uint16_t>, std::vector<std::string>> byArchives;
@@ -109,6 +136,38 @@ std::vector<std::byte> GameArchives::read(const fs::path& root, const fb::CasIde
                                           std::uint32_t offset, std::uint32_t size) const {
     const auto path = root / "Win32" / fs::path(directory(location.installChunk)) /
         fs::path(archive_file(location.archive));
+#ifdef _WIN32
+    if (open_) {
+        HANDLE file{};
+        {
+            std::lock_guard lock(open_->mutex);
+            auto& held = open_->files[path.wstring()];
+            if (!held) {
+                // Shared in full: the game, a mod manager or this merge may hold, link or
+                // append to the same file meanwhile.
+                held = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (held == INVALID_HANDLE_VALUE) {
+                    open_->files.erase(path.wstring());
+                    throw std::runtime_error("Cannot open " + path_utf8(path));
+                }
+            }
+            file = held;
+        }
+        std::vector<std::byte> bytes(size);
+        // Read at the offset itself, not at a file position threads would share.
+        for (std::uint32_t done = 0; done < size;) {
+            OVERLAPPED at{};
+            at.Offset = offset + done; // an archive's payloads are addressed in 32 bits
+            if (at.Offset < offset) throw std::runtime_error("Cannot read " + path_utf8(path));
+            DWORD read{};
+            if (!ReadFile(file, bytes.data() + done, size - done, &read, &at) || !read)
+                throw std::runtime_error("Cannot read " + path_utf8(path));
+            done += read;
+        }
+        return bytes;
+    }
+#endif
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     input.seekg(static_cast<std::streamoff>(offset));

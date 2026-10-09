@@ -157,6 +157,15 @@ struct OutfitBudget {
         return ++count <= outfit_burst;
     }
 };
+// Skater effects: at most one packet per network tick, a few contacts each.
+struct EffectBudget {
+    std::uint64_t since{};
+    std::size_t packets{};
+    bool accept(std::uint64_t now) noexcept {
+        if (now < since || now - since >= 1000000) { since = now; packets = 0; }
+        return ++packets <= multiplayer_tick_rates.back() + 30U;
+    }
+};
 // Skater sound: at most one packet per network tick, a few samples each.
 struct SoundBudget {
     std::uint64_t since{};
