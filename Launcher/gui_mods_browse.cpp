@@ -192,7 +192,7 @@ std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Pa
     options.author = package.owner;
     options.require_content = true;
     return launcher_mods::install(root, archive, true, [&panel](float fraction) { panel.progress = fraction; },
-        panel.cancel, options);
+        panel.cancel, options, panel.operation.get());
 }
 
 // Search, category and the sort order, pinned packages first like the site.
@@ -314,9 +314,7 @@ std::vector<const thunderstore::Package*> updates(const Store& store, const thun
 }
 
 void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages) {
-    if (panel.installing || packages.empty()) return;
-    if (panel.worker.joinable()) panel.worker.join();
-    panel.installing = true;
+    if (packages.empty() || !begin_mod_operation(panel, launcher_mods::Operation::install)) return;
     panel.cancel = false;
     panel.progress = 0;
     panel.message.clear();
@@ -350,7 +348,6 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
         panel.finished_note = note;
         panel.finished_source.clear();
         panel.activity.clear();
-        panel.installing = false;
     });
 }
 

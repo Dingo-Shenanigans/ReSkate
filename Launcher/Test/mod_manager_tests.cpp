@@ -4,16 +4,20 @@
 #include "Engine/Vfs/mod_list.h"
 
 #include <Windows.h>
+#include <winioctl.h>
 
 #include <miniz.h>
 
 #include <cstdio>
+#include <condition_variable>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -77,9 +81,339 @@ template<class F> std::string error_of(F&& run) {
     return {};
 }
 
+// Junctions exercise the same no-follow path as symlinks, without requiring
+// Developer Mode or SeCreateSymbolicLinkPrivilege. Failure is a test failure,
+// never a silently skipped safety check.
+bool junction(const fs::path& link, const fs::path& target) {
+    fs::create_directories(link);
+    const auto handle = CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    const auto substitute = L"\\??\\" + target.wstring();
+    const auto print = target.wstring();
+    struct Mount {
+        DWORD tag{IO_REPARSE_TAG_MOUNT_POINT};
+        WORD length{}, reserved{}, substitute_offset{}, substitute_length{}, print_offset{}, print_length{};
+        wchar_t buffer[4096]{};
+    } data;
+    data.substitute_length = static_cast<WORD>(substitute.size() * sizeof(wchar_t));
+    data.print_offset = static_cast<WORD>((substitute.size() + 1) * sizeof(wchar_t));
+    data.print_length = static_cast<WORD>(print.size() * sizeof(wchar_t));
+    std::copy(substitute.begin(), substitute.end(), data.buffer);
+    std::copy(print.begin(), print.end(), data.buffer + substitute.size() + 1);
+    data.length = static_cast<WORD>(8 + data.print_offset + data.print_length + sizeof(wchar_t));
+    DWORD returned{};
+    const bool ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, &data, data.length + 8,
+        nullptr, 0, &returned, nullptr) != FALSE;
+    CloseHandle(handle);
+    return ok;
+}
+
+void reset_tests(const fs::path& fixtures, const fs::path& sources) {
+    using namespace launcher_mods;
+    const auto fixture = [&](const wchar_t* name) {
+        const auto game = fixtures / name;
+        write(game / L"Skate.exe", "game");
+        return game;
+    };
+    const auto reset = [](const fs::path& game) { return execute_factory_reset(prepare_factory_reset(game)); };
+
+    // A/B/C/K/L: both layouts individually, full coverage, preservation,
+    // idempotency and reinstall. Enabled state never narrows the reset scope.
+    for (const bool mod_data : {false, true}) {
+        const auto game = fixture(mod_data ? L"moddata" : L"legacy");
+        if (mod_data) fs::create_directories(game / L"ModData" / L"Default");
+        const auto root = mods_root(game);
+        check(root == (mod_data ? game / L"ModData" / L"Default" / L"Mods" : game / L"Mods"),
+            "Reset discovery uses the game's default data path");
+        for (const auto* name : {L"One", L"Two", L"Disabled"}) {
+            write(root / name / L"layout.toc", "toc");
+            write(root / name / L"nested" / L"assets.bin", "assets");
+        }
+        auto list = mods::scan_mods(root.parent_path());
+        list.entries.back().enabled = false;
+        mods::save_mod_order(root, list.entries);
+        write(root / mods::exclusions_file, "{}");
+        write(root / L".reskate" / L"merged" / L"asset.cas", "merged");
+        write(root / L".reskate-install" / L"pending" / L"file", "temporary");
+        write(root / L".reskate-download" / L"package.zip", "zip");
+        write(root / L"mods.json.tmp", "temporary metadata");
+        write(root / L".reskate-excluded.json.tmp", "temporary exclusions");
+        for (const auto& file : {game / L"ReSkateLauncher.exe", game / L"ReSkate.dll", game / L"Data" / L"layout.toc",
+                game / L"ReSkate.settings.json", game / L"logs" / L"launcher.log", game / L"personal.txt",
+                game / L"savegames" / L"save", game / L"steam_api64.dll"}) write(file, "preserve");
+        const auto plan = prepare_factory_reset(game);
+        check(plan.errors.empty() && plan.targets.size() == 1 && plan.mod_count == 3 && plan.estimated_bytes > 0,
+            "Preflight includes enabled, disabled, nested and generated data");
+        check(fs::exists(root / L"Disabled" / L"layout.toc"), "Preflight does not modify mod files");
+        const auto result = execute_factory_reset(plan);
+        if (!result.success) for (const auto& error : result.errors) std::cerr << error << '\n';
+        check(result.success && result.errors.empty() && result.remaining.empty() && result.removed_items > 3 &&
+                result.removed_bytes == plan.estimated_bytes && !fs::exists(root), "Full reset permanently removes the Mods tree");
+        check(read(game / L"Skate.exe") == "game" && read(game / L"Data" / L"layout.toc") == "preserve" &&
+                read(game / L"ReSkate.dll") == "preserve" && read(game / L"ReSkateLauncher.exe") == "preserve" &&
+                read(game / L"ReSkate.settings.json") == "preserve" && read(game / L"personal.txt") == "preserve" &&
+                read(game / L"logs" / L"launcher.log") == "preserve" && read(game / L"savegames" / L"save") == "preserve" &&
+                read(game / L"steam_api64.dll") == "preserve", "Game, settings, logs, saves and personal files are preserved");
+        if (mod_data) check(fs::is_directory(root.parent_path()), "ModData/Default itself is preserved");
+        const auto empty = mods::scan_mods(root.parent_path());
+        check(!empty.present && empty.entries.empty() && empty.missing.empty() && empty.excluded.empty(),
+            "Rescanning a reset installation has no stale order, exclusions or enabled mods");
+        check(reset(game).success && !fs::exists(root), "A second reset succeeds without recreating Mods");
+        check(install(root, sources / L"v2.zip") == "Cool Park" &&
+                mods::scan_mods(root.parent_path()).entries.size() == 1, "A new mod installs and is discovered after reset");
+        check(reset(game).success, "Reinstalled mods can be reset again");
+    }
+
+    // C/J/I: independent roots; one locked file must not prevent cleanup of the
+    // other root or siblings, and must never be reported as success.
+    {
+        const auto game = fixture(L"both");
+        const auto old = game / L"Mods";
+        const auto current = game / L"ModData" / L"Default" / L"Mods";
+        write(old / L"Old" / L"layout.toc", "old");
+        write(old / L"Independent" / L"layout.toc", "independent");
+        write(current / L"New" / L"layout.toc", "new");
+        const auto plan = prepare_factory_reset(game);
+        check(plan.errors.empty() && plan.targets.size() == 2 && plan.mod_count == 3,
+            "Both known managed layouts are included");
+        const auto file = old / L"Old" / L"layout.toc";
+        const auto lock = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        check(lock != INVALID_HANDLE_VALUE, "Locked-file fixture opens");
+        const auto result = execute_factory_reset(plan);
+        check(!result.success && !result.errors.empty() && !result.remaining.empty() && result.removed_items > 0 &&
+                fs::exists(file) && !fs::exists(old / L"Independent") && !fs::exists(current),
+            "Partial reset reports locked paths and continues independent safe targets");
+        if (lock != INVALID_HANDLE_VALUE) CloseHandle(lock);
+        check(reset(game).success && !fs::exists(old), "Partial cleanup can be retried after a lock is released");
+        write(old / L"Orphan" / L"layout.toc", "readonly");
+        check(SetFileAttributesW((old / L"Orphan" / L"layout.toc").c_str(), FILE_ATTRIBUTE_READONLY) != FALSE,
+            "Read-only fixture is set");
+        const auto readonly = reset(game);
+        check(!readonly.success && !readonly.errors.empty() && !readonly.remaining.empty(), "Read-only failure never claims success");
+        SetFileAttributesW((old / L"Orphan" / L"layout.toc").c_str(), FILE_ATTRIBUTE_NORMAL);
+        check(reset(game).success, "Read-only failure is retryable");
+        write(old / L"mods.json", "{}");
+        write(current / L".reskate" / L"generated", "generated");
+        check(reset(game).success && !fs::exists(old) && !fs::exists(current), "Both layouts are fully removed on success");
+    }
+
+    // D/E/F: absent/empty directories, metadata without mods and corrupt JSON.
+    {
+        const auto game = fixture(L"empty");
+        check(reset(game).success && !fs::exists(game / L"Mods") && !fs::exists(game / L"ModData"),
+            "An empty installation succeeds without creating unrelated directories");
+        const auto root = game / L"Mods";
+        fs::create_directories(root);
+        check(reset(game).success && !fs::exists(root), "An empty active Mods root is removed");
+        write(root / L"mods.json", "invalid JSON [");
+        write(root / mods::exclusions_file, "also invalid");
+        write(root / L".reskate" / L"merged", "orphan");
+        const auto plan = prepare_factory_reset(game);
+        check(plan.errors.empty() && plan.mod_count == 0 && plan.targets.size() == 1,
+            "Orphaned managed state is discovered without parsing JSON");
+        check(execute_factory_reset(plan).success && !fs::exists(root), "Malformed metadata and orphaned merge data are removed");
+        write(game / L"ModData" / L"Default" / L"Mods" / L"Only" / L"layout.toc", "mod");
+        const auto vanished = prepare_factory_reset(game);
+        fs::remove_all(game / L"ModData");
+        check(execute_factory_reset(vanished).success, "Already missing targets and layout parents are harmless");
+    }
+
+    // G: even a modified plan cannot authorise arbitrary folders or traversal.
+    {
+        const auto game = fixture(L"unsafe");
+        write(game / L"Mods" / L"One" / L"layout.toc", "safe");
+        write(game / L"personal" / L"keep", "preserve");
+        const auto plan = prepare_factory_reset(game);
+        if (plan.targets.empty()) { check(false, "Unsafe-target fixture requires a validated reset plan"); return; }
+        for (const auto& path : {fs::path(), game, game.root_path(), game / L"personal",
+                game / L"ModData" / L"Default", game / L"Mods" / L".." / L"personal"}) {
+            auto forged = plan;
+            forged.targets[0].path = path;
+            check(!execute_factory_reset(forged).success && read(game / L"personal" / L"keep") == "preserve" &&
+                    fs::exists(game / L"Mods" / L"One" / L"layout.toc"), "Unsafe reset targets are rejected without deletion");
+        }
+        for (const auto& path : {fs::path(), game.root_path(), game / L"Mods" / L".."})
+            check(!prepare_factory_reset(path).errors.empty(), "Unsafe game paths fail preflight");
+        check(!execute_factory_reset(ResetPlan{}).success, "An empty unresolved plan is rejected");
+        // A confirmation plan that is simply discarded has no side effects.
+        { const auto cancelled = prepare_factory_reset(game); check(cancelled.errors.empty(), "Cancel fixture preflights"); }
+        check(read(game / L"Mods" / L"One" / L"layout.toc") == "safe", "Discarding preflight leaves every file intact");
+        check(reset(game).success, "Safe cleanup still works after invalid requests");
+    }
+
+    // Inactive folders need ownership evidence; a folder name alone is insufficient.
+    {
+        const auto game = fixture(L"unowned");
+        write(game / L"Mods" / L"personal.txt", "preserve");
+        write(game / L"ModData" / L"Default" / L"Mods" / L"New" / L"layout.toc", "mod");
+        const auto plan = prepare_factory_reset(game);
+        check(plan.targets.size() == 1 && !plan.excluded.empty(), "Inactive unowned Mods roots are excluded and explained");
+        check(execute_factory_reset(plan).success && read(game / L"Mods" / L"personal.txt") == "preserve",
+            "Unowned inactive roots are preserved");
+        write(game / L"Mods" / L"Old" / L"LAYOUT.TOC", "mod");
+        const auto case_plan = prepare_factory_reset(game);
+        check(case_plan.targets.size() == 1 && case_plan.excluded.empty() && execute_factory_reset(case_plan).success,
+            "Inactive ownership markers follow Windows case-insensitive filename rules");
+    }
+
+    // H plus changed/new reparse points after confirmation (TOCTOU).
+    {
+        const auto external = fixtures / L"external";
+        write(external / L"keep", "outside");
+        const auto game = fixture(L"links");
+        write(game / L"Mods" / L"One" / L"layout.toc", "mod");
+        const auto link = game / L"Mods" / L"escape";
+        const bool linked = junction(link, external);
+        check(linked, "Junction escape fixture must execute (no silent skip)");
+        if (linked) {
+            const auto plan = prepare_factory_reset(game);
+            check(plan.errors.empty() && !plan.excluded.empty() && plan.estimated_bytes == 3,
+                "Preflight never counts or traverses junction targets");
+            check(execute_factory_reset(plan).success && read(external / L"keep") == "outside",
+                "Reset deletes the junction itself and preserves external content");
+        }
+        write(game / L"Mods" / L"Two" / L"layout.toc", "mod");
+        const auto before_link = prepare_factory_reset(game);
+        const bool introduced = junction(game / L"Mods" / L"late-link", external);
+        check(introduced, "New junction after preflight fixture must execute");
+        if (introduced) check(execute_factory_reset(before_link).success && read(external / L"keep") == "outside",
+            "Newly introduced junctions cannot redirect deletion");
+        write(game / L"Mods" / L"Three" / L"layout.toc", "mod");
+        const auto replaced = prepare_factory_reset(game);
+        fs::rename(game / L"Mods", game / L"original");
+        const bool root_link = junction(game / L"Mods", external);
+        check(root_link, "Changed root junction fixture must execute");
+        if (root_link) {
+            check(!execute_factory_reset(replaced).success && read(external / L"keep") == "outside" &&
+                    fs::exists(game / L"original" / L"Three" / L"layout.toc"), "A Mods root replaced by a junction is refused");
+            check(!prepare_factory_reset(game).errors.empty(), "A linked Mods root is rejected during preflight");
+            fs::remove(game / L"Mods");
+        }
+        fs::rename(game / L"original", game / L"Mods");
+        const auto changed = prepare_factory_reset(game);
+        fs::rename(game / L"Mods", game / L"original");
+        write(game / L"Mods" / L"Replacement" / L"layout.toc", "new");
+        check(!execute_factory_reset(changed).success && fs::exists(game / L"Mods" / L"Replacement" / L"layout.toc"),
+            "A different ordinary Mods root invalidates the confirmed identity");
+        check(reset(game).success, "Changed roots require a fresh plan");
+        write(game / L"Mods" / L"Pinned" / L"layout.toc", "mod");
+        const auto pinned = prepare_factory_reset(game);
+        bool rename_checked = false;
+        const auto pinned_result = execute_factory_reset(pinned, [&](float progress) {
+            if (progress >= 0 || rename_checked) return;
+            rename_checked = true;
+            check(MoveFileExW((game / L"Mods").c_str(), (game / L"moved").c_str(), 0) == FALSE,
+                "A pinned root cannot be renamed during deletion");
+            const auto writer = CreateFileW((game / L"Mods").c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            check(writer == INVALID_HANDLE_VALUE, "A pinned root denies reparse mutation through a write handle");
+            if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+            const auto image = CreateFileW((game / L"Skate.exe").c_str(), GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+            check(image == INVALID_HANDLE_VALUE, "Skate executable is held exclusively while deleting mods");
+            if (image != INVALID_HANDLE_VALUE) CloseHandle(image);
+        });
+        check(pinned_result.success && rename_checked, "Deletion exercises handle pinning against concurrent replacement");
+        const auto ancestor_game = fixture(L"linked-parent");
+        const bool ancestor = junction(ancestor_game / L"ModData", external);
+        check(ancestor, "Linked ancestor fixture must execute");
+        if (ancestor) {
+            check(!prepare_factory_reset(ancestor_game).errors.empty() && read(external / L"keep") == "outside",
+                "Reparse ancestors are refused without traversal");
+            fs::remove(ancestor_game / L"ModData");
+        }
+    }
+
+    // A long path and a hard link: no MAX_PATH failure or modification of the
+    // shared external file's attributes/content while unlinking the Mods copy.
+    {
+        const auto game = fixture(L"long");
+        const auto asset = game / L"Mods" / L"One" / std::wstring(150, L'a') / std::wstring(150, L'b') / L"asset";
+        write(fs::path(L"\\\\?\\" + asset.wstring()), "long");
+        write(game / L"Mods" / L"One" / L"layout.toc", "mod");
+        const auto external = fixtures / L"hardlink-original";
+        write(external, "preserve");
+        check(CreateHardLinkW((game / L"Mods" / L"One" / L"linked.cas").c_str(), external.c_str(), nullptr) != FALSE,
+            "Hard-link fixture opens");
+        check(reset(game).success && read(external) == "preserve", "Long paths reset and external hard-link content remains intact");
+    }
+
+    // N: real installation worker paused inside progress holds the coordinator.
+    {
+        const auto game = fixture(L"concurrency");
+        std::mutex mutex;
+        std::condition_variable wake;
+        bool entered = false, release = false;
+        std::string failure;
+        std::thread worker([&] {
+            std::atomic<bool> cancel{};
+            try {
+                launcher_mods::install(game / L"Mods", sources / L"v2.zip", false, [&](float) {
+                    std::unique_lock lock(mutex);
+                    entered = true;
+                    wake.notify_all();
+                    wake.wait(lock, [&] { return release; });
+                }, cancel);
+            } catch (const std::exception& error) { failure = error.what(); }
+        });
+        {
+            std::unique_lock lock(mutex);
+            check(wake.wait_for(lock, std::chrono::seconds(10), [&] { return entered; }), "Installation worker reaches progress");
+        }
+        check(!prepare_factory_reset(game).errors.empty(), "Factory Reset is refused while a real installation runs");
+        { std::lock_guard lock(mutex); release = true; }
+        wake.notify_all();
+        worker.join();
+        check(failure.empty(), "Concurrent installation completes normally");
+        const auto plan = prepare_factory_reset(game);
+        {
+            OperationLease resetting(Operation::reset);
+            check(static_cast<bool>(resetting), "Reset obtains the operation lease");
+            OperationLease second(Operation::reset);
+            check(!second && !execute_factory_reset(plan).success, "Two simultaneous Factory Resets are refused");
+            check(!error_of([&] { install(game / L"Mods", sources / L"v2.zip", true); }).empty(),
+                "Installation is refused during Factory Reset");
+            OperationLease launch(Operation::launcher);
+            check(!launch, "Game launch/merge is refused during reset");
+            check(execute_factory_reset(plan, {}, &resetting).success, "The lease owner can execute reset");
+        }
+        check(!OperationLease::busy(), "Operation lease is released after completion");
+    }
+
+    // A real process with the game's executable name, launched independently
+    // of the UI. It is this test binary's wait-only fixture mode, never Skate.
+    {
+        const auto game = fixture(L"running");
+        write(game / L"Mods" / L"One" / L"layout.toc", "mod");
+        const auto plan = prepare_factory_reset(game);
+        wchar_t executable[32768]{};
+        GetModuleFileNameW(nullptr, executable, 32768);
+        fs::copy_file(executable, game / L"Skate.exe", fs::copy_options::overwrite_existing);
+        auto command = L"\"" + (game / L"Skate.exe").wstring() + L"\" --reset-game-fixture";
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        const bool started = CreateProcessW((game / L"Skate.exe").c_str(), command.data(), nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, game.c_str(), &startup, &process) != FALSE;
+        check(started, "Externally launched Skate-name process fixture starts");
+        if (started) {
+            check(!factory_reset_blocker().empty() && !prepare_factory_reset(game).errors.empty() &&
+                    !execute_factory_reset(plan).success && fs::exists(game / L"Mods" / L"One" / L"layout.toc"),
+                "A running game outside the launcher blocks preflight and execution");
+            TerminateProcess(process.hProcess, 0);
+            WaitForSingleObject(process.hProcess, 10000);
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+        }
+        check(reset(game).success, "Reset can proceed after the external game process closes");
+    }
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--reset-game-fixture") { Sleep(30000); return 0; }
     wchar_t temp[MAX_PATH]{};
     GetTempPathW(MAX_PATH, temp);
     const auto root = fs::path(temp) / (L"reskate-mod-manager-tests-" + std::to_wstring(GetCurrentProcessId()));
@@ -321,6 +655,8 @@ int main() {
               "Thunderstore installs refuse a package with nothing to load");
         check(install(store, sources / L"empty.zip") == "empty", "A plain install still takes a description-only mod");
     }
+
+    reset_tests(root / L"reset", sources);
 
     std::error_code ignored;
     fs::remove_all(root, ignored);

@@ -367,7 +367,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // A mod dropped on the window opens the Mods panel and installs it.
     {
         std::lock_guard lock(g_dropped_mutex);
-        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt && !mods_panel.installing) {
+        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt && !mods_panel.installing &&
+            mods_panel.reset_stage == ModsPanel::ResetStage::none && !launcher_mods::OperationLease::busy()) {
             ui.mods = true;
             mods_panel.tab = 0;
             if (!mods_panel.scanned) scan(mods_panel, launcher.session());
@@ -419,7 +420,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     const ImVec2 settings(primary.x, mods_position.y - S(14) - S(84));
     const char* label = "PLAY";
     std::string detail;
-    bool enabled = !launcher.busy();
+    bool enabled = !launcher.busy() && !mods_panel.installing && !launcher_mods::OperationLease::busy();
     bool secondary = false;
     switch (state.phase) {
     case Phase::checking: label = "CHECKING"; enabled = false; break;

@@ -30,12 +30,47 @@ void save(ModsPanel& panel) {
     }
 }
 
-// Picks up a finished install: rescan and select the new mod, or ask to replace.
+// Collects finished install/reset work on the UI thread, after worker join.
 void collect_install(ModsPanel& panel, const launcher_app::Session& session) {
-    std::lock_guard lock(panel.mutex);
-    if (!panel.finished) return;
+    {
+        std::lock_guard lock(panel.mutex);
+        if (!panel.finished) return;
+    }
+    // Join outside the mutex before releasing the lease or starting new work.
+    if (panel.worker.joinable()) panel.worker.join();
     panel.finished = false;
+    panel.installing = false;
     panel.progress = -1;
+    if (panel.reset_stage == ModsPanel::ResetStage::inspecting) {
+        panel.reset_stage = ModsPanel::ResetStage::confirming;
+        panel.reset_confirm_focus = true;
+        return;
+    }
+    panel.operation.reset();
+    if (panel.reset_stage == ModsPanel::ResetStage::deleting) {
+        panel.reset_stage = ModsPanel::ResetStage::result;
+        panel.selected = -1;
+        panel.overview = false;
+        panel.marked.clear();
+        panel.anchor.clear();
+        panel.confirm_remove.clear();
+        panel.conflict_name.clear();
+        panel.conflict_source.clear();
+        panel.finished_name.clear();
+        panel.finished_error.clear();
+        panel.finished_conflict.clear();
+        panel.finished_note.clear();
+        panel.finished_source.clear();
+        std::erase_if(panel.readmes.entries, [](const auto& entry) { return entry.first.starts_with("folder:"); });
+        scan(panel, session);
+        panel.message_error = !panel.reset_result.success;
+        panel.message = panel.reset_result.success ? "Factory Reset Complete" : "Factory Reset Incomplete";
+        logging::write(panel.message_error ? logging::Level::warning : logging::Level::info,
+            logging::Channel::launcher, panel.message);
+        for (const auto& error : panel.reset_result.errors)
+            logging::write(logging::Level::warning, logging::Channel::launcher, error);
+        return;
+    }
     if (!panel.finished_conflict.empty()) {
         panel.conflict_name = panel.finished_conflict;
         panel.conflict_source = panel.finished_source;
@@ -58,6 +93,31 @@ void collect_install(ModsPanel& panel, const launcher_app::Session& session) {
     }
     panel.message = "Installed " + panel.finished_name + ". It loads the next time Skate starts.";
     logging::write(logging::Level::info, logging::Channel::launcher, "Mod installed: " + panel.finished_name);
+}
+
+void start_reset_inspection(ModsPanel& panel, const fs::path& game) {
+    if (!begin_mod_operation(panel, launcher_mods::Operation::reset)) return;
+    panel.reset_stage = ModsPanel::ResetStage::inspecting;
+    panel.confirm_remove.clear();
+    panel.conflict_name.clear();
+    panel.conflict_source.clear();
+    panel.progress = -1;
+    panel.worker = std::thread([&panel, game] {
+        auto plan = launcher_mods::prepare_factory_reset(game, panel.operation.get());
+        std::lock_guard lock(panel.mutex);
+        panel.reset_plan = std::move(plan);
+        panel.finished = true;
+    });
+}
+
+bool destructive_button(const char* label, ImVec2 size) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(rgba(170, 28, 40)));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::ColorConvertU32ToFloat4(rgba(210, 40, 55)));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::ColorConvertU32ToFloat4(rgba(120, 20, 30)));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(rgba(255, 255, 255)));
+    const bool pressed = ImGui::Button(label, size);
+    ImGui::PopStyleColor(4);
+    return pressed;
 }
 
 // The Windows file (or folder) picker; empty when cancelled.
@@ -158,7 +218,7 @@ bool thunderstore_button(const Fonts& fonts, const char* label, float height) {
     return pressed;
 }
 
-bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
+bool rail(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, HWND window, float width,
           const std::vector<const thunderstore::Package*>& pending, bool installing) {
     const auto installed = panel.list.entries.size();
     const auto& store = panel.store;
@@ -198,12 +258,22 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
     ImGui::Dummy(ImVec2(0, S(4)));
     if (thunderstore_button(fonts, "Thunderstore##visit", S(48)))
         open_url(utf8(thunderstore::community_page(thunderstore::community())));
+    ImGui::Dummy(ImVec2(0, S(4)));
+    if (destructive_button("Factory Reset", ImVec2(-1, S(46)))) {
+        if (launcher.game() || launcher.launched()) {
+            panel.message = "Close Skate before resetting mods.";
+            panel.message_error = true;
+        } else start_reset_inspection(panel, launcher.session().paths.directory);
+    }
+    if (panel.reset_focus) { ImGui::SetKeyboardFocusHere(-1); panel.reset_focus = false; }
     ImGui::EndDisabled();
 
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(38));
+    ImGui::BeginDisabled(panel.installing);
     push_primary_button();
     if (ImGui::Button("\xe2\x86\x90  BACK", ImVec2(-1, S(34)))) leave = true;
     pop_primary_button();
+    ImGui::EndDisabled();
     return leave;
 }
 
@@ -772,11 +842,13 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     end_overview_details();
 
     ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
+    ImGui::BeginDisabled(installing);
     bool enabled = entry.enabled;
     if (ImGui::Checkbox("Loads when Skate starts", &enabled)) {
         entry.enabled = enabled;
         save(panel);
     }
+    ImGui::EndDisabled();
     ImGui::SameLine(extent.x - S(28) - S(110));
     // Escape too, and so a controller's B: the modal has no other way out but CLOSE.
     if (ImGui::Button("CLOSE", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) close();
@@ -841,6 +913,90 @@ void install_modal(const Fonts& fonts, ModsPanel& panel, ImVec2 size) {
     ImGui::End();
 }
 
+void reset_dialogs(Launcher& launcher, ModsPanel& panel, ImVec2 size) {
+    using Stage = ModsPanel::ResetStage;
+    const bool working = panel.reset_stage == Stage::inspecting || panel.reset_stage == Stage::deleting;
+    const char* title = working ? "Resetting Mods...###factory_reset"
+        : panel.reset_stage == Stage::confirming ? "Factory Reset###factory_reset"
+        : panel.reset_result.success ? "Factory Reset Complete###factory_reset" : "Factory Reset Incomplete###factory_reset";
+    if (panel.reset_stage == Stage::none) return;
+    if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
+    ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(S(620), 0));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(S(400), 0), ImVec2(S(620), size.y - S(60)));
+    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_AlwaysAutoResize)) return;
+    ImGui::PushTextWrapPos(0);
+    if (working) {
+        std::string activity;
+        { std::lock_guard lock(panel.mutex); activity = panel.activity; }
+        ImGui::TextUnformatted(panel.reset_stage == Stage::inspecting ? "Inspecting mod files..." : activity.c_str());
+        // Logical sizes include hard links and the tree can change, so display
+        // activity without promising an inaccurate percentage or cancellation.
+        ImGui::TextDisabled("Please wait%s", static_cast<int>(ImGui::GetTime() * 2) % 3 == 0 ? "."
+            : static_cast<int>(ImGui::GetTime() * 2) % 3 == 1 ? ".." : "...");
+    } else if (panel.reset_stage == Stage::confirming) {
+        ImGui::TextUnformatted("Are you sure you want to completely reset your mods?\n\n"
+            "This will permanently remove all installed mods, their configurations, generated mod data, "
+            "and temporary installation files.\n\nThis action cannot be undone.");
+        ImGui::Spacing();
+        ImGui::Text("Installed mods: %zu", panel.reset_plan.mod_count);
+        ImGui::TextWrapped("Estimated data to remove: %s (logical size; hard links may reduce freed space)",
+            size_text(panel.reset_plan.estimated_bytes).c_str());
+        ImGui::TextUnformatted("Permanently delete these directories and all their contents:");
+        for (const auto& target : panel.reset_plan.targets) ImGui::TextWrapped("%s", utf8(target.path.wstring()).c_str());
+        if (panel.reset_plan.targets.empty()) ImGui::TextDisabled("No managed Mods directories found.");
+        for (const auto& path : panel.reset_plan.excluded) ImGui::TextWrapped("Excluded: %s", path.c_str());
+        const std::string blocked = launcher.busy() || launcher.game() || launcher.launched()
+            ? "Close Skate and wait for launcher operations to finish." : std::string();
+        for (const auto& error : panel.reset_plan.errors) ImGui::TextWrapped("%s", error.c_str());
+        if (!blocked.empty()) ImGui::TextWrapped("%s", blocked.c_str());
+        const bool cancel = ImGui::Button("Cancel", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        ImGui::SetItemDefaultFocus();
+        if (panel.reset_confirm_focus) { ImGui::SetKeyboardFocusHere(-1); panel.reset_confirm_focus = false; }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(cancel || !blocked.empty() || !panel.reset_plan.errors.empty());
+        const bool confirm = destructive_button("Delete Everything", ImVec2(S(190), 0));
+        ImGui::EndDisabled();
+        if (cancel) {
+            // Cancel never invokes the cleanup service.
+            panel.operation.reset();
+            panel.reset_plan = {};
+            panel.reset_stage = Stage::none;
+            panel.reset_focus = true;
+            ImGui::CloseCurrentPopup();
+        } else if (confirm) {
+            panel.reset_stage = Stage::deleting;
+            panel.installing = true;
+            panel.activity = "Removing installed mods...";
+            panel.worker = std::thread([&panel] {
+                auto result = launcher_mods::execute_factory_reset(panel.reset_plan,
+                    [&panel](float fraction) { panel.progress = fraction; }, panel.operation.get(),
+                    [&panel](const std::string& activity) { std::lock_guard lock(panel.mutex); panel.activity = activity; });
+                std::lock_guard lock(panel.mutex);
+                panel.reset_result = std::move(result);
+                panel.finished = true;
+            });
+            ImGui::CloseCurrentPopup();
+        }
+    } else {
+        ImGui::TextUnformatted(panel.reset_result.success
+            ? "All installed mods and generated mod data have been removed successfully."
+            : "Some mod files could not be removed.");
+        for (const auto& error : panel.reset_result.errors) ImGui::TextWrapped("%s", error.c_str());
+        for (const auto& path : panel.reset_result.remaining) ImGui::TextWrapped("Remaining: %s", utf8(path.wstring()).c_str());
+        if (!panel.reset_result.success) ImGui::TextUnformatted("Resolve the reported errors, then use Factory Reset again to retry.");
+        if (ImGui::Button("Close", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            panel.reset_stage = Stage::none;
+            panel.reset_focus = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SetItemDefaultFocus();
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
+}
+
 } // namespace
 
 void refresh_mods(Launcher& launcher, ModsPanel& panel) {
@@ -863,9 +1019,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
 }
 
 void start_install(ModsPanel& panel, const fs::path& source, bool replace) {
-    if (panel.installing) return;
-    if (panel.worker.joinable()) panel.worker.join();
-    panel.installing = true;
+    if (!begin_mod_operation(panel, launcher_mods::Operation::install)) return;
     panel.cancel = false;
     panel.progress = 0;
     panel.message.clear();
@@ -879,7 +1033,7 @@ void start_install(ModsPanel& panel, const fs::path& source, bool replace) {
         std::string name, error, conflict;
         try {
             name = launcher_mods::install(root, source, replace,
-                [&panel](float fraction) { panel.progress = fraction; }, panel.cancel);
+                [&panel](float fraction) { panel.progress = fraction; }, panel.cancel, {}, panel.operation.get());
         } catch (const launcher_mods::AlreadyInstalled& existing) {
             conflict = existing.name;
         } catch (const std::exception& failure) {
@@ -892,8 +1046,22 @@ void start_install(ModsPanel& panel, const fs::path& source, bool replace) {
         panel.finished_conflict = conflict;
         panel.finished_source = source;
         panel.activity.clear();
-        panel.installing = false;
     });
+}
+
+bool begin_mod_operation(ModsPanel& panel, launcher_mods::Operation operation) {
+    if (panel.installing || panel.reset_stage != ModsPanel::ResetStage::none) return false;
+    auto lease = std::make_unique<launcher_mods::OperationLease>(operation);
+    if (!*lease) {
+        panel.message = "Another mod or launcher operation is still running. Please wait.";
+        panel.message_error = true;
+        return false;
+    }
+    if (panel.worker.joinable()) panel.worker.join();
+    panel.operation = std::move(lease);
+    panel.installing = true;
+    panel.message.clear();
+    return true;
 }
 
 // What PLAY shows instead of launching when the merge left mods out. The game
@@ -1050,7 +1218,13 @@ void mods_outdated_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, U
 void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel, HWND window) {
     const auto& session = launcher.session();
     if (!panel.scanned) scan(panel, session);
+    const bool was_resetting = panel.reset_stage == ModsPanel::ResetStage::deleting;
     collect_install(panel, session);
+    if (was_resetting && panel.reset_stage == ModsPanel::ResetStage::result) {
+        ui.mods_checked = -100;
+        ui.play_after_install = false;
+        launcher.dismiss_mod_problems();
+    }
     refresh_listing(panel, ImGui::GetTime());
     // A page, not a panel: the mod list and the Thunderstore browser both want
     // the whole window. It sits at (0, 0), so window and screen space agree.
@@ -1058,7 +1232,8 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     // Both lists draw mod icons, so both need finished ones uploaded.
     pump_icons(panel);
     auto* draw = ImGui::GetWindowDrawList();
-    const bool installing = panel.installing;
+    bool installing = panel.installing || launcher.busy() ||
+        panel.reset_stage != ModsPanel::ResetStage::none || launcher_mods::OperationLease::busy();
     hold_focus(installing);
     auto& entries = panel.list.entries;
     const auto installed = installed_versions(panel.list);
@@ -1082,8 +1257,9 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     ImGui::SetCursorPos(ImVec2(rail_x, rail_top));
     // Flattened, so a controller's D-pad crosses from the rail into the list and back.
     ImGui::BeginChild("##rail", ImVec2(rail_width, bottom - rail_top), ImGuiChildFlags_NavFlattened);
-    const bool leave = rail(fonts, panel, window, rail_width, pending, installing);
+    const bool leave = rail(launcher, fonts, panel, window, rail_width, pending, installing);
     ImGui::EndChild();
+    installing = installing || panel.installing || panel.reset_stage != ModsPanel::ResetStage::none;
 
     ImGui::SetCursorPos(ImVec2(content_x, top));
     ImGui::BeginChild("##content", ImVec2(frame.x - content_x - S(28), bottom - top), ImGuiChildFlags_NavFlattened);
@@ -1149,6 +1325,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
+        ImGui::BeginDisabled(installing);
         push_primary_button();
         if (ImGui::Button("UNINSTALL", ImVec2(S(110), 0))) {
             // Stops at the first folder that will not go: what went is gone, the rest is untouched.
@@ -1183,6 +1360,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             ImGui::CloseCurrentPopup();
         }
         pop_primary_button();
+        ImGui::EndDisabled();
         ImGui::EndPopup();
     }
     ImGui::SetNextWindowSize(ImVec2(S(440), 0));
@@ -1197,6 +1375,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
+        ImGui::BeginDisabled(installing);
         push_primary_button();
         if (ImGui::Button("REPLACE", ImVec2(S(110), 0))) {
             const auto source = panel.conflict_source;
@@ -1205,11 +1384,13 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             start_install(panel, source, true);
         }
         pop_primary_button();
+        ImGui::EndDisabled();
         ImGui::EndPopup();
     }
     g_drag_allowed = !ImGui::IsAnyItemHovered() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     ImGui::End();
-    if (installing) install_modal(fonts, panel, frame);
+    reset_dialogs(launcher, panel, frame);
+    if (panel.installing && panel.reset_stage == ModsPanel::ResetStage::none) install_modal(fonts, panel, frame);
     // collect_install at the top of this frame has already taken the result, so
     // an install that is no longer running is settled: go and play, as the
     // button that sent us here said it would.
