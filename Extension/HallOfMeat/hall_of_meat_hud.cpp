@@ -47,6 +47,8 @@ struct State {
     double heartbeat{};
     float darkness{};
     double watch_logged{};
+    std::uint32_t xray_serial{};
+    double upright_since{-1}, getting_up_at{-1}; // the live bail's skater getting up (X-ray fading out)
     std::uint32_t sounded_serial{};
     std::size_t sounded{}; // damage events of the live bail already heard
 };
@@ -325,7 +327,7 @@ void draw_grain(ImDrawList *draw, float strength) {
 
 // The original's X-ray: the picture closes in to a dark, grainy spotlight on the skater, and only
 // the bones that got hurt show through the body: warm white, the broken ones orange, red at the break.
-void draw_xray(ImDrawList *draw, const Result &r, bool show_bones, float fade, float darkness) {
+void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade, float darkness) {
     const auto display = ImGui::GetIO().DisplaySize;
     auto rig = hall_of_meat::latest_rig();
     if (rig.valid) {
@@ -371,7 +373,7 @@ void draw_xray(ImDrawList *draw, const Result &r, bool show_bones, float fade, f
         if (b.bone < broken.size()) broken[b.bone] = true;
     const bool meshes = hom_bones_ready();
     // Getting up, or the bail is over: the original's X-ray is gone (only the grade fades out).
-    if (!show_bones || hall_of_meat::rig_upright().load()) return;
+    if (bones_alpha <= 0.0f) return;
     for (int pass = 0; pass < 2; ++pass)
         for (std::size_t i = 0; i < hall_of_meat::rig_bones; ++i) {
             const float damage = r.damage[i];
@@ -383,7 +385,7 @@ void draw_xray(ImDrawList *draw, const Result &r, bool show_bones, float fade, f
                 float da{}, db{};
                 if (!projector.project(seg.a, a, da) || !projector.project(seg.b, b, db)) continue;
                 const float px = std::clamp(seg.radius * projector.focal * 2.0f / (da + db), 1.5f, 80.0f);
-                draw_bone(draw, i, a, b, px, broken[i], 1.0f, fade);
+                draw_bone(draw, i, a, b, px, broken[i], 1.0f, fade * bones_alpha);
                 continue;
             }
             // Bruised up to dislocated shows faint to full; broken in the fracture colours.
@@ -392,7 +394,7 @@ void draw_xray(ImDrawList *draw, const Result &r, bool show_bones, float fade, f
             // fracture (158, 43, 23), after its bone map; these tints give those through the map.
             const ImU32 tint = broken[i] ? IM_COL32(235, 103, 75, 255) : IM_COL32(255, 244, 246, 255);
             const auto &facing = seg.has_front && hall_of_meat::roll_from_joints().load() ? seg.front : rig.forward;
-            draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade, broken[i] ? 0.85f : 0.0f);
+            draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade * bones_alpha, broken[i] ? 0.85f : 0.0f);
         }
 }
 
@@ -534,7 +536,23 @@ void draw_hall_of_meat_hud() {
         // Darkness: deep once the body is settling (as the original reveals its X-ray), lighter mid-tumble.
         const float dark_target = live ? ((s.tracker.live().duration > 0.7f) ? 1.0f : 0.5f) : 0.0f;
         s.darkness += (dark_target - s.darkness) * std::min(1.0f, ImGui::GetIO().DeltaTime * 4.0f);
-        if (live || s.darkness > 0.02f) draw_xray(draw, r, live, live ? 1.0f : fade, s.darkness);
+        // Getting up ends the X-ray for good: once the skater has been upright for a moment the bones
+        // fade out and stay gone, however the body bends on the way up (it flickered on and off before).
+        if (live) {
+            if (r.serial != s.xray_serial) {
+                s.xray_serial = r.serial;
+                s.upright_since = s.getting_up_at = -1;
+            }
+            if (hall_of_meat::rig_upright().load()) {
+                if (s.upright_since < 0) s.upright_since = now;
+                if (s.getting_up_at < 0 && now - s.upright_since >= 0.12) s.getting_up_at = now;
+            } else {
+                s.upright_since = -1;
+            }
+        }
+        const float bones_alpha = !live ? 0.0f : s.getting_up_at < 0 ? 1.0f
+                                                 : std::clamp(1.0f - static_cast<float>(now - s.getting_up_at) / 0.25f, 0.0f, 1.0f);
+        if (live || s.darkness > 0.02f) draw_xray(draw, r, bones_alpha, live ? 1.0f : fade, s.darkness);
     }
     draw_block(draw, r, s.shown_total, fade, scale, now, s.started);
 }
