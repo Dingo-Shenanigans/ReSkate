@@ -279,6 +279,9 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     apply_guest_tools(s, p.guest_noclip, p.guest_no_bail, p.guest_boosts);
     s.enforce_tuning = p.enforce_tuning;
     s.server_votes = dedicated_host(s) ? p.server_votes : 0;
+    s.server_polls = dedicated_host(s) ? p.server_polls : 0;
+    if (dedicated_host(s)) s.server_custom_votes = p.server_custom_votes;
+    else s.server_custom_votes.clear();
     publish_chat(s); // the "/" list follows the server's votes, its players and its maps
     if (s.object_clears && *s.object_clears != p.object_clears) s.clear_pending = true;
     s.object_clears = p.object_clears;
@@ -312,13 +315,24 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     s.roster_voice_range = p.voice_range;
     s.server_chat_badge = p.chat_badge;
     s.server_chat_text = p.chat_text;
-    // The server's vote. A new one starts with no answer from this player, unless they started it.
+    // The server's vote. A new one starts with no answer from this player, unless they started
+    // it and the server counts that as a yes. A poll they started they still answer.
     if (dedicated_host(s)) {
         const auto local = s.transport.status().local_id;
-        if (p.vote.id != s.vote.id) s.vote_mine = p.vote.id && p.vote.starter == local ? 1 : 0;
+        const bool poll = p.vote.kind == server_vote_poll;
+        if (p.vote.id != s.vote.id) s.vote_mine = p.vote.id && !poll && p.vote.starter == local && p.vote.yes ? 1 : 0;
         s.vote = p.vote;
         s.vote_ends = now_us() + std::uint64_t{p.vote.seconds} * 1000000;
-        server_vote_open_flag.store(p.vote.id && p.vote.outcome == vote_running && p.vote.target != local, std::memory_order_relaxed);
+        // The Yes and No binds answer a yes/no vote; a poll is answered with the number keys, on
+        // its card or with /1, /2...
+        server_vote_open_flag.store(p.vote.id && !poll && p.vote.outcome == vote_running && p.vote.target != local,
+                                    std::memory_order_relaxed);
+        server_poll_answers_flag.store(p.vote.id && poll && p.vote.outcome == vote_running
+                                           ? static_cast<unsigned>(std::min(p.vote.answers.size(), max_vote_answers)) : 0U,
+                                       std::memory_order_relaxed);
+        if (p.announcement.id != s.announcement.id)
+            s.announcement_ends = now_us() + std::uint64_t{p.announcement.seconds} * 1000000;
+        s.announcement = p.announcement;
     }
     ++s.party_revision; // anyone's party may have changed
     // A dedicated server knows players only by the name each sent in their hello.

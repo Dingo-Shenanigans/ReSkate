@@ -126,9 +126,19 @@ struct MultiplayerVote {
     std::string label;           // "change the map to ..."
     unsigned yes{}, no{}, needed{}, seconds{}; // seconds: left of a running one
     std::uint8_t outcome{};      // 0 running, 1 passed, 2 failed, 3 cancelled
-    std::uint8_t mine{};         // this player's answer: 0 none yet, 1 yes, 2 no
+    std::uint8_t mine{};         // this player's answer: 0 none yet, 1 yes, 2 no; in a poll, 1 + the answer's index
     bool may_vote{};             // not the player a kick vote is about
     std::uint32_t yes_bind{}, no_bind{}; // the player's binds for Yes and No (controller_bindings.h), 0: none
+    // A poll: a question (`label`) with answers and a count for each, instead of yes and no.
+    bool poll{};
+    std::vector<std::string> answers;
+    std::vector<unsigned> counts;
+};
+// A dedicated server's announcement, for its card. `id` 0: none showing.
+struct MultiplayerAnnouncement {
+    std::uint32_t id{};
+    std::string text;
+    unsigned seconds{}; // how long it still shows
 };
 struct MultiplayerChat {
     bool available{};           // in a session that can carry chat
@@ -137,6 +147,7 @@ struct MultiplayerChat {
     std::vector<MultiplayerChatCommand> commands; // what "/" offers in this session
     std::vector<std::string> players, maps;       // what their arguments complete to
     MultiplayerVote vote;
+    MultiplayerAnnouncement announcement;
 };
 // A player this PC's lobbies never admit, kept in the local profile.
 struct MultiplayerBan {

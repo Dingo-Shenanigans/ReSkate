@@ -597,6 +597,52 @@ void object_codec() {
     served.vote.id = 1;
     served.vote.label.assign(max_vote_label + 1, 'a');
     check(reject(served), "An overlong vote label was encoded");
+    // A poll on the card: its question and answers, a count for each, and no yes or no.
+    served.vote = {8, server_vote_poll, vote_running, 0, 0, 0, 40, 76561198000000002ULL, 0, "Next map?",
+                   {"Grom", "San Vansterdam", "Stadium"}, {3, 1, 0}};
+    const auto polled = decode(encode(served));
+    check(polled && polled->vote == served.vote, "A server's poll failed to round-trip");
+    auto bad_poll = served;
+    bad_poll.vote.counts.pop_back();
+    check(reject(bad_poll), "A poll with a count missing was encoded");
+    bad_poll = served;
+    bad_poll.vote.answers = {"Only one"};
+    bad_poll.vote.counts = {1};
+    check(reject(bad_poll), "A poll with one answer was encoded");
+    bad_poll = served;
+    bad_poll.vote.answers[1].assign(max_vote_answer + 1, 'b');
+    check(reject(bad_poll), "An overlong poll answer was encoded");
+    bad_poll = served;
+    bad_poll.vote.answers.resize(max_vote_answers + 1, "x");
+    bad_poll.vote.counts.resize(max_vote_answers + 1);
+    check(reject(bad_poll), "A poll with seven answers was encoded");
+    bad_poll = served;
+    bad_poll.vote.kind = server_vote_map;
+    check(reject(bad_poll), "A yes/no vote with answers was encoded");
+    // Who may start polls, the owner's own votes, and an announcement ride on the roster too.
+    served.vote = {};
+    served.server_polls = static_cast<std::uint8_t>(ServerPolls::everyone);
+    served.server_custom_votes = {{"restart", "Reload the current map", {}}, {"noclip", "", {"on", "off"}}};
+    served.announcement = {4, 12, "Tournament starts in 10 minutes!"};
+    const auto extras = decode(encode(served));
+    check(extras && extras->server_polls == served.server_polls && extras->server_custom_votes == served.server_custom_votes &&
+              extras->announcement == served.announcement,
+          "Polls, custom votes or the announcement failed to round-trip");
+    auto bad_extras = served;
+    bad_extras.server_custom_votes[0].name = "Restart now";
+    check(reject(bad_extras), "A custom vote name with capitals and a space was encoded");
+    bad_extras = served;
+    bad_extras.server_custom_votes.resize(server_custom_vote_limit + 1, served.server_custom_votes[0]);
+    check(reject(bad_extras), "Too many custom votes were encoded");
+    bad_extras = served;
+    bad_extras.server_polls = 3;
+    check(reject(bad_extras), "An unknown poll setting was encoded");
+    bad_extras = served;
+    bad_extras.announcement.text = "two\nlines";
+    check(reject(bad_extras), "An announcement that is not one chat line was encoded");
+    const auto announced = encode(served);
+    for (std::size_t length = announced.size() - 40; length < announced.size(); ++length)
+        check(!decode(std::span(announced).first(length)), "A truncated roster with an announcement decoded");
 }
 void chat_codec() {
     const auto reject = [](const Packet &packet) {

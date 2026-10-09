@@ -616,9 +616,14 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.tps, 1);
         w.integer(p.chat_badge & 0xffffff, 3); // red, green, blue
         w.integer(p.chat_text & 0xffffff, 3);
+        // Short text: its length in `width` bytes, then the text.
+        const auto text = [&w](std::string_view value, unsigned width) {
+            w.integer(value.size(), width);
+            w.bytes.insert(w.bytes.end(), value.begin(), value.end());
+        };
         w.integer(p.vote.id, 4);
         if (p.vote.id) {
-            if (p.vote.label.size() > max_vote_label || p.vote.outcome > vote_cancelled) throw std::invalid_argument("Invalid server vote");
+            if (!valid_server_vote(p.vote) || p.vote.outcome > vote_cancelled) throw std::invalid_argument("Invalid server vote");
             w.integer(p.vote.kind, 1);
             w.integer(p.vote.outcome, 1);
             w.integer(p.vote.yes, 2);
@@ -629,6 +634,11 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.integer(p.vote.target, 8);
             w.integer(p.vote.label.size(), 1);
             w.bytes.insert(w.bytes.end(), p.vote.label.begin(), p.vote.label.end());
+            w.integer(p.vote.answers.size(), 1);
+            for (std::size_t i = 0; i < p.vote.answers.size(); ++i) {
+                text(p.vote.answers[i], 1);
+                w.integer(p.vote.counts[i], 2);
+            }
         }
         w.integer(static_cast<std::uint8_t>(p.object_placement), 1);
         if (!valid_object_limit(p.object_limit)) throw std::invalid_argument("Invalid object limit");
@@ -652,6 +662,23 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         if (p.server_votes > 7) throw std::invalid_argument("Invalid server votes");
         w.integer((p.guest_noclip ? 1U : 0U) | (p.guest_no_bail ? 2U : 0U) | (p.guest_boosts ? 4U : 0U) |
                       (static_cast<unsigned>(p.server_votes) << 3) | (p.enforce_tuning ? 64U : 0U), 1);
+        if (p.server_polls > static_cast<std::uint8_t>(ServerPolls::everyone) || p.server_custom_votes.size() > server_custom_vote_limit ||
+            !std::all_of(p.server_custom_votes.begin(), p.server_custom_votes.end(), [](const auto &v) { return valid_server_custom_vote(v); }))
+            throw std::invalid_argument("Invalid server votes");
+        w.integer(p.server_polls, 1);
+        w.integer(p.server_custom_votes.size(), 1);
+        for (const auto &vote : p.server_custom_votes) {
+            text(vote.name, 1);
+            text(vote.description, 1);
+            w.integer(vote.choices.size(), 1);
+            for (const auto &choice : vote.choices) text(choice, 1);
+        }
+        w.integer(p.announcement.id, 4);
+        if (p.announcement.id) {
+            if (!valid_chat_text(p.announcement.text)) throw std::invalid_argument("Invalid server announcement");
+            w.integer(p.announcement.seconds, 2);
+            text(p.announcement.text, 1);
+        }
     }
     if (p.kind == PacketKind::routes) {
         w.integer(p.members.size(), 1);
@@ -685,6 +712,14 @@ static bool read_map_label(Reader &r, std::span<const std::uint8_t> bytes, Packe
     p.map_label.assign(reinterpret_cast<const char *>(bytes.data() + r.at), static_cast<std::size_t>(length));
     r.at += static_cast<std::size_t>(length);
     return valid_map_label(p.map_label);
+}
+// Short text written by encode's `text`: nothing when it is longer than `limit` or the packet.
+static std::optional<std::string> read_text(Reader &r, std::span<const std::uint8_t> bytes, unsigned width, std::size_t limit) {
+    const auto length = r.integer(width);
+    if (length > limit || length > bytes.size() - r.at) return {};
+    std::string value(reinterpret_cast<const char *>(bytes.data() + r.at), static_cast<std::size_t>(length));
+    r.at += static_cast<std::size_t>(length);
+    return value;
 }
 std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
     try {
@@ -968,6 +1003,15 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 if (p.vote.outcome > vote_cancelled || length > max_vote_label || length > bytes.size() - r.at) return {};
                 p.vote.label.assign(reinterpret_cast<const char *>(bytes.data() + r.at), static_cast<std::size_t>(length));
                 r.at += static_cast<std::size_t>(length);
+                const auto answers = r.integer(1);
+                if (answers > max_vote_answers) return {};
+                for (std::uint64_t i = 0; i < answers; ++i) {
+                    auto answer = read_text(r, bytes, 1, max_vote_answer);
+                    if (!answer) return {};
+                    p.vote.answers.push_back(std::move(*answer));
+                    p.vote.counts.push_back(static_cast<std::uint16_t>(r.integer(2)));
+                }
+                if (!valid_server_vote(p.vote)) return {};
             }
             const auto placement = r.integer(1);
             if (!valid_object_placement(placement)) return {};
@@ -1006,6 +1050,33 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             p.guest_boosts = (tools & 4) != 0;
             p.server_votes = static_cast<std::uint8_t>((tools >> 3) & 7);
             p.enforce_tuning = (tools & 64) != 0;
+            const auto polls = r.integer(1), custom = r.integer(1);
+            if (polls > static_cast<std::uint8_t>(ServerPolls::everyone) || custom > server_custom_vote_limit) return {};
+            p.server_polls = static_cast<std::uint8_t>(polls);
+            for (std::uint64_t i = 0; i < custom; ++i) {
+                ServerCustomVote vote;
+                auto name = read_text(r, bytes, 1, server_vote_name_bytes);
+                auto description = name ? read_text(r, bytes, 1, server_vote_description_bytes) : std::nullopt;
+                if (!description) return {};
+                vote.name = std::move(*name);
+                vote.description = std::move(*description);
+                const auto choices = r.integer(1);
+                if (choices > server_vote_max_choices) return {};
+                for (std::uint64_t c = 0; c < choices; ++c) {
+                    auto choice = read_text(r, bytes, 1, server_vote_name_bytes);
+                    if (!choice) return {};
+                    vote.choices.push_back(std::move(*choice));
+                }
+                if (!valid_server_custom_vote(vote)) return {};
+                p.server_custom_votes.push_back(std::move(vote));
+            }
+            p.announcement.id = static_cast<std::uint32_t>(r.integer(4));
+            if (p.announcement.id) {
+                p.announcement.seconds = static_cast<std::uint16_t>(r.integer(2));
+                auto line = read_text(r, bytes, 1, multiplayer_chat_max_bytes);
+                if (!line || !valid_chat_text(*line)) return {};
+                p.announcement.text = std::move(*line);
+            }
             if (!valid_roster(p.members, p.capacity) || !p.distances.valid())
                 return {};
         } else if (p.kind == PacketKind::routes) {
@@ -1084,6 +1155,28 @@ bool valid_chat_text(std::string_view text) noexcept {
         at += length;
     }
     return visible;
+}
+bool valid_server_vote_name(std::string_view name) noexcept {
+    return !name.empty() && name.size() <= server_vote_name_bytes && std::all_of(name.begin(), name.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+    });
+}
+bool valid_server_custom_vote(const ServerCustomVote &vote) noexcept {
+    if (!valid_server_vote_name(vote.name) || vote.choices.size() > server_vote_max_choices) return false;
+    if (!vote.description.empty() &&
+        (vote.description.size() > server_vote_description_bytes || !valid_chat_text(vote.description)))
+        return false;
+    return std::all_of(vote.choices.begin(), vote.choices.end(), [](const std::string &c) { return valid_server_vote_name(c); });
+}
+bool valid_server_vote(const ServerVote &vote) noexcept {
+    if (vote.label.size() > max_vote_label || vote.answers.size() > max_vote_answers || vote.answers.size() != vote.counts.size())
+        return false;
+    // A poll has two answers at least; nothing else has any.
+    if ((vote.kind == server_vote_poll) != !vote.answers.empty() || (vote.kind == server_vote_poll && vote.answers.size() < 2))
+        return false;
+    return std::all_of(vote.answers.begin(), vote.answers.end(), [](const std::string &answer) {
+        return answer.size() <= max_vote_answer && valid_chat_text(answer);
+    });
 }
 bool valid_member_name(std::string_view text) noexcept {
     if (text.size() > max_member_name) return false;

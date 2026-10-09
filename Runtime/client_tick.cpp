@@ -389,6 +389,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // The switches on buttons (action_binds): each runs its console command.
     std::array<std::uint32_t, dingosdk::action_binds.size()> action_combos{};
     const bool vote_open = dingosdk::multiplayer::server_vote_open();
+    const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
     bool freecam_controller = dingosdk::local_freecam_controller();
     {
         std::lock_guard lock(r.mutex);
@@ -413,7 +414,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
-        vote_yes_combo || vote_no_combo || std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
+        vote_yes_combo || vote_no_combo || poll_answers || std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
         DingoSDKOverlayReadControllerInput(&controller);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
         if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
@@ -428,6 +429,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_yes\"}");
     if (r.vote_no_bind_latch.update(vote_no_combo, controller, !vote_open) && dingosdk::multiplayer::queue_command("vote", "no", ""))
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_no\"}");
+    // A poll's answers are on the number keys, 1 for the first: only while one is running, so
+    // the keys are the game's own the rest of the time.
+    for (unsigned answer = 0; answer < r.poll_answer_latches.size(); ++answer) {
+        const std::uint32_t key = answer < poll_answers ? dingosdk::keyboard_binding_tag | ('1' + answer) : 0U;
+        const char number[2]{static_cast<char>('1' + answer), 0};
+        if (r.poll_answer_latches[answer].update(key, controller, !poll_answers) && dingosdk::multiplayer::queue_command("vote", number, ""))
+            record("{\"event\":\"controller_binding_triggered\",\"action\":\"poll_answer\"}");
+    }
     
     if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
         if (dingosdk::set_local_freecam_controller(!freecam_controller))

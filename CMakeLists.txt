@@ -212,6 +212,20 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_ea_service_block_tests Extension/Boot/Test/ea_service_block_tests.cpp)
     target_include_directories(dingosdk_ea_service_block_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME ea_service_block COMMAND dingosdk_ea_service_block_tests)
+    # The dedicated server's host under a full server of simulated players, over a transport
+    # that is not Steam's: what its passes cost, and a hash of what it sent (not run by ctest).
+    add_executable(dingosdk_server_load_tests Server/Test/server_load_tests.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
+        Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
+        Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
+        Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp)
+    target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+    target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
 endif()
 # The route and logging tests live in the local, untracked tests/ folder.
 option(DINGOSDK_BUILD_ROUTE_TESTS "Build native route cycle regression tests" OFF)

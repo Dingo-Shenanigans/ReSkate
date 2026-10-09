@@ -470,10 +470,21 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/vote kick", "/vote kick <player>", "Start a vote to kick a player", "player"});
         if (s.server_votes & server_vote_time)
             list.push_back({"/vote tod", "/vote tod <time>", "Vote for a time of day: morning, noon, afternoon, evening, night...", "time"});
-        if (s.server_votes) {
+        for (const auto &vote : s.server_custom_votes) {
+            std::string choices;
+            for (const auto &choice : vote.choices) choices += (choices.empty() ? "" : "|") + choice;
+            list.push_back({"/vote " + vote.name, "/vote " + vote.name + (choices.empty() ? "" : " <" + choices + ">"),
+                            vote.description.empty() ? "Start a vote this server defines" : "Start a vote: " + vote.description});
+        }
+        if (s.server_votes || !s.server_custom_votes.empty()) {
             list.push_back({"/yes", "/yes", "Vote yes in the running vote"});
             list.push_back({"/no", "/no", "Vote no in the running vote"});
         }
+        if (!s.server_custom_votes.empty()) list.push_back({"/vote list", "/vote list", "This server's own votes, and what each does"});
+        const auto polls = static_cast<ServerPolls>(s.server_polls);
+        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && s.server_admin))
+            list.push_back({"/poll", "/poll <question> | <answer> | <answer>...", "Ask everyone a question, with up to six answers"});
+        if (polls != ServerPolls::off) list.push_back({"/1", "/1, /2...", "Answer the running poll"});
         if (s.server_admin) {
             list.push_back({"/msg", "/msg <player> <message>", "Admin: message a player privately", "player"});
             list.push_back({"/msg-party", "/msg-party <player> <message>", "Admin: message everyone in a player's party", "player"});
@@ -484,7 +495,11 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/tpall", "/tpall [player]", "Admin: teleport everyone to you (or to a player)", "player"});
             list.push_back({"/tphere", "/tphere <player>", "Admin: teleport a player to you", "player"});
             list.push_back({"/tod", "/tod <time>", "Admin: set the time of day", "time"});
-            list.push_back({"/votes", "/votes [map|kick|tod on|off|<percent>]", "Admin: the server's vote settings"});
+            list.push_back({"/votes", "/votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>]", "Admin: the server's vote settings"});
+            list.push_back({"/announce", "/announce <text>", "Admin: announce something to everyone, on a card on their screen"});
+            list.push_back({"/announcements", "/announcements [list|add <text>|remove <n>|interval <minutes>|off]",
+                            "Admin: the messages the server announces on a timer"});
+            list.push_back({"/poll end", "/poll end", "Admin: end the running poll now"});
             list.push_back({"/vote-cancel", "/vote-cancel", "Admin: stop the running vote"});
             list.push_back({"/map-pool", "/map-pool [add|remove <map>|clear]", "Admin: the maps players vote between and the rotation uses"});
             list.push_back({"/rotation", "/rotation [<minutes>|off]", "Admin: change the map on a timer, through the map pool"});
@@ -535,6 +550,13 @@ void publish_chat(Session &s) {
     signature.add(static_cast<std::uint64_t>(s.vote.id));
     signature.add(static_cast<std::uint64_t>(s.vote.yes) << 32 | static_cast<std::uint64_t>(s.vote.no) << 16 | s.vote.needed);
     signature.add(static_cast<std::uint64_t>(s.vote.outcome) << 40 | static_cast<std::uint64_t>(s.vote_mine) << 32 | vote_seconds);
+    for (const auto count : s.vote.counts) signature.add(static_cast<std::uint64_t>(count));
+    signature.add(static_cast<std::uint64_t>(s.server_polls));
+    for (const auto &vote : s.server_custom_votes) signature.add(vote.name);
+    // The announcement card, and the seconds it still shows.
+    const unsigned announcement_seconds = s.announcement.id && s.announcement_ends > now
+                                              ? static_cast<unsigned>((s.announcement_ends - now + 999999) / 1000000) : 0;
+    signature.add(static_cast<std::uint64_t>(s.announcement.id) << 16 | announcement_seconds);
     signature.add(static_cast<std::uint64_t>(s.chat.size()));
     if (!s.chat.empty()) {
         signature.add(s.chat.front().sequence);
@@ -567,12 +589,16 @@ void publish_chat(Session &s) {
         vote.outcome = s.vote.outcome;
         vote.mine = s.vote_mine;
         vote.may_vote = s.vote.target != s.transport.status().local_id;
+        vote.poll = s.vote.kind == server_vote_poll;
+        for (const auto &answer : s.vote.answers) vote.answers.push_back(clean_chat_text(answer));
+        vote.counts.assign(s.vote.counts.begin(), s.vote.counts.end());
         const auto binds = local_profile_controller_bindings();
         if (binds.available) {
             vote.yes_bind = binds.vote_yes_combo;
             vote.no_bind = binds.vote_no_combo;
         }
     }
+    if (dedicated && announcement_seconds) view.announcement = {s.announcement.id, clean_chat_text(s.announcement.text), announcement_seconds};
     view.lines.assign(s.chat.begin(), s.chat.end());
     // The filter masks each line once; lines leave the cache with the log.
     if (!s.chat_filter || s.chat.empty()) {

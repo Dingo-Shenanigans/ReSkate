@@ -643,6 +643,7 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
     return true;
 }
 bool server_vote_open() noexcept { return session_detail::server_vote_open_flag.load(std::memory_order_relaxed); }
+unsigned server_poll_answers() noexcept { return session_detail::server_poll_answers_flag.load(std::memory_order_relaxed); }
 std::string command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action))
         return "Multiplayer is unavailable in offline mode. Start Steam and relaunch ReSkate.";
@@ -666,8 +667,11 @@ std::string command(std::string_view action, std::string_view argument, std::str
             return result;
         }
         if (action == "vote") {
-            if (argument != "yes" && argument != "no") return "vote yes|no";
-            const auto result = cast_server_vote(s, argument == "yes");
+            // yes or no, or the number of a poll's answer
+            const bool answer = argument.size() == 1 && argument[0] >= '1' && argument[0] <= '0' + static_cast<char>(max_vote_answers);
+            if (argument != "yes" && argument != "no" && !answer) return "vote yes|no|<answer number>";
+            const auto result = answer ? answer_server_poll(s, static_cast<std::size_t>(argument[0] - '1'))
+                                       : cast_server_vote(s, argument == "yes");
             if (!result.empty()) add_chat(s, 0, "ReSkate", result);
             return result;
         }

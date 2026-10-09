@@ -225,7 +225,12 @@ std::string send_chat_command(Session &s, std::string_view typed) {
     const std::string_view sent = message.text;
     // An answer to the vote typed in chat shows on the vote card like one given there.
     if (s.vote.id && s.vote.outcome == vote_running) {
-        if (sent == "/yes" || sent == "/y" || sent == "/vote yes" || sent == "/vote y") s.vote_mine = 1;
+        if (s.vote.kind == server_vote_poll) {
+            // "/2" or "/vote 2"
+            const auto number = sent.starts_with("/vote ") ? sent.substr(6) : sent.substr(1);
+            if (number.size() == 1 && number[0] >= '1' && static_cast<std::size_t>(number[0] - '0') <= s.vote.answers.size())
+                s.vote_mine = static_cast<std::uint8_t>(number[0] - '0');
+        } else if (sent == "/yes" || sent == "/y" || sent == "/vote yes" || sent == "/vote y") s.vote_mine = 1;
         else if (sent == "/no" || sent == "/n" || sent == "/vote no" || sent == "/vote n") s.vote_mine = 2;
     }
     if (sent.starts_with("/p ") && s.local_party) {
@@ -234,8 +239,21 @@ std::string send_chat_command(Session &s, std::string_view typed) {
     }
     return {};
 }
+std::string answer_server_poll(Session &s, std::size_t answer) {
+    if (!dedicated_host(s) || !s.vote.id || s.vote.outcome != vote_running || s.vote.kind != server_vote_poll)
+        return "No poll is running.";
+    if (answer >= s.vote.answers.size()) return "The poll has " + std::to_string(s.vote.answers.size()) + " answers.";
+    if (s.vote_mine == answer + 1) return {};
+    // Sent as the chat command, as an answer to a vote is.
+    auto message = packet(s, PacketKind::chat, now_us());
+    message.text = "/" + std::to_string(answer + 1);
+    if (!send_packet(s, s.host_id, message, true, false)) return "Could not reach the server.";
+    s.vote_mine = static_cast<std::uint8_t>(answer + 1);
+    return {};
+}
 std::string cast_server_vote(Session &s, bool yes) {
     if (!dedicated_host(s) || !s.vote.id || s.vote.outcome != vote_running) return "No vote is running.";
+    if (s.vote.kind == server_vote_poll) return "This is a poll: answer it on its card, or with /1, /2...";
     if (s.vote.target == s.transport.status().local_id) return "You cannot vote on your own kick.";
     if (s.vote_mine == (yes ? 1 : 2)) return {};
     // The server takes the answer as the chat command (server_votes.cpp); it is not a chat

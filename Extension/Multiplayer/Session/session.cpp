@@ -102,6 +102,8 @@ void stop(Session &s, std::string reason) {
     set_session_tuning_enforced(false);
     set_host_physics_extras({});
     s.server_votes = 0;
+    s.server_polls = 0;
+    s.server_custom_votes.clear();
     set_session_tools_allowed(true, true, true);
     s.object_clears.reset();
     s.clear_pending = false;
@@ -164,7 +166,10 @@ void stop(Session &s, std::string reason) {
     s.vote = {};
     s.vote_ends = 0;
     s.vote_mine = 0;
+    s.announcement = {};
+    s.announcement_ends = 0;
     server_vote_open_flag.store(false, std::memory_order_relaxed);
+    server_poll_answers_flag.store(0, std::memory_order_relaxed);
     s.pose_streams.clear();
     s.pose_ack = {};
     s.pose_ack_due = false;

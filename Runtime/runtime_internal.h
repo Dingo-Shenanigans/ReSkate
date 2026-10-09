@@ -77,6 +77,8 @@ struct Runtime {
     dingosdk::ControllerComboLatch up_velocity_bind_latch;
     dingosdk::ControllerComboLatch offboard_up_velocity_bind_latch;
     dingosdk::ControllerComboLatch vote_yes_bind_latch, vote_no_bind_latch;
+    // The number keys 1 to 6, which answer a dedicated server's poll while one is running.
+    std::array<dingosdk::ControllerComboLatch, 6> poll_answer_latches;
     std::array<dingosdk::ControllerComboLatch, dingosdk::action_binds.size()> action_bind_latches;
     ULONGLONG next_offline{};
     bool transition_seen{}, initialized{}, catalog_logged{},

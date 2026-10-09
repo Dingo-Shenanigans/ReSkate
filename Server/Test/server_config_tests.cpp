@@ -42,6 +42,10 @@ int run() {
     // A setting under its old name is read, written back under its new one, and not called new.
     check(!has("players.allow_boosts") && has("players.allow_noclip"), "A renamed setting was reported as new, or a new one was not");
     check(!has("server.name") && !has("tps") && !has("votes.map"), "Settings the file had reported as new");
+    // Settings added after 2.0.0's votes: each vote's own limits, polls, custom votes, announcements.
+    check(has("votes.map.seconds") && has("votes.map.min_players") && has("votes.polls") && has("votes.custom") &&
+              has("announcements.messages") && has("announcements.interval_minutes"),
+          "The new vote and announcement settings were not reported");
     const auto written = text(file);
     check(written.find("\"enforce_tuning\"") != std::string::npos && written.find("\"seconds\"") != std::string::npos,
           "New settings not written into the file");
@@ -74,6 +78,7 @@ int run() {
         scaled.bone_scale_limit = 0.5f;
         check(config_error(scaled).find("bone_scale_limit") != std::string::npos, "A bone scale limit under 1 was accepted");
         check(has("network.pack_ms") && config.pack_ms == 10, "pack_ms is not a new setting of 10");
+        check(has("network.threads") && config.threads == 0, "threads is not a new setting of 0");
         check(has("network.finger_distance") && config.finger_distance == 25, "finger_distance is not a new setting of 25");
         check(has("network.use_steam_relay") && config.use_steam_relay, "use_steam_relay is not a new setting of true");
         ServerConfig crowd;
@@ -313,6 +318,58 @@ int run() {
     const auto odd_pool = load_config(file);
     check(odd_pool.map_pool == std::vector<std::string>{"Isle of Grom"} && odd_pool.map_rotation == 1440,
           "Bad pool entries kept, or rotation not capped");
+
+    // Each vote's own limits, polls, custom votes and announcements are kept on a rewrite.
+    check(config.votes.polls == "admins" && config.votes.poll_seconds == 60 && config.votes.starter_votes_yes &&
+              config.votes.map.min_players == 1 && config.votes.custom.empty() && config.announcements.card,
+          "The new vote settings do not start at their defaults");
+    {
+        auto voting = pool;
+        voting.votes.kick.seconds = 45;
+        voting.votes.kick.min_players = 4;
+        voting.votes.polls = "everyone";
+        voting.votes.custom = {{"restart", "Reload the current map", "map {map}", {}, {true, 70}},
+                               {"noclip", "Allow noclip", "noclip {arg}", {"on", "off"}, {false, 55, 20, 0, 3}}};
+        voting.announcements = {{"Welcome to the server!", "Join our Discord"}, 15, false};
+        check(config_error(voting).empty(), "Valid custom votes and announcements refused");
+        save_config(voting);
+        const auto back = load_config(file);
+        check(back.votes.kick.seconds == 45 && back.votes.kick.min_players == 4 && back.votes.polls == "everyone",
+              "Vote settings lost on save");
+        check(back.votes.custom.size() == 2 && back.votes.custom[0].name == "restart" && back.votes.custom[0].command == "map {map}" &&
+                  back.votes.custom[0].setting.percent == 70 && back.votes.custom[1].choices == std::vector<std::string>{"on", "off"} &&
+                  !back.votes.custom[1].setting.enabled && back.votes.custom[1].setting.seconds == 20 &&
+                  back.votes.custom[1].setting.min_players == 3,
+              "Custom votes lost on save");
+        check(back.announcements.messages == voting.announcements.messages && back.announcements.interval == 15 &&
+                  !back.announcements.card,
+              "Announcements lost on save");
+        const auto refused = [&](auto change, const char *what) {
+            auto bad = voting;
+            change(bad);
+            check(!config_error(bad).empty(), what);
+        };
+        refused([](ServerConfig &c) { c.votes.custom[0].name = "map"; }, "A custom vote named like a built-in one accepted");
+        refused([](ServerConfig &c) { c.votes.custom[0].name = "Restart!"; }, "A custom vote name with capitals and marks accepted");
+        refused([](ServerConfig &c) { c.votes.custom[0].name = "list"; }, "A custom vote named like /vote list accepted");
+        refused([](ServerConfig &c) { c.votes.custom[0].name = "2"; }, "A custom vote named like a poll answer accepted");
+        refused([](ServerConfig &c) { c.votes.custom[1].name = "restart"; }, "Two custom votes with one name accepted");
+        refused([](ServerConfig &c) { c.votes.custom[0].command.clear(); }, "A custom vote without a command accepted");
+        refused([](ServerConfig &c) { c.votes.custom[1].choices.clear(); }, "{arg} without choices accepted");
+        refused([](ServerConfig &c) { c.votes.custom[0].choices = {"a"}; }, "Choices without {arg} accepted");
+        refused([](ServerConfig &c) { c.votes.custom[1].choices = {"on now"}; }, "A choice with a space accepted");
+        refused([](ServerConfig &c) { c.announcements.messages = {std::string(201, 'a')}; }, "An announcement over one chat line accepted");
+        refused([](ServerConfig &c) { c.votes.custom.resize(17, c.votes.custom[0]); }, "More than 16 custom votes accepted");
+        // A vote written in by hand needs only its name and command; nonsense is evened out.
+        std::ofstream(file, std::ios::binary) << R"({"votes": {"polls": "sometimes", "poll_seconds": 5000,
+            "custom": [{"name": "restart", "command": "map {map}", "percent": 500}]},
+            "announcements": {"messages": ["hi", "", 3], "interval_minutes": 99999}})";
+        const auto hand = load_config(file);
+        check(hand.votes.polls == "admins" && hand.votes.poll_seconds == 600 && hand.votes.custom.size() == 1 &&
+                  hand.votes.custom[0].setting.enabled && hand.votes.custom[0].setting.percent == 100 &&
+                  hand.announcements.messages == std::vector<std::string>{"hi"} && hand.announcements.interval == 1440,
+              "A hand-written custom vote or announcement list was not read sensibly");
+    }
 
     std::filesystem::remove_all(folder);
     if (failures) return 1;
