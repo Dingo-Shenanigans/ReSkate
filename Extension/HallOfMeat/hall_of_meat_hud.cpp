@@ -324,7 +324,7 @@ void draw_grain(ImDrawList *draw, float strength) {
 
 // The original's X-ray: the picture closes in to a dark, grainy spotlight on the skater, and only
 // the bones that got hurt show through the body: warm white, the broken ones orange, red at the break.
-void draw_xray(ImDrawList *draw, const Result &r, double, float fade, float darkness) {
+void draw_xray(ImDrawList *draw, const Result &r, bool show_bones, float fade, float darkness) {
     const auto display = ImGui::GetIO().DisplaySize;
     auto rig = hall_of_meat::latest_rig();
     if (rig.valid) {
@@ -369,7 +369,8 @@ void draw_xray(ImDrawList *draw, const Result &r, double, float fade, float dark
     for (const auto &b : r.broken)
         if (b.bone < broken.size()) broken[b.bone] = true;
     const bool meshes = hom_bones_ready();
-    if (hall_of_meat::rig_upright().load()) return; // getting up: the original's X-ray is over
+    // Getting up, or the bail is over: the original's X-ray is gone (only the grade fades out).
+    if (!show_bones || hall_of_meat::rig_upright().load()) return;
     for (int pass = 0; pass < 2; ++pass)
         for (std::size_t i = 0; i < hall_of_meat::rig_bones; ++i) {
             const float damage = r.damage[i];
@@ -527,7 +528,7 @@ void draw_hall_of_meat_hud() {
         // Darkness: deep once the body is settling (as the original reveals its X-ray), lighter mid-tumble.
         const float dark_target = live ? ((s.tracker.live().duration > 0.7f) ? 1.0f : 0.5f) : 0.0f;
         s.darkness += (dark_target - s.darkness) * std::min(1.0f, ImGui::GetIO().DeltaTime * 4.0f);
-        if (live || s.darkness > 0.02f) draw_xray(draw, r, now, live ? 1.0f : fade, s.darkness);
+        if (live || s.darkness > 0.02f) draw_xray(draw, r, live, live ? 1.0f : fade, s.darkness);
     }
     draw_block(draw, r, s.shown_total, fade, scale, now, s.started);
 }

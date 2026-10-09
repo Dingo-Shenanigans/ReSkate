@@ -149,6 +149,9 @@ private:
     void track_bones(const Sample &previous, const Sample &now, double dt);
     void apply_bone_hits(const Sample &now);
     std::array<float, 19> bone_change_{}; // speed each bone lost over the last ~0.13 s
+    // The part of that loss that was the bone's own hit: in full for the bones touching the ground
+    // (the lowest), else only what it lost beyond the body as a whole (it struck something).
+    std::array<float, 19> bone_hit_{};
     double down_since_{-1}, hit_time_{-1}, upright_idle_since_{-1};
     Sample down_start_{};
     bool armed_{true}; // the skater has been on their feet since the last bail

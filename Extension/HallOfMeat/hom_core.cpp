@@ -139,6 +139,7 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
         h.back() = length(v);
     }
     bone_change_ = {};
+    bone_hit_ = {};
     if (bone_samples_ < 3) return;
     for (std::size_t i = 0; i < 19; ++i) {
         const auto &h = bone_speeds_[i];
@@ -148,6 +149,18 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
         const float change = before - h.back();
         // Teleports and respawns move the whole body at once: not a hit.
         if (change > 0 && change <= 60.0f) bone_change_[i] = change;
+    }
+    // Skate 3 damages the parts that take the impact, not every bone of a body that stops: a bone
+    // gets its whole loss only when it is down on the ground (within 0.3 m of the lowest bone),
+    // otherwise only what it lost beyond the body's mean (a limb or the head striking something).
+    {
+        float lowest = now.bone_centres[0][1], mean = 0;
+        for (std::size_t i = 0; i < 19; ++i) {
+            lowest = std::min(lowest, now.bone_centres[i][1]);
+            mean += bone_change_[i] / 19.0f;
+        }
+        for (std::size_t i = 0; i < 19; ++i)
+            bone_hit_[i] = now.bone_centres[i][1] - lowest < 0.3f ? bone_change_[i] : std::max(0.0f, bone_change_[i] - mean);
     }
     float sum = 0;
     for (std::size_t i = 0; i < 19; ++i) sum += bone_speeds_[i].back();
@@ -195,7 +208,7 @@ void Tracker::apply_bone_hits(const Sample &now) {
     if (now.time - start_.time < 0.15) return; // the wipeout's own first jolt
     const auto &list = bones();
     for (std::size_t i = 0; i < list.size() && i < 19; ++i) {
-        const float change = bone_change_[i];
+        const float change = bone_hit_[i];
         if (change <= 0) continue;
         live_.biggest_hit = std::max(live_.biggest_hit, change);
         hit_part(list[i].part, change, now.time);
@@ -246,6 +259,7 @@ bool Tracker::update(const Sample &s) {
         } else {
             bone_samples_ = 0;
             bone_change_ = {};
+            bone_hit_ = {};
         }
     }
     if (phase_ == Phase::idle) {
@@ -275,8 +289,8 @@ bool Tracker::update(const Sample &s) {
             for (const float c : bone_change_) any = std::max(any, c);
             if (off_board && (torso >= config_.hit_torso || any >= config_.hit_any)) hit_time_ = s.time;
             for (std::size_t i = 0; i < 19; ++i)
-                if (bone_change_[i] > 0 && (s.time - recent_hit_time_[i] > 3.0 || bone_change_[i] >= recent_hit_[i])) {
-                    recent_hit_[i] = bone_change_[i];
+                if (bone_hit_[i] > 0 && (s.time - recent_hit_time_[i] > 3.0 || bone_hit_[i] >= recent_hit_[i])) {
+                    recent_hit_[i] = bone_hit_[i];
                     recent_hit_time_[i] = s.time;
                 }
         }
@@ -380,7 +394,7 @@ bool Tracker::update(const Sample &s) {
         }
         // Back on the board ends it at once.
         const bool riding = s.physics_state >= 100 && s.physics_state < 300 && elapsed > 0.3;
-        const bool recovered = riding || (s.bones_valid ? (went_down_ && upright_since_ >= 0 && s.time - upright_since_ >= 0.4 && s.speed < 3.0f)
+        const bool recovered = riding || (s.bones_valid ? (went_down_ && upright_since_ >= 0 && s.time - upright_since_ >= 0.4)
                                                        : (s.physics_state != config_.wipeout_state && elapsed > 0.5 && s.speed < 2.0f));
         if (settled || recovered || elapsed > config_.max_duration) {
             if (air_start_ >= 0) live_.air_time += static_cast<float>(s.time - air_start_);
