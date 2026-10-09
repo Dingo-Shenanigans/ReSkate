@@ -266,8 +266,8 @@ environment variable `RESKATE_CRASH_REPORTING=0`.
 
 ## Third-party code
 
-ReSkate uses Dear ImGui, Microsoft Detours, RapidJSON, spdlog, SQLite, LZ4, Zstandard, miniz, bcdec and
-Valve's networking headers, and the Montserrat and Permanent Marker fonts. Versions, licenses and local
+ReSkate uses Dear ImGui, Microsoft Detours, RapidJSON, spdlog, SQLite, LZ4, Zstandard, miniz, bcdec, Opus
+and Valve's networking headers, and the Montserrat and Permanent Marker fonts. Versions, licenses and local
 patches are in [External/README.md](External/README.md). Every release ships their license files in
 `licenses/`.
 
