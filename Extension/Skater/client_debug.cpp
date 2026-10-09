@@ -7,10 +7,12 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "free_flight.h"
+#include "Engine/Game/Skater/first_person_cycle.h"
 #include "Engine/Game/Skater/velocity_boost.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include <atomic>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -255,6 +257,7 @@ constexpr std::array<const char*, 4> strength{"FirstPerson.Up", "FirstPerson.Dow
 constexpr const char* stabilize = "FirstPerson.Stabilize";
 constexpr const char* follow_flips = "FirstPerson.FollowFlips";
 constexpr const char* board_only = "FirstPerson.ThirdPersonOnFoot";
+constexpr const char* camera_cycle = "FirstPerson.CameraCycle";
 constexpr std::array<const char*, 4> steady{"FirstPerson.Smoothing", "FirstPerson.HeadPitch", "FirstPerson.HeadRoll", "FirstPerson.Bob"};
 constexpr ULONGLONG delay_ms = 750;
 
@@ -293,6 +296,7 @@ void save_debug(InteractiveDebug& debug) noexcept {
         values.emplace_back(saved::stabilize, arm.stabilize);
         values.emplace_back(saved::follow_flips, arm.follow_flips);
         values.emplace_back(saved::board_only, arm.board_only);
+        values.emplace_back(saved::camera_cycle, arm.camera_cycle);
         const std::array<float, 4> steady{arm.smoothing, arm.head_pitch, arm.head_roll, arm.bob};
         for (std::size_t i = 0; i < 4; ++i) values.emplace_back(saved::steady[i], static_cast<double>(steady[i]));
         profile_runtime::set_local_values(values);
@@ -336,6 +340,7 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         if (const auto enabled = profile_runtime::local_preference(saved::stabilize)) arm.stabilize = *enabled;
         if (const auto enabled = profile_runtime::local_preference(saved::follow_flips)) arm.follow_flips = *enabled;
         if (const auto enabled = profile_runtime::local_preference(saved::board_only)) arm.board_only = *enabled;
+        if (const auto enabled = profile_runtime::local_preference(saved::camera_cycle)) arm.camera_cycle = *enabled;
         const std::array<float*, 4> steady{&arm.smoothing, &arm.head_pitch, &arm.head_roll, &arm.bob};
         for (std::size_t i = 0; i < 4; ++i)
             if (const auto value = saved::number(saved::steady[i])) *steady[i] = *value;
@@ -423,7 +428,9 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         case Action::set_first_person_head_roll: settings.head_roll = request.value; break;
         case Action::set_first_person_bob: settings.bob = request.value; break;
         case Action::set_first_person_board_only: settings.board_only = request.enabled; break;
-        case Action::reset_first_person_arm: settings = {}; break;
+        case Action::set_first_person_camera_cycle: settings.camera_cycle = request.enabled; break;
+        // Resets the view; which steps the camera height button goes through is kept.
+        case Action::reset_first_person_arm: settings = {.camera_cycle = settings.camera_cycle}; break;
         default: break;
         }
         source_require(first_person::valid(settings), "First-person arm setting is outside its supported range.");
@@ -438,6 +445,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
             ? (settings.stabilize ? "True first person on: level horizon, steady view." : "True first person off: the view follows the raw head.")
             : request.action == Action::set_first_person_board_only
             ? (settings.board_only ? "Third person while walking; first person on the board." : "First person while walking too.")
+            : request.action == Action::set_first_person_camera_cycle
+            ? (settings.camera_cycle ? "Camera height button: high, low, first person." : "Camera height button: high and low only.")
             : "First-person settings updated.";
         return;
     }
@@ -776,6 +785,57 @@ void first_person_board_tick(SourceTrial& trial, std::uintptr_t client, bool can
         debug.first_person_retry_after = now + 500;
     }
 }
+// "First person in the camera cycle" (Engine/Game/Skater/first_person_cycle.h). The game writes
+// its camera height option on the thread that handles the button, so each tick publishes what
+// that write needs, and the next tick carries out the step it asked for.
+namespace {
+enum CycleFlag : std::uint8_t { cycle_enabled = 1, cycle_first_person = 2, cycle_can_enter = 4 };
+std::atomic<std::uint8_t> cycle_flags{}, cycle_request{};
+// When the flags were published: a tick that stopped running (loading, no local skater) leaves
+// the game's own height alone.
+std::atomic<ULONGLONG> cycle_published{};
+constexpr ULONGLONG cycle_flags_lifetime_ms = 250;
+}
+bool first_person_camera_height_write(bool high) noexcept {
+    const auto published = cycle_published.load(std::memory_order_acquire);
+    const auto flags = cycle_flags.load(std::memory_order_acquire);
+    const auto now = GetTickCount64();
+    if (now < published || now - published > cycle_flags_lifetime_ms) return high;
+    const auto write = first_person::cycle_height_write(
+        {(flags & cycle_enabled) != 0, (flags & cycle_first_person) != 0, (flags & cycle_can_enter) != 0}, high);
+    if (write.step != first_person::CycleStep::none)
+        cycle_request.store(static_cast<std::uint8_t>(write.step), std::memory_order_release);
+    return write.high;
+}
+void first_person_cycle_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
+    auto& debug = trial.debug;
+    const auto now = GetTickCount64();
+    const bool enabled = debug.first_person_settings.camera_cycle && can_control && phase &&
+        !debug.park_editor && !debug.noclip && !debug.editor_transition;
+    const auto step = static_cast<first_person::CycleStep>(cycle_request.exchange(0, std::memory_order_acq_rel));
+    if (enabled && step != first_person::CycleStep::none) {
+        // The player's own First person choice, so it replaces an on-foot hand-back.
+        debug.first_person_paused = false;
+        try {
+            debug_action(trial, client, can_control, phase,
+                {overlay::DebugAction::set_first_person, step == first_person::CycleStep::enter}, error);
+        } catch (const SourceGuard& guard) {
+            debug.status = guard.message;
+            // The press kept the low camera; the next ones switch height as the game does.
+            debug.first_person_cycle_retry_after = now + 2000;
+        } catch (...) {
+            debug.first_person_cycle_retry_after = now + 2000;
+        }
+    }
+    bool can_enter = false;
+    if (enabled && !debug.first_person && !debug.camera_owned && now >= debug.first_person_cycle_retry_after) {
+        const auto on_foot = first_person_on_foot(trial.base, client);
+        can_enter = on_foot && !*on_foot;
+    }
+    cycle_flags.store(static_cast<std::uint8_t>((enabled ? cycle_enabled : 0) | (debug.first_person ? cycle_first_person : 0) |
+        (can_enter ? cycle_can_enter : 0)), std::memory_order_release);
+    cycle_published.store(now, std::memory_order_release);
+}
 }
 }
 
@@ -797,6 +857,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     if (!debug.saved_loaded) {
         debug.saved_loaded = true;
         load_saved_debug(debug);
+        profile_runtime::set_camera_height_write_listener(&first_person_camera_height_write);
     }
     if (debug.save_pending && GetTickCount64() >= debug.save_due) save_debug(debug);
     if (debug.no_bail_restore && can_control && !debug.park_editor && GetTickCount64() >= debug.no_bail_restore_after) {
@@ -832,6 +893,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         catch (...) { debug.status = "Debug action failed; inspect the current state before retrying."; }
     }
     first_person_board_tick(trial, client, can_control, camera_phase_observed, error.value);
+    first_person_cycle_tick(trial, client, can_control, camera_phase_observed, error.value);
     // Camera ownership survives a busy tick or a failed presentation snapshot.
     // Input capture must follow the lease, not those transient model failures.
     state.free_camera_active.store(debug.camera_owned && !debug.first_person, std::memory_order_release);

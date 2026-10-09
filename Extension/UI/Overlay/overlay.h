@@ -74,6 +74,7 @@ enum class DebugAction {
     set_first_person_head_roll,
     set_first_person_bob,
     set_first_person_board_only,
+    set_first_person_camera_cycle,
     reset_first_person_arm,
     set_free_camera_fov,  // 0 = the game's own FOV
     // Keep the last action in sync with the bound in request_scheduler.h.

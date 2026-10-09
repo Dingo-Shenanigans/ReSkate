@@ -107,6 +107,9 @@ struct InteractiveDebug {
     // skater walks and takes it again once they are back on the board.
     bool first_person_paused{}, first_person_last_on_foot{};
     ULONGLONG first_person_foot_since{}, first_person_retry_after{};
+    // "First person in the camera cycle": after first person could not start, the camera height
+    // button switches height as the game does until this time.
+    ULONGLONG first_person_cycle_retry_after{};
     // FreeCamera vertical FOV (+0xac): chosen value (0 = unchanged) and the value
     // it held before first person took it, restored when first person ends.
     float first_person_fov{}, first_person_saved_fov{};
