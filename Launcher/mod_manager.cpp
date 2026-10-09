@@ -30,6 +30,9 @@ constexpr std::array<std::string_view, 2> info_markers{"manifest.json", "reskate
 // follow the mod in when it is packed one folder deeper.
 constexpr std::array<std::string_view, 4> package_files{"manifest.json", "icon.png", "readme.md", "changelog.md"};
 constexpr char no_mod[] = " does not contain a ReSkate mod (no layout.toc, reskate-levels.json or manifest.json).";
+// Hall Of Meat's assets (HallOfMeat/bones.bin, see Extension/HallOfMeat/hom_art.h) are something the game loads.
+constexpr std::string_view hall_of_meat_folder = "hallofmeat";
+constexpr std::string_view hall_of_meat_marker = "bones.bin";
 // Staging lives inside Mods so the final move is a rename on one volume; the
 // leading dot keeps the runtime from ever treating it as a mod.
 constexpr wchar_t staging_folder[] = L".reskate-install";
@@ -84,8 +87,8 @@ struct Root {
     bool content{};       // holds something the game loads
 };
 
-// The shallowest folder holding game content (layout.toc, reskate-levels.json
-// or parks/<map>.park.json), else the shallowest holding only a description.
+// The shallowest folder holding game content (layout.toc, reskate-levels.json,
+// parks/<map>.park.json or HallOfMeat/bones.bin), else the shallowest holding only a description.
 // Content wins so a package's own manifest.json at the top cannot hide a mod
 // packed one folder down.
 std::optional<Root> mod_root(const std::vector<std::string>& files) {
@@ -98,6 +101,10 @@ std::optional<Root> mod_root(const std::vector<std::string>& files) {
         bool is_content = one_of(content_markers, leaf);
         if (!is_content && lower(leaf).ends_with(".park.json") && lower(last_folder(folder)) == "parks") {
             folder.resize(folder.size() - std::string_view("parks/").size());
+            is_content = true;
+        }
+        if (!is_content && lower(leaf) == hall_of_meat_marker && lower(last_folder(folder)) == hall_of_meat_folder) {
+            folder.resize(folder.size() - hall_of_meat_folder.size() - 1);
             is_content = true;
         }
         const auto depth = static_cast<std::size_t>(std::count(folder.begin(), folder.end(), '/'));
@@ -150,8 +157,8 @@ std::string mod_name(const Root& root, const std::string& source_name, const Ins
 // refused when asked, and the author goes into manifest.json.
 void finish(const fs::path& staging, const Root& root, const std::string& source_name, const InstallOptions& options) {
     if (options.require_content && !root.content)
-        fail(source_name + " has nothing for ReSkate to load: no layout.toc, reskate-levels.json or parks folder. "
-             "Only mods built with ReSkate Studio, and park mods, can be installed.");
+        fail(source_name + " has nothing for ReSkate to load: no layout.toc, reskate-levels.json, parks or HallOfMeat folder. "
+             "Only mods built with ReSkate Studio, park mods and Hall of Meat asset packs can be installed.");
     const auto manifest = staging / mods::manifest_file;
     std::error_code error;
     if (options.author.empty() || !fs::is_regular_file(manifest, error)) return;
