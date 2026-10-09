@@ -179,7 +179,21 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
     const float vertical = static_cast<float>((now.bone_centres[4][1] - previous.bone_centres[4][1]) / dt);
     hips_vertical_ += (vertical - hips_vertical_) * std::min(1.0f, static_cast<float>(dt) * 8.0f);
     if (vertical <= -3.0f && vertical > -60.0f) fast_fall_time_ = now.time;
-    recent_peak_speed_ = std::max(body_speed_, recent_peak_speed_ - 12.0f * static_cast<float>(dt));
+    if (vertical <= -6.0f && vertical > -60.0f) hard_fall_time_ = now.time;
+    // A respawn or teleport moves the body hundreds of metres in a tick: not a speed.
+    if (body_speed_ < 80.0f) recent_peak_speed_ = std::max(body_speed_, recent_peak_speed_ - 12.0f * static_cast<float>(dt));
+    {
+        std::array<float, 3> v{};
+        for (std::size_t k = 0; k < 3; ++k) v[k] = static_cast<float>((now.bone_centres[4][k] - previous.bone_centres[4][k]) / dt);
+        const float blend = std::min(1.0f, static_cast<float>(dt) * 15.0f);
+        for (std::size_t k = 0; k < 3; ++k) {
+            const float a = static_cast<float>((v[k] - hips_velocity_[k]) / dt);
+            if (std::isfinite(a) && std::abs(a) < 500.0f) hips_accel_[k] += (a - hips_accel_[k]) * blend;
+        }
+        hips_velocity_ = v;
+        const float sideways = std::sqrt(hips_accel_[0] * hips_accel_[0] + hips_accel_[2] * hips_accel_[2]);
+        free_fall_ = hips_accel_[1] < -6.5f && hips_accel_[1] > -13.0f && sideways < 3.0f;
+    }
 }
 
 // A hit on a body part: it reaches every damage level whose impact the hit meets, and each part
@@ -285,6 +299,18 @@ bool Tracker::update(const Sample &s) {
         const bool off_board = s.physics_state == config_.wipeout_state || s.physics_state == 504;
         if (s.physics_state == 504 && have_previous_ && previous_.physics_state >= 200 && previous_.physics_state < 300) from_air_ = true;
         if (!off_board) from_air_ = false;
+        // Leaving the board (or the feet): where a crash would start from.
+        const bool was_off_board = have_previous_ && (previous_.physics_state == config_.wipeout_state || previous_.physics_state == 504);
+        // Standing or walking about off the board is not the start of anything; falling upright is.
+        if (!off_board || (s.bones_valid && s.upright && std::abs(hips_vertical_) < 1.5f)) {
+            have_offboard_start_ = false;
+        } else if (!was_off_board || !have_offboard_start_) {
+            offboard_start_ = s;
+            have_offboard_start_ = true;
+            pre_air_ = 0;
+        } else if (free_fall_ && have_previous_) {
+            pre_air_ += static_cast<float>(s.time - previous_.time);
+        }
         if (s.bones_valid && s.upright) {
             if (upright_idle_since_ < 0) upright_idle_since_ = s.time;
             if (s.time - upright_idle_since_ >= 0.3) armed_ = true;
@@ -303,6 +329,10 @@ bool Tracker::update(const Sample &s) {
             float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
             for (const float c : bone_change_) any = std::max(any, c);
             if (off_board && (torso >= config_.hit_torso || any >= config_.hit_any)) hit_time_ = s.time;
+            // A body that falls hard and smashes into something is a crash at that instant, as Skate 3
+            // starts its Hall of Meat on the bail: no waiting for it to lie flat.
+            slam_now_ = off_board && s.bones_valid && !s.upright && hard_fall_time_ >= 0 && s.time - hard_fall_time_ <= 0.3 &&
+                        (torso >= 6.0f || any >= 12.0f);
             for (std::size_t i = 0; i < 19; ++i)
                 if (bone_hit_[i] > 0 && (s.time - recent_hit_time_[i] > 3.0 || bone_hit_[i] >= recent_hit_[i])) {
                     recent_hit_[i] = bone_hit_[i];
@@ -318,9 +348,11 @@ bool Tracker::update(const Sample &s) {
         const bool came_down = !from_air_ || (fast_fall_time_ >= 0 && hit_time_ >= 0 && hit_time_ - fast_fall_time_ <= 0.6);
         const bool thrown = armed_ && grounded && stopping && came_down && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
+        const bool slammed = armed_ && slam_now_ && !thrown;
         if (wipeout) trigger_ = "wipeout state";
         else if (thrown) trigger_ = "hit and down";
-        if (wipeout || thrown) {
+        else if (slammed) trigger_ = "slam";
+        if (wipeout || thrown || slammed) {
             armed_ = false;
             hit_time_ = -1;
             down_since_ = -1;
@@ -332,13 +364,19 @@ bool Tracker::update(const Sample &s) {
             went_down_ = !s.upright;
             upright_since_ = -1;
             start_ = thrown ? down_start_ : s;
+            // The bail started where the skater left the board or their feet, if that was just now.
+            if ((thrown || slammed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
+                start_ = offboard_start_;
+                live_.air_time = pre_air_;
+            }
+            turn_ = 0;
             slow_since_ = -1;
             air_start_ = -1;
             live_.peak_speed = s.speed;
             frozen_ = false;
             still_since_ = -1;
             // The impact that showed this was a crash came before the bail was recognised: count it.
-            if (thrown) {
+            if (thrown || slammed) {
                 const auto &list = bones();
                 for (std::size_t i = 0; i < list.size() && i < 19; ++i) {
                     if (s.time - recent_hit_time_[i] > 3.0 || recent_hit_[i] <= 0) continue;
@@ -373,7 +411,10 @@ bool Tracker::update(const Sample &s) {
             // In the air: the board says so while riding; off it, the hips are rising or falling freely.
             float hips_vertical = 0;
             if (s.bones_valid && previous_.bones_valid) hips_vertical = static_cast<float>((s.bone_centres[4][1] - previous_.bone_centres[4][1]) / dt);
-            const bool flying = s.airborne || (s.bones_valid && std::abs(hips_vertical) > 1.5f);
+            (void)hips_vertical;
+            // In the air: the board says so while riding; off it, the body is in free fall (sliding
+            // down a ramp is fast and downward too, but it is not air).
+            const bool flying = s.airborne || (s.bones_valid && free_fall_);
             if (flying) {
                 if (air_start_ < 0) air_start_ = previous_.time;
             } else if (air_start_ >= 0) {
@@ -390,7 +431,9 @@ bool Tracker::update(const Sample &s) {
             while (turn > 180.0f) turn -= 360.0f;
             while (turn < -180.0f) turn += 360.0f;
             // Only while the body is really moving: a still body's heading jitters.
-            if (dt > 0 && dt < 0.25 && (s.bones_valid ? body_speed_ : s.speed) > 1.0f) live_.rotation += std::abs(turn);
+            if (dt > 0 && dt < 0.25 && (s.bones_valid ? body_speed_ : s.speed) > 1.0f) turn_ += turn;
+            // Net turn: a tumbling ragdoll's heading twitches back and forth, which must not add up.
+            live_.rotation = std::max(live_.rotation, std::abs(turn_));
             live_.duration = static_cast<float>(elapsed);
         } else if (air_start_ >= 0) {
             live_.air_time += static_cast<float>(s.time - air_start_);

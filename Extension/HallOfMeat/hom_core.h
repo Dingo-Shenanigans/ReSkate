@@ -99,9 +99,10 @@ struct Config {
     float impact_threshold = 3.5f;     // m/s lost between two ticks to count as a hit
     float hit_torso = 3.5f;             // m/s the chest or hips lose in ~0.13 s: the body hit something
     float hit_any = 9.0f;               // or any bone does (a limb slammed hard)
-    float down_time = 0.30f;            // seconds the body must be lying for an off-board bail
-    float still_speed = 0.5f;           // bones' average speed below which the body has stopped
-    float still_time = 0.5f;            // for this long: the bail's score is final
+    float down_time = 0.20f;            // seconds the body must be lying for an off-board bail
+    float still_speed = 1.2f;           // bones' average speed below which the body has stopped (a
+                                        // ragdoll at rest still twitches at up to ~1 m/s)
+    float still_time = 0.4f;            // for this long: the bail's score is final
     float settle_speed = 0.6f;         // below this for settle_time ends the bail
     float settle_time = 1.0f;
     float min_duration = 0.4f; // shorter wipeouts are not worth scoring
@@ -165,6 +166,18 @@ private:
     float hips_vertical_{}; // smoothed up/down speed of the hips (m/s)
     float recent_peak_speed_{}; // the body's top speed lately, decaying (m/s)
     double fast_fall_time_{-1}; // when the hips last fell at 3 m/s or more
+    double hard_fall_time_{-1}; // ... at 6 m/s or more
+    // The hips' velocity and smoothed acceleration: in free fall the body drops at g and keeps its
+    // sideways speed, which sliding down a ramp (also fast and downward) does not.
+    std::array<float, 3> hips_velocity_{}, hips_accel_{};
+    bool free_fall_{};
+    // Where the skater left the board (or their feet) before a crash, and the free fall since:
+    // a slam recognised on impact still counts its fall, as Skate 3's bail starts at the bail.
+    Sample offboard_start_{};
+    bool have_offboard_start_{};
+    float pre_air_{};
+    bool slam_now_{};
+    float turn_{}; // signed turn of the body during the bail (degrees); rotation is its size
     // Off the board since leaving it in the air (a dive, a spread eagle, a jump off): only a
     // falling impact makes that a crash, not the jolts of steering a glide.
     bool from_air_{};
