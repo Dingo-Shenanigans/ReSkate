@@ -3,6 +3,8 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
 #include "Extension/Trainer/trainer_page.h"
+#include "Extension/HallOfMeat/hall_of_meat_hud.h"
+#include "Extension/HallOfMeat/hom_art.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
@@ -287,8 +289,11 @@ bool setup_graphics() {
     // normally long finished by the time the first frame gets here.
     // Emotes reserve their room before the park previews build the atlas, and fill it after.
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
+    const auto hom_art_count = reserve_hom_art(*ImGui::GetIO().Fonts);
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     fill_chat_emotes(*ImGui::GetIO().Fonts);
+    fill_hom_art(*ImGui::GetIO().Fonts);
+    (void)hom_art_count;
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -452,7 +457,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool game_text_frame = game_text_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
-    const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
+    const bool perf_frame = perf_hud_pending() || trainer_hud_pending() || hall_of_meat_hud_pending();
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
@@ -521,6 +526,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
+    draw_hall_of_meat_hud();
     draw_notices();
     draw_chat();
     sync_menu_cursor(); // close buttons also change visibility, without a key message

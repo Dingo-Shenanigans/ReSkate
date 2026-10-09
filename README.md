@@ -142,6 +142,14 @@ accepts `park random` from its console or an admin.
 
 Only install mods you trust. Mods change game data, and custom scripts can run code.
 
+### Hall of Meat
+
+Skate 3's Hall of Meat: on every crash the picture closes in to a dark spotlight and the hurt and
+broken bones show through the skater, with Skate 3's score panel. It is built into `ReSkate.dll` but
+switched off until a mod provides its assets in a `HallOfMeat` folder (`bones.bin`, `art/`, `fonts/`,
+`sounds/`); turning that mod off in the **MODS** tab turns Hall of Meat off. ReSkate ships none of
+Skate 3's assets. The console's `hom status` shows the best bail. The code is in `Extension/HallOfMeat/`.
+
 ## Dedicated servers
 
 `ReSkateServer.exe` is a headless lobby that needs neither the game nor Steam installed. It is in the
