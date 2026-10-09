@@ -304,6 +304,12 @@ bool Tracker::update(const Sample &s) {
             left_board_time_ = s.time;
             left_board_from_ = previous_.physics_state;
         }
+        if (off_board && s.bones_valid && s.lying && body_speed_ > 8.0f && have_previous_) {
+            glide_time_ += static_cast<float>(s.time - previous_.time);
+            if (glide_time_ >= 0.4f) last_glide_time_ = s.time;
+        } else {
+            glide_time_ = 0;
+        }
         // Leaving the board (or the feet): where a crash would start from.
         const bool was_off_board = have_previous_ && (previous_.physics_state == config_.wipeout_state || previous_.physics_state == 504);
         // Standing or walking about off the board is not the start of anything; falling upright is.
@@ -396,6 +402,7 @@ bool Tracker::update(const Sample &s) {
             start_ = thrown ? down_start_ : s;
             // The bail started where the skater left the board or their feet, if that was just now.
             left_board_time_ = -1;
+            pending_until_ = !wipeout && last_glide_time_ >= 0 && s.time - last_glide_time_ <= 1.0 ? s.time + 0.65 : -1;
             if ((thrown || slammed || knocked || crash_landed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
                 start_ = offboard_start_;
                 live_.air_time = pre_air_;
@@ -417,7 +424,18 @@ bool Tracker::update(const Sample &s) {
             }
             recent_hit_ = {};
         }
+    } else if (have_previous_ && pending_until_ >= 0 &&
+               ((s.physics_state >= 100 && s.physics_state < 300) || (s.physics_state >= 600 && s.physics_state < 700) ||
+                (s.bones_valid && s.upright))) {
+        // The glide landed and the skater rode or stood straight on: it was no crash.
+        phase_ = Phase::idle;
+        live_ = {};
+        pending_until_ = -1;
+        last_glide_time_ = -1;
+        armed_ = true;
+        ++cancelled_;
     } else if (have_previous_) {
+        if (pending_until_ >= 0 && s.time >= pending_until_) pending_until_ = -1; // stayed down: a crash
         const double dt = s.time - previous_.time;
         const double elapsed = s.time - start_.time;
         {

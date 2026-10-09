@@ -121,6 +121,10 @@ public:
     // Returns true on the tick a bail ends (result() is then valid).
     bool update(const Sample &sample);
     Phase phase() const { return phase_; }
+    // A bail that is on screen: not one still waiting to see whether a glide's landing was a crash.
+    bool showing() const { return phase_ == Phase::bailing && pending_until_ < 0; }
+    // Bails taken back because the skater was straight back on the board or their feet.
+    int cancelled() const { return cancelled_; }
     // Why the last bail started, for the log.
     const std::string &trigger() const { return trigger_; }
     const Result &live() const { return live_; }   // the bail in progress, scored so far
@@ -178,6 +182,12 @@ private:
     bool have_offboard_start_{};
     float pre_air_{};
     bool slam_now_{};
+    // Gliding: off the board, flat out and fast for a while (skate.'s spread eagle and dive). A crash
+    // right after one waits pending_until_ to see the skater stay down: a glide lands with a jolt and
+    // puts the skater straight back on the board.
+    float glide_time_{};
+    double last_glide_time_{-1}, pending_until_{-1};
+    int cancelled_{};
     // The tick the skater came off the board (state 1xx or 2xx into 504) and from which, so the
     // crash that caused it can be recognised over the next few ticks.
     double left_board_time_{-1};

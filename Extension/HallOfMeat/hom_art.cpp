@@ -127,7 +127,10 @@ std::size_t reserve_hom_art(ImFontAtlas &atlas) noexcept {
         }
         if (SUCCEEDED(hr)) CoUninitialize();
         {
-            // Film grain for the X-ray (Skate 3 scrolls a noise texture over the picture): grey noise.
+            // Film grain for the X-ray (Skate 3 scrolls a noise texture over the picture). Each texel is
+            // a dark or a light speck whose strength is in its alpha, so the grain roughly averages out
+            // instead of lifting the whole picture toward grey (light specks are rarer and fainter:
+            // over a dark picture they show more).
             Picture grain;
             grain.width = grain.height = 128;
             grain.rgba.resize(128 * 128 * 4);
@@ -136,9 +139,11 @@ std::size_t reserve_hom_art(ImFontAtlas &atlas) noexcept {
                 seed ^= seed << 13;
                 seed ^= seed >> 17;
                 seed ^= seed << 5;
-                const auto v = static_cast<unsigned char>(seed & 0xff);
-                grain.rgba[i * 4] = grain.rgba[i * 4 + 1] = grain.rgba[i * 4 + 2] = v;
-                grain.rgba[i * 4 + 3] = 255;
+                const unsigned noise = seed & 0xff;
+                const bool light = ((seed >> 8) & 0xff) < 90;
+                const unsigned strength = light ? noise * 2 / 5 : noise;
+                grain.rgba[i * 4] = grain.rgba[i * 4 + 1] = grain.rgba[i * 4 + 2] = light ? 230 : 0;
+                grain.rgba[i * 4 + 3] = static_cast<unsigned char>(strength * strength / 255);
             }
             grain.rect = atlas.AddCustomRectRegular(grain.width, grain.height);
             l.pictures.emplace("grain", std::move(grain));

@@ -47,6 +47,7 @@ struct State {
     double heartbeat{};
     float darkness{};
     double watch_logged{};
+    int cancelled_seen{};
     std::uint32_t xray_serial{};
     double upright_since{-1}, getting_up_at{-1}; // the live bail's skater getting up (X-ray fading out)
     std::uint32_t sounded_serial{};
@@ -281,10 +282,14 @@ void draw_bone(ImDrawList *draw, std::size_t index, ImVec2 a, ImVec2 b, float r,
 void draw_grade(ImDrawList *draw, ImVec2 centre, float strength) {
     if (strength <= 0.01f) return;
     const auto display = ImGui::GetIO().DisplaySize;
-    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(14, 22, 58, static_cast<int>(0.60f * strength * 255.0f)));
+    // Measured against Skate 3's own footage (its settled X-ray): the lit ground around the skater is a
+    // cool, near-neutral grey-blue (about 37, 36, 45), falling to black by the corners, with no haze.
+    // A blue-grey wash at about that level takes most of the colour out (Skate 3's colour matrix for
+    // HoM: half saturation, blue x1.2) without lifting the picture much; a black spotlight closes in.
+    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(30, 36, 58, static_cast<int>(0.62f * strength * 255.0f)));
     const float h = display.y;
-    const float radii[]{0.14f * h, 0.30f * h, 0.58f * h, 1.7f * std::max(display.x, display.y)};
-    const float alphas[]{0.0f, 0.45f, 0.82f, 0.95f};
+    const float radii[]{0.22f * h, 0.42f * h, 0.70f * h, 1.7f * std::max(display.x, display.y)};
+    const float alphas[]{0.0f, 0.35f, 0.90f, 1.0f};
     constexpr int segments = 48;
     const auto uv = ImGui::GetFontTexUvWhitePixel();
     for (int ring = 0; ring < 3; ++ring) {
@@ -292,8 +297,8 @@ void draw_grade(ImDrawList *draw, ImVec2 centre, float strength) {
         for (int k = 0; k < segments; ++k) {
             const float a0 = k * 6.2831853f / segments, a1 = (k + 1) * 6.2831853f / segments;
             const auto at = [&](float r, float angle) { return ImVec2(centre.x + std::cos(angle) * r, centre.y + std::sin(angle) * r); };
-            const ImU32 inner = IM_COL32(1, 3, 12, static_cast<int>(alphas[ring] * strength * 255.0f));
-            const ImU32 outer = IM_COL32(1, 3, 12, static_cast<int>(alphas[ring + 1] * strength * 255.0f));
+            const ImU32 inner = IM_COL32(0, 1, 4, static_cast<int>(alphas[ring] * strength * 255.0f));
+            const ImU32 outer = IM_COL32(0, 1, 4, static_cast<int>(alphas[ring + 1] * strength * 255.0f));
             const auto base = static_cast<ImDrawIdx>(draw->_VtxCurrentIdx);
             draw->PrimWriteVtx(at(radii[ring], a0), uv, inner);
             draw->PrimWriteVtx(at(radii[ring], a1), uv, inner);
@@ -315,10 +320,11 @@ void draw_grain(ImDrawList *draw, float strength) {
     HomArt grain;
     if (strength <= 0.01f || !hom_art("grain", grain)) return;
     const auto display = ImGui::GetIO().DisplaySize;
-    const float tile = 128.0f;
+    // Skate 3's grain is coarse: about a pixel of its 720p picture, so the tile is scaled with the screen.
+    const float tile = 128.0f * std::max(1.0f, display.y / 720.0f);
     static std::uint32_t seed = 12345u;
     seed = seed * 1664525u + 1013904223u;
-    const float ox = -static_cast<float>(seed % 128u), oy = -static_cast<float>((seed >> 8) % 128u);
+    const float ox = -static_cast<float>(seed % 128u) * tile / 128.0f, oy = -static_cast<float>((seed >> 8) % 128u) * tile / 128.0f;
     const ImU32 colour = IM_COL32(255, 255, 255, static_cast<int>(strength * 255.0f));
     for (float y = oy; y < display.y; y += tile)
         for (float x = ox; x < display.x; x += tile)
@@ -366,7 +372,7 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
         if (since >= 0 && since < 0.8f)
             draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(102, 51, 51, static_cast<int>(0.2f * (1.0f - since / 0.8f) * fade * 255.0f)));
     }
-    draw_grain(draw, 0.13f * darkness * fade);
+    draw_grain(draw, 0.5f * darkness * fade);
     if (!camera) return;
     std::array<bool, hall_of_meat::rig_bones> broken{};
     for (const auto &b : r.broken)
@@ -451,7 +457,11 @@ void hall_of_meat_tick() {
     }
     const bool was_bailing = s.tracker.phase() == Phase::bailing;
     const bool done = s.tracker.update(in);
-    hall_of_meat::hide_game_ui().store(s.tracker.phase() == Phase::bailing || now < s.visible_until);
+    hall_of_meat::hide_game_ui().store(s.tracker.showing() || now < s.visible_until);
+    if (s.tracker.cancelled() != s.cancelled_seen) {
+        s.cancelled_seen = s.tracker.cancelled();
+        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: that was a glide landing, not a crash: taken back.");
+    }
     if (!was_bailing && s.tracker.phase() == Phase::bailing) {
         s.started = now;
         s.shown_total = 0;
@@ -467,11 +477,13 @@ void hall_of_meat_tick() {
     {
         // Each new damage level is heard, as Skate 3 plays its HoM bone sounds.
         const Result &r = s.tracker.phase() == Phase::bailing ? s.tracker.live() : s.tracker.result();
+        // A bail not yet known to be a crash (a glide's landing) is not heard until it is.
+        const bool hold = s.tracker.phase() == Phase::bailing && !s.tracker.showing();
         if (r.serial != s.sounded_serial) {
             s.sounded_serial = r.serial;
             s.sounded = 0;
         }
-        for (; s.sounded < r.events.size(); ++s.sounded) {
+        for (; !hold && s.sounded < r.events.size(); ++s.sounded) {
             const auto &e = r.events[s.sounded];
             const int n = std::max(1, level_count(static_cast<std::size_t>(e.part)));
             hall_of_meat::play_bone_sound(static_cast<float>(e.level) / static_cast<float>(n), e.top);
@@ -491,7 +503,7 @@ void hall_of_meat_tick() {
 bool hall_of_meat_hud_pending() {
     auto &s = state();
     std::lock_guard lock(s.mutex);
-    return s.tracker.phase() == Phase::bailing || clock_seconds() < s.visible_until;
+    return s.tracker.showing() || clock_seconds() < s.visible_until;
 }
 
 std::string hall_of_meat_command(std::string_view verb, const std::vector<std::string> &words) {
@@ -523,7 +535,7 @@ void draw_hall_of_meat_hud() {
     auto *draw = ImGui::GetBackgroundDrawList();
     std::lock_guard lock(s.mutex);
     const double now = clock_seconds();
-    const bool live = s.tracker.phase() == Phase::bailing;
+    const bool live = s.tracker.showing();
     if (!live && now >= s.visible_until) return;
     const Result &r = live ? s.tracker.live() : s.tracker.result();
     float fade = 1.0f;
