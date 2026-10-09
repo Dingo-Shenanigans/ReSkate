@@ -959,6 +959,13 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
             continue;
         }
+        // A dedicated server's radio, for the world we are in: only the server itself sends it.
+        if (p.kind == PacketKind::radio) {
+            if (s.mode == Mode::join && dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id &&
+                p.world == s.world)
+                s.radio.receive(p.session, p.radio);
+            continue;
+        }
         // Throwdown messages are relayed like chat, but only within one map: a drop
         // belongs to the world it was placed in.
         if (p.kind == PacketKind::throwdown) {

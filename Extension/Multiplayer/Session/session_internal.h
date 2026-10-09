@@ -6,6 +6,7 @@
 #include "Extension/Customization/developer_board.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Multiplayer/Voice/voice_chat.h"
+#include "Extension/Multiplayer/Voice/radio_player.h"
 #include "Extension/Multiplayer/Steam/steam_transport.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Multiplayer/Steam/steam_lobbies.h"
@@ -150,6 +151,7 @@ struct PrivateRequest {
 struct Session {
     VoiceChat voice;
     VoiceSettings voice_settings;
+    RadioPlayer radio; // a dedicated server's radio (PacketKind::radio)
     VoicePolicy voice_policy;
     unsigned tps = multiplayer_default_tps;
     ObjectState local_objects;

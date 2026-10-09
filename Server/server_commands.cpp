@@ -26,6 +26,7 @@ constexpr std::string_view help_text =
     "park <lot> <layout> | park random | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>]\n"
+    "radio play <URL or file in Radio> | radio skip | radio stop | radio | radio allow on|off (console only)\n"
     "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | update | quit";
 } // namespace
 
@@ -681,6 +682,28 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         apply_layers();
         return changed(found->label + " set to " + std::string(mode) +
                        (config_.world_layer_sync ? "." : ". Turn on layer-sync to apply it to everyone."));
+    }
+    if (name == "radio") {
+        const auto [sub, source] = split(argument);
+        const auto what = lower(sub);
+        // Whether admins may play anything at all is the owner's call, so only the console decides.
+        if (what == "allow") {
+            if (!console) return "Only the server console turns the radio on or off.";
+            const auto value = on_off(source);
+            if (!value) return std::string("radio allow on|off (now ") + (config_.radio ? "on" : "off") + ")";
+            config_.radio = *value;
+            if (!*value) radio_.stop();
+            return changed(*value ? "The radio is on: admins can play music to everyone."
+                                  : "The radio is off: admins cannot play music.");
+        }
+        if (!config_.radio)
+            return "The radio is off on this server. The owner turns it on with \"enabled\": true in the \"radio\" "
+                   "section of ReSkateServer.json, or radio allow on in the server console.";
+        if (what.empty() || what == "status") return radio_.status();
+        if (what == "play") return radio_.play(source);
+        if (what == "skip" || what == "next") return radio_.skip();
+        if (what == "stop" || what == "off") return radio_.stop();
+        return "radio play <URL, or a file or folder in the server's Radio folder> | radio skip | radio stop | radio";
     }
     if (name == "reserved") {
         // reserved | reserved add|remove <player or SteamID64>

@@ -52,6 +52,8 @@ struct SkateMenu {
     ControllerComboCapture voice_controller_capture;
     double voice_capture_until{}, voice_pending_until{};
     std::optional<VoiceSettings> voice_pending;
+    std::optional<RadioSettings> radio_pending; // until the model agrees, like voice_pending
+    double radio_pending_until{};
     std::optional<float> voice_range_pending;  // the host's range slider while dragged / until the model agrees
     double voice_range_until{};
     // Chat bubble distance/duration/history sliders, likewise held while dragged.

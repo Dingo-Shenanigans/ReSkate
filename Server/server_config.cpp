@@ -108,6 +108,10 @@ Layout layout(const ServerConfig &c) {
     players.set("sync_effects", c.sync_effects);
     players.set("announce_throwdowns", c.announce_throwdowns);
 
+    // Off until the owner turns it on: what the server plays is theirs to answer for (server_radio.h).
+    auto &radio = root.section("radio");
+    radio.set("enabled", c.radio);
+
     auto &anti_cheat = root.section("anti_cheat");
     anti_cheat.set("speed_hack", c.speed_check);
     anti_cheat.set("modified_scoring", c.score_check);
@@ -295,6 +299,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.object_scaling = get("players", "allow_object_scaling", c.object_scaling);
     c.sync_effects = get("players", "sync_effects", c.sync_effects);
     c.announce_throwdowns = get("players", "announce_throwdowns", c.announce_throwdowns);
+    c.radio = get("radio", "enabled", c.radio);
 
     c.speed_check = get("anti_cheat", "speed_hack", c.speed_check, {"speed_check"});
     if (c.speed_check != "off" && c.speed_check != "warn" && c.speed_check != "kick") c.speed_check = "warn";

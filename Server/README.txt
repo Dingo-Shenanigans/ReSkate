@@ -31,6 +31,40 @@ join code, every time it starts. The browser always finds it by name.
 
 Players and the server need the same ReSkate version.
 
+Radio
+-----
+Off unless you turn it on ("enabled": true in the "radio" section, or "radio
+allow on" in the console).
+Then admins play music to everyone on the map with /radio play <source>, and
+each player sets their volume or mutes it in the game's Multiplayer menus.
+
+A source is an http(s) URL of an audio stream (an internet radio station, an
+MP3), or a file or folder in a Radio folder next to the server. Web pages and
+video sites are not sources. The server needs ffmpeg installed to decode it
+(on Windows, ffmpeg.exe on PATH); installing it takes effect on the next play,
+without a restart.
+
+To play your own files, create a folder named Radio next to ReSkateServer.json
+(the server does not create it) and put audio files in it: .mp3, .ogg, .opus,
+.flac, .wav, .m4a, .aac, .webm or .mka. Name them relative to that folder:
+
+  /radio play song.mp3              one file
+  /radio play my album              every audio file in Radio/my album, in name
+                                    order (not the folders inside it)
+  /radio play my album/bonus/a.mp3  a file in a folder inside Radio
+  /radio play https://...           an internet radio station or MP3 URL
+
+Names may have spaces. Anything outside the Radio folder is refused, including
+links that point out of it.
+
+The server sends the audio to every player itself, so you are the one sharing
+it with them, and what it plays is your responsibility. Only play what you may
+share: music you made or own the rights to, royalty-free or Creative Commons
+music, or a station that allows rebroadcasting. Music in a player's own stream
+or video can get them a copyright claim, so each player can mute the radio.
+
+Each song uses about 96 kbps of upload per player (16 players: about 1.5 Mbit/s).
+
 Updates
 -------
 The server keeps itself on the latest ReSkate release. It checks when it starts
@@ -144,6 +178,10 @@ sync_effects       Let players see each other's skater effects (default true):
                    server. Console: effects on|off.
 announce_throwdowns  Tell everyone in chat when a throwdown drop is placed
                    (default true).
+
+"radio" - Music for everyone on the map (see Radio).
+enabled            Let admins play music to everyone (default false). The console
+                   also turns it on and off: radio allow on|off.
 
 "anti_cheat" - What the server checks, and what it does about it.
 speed_hack         Catch players whose game runs faster than normal (Cheat
@@ -382,6 +420,9 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
                                 or physics; with no argument, every player's result.
   score-allow [<fingerprint>|remove <fingerprint>]   Accept a scoring mod's
                                 fingerprint like the game's own (or list them).
+  radio play <URL or file in Radio>   radio skip   radio stop   radio
+                                Music for everyone (see Radio; off until allowed).
+  radio allow on|off            Let admins use the radio (console only).
   admin add|remove <player or id>   admins      (console only)
   update                        Check for a new release and install it now (console only).
   quit, exit or stop            Shut the server down (console only).

@@ -37,7 +37,7 @@ int run() {
     const auto config = load_config(file, &added);
     const auto has = [&](std::string_view name) { return std::ranges::find(added, name) != added.end(); };
     check(has("anti_cheat.enforce_tuning") && has("votes.seconds") && has("votes.kick") && has("anti_cheat.modified_scoring") && has("anti_cheat.allowed_scoring_mods") &&
-              has("access.use_global_bans") && has("maps.pool") && has("maps.rotation_minutes"),
+              has("access.use_global_bans") && has("maps.pool") && has("maps.rotation_minutes") && has("radio.enabled"),
           "New settings not reported");
     // A setting under its old name is read, written back under its new one, and not called new.
     check(!has("players.allow_boosts") && has("players.allow_noclip"), "A renamed setting was reported as new, or a new one was not");
@@ -46,6 +46,7 @@ int run() {
     check(has("votes.map.seconds") && has("votes.map.min_players") && has("votes.polls") && has("votes.custom") &&
               has("announcements.messages") && has("announcements.interval_minutes"),
           "The new vote and announcement settings were not reported");
+    check(!config.radio, "The radio is on in a config that never turned it on");
     const auto written = text(file);
     check(written.find("\"enforce_tuning\"") != std::string::npos && written.find("\"seconds\"") != std::string::npos,
           "New settings not written into the file");

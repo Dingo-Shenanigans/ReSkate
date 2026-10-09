@@ -2,6 +2,7 @@
 #include "server_activity.h"
 #include "worker_pool.h"
 #include "server_config.h"
+#include "server_radio.h"
 #include "speed_check.h"
 #include "Engine/Game/Multiplayer/chat_rate.h"
 #include "Extension/Multiplayer/Net/delta_codec.h"
@@ -62,7 +63,7 @@ class Host {
     // What is sent and received, in bytes, by what it carries (traffic_kind): poses, sound,
     // voice, outfits, objects, the rest. `last` is the last whole half minute.
     struct Traffic {
-        std::array<std::uint64_t, 6> out{}, in{};
+        std::array<std::uint64_t, 7> out{}, in{};
         std::uint64_t snapshots{}; // whole states sent reliably; the rest of a stream is differences
     };
     struct Counted {
@@ -190,6 +191,7 @@ class Host {
     SteamTransport &transport_;
     Log log_;
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
+    Radio radio_;          // `radio play ...`: its frames go to everyone in the world (server_radio.h)
     // The running player vote (server_votes.cpp), and when each player may start another.
     // A poll is one too: it has answers instead of yes and no, and runs nothing (but the console's poll-run).
     struct Vote {

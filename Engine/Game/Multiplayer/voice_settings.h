@@ -29,6 +29,19 @@ struct VoiceSettings {
             valid_voice_volume(volume) && valid_voice_volume(microphone);
     }
 };
+// A dedicated server's radio, as this player hears it (Extension/Multiplayer/Voice/radio_player.h).
+inline constexpr float default_radio_volume = .5f;
+struct RadioSettings {
+    bool enabled = true;
+    float volume = default_radio_volume;
+    bool operator==(const RadioSettings &) const = default;
+    bool valid() const noexcept { return valid_voice_volume(volume); }
+};
+struct RadioModel {
+    RadioSettings settings;
+    bool playing{};
+    std::string status = "No server radio.";
+};
 struct VoicePlayer {
     std::uint64_t id{};
     bool muted{}, speaking{};

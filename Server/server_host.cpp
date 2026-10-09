@@ -53,7 +53,8 @@ Host::Host(ServerConfig &config, SteamTransport &transport, Log log)
                     const auto *guest = find(id);
                     return guest && guest->handshaken ? guest_name(*guest) : std::string{};
                 },
-                [this](const std::string &text) { if (config_.announce_throwdowns) send_chat(text); }) {
+                [this](const std::string &text) { if (config_.announce_throwdowns) send_chat(text); }),
+      radio_(config_.file.parent_path() / "Radio") {
     parties_.set_limit(config_.party_size);
 }
 
@@ -176,6 +177,7 @@ bool Host::start(std::string &error) {
 }
 void Host::stop(const std::string &reason) {
     if (!running_) return;
+    radio_.stop();
     const auto away = packet(PacketKind::away, now_us());
     for (auto &[id, guest] : guests_)
         if (guest->handshaken) send_packet(*guest, away, true, false);
@@ -207,10 +209,10 @@ constexpr std::uint64_t whole_state_refresh = 60000000;
 constexpr std::array<const char *, 4> pose_rate_names{"full rate", "half rate", "low rate", "out of sight"};
 // How long a kept pose stays (KeptPose::keep), in microseconds: by the slowest rate it went out at.
 constexpr std::array<std::uint64_t, 4> pose_kept_for{1500000, 3000000, 5000000, 15000000};
-constexpr std::array<const char *, 6> traffic_names{"poses", "sound", "voice", "outfits", "objects", "other"};
+constexpr std::array<const char *, 7> traffic_names{"poses", "sound", "voice", "outfits", "objects", "radio", "other"};
 constexpr std::size_t traffic_kind(PacketKind kind) noexcept {
     return kind == PacketKind::pose ? 0 : kind == PacketKind::audio ? 1 : kind == PacketKind::voice ? 2
-         : kind == PacketKind::cosmetics ? 3 : kind == PacketKind::objects ? 4 : 5;
+         : kind == PacketKind::cosmetics ? 3 : kind == PacketKind::objects ? 4 : kind == PacketKind::radio ? 5 : 6;
 }
 } // namespace
 bool Host::send_packet(Guest &g, const Packet &p, bool reliable, bool fresh, std::span<const std::uint8_t> raw,
@@ -418,7 +420,7 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
     std::shared_ptr<const std::vector<AudioSample>> sound; // a skater's samples, shared by everyone sent them
     const bool gameplay = packet.kind == PacketKind::pose || packet.kind == PacketKind::audio ||
                           packet.kind == PacketKind::voice || packet.kind == PacketKind::cosmetics ||
-                          packet.kind == PacketKind::effects;
+                          packet.kind == PacketKind::effects || packet.kind == PacketKind::radio;
     for (auto &[id, guest] : guests_) {
         auto &p = *guest;
         if (!p.handshaken || id == except || (gameplay && !p.world_ready)) continue;
@@ -1681,6 +1683,18 @@ void Host::tick(std::uint64_t now) {
         log_("Everyone has loaded " + map_name() + ".");
     }
     sync_objects();
+    // The radio: its notices go to chat, its frames to everyone in the world, unreliable and
+    // fresh like voice (a late frame is worth nothing).
+    auto radio = radio_.poll(now_);
+    for (const auto &notice : radio.notices) {
+        log_("[radio] " + notice);
+        send_chat(notice);
+    }
+    for (const auto &batch : radio.batches) {
+        auto p = packet(PacketKind::radio, now_);
+        p.radio = encode_radio_batch(batch);
+        broadcast(p, false, true);
+    }
     activity_.tick(now_);
     if (std::exchange(vote_recount_, false)) check_vote(false);
     if (vote_ && now_ >= vote_->ends) check_vote(true);

@@ -26,7 +26,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 46;
+constexpr std::uint16_t protocol_version = 47;
 // A dedicated server's chat lines unless its owner says otherwise: violet (#8E5CFF) and lavender (#D9C8FF).
 inline constexpr std::uint32_t default_server_chat_badge = 0xffff5c8eU, default_server_chat_text = 0xffffc8d9U;
 constexpr std::size_t max_throwdown_message = 4096;
@@ -119,7 +119,10 @@ enum class PacketKind : std::uint16_t {
     physics_extras = 30,
     // A player's skater touching the world (effects.h): the game's sparks, dust and puffs for
     // it, shown on that player's skater by everyone near. Unreliable, relayed like voice.
-    effects = 31
+    effects = 31,
+    // A dedicated server's radio: one batch of Opus frames (Extension/Multiplayer/Net/radio_frames.h).
+    // Only a dedicated server sends it, unreliable and fresh like voice.
+    radio = 32
 };
 // Packet::party_action. Requests go from a player to whoever hosts, a dedicated server or a
 // lobby's host (party_player = the other player involved, 0 for leave/open/close); invited
@@ -262,6 +265,7 @@ struct Packet {
     std::vector<std::uint8_t> tuning;         // physics_tuning: 0..max_physics_tuning bytes
     std::vector<std::uint8_t> extras;         // physics_extras: 0..max_physics_extras bytes
     std::vector<Impact> impacts;              // effects: 1..max_impacts contacts
+    std::vector<std::uint8_t> radio;          // radio: one encode_radio_batch (decode() checks it)
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)
     // scoring: the sender's scoring fingerprint, 0 for the game's own; `text` names the mods

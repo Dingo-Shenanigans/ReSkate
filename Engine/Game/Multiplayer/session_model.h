@@ -158,6 +158,7 @@ struct MultiplayerBan {
 inline constexpr float player_distance_least = 50.f, player_distance_unlimited = 1000.f;
 struct MultiplayerModel {
     VoiceModel voice;
+    RadioModel radio;
     std::vector<MultiplayerBan> bans;
     unsigned tps = multiplayer_default_tps;
     ObjectPlacement object_placement = ObjectPlacement::everyone;

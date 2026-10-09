@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "radio_frames.h"
 #include <algorithm>
 #include <bit>
 #include <charconv>
@@ -410,6 +411,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid physics tuning");
     if (p.kind == PacketKind::physics_extras && (!p.source || p.extras.size() > max_physics_extras))
         throw std::invalid_argument("Invalid physics extras");
+    if (p.kind == PacketKind::radio && (!p.source || !decode_radio_batch(p.radio)))
+        throw std::invalid_argument("Invalid radio batch");
     if (p.kind == PacketKind::party && (!p.source || !valid_party_request(p.party_action, p.party_player)))
         throw std::invalid_argument("Invalid party message");
     if (p.kind == PacketKind::scoring && (!p.source || (!p.text.empty() && !valid_admin_text(p.text))))
@@ -453,7 +456,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         p.kind != PacketKind::admin && p.kind != PacketKind::bans && p.kind != PacketKind::maps &&
         p.kind != PacketKind::throwdown && p.kind != PacketKind::teleport && p.kind != PacketKind::physics_tuning &&
         p.kind != PacketKind::party && p.kind != PacketKind::scoring && p.kind != PacketKind::physics_extras &&
-        p.kind != PacketKind::effects)
+        p.kind != PacketKind::effects && p.kind != PacketKind::radio)
         throw std::invalid_argument("Unknown packet kind");
     const auto payload = greeting ? 72
                          : p.kind == PacketKind::away
@@ -590,6 +593,10 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
     if (p.kind == PacketKind::physics_extras) {
         w.integer(p.extras.size(), 2);
         w.bytes.insert(w.bytes.end(), p.extras.begin(), p.extras.end());
+    }
+    if (p.kind == PacketKind::radio) {
+        w.integer(p.radio.size(), 2);
+        w.bytes.insert(w.bytes.end(), p.radio.begin(), p.radio.end());
     }
     if (p.kind == PacketKind::scoring) {
         w.integer(p.scoring, 8);
@@ -920,6 +927,12 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 return {};
             p.extras.assign(bytes.begin() + static_cast<std::ptrdiff_t>(r.at), bytes.end());
             r.at = bytes.size();
+        } else if (p.kind == PacketKind::radio) {
+            const auto length = r.integer(2);
+            if (!p.source || !length || length != bytes.size() - r.at) return {};
+            p.radio.assign(bytes.begin() + static_cast<std::ptrdiff_t>(r.at), bytes.end());
+            r.at = bytes.size();
+            if (!decode_radio_batch(p.radio)) return {};
         } else if (p.kind == PacketKind::scoring) {
             p.scoring = r.integer(8);
             const auto length = r.integer(2);

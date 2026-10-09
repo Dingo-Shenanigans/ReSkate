@@ -80,6 +80,8 @@ struct State {
     // press before the model catches up builds on the first.
     std::optional<VoiceSettings> voice_pending;
     std::uint64_t voice_pending_until{};
+    std::optional<RadioSettings> radio_pending; // the same, for the server radio
+    std::uint64_t radio_pending_until{};
     bool public_lobby{true}, was_active{}, host_seeded{};
     bool browsing{};  // the lobby browser was on screen at the last render
     std::uint64_t next_id = 1, next_scan{}, next_retry{}, next_update{}, next_render{}, owner{}, feedback_until{};

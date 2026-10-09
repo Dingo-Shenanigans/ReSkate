@@ -12,6 +12,7 @@
 | bcdec | `80859ed3b7afb1c527a2a99d70c61457bea72d0c` | MIT or Unlicense | [iOrange/bcdec](https://github.com/iOrange/bcdec/tree/80859ed3b7afb1c527a2a99d70c61457bea72d0c) |
 | LZ4 | `1.10.0` | BSD-2-Clause | [lz4/lz4](https://github.com/lz4/lz4/releases/tag/v1.10.0) |
 | Zstandard | `1.5.7` | BSD-3-Clause (dual-licensed with GPLv2; used under BSD) | [facebook/zstd](https://github.com/facebook/zstd/releases/tag/v1.5.7) |
+| Opus | `1.6.1` (codec only, see below) | BSD-3-Clause | [xiph/opus](https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz) |
 | Montserrat font | `fonts/Montserrat-*.ttf` | SIL Open Font License 1.1 | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) |
 | Permanent Marker font | `fonts/PermanentMarker-Regular.ttf` | Apache 2.0 | [Google Fonts](https://fonts.google.com/specimen/Permanent+Marker) |
 
@@ -76,3 +77,10 @@ zlib compatibility, stdio and timestamp APIs are disabled. Extraction writes onl
 the expected file to a fixed temporary path, bounds its size, and checks the
 uncompressed SHA-256 before replacing the cache. Keep `miniz/LICENSE.txt` with
 binary packages. Builds do not fetch the library.
+
+Opus is vendored without its build system or the optional neural-network features
+(DRED, OSCE, deep PLC, the `dnn/` folder): only `include/`, the headers of `celt/`, `silk/`,
+`silk/float/` and `src/`, the sources those features do not need, and `COPYING`.
+`opus/sources.txt` (local) lists the sources from the release's `celt_sources.mk`,
+`silk_sources.mk` and `opus_sources.mk`; `cmake/Dependencies.cmake` builds them as
+`dingosdk_opus`, floating point.
