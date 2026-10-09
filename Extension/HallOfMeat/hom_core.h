@@ -171,6 +171,7 @@ private:
     // sideways speed, which sliding down a ramp (also fast and downward) does not.
     std::array<float, 3> hips_velocity_{}, hips_accel_{};
     bool free_fall_{};
+    double free_fall_time_{-1}; // when the body was last in free fall
     // Where the skater left the board (or their feet) before a crash, and the free fall since:
     // a slam recognised on impact still counts its fall, as Skate 3's bail starts at the bail.
     Sample offboard_start_{};

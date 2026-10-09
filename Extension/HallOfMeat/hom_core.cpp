@@ -193,6 +193,7 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
         hips_velocity_ = v;
         const float sideways = std::sqrt(hips_accel_[0] * hips_accel_[0] + hips_accel_[2] * hips_accel_[2]);
         free_fall_ = hips_accel_[1] < -6.5f && hips_accel_[1] > -13.0f && sideways < 3.0f;
+        if (free_fall_) free_fall_time_ = now.time;
     }
 }
 
@@ -331,8 +332,10 @@ bool Tracker::update(const Sample &s) {
             if (off_board && (torso >= config_.hit_torso || any >= config_.hit_any)) hit_time_ = s.time;
             // A body that falls hard and smashes into something is a crash at that instant, as Skate 3
             // starts its Hall of Meat on the bail: no waiting for it to lie flat.
+            // It must have landed: the fall stopped dead and the body lost much of its speed (a dive
+            // or a glide that brushes something keeps sinking and flying).
             slam_now_ = off_board && s.bones_valid && !s.upright && hard_fall_time_ >= 0 && s.time - hard_fall_time_ <= 0.3 &&
-                        (torso >= 6.0f || any >= 12.0f);
+                        (torso >= 6.0f || any >= 12.0f) && hips_velocity_[1] > -2.0f && body_speed_ < 0.6f * recent_peak_speed_;
             for (std::size_t i = 0; i < 19; ++i)
                 if (bone_hit_[i] > 0 && (s.time - recent_hit_time_[i] > 3.0 || bone_hit_[i] >= recent_hit_[i])) {
                     recent_hit_[i] = bone_hit_[i];
@@ -346,9 +349,11 @@ bool Tracker::update(const Sample &s) {
         const bool stopping = body_speed_ < 5.0f || body_speed_ < 0.65f * recent_peak_speed_;
         // Off the board since the air: the body must have come down onto something.
         const bool came_down = !from_air_ || (fast_fall_time_ >= 0 && hit_time_ >= 0 && hit_time_ - fast_fall_time_ <= 0.6);
-        const bool thrown = armed_ && grounded && stopping && came_down && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
+        // Held up by something: not in free fall lately (the top of a jump is slow and level too).
+        const bool supported = (free_fall_time_ < 0 || s.time - free_fall_time_ > 0.25) && hips_velocity_[1] < 1.0f;
+        const bool thrown = armed_ && grounded && stopping && came_down && supported && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
-        const bool slammed = armed_ && slam_now_ && !thrown;
+        const bool slammed = armed_ && slam_now_ && came_down && !thrown;
         if (wipeout) trigger_ = "wipeout state";
         else if (thrown) trigger_ = "hit and down";
         else if (slammed) trigger_ = "slam";
