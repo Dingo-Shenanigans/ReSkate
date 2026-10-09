@@ -464,7 +464,11 @@ void hall_of_meat_tick() {
         s.cancelled_seen = s.tracker.cancelled();
         logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: that was a glide landing, not a crash: taken back.");
     }
-    if (!was_bailing && s.tracker.phase() == Phase::bailing) {
+    if (!was_bailing && s.tracker.phase() == Phase::bailing && s.tracker.carried_on()) {
+        // The same crash carrying on (a second drop): the panel stays up and the X-ray comes back.
+        s.upright_since = s.getting_up_at = -1;
+        logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: bail {} carries on.", s.tracker.live().serial);
+    } else if (!was_bailing && s.tracker.phase() == Phase::bailing) {
         s.started = now;
         s.shown_total = 0;
         // Calibration: the X-ray skull and pelvis against the skater's own position.
@@ -558,7 +562,7 @@ void draw_hall_of_meat_hud() {
                 s.xray_serial = r.serial;
                 s.upright_since = s.getting_up_at = -1;
             }
-            if (hall_of_meat::rig_upright().load()) {
+            if (s.tracker.getting_up()) {
                 if (s.upright_since < 0) s.upright_since = now;
                 if (s.getting_up_at < 0 && now - s.upright_since >= 0.12) s.getting_up_at = now;
             } else {

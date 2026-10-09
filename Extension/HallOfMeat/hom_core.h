@@ -123,6 +123,10 @@ public:
     Phase phase() const { return phase_; }
     // A bail that is on screen: not one still waiting to see whether a glide's landing was a crash.
     bool showing() const { return phase_ == Phase::bailing && pending_until_ < 0; }
+    // The skater is getting up: upright and settled, not falling feet first (the X-ray fades then).
+    // The live bail is the previous one carrying on (a second drop straight after it).
+    bool carried_on() const { return carried_on_; }
+    bool getting_up() const { return phase_ == Phase::bailing && upright_since_ >= 0; }
     // Bails taken back because the skater was straight back on the board or their feet.
     int cancelled() const { return cancelled_; }
     // Why the last bail started, for the log.
@@ -188,6 +192,17 @@ private:
     float glide_time_{};
     double last_glide_time_{-1}, pending_until_{-1};
     int cancelled_{};
+    // When the physics state last switched in or out of the off-board states: skate. snaps the pose
+    // over then, which flings the hands and feet, so no limb takes more than the torso's hit then.
+    double switch_time_{-1};
+    double riding_since_{-1};
+    // The last bail as it ended, so a crash straight after it (still falling, a second drop) carries
+    // on as the same bail instead of starting another.
+    double ended_at_{-1};
+    bool carried_on_{};
+    Sample ended_start_{};
+    float ended_turn_{};
+    std::vector<bool> ended_broken_;
     // The tick the skater came off the board (state 1xx or 2xx into 504) and from which, so the
     // crash that caused it can be recognised over the next few ticks.
     double left_board_time_{-1};

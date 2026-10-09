@@ -172,6 +172,12 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
         }
         for (std::size_t i = 0; i < 19; ++i)
             bone_hit_[i] = now.bone_centres[i][1] - lowest < 0.3f ? bone_change_[i] : std::max(0.0f, bone_change_[i] - mean);
+        // Just after skate. switches the skater on or off the board the pose snaps over and flings the
+        // limbs: a real impact then stops the whole body, so no bone counts more than the torso lost.
+        if (switch_time_ >= 0 && now.time - switch_time_ <= 0.2) {
+            const float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]});
+            for (auto &hit : bone_hit_) hit = std::min(hit, torso);
+        }
     }
     float sum = 0;
     for (std::size_t i = 0; i < 19; ++i) sum += bone_speeds_[i].back();
@@ -280,6 +286,10 @@ void Tracker::score(Result &r) const {
 bool Tracker::update(const Sample &s) {
     bool finished = false;
     if (phase_ == Phase::finished) phase_ = Phase::idle;
+    if (have_previous_ && previous_.physics_state != s.physics_state) {
+        const auto off = [&](std::uint32_t state) { return state == config_.wipeout_state || state == 504; };
+        if (off(previous_.physics_state) != off(s.physics_state) || s.physics_state == config_.wipeout_state) switch_time_ = s.time;
+    }
     {
         const double step = s.time - previous_.time;
         if (have_previous_ && s.bones_valid && previous_.bones_valid && step > 0 && step < 0.25) {
@@ -361,12 +371,14 @@ bool Tracker::update(const Sample &s) {
         const bool came_down = !from_air_ || (fast_fall_time_ >= 0 && hit_time_ >= 0 && hit_time_ - fast_fall_time_ <= 0.6);
         // Held up by something: not in free fall lately (the top of a jump is slow and level too).
         const bool supported = (free_fall_time_ < 0 || s.time - free_fall_time_ > 0.25) && hips_velocity_[1] < 1.0f;
-        const bool thrown = armed_ && grounded && stopping && came_down && supported && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
+        // Straight after a bail ends the next crash needs no re-arming: it carries that bail on.
+        const bool may_start = armed_ || (ended_at_ >= 0 && s.time - ended_at_ <= 1.5);
+        const bool thrown = may_start && grounded && stopping && came_down && supported && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
         // Coming off the board, skate. switches the skater's pose over in a tick or two: that jump is
         // no impact. Crashes at that moment are the knocked-off and crash-landing cases below.
         const bool switching = left_board_time_ >= 0 && s.time - left_board_time_ <= 0.15;
-        const bool slammed = armed_ && slam_now_ && came_down && !thrown && !switching;
+        const bool slammed = may_start && slam_now_ && came_down && !thrown && !switching;
         // Skate 3 starts its Hall of Meat on the bail itself. skate. takes the skater off the board at the
         // moment of a crash, so that moment (and the next tick or two, while the hit registers) is the
         // bail when it comes with:
@@ -375,7 +387,7 @@ bool Tracker::update(const Sample &s) {
         //  - coming down from the air onto something: still falling fast as the board goes, and hit (a
         //    dive leaves the board slowly, or rising, and with nothing hitting it).
         bool knocked = false, crash_landed = false;
-        if (armed_ && left_board_time_ >= 0 && s.time - left_board_time_ <= 0.1 && s.physics_state == 504 && s.bones_valid) {
+        if (may_start && left_board_time_ >= 0 && s.time - left_board_time_ <= 0.1 && s.physics_state == 504 && s.bones_valid) {
             float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
             for (const float c : bone_change_) any = std::max(any, c);
             if (left_board_from_ < 200) knocked = !s.upright && (torso >= 5.0f || any >= 10.0f);
@@ -388,13 +400,40 @@ bool Tracker::update(const Sample &s) {
         if (wipeout) trigger_ = "wipeout state";
         else if (thrown) trigger_ = "hit and down";
         else if (slammed) trigger_ = "slam";
-        if (wipeout || thrown || slammed || knocked || crash_landed) {
+        // A crash within a moment of the last bail ending (it ended while the skater was still falling,
+        // or they stood for an instant and went straight down again) is the same bail carrying on.
+        const bool resume = (wipeout || thrown || slammed || knocked || crash_landed) && ended_at_ >= 0 && s.time - ended_at_ <= 1.5;
+        if (resume) {
+            phase_ = Phase::bailing;
+            live_ = last_;
+            start_ = ended_start_;
+            turn_ = ended_turn_;
+            is_broken_ = ended_broken_;
+            armed_ = false;
+            hit_time_ = -1;
+            down_since_ = -1;
+            ended_at_ = -1;
+            went_down_ = true;
+            upright_since_ = riding_since_ = -1;
+            pending_until_ = -1;
+            frozen_ = false;
+            still_since_ = slow_since_ = air_start_ = -1;
+            left_board_time_ = -1;
+            trigger_ += " (carrying on)";
+            carried_on_ = true;
+            const auto &list = bones();
+            for (std::size_t i = 0; i < list.size() && i < 19; ++i)
+                if (s.time - recent_hit_time_[i] <= 3.0 && recent_hit_[i] > 0) hit_part(list[i].part, recent_hit_[i], recent_hit_time_[i]);
+            recent_hit_ = {};
+        } else if (wipeout || thrown || slammed || knocked || crash_landed) {
             armed_ = false;
             hit_time_ = -1;
             down_since_ = -1;
             phase_ = Phase::bailing;
             live_ = {};
             live_.serial = ++serial_;
+            riding_since_ = -1;
+            carried_on_ = false;
             rng_ = 0xC0FFEEull * live_.serial + 17;
             is_broken_.assign(bones().size(), false);
             went_down_ = !s.upright;
@@ -445,8 +484,10 @@ bool Tracker::update(const Sample &s) {
                 if (s.time - still_since_ >= config_.still_time) frozen_ = true;
             } else {
                 // Once the body has stopped the bail's numbers are final, as in Skate 3: getting up
-                // (or being dragged by the ragdoll) does not count on.
+                // (or being dragged by the ragdoll) does not count on. Falling again (off an edge it
+                // came to rest on) does: that is still the same crash.
                 still_since_ = -1;
+                if (frozen_ && s.bones_valid && (free_fall_ || hips_vertical_ < -3.0f)) frozen_ = false;
             }
         }
         if (!frozen_ && dt > 0 && dt < 0.25) {
@@ -498,13 +539,20 @@ bool Tracker::update(const Sample &s) {
         // With the skeleton: over once the skater is back on their feet. Without it: out of the
         // wipeout state and slow.
         if (s.bones_valid && !s.upright) went_down_ = true;
-        if (s.bones_valid && s.upright) {
+        // Standing: upright and settled. Upright while still dropping (falling feet first) is not.
+        if (s.bones_valid && s.upright && std::abs(hips_vertical_) < 1.5f && !free_fall_) {
             if (upright_since_ < 0) upright_since_ = s.time;
         } else {
             upright_since_ = -1;
         }
-        // Back on the board ends it at once.
-        const bool riding = s.physics_state >= 100 && s.physics_state < 300 && elapsed > 0.3;
+        // Back on the board: skate. flicks the state to the board for a moment mid-tumble too, so
+        // it has to stay there briefly.
+        if (s.physics_state >= 100 && s.physics_state < 300) {
+            if (riding_since_ < 0) riding_since_ = s.time;
+        } else {
+            riding_since_ = -1;
+        }
+        const bool riding = riding_since_ >= 0 && s.time - riding_since_ >= 0.3 && elapsed > 0.3;
         const bool recovered = riding || (s.bones_valid ? (went_down_ && upright_since_ >= 0 && s.time - upright_since_ >= 0.4)
                                                        : (s.physics_state != config_.wipeout_state && elapsed > 0.5 && s.speed < 2.0f));
         if (settled || recovered || elapsed > config_.max_duration) {
@@ -513,6 +561,10 @@ bool Tracker::update(const Sample &s) {
             if (elapsed >= config_.min_duration) {
                 score(live_);
                 last_ = live_;
+                ended_at_ = s.time;
+                ended_start_ = start_;
+                ended_turn_ = turn_;
+                ended_broken_ = is_broken_;
                 phase_ = Phase::finished;
                 finished = true;
             } else {
