@@ -32,6 +32,8 @@
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/Skate3HallOfMeat/s3hom_hud.h"
+#include "Extension/Skate3HallOfMeat/hom_rig.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
 #include <dxgi.h>
@@ -1252,6 +1254,13 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             DINGO_PROFILE_ZONE("tick/trainer");
             // A custom map is a sublevel of the root level: that is the map the player means.
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/Skate 3 Hall Of Meat");
+            // Stands down while ReSkate's own Hall of Meat is switched on: one at a time.
+            const bool official = dingosdk::hall_of_meat::enabled();
+            if (!official) dingosdk::skate3_hom::rig_tick(r.base, client);
+            dingosdk::overlay::skate3_hom_tick(official);
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");
