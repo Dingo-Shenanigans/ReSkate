@@ -13,6 +13,7 @@
 #include "Extension/Multiplayer/Session/room.h"
 #include "Extension/Multiplayer/Steam/steam_transport.h"
 #include "Engine/Game/World/world_layers.h"
+#include "server_scripts.h"
 #include <mutex>
 #include <unordered_map>
 #include <functional>
@@ -36,6 +37,10 @@ class Host {
     // Opens the listener and starts a session under the given server identity.
     bool start(std::string &error);
     void tick(std::uint64_t now);
+
+    // Script loader
+    std::string load_scripts(const std::string &folder) { return scripts_.load(folder); }
+
     // A console line, or an admin's request (`admin` = their SteamID64, 0 for the console).
     std::string command(std::string_view line, std::uint64_t admin = 0);
     void stop(const std::string &reason);
@@ -50,6 +55,8 @@ class Host {
     enum class VoteKind { map, kick, time, custom, poll };
 
   private:
+    Scripts scripts_; // Lua scripts
+
     struct ChatBudget {
         std::uint64_t since{};
         unsigned messages{};

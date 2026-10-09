@@ -207,6 +207,9 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (auto *still = find(id)) reply(*still, answer_text.empty() ? std::string("Done.") : answer_text);
         return;
     }
+
+    // a /command from a script in `scripts/`. its return value is the reply
+    if (const auto answer = scripts_.run(verb, guest_name(guest), rest)) return reply(guest, *answer);
     reply(guest, "Unknown command /" + verb + ". Type /help for the list.");
 }
 

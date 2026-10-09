@@ -12,6 +12,7 @@
 | bcdec | `80859ed3b7afb1c527a2a99d70c61457bea72d0c` | MIT or Unlicense | [iOrange/bcdec](https://github.com/iOrange/bcdec/tree/80859ed3b7afb1c527a2a99d70c61457bea72d0c) |
 | LZ4 | `1.10.0` | BSD-2-Clause | [lz4/lz4](https://github.com/lz4/lz4/releases/tag/v1.10.0) |
 | Zstandard | `1.5.7` | BSD-3-Clause (dual-licensed with GPLv2; used under BSD) | [facebook/zstd](https://github.com/facebook/zstd/releases/tag/v1.5.7) |
+| Lua | `5.4.9` | MIT | [lua.org](https://www.lua.org/ftp/lua-5.4.9.tar.gz) |
 | Montserrat font | `fonts/Montserrat-*.ttf` | SIL Open Font License 1.1 | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) |
 | Permanent Marker font | `fonts/PermanentMarker-Regular.ttf` | Apache 2.0 | [Google Fonts](https://fonts.google.com/specimen/Permanent+Marker) |
 

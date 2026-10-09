@@ -43,6 +43,16 @@ add_library(dingosdk_zstd STATIC ${zstd_sources})
 target_include_directories(dingosdk_zstd SYSTEM PUBLIC External/zstd/lib)
 target_compile_definitions(dingosdk_zstd PRIVATE ZSTD_LEGACY_SUPPORT=0 ZSTD_DISABLE_ASM)
 set_target_properties(dingosdk_zstd PROPERTIES FOLDER "Dependencies")
+# Lua for server scripts, built as C++ so a Lua error unwinds C++ frames instead of longjmp-ing past
+# their destructors. Include lua.h, lualib.h and lauxlib.h directly, never lua.hpp: its extern "C"
+# would name C symbols that a C++ build does not have. lua.c and luac.c are the standalone programs.
+file(GLOB lua_sources CONFIGURE_DEPENDS External/lua/src/*.c)
+list(FILTER lua_sources EXCLUDE REGEX "/luac?\\.c$")
+set_source_files_properties(${lua_sources} PROPERTIES LANGUAGE CXX)
+add_library(dingosdk_lua STATIC ${lua_sources})
+target_include_directories(dingosdk_lua SYSTEM PUBLIC External/lua/src)
+target_compile_definitions(dingosdk_lua PRIVATE $<$<NOT:$<BOOL:${WIN32}>>:LUA_USE_POSIX>)
+set_target_properties(dingosdk_lua PROPERTIES FOLDER "Dependencies")
 add_library(dingosdk_sqlite STATIC External/sqlite/sqlite3.c)
 target_include_directories(dingosdk_sqlite SYSTEM PUBLIC External/sqlite)
 target_compile_definitions(dingosdk_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0 SQLITE_DEFAULT_MEMSTATUS=0)
