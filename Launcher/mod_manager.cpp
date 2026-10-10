@@ -376,7 +376,11 @@ fs::path mods_root(const fs::path& game_directory) {
 }
 
 std::string install(const fs::path& mods, const fs::path& source, bool replace,
-                    const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options) {
+                    const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options,
+                    const OperationLease* lease) {
+    std::optional<OperationLease> owned;
+    if (!lease) { owned.emplace(Operation::install); lease = &*owned; }
+    if (!lease->permits(Operation::install)) fail("Another mod or launcher operation is still running.");
     try {
         fs::create_directories(mods);
         std::error_code error;
@@ -397,6 +401,8 @@ std::string install(const fs::path& mods, const fs::path& source, bool replace,
 }
 
 void remove(const fs::path& mods, const std::string& name) {
+    OperationLease lease(Operation::install);
+    if (!lease) fail("Another mod or launcher operation is still running.");
     if (!mods::valid_mod_name(name)) fail("\"" + name + "\" is not a mod folder.");
     const auto target = mods / from_utf8(name);
     std::error_code error;

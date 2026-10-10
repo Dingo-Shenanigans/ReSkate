@@ -1,10 +1,12 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // The launcher's side of the Mods folder: installing mods from a .zip or a
 // folder, and removing them. Order and enabled state live in mods.json
@@ -24,6 +26,61 @@ struct AlreadyInstalled : std::runtime_error {
 };
 
 using Progress = std::function<void(float fraction)>;
+
+// One launcher filesystem operation at a time, including the entire download,
+// merge or launch worker. The mod panel retains its lease until worker join.
+enum class Operation { install, reset, launcher };
+class OperationLease {
+public:
+    explicit OperationLease(Operation operation);
+    ~OperationLease();
+    OperationLease(OperationLease&& other) noexcept;
+    OperationLease(const OperationLease&) = delete;
+    OperationLease& operator=(const OperationLease&) = delete;
+    explicit operator bool() const { return held_; }
+    bool permits(Operation operation) const { return held_ && operation_ == operation; }
+    static bool busy();
+private:
+    Operation operation_;
+    bool held_{};
+};
+
+struct ResetIdentity {
+    std::uint64_t volume{}, file{};
+    bool operator==(const ResetIdentity&) const = default;
+};
+struct ResetTarget {
+    std::filesystem::path path;
+    std::uintmax_t estimated_bytes{};
+    ResetIdentity identity;
+};
+struct ResetPlan {
+    std::filesystem::path game_directory;
+    ResetIdentity game_identity;
+    std::vector<ResetTarget> targets;
+    std::vector<std::string> excluded, errors;
+    std::uintmax_t estimated_bytes{}; // logical sizes; hard links can overestimate freed space
+    std::size_t mod_count{};
+};
+struct ResetResult {
+    bool success{};
+    std::size_t removed_items{};
+    std::uintmax_t removed_bytes{};
+    std::vector<std::string> errors;
+    std::vector<std::filesystem::path> remaining;
+};
+
+// Read-only inspection of the two known layouts. Never follows reparse points.
+ResetPlan prepare_factory_reset(const std::filesystem::path& game_directory,
+                                const OperationLease* lease = nullptr);
+// Permanent, handle-based deletion; revalidates the plan and checks Skate
+// processes again. Progress is indeterminate (-1) while the tree can change.
+ResetResult execute_factory_reset(const ResetPlan& plan, const Progress& progress = {},
+                                  const OperationLease* lease = nullptr,
+                                  const std::function<void(const std::string&)>& activity = {});
+// Conservatively blocks reset if any Skate.exe is running, including games
+// started outside this launcher. Returns a user-facing reason, or empty.
+std::string factory_reset_blocker();
 
 struct InstallOptions {
     // Install under this folder name instead of one taken from the source
@@ -47,7 +104,8 @@ struct InstallOptions {
 // installed mod of the same name goes to the Recycle Bin first. Throws a
 // user-facing message; a failed or cancelled install leaves the Mods folder as it was.
 std::string install(const std::filesystem::path& mods_root, const std::filesystem::path& source, bool replace,
-                    const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options = {});
+                    const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options = {},
+                    const OperationLease* lease = nullptr);
 
 // Moves Mods/<name> to the Recycle Bin. Throws a user-facing message.
 void remove(const std::filesystem::path& mods_root, const std::string& name);

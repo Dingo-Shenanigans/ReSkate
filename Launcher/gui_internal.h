@@ -3,6 +3,7 @@
 #include "gamepad_input.h"
 #include "game_settings.h"
 #include "launch.h"
+#include "mod_manager.h"
 #include "text_encoding.h"
 #include "thunderstore.h"
 
@@ -21,6 +22,7 @@
 #include <deque>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -474,6 +476,14 @@ struct ModsPanel {
 
     std::thread worker;
     std::atomic<bool> installing{};
+    // UI owns the lease until the worker is joined, including cancellation.
+    std::unique_ptr<launcher_mods::OperationLease> operation;
+    enum class ResetStage { none, inspecting, confirming, deleting, result };
+    ResetStage reset_stage{ResetStage::none};
+    launcher_mods::ResetPlan reset_plan;
+    launcher_mods::ResetResult reset_result;
+    bool reset_focus{};
+    bool reset_confirm_focus{};
     std::atomic<bool> cancel{};
     std::atomic<float> progress{-1};
     std::mutex mutex;
@@ -496,6 +506,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session);
 // Re-reads the Mods folder and the Thunderstore listing.
 void refresh_mods(Launcher& launcher, ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
+bool begin_mod_operation(ModsPanel& panel, launcher_mods::Operation operation);
 
 // ---------------------------------------------------------------- Thunderstore (gui_mods_browse.cpp)
 

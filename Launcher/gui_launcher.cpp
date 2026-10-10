@@ -156,9 +156,11 @@ void Launcher::save() {
 template<class Task> void Launcher::start(Task task) {
     if (busy_) return;
     if (worker_.joinable()) worker_.join();
+    launcher_mods::OperationLease operation(launcher_mods::Operation::launcher);
+    if (!operation) return;
     busy_ = true;
     cancel_ = false;
-    worker_ = std::thread([this, task] {
+    worker_ = std::thread([this, task, operation = std::move(operation)] {
         try { task(); }
         catch (const std::exception& exception) { fail(exception.what()); }
         busy_ = false;
