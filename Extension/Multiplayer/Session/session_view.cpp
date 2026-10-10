@@ -506,6 +506,12 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/vote-cancel", "/vote-cancel", "Admin: stop the running vote"});
             list.push_back({"/map-pool", "/map-pool [add|remove <map>|clear]", "Admin: the maps players vote between and the rotation uses"});
             list.push_back({"/rotation", "/rotation [<minutes>|off]", "Admin: change the map on a timer, through the map pool"});
+            // Park mods (Server/server_parks.cpp): their names are the server's own, not in the roster.
+            list.push_back({"/park-mod list", "/park-mod list", "Admin: the server's park mods, and which are spawned"});
+            list.push_back({"/park-mod add", "/park-mod add <name> [<name>...] [minutes]",
+                            "Admin: spawn park mods on this map, for 1-1440 minutes or until removed"});
+            list.push_back({"/park-mod remove", "/park-mod remove <name> [<name>...]", "Admin: remove spawned park mods"});
+            list.push_back({"/park-mod clear", "/park-mod clear", "Admin: remove every spawned park mod"});
         }
     }
     return list;
