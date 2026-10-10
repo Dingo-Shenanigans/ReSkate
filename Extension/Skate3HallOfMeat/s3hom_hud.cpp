@@ -473,17 +473,20 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
     // (250, 150, 126) out to (146, 45, 36) at its edge, through its colour matrix.
     for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i) {
         const float heat = broken[i] ? 1.0f : std::clamp((r.damage[i] - 0.25f) / 0.75f, 0.0f, 1.0f);
-        if (heat <= 0.0f) continue;
+        if (!broken[i] && r.damage[i] <= 0.0f) continue;
         const auto &seg = rig.bones[i];
         ImVec2 a, b;
         float da{}, db{};
         if (!projector.project(seg.a, a, da) || !projector.project(seg.b, b, db)) continue;
         const float px = std::clamp(seg.radius * projector.focal * 2.0f / (da + db), 1.5f, 80.0f);
         const float throb = broken[i] ? 0.8f + 0.2f * std::sin(static_cast<float>(ImGui::GetTime()) * 7.0f) : 1.0f;
-        const ImU32 glow = broken[i] ? IM_COL32(255, 80, 30, 255) : IM_COL32(255, 130, 45, 255);
+        // Skate 3's bloom: cool white round white bones, red-orange round hurt ones.
+        const auto lerp8 = [](int x, int y, float t) { return static_cast<int>(static_cast<float>(x) + static_cast<float>(y - x) * t); };
+        const ImU32 glow = broken[i] ? IM_COL32(255, 70, 25, 255)
+                                     : IM_COL32(lerp8(190, 255, heat), lerp8(205, 95, heat), lerp8(240, 35, heat), 255);
         for (int layer = 4; layer >= 1; --layer) {
-            const float w = px * (1.4f + 0.9f * layer);
-            const float k = (0.05f + 0.07f * heat) * throb * fade * bones_alpha;
+            const float w = px * (1.3f + 0.8f * layer);
+            const float k = (0.045f + 0.075f * heat) * throb * fade * bones_alpha;
             if (i == 0) draw->AddCircleFilled(ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), w, alpha(glow, k), 24);
             else {
                 draw->AddLine(a, b, alpha(glow, k), w * 2.0f);
@@ -507,15 +510,16 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
                 continue;
             }
             // Bruised up to dislocated shows faint to full; broken in the fracture colours.
-            const float strength = broken[i] ? 1.0f : std::clamp(0.35f + 0.65f * damage, 0.35f, 1.0f);
+            const float strength = broken[i] ? 1.0f : std::clamp(0.75f + 0.25f * damage, 0.75f, 1.0f);
             // Skate 3's colours, measured from the original: hurt (223, 212, 214), broken (198, 87, 64),
             // fracture (158, 43, 23), after its bone map; these tints give those through the map.
             // Lightly hurt stays bone white; from sprained on it heats up to orange, broken burns red-orange.
             const float heat = std::clamp((damage - 0.25f) / 0.75f, 0.0f, 1.0f);
             const auto mix = [](int x, int y, float t) { return static_cast<int>(static_cast<float>(x) + (static_cast<float>(y) - static_cast<float>(x)) * t); };
-            const ImU32 tint = broken[i] ? IM_COL32(255, 110, 55, 255) : IM_COL32(255, mix(244, 160, heat), mix(246, 90, heat), 255);
+            // The rim colour (the core runs to white): Skate 3's cool white, heating to its red-orange.
+            const ImU32 tint = broken[i] ? IM_COL32(236, 70, 26, 255) : IM_COL32(mix(198, 236, heat), mix(212, 92, heat), mix(234, 40, heat), 255);
             const auto &facing = seg.has_front && skate3_hom::roll_from_joints().load() ? seg.front : rig.forward;
-            draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade * bones_alpha, broken[i] ? 0.85f : 0.0f);
+            draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade * bones_alpha, broken[i] ? 0.35f : 0.0f);
         }
 }
 
