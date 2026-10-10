@@ -1000,21 +1000,26 @@ std::string command(std::string_view action, std::string_view argument, std::str
             }
             s.mode = Mode::host;
             s.host_id = s.transport.status().local_id;
-            // Falling back to the Steam name: that one is not the player's to retype, so mask it.
-            s.lobby_name = lobby_name.empty() ? text::mask_bad_words(s.transport.name(s.host_id))
-                                              : std::string(lobby_name);
+            load_host_preferences(s);
+            auto &remembered = s.host_preferences;
+            if (!lobby_name.empty())
+                s.lobby_name = std::string(lobby_name);
+            else if (!remembered.lobby_name.empty())
+                s.lobby_name = remembered.lobby_name;
+            else {
+                // Falling back to the Steam name: that one is not the player's to retype, so mask it.
+                s.lobby_name = text::mask_bad_words(s.transport.name(s.host_id));
+            }
             if (s.lobby_name.empty()) s.lobby_name = "ReSkate session";
             s.invite = format_invite({s.host_id, s.secret});
             s.public_host = visibility == "public";
             if (s.public_host)
                 s.lobbies.host(s.invite, capacity, s.password.has_value(), s.lobby_name);
             // Remember this setup, and bring back the host options chosen last time.
-            load_host_preferences(s);
-            auto &remembered = s.host_preferences;
             remembered.public_lobby = s.public_host;
             remembered.capacity = capacity;
             remembered.tps = tps;
-            remembered.lobby_name = std::string(lobby_name);
+            if (!lobby_name.empty()) remembered.lobby_name = std::string(lobby_name);
             remembered.password_required = s.password.has_value();
             apply_distances(s, remembered.distances);
             s.voice_range = remembered.voice_range;

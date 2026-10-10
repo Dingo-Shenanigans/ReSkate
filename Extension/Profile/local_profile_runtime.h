@@ -89,6 +89,7 @@ bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."
 // prefix. Absent until first written; never exposed to the game's own settings.
 namespace profile_runtime {
+bool local_profile_store_ready() noexcept;
 std::optional<bool> local_preference(std::string_view key) noexcept;
 void set_local_preference(std::string_view key, bool value) noexcept;
 // The same "ReSkate." store for numbers and text. A key keeps the type it was

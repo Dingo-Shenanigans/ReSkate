@@ -8,6 +8,7 @@
 #include "Extension/Multiplayer/Session/session_party.cpp"
 #include "Engine/Game/World/park_randomization.h"
 #include <iostream>
+#include <map>
 #include <set>
 
 namespace dingosdk {
@@ -73,10 +74,27 @@ std::string status() { return {}; }
 namespace dingosdk::profile_runtime {
 void install_script_error_log(std::uintptr_t) noexcept {}
 void install_board_wear_hold(std::uintptr_t) noexcept {}
-std::optional<bool> local_preference(std::string_view) noexcept { return {}; }
-void set_local_preference(std::string_view, bool) noexcept {}
-std::optional<Json> local_value(std::string_view) noexcept { return {}; }
-void set_local_values(const std::vector<std::pair<std::string, Json>>&) noexcept {}
+bool simulated_profile_store_ready = true;
+std::map<std::string, Json, std::less<>> simulated_profile;
+bool local_profile_store_ready() noexcept { return simulated_profile_store_ready; }
+std::optional<bool> local_preference(std::string_view key) noexcept {
+    const auto value = local_value(key);
+    if (value && value->is_boolean()) return value->get<bool>();
+    return {};
+}
+void set_local_preference(std::string_view key, bool value) noexcept {
+    set_local_values({{std::string(key), value}});
+}
+std::optional<Json> local_value(std::string_view key) noexcept {
+    if (!simulated_profile_store_ready) return {};
+    const auto it = simulated_profile.find("ReSkate." + std::string(key));
+    if (it == simulated_profile.end()) return {};
+    return it->second;
+}
+void set_local_values(const std::vector<std::pair<std::string, Json>>& values) noexcept {
+    if (!simulated_profile_store_ready) return;
+    for (const auto& [key, value] : values) simulated_profile["ReSkate." + key] = value;
+}
 }
 
 namespace dingosdk::multiplayer {
@@ -1150,6 +1168,20 @@ void tick_settings_checks() {
     }
     (void)command("host", "code 8 120 is a lobby name");
     check(configured.tps == 30 && configured.lobby_name == "120 is a lobby name", "Legacy host command changed meaning");
+    profile_runtime::simulated_profile.clear();
+    stop(configured, "Lobby name persistence");
+    (void)command("host-config", "code 8 30 Persisted lobby");
+    check(configured.lobby_name == "Persisted lobby", "Host did not use the requested lobby name");
+    const auto stored = profile_runtime::local_value("Host.LobbyName");
+    check(stored && stored->is_string() && stored->string() == "Persisted lobby",
+          "Host did not save the lobby name to the profile");
+    stop(configured, "Lobby name persistence");
+    configured.host_preferences.loaded = false;
+    (void)command("host-config", "code 8 30");
+    check(configured.lobby_name == "Persisted lobby", "Empty rehost did not reuse the saved lobby name");
+    const auto still_stored = profile_runtime::local_value("Host.LobbyName");
+    check(still_stored && still_stored->is_string() && still_stored->string() == "Persisted lobby",
+          "Empty rehost wiped the saved lobby name");
     // Whose physics guests skate with is the host's to switch, and is remembered for next time.
     check(configured.enforce_tuning, "A new lobby did not start with the host's physics for everyone");
     (void)command("tuning-enforce", "off");
