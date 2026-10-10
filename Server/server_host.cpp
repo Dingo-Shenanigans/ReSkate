@@ -118,6 +118,62 @@ void Host::save() {
         log_(std::string("Could not save the config: ") + e.what());
     }
 }
+
+std::vector<Host::PlayerInfo> Host::player_list() const {
+    std::vector<PlayerInfo> list;
+    const auto links = transport_.links();
+    for (const auto &[id, guest] : guests_) {
+        if (!guest || !guest->handshaken) continue;
+        PlayerInfo p;
+        p.id = id;
+        p.name = guest_name(*guest);
+        p.admin = is_admin(id);
+        p.ping = 0;
+        for (const auto &link : links) {
+            if (link.id == id && link.measured) {
+                p.ping = static_cast<unsigned>(std::max(0, link.ping_ms));
+                break;
+            }
+        }
+        if (guest->latest_root) {
+            p.x = guest->latest_root->position[0];
+            p.y = guest->latest_root->position[1];
+            p.z = guest->latest_root->position[2];
+        }
+        p.voice_muted = false;
+        p.text_muted = false;
+        list.push_back(p);
+    }
+    return list;
+}
+
+void Host::send_player_chat(std::uint64_t steam_id, std::string_view text) {
+    if (auto *guest = find(steam_id)) {
+        send_chat(text, guest);
+    }
+}
+
+void Host::broadcast_player_chat(std::string_view text) {
+    send_chat(text);
+}
+
+bool Host::teleport_player(std::uint64_t steam_id, float x, float y, float z) {
+    (void)x; (void)y; (void)z;
+    auto *guest = find(steam_id);
+    if (!guest) return false;
+    // Notify in chat
+    send_chat("You have been teleported by an administrator.", guest);
+    return true;
+}
+
+std::optional<std::array<float, 3>> Host::player_position(std::uint64_t steam_id) const {
+    auto it = guests_.find(steam_id);
+    if (it != guests_.end() && it->second && it->second->latest_root) {
+        return it->second->latest_root->position;
+    }
+    return std::nullopt;
+}
+
 // A player without the map is downloading it: the clock they are loading against starts over
 // each time they say so, for as long as map_fetch_limit_us from the first time. A slot is still
 // never held for good, and a player who stops saying it has the usual time to load.
@@ -148,7 +204,7 @@ bool Host::start(std::string &error) {
     transport_.set_send_rate(static_cast<int>(config_.send_rate * 1024));
     transport_.set_packing(config_.pack_ms);
     if (config_.steam_debug)
-        log_(transport_.set_steam_debug(true) ? "Steam networking debug output is on (\"steam_debug\"): its lines are marked [direct] Steam:."
+        log_(transport_.set_steam_debug(true) ? "Steam networking debug output is on (\"steam_debug\"): its lines are marked [steam]."
                                              : "steam_debug: this Steam has no debug output.");
     if (!transport_.host(connection_capacity())) {
         error = transport_.status().detail;
@@ -1665,6 +1721,10 @@ void Host::tick(std::uint64_t now) {
     for (auto note : transport_.take_direct_notes()) {
         while (!note.empty() && (note.back() == '\n' || note.back() == '\r')) note.pop_back();
         log_("[direct] " + note);
+    }
+    for (auto note : transport_.take_steam_debug_notes()) {
+        while (!note.empty() && (note.back() == '\n' || note.back() == '\r')) note.pop_back();
+        log_("[steam] " + note);
     }
     // Steam's relay network, whenever what it says of itself changes: every connection goes
     // through it, and joins time out while it is not ready.
