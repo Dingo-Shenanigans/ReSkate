@@ -68,8 +68,9 @@ LZ4 1.10.0 (`lz4/`) supplies the unmodified BSD-2-Clause block codec for bounded
 Lua 5.4.9 (`lua/`) runs the dedicated server's scripts (`Server/server_scripts.cpp`). Its `src/` is
 built as C++, without the standalone `lua.c` and `luac.c`. The one local patch, in `lua/src/lstrlib.c`
 (marked "ReSkate"), gives pattern matching a work budget (`MAXMATCHSTEPS`): Lua's instruction hooks
-cannot stop C code, and a pattern a player types could otherwise stall the server. Server packages
-should include `lua/LICENSE.txt`.
+cannot stop C code, and a pattern a player types could otherwise stall the server. Both server
+packages (`ReSkateServer-<version>.zip` and `ReSkateServer-Linux-<version>.tar.gz`) must ship
+`lua/LICENSE.txt` as `licenses/lua-LICENSE.txt`, beside the other libraries' licenses.
 
 Zstandard 1.5.7 (`zstd/`) is the library's common, compress and decompress sources, built without legacy format
 support or assembly, for multiplayer packet and game archive compression. It is not
