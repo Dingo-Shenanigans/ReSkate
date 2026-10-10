@@ -1,4 +1,5 @@
 #include "client_source_spawn.h"
+#include "car_grab_runtime.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
 #include "offboard_flight.h"
@@ -350,6 +351,14 @@ void noclip_physics_update(std::uintptr_t core) {
     noclip_apply_velocity(core);
     trainer_apply_jump_scale(core);
     trainer_push_speed(core);
+    // Car Grab uses the same validated simulation phase and physics ownership.
+    // Its bridge must not recursively acquire SourceState::busy.
+    auto& state = source_state();
+    if (state.initialized.load(std::memory_order_acquire) && state.velocity_guard_active.load(std::memory_order_acquire) &&
+        !state.busy.test_and_set(std::memory_order_acquire)) {
+        SourceBusyScope scope{state.busy};
+        car_grab_physics_tick(core);
+    }
 }
 bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::array<float,16>& target) noexcept {

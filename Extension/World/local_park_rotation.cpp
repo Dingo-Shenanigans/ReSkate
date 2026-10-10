@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Skater/traffic_vehicle_provider.h"
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "level_loading.h"
@@ -160,12 +161,14 @@ void park_tick_hook(std::uintptr_t manager, float delta) {
         update_park_rotation(manager, GetTickCount64());
         update_world_layers(manager, GetTickCount64());
         update_placement_poses();
+        car_grab_native::capture(s.base, manager);
     } catch (...) {
         dingosdk::logging::event(dingosdk::logging::Channel::world, "{\"event\":\"local_park_update_failed\"}");
     }
 }
 
 void park_construct_hook(std::uintptr_t context) {
+    car_grab_native::invalidate();
     park_runtime().construct(context);
     if (!park_runtime().active.load(std::memory_order_acquire)) return;
     PreserveError preserve;

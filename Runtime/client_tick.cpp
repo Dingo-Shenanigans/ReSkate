@@ -27,6 +27,7 @@
 #include "Extension/Settings/named_settings.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/client_source_spawn.h"
+#include "Extension/Skater/car_grab_runtime.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Trainer/trainer.h"
@@ -1151,6 +1152,11 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             if (!discord_join.empty() && multiplayer_ready && dingosdk::multiplayer::queue_command("join", discord_join, ""))
                 discord_join.clear();
         }
+        // Car Grab: publish only the verified, idle local client scope. Physics
+        // reacquires ownership and reads focus/input before applying any delta.
+        bool car_grab_idle{};
+        { std::lock_guard lock(r.mutex); car_grab_idle = r.requests.idle(); }
+        dingosdk::publish_car_grab_client(r.base, client, multiplayer_ready && car_grab_idle);
         dingosdk::tick_local_developer_hoodie(r.base, client, multiplayer_ready);
         dingosdk::tick_local_developer_board(r.base, client, multiplayer_ready);
         // The session spawns and places skaters and can teleport: check the camera again.

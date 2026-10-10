@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Skater/traffic_vehicle_provider.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "local_population_controls.h"
 #include "local_world_controls.h"
@@ -54,6 +55,7 @@ void population_release_config(std::uintptr_t manager) {
 }
 
 std::uintptr_t population_construct(std::uintptr_t manager, int realm, std::uintptr_t allocator) {
+    if (realm == 1) car_grab_native::invalidate();
     auto& p = population_runtime(); const auto result = p.construct(manager, realm, allocator);
     PreserveError preserve;
     try {
@@ -64,6 +66,7 @@ std::uintptr_t population_construct(std::uintptr_t manager, int realm, std::uint
 }
 
 std::uintptr_t population_destroy(std::uintptr_t manager, unsigned flags) {
+    car_grab_native::invalidate_population(manager);
     auto& p = population_runtime();
     { PreserveError preserve; std::lock_guard lock(world_control_runtime().mutex);
       population_release_config(manager); p.nodes.erase(manager); }

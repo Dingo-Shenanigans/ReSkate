@@ -1,4 +1,5 @@
 #include "native_skater_internal.h"
+#include "Extension/Skater/car_grab_reach.h"
 #include "native_pose_layout.h"
 #include "puppet_cost.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
@@ -376,6 +377,7 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
         return;
     }
     shared().original_animation(component, update);
+    dingosdk::car_grab_native::reach_on_animation(component);
     if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
         listener(component);
 }

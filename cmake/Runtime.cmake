@@ -110,6 +110,16 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/client_noclip.cpp
     Extension/Skater/client_first_person.cpp
     Extension/Skater/client_debug.cpp
+    Extension/Skater/car_grab_runtime.cpp
+    Extension/Skater/traffic_vehicle_provider.cpp
+    Extension/Skater/traffic_vehicle_surface.cpp
+    Extension/Skater/car_grab_reach.cpp
+    Extension/UI/Overlay/car_grab_hud.cpp
+    Extension/Skater/CarGrabCore/src/controller.cpp
+    Extension/Skater/CarGrabCore/src/vehicle_samples.cpp
+    Extension/Skater/CarGrabCore/src/lifecycle_journal.cpp
+    Extension/Skater/CarGrabCore/src/reach_pose.cpp
+    Extension/Skater/CarGrabCore/src/grip_pose.cpp
     Extension/Skater/ai_skaters.cpp
     Extension/Skater/no_bail.cpp
     Extension/Skater/physics_tuning.cpp
@@ -203,6 +213,7 @@ target_link_libraries(dingosdk_custom_level_manifest PUBLIC dingosdk_json)
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_custom_level_manifest)
 
 set_target_properties(dingosdk_runtime PROPERTIES OUTPUT_NAME "ReSkate" PREFIX "")
+target_include_directories(dingosdk_runtime PRIVATE "${PROJECT_SOURCE_DIR}/Extension/Skater/CarGrabCore/include")
 dingosdk_version_info(dingosdk_runtime "ReSkate mod runtime" "ReSkate.dll" VFT_DLL)
 target_include_directories(dingosdk_runtime SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_lz4 dingosdk_zstd)
