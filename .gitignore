@@ -29,3 +29,4 @@ analysis/raw/**/*.res
 /docs/
 /release
 /External/.vs
+/.github
