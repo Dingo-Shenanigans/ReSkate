@@ -45,7 +45,7 @@ LoadedPark load_park_mod(const fs::path &mods, const ParkMod &park) {
     const auto folder = mods / fs::path(park.folder);
     std::error_code error;
     if (!fs::is_directory(folder, error))
-        throw std::runtime_error("The mod folder \"" + park.folder + "\" is not in " + path_utf8(mods) + ".");
+        throw std::runtime_error("The mod folder \"" + park.folder + "\" is not in the Mods folder.");
     const auto parks = folder / "parks";
     LoadedPark loaded;
     if (!park.key.empty() && !valid_park_key(park.key)) throw std::runtime_error("\"" + park.key + "\" is not a base map's key.");

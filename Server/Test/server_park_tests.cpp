@@ -195,7 +195,9 @@ int run(const std::filesystem::path &fixtures) {
             }
             return false;
         };
-        check(refused({"x", "not installed", "San Vansterdam", "bam"}, "is not in"), "A missing mod folder was not reported");
+        // Said without the server's own paths: the reason can reach chat (an admin, a vote).
+        check(refused({"x", "not installed", "San Vansterdam", "bam"}, "The mod folder \"not installed\" is not in the Mods folder."),
+              "A missing mod folder was not reported, or named the server's path");
         check(refused({"x", "popular skate 2 street park", "Isle of Grom", "grom"}, "has no park for grom"), "A missing park file was not reported");
         check(refused({"x", "two maps", "San Vansterdam", ""}, "set \"key\""), "A mod with parks for two maps did not ask for a key");
         check(load_park_mod(fixtures, {"x", "two maps", "Super Ultra Mega Resort", "mpr"}).objects.size() == 3, "A park chosen by its key did not load");
