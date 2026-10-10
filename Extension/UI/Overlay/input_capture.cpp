@@ -80,9 +80,10 @@ BOOLEAN __stdcall captured_hid_attributes(HANDLE file, PHIDD_ATTRIBUTES attribut
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     if (!block_polled_input() || !read.buffer || size > read.capacity) return;
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
-    if (!parse_playstation_report(read.kind, playstation_bluetooth(read.capacity), bytes, size)) return;
+    const bool bluetooth = playstation_bluetooth(size);
+    if (!parse_playstation_report(read.kind, bluetooth, bytes, size)) return;
     const bool sense_full = read.kind == PlayStationPad::dualsense &&
-        (bytes[0] == 0x31 || (bytes[0] == 1 && !playstation_bluetooth(read.capacity)));
+        (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
     const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
     auto* data = bytes + offset;
     std::fill_n(data, 4, std::uint8_t{128});
