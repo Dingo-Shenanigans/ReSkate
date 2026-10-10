@@ -24,6 +24,7 @@ struct Sample {
     bool lying{};   // head no higher than ~0.3 m above the hips: the body is down, not crouched
     std::array<std::array<float, 3>, 19> bone_centres{};
     bool vehicle{}; // the body touched a car or truck
+    int ragdoll{-1}; // skate.'s own flag: 1 the body is a ragdoll (a crash), 0 under control, -1 unknown
 };
 
 // Skate 3's own HoM damage model (Sk8::Score::HoM in its attribute database): 25 body parts, each

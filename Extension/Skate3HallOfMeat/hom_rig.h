@@ -59,6 +59,12 @@ inline std::atomic<bool> &hide_game_ui() {
 }
 // Whether the skater stands upright (head well above the hips), from the last skeleton read.
 // A body of the local skater touched a vehicle in the last physics step (skate.'s contact records).
+// skate.'s own word on the body off the board: 1 a ragdoll (a crash), 0 under control (on foot, a
+// glide, a dive), -1 not readable.
+inline std::atomic<int> &rig_ragdoll() {
+    static std::atomic<int> value{-1};
+    return value;
+}
 inline std::atomic<bool> &vehicle_contact() {
     static std::atomic<bool> value{};
     return value;

@@ -292,7 +292,7 @@ bool Tracker::update(const Sample &s) {
     if (s.vehicle) vehicle_time_ = s.time;
     // While a crash from the air waits to be confirmed, a body that keeps dropping is still flying
     // (a glide that jolted, a jump off the board mid-air, a trainer-boosted jump): no crash yet.
-    if (phase_ == Phase::bailing && pending_until_ >= 0 && hips_velocity_[1] < -2.0f) {
+    if (phase_ == Phase::bailing && pending_until_ >= 0 && hips_velocity_[1] < -2.0f && s.ragdoll != 1) {
         if (pending_fall_since_ < 0) pending_fall_since_ = s.time;
     } else {
         pending_fall_since_ = -1;
@@ -506,6 +506,8 @@ bool Tracker::update(const Sample &s) {
         // A crash from the air (not a glide's landing) shows as soon as the body has stopped dropping:
         // only one still falling has to wait out the check.
         if (pending_until_ >= 0 && !pending_glide_ && s.time - pending_from_ >= 0.03 && hips_velocity_[1] > -1.5f) pending_until_ = -1;
+        // skate. itself calls the body a ragdoll: a crash, whatever the glide checks would say.
+        if (pending_until_ >= 0 && s.ragdoll == 1 && s.time - pending_from_ >= 0.03) pending_until_ = -1;
         // A glide that ends stopped dead (a slam, not a belly slide) is a crash at once too.
         if (pending_until_ >= 0 && pending_glide_ && s.time - pending_from_ >= 0.1 && body_speed_ < 2.5f && hips_velocity_[1] > -1.5f)
             pending_until_ = -1;

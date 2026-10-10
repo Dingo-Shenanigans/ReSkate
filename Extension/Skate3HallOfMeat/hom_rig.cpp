@@ -8,6 +8,7 @@
 #include "Extension/Skater/no_bail.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/skater_body.h"
+#include "Engine/Game/Build/20260929/skater_state.h"
 #include <Windows.h>
 #include <array>
 #include <chrono>
@@ -406,6 +407,16 @@ void read_vehicle_contact(std::uintptr_t base) noexcept {
         for (std::size_t i = 0; i < body::body_bone_count; ++i)
             if (touching[i] && records[i * body::bone_record_size + body::bone_hit_vehicle_offset]) touched = true;
     vehicle_contact().store(touched);
+    // The offboard state's ragdoll flag (Engine/Game/Build/20260929/skater_state.h), read the same way.
+    namespace state = addr::skater_state;
+    int ragdoll = -1;
+    std::uintptr_t trick_state{}, offboard{};
+    std::uint8_t flag{};
+    if (contacts_readable(base) && skater.core && first_person_read(skater.core + state::trick_state_offset, &trick_state, sizeof(trick_state)) &&
+        trick_state && first_person_read(trick_state + state::offboard_state_offset, &offboard, sizeof(offboard)) && offboard &&
+        first_person_read(offboard + state::ragdoll_offset, &flag, sizeof(flag)) && flag <= 1)
+        ragdoll = flag;
+    rig_ragdoll().store(ragdoll);
 }
 } // namespace
 

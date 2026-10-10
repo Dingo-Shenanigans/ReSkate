@@ -576,6 +576,7 @@ void skate3_hom_tick(bool stand_down) {
         in.upright = skate3_hom::rig_upright().load();
         in.lying = skate3_hom::rig_lying().load();
         in.vehicle = skate3_hom::vehicle_contact().load();
+        in.ragdoll = skate3_hom::rig_ragdoll().load();
         for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i)
             for (std::size_t k = 0; k < 3; ++k) in.bone_centres[i][k] = (rig.bones[i].a[k] + rig.bones[i].b[k]) * 0.5f;
     }
