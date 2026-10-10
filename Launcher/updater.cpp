@@ -11,6 +11,8 @@
 #include <miniz.h>
 
 #include <array>
+#include <cctype>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -328,6 +330,136 @@ std::optional<Config> fetch_config() {
         return std::nullopt;
     }
 }
+
+namespace {
+// &lt; &amp; &#39; &#x27; ... as the characters they stand for; anything else is left as it is.
+std::string unescape(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t at = 0; at < text.size();) {
+        const auto end = text[at] == '&' ? text.find(';', at) : std::string_view::npos;
+        if (end == std::string_view::npos || end - at > 9) { out.push_back(text[at++]); continue; }
+        const auto name = text.substr(at + 1, end - at - 1);
+        unsigned long code{};
+        if (name == "lt") code = '<';
+        else if (name == "gt") code = '>';
+        else if (name == "amp") code = '&';
+        else if (name == "quot") code = '"';
+        else if (name == "apos") code = '\'';
+        else if (name == "nbsp") code = ' ';
+        else if (name.size() > 1 && name[0] == '#') {
+            const bool hex = name[1] == 'x' || name[1] == 'X';
+            const std::string digits(name.substr(hex ? 2 : 1));
+            char* stop{};
+            code = digits.empty() ? 0 : std::strtoul(digits.c_str(), &stop, hex ? 16 : 10);
+            if (!stop || *stop || code > 0x10ffff) code = 0;
+        }
+        if (!code) { out.push_back(text[at++]); continue; }
+        if (code < 0x80) out.push_back(static_cast<char>(code));
+        else if (code < 0x800) out += {static_cast<char>(0xc0 | code >> 6), static_cast<char>(0x80 | (code & 0x3f))};
+        else if (code < 0x10000)
+            out += {static_cast<char>(0xe0 | code >> 12), static_cast<char>(0x80 | (code >> 6 & 0x3f)),
+                    static_cast<char>(0x80 | (code & 0x3f))};
+        else
+            out += {static_cast<char>(0xf0 | code >> 18), static_cast<char>(0x80 | (code >> 12 & 0x3f)),
+                    static_cast<char>(0x80 | (code >> 6 & 0x3f)), static_cast<char>(0x80 | (code & 0x3f))};
+        at = end + 1;
+    }
+    return out;
+}
+
+// The HTML GitHub renders a release's notes to, back as the plain markdown the launcher
+// draws: paragraphs, headings and list items keep their lines, every other tag is dropped.
+std::string html_to_markdown(std::string_view html) {
+    std::string out;
+    const auto line = [&](int blank) {
+        while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+        int have{};
+        for (auto it = out.rbegin(); it != out.rend() && *it == '\n'; ++it) ++have;
+        for (; !out.empty() && have < blank; ++have) out.push_back('\n');
+    };
+    for (std::size_t at = 0; at < html.size();) {
+        if (html[at] != '<') {
+            out.push_back(html[at++]);
+            continue;
+        }
+        const auto end = html.find('>', at);
+        if (end == std::string_view::npos) break;
+        auto tag = html.substr(at + 1, end - at - 1);
+        at = end + 1;
+        const bool closing = tag.starts_with('/');
+        if (closing) tag.remove_prefix(1);
+        std::string name(tag.substr(0, tag.find_first_of(" \t\r\n/")));
+        for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const bool heading = name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
+        if (name == "br") line(1);
+        else if (name == "li" && !closing) line(1), out += "- ";
+        else if (heading && !closing) line(2), out += "## ";
+        else if (name == "p" || name == "div" || name == "pre" || name == "ul" || name == "ol" || name == "blockquote" || heading)
+            line(2);
+        else if (name == "li" || name == "tr") line(1);
+    }
+    return unescape(out);
+}
+
+std::string_view between(std::string_view text, std::string_view open, std::string_view close) {
+    const auto start = text.find(open);
+    if (start == std::string_view::npos) return {};
+    const auto from = start + open.size();
+    const auto end = text.find(close, from);
+    return end == std::string_view::npos ? std::string_view{} : text.substr(from, end - from);
+}
+} // namespace
+
+std::vector<ReleaseNote> parse_release_feed(std::string_view feed) {
+    std::vector<ReleaseNote> notes;
+    for (std::size_t at = 0; notes.size() < 50;) {
+        const auto start = feed.find("<entry>", at);
+        const auto end = start == std::string_view::npos ? start : feed.find("</entry>", start);
+        if (end == std::string_view::npos) break;
+        const auto entry = feed.substr(start, end - start);
+        at = end;
+        ReleaseNote note;
+        note.title = unescape(between(entry, "<title>", "</title>"));
+        note.tag = unescape(between(entry, "/releases/tag/", "\""));
+        if (note.tag.empty()) note.tag = note.title;
+        note.date = std::string(between(entry, "<updated>", "</updated>").substr(0, 10));
+        // <content type="html">: the notes as HTML, escaped once more to sit in the feed.
+        if (const auto content = entry.find("<content"); content != std::string_view::npos)
+            note.notes = html_to_markdown(unescape(between(entry.substr(content), ">", "</content>")));
+        if (!note.tag.empty()) notes.push_back(std::move(note));
+    }
+    return notes;
+}
+
+ReleaseNote fetch_release_note() {
+    // The description as it was written, markdown, from GitHub's API.
+    try {
+        const auto url = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo + L"/releases/latest";
+        std::string text;
+        http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+        const auto release = Json::parse(text);
+        // (A release made without a title or a description has null there.)
+        const auto field = [&](std::string_view key) {
+            return release.contains(key) && release.at(key).is_string() ? release.at(key).string() : std::string();
+        };
+        ReleaseNote note{field("tag_name"), field("name"), field("published_at").substr(0, 10), field("body")};
+        if (!note.tag.empty() && note.notes.find_first_not_of(" \t\r\n") != std::string::npos) return note;
+    } catch (const std::exception& exception) {
+        logging::log(logging::Level::info, logging::Channel::launcher,
+            "Latest release's notes not available from GitHub's API ({}); reading the releases feed.", exception.what());
+    }
+    // Else what the releases page shows, from its feed: a release published without a
+    // description shows its commit's message there, and the feed has no hourly limit.
+    const auto url = std::wstring(L"https://github.com/") + launcher_release_repo + L"/releases.atom";
+    std::string text;
+    http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+    auto notes = parse_release_feed(text);
+    if (notes.empty()) fail("The repository has no releases");
+    return std::move(notes.front());
+}
+
+std::string releases_page() { return "https://github.com/" + utf8(launcher_release_repo) + "/releases"; }
 
 bool file_matches(const fs::path& path, const RemoteFile& file) {
     std::error_code error;

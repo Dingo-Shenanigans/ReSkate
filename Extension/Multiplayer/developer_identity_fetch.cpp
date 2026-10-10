@@ -1,4 +1,5 @@
 #include "developer_identity.h"
+#include "word_lists.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/https_download.h"
 #include <Windows.h>
@@ -30,6 +31,11 @@ void fetch() noexcept {
                 logging::log(logging::Level::info, logging::Channel::runtime,
                              "Identity lists: {} developer(s), {} homie(s), {} content creator(s), {} banned.", developers,
                              homies, creators, bans);
+            // The chat word lists come in the same answer (word_lists.h).
+            if (const auto words = use_word_lists(*answer); words.changed)
+                logging::log(logging::Level::info, logging::Channel::runtime,
+                             "Word lists: {} filtered and {} not allowed at all, from the ReSkate backend.", words.filtered,
+                             words.forbidden);
             ok = true;
         } else if (!failing) {
             logging::log(logging::Level::info, logging::Channel::runtime,

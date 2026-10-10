@@ -263,6 +263,7 @@ void publish(Session &s, const NativeFrame *local) {
     view.sent_bytes = t.sent_bytes;
     view.raw_sent_bytes = t.raw_sent_bytes;
     view.invite = s.invite;
+    if ((s.mode == Mode::host || s.mode == Mode::join) && s.host_id && s.secret) view.join_code = format_invite({s.host_id, s.secret});
     view.map = s.map_name.empty() ? s.available_map : s.map_name;
     view.local_ready = s.gameplay_ready && !s.available_map.empty();
     const auto &lobby = s.lobbies.status();
@@ -497,6 +498,8 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/tod", "/tod <time>", "Admin: set the time of day", "time"});
             list.push_back({"/votes", "/votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>]", "Admin: the server's vote settings"});
             list.push_back({"/announce", "/announce <text>", "Admin: announce something to everyone, on a card on their screen"});
+            list.push_back({"/announce-to", "/announce-to <player> <text>", "Admin: announce something to one player, on a card on their screen",
+                            "player"});
             list.push_back({"/announcements", "/announcements [list|add <text>|remove <n>|interval <minutes>|off]",
                             "Admin: the messages the server announces on a timer"});
             list.push_back({"/poll end", "/poll end", "Admin: end the running poll now"});

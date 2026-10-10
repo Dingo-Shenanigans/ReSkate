@@ -44,6 +44,7 @@ Settings load_settings(const fs::path& path) {
         settings.height = std::clamp(json.value("height", settings.height), 200, 16384);
         settings.loose_files = json.value("loose_files", settings.loose_files);
         settings.gpu_diagnostics = json.value("gpu_diagnostics", settings.gpu_diagnostics);
+        settings.discord_status = json.value("discord_status", settings.discord_status);
         settings.offline = json.value("offline", settings.offline);
         settings.menu_key = json.value("menu_key", settings.menu_key);
         settings.console_key = json.value("console_key", settings.console_key);
@@ -77,6 +78,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["height"] = settings.height;
     json["loose_files"] = settings.loose_files;
     json["gpu_diagnostics"] = settings.gpu_diagnostics;
+    json["discord_status"] = settings.discord_status;
     json["offline"] = settings.offline;
     json["menu_key"] = settings.menu_key;
     json["console_key"] = settings.console_key;
@@ -102,6 +104,7 @@ launcher::LaunchOptions launch_options(const Settings& settings) {
     }
     if (!settings.loose_files) arguments.emplace_back(L"--no-loose-files");
     if (settings.gpu_diagnostics) arguments.emplace_back(L"--gpu-diagnostics");
+    if (!settings.discord_status) arguments.emplace_back(L"--no-discord");
     if (settings.offline) arguments.emplace_back(L"-offline");
     arguments.push_back(std::format(L"--menu-key={}", settings.menu_key));
     arguments.push_back(std::format(L"--console-key={}", settings.console_key));
@@ -483,6 +486,9 @@ void Launcher::run_play() {
 namespace dingosdk::launcher_gui {
 bool updates_enabled(const launcher_app::Session& session) {
     return detail::load_settings(detail::settings_path(session)).updates;
+}
+launcher::LaunchOptions saved_launch_options(const launcher_app::Session& session) {
+    return detail::launch_options(detail::load_settings(detail::settings_path(session)));
 }
 void apply_crash_report_setting() noexcept {
     try {

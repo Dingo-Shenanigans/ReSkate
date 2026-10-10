@@ -6,6 +6,7 @@
 #include "Extension/Multiplayer/developer_identity.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Engine/Core/Text/word_filter.h"
+#include "Extension/Multiplayer/word_lists.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/World/world_names.h"
 #include "Engine/Game/World/park_randomization.h"
@@ -678,7 +679,18 @@ void Host::send_roster() {
         if (m.party && std::none_of(p.members.begin(), p.members.end(),
                                     [&](const Member &o) { return o.party == m.party && o.party_leader; }))
             m.party_leader = true; // the first listed member of a party missing its leader
-    broadcast(p, true, false);
+    // An announcement for one player: everyone else's roster goes without it.
+    auto *only = announcement_for_ ? find(announcement_for_) : nullptr;
+    if (only && !only->handshaken) only = nullptr;
+    if (announcement_for_) {
+        const auto shown = p.announcement;
+        p.announcement = {};
+        broadcast(p, true, false, announcement_for_);
+        p.announcement = shown;
+        if (only) send_packet(*only, p, true, false);
+    } else {
+        broadcast(p, true, false);
+    }
     roster_dirty_ = false;
     last_roster_ = now_;
 }
@@ -698,6 +710,27 @@ void Host::send_chat(std::string_view text, Guest *only) {
     if (message.text.empty()) return;
     if (only) send_packet(*only, message, true, false);
     else broadcast(message, true, false);
+}
+bool Host::allowed_words(Guest &guest, std::string_view text) {
+    if (!text::contains_forbidden_words(text)) return true;
+    // Never passed on. Without warnings ("word_warnings": 0) that is all that happens.
+    if (!config_.word_warnings) {
+        log_("[words] " + guest_name(guest) + " said a word that is not allowed; the message was not passed on.");
+        send_chat(multiplayer::word_blocked_notice, &guest);
+        return false;
+    }
+    const auto id = guest.member.id;
+    const auto count = ++word_warnings_[id];
+    if (count > config_.word_warnings) {
+        log_("[words] " + guest_name(guest) + " was kicked: a word that is not allowed, after " + std::to_string(config_.word_warnings) +
+             " warning(s).");
+        drop(id, std::string(multiplayer::word_kick_notice));
+        return false;
+    }
+    log_("[words] " + guest_name(guest) + " said a word that is not allowed (warning " + std::to_string(count) + " of " +
+         std::to_string(config_.word_warnings) + "); the message was not passed on.");
+    send_chat(multiplayer::word_warning(count, config_.word_warnings), &guest);
+    return false;
 }
 void Host::send_bans(Guest &admin) {
     auto list = packet(PacketKind::bans, now_);
@@ -1088,6 +1121,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
             link->chat_rate.accept(now_, p.text, 1) != ChatRate::Verdict::accepted)
             return;
         link->last_packet = now_;
+        if (!allowed_words(*link, p.text)) return;
         // "/" starts a command (votes; any server command for admins), answered to the sender only.
         if (p.text.front() == '/') {
             log_("[command] " + guest_name(*link) + ": /" + loggable(std::string_view(p.text).substr(1)));

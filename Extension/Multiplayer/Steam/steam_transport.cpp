@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstring>
 #include <deque>
+#include <unordered_map>
 #include <filesystem>
 #include <mutex>
 #include <map>
@@ -139,6 +140,9 @@ struct SteamTransport::Impl {
         note_direct("Direct connection to the server did not come up (" + why + "); using Steam's relays.");
     }
     std::string direct_note; // how the last direct attempt went
+    // When each player's direct connection was last noted, and how often they asked since.
+    struct DirectAsked { std::uint64_t since{}; unsigned again{}; };
+    std::unordered_map<std::uint64_t, DirectAsked> direct_asked;
     std::vector<std::string> direct_notes; // take_direct_notes
     void note_direct(std::string text) {
         if (direct_notes.size() < 64) direct_notes.push_back(std::move(text));
@@ -705,7 +709,19 @@ void SteamTransport::poll() {
         if (existing != p.links.end() && existing->second.handle == event.m_hConn)
             continue;
         const bool direct = p.direct_listener && event.m_info.m_hListenSocket == p.direct_listener;
-        if (direct) p.note_direct("Direct connection asked for by " + std::to_string(id) + ".");
+        // Once a minute a player: one waiting for a place on a full server asks again every
+        // second or so, and each ask used to be a line.
+        if (direct) {
+            if (p.direct_asked.size() > 512) std::erase_if(p.direct_asked, [&](const auto &asked) { return now - asked.second.since >= 60000; });
+            auto &asked = p.direct_asked[id];
+            if (!asked.since || now - asked.since >= 60000) {
+                p.note_direct("Direct connection asked for by " + std::to_string(id) +
+                              (asked.again ? " (and " + std::to_string(asked.again) + " more times in the last minute)." : "."));
+                asked = {now, 0};
+            } else {
+                ++asked.again;
+            }
+        }
         // (A connection by address names a Steam ID only when Steam has vouched for it.)
         if ((event.m_info.m_hListenSocket != p.listener && !direct) || !p.listener || !id || id == p.state.local_id ||
             (!p.state.hosting && !p.allowed.contains(id)) || p.links.size() >= p.capacity - 1 ||

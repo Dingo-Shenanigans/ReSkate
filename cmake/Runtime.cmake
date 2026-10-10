@@ -23,6 +23,7 @@ add_library(dingosdk_runtime SHARED
     Extension/UI/NativeMenu/native_menu.cpp
     Extension/UI/NativeMenu/native_menu_rows.cpp
     Extension/UI/NativeMenu/native_menu_multiplayer.cpp
+    Extension/UI/NativeMenu/ui_sound.cpp
     Extension/UI/NativeMenu/native_menu_dump.cpp
     Extension/UI/NativeMenu/native_hub.cpp
     Extension/UI/NativeMenu/native_menu_data.cpp
@@ -63,6 +64,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Session/password.cpp
     Extension/Multiplayer/developer_identity.cpp
     Extension/Multiplayer/developer_identity_fetch.cpp
+    Extension/Multiplayer/word_lists.cpp
     Extension/Settings/console_commands.cpp
     Extension/Settings/job_spin.cpp
     Extension/Settings/engine_tweaks.cpp
@@ -98,6 +100,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/loading_screen.cpp
     Extension/Customization/preset_lookup_guard.cpp
     Extension/Boot/exit_watch.cpp
+    Extension/Boot/discord_presence.cpp
     Extension/Customization/developer_hoodie.cpp
     Extension/Customization/developer_board.cpp
     Extension/Skater/skater_model.cpp

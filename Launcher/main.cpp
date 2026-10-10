@@ -71,7 +71,9 @@ void run_headless(const app::Session& session, std::vector<std::wstring> argumen
                   const std::vector<std::wstring>& original) {
     const bool relaunched = take_flag(arguments, L"--reskate-updated");
     const bool updates = !take_flag(arguments, L"--no-update") && dingosdk::launcher_gui::updates_enabled(session);
-    const auto options = dingosdk::launcher::parse_launch_options(arguments);
+    // With no options of its own, the launch is the one the launcher window's Play would make.
+    const auto options = arguments.empty() ? dingosdk::launcher_gui::saved_launch_options(session)
+                                           : dingosdk::launcher::parse_launch_options(arguments);
     update::remove_previous_launcher(session.self);
     if (updates) {
         const auto config = update::fetch_config();

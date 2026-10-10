@@ -2,6 +2,8 @@
 #include "Engine/Game/Multiplayer/chat_rate.h"
 #include "session.h"
 #include "Extension/Multiplayer/developer_identity.h"
+#include "Extension/Multiplayer/word_lists.h"
+#include "Engine/Core/Text/word_filter.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
@@ -199,6 +201,8 @@ struct Session {
     bool force_world_layers{};
     // Players the host kicked. They cannot reconnect until the session ends.
     std::set<std::uint64_t> banned;
+    // Warnings each guest of this lobby has had for words that are not allowed at all (word_lists.h).
+    std::map<std::uint64_t, unsigned> word_warnings;
     // Host: Steam IDs whose attempts to join keep failing wait longer each time (room.h).
     JoinBackoff join_backoff;
     // Players banned for good (every session this PC hosts), from the local profile.
@@ -215,7 +219,7 @@ struct Session {
     std::mutex request_mutex;
     std::deque<std::unique_ptr<PrivateRequest>> requests;
     SteamTransport transport;
-    SteamLobbies lobbies{make_steam_lobby_api()};
+    SteamLobbies lobbies{make_steam_lobby_api(), [](std::uint64_t host) { return banned_host(host) || reskate_banned(host); }};
     SteamServerBrowser servers;
     // Guest of a dedicated server: whether the roster lists us as an admin,
     // and the server's voice range from it.

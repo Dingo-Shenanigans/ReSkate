@@ -454,6 +454,15 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         stop(s, "This host is banned from ReSkate multiplayer.");
         return;
     }
+    // The same for a player who may not host (banned_host): theirs stops, and nobody stays in it.
+    if (s.mode == Mode::host && banned_host(s.transport.status().local_id)) {
+        stop(s, std::string(banned_host_notice));
+        return;
+    }
+    if (s.mode == Mode::join && banned_host(s.host_id)) {
+        stop(s, std::string(banned_host_lobby_notice));
+        return;
+    }
     for (const auto &link : links) {
         if (s.mode == Mode::host && s.banned.contains(link.id)) {
             s.transport.disconnect(link.id, "You were kicked from this session.");
@@ -949,6 +958,20 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             // Everyone holds everyone to the same pace, so a modified client cannot flood.
             if (!server && sender->chat_rate.accept(now, p.text, 1) != ChatRate::Verdict::accepted) continue;
             sender->last_packet = now;
+            // A word that is not allowed at all: a lobby's host does not show or pass the line on,
+            // warns the guest, and after the last warning removes them (a dedicated server
+            // does the same with its own count).
+            if (s.mode == Mode::host && text::contains_forbidden_words(p.text)) {
+                const auto count = ++s.word_warnings[sender->member.id];
+                if (count > word_warnings_default) {
+                    s.transport.disconnect(sender->member.id, word_kick_notice.data());
+                } else {
+                    auto notice = packet(s, PacketKind::admin, now);
+                    notice.text = clean_chat_text(word_warning(count, word_warnings_default));
+                    send_packet(s, sender->member.id, notice, true, false);
+                }
+                continue;
+            }
             // "/p": party chat, which a lobby's host relays to the sender's party and nobody else.
             if (s.mode == Mode::host && p.text.starts_with("/p ")) {
                 host_party_chat(s, sender->member.id, std::string_view(p.text).substr(3), now);

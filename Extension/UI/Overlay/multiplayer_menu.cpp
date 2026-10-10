@@ -1,5 +1,6 @@
 #include "multiplayer_menu_internal.h"
 #include "role_badge.h"
+#include "Extension/Boot/discord_presence.h"
 #include "Engine/Game/World/world_names.h"
 #include <algorithm>
 #include <atomic>
@@ -21,6 +22,11 @@ bool queue_multiplayer_action(const char* action, const std::string& argument) {
     const auto callback = private_queue.load();
     std::array<char, 256> result{};
     return callback && callback(action, argument.c_str(), "", result.data(), result.size());
+}
+bool queue_multiplayer_action(const char* action, const std::string& argument, const std::string& password) {
+    const auto callback = private_queue.load();
+    std::array<char, 256> result{};
+    return callback && callback(action, argument.c_str(), password.c_str(), result.data(), result.size());
 }
 } // namespace dingosdk::overlay::detail
 
@@ -309,6 +315,13 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
     if (toggle_row(menu, "Chat filter", "Show bad words in chat messages and names as ****.", filter, mp.chat_visible, "OFF")) {
         std::array<char, 65> unused{};
         send_private(menu, "chat-filter", filter ? "on" : "off", unused, false);
+    }
+    if (dingosdk::discord_presence::available()) {
+        bool discord = dingosdk::discord_presence::enabled();
+        if (toggle_row(menu, "Discord status",
+                "Show on your Discord profile where you are skating: the map, the server or lobby and how many are in it. A session with a password shows no name.",
+                discord))
+            dingosdk::discord_presence::set_enabled(discord);
     }
     bool bubbles = mp.chat_bubbles;
     if (toggle_row(menu, "Chat bubbles", "Show each player's newest chat line in a bubble above their skater.", bubbles)) {

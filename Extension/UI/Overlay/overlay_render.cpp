@@ -482,6 +482,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool nametag_frame = nametags_pending();
     const bool meat_frame = hall_of_meat_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
+    const bool hub_frame = hub_page_pending();
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
@@ -499,7 +500,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !skate_hud_frame &&
-            !nametag_frame && !meat_frame && !perf_frame) return;
+            !nametag_frame && !meat_frame && !perf_frame && !hub_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -534,7 +535,9 @@ void render(IDXGISwapChain* presented, UINT flags) {
     }
     const bool interactive = interactive_visible(s);
     sync_menu_cursor();
-    if (!interactive) { ImGui::GetIO().ClearInputKeys(); ImGui::GetIO().ClearInputMouse(); }
+    // (Watching the pointer for the pause menu's browser keeps the mouse state between frames,
+    // or every frame would look like a fresh click.)
+    if (!interactive) { ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
     ImGui::GetIO().MouseDrawCursor = owns_menu_cursor(s);
     ImGui_ImplDX12_NewFrame();
     { OverlayInputAccess access; ImGui_ImplWin32_NewFrame(); }
@@ -546,6 +549,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         draw_console();
         draw_perf_window();
     }
+    draw_hub_page();
     draw_hall_of_meat();
     draw_nametags();
     draw_game_text();

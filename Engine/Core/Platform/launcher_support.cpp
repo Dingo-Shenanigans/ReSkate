@@ -182,6 +182,7 @@ LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
             options.log_level = std::move(level); log_level_explicit = true; continue;
         }
         if (argument == L"--gpu-diagnostics") { options.gpu_diagnostics = true; continue; }
+        if (argument == L"--no-discord") { options.discord = false; continue; }
         const bool menu_key = argument.starts_with(L"--menu-key=");
         if (menu_key || argument.starts_with(L"--console-key=")) {
             const std::wstring value(argument.substr(argument.find(L'=') + 1));

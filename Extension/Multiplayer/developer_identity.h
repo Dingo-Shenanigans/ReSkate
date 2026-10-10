@@ -16,8 +16,8 @@ namespace dingosdk::multiplayer {
 // The last list is not of players: the dedicated servers the ReSkate team runs, which the
 // server browser puts first. A server is on it by the Steam ID its login token gives it.
 // And one of servers the team has blocked: the browser does not show them and the game does
-// not join them.
-enum class IdentityList : std::uint8_t { developer, homie, content_creator, centrix, banned, official_server, staff, blocked_server, count };
+// not join them. And one of players who may not host a lobby (banned_host, below).
+enum class IdentityList : std::uint8_t { developer, homie, content_creator, centrix, banned, official_server, staff, blocked_server, banned_host, count };
 using IdentityLists = std::array<std::vector<std::uint64_t>, static_cast<std::size_t>(IdentityList::count)>;
 inline constexpr std::string_view identity_lists_url = "https://api.reskate.dev/api/v1/steam-ids";
 
@@ -57,6 +57,13 @@ inline bool reskate_banned(std::uint64_t id) noexcept { return identity_listed(i
 inline bool official_server(std::uint64_t id) noexcept { return identity_listed(id, IdentityList::official_server); }
 inline bool blocked_server(std::uint64_t id) noexcept { return identity_listed(id, IdentityList::blocked_server); }
 inline constexpr std::string_view blocked_server_notice = "This server has been blocked by the ReSkate team.";
+// A player the team has stopped from hosting lobbies ("banned_hosts"); they still play on
+// servers and in other players' lobbies. Their own game does not host, and since that is theirs
+// to change, everyone else's does the rest: the lobby browser leaves their lobbies out and the
+// game does not join one or stay in one.
+inline bool banned_host(std::uint64_t id) noexcept { return identity_listed(id, IdentityList::banned_host); }
+inline constexpr std::string_view banned_host_notice = "You are banned from hosting ReSkate lobbies. You can still join servers and other players' lobbies.";
+inline constexpr std::string_view banned_host_lobby_notice = "This player has been banned from hosting lobbies by the ReSkate team.";
 // Whether the server browser shows only dedicated servers signed in with a Steam login token
 // (protocol.h: persistent_server_steam_id), which the backend switches on and off beside the
 // lists ("server_tokens_required"). Such a server keeps its Steam ID, so a block holds on it.
@@ -70,7 +77,7 @@ bool parse_server_tokens_required(std::string_view json);
 inline constexpr std::string_view banned_notice = "You are banned from ReSkate multiplayer.";
 
 // The API's answer, {"categories":{"dev":["7656119..."],"homie":[],...},"banned":[],
-// "official_servers":["8556839..."],"blocked_servers":[]}, as sorted lists. A category this build does not know
+// "official_servers":["8556839..."],"blocked_servers":[],"banned_hosts":[]}, as sorted lists. A category this build does not know
 // is ignored and a list the answer leaves out is empty; an entry that is not a player's
 // SteamID64 (for the servers: a token server's) throws.
 IdentityLists parse_identity_lists(std::string_view json);

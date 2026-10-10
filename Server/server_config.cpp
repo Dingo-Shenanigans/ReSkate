@@ -100,6 +100,7 @@ Layout layout(const ServerConfig &c) {
     players.set("allow_parties", c.parties);
     players.set("party_size", c.party_size);
     players.set("afk_kick_minutes", c.afk_kick);
+    players.set("word_warnings", c.word_warnings);
     players.set("allow_voice_chat", c.voice_chat);
     players.set("voice_range", static_cast<double>(c.voice_range));
     players.set("object_placement", placement_text(c.object_placement));
@@ -172,7 +173,19 @@ Layout layout(const ServerConfig &c) {
     for (const auto &message : c.announcements.messages) messages.push_back(message);
     announcements.set("messages", std::move(messages));
     announcements.set("interval_minutes", c.announcements.interval);
-    announcements.set("card", c.announcements.card);
+
+    auto commands = Json::array();
+    for (const auto &command : c.commands) {
+        auto item = Json::object();
+        item["name"] = command.name;
+        item["reply"] = command.reply;
+        auto runs = Json::array();
+        for (const auto &run : command.commands) runs.push_back(run);
+        item["command"] = std::move(runs);
+        item["admin"] = command.admin;
+        commands.push_back(std::move(item));
+    }
+    root.set("commands", std::move(commands));
     return root;
 }
 // Bans have a file of their own, beside the config.
@@ -285,6 +298,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.parties = get("players", "allow_parties", c.parties, {"parties"});
     c.party_size = std::clamp(get("players", "party_size", c.party_size), 2U, 8U);
     c.afk_kick = get("players", "afk_kick_minutes", c.afk_kick);
+    c.word_warnings = get("players", "word_warnings", c.word_warnings);
     c.voice_chat = get("players", "allow_voice_chat", c.voice_chat, {"voice_chat"});
     c.voice_range = get("players", "voice_range", c.voice_range);
     const auto placement = get("players", "object_placement", placement_text(c.object_placement));
@@ -373,13 +387,29 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     const Json no_announcements = Json::object();
     const auto &announcements = root.contains("announcements") && root.at("announcements").is_object()
                                     ? root.at("announcements") : no_announcements;
-    for (const char *key : {"messages", "interval_minutes", "card"})
+    for (const char *key : {"messages", "interval_minutes"})
         if (!announcements.contains(key)) missing.push_back(std::string("announcements.") + key);
     if (announcements.contains("messages") && announcements.at("messages").is_array())
         for (const auto &message : announcements.at("messages"))
             if (message.is_string() && !message.string().empty()) c.announcements.messages.push_back(message.string());
     c.announcements.interval = std::min(announcements.value("interval_minutes", c.announcements.interval), max_announcement_interval);
-    c.announcements.card = announcements.value("card", c.announcements.card);
+
+    // Chat commands came after announcements: a command is a string or a list of them.
+    if (!root.contains("commands")) missing.push_back("commands");
+    else if (!root.at("commands").is_array()) throw std::runtime_error("commands must be a list of commands, each a JSON object.");
+    else
+        for (const auto &item : root.at("commands")) {
+            if (!item.is_object()) throw std::runtime_error("commands must be a list of commands, each a JSON object.");
+            CustomCommand command;
+            command.name = item.value("name", std::string{});
+            command.reply = item.value("reply", std::string{});
+            command.admin = item.value("admin", command.admin);
+            if (item.contains("command") && item.at("command").is_string()) command.commands.push_back(item.at("command").string());
+            else if (item.contains("command") && item.at("command").is_array())
+                for (const auto &run : item.at("command"))
+                    if (run.is_string() && !run.string().empty()) command.commands.push_back(run.string());
+            c.commands.push_back(std::move(command));
+        }
 
     const auto read_bans = [&](const Json &rows) {
         if (!rows.is_array()) throw std::runtime_error("The bans must be a JSON list.");
@@ -499,10 +529,47 @@ std::string custom_votes_error(const std::vector<CustomVote> &votes) {
     }
     return {};
 }
+bool custom_command_name_free(std::string_view name) noexcept {
+    // The chat's own commands, then the server commands admins type as /<command>.
+    for (const std::string_view taken :
+         {"help", "party", "p", "w", "whisper", "tell", "poll", "vote", "yes", "y", "no", "n", "tp",
+          "activity-log", "admin", "admins", "afk-kick", "announce", "announce-throwdowns", "announce-to", "announcements",
+          "ban", "bans", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
+          "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
+          "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
+          "object-placement", "object-scaling", "objects", "park", "parties", "party-size", "password", "placement",
+          "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "tod",
+          "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
+          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
+        if (name == taken) return false;
+    // A number is an answer to a poll ("/2").
+    return !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+std::string custom_commands_error(const std::vector<CustomCommand> &commands) {
+    using namespace multiplayer;
+    if (commands.size() > max_custom_commands) return "commands: at most " + std::to_string(max_custom_commands) + " commands.";
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        const auto &c = commands[i];
+        if (!valid_server_vote_name(c.name))
+            return "commands: each needs a name of 1 to 16 lowercase letters, digits, - or _ (\"" + c.name + "\" is not).";
+        const auto where = "commands \"" + c.name + "\": ";
+        if (!custom_command_name_free(c.name)) return where + "that name is one of the server's own commands.";
+        for (std::size_t j = 0; j < i; ++j)
+            if (commands[j].name == c.name) return where + "two commands have that name.";
+        if (c.reply.empty() && c.commands.empty()) return where + "needs a reply, a command, or both.";
+        if (!c.reply.empty() && !valid_chat_text(c.reply)) return where + "reply must be one chat line (at most 200 bytes).";
+        if (c.commands.size() > max_custom_command_runs)
+            return where + "at most " + std::to_string(max_custom_command_runs) + " server commands.";
+        for (const auto &run : c.commands)
+            if (!valid_admin_text(run)) return where + "each command must be one server command, e.g. \"announce-to {player} Hi\".";
+    }
+    return {};
+}
 std::string config_error(const ServerConfig &c) {
     using namespace multiplayer;
     if (!parse_colour(c.chat_color)) return "chat_color must be a colour like #8E5CFF.";
     if (c.afk_kick > 1440) return "afk_kick_minutes must be 0 (never) to 1440.";
+    if (c.word_warnings > 10) return "word_warnings must be 0 (words are not checked) to 10.";
     if (!parse_colour(c.chat_text_color)) return "chat_text_color must be a colour like #D9C8FF.";
     if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
     for (const auto id : c.reserved)
@@ -533,6 +600,7 @@ std::string config_error(const ServerConfig &c) {
     if (c.password.size() > 64) return "password must be at most 64 characters.";
     if (!c.welcome.empty() && !valid_chat_text(c.welcome)) return "welcome must be one chat line (at most 200 bytes).";
     if (auto error = custom_votes_error(c.votes.custom); !error.empty()) return error;
+    if (auto error = custom_commands_error(c.commands); !error.empty()) return error;
     if (c.announcements.messages.size() > max_announcements)
         return "announcements.messages: at most " + std::to_string(max_announcements) + " messages.";
     for (const auto &message : c.announcements.messages)

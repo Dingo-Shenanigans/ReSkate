@@ -43,7 +43,8 @@ bool is_input(UINT message) {
 }
 
 bool interactive_visible(const State& s) {
-    return s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
+    return s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() ||
+           s.hub_typing.load();
 }
 
 void restore_input(bool hide_menu) {
@@ -52,6 +53,7 @@ void restore_input(bool hide_menu) {
         s.visible.store(false);
         s.console_visible.store(false);
         s.chat_visible.store(false);
+        s.hub_typing.store(false);
         s.editor_visible.store(false);
         s.editor_flight.store(false);
     }

@@ -13,6 +13,9 @@ struct BanListCheck {
     bool ok{};
     bool changed{};       // the ban list is not the one read before (or is the first)
     std::size_t banned{}; // players on it
+    // The chat word lists that came with it (word_lists.h): whether they are new, and their sizes.
+    bool words_changed{};
+    std::size_t filtered_words{}, forbidden_words{};
     std::string problem;  // why it could not be read, or empty
 };
 // Puts the backend's answer (the JSON of developer_identity.h) in use. An answer

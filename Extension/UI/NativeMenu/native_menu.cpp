@@ -1,7 +1,9 @@
 #include "native_menu.h"
 #include "native_menu_internal.h"
 #include "native_menu_dump.h"
+#include "ui_sound.h"
 #include "Extension/Multiplayer/Session/session.h"
+#include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -9,6 +11,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 namespace dingosdk::multiplayer {
@@ -117,51 +120,10 @@ namespace {
 void render(const Context& context, const MultiplayerModel& model) {
     auto& s = state();
     ++s.pass;
-    const auto publish = [&](const std::vector<native_tools::Row>& rows, Value list, unsigned slot, float width) {
-        s.row_width = width;
-        std::vector<std::string> visible;
-        for (const auto& entry : rows) {
-            if (entry.input) add_input(context, visible, entry.id, entry.title, entry.argument);
-            else if (entry.button) add_button(context, visible, entry.id, entry.title, entry.command, entry.argument, entry.primary);
-            else add_text(context, visible, entry.id, entry.title);
-        }
-        publish_rows(context, list, slot, visible);
-    };
-    if (s.slot == tools_page) {
-        const auto selected = read<int>(context.address(context.path(s.page, {content, 0x18f8355b})));
-        if (selected >= 0 && selected < static_cast<int>(section_count)) s.section = static_cast<Section>(selected);
-        for (unsigned i = 0; i < native_tools::sections.size(); ++i) {
-            const auto view = native_tools::render(s.tools, s.tools_model, s.tools_callbacks, i);
-            publish(view.main, s.lists[i], i * 2, main_width);
-            publish(view.side, s.side_lists[i], i * 2 + 1, side_width);
-        }
-        return;
-    }
-    if (model.active != s.was_active) {
-        s.section = model.active ? Section::session : Section::browser;
-        s.selected_player.clear();
-        s.protected_lobby.clear();
-        s.feedback.clear(); s.feedback_until = 0;
-        // Republish native widget lists when membership ends, even if a list
-        // happens to have the same row IDs as the previous offline page.
-        for (auto& displayed : s.displayed) displayed.clear();
-        context.set(context.path(s.page, {content, 0x18f8355b}), static_cast<int>(s.section));
-    } else {
-        const auto selected = read<int>(context.address(context.path(s.page, {content, 0x18f8355b})));
-        if (selected >= 0 && selected < static_cast<int>(section_count)) s.section = static_cast<Section>(selected);
-    }
-    s.was_active = model.active;
-    // The browser coming into view (the game menu opening, or switching to it)
-    // fetches the latest lobbies.
-    const bool browsing = s.section == Section::browser && !model.active && !model.lobby_joining;
-    if (browsing && !s.browsing && !model.lobby_searching) queue_command("browse", "", {});
-    s.browsing = browsing;
-    if (s.feedback_until && (GetTickCount64() >= s.feedback_until || model.status != s.feedback_status)) {
-        s.feedback.clear(); s.feedback_until = 0;
-    }
-    // Populate every section before it can be shown; tab switches never wait for
-    // the next model polling interval to create their controls.
-    for (unsigned i = 0; i < section_count; ++i) render_section(context, model, static_cast<Section>(i));
+    // Both pages are drawn by the overlay (Extension/UI/Overlay/hub_page.cpp), their tabs too:
+    // here each is one body with nothing in it.
+    s.section = Section::browser;
+    render_section(context, model, Section::browser);
 }
 void ensure_body(const Context& context) {
     auto& s = state();
@@ -215,7 +177,13 @@ void hide_top_bar_currency(const Context& context, Value menu) {
 } // namespace
 void update_hub(const Context& context);
 namespace {
-void restore_last_tab(const Context& context, Value menu) {
+// Which of ReSkate's pages is on screen, for the overlay (native_menu_page): when one was last
+// seen selected with the pause menu up (GetTickCount64; 0: not now), and which.
+std::atomic<std::uint64_t> page_seen{};
+std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options
+std::atomic<bool> game_in_menu{};
+// Returns the key of the tab the pause menu has selected (0: none of ours can be told).
+std::uint32_t restore_last_tab(const Context& context, Value menu) {
     static std::uint32_t remembered{};
     static bool reopening{};
     static int previous = -2;
@@ -223,7 +191,7 @@ void restore_last_tab(const Context& context, Value menu) {
     const auto target = context.path(menu, {content, 0x18f8355b});
     unsigned count{}, stride{};
     const auto values = context.array(list, 16, count, stride);
-    if (stride != stack_item.size) return;
+    if (stride != stack_item.size) return 0;
     const auto key_at = [&](int index) {
         std::uint32_t key{};
         if (index >= 0 && static_cast<unsigned>(index) < count) std::memcpy(&key, values.data() + index * stride + 0x568, 4);
@@ -234,7 +202,7 @@ void restore_last_tab(const Context& context, Value menu) {
     };
     bool present{};
     for (unsigned i = 0; i < count; ++i) present |= owned(key_at(static_cast<int>(i)));
-    if (!present) { reopening = true; previous = -2; return; }
+    if (!present) { reopening = true; previous = -2; return 0; }
     const auto selected = read<int>(context.address(target));
     if (reopening) {
         reopening = false;
@@ -246,12 +214,14 @@ void restore_last_tab(const Context& context, Value menu) {
                     logging::printf(logging::Level::info, logging::Channel::ui, "Pause menu reopened on ReSkate tab %u.", i);
                 }
                 previous = static_cast<int>(i);
-                return;
+                return key_at(static_cast<int>(i));
             }
     }
-    if (selected == previous) return;
-    previous = selected;
-    if (selected >= 0) remembered = owned(key_at(selected)) ? key_at(selected) : 0;
+    if (selected != previous) {
+        previous = selected;
+        if (selected >= 0) remembered = owned(key_at(selected)) ? key_at(selected) : 0;
+    }
+    return key_at(selected);
 }
 // Page Back is a button action: input UI_Back, navigation "ToggleMenu", no
 // delegate, handled by the shared navigation handler. An active action with
@@ -314,7 +284,7 @@ void insert(const Context& context) {
         // from the player's last visit, before ours were back. Taking the Store out
         // changes the tab at that index if it is the Store's or later, and the stack
         // then shows the new tab's page only if its length changes too: online the
-        // Multiplayer tab makes it longer, but offline Custom Stuff just takes the
+        // Multiplayer tab makes it longer, but offline Mod Options just takes the
         // Store's place, and the old page stays up, blank, with Back dead. Then keep
         // a copy of the Store item last for now, so the length changes, and drop it
         // once the stack has seen that (trim_store).
@@ -463,13 +433,13 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     context.set(context.field(backdrop_stack, 0x3b14d43c), false);
     context.set(context.field(backdrop_stack, 0x2a98baa3), false);
     build_back_action(context, s);
-    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "CUSTOM STUFF"},
-        tab_names{"Multiplayer", "Custom Stuff"};
+    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "MOD OPTIONS"},
+        tab_names{"Multiplayer", "Mod Options"};
     context.text(context.path(s.page, {0x3781b603, text_field}), titles[s.slot]);
     context.set(context.field(s.page, 0xe1d821a3), true);
     context.set(context.field(s.page, 0x616cb924), false);
-    const auto sections = s.slot == tools_page ? std::vector<const char*>(native_tools::sections.begin(), native_tools::sections.end()) :
-        std::vector<const char*>{"Server Browser", "Host Lobby", "Join by Code", "Current Session", "Voice Chat"};
+    // One body for either page: the overlay draws the page and its tabs.
+    const std::vector<const char*> sections{" "};
     s.section_total = static_cast<unsigned>(sections.size());
     std::vector<std::byte> body_bytes(stack_item.size * sections.size());
     for (unsigned i = 0; i < sections.size(); ++i) {
@@ -551,20 +521,6 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
     std::string card_request;
     std::optional<std::string> card_name;
     try {
-        if (s.slot == tools_page) {
-            { std::lock_guard callbacks_lock(callbacks_mutex); s.tools_callbacks = tools_callbacks; }
-            if (!s.tools_callbacks.read_model) return;
-            std::deque<Action> requests;
-            { std::lock_guard pending_lock(s.mutex); requests.swap(s.pending); }
-            if (!requests.empty() || now >= s.next_render)
-                s.tools_callbacks.read_model(s.tools_callbacks.user, s.tools_model);
-            for (const auto& request : requests) if (request.generation == s.generation.load()) {
-                // The card name field can only be read under the model lock below.
-                if (request.command == "card-name" || request.command == "card-name-reset") card_request = request.command;
-                else native_tools::activate(s.tools, s.tools_model, s.tools_callbacks, request.command, request.argument);
-                s.next_render = 0;
-            }
-        }
         const auto ui = read<Address>(base + addr::engine::ui_manager);
         if (!ui) return;
         const auto manager = read<Address>(ui + 0x140);
@@ -603,9 +559,17 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
         if (!active.model.handle) return;
         trim_store(context, active.model);
         if (!s.slot) {
-            restore_last_tab(context, active.model);
+            const auto shown_tab = restore_last_tab(context, active.model);
             hide_top_bar_currency(context, active.model);
             update_hub(context);
+            // Tell the overlay while this page is the one on screen: it draws the body.
+            const bool ours = shown_tab == our_key || shown_tab == our_key + tools_page * 0x100;
+            const auto& shown_page = page_state(shown_tab == our_key ? 0 : tools_page);
+            const bool on_screen = ours && game_in_menu.load(std::memory_order_relaxed) && shown_page.page.handle &&
+                                   context.type_of(shown_page.page.handle) == shown_page.page.type;
+            // (Said at once when another page takes its place, not left to go stale.)
+            page_shown.store(shown_tab == our_key ? 0 : 1, std::memory_order_relaxed);
+            page_seen.store(on_screen ? now : 0, std::memory_order_relaxed);
         }
         bool pending{};
         { std::lock_guard pending_lock(s.mutex); pending = !s.pending.empty(); }
@@ -729,8 +693,18 @@ void native_menu_before_level_transition(std::uintptr_t base, unsigned next) noe
                 "Native ReSkate menu cleanup could not finish before state %u.", next);
     });
 }
+overlay::HubPage native_menu_page() noexcept {
+    // Seen every 50 ms while it is up; a little longer than that and it has gone.
+    const auto seen = page_seen.load(std::memory_order_relaxed);
+    if (!seen || GetTickCount64() - seen > 200) return {};
+    return {true, page_shown.load(std::memory_order_relaxed)};
+}
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     run_pending_ui_dump(base);
+    // The menu sounds the overlay's pages asked for (ui_sound.h).
+    tick_ui_sounds(base, loading);
+    // (Read here: it takes the UI model's lock, which a page's tick then holds.)
+    game_in_menu.store(!loading && sample_game_ui_state(base).in_menu, std::memory_order_relaxed);
     if (lifetime.blocked()) return;
     for (unsigned slot = 0; slot < page_count; ++slot) {
         current_state = &page_state(slot);

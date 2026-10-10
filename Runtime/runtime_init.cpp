@@ -15,6 +15,7 @@
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
+#include "Extension/UI/NativeMenu/ui_sound.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
@@ -188,6 +189,9 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::multiplayer::set_native_menu_callbacks(native_callbacks);
         dingosdk::overlay::set_multiplayer_queue(queue_multiplayer_command);
         dingosdk::overlay::set_chat_feed(dingosdk::multiplayer::chat);
+        dingosdk::overlay::set_hub_page_feed(dingosdk::multiplayer::native_menu_page);
+        dingosdk::overlay::set_hub_callbacks(native_callbacks);
+        dingosdk::overlay::set_ui_sound(dingosdk::multiplayer::queue_ui_sound);
         dingosdk::overlay::set_game_text_feed(dingosdk::multiplayer::skate_debug_text);
         dingosdk::overlay::set_skate_hud_feed(dingosdk::multiplayer::skate_hud);
         dingosdk::overlay::set_nametag_feed(dingosdk::multiplayer::custom_nametags);

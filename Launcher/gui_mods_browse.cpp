@@ -323,7 +323,11 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
     panel.worker = std::thread([&panel, root, packages = std::move(packages)] {
         std::string name, error, note;
         std::size_t done = 0;
+        // One that fails does not stop the ones after it: each is its own download, and the
+        // list ends with what could not be installed. Cancelling does stop the rest.
+        std::vector<std::string> failed;
         for (const auto& package : packages) {
+            if (panel.cancel) break;
             try {
                 const bool update = fs::exists(root / wide(ts::folder_for(package.full_name)));
                 name = install_package(panel, root, package);
@@ -335,9 +339,23 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
                     : std::format("{} {} v{}. It loads the next time Skate starts.", update ? "Updated" : "Installed",
                                   package.title(), package.latest().number);
             } catch (const std::exception& failure) {
-                error = package.title() + ": " + failure.what();
                 log(logging::Level::warning, "Thunderstore install of " + package.full_name + " failed: " + failure.what());
-                break;
+                if (panel.cancel) {
+                    error = package.title() + ": " + failure.what();
+                    break;
+                }
+                failed.push_back(package.title() + ": " + failure.what());
+            }
+        }
+        if (error.empty() && !failed.empty()) {
+            // The first few by name and reason; the log has every one.
+            constexpr std::size_t shown = 3;
+            error = packages.size() == 1 ? failed.front()
+                : std::format("{} of {} could not be installed{}. ", failed.size(), packages.size(),
+                              done ? std::format(" ({} were)", done) : std::string());
+            if (packages.size() > 1) {
+                for (std::size_t i = 0; i < failed.size() && i < shown; ++i) error += (i ? " | " : "") + failed[i];
+                if (failed.size() > shown) error += std::format(" | and {} more", failed.size() - shown);
             }
         }
         std::lock_guard lock(panel.mutex);
@@ -446,8 +464,15 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     if (!store.picked.empty()) {
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(store.picked.size() == 1
-            ? "1 mod selected" : std::format("{} mods selected", store.picked.size()).c_str());
+        // What installing them all downloads: each one's newest version.
+        std::uint64_t bytes{};
+        for (const auto& name : store.picked)
+            for (const auto& package : store.packages)
+                if (package.full_name == name) bytes += package.latest().file_size;
+        auto chosen_text = store.picked.size() == 1 ? std::string("1 mod selected")
+                                                    : std::format("{} mods selected", store.picked.size());
+        if (bytes) chosen_text += "  /  " + size_text(bytes) + " to download";
+        ImGui::TextUnformatted(chosen_text.c_str());
         ImGui::SameLine();
         const float action = S(190);
         ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - action - S(90) - S(8));
@@ -693,23 +718,13 @@ void overview_fact(const Fonts& fonts, const char* name, const std::string& valu
     ImGui::Dummy(ImVec2(0, S(6)));
 }
 
-bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod) {
-    const auto* entry = readme_for(panel, package, mod);
-    if (!entry || (!entry->loading && !entry->failed && entry->readme.lines.empty())) return false;
-    if (entry->loading) {
-        ImGui::TextDisabled("Loading the README...");
-        return true;
-    }
-    if (entry->failed) {
-        ImGui::TextDisabled("Could not load the README. It is on the mod's Thunderstore page.");
-        return true;
-    }
+void draw_readme(const Fonts& fonts, const thunderstore::Readme& readme) {
     using Kind = ts::ReadmeLine::Kind;
     ImGui::PushTextWrapPos(0);
-    for (const auto& line : entry->readme.lines) {
+    for (const auto& line : readme.lines) {
         switch (line.kind) {
         case Kind::heading:
-            if (&line != &entry->readme.lines.front()) ImGui::Dummy(ImVec2(0, S(8)));
+            if (&line != &readme.lines.front()) ImGui::Dummy(ImVec2(0, S(8)));
             ImGui::PushFont(fonts.bold);
             ImGui::TextUnformatted(line.text.c_str());
             ImGui::PopFont();
@@ -728,8 +743,22 @@ bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Pack
         case Kind::text: ImGui::TextUnformatted(line.text.c_str()); break;
         }
     }
-    if (entry->readme.cut) ImGui::TextDisabled("The rest is on the mod's Thunderstore page.");
     ImGui::PopTextWrapPos();
+}
+
+bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod) {
+    const auto* entry = readme_for(panel, package, mod);
+    if (!entry || (!entry->loading && !entry->failed && entry->readme.lines.empty())) return false;
+    if (entry->loading) {
+        ImGui::TextDisabled("Loading the README...");
+        return true;
+    }
+    if (entry->failed) {
+        ImGui::TextDisabled("Could not load the README. It is on the mod's Thunderstore page.");
+        return true;
+    }
+    draw_readme(fonts, entry->readme);
+    if (entry->readme.cut) ImGui::TextDisabled("The rest is on the mod's Thunderstore page.");
     return true;
 }
 

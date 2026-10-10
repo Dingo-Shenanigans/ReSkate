@@ -254,7 +254,7 @@ void SteamLobbies::tick(std::uint64_t now) {
         for (std::uint32_t i = 0; i < std::min(result.count, 50U); ++i) {
             const auto id = api_->at(static_cast<int>(i));
             const auto row = read_lobby(id, 0, [&](const char *key) { return api_->data(id, key); });
-            if (row && !text::contains_bad_words(row->name) &&
+            if (row && !text::contains_bad_words(row->name) && !(hidden_host_ && hidden_host_(row->owner)) &&
                 std::none_of(state_.rows.begin(), state_.rows.end(),
                              [id](const auto &v) { return v.id == id; }))
                 state_.rows.push_back(*row);

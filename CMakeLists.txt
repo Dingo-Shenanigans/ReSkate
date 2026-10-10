@@ -94,9 +94,9 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     target_link_libraries(dingosdk_server_release_tests PRIVATE dingosdk_json)
     add_test(NAME server_release COMMAND dingosdk_server_release_tests)
     add_executable(dingosdk_global_bans_tests Server/Test/global_bans_tests.cpp Server/global_bans.cpp
-        Extension/Multiplayer/developer_identity.cpp)
+        Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp)
     target_include_directories(dingosdk_global_bans_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_link_libraries(dingosdk_global_bans_tests PRIVATE dingosdk_json $<$<BOOL:${WIN32}>:dingosdk_https>)
+    target_link_libraries(dingosdk_global_bans_tests PRIVATE dingosdk_json dingosdk_word_filter $<$<BOOL:${WIN32}>:dingosdk_https>)
     add_test(NAME server_global_bans COMMAND dingosdk_global_bans_tests)
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
     target_link_libraries(dingosdk_word_filter_tests PRIVATE dingosdk_word_filter)
@@ -192,14 +192,15 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Test/mesh_tests.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
         Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Net/delta_codec.cpp
         Extension/Multiplayer/Session/password.cpp Extension/Multiplayer/Session/party_book.cpp
-        Extension/Multiplayer/Steam/steam_lobbies.cpp Extension/Multiplayer/Steam/steam_server_browser.cpp)
+        Extension/Multiplayer/Steam/steam_lobbies.cpp Extension/Multiplayer/Steam/steam_server_browser.cpp
+        Extension/Multiplayer/word_lists.cpp)
     target_link_libraries(dingosdk_multiplayer_mesh_tests PRIVATE dingosdk_logging dingosdk_launcher_support dingosdk_lz4 dingosdk_zstd bcrypt
-        dingosdk_word_filter)
+        dingosdk_word_filter dingosdk_json)
     add_test(NAME multiplayer_mesh COMMAND dingosdk_multiplayer_mesh_tests)
     add_executable(dingosdk_developer_identity_tests
         Extension/Multiplayer/Test/developer_identity_tests.cpp Extension/Multiplayer/developer_identity.cpp
-        Extension/Multiplayer/developer_identity_fetch.cpp)
-    target_link_libraries(dingosdk_developer_identity_tests PRIVATE dingosdk_json dingosdk_https dingosdk_logging winhttp)
+        Extension/Multiplayer/developer_identity_fetch.cpp Extension/Multiplayer/word_lists.cpp)
+    target_link_libraries(dingosdk_developer_identity_tests PRIVATE dingosdk_json dingosdk_https dingosdk_logging dingosdk_word_filter winhttp)
     add_test(NAME developer_identity COMMAND dingosdk_developer_identity_tests)
     add_executable(dingosdk_settings_lock_tests Engine/Game/Settings/Test/multiplayer_settings_lock_tests.cpp)
     target_include_directories(dingosdk_settings_lock_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -212,12 +213,16 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_ea_service_block_tests Extension/Boot/Test/ea_service_block_tests.cpp)
     target_include_directories(dingosdk_ea_service_block_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME ea_service_block COMMAND dingosdk_ea_service_block_tests)
+    add_executable(dingosdk_discord_presence_tests Extension/Boot/Test/discord_presence_tests.cpp Extension/Boot/discord_presence.cpp)
+    target_include_directories(dingosdk_discord_presence_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_discord_presence_tests PRIVATE dingosdk_json dingosdk_logging)
+    add_test(NAME discord_presence COMMAND dingosdk_discord_presence_tests)
     # The dedicated server's host under a full server of simulated players, over a transport
     # that is not Steam's: what its passes cost, and a hash of what it sent (not run by ctest).
     add_executable(dingosdk_server_load_tests Server/Test/server_load_tests.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
         Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
-        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp

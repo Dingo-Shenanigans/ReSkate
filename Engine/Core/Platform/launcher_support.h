@@ -42,6 +42,7 @@ struct LaunchOptions {
     unsigned height{720};
     bool force_windowed{};
     bool gpu_diagnostics{};
+    bool discord{true}; // the game may show a Discord status (--no-discord: never)
     bool window_console{};
     bool log_trace{};
     bool loose_files{true};

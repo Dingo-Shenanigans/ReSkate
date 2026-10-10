@@ -44,7 +44,7 @@ int run() {
     check(!has("server.name") && !has("tps") && !has("votes.map"), "Settings the file had reported as new");
     // Settings added after 2.0.0's votes: each vote's own limits, polls, custom votes, announcements.
     check(has("votes.map.seconds") && has("votes.map.min_players") && has("votes.polls") && has("votes.custom") &&
-              has("announcements.messages") && has("announcements.interval_minutes"),
+              has("announcements.messages") && has("announcements.interval_minutes") && has("commands"),
           "The new vote and announcement settings were not reported");
     const auto written = text(file);
     check(written.find("\"enforce_tuning\"") != std::string::npos && written.find("\"seconds\"") != std::string::npos,
@@ -211,6 +211,10 @@ int run() {
         check(load_config(away.file).afk_kick == 15, "The away timer was not kept");
         away.afk_kick = 1441;
         check(config_error(away).find("afk_kick_minutes") != std::string::npos, "An away timer over a day was accepted");
+        ServerConfig words;
+        check(words.word_warnings == 3 && config.word_warnings == 3, "word_warnings is not 3 unless set");
+        words.word_warnings = 11;
+        check(config_error(words).find("word_warnings") != std::string::npos, "More than ten word warnings were accepted");
         std::filesystem::remove_all(folder / "data");
     }
     // Skater effects: shared unless turned off, and kept in the file.
@@ -325,7 +329,7 @@ int run() {
 
     // Each vote's own limits, polls, custom votes and announcements are kept on a rewrite.
     check(config.votes.polls == "admins" && config.votes.poll_seconds == 60 && config.votes.starter_votes_yes &&
-              config.votes.map.min_players == 1 && config.votes.custom.empty() && config.announcements.card,
+              config.votes.map.min_players == 1 && config.votes.custom.empty() && config.commands.empty(),
           "The new vote settings do not start at their defaults");
     {
         auto voting = pool;
@@ -334,8 +338,11 @@ int run() {
         voting.votes.polls = "everyone";
         voting.votes.custom = {{"restart", "Reload the current map", "map {map}", {}, {true, 70}},
                                {"noclip", "Allow noclip", "noclip {arg}", {"on", "off"}, {false, 55, 20, 0, 3}}};
-        voting.announcements = {{"Welcome to the server!", "Join our Discord"}, 15, false};
-        check(config_error(voting).empty(), "Valid custom votes and announcements refused");
+        voting.announcements = {{"Welcome to the server!", "Join our Discord"}, 15};
+        voting.commands = {{"discord", "Join us: discord.gg/reskate", {}, false},
+                           {"rules", {}, {"announce-to {player} No griefing!", "say {arg}"}, false},
+                           {"restart", "Reloading...", {"map {map}"}, true}};
+        check(config_error(voting).empty(), "Valid custom votes, announcements and commands refused");
         save_config(voting);
         const auto back = load_config(file);
         check(back.votes.kick.seconds == 45 && back.votes.kick.min_players == 4 && back.votes.polls == "everyone",
@@ -345,9 +352,12 @@ int run() {
                   !back.votes.custom[1].setting.enabled && back.votes.custom[1].setting.seconds == 20 &&
                   back.votes.custom[1].setting.min_players == 3,
               "Custom votes lost on save");
-        check(back.announcements.messages == voting.announcements.messages && back.announcements.interval == 15 &&
-                  !back.announcements.card,
+        check(back.announcements.messages == voting.announcements.messages && back.announcements.interval == 15,
               "Announcements lost on save");
+        check(back.commands.size() == 3 && back.commands[0].name == "discord" && back.commands[0].reply == "Join us: discord.gg/reskate" &&
+                  back.commands[0].commands.empty() && !back.commands[0].admin &&
+                  back.commands[1].commands == voting.commands[1].commands && back.commands[2].admin,
+              "Custom commands lost on save");
         const auto refused = [&](auto change, const char *what) {
             auto bad = voting;
             change(bad);
@@ -364,15 +374,23 @@ int run() {
         refused([](ServerConfig &c) { c.votes.custom[1].choices = {"on now"}; }, "A choice with a space accepted");
         refused([](ServerConfig &c) { c.announcements.messages = {std::string(201, 'a')}; }, "An announcement over one chat line accepted");
         refused([](ServerConfig &c) { c.votes.custom.resize(17, c.votes.custom[0]); }, "More than 16 custom votes accepted");
+        refused([](ServerConfig &c) { c.commands[0].name = "kick"; }, "A custom command named like a server command accepted");
+        refused([](ServerConfig &c) { c.commands[0].name = "party"; }, "A custom command named like a chat command accepted");
+        refused([](ServerConfig &c) { c.commands[0].name = "Discord"; }, "A custom command name with capitals accepted");
+        refused([](ServerConfig &c) { c.commands[1].name = "discord"; }, "Two custom commands with one name accepted");
+        refused([](ServerConfig &c) { c.commands[0].reply.clear(); }, "A custom command with no reply or command accepted");
+        refused([](ServerConfig &c) { c.commands[0].reply = std::string(201, 'a'); }, "A custom reply over one chat line accepted");
         // A vote written in by hand needs only its name and command; nonsense is evened out.
         std::ofstream(file, std::ios::binary) << R"({"votes": {"polls": "sometimes", "poll_seconds": 5000,
             "custom": [{"name": "restart", "command": "map {map}", "percent": 500}]},
-            "announcements": {"messages": ["hi", "", 3], "interval_minutes": 99999}})";
+            "announcements": {"messages": ["hi", "", 3], "interval_minutes": 99999, "card": false},
+            "commands": [{"name": "discord", "reply": "hi", "command": "say hello"}]})";
         const auto hand = load_config(file);
         check(hand.votes.polls == "admins" && hand.votes.poll_seconds == 600 && hand.votes.custom.size() == 1 &&
                   hand.votes.custom[0].setting.enabled && hand.votes.custom[0].setting.percent == 100 &&
-                  hand.announcements.messages == std::vector<std::string>{"hi"} && hand.announcements.interval == 1440,
-              "A hand-written custom vote or announcement list was not read sensibly");
+                  hand.announcements.messages == std::vector<std::string>{"hi"} && hand.announcements.interval == 1440 &&
+                  hand.commands.size() == 1 && hand.commands[0].commands == std::vector<std::string>{"say hello"},
+              "A hand-written custom vote, announcement list or command was not read sensibly");
     }
 
     std::filesystem::remove_all(folder);

@@ -11,6 +11,8 @@
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Session/session.h"
+#include "Extension/Boot/discord_presence.h"
+#include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/developer_identity.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
@@ -1114,6 +1116,41 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
                 dingosdk::overlay::notify(dingosdk::overlay::NoticeLevel::warning, "Map not installed", std::move(notice));
         }
         dingosdk::multiplayer::refresh_identity_lists();
+        // The player's Discord status (discord_presence.h): where they skate and with whom,
+        // looked at every couple of seconds.
+        if (static std::uint64_t next_presence{}; dingosdk::discord_presence::available() && GetTickCount64() >= next_presence) {
+            next_presence = GetTickCount64() + 2000;
+            const auto mp = dingosdk::multiplayer::model();
+            const bool session = mp.active && !mp.echo && (mp.hosting || mp.connected);
+            // A destination is "root|level": the level names the map. Maps ReSkate adds are "reskate <name>".
+            const std::string_view destination = session && !mp.map.empty() ? std::string_view(mp.map) : std::string_view(r.multiplayer_map);
+            auto map = dingosdk::world_level_name(destination.substr(destination.find_last_of('|') + 1));
+            if (map.size() > 8 && (map.starts_with("reskate ") || map.starts_with("ReSkate "))) map.erase(0, 8);
+            dingosdk::discord_presence::Presence presence;
+            presence.details = map.empty() ? std::string("Skating") : "On " + map;
+            if (!session) {
+                presence.state = "Solo skating";
+            } else {
+                // A session behind a password keeps its name to itself.
+                presence.state = mp.password_required ? std::string(mp.dedicated ? "Private server" : "Private lobby")
+                                 : mp.lobby_name.empty() ? std::string(mp.dedicated ? "On a server" : "In a lobby")
+                                 : (mp.dedicated ? "Server: " : "Lobby: ") + mp.lobby_name;
+                presence.party_size = mp.players;
+                presence.party_most = std::max(mp.capacity, mp.players);
+                presence.party = std::to_string(mp.host_id);
+                // Anyone may walk in: no password, and a server or a lobby that is publicly listed
+                // (one shared by code stays with those who were given the code).
+                if (!mp.password_required && (mp.dedicated || (mp.public_host && mp.lobby_listed) || mp.public_lobby))
+                    presence.join = mp.join_code;
+            }
+            dingosdk::discord_presence::update(std::move(presence));
+        }
+        // A session the player chose to join from Discord, once the game can join one.
+        if (static std::string discord_join; dingosdk::discord_presence::available()) {
+            if (auto asked = dingosdk::discord_presence::take_join(); !asked.empty()) discord_join = std::move(asked);
+            if (!discord_join.empty() && multiplayer_ready && dingosdk::multiplayer::queue_command("join", discord_join, ""))
+                discord_join.clear();
+        }
         dingosdk::tick_local_developer_hoodie(r.base, client, multiplayer_ready);
         dingosdk::tick_local_developer_board(r.base, client, multiplayer_ready);
         // The session spawns and places skaters and can teleport: check the camera again.

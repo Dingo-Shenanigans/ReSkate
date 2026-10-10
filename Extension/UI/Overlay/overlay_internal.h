@@ -126,6 +126,11 @@ struct State {
     std::atomic<bool> chat_visible{false}, chat_available{false};
     std::atomic<bool> chat_character_pending{false}, chat_escape_pending{false}, chat_focus_requested{false};
     std::atomic<bool> chat_command_requested{false}; // opened with "/": the box starts with it
+    // The Multiplayer page drawn in the game's pause menu (hub_page.cpp). hub_pointer: it is
+    // on screen, so the overlay watches the mouse (position, buttons, wheel) while the game
+    // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
+    // for that long, as for chat.
+    std::atomic<bool> hub_pointer{false}, hub_typing{false};
     std::atomic<bool> input_attached{false};
     std::atomic<bool> stop{false};
     std::atomic<HWND> window{nullptr};
@@ -281,4 +286,8 @@ void draw_perf_hud();
 void draw_perf_window();
 // Queues a private multiplayer action from outside the menu (multiplayer_menu.cpp).
 bool queue_multiplayer_action(const char* action, const std::string& argument);
+bool queue_multiplayer_action(const char* action, const std::string& argument, const std::string& password);
+// The pause menu's Multiplayer page (hub_page.cpp): polled every presented frame.
+bool hub_page_pending();
+void draw_hub_page();
 }

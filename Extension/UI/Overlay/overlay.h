@@ -280,6 +280,16 @@ void set_multiplayer_queue(MultiplayerQueue) noexcept;
 // The session's text chat, read by the chat panel every frame (thread-safe, cheap).
 using ChatFeed = MultiplayerChat (*)();
 void set_chat_feed(ChatFeed) noexcept;
+// The game's pause menu, as far as ReSkate's own pages in it go: whether one of them is the
+// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options). The overlay draws
+// everything in such a page itself, its tabs too (hub_page.cpp). Read every presented frame
+// (thread-safe, cheap).
+struct HubPage {
+    bool visible{};
+    int section{};
+};
+using HubPageFeed = HubPage (*)();
+void set_hub_page_feed(HubPageFeed) noexcept;
 // Text the game draws with its debug text natives, where retail draws nothing (the
 // S.K.A.T.E. throwdown HUD). One frame of lines, positioned in a width x height screen;
 // color is R, G, B, A bytes (ImGui's IM_COL32 layout). Read every presented frame
@@ -372,6 +382,15 @@ struct CallbacksV3 {
     bool (*queue_console_command)(void* user, const char* command,
                                   char* result, std::size_t result_size) = nullptr;
 };
+
+// Plays one of the game's own menu sounds, by its number in the game's list (ui_sound.h: 3
+// moving the focus, 7 pressing something, 56 changing tab). Any thread.
+using UiSound = void (*)(std::uint32_t sound) noexcept;
+void set_ui_sound(UiSound) noexcept;
+// What those pages read the game with and act through: callbacks as the overlay's own, with a
+// read_model that takes a snapshot and leaves the console log alone (it is asked a few times a
+// second while a page is drawn).
+void set_hub_callbacks(const CallbacksV3 &callbacks) noexcept;
 
 struct Status {
     bool started = false;

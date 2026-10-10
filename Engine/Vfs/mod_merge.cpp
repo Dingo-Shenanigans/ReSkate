@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <exception>
@@ -58,6 +59,16 @@ bool store_copy_problems(const Catalog& catalog, MergeReport& report) {
 MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, const MergeOptions& options) noexcept {
     MergeReport report;
     try {
+        // How long each step took, for the log: a merge that takes many minutes
+        // can then be traced to the step that takes them.
+        using Clock = std::chrono::steady_clock;
+        std::vector<std::pair<std::string, Clock::duration>> times;
+        auto lapStart = Clock::now();
+        const auto lap = [&](std::string step) {
+            const auto now = Clock::now();
+            times.emplace_back(std::move(step), now - lapStart);
+            lapStart = now;
+        };
         const auto output = catalog.root / generated_folder;
         std::error_code error;
 
@@ -74,7 +85,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // Disabled mods count too: their archives and map registration are placed at launch.
         auto fingerprint = merge_fingerprint(catalog, mods, modFiles, storeKnown);
         for (const auto& mod : catalog.inactive)
-            fingerprint += "\ninactive " + mod.name + " " + mod_fingerprint(mod.directory);
+            fingerprint += " inactive " + mod.name + " " + mod_fingerprint(mod.directory);
         if (options.live) {
             fs::remove(output / stamp_file, error);
         } else if (auto previous = previous_merge(output, fingerprint)) {
@@ -86,13 +97,15 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // reuse or replace.
         if (storeKnown && store_copy_problems(catalog, report)) return report;
         if (!options.live) fs::remove_all(output, error);
+        lap("checking the mods");
 
-        // Progress: each mod's archives, each superbundle, then the layout.
+        // Progress: each mod's archives, the material grid, a live merge's load
+        // screens, the asset overrides, each superbundle, then the layout.
         std::set<std::string> distinctTocs;
         for (const auto& [mod, files] : modFiles)
             for (const auto& toc : files.tocs) distinctTocs.insert(lower(toc));
         for (const auto relative : launch_superbundles) distinctTocs.insert(lower(relative));
-        MergeProgress progress{0, mods.size() + distinctTocs.size() + 1, mods.size(), {}};
+        MergeProgress progress{0, mods.size() + distinctTocs.size() + (options.live ? 4 : 3), mods.size(), {}};
         const auto advance = [&](std::string step) {
             if (!observe) return;
             progress.step = std::move(step);
@@ -291,6 +304,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 fs::create_directories(path.parent_path(), error);
                 write_file(path, {});
             }
+        lap("linking");
 
         // Maps that author their own surfaces all number them from the same
         // first free slot of the game's material grid; they are combined into
@@ -316,19 +330,33 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         const bool keepRoot = options.live && rootNames == record.root && !rootNames.empty() &&
                               fs::exists(output / fs::path(root_level), error);
         record.root = rootNames;
+        // Without steps of their own, the material grid and the asset overrides showed
+        // the last "Linking" for as long as they ran
+        // (https://github.com/Dingo-Shenanigans/ReSkate/issues/138).
+        advance("Planning the material grid");
         // rootMods belongs to providers; finish using it before erasing its node.
         const auto grid = plan_material_grid(rootMods, modFiles, store, baseRoot, gameRoot, report);
         if (rootMods.empty()) {
             providers.erase(std::string(root_level));
             std::erase_if(superbundles, [](const std::string& relative) { return lower(relative) == root_level; });
         }
-        if (options.live) report.load_screens = read_load_screens(mods, modFiles, store, baseRoot, gameRoot, report);
+        lap("material grid");
+        if (options.live) {
+            advance("Reading load screens");
+            report.load_screens = read_load_screens(mods, modFiles, store, baseRoot, gameRoot, report);
+            lap("load screens");
+        }
+        advance("Collecting asset overrides");
         auto overrides = collect_asset_overrides(mods, modFiles, store, baseRoot, gameRoot, report);
         // Carried chunks point into their mod's archives; move them to where those landed.
         for (auto& [name, chunks] : overrides.chunks)
             for (const auto* mod : mods)
                 if (mod->name == name)
                     for (auto& chunk : chunks) store.shift(chunk.location, chunk.offset, &placements[mod]);
+        lap("asset overrides");
+        // The count above missed the root level when only a disabled map brings it, and
+        // that is merged too: from here each superbundle is a step, then the layout.
+        progress.total = progress.done + superbundles.size() + 1;
 
         // Each superbundle is merged by itself: it reads the game's and the mods' files and
         // what was worked out above, and what it writes waits in its own copy of the store
@@ -482,6 +510,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             record.tocs = superbundles;
             write_placements(placementsPath, record);
         }
+        lap("superbundles");
 
         // The layout lists every superbundle the merged layer now provides.
         advance("Writing the layout");
@@ -642,6 +671,20 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                                        failure.what());
             }
         }
+        lap("layout");
+        // After the stamp, which keeps the notes: a patch that is reused must not
+        // report the times of the merge that built it.
+        const auto seconds = [](Clock::duration elapsed) {
+            const auto tenths = (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() + 50) / 100;
+            return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " s";
+        };
+        std::string summary;
+        Clock::duration all{};
+        for (const auto& [step, elapsed] : times) {
+            summary += (summary.empty() ? "Merge times: " : ", ") + step + " " + seconds(elapsed);
+            all += elapsed;
+        }
+        report.notes.push_back(summary + " (" + seconds(all) + " for this merge)");
         report.built = true;
     } catch (const std::exception& failure) {
         report.issue = failure.what();

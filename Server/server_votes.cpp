@@ -142,7 +142,7 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (config_.map_rotation) text += "The map changes every " + std::to_string(config_.map_rotation) + " min.\n";
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
         if (is_admin(guest.member.id))
-            text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /msg, /msg-party, /msg-admins\n";
+            text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins\n";
         const std::string whisper = "/w <player> <message>: send a private message";
         return reply(guest, (text.empty() ? "This server has no player votes. Type /tp <player> to teleport.\n" : text) + whisper);
     }
@@ -199,6 +199,10 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         return reply(guest, enabled_votes() || !custom.empty() ? "Start one with /vote map, /vote kick, /vote tod or /vote list (see /help)."
                                                                : "This server has no player votes.");
     }
+    // The owner's own commands (ReSkateServer.json "commands"), never listed in /help.
+    for (const auto &custom_command : config_.commands)
+        if (custom_command.name == verb && (!custom_command.admin || is_admin(guest.member.id)))
+            return run_custom_command(guest, custom_command, trim(rest));
     // Admins run any server command from chat, as they do with "mp server". The caller
     // has already logged the line with any password hidden, so it is not logged again here.
     if (is_admin(guest.member.id)) {
@@ -208,6 +212,18 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         return;
     }
     reply(guest, "Unknown command /" + verb + ". Type /help for the list.");
+}
+
+void Host::run_custom_command(Guest &guest, const CustomCommand &custom_command, std::string_view argument) {
+    const auto id = guest.member.id;
+    // Copies: the commands it runs may change the config.
+    const auto reply_text = custom_command.reply;
+    const auto runs = custom_command.commands;
+    log_("[command] " + guest_name(guest) + " /" + custom_command.name + (argument.empty() ? "" : " " + std::string(argument)));
+    if (!reply_text.empty()) reply(guest, reply_text);
+    // As the console, like a custom vote; {arg} last, so what the player typed is never filled in again.
+    for (const auto &run : runs)
+        log_(command(fill(fill(fill(run, "{player}", std::to_string(id)), "{map}", config_.map), "{arg}", argument)));
 }
 
 std::string Host::running_vote_text() const {
@@ -594,22 +610,24 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
     return {label + " now need " + std::to_string(*percent) + "% to pass.", true};
 }
 
-void Host::announce(std::string_view text) {
+void Host::announce(std::string_view text, std::uint64_t to) {
     const auto line = clean_chat_text(text);
     if (line.empty()) return;
-    send_chat(line);
-    log_("[announcement] " + line);
-    if (!config_.announcements.card) return;
+    const auto *target = to ? find(to) : nullptr;
+    if (to && !target) return;
+    log_("[announcement" + (target ? " -> " + guest_name(*target) : std::string()) + "] " + line);
     // Up long enough to read: longer text stays longer.
     const auto seconds = static_cast<std::uint16_t>(std::clamp<std::size_t>(5 + line.size() / 20, 6, 15));
     if (!++announcement_ids_) ++announcement_ids_;
     announcement_ = {announcement_ids_, seconds, line};
+    announcement_for_ = to;
     announcement_until_ = now_ + microseconds(seconds);
     roster_dirty_ = true;
 }
 void Host::tick_announcements() { // the timer waits while nobody is on
     if (announcement_.id && now_ >= announcement_until_) {
         announcement_ = {};
+        announcement_for_ = 0;
         roster_dirty_ = true;
     }
     const auto &a = config_.announcements;
@@ -629,8 +647,7 @@ std::pair<std::string, bool> Host::announcements_command(std::string_view argume
     const auto value = trim(rest);
     if (what.empty() || what == "list") {
         std::string text = a.messages.empty() ? "No announcements. Add one with: announcements add <text>"
-                         : "Announcements" + (a.interval ? ", one every " + std::to_string(a.interval) + " min" : std::string(" (timer off)")) +
-                               ", card " + (a.card ? "on" : "off") + ":";
+                         : "Announcements" + (a.interval ? ", one every " + std::to_string(a.interval) + " min" : std::string(" (timer off)")) + ":";
         for (std::size_t i = 0; i < a.messages.size(); ++i) text += "\n" + std::to_string(i + 1) + ". " + a.messages[i];
         return {text, false};
     }
@@ -659,13 +676,7 @@ std::pair<std::string, bool> Host::announcements_command(std::string_view argume
         announced_at_ = now_;
         return {*n ? "An announcement every " + std::to_string(*n) + " min." : std::string("The announcement timer is off."), true};
     }
-    if (what == "card") {
-        const auto toggle = on_off(lower(value));
-        if (!toggle) return {"announcements card on|off", false};
-        a.card = *toggle;
-        return {*toggle ? "Announcements also show as a card on each player's screen." : "Announcements show in chat only.", true};
-    }
-    return {"announcements [list | add <text> | remove <n> | clear | interval <minutes>|off | card on|off]", false};
+    return {"announcements [list | add <text> | remove <n> | clear | interval <minutes>|off]", false};
 }
 
 std::string Host::pool_text() const {

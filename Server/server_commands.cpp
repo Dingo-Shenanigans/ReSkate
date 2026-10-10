@@ -21,7 +21,7 @@ constexpr std::string_view help_text =
     "votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off\n"
     "vote <map|kick|tod|<custom vote>> [argument] | poll <question> | <answer> | <answer>... | poll end\n"
     "poll-run <command with {answer}> | <question> | <answer> | <answer>...\n"
-    "announce <text> | announcements [list|add <text>|remove <n>|clear|interval <minutes>|off|card on|off]\n"
+    "announce <text> | announce-to <player> <text> | announcements [list|add <text>|remove <n>|clear|interval <minutes>|off]\n"
     "map-pool [add|remove <map>|clear] | rotation [<minutes>|off]\n"
     "park <lot> <layout> | park random | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick\n"
@@ -496,6 +496,14 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (argument.empty()) return "announce <text>";
         announce(argument);
         return "Announced.";
+    }
+    if (name == "announce-to") {
+        const auto [who, text] = split(argument);
+        if (text.empty()) return "announce-to <player> <text>";
+        auto *guest = match_player(who);
+        if (!guest) return "No single connected player matches \"" + std::string(who) + "\".";
+        announce(text, guest->member.id);
+        return "Announced to " + guest_name(*guest) + ".";
     }
     if (name == "vote-cancel") {
         if (!vote_) return "No vote is running.";

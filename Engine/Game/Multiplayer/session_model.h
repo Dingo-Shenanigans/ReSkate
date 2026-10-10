@@ -253,6 +253,8 @@ struct MultiplayerModel {
     std::uint64_t local_id{}, peer_id{}, sent{}, received{}, dropped{}, pose_updates{}, board_pose_updates{};
     std::size_t skater_bones{}, board_bones{};
     std::string invite, map;
+    // The code of the session this player is in, as host or guest (`invite` is a host's own).
+    std::string join_code;
     std::string status = "Multiplayer is off.";
     std::string native_status;
     std::string cosmetic_status;

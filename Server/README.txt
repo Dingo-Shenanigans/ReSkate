@@ -120,6 +120,14 @@ afk_kick_minutes   Remove a player who has been away this many minutes, 1-1440
                    in chat or changing their objects. They are warned in chat
                    a minute before and can join again at once. Admins are
                    never removed for it. Console: afk-kick <minutes>|off.
+word_warnings      The ReSkate team keeps a list of words that are not allowed
+                   in chat at all (read from api.reskate.dev with the global
+                   bans). A message with one is never passed on, whatever
+                   this is set to, and its player is warned. After this many
+                   warnings, 1-10 (default 3), the next one gets them kicked;
+                   they can join again, and are kicked again at the next.
+                   Warnings last until the server restarts. 0: nobody is
+                   warned or kicked; the message is still not passed on.
 allow_voice_chat   Allow voice chat.
 voice_range        How far proximity voice reaches, 50-1000 m.
 object_placement   everyone, admins (only admins can build), or nobody.
@@ -294,10 +302,26 @@ Server votes       The console (and scripts that talk to it) starts the same
 
 "announcements" - Messages from the server.
 messages           Lines the server posts in turn, one every "interval_minutes"
-                   (0: off) while players are on. Each is one chat line.
-card               Also show each announcement as a card at the top of every
-                   player's screen, not only in chat (default true).
-                   Admins announce something once with: announce <text>.
+                   (0: off) while players are on. Each is at most one chat line.
+                   Announcements show as a card at the top of the screen, not
+                   in chat; :emotes: in them (and in polls) show as images. Admins announce something once with announce <text>,
+                   or to one player only with announce-to <player> <text>.
+
+"commands" - Chat commands of your own, e.g. /discord or /rules. A list, each:
+name               1-16 of a-z, 0-9, - and _; not one of the server's own
+                   commands (help, party, vote, kick, map...).
+reply              A chat line sent back to whoever typed it (optional).
+command            A server command, or a list of up to 8, run as the console
+                   (optional). {player} is the SteamID64 of whoever typed it,
+                   {map} the current map and {arg} the rest of what they
+                   typed. Each command needs a reply, a command, or both.
+admin              Only admins may use it (default false).
+                   For example:
+                     {"name": "discord", "reply": "Join us: discord.gg/..."}
+                     {"name": "rules", "command": "announce-to {player} No griefing!"}
+                     {"name": "restart", "admin": true, "command": ["map {map}"]}
+                   They are not listed in /help: tell players about them yourself.
+                   Up to 32. Mind what {arg} lets players put into a command.
 
 Every change made from the console or by an admin is saved back to this file.
 
@@ -370,7 +394,8 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   poll-run <command with {answer}> | <question> | <answer>...   A poll whose
                                 winning answer runs the command (console only).
   announce <text>               Tell everyone, in chat and on a card.
-  announcements [list | add <text> | remove <n> | clear | interval <minutes>|off | card on|off]
+  announce-to <player> <text>   Tell one player, on a card.
+  announcements [list | add <text> | remove <n> | clear | interval <minutes>|off]
                                 The messages posted on a timer.
   activity-log on|off           Log player activity (see activity_log).
   announce-throwdowns on|off    Chat message when a throwdown is placed.

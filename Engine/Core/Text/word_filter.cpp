@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <unordered_set>
 #include <vector>
 
@@ -65,28 +67,40 @@ struct Lists {
     std::size_t shortest_inside{~std::size_t{}}, longest_inside{};
 };
 
-const Lists& lists() {
-    static const Lists built = [] {
-        Lists l;
+void add(Lists& l, std::string_view line) {
+    std::string word;
+    for (const char c : line)
+        if (const char letter = fold(c)) word += letter;
+    if (word.empty()) return;
+    l.whole.insert(word);
+    if (word.size() > 3 && std::ranges::find(whole_word_only, word) == std::ranges::end(whole_word_only)) {
+        l.shortest_inside = std::min(l.shortest_inside, word.size());
+        l.longest_inside = std::max(l.longest_inside, word.size());
+        l.inside.insert(std::move(word));
+    }
+}
+
+// What is filtered (the forbidden words too), and what is forbidden outright.
+struct Rules {
+    Lists filtered, forbidden;
+};
+std::shared_ptr<const Rules> built_in() {
+    static const auto rules = [] {
+        auto r = std::make_shared<Rules>();
         std::string_view text = embedded::bad_words_list;
         while (!text.empty()) {
             const auto end = text.find('\n');
-            const auto line = text.substr(0, end);
+            add(r->filtered, text.substr(0, end));
             text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
-            std::string word;
-            for (const char c : line)
-                if (const char letter = fold(c)) word += letter;
-            if (word.empty()) continue;
-            l.whole.insert(word);
-            if (word.size() > 3 && std::ranges::find(whole_word_only, word) == std::ranges::end(whole_word_only)) {
-                l.shortest_inside = std::min(l.shortest_inside, word.size());
-                l.longest_inside = std::max(l.longest_inside, word.size());
-                l.inside.insert(std::move(word));
-            }
         }
-        return l;
+        return std::shared_ptr<const Rules>(std::move(r));
     }();
-    return built;
+    return rules;
+}
+std::atomic<std::shared_ptr<const Rules>> given;
+std::shared_ptr<const Rules> rules() {
+    auto current = given.load();
+    return current ? current : built_in();
 }
 
 // A word as folded letters, with where each letter sits in the text.
@@ -135,14 +149,14 @@ bool covered(std::string_view letters, std::size_t start, std::size_t length) {
 }
 
 // Whether `word` has a bad word in it; with `marked`, flags each letter that belongs to one.
-bool match(const Word& word, std::vector<bool>* marked) {
-    const auto& l = lists();
+bool match(const Lists& l, const Word& word, std::vector<bool>* marked) {
     const std::string_view letters = word.letters;
     if (l.whole.contains(letters)) {
         if (marked) marked->assign(letters.size(), true);
         return true;
     }
     bool found{};
+    if (l.inside.empty()) return false;
     for (std::size_t start = 0; start + l.shortest_inside <= letters.size(); ++start)
         for (auto length = l.shortest_inside; length <= l.longest_inside && start + length <= letters.size(); ++length) {
             if (!l.inside.contains(letters.substr(start, length)) || covered(letters, start, length)) continue;
@@ -156,16 +170,35 @@ bool match(const Word& word, std::vector<bool>* marked) {
 } // namespace
 
 bool contains_bad_words(std::string_view text) {
+    const auto r = rules();
     for (const auto& word : words(text))
-        if (match(word, nullptr)) return true;
+        if (match(r->filtered, word, nullptr)) return true;
     return false;
 }
 
+bool contains_forbidden_words(std::string_view text) {
+    const auto r = rules();
+    if (r->forbidden.whole.empty()) return false;
+    for (const auto& word : words(text))
+        if (match(r->forbidden, word, nullptr)) return true;
+    return false;
+}
+
+void set_word_lists(std::span<const std::string> filtered, std::span<const std::string> forbidden) {
+    auto r = std::make_shared<Rules>();
+    for (const auto& word : filtered) add(r->filtered, word);
+    for (const auto& word : forbidden) add(r->filtered, word), add(r->forbidden, word);
+    given.store(std::shared_ptr<const Rules>(std::move(r)));
+}
+
+void reset_word_lists() { given.store({}); }
+
 std::string mask_bad_words(std::string_view text) {
+    const auto r = rules();
     std::string out(text);
     for (const auto& word : words(text)) {
         std::vector<bool> marked(word.letters.size());
-        if (!match(word, &marked)) continue;
+        if (!match(r->filtered, word, &marked)) continue;
         for (std::size_t i = 0; i < marked.size(); ++i)
             if (marked[i]) out[word.at[i]] = '*';
     }

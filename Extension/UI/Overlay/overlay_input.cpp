@@ -228,7 +228,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         if (message == WM_NCDESTROY) s.selected_window_destroyed.store(true);
         if (message == WM_KILLFOCUS || message == WM_SETFOCUS || message == WM_NCDESTROY) sync_menu_cursor();
         // ImGui's Win32 backend ignores raw input, so WM_INPUT is not queued.
-        if ((interactive_visible(s) || message == WM_KILLFOCUS || message == WM_SETFOCUS) && message != WM_INPUT) {
+        // (The pause menu's server browser scrolls with the wheel, which only arrives this way.)
+        if ((interactive_visible(s) || message == WM_KILLFOCUS || message == WM_SETFOCUS ||
+             (message == WM_MOUSEWHEEL && s.hub_pointer.load())) && message != WM_INPUT) {
             std::lock_guard lock(s.input_mutex);
             if (message == WM_MOUSEMOVE && !s.input.empty() && s.input.back().message == WM_MOUSEMOVE &&
                 s.input.back().window == window) {

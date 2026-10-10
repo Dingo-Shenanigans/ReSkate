@@ -936,6 +936,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         };
         // Joining is for the host or the server to refuse (a server may opt out of the bans).
         if (action == "host" && reskate_banned(s.transport.status().local_id)) return refuse(std::string(banned_notice));
+        if (action == "host" && banned_host(s.transport.status().local_id)) return refuse(std::string(banned_host_notice));
         if (action == "host") {
             const auto space = argument.find(' ');
             if (space != std::string_view::npos) {
@@ -975,6 +976,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             if (!invitation)
                 return refuse("Invalid join code. Paste the complete SteamID-session code from the host.");
             if (blocked_server(invitation->steam_id)) return refuse(std::string(blocked_server_notice));
+            if (banned_host(invitation->steam_id)) return refuse(std::string(banned_host_lobby_notice));
         }
         stop(s, "Starting multiplayer...");
         s.chat.clear(); // A new session starts with an empty chat.

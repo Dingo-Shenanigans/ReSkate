@@ -17,7 +17,7 @@ THRASHER wordmark and the brush strokes are read from the installed game.
   moment. The slow motion never runs in a multiplayer session. It is the same at every break, but
   never faster than the trainer's game speed (PRACTICE), which it gives back after.
 
-Off until you switch it on: skate.'s menu, **Custom Stuff > Player > Hall of Meat**, or the console (`~`)
+Off until you switch it on: skate.'s menu, **Mod Options > Player > Hall of Meat**, or the console (`~`)
 with `hallofmeat 0|1`. The choice and each map's best are saved with the profile.
 
 With No Bail on, a wipeout No Bail stops is not a bail, so nothing shows.
