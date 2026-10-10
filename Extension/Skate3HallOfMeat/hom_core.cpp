@@ -444,6 +444,7 @@ bool Tracker::update(const Sample &s) {
             // The bail started where the skater left the board or their feet, if that was just now.
             left_board_time_ = -1;
             pending_until_ = !wipeout && last_glide_time_ >= 0 && s.time - last_glide_time_ <= 1.0 ? s.time + 0.65 : -1;
+            pending_from_ = s.time;
             if ((thrown || slammed || knocked || crash_landed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
                 start_ = offboard_start_;
                 live_.air_time = pre_air_;
@@ -476,7 +477,13 @@ bool Tracker::update(const Sample &s) {
         armed_ = true;
         ++cancelled_;
     } else if (have_previous_) {
-        if (pending_until_ >= 0 && s.time >= pending_until_) pending_until_ = -1; // stayed down: a crash
+        // Stayed down: a crash. A glide's landing that is still sliding along on the belly (a big
+        // glide, a trainer-boosted jump) is not settled yet: it waits while the body keeps its speed,
+        // up to 2.5 s, for the skater to pop back up.
+        if (pending_until_ >= 0 && s.time >= pending_until_) {
+            const bool sliding = body_speed_ >= 2.5f && std::abs(hips_vertical_) < 1.5f && s.time - pending_from_ < 2.5;
+            pending_until_ = sliding ? s.time + 0.1 : -1;
+        }
         // A car hit (the one that knocked the skater down counts too, a moment before the bail began).
         if (vehicle_time_ >= 0 && s.time - vehicle_time_ <= 0.6 && vehicle_time_ - car_awarded_ >= config_.car_gap) {
             car_awarded_ = vehicle_time_;
