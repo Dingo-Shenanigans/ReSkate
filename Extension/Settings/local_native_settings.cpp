@@ -7,6 +7,7 @@
 #include "Engine/Game/Build/20260929/named_settings.h"
 #include "local_user_settings.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include <atomic>
 #include <cstring>
 #include <optional>
 #include <string_view>
@@ -132,6 +133,30 @@ void apply_own_default(std::uintptr_t group, const char* key, const NativeSettin
         return;
     }
 }
+
+// The game's camera height button writes UseHighCam (a cloud option, true is the high camera)
+// as the opposite of the height it reads. The listener may keep another height
+// (first person in the camera cycle, Extension/Skater/client_debug.cpp).
+std::atomic<CameraHeightWrite> height_write_listener{};
+// True when the game's write of `value` is to be replaced by `high`.
+bool replace_camera_height(const char* key, std::uintptr_t type, const NativeSettingValue* value, bool& high) noexcept {
+    constexpr std::string_view camera_height_key = "UseHighCam";
+    const auto listener = height_write_listener.load(std::memory_order_acquire);
+    if (!listener || type != local_runtime().base + native_types::native_bool) return false;
+    char text[camera_height_key.size() + 1];
+    if (memory::peek_cstring(reinterpret_cast<std::uintptr_t>(key), text, sizeof(text)) !=
+            static_cast<std::ptrdiff_t>(camera_height_key.size()) || camera_height_key != text) return false;
+    NativeSettingValue native{};
+    std::uint8_t byte{};
+    if (!memory::peek(reinterpret_cast<std::uintptr_t>(value), native) ||
+        !memory::peek(reinterpret_cast<std::uintptr_t>(native.data), byte) || byte > 1) return false;
+    high = listener(byte != 0);
+    return high != (byte != 0);
+}
+}
+
+void set_camera_height_write_listener(CameraHeightWrite listener) noexcept {
+    height_write_listener.store(listener, std::memory_order_release);
 }
 
 bool restore_native_setting(std::uintptr_t group, const char* key, std::uintptr_t type,
@@ -181,6 +206,10 @@ const NativeSettingValue* native_setting_get(std::uintptr_t group, const char* k
 }
 
 bool native_setting_set(std::uintptr_t group, const char* key, std::uintptr_t type, const NativeSettingValue* value) {
+    bool high{};
+    const NativeSettingValue kept{type, &high};
+    // The original setter clones the boxed value, so `kept` only needs to outlive the call.
+    if (replace_camera_height(key, type, value, high)) value = &kept;
     const bool changed = native_settings().set(group, key, type, value);
     PreserveError preserve;
     try {

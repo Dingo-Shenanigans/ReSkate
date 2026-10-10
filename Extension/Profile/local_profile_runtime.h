@@ -99,6 +99,11 @@ void set_local_values(const std::vector<std::pair<std::string, Json>>& values) n
 // read it every frame without touching the database.
 float local_menu_scale() noexcept;
 bool set_local_menu_scale(float value) noexcept;
+// The game's camera height option (UseHighCam, true is the high camera) as the game writes it,
+// which its camera height button does: the listener returns the height to keep instead. Runs on
+// the thread that writes the option.
+using CameraHeightWrite = bool (*)(bool high) noexcept;
+void set_camera_height_write_listener(CameraHeightWrite listener) noexcept;
 }
 PlayerCardModel local_profile_player_card();
 // Renames only the local RIP Card. An empty name restores the Steam name.
