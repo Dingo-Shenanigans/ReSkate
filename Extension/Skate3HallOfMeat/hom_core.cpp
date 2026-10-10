@@ -506,6 +506,9 @@ bool Tracker::update(const Sample &s) {
         // A crash from the air (not a glide's landing) shows as soon as the body has stopped dropping:
         // only one still falling has to wait out the check.
         if (pending_until_ >= 0 && !pending_glide_ && s.time - pending_from_ >= 0.03 && hips_velocity_[1] > -1.5f) pending_until_ = -1;
+        // A glide that ends stopped dead (a slam, not a belly slide) is a crash at once too.
+        if (pending_until_ >= 0 && pending_glide_ && s.time - pending_from_ >= 0.1 && body_speed_ < 2.5f && hips_velocity_[1] > -1.5f)
+            pending_until_ = -1;
         if (pending_until_ >= 0 && s.time >= pending_until_) {
             const bool sliding = body_speed_ >= 2.5f && std::abs(hips_vertical_) < 1.5f && s.time - pending_from_ < 2.5;
             pending_until_ = sliding ? s.time + 0.1 : -1;

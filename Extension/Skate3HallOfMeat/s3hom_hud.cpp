@@ -475,7 +475,18 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
     if (shown[0] && shown[2]) shown[1] = true; // skull .. neck .. rib cage
     // How orange a bone is: Skate 3 keeps bruised and scraped bones white and turns them orange
     // from a bad sprain on, all the way at a break.
-    const auto heat_of = [&](std::size_t i) { return broken[i] ? 1.0f : std::clamp((r.damage[i] - 0.45f) / 0.4f, 0.0f, 1.0f); };
+    const auto heat_of = [&](std::size_t i) { return broken[i] ? 1.0f : std::clamp((r.damage[i] - 0.3f) / 0.65f, 0.0f, 1.0f); };
+    // Skate 3's three stages, measured from its footage through the bone map: white, a peach
+    // orange, then red-orange (about (207, 63, 13) on screen at a break).
+    const auto stage_colour = [](float t) {
+        const auto lerp8 = [](int x, int y, float u) { return static_cast<int>(static_cast<float>(x) + static_cast<float>(y - x) * u); };
+        if (t < 0.5f) {
+            const float u = t / 0.5f;
+            return IM_COL32(lerp8(255, 255, u), lerp8(248, 182, u), lerp8(250, 150, u), 255);
+        }
+        const float u = (t - 0.5f) / 0.5f;
+        return IM_COL32(lerp8(255, 245, u), lerp8(182, 74, u), lerp8(150, 16, u), 255);
+    };
     // Skate 3's hurt bones glow orange through the body, hotter the worse the damage; a break
     // burns red-orange and throbs. Measured from the original: core (255, 190, 170), glow
     // (250, 150, 126) out to (146, 45, 36) at its edge, through its colour matrix.
@@ -490,11 +501,13 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
         const float throb = broken[i] ? 0.8f + 0.2f * std::sin(static_cast<float>(ImGui::GetTime()) * 7.0f) : 1.0f;
         // Skate 3's bloom: cool white round white bones, red-orange round hurt ones.
         const auto lerp8 = [](int x, int y, float t) { return static_cast<int>(static_cast<float>(x) + static_cast<float>(y - x) * t); };
-        const ImU32 glow = broken[i] ? IM_COL32(255, 70, 25, 255)
-                                     : IM_COL32(lerp8(190, 255, heat), lerp8(205, 95, heat), lerp8(240, 35, heat), 255);
+        // A faint red glow round the hot ones only; white bones in Skate 3 have none.
+        if (heat < 0.4f) continue;
+        (void)lerp8;
+        const ImU32 glow = IM_COL32(255, 80, 30, 255);
         for (int layer = 4; layer >= 1; --layer) {
             const float w = px * (1.3f + 0.8f * layer);
-            const float k = (0.045f + 0.075f * heat) * throb * fade * bones_alpha;
+            const float k = 0.05f * (heat - 0.3f) * throb * fade * bones_alpha;
             if (i == 0) draw->AddCircleFilled(ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), w, alpha(glow, k), 24);
             else {
                 draw->AddLine(a, b, alpha(glow, k), w * 2.0f);
@@ -525,9 +538,10 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
             const float heat = heat_of(i);
             const auto mix = [](int x, int y, float t) { return static_cast<int>(static_cast<float>(x) + (static_cast<float>(y) - static_cast<float>(x)) * t); };
             // The rim colour (the core runs to white): Skate 3's cool white, heating to its red-orange.
-            const ImU32 tint = broken[i] ? IM_COL32(236, 70, 26, 255) : IM_COL32(mix(198, 236, heat), mix(212, 92, heat), mix(234, 40, heat), 255);
+            const ImU32 tint = stage_colour(heat);
+            (void)mix;
             const auto &facing = seg.has_front && skate3_hom::roll_from_joints().load() ? seg.front : rig.forward;
-            draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade * bones_alpha, broken[i] ? 0.35f : 0.0f);
+            draw_hom_bone(draw, projector, i, seg.a, seg.b, facing, tint, strength * fade * bones_alpha, 0.0f);
         }
 }
 

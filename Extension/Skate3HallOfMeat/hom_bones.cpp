@@ -193,10 +193,9 @@ void draw_hom_bone(ImDrawList *draw, const BoneProjector &projector, std::size_t
             const Vec3f &n0 = mesh.normals[i];
             const Vec3f normal = normalise(add(add(mul(to.axis, dot(n0, from.axis)), mul(to.front, dot(n0, from.front))), mul(to.side, dot(n0, from.side))));
             visible[i] = projector.project(world, screen[i], depth[i]);
-            // Skate 3's X-ray glows: a pale hot core where the bone faces the camera, its colour at the
-            // rim. `light` holds how much core (1 facing, 0 edge on).
+            // X-ray shading: edges facing away glow brighter than faces toward the camera.
             const float facing = std::abs(dot(normal, projector.view_direction(world)));
-            light[i] = facing; // raised per bone below: warmer bones show more core
+            light[i] = 0.82f + 0.3f * (1.0f - facing);
             if (core > 0.0f) {
                 const float d = length(sub(mesh.positions[i], centre_bind)) / half;
                 heat[i] = core * std::clamp(1.0f - d, 0.0f, 1.0f);
@@ -213,14 +212,10 @@ void draw_hom_bone(ImDrawList *draw, const BoneProjector &projector, std::size_t
         }
         std::sort(order.begin(), order.end(), [](const auto &l, const auto &r) { return l.first > r.first; });
         if (order.empty()) return;
-        // Emissive, as Skate 3's X-ray reads in play: flat colour, no bone map detail.
+        // Skate 3's bone map (marquee_hom diffuse) when it is in the atlas, else flat colour.
+        HomArt map;
+        const bool textured = hom_art("bone_texture", map);
         const auto white = ImGui::GetFontTexUvWhitePixel();
-        // The core: the rim colour taken most of the way to a warm white (a cool white for white bones).
-        const auto channel = [](ImU32 c, int shift) { return static_cast<float>((c >> shift) & 0xff); };
-        const float rim_r = channel(colour, IM_COL32_R_SHIFT), rim_g = channel(colour, IM_COL32_G_SHIFT), rim_b = channel(colour, IM_COL32_B_SHIFT);
-        const float warm = std::clamp((rim_r - rim_b) / 200.0f, 0.0f, 1.0f);
-        const float core_r = 255.0f, core_g = 252.0f - 47.0f * warm, core_b = 255.0f - 80.0f * warm;
-        const float core_power = 0.8f - 0.3f * warm;
         constexpr ImU32 hot = IM_COL32(185, 50, 27, 255);
         for (std::size_t first = 0; first < order.size(); first += 4000) {
             const std::size_t n = std::min<std::size_t>(4000, order.size() - first);
@@ -229,25 +224,18 @@ void draw_hom_bone(ImDrawList *draw, const BoneProjector &projector, std::size_t
                 const auto t = order[first + k].second;
                 for (int c = 0; c < 3; ++c) {
                     const auto i = mesh.indices[t * 3 + c];
-                    const float f = std::pow(light[i], core_power);
-                    ImU32 tint = IM_COL32(static_cast<int>(rim_r + (core_r - rim_r) * f), static_cast<int>(rim_g + (core_g - rim_g) * f),
-                                          static_cast<int>(rim_b + (core_b - rim_b) * f), 255);
+                    ImU32 tint = colour;
                     if (heat[i] > 0.0f) {
                         const float h = heat[i];
                         const auto mix = [&](int shift) {
                             const float x = static_cast<float>((colour >> shift) & 0xff), y = static_cast<float>((hot >> shift) & 0xff);
                             return static_cast<ImU32>(x + (y - x) * h) << shift;
                         };
-                        const ImU32 base = tint;
-                        const auto mix2 = [&](int shift) {
-                            const float x = static_cast<float>((base >> shift) & 0xff), y = static_cast<float>((hot >> shift) & 0xff);
-                            return static_cast<ImU32>(x + (y - x) * h) << shift;
-                        };
-                        tint = mix2(IM_COL32_R_SHIFT) | mix2(IM_COL32_G_SHIFT) | mix2(IM_COL32_B_SHIFT) | IM_COL32_A_MASK;
-                        (void)mix;
+                        tint = mix(IM_COL32_R_SHIFT) | mix(IM_COL32_G_SHIFT) | mix(IM_COL32_B_SHIFT) | (colour & IM_COL32_A_MASK);
                     }
                     const auto vertex = static_cast<ImDrawIdx>(draw->_VtxCurrentIdx);
-                    draw->PrimWriteVtx(screen[i], white, scale_colour(tint, 1.0f, opacity));
+                    const ImVec2 uv = textured ? ImVec2(map.uv0.x + (map.uv1.x - map.uv0.x) * mesh.uvs[i][0], map.uv0.y + (map.uv1.y - map.uv0.y) * mesh.uvs[i][1]) : white;
+                    draw->PrimWriteVtx(screen[i], uv, scale_colour(tint, light[i], opacity));
                     draw->PrimWriteIdx(vertex);
                 }
             }
