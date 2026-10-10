@@ -174,25 +174,35 @@ if(WIN32)
     set_target_properties(dingosdk_emote_packer PROPERTIES OUTPUT_NAME "ReSkateEmotePacker")
 endif()
 
-# ReSkate dedicated server: a headless session host. It runs from its own folder
-# next to steam_api64.dll and the Steam client files; no game install needed.
-# On Linux next to libsteam_api.so; it updates itself there too, with the machine's curl and tar.
-add_executable(dingosdk_server Server/main.cpp Server/server_host.cpp Server/server_party.cpp
-    Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
-    Server/server_update.cpp Server/server_release.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
-    Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
-    Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
-    Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
-    Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-    Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp)
-target_include_directories(dingosdk_server SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+# ReSkate dedicated server: 1-1 native desktop GUI on Windows (with --headless support), headless on Linux.
 if(WIN32)
+    add_executable(dingosdk_server WIN32 Server/main.cpp Server/GUI/server_gui.cpp Server/GUI/server_gui_renderer.cpp
+        Server/server_engine.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
+        Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
+        Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
+        Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/launcher_resources.rc")
+    target_include_directories(dingosdk_server SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+        dingosdk_imgui d3d12 dxgi dwmapi shell32 windowscodecs ole32)
     set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")
     dingosdk_version_info(dingosdk_server "ReSkate dedicated server" "ReSkateServer.exe" VFT_APP)
 else()
     find_package(OpenSSL REQUIRED)
+    add_executable(dingosdk_server Server/main.cpp Server/server_engine.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/steam_server.cpp
+        Server/server_update.cpp Server/server_release.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
+        Extension/Multiplayer/Steam/steam_transport.cpp Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
+        Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp)
+    target_include_directories(dingosdk_server SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
         dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
     set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")

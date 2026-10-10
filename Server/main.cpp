@@ -103,17 +103,27 @@ Console &console() {
 }
 void write_log(const std::string &text) {
     std::lock_guard lock(log_mutex);
-    const auto now = std::time(nullptr);
-    std::tm local{};
+    char stamp[64]{};
+    char file_stamp[64]{};
 #ifdef _WIN32
-    localtime_s(&local, &now);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    if (GetTimeFormatA(LOCALE_USER_DEFAULT, 0, &st, nullptr, stamp, sizeof(stamp)) == 0) {
+        const bool pm = st.wHour >= 12;
+        const int hour12 = (st.wHour % 12 == 0) ? 12 : (st.wHour % 12);
+        std::snprintf(stamp, sizeof(stamp), "%d:%02d:%02d %s", hour12, st.wMinute, st.wSecond, pm ? "PM" : "AM");
+    }
+    std::snprintf(file_stamp, sizeof(file_stamp), "%04d-%02d-%02d %s", st.wYear, st.wMonth, st.wDay, stamp);
 #else
-    localtime_r(&now, &local);
+    const auto now_tp = std::chrono::system_clock::now();
+    const auto now_t = std::chrono::system_clock::to_time_t(now_tp);
+    std::tm local{};
+    localtime_r(&now_t, &local);
+    std::strftime(stamp, sizeof(stamp), "%X", &local);
+    std::strftime(file_stamp, sizeof(file_stamp), "%Y-%m-%d %H:%M:%S", &local);
 #endif
-    char stamp[32]{};
-    std::strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", &local);
-    if (log_file) log_file << '[' << stamp << "] " << text << std::endl;
-    console().write(std::string("[") + (stamp + 11) + "] " + text + "\n");
+    if (log_file) log_file << '[' << file_stamp << "] " << text << std::endl;
+    console().write(std::string("[") + stamp + "] " + text + "\n");
 }
 std::atomic<bool> finished{};
 #ifdef _WIN32
@@ -249,6 +259,14 @@ int run(int argc, wchar_t **argv, bool skip_update) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+    }
     SetConsoleCtrlHandler(on_console, TRUE);
     const auto here = folder();
     // Release builds: ReSkateServer --export-world-layers "<Skate folder>" "<file>" writes the
@@ -478,8 +496,7 @@ int run(int argc, char **argv, bool skip_update) {
     std::future<UpdateCheck> update_check;
     bool update_now{}, update_waiting{}, restart{};
     // The backend's ban list (global_bans.h): read now and every ten minutes, a minute after a
-    // failure. "global_bans": false lets those players in; the answer is still read, for the
-    // chat word lists that come in it.
+    // failure. "global_bans": false leaves it unread and lets those players in.
     std::future<BanListCheck> ban_check;
     auto next_ban_check = next_advertise;
     bool bans_unread{};
@@ -566,7 +583,7 @@ int run(int argc, char **argv, bool skip_update) {
             if (check.ok && check.words_changed)
                 write_log("Word lists: " + std::to_string(check.filtered_words) + " filtered and " + std::to_string(check.forbidden_words) +
                           " not allowed at all, from the ReSkate team's lists." +
-                          (config.word_warnings ? "" : " (\"word_warnings\" is 0: a message with one is not passed on, and nobody is warned or kicked.)"));
+                          (config.word_warnings ? "" : " (\"word_warnings\" is 0: a message with one is not passed on, and nobody is kicked)."));
             else if (!check.ok && !bans_unread)
                 write_log("The ReSkate team's lists (global bans and chat words) could not be read (" + check.problem +
                           "). Trying again every minute; until then the ones already read hold.");
@@ -648,19 +665,55 @@ int serve(int argc, auto **argv) {
 } // namespace
 
 #ifdef _WIN32
-int wmain(int argc, wchar_t **argv) {
-    const int code = serve(argc, argv);
-    finished = true;
-    // Keep a failure on screen until the host has read it, instead of the window
-    // vanishing with it. Closing the window or Ctrl+C still ends it at once.
-    if (code != 0 && !stopping && own_window()) {
-        auto &input = console_input();
-        input.take();
-        console().write("Press Enter to close.\n");
-        while (!stopping && input.take().empty()) Sleep(50);
+#include "GUI/server_gui.h"
+#include <shellapi.h>
+
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int cmd_show) {
+    int argc = 0;
+    LPWSTR *argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool headless = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!argvW[i]) continue;
+        std::wstring arg = argvW[i];
+        if (arg == L"--headless" || arg == L"--cli" || arg == L"--no-gui" || arg == L"-nogui" || arg == L"-headless" || arg == L"-cli") {
+            headless = true;
+            break;
+        }
     }
-    console().flush(std::chrono::seconds(2));
-    return code;
+
+    if (headless) {
+        if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole()) {
+            FILE *fp = nullptr;
+            freopen_s(&fp, "CONOUT$", "w", stdout);
+            freopen_s(&fp, "CONOUT$", "w", stderr);
+            freopen_s(&fp, "CONIN$", "r", stdin);
+            std::ios::sync_with_stdio(true);
+        }
+        const int code = serve(argc, argvW);
+        LocalFree(argvW);
+        finished = true;
+        if (code != 0 && !stopping && own_window()) {
+            auto &input = console_input();
+            input.take();
+            console().write("Press Enter to close.\n");
+            while (!stopping && input.take().empty()) Sleep(50);
+        }
+        console().flush(std::chrono::seconds(2));
+        return code;
+    }
+
+    LocalFree(argvW);
+    try {
+        return dingosdk::server_gui::run_gui(instance, cmd_show);
+    } catch (const std::exception &e) {
+        std::ofstream f("gui_exception.txt");
+        f << "EXCEPTION: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::ofstream f("gui_exception.txt");
+        f << "UNKNOWN EXCEPTION\n";
+        return 1;
+    }
 }
 #else
 int main(int argc, char **argv) {
