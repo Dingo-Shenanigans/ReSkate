@@ -104,6 +104,9 @@ int main() {
     const auto folder = std::filesystem::temp_directory_path() / "reskate_server_scripts_tests";
     std::filesystem::create_directories(folder);
     std::ofstream(folder / "test.lua", std::ios::binary | std::ios::trunc) << script;
+    // The server saves its settings and bans (a kick does) into the folder it runs in.
+    const auto was = std::filesystem::current_path();
+    std::filesystem::current_path(folder);
 
     server::ServerConfig config;
     config.activity_log = false;
@@ -165,6 +168,7 @@ int main() {
     check(has("[script] bad event false") == 1, "server.on refuses an unknown event");
     check(has("[script] too often false") == 1, "server.every refuses under 0.1 s");
     check(has("[script] cancel unknown false") == 1, "server.cancel of no timer is false");
+    std::filesystem::current_path(was);
     std::filesystem::remove_all(folder);
     std::printf(failures ? "%d failed\n" : "all passed\n", failures);
     return failures ? 1 : 0;
