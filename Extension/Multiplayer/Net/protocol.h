@@ -301,6 +301,18 @@ void coarsen_rotations(Pose &pose, unsigned bits) noexcept;
 // that resizes part of a skater (a head four times the size) does it with a bone's scale,
 // which travels in the pose and so shows to everyone, mod or not.
 void limit_bone_scale(Pose &pose, float limit) noexcept;
+// Keeps every bone of the body and the board within `limit` metres of the bone it hangs from
+// (0: no limit). A bone's place is relative to its parent and, on the game's rigs, never
+// changes: the longest is a thigh, 0.44 m. A hacked client that moves them stretches its
+// skater across the map for everyone. The skater's few bones that follow the board and the
+// body's place in a fall (free_skater_bones) do move, by metres, and are held to
+// free_bone_reach instead; so is the board's own rig from the board.
+inline constexpr std::array<std::uint16_t, 14> free_skater_bones{3, 50, 283, 375, 376, 377, 378, 379, 380, 390, 391, 392, 393, 394};
+inline constexpr float free_bone_reach = 100.f;
+// What a game holds every pose it is sent to, whatever sent it: twice the server's standard
+// reach, and the most a server may allow a bone to be resized.
+inline constexpr float client_bone_reach = 2.f, client_bone_scale = 8.f;
+void limit_bone_reach(Pose &pose, float limit) noexcept;
 // The same, with a pose encoded at another update interval (a recipient thinned by
 // distance) instead of the packet's own, so the packet need not be copied for it.
 std::vector<std::uint8_t> encode(const Packet &, bool compact_pose, std::uint32_t pose_interval_us);

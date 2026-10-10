@@ -116,6 +116,7 @@ Layout layout(const ServerConfig &c) {
     anti_cheat.set("allowed_scoring_mods", std::move(allowed));
     anti_cheat.set("enforce_tuning", c.enforce_tuning);
     anti_cheat.set("bone_scale_limit", c.bone_scale_limit);
+    anti_cheat.set("bone_reach_limit", c.bone_reach_limit);
 
     auto &network = root.section("network");
     network.set("use_steam_relay", c.use_steam_relay);
@@ -171,7 +172,19 @@ Layout layout(const ServerConfig &c) {
     for (const auto &message : c.announcements.messages) messages.push_back(message);
     announcements.set("messages", std::move(messages));
     announcements.set("interval_minutes", c.announcements.interval);
-    announcements.set("card", c.announcements.card);
+
+    auto commands = Json::array();
+    for (const auto &command : c.commands) {
+        auto item = Json::object();
+        item["name"] = command.name;
+        item["reply"] = command.reply;
+        auto runs = Json::array();
+        for (const auto &run : command.commands) runs.push_back(run);
+        item["command"] = std::move(runs);
+        item["admin"] = command.admin;
+        commands.push_back(std::move(item));
+    }
+    root.set("commands", std::move(commands));
     return root;
 }
 // Bans have a file of their own, beside the config.
@@ -305,6 +318,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
                 if (const auto fingerprint = parse_scoring(value.string())) c.score_allow.push_back(*fingerprint);
     c.enforce_tuning = get("anti_cheat", "enforce_tuning", c.enforce_tuning);
     c.bone_scale_limit = get("anti_cheat", "bone_scale_limit", c.bone_scale_limit);
+    c.bone_reach_limit = get("anti_cheat", "bone_reach_limit", c.bone_reach_limit);
 
     c.use_steam_relay = get("network", "use_steam_relay", c.use_steam_relay);
     c.send_rate = get("network", "send_rate", c.send_rate);
@@ -371,13 +385,29 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     const Json no_announcements = Json::object();
     const auto &announcements = root.contains("announcements") && root.at("announcements").is_object()
                                     ? root.at("announcements") : no_announcements;
-    for (const char *key : {"messages", "interval_minutes", "card"})
+    for (const char *key : {"messages", "interval_minutes"})
         if (!announcements.contains(key)) missing.push_back(std::string("announcements.") + key);
     if (announcements.contains("messages") && announcements.at("messages").is_array())
         for (const auto &message : announcements.at("messages"))
             if (message.is_string() && !message.string().empty()) c.announcements.messages.push_back(message.string());
     c.announcements.interval = std::min(announcements.value("interval_minutes", c.announcements.interval), max_announcement_interval);
-    c.announcements.card = announcements.value("card", c.announcements.card);
+
+    // Chat commands came after announcements: a command is a string or a list of them.
+    if (!root.contains("commands")) missing.push_back("commands");
+    else if (!root.at("commands").is_array()) throw std::runtime_error("commands must be a list of commands, each a JSON object.");
+    else
+        for (const auto &item : root.at("commands")) {
+            if (!item.is_object()) throw std::runtime_error("commands must be a list of commands, each a JSON object.");
+            CustomCommand command;
+            command.name = item.value("name", std::string{});
+            command.reply = item.value("reply", std::string{});
+            command.admin = item.value("admin", command.admin);
+            if (item.contains("command") && item.at("command").is_string()) command.commands.push_back(item.at("command").string());
+            else if (item.contains("command") && item.at("command").is_array())
+                for (const auto &run : item.at("command"))
+                    if (run.is_string() && !run.string().empty()) command.commands.push_back(run.string());
+            c.commands.push_back(std::move(command));
+        }
 
     const auto read_bans = [&](const Json &rows) {
         if (!rows.is_array()) throw std::runtime_error("The bans must be a JSON list.");
@@ -497,6 +527,42 @@ std::string custom_votes_error(const std::vector<CustomVote> &votes) {
     }
     return {};
 }
+bool custom_command_name_free(std::string_view name) noexcept {
+    // The chat's own commands, then the server commands admins type as /<command>.
+    for (const std::string_view taken :
+         {"help", "party", "p", "w", "whisper", "tell", "poll", "vote", "yes", "y", "no", "n", "tp",
+          "activity-log", "admin", "admins", "afk-kick", "announce", "announce-throwdowns", "announce-to", "announcements",
+          "ban", "bans", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
+          "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
+          "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
+          "object-placement", "object-scaling", "objects", "park", "parties", "party-size", "password", "placement",
+          "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "tod",
+          "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
+          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
+        if (name == taken) return false;
+    // A number is an answer to a poll ("/2").
+    return !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+std::string custom_commands_error(const std::vector<CustomCommand> &commands) {
+    using namespace multiplayer;
+    if (commands.size() > max_custom_commands) return "commands: at most " + std::to_string(max_custom_commands) + " commands.";
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        const auto &c = commands[i];
+        if (!valid_server_vote_name(c.name))
+            return "commands: each needs a name of 1 to 16 lowercase letters, digits, - or _ (\"" + c.name + "\" is not).";
+        const auto where = "commands \"" + c.name + "\": ";
+        if (!custom_command_name_free(c.name)) return where + "that name is one of the server's own commands.";
+        for (std::size_t j = 0; j < i; ++j)
+            if (commands[j].name == c.name) return where + "two commands have that name.";
+        if (c.reply.empty() && c.commands.empty()) return where + "needs a reply, a command, or both.";
+        if (!c.reply.empty() && !valid_chat_text(c.reply)) return where + "reply must be one chat line (at most 200 bytes).";
+        if (c.commands.size() > max_custom_command_runs)
+            return where + "at most " + std::to_string(max_custom_command_runs) + " server commands.";
+        for (const auto &run : c.commands)
+            if (!valid_admin_text(run)) return where + "each command must be one server command, e.g. \"announce-to {player} Hi\".";
+    }
+    return {};
+}
 std::string config_error(const ServerConfig &c) {
     using namespace multiplayer;
     if (!parse_colour(c.chat_color)) return "chat_color must be a colour like #8E5CFF.";
@@ -509,6 +575,8 @@ std::string config_error(const ServerConfig &c) {
     if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
     if (c.bone_scale_limit != 0 && !(c.bone_scale_limit >= 1.f && c.bone_scale_limit <= 8.f))
         return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";
+    if (c.bone_reach_limit != 0 && !(c.bone_reach_limit >= .5f && c.bone_reach_limit <= 20.f))
+        return "bone_reach_limit must be 0 (no limit) or 0.5 to 20 metres.";
     if (c.pack_ms > 50) return "pack_ms must be 0 (off) to 50.";
     if (c.threads > 32) return "threads must be 0 (one for each processor but one) to 32.";
     if (c.finger_distance > 10000) return "finger_distance must be 0 (fingers always sent) to 10000.";
@@ -529,6 +597,7 @@ std::string config_error(const ServerConfig &c) {
     if (c.password.size() > 64) return "password must be at most 64 characters.";
     if (!c.welcome.empty() && !valid_chat_text(c.welcome)) return "welcome must be one chat line (at most 200 bytes).";
     if (auto error = custom_votes_error(c.votes.custom); !error.empty()) return error;
+    if (auto error = custom_commands_error(c.commands); !error.empty()) return error;
     if (c.announcements.messages.size() > max_announcements)
         return "announcements.messages: at most " + std::to_string(max_announcements) + " messages.";
     for (const auto &message : c.announcements.messages)

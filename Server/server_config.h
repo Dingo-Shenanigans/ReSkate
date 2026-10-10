@@ -49,7 +49,17 @@ inline constexpr unsigned max_announcement_interval = 1440; // minutes
 struct Announcements {
     std::vector<std::string> messages;
     unsigned interval{}; // minutes; 0: off
-    bool card = true;   // also as a card on each player's screen, not only in chat
+};
+inline constexpr std::size_t max_custom_commands = 32;
+inline constexpr std::size_t max_custom_command_runs = 8;
+// The owner's own chat commands ("/discord"), never listed in /help. Each answers whoever typed
+// it with `reply`, and/or runs `commands` as the console: {player} is their SteamID64, {map}
+// the current map, {arg} the rest of what they typed.
+struct CustomCommand {
+    std::string name; // 1-16 of a-z 0-9 - _
+    std::string reply;
+    std::vector<std::string> commands;
+    bool admin{}; // only admins may use it
 };
 // ReSkateServer.json. Every setting an admin or the console changes is saved
 // back, so a restart keeps it.
@@ -69,6 +79,9 @@ struct ServerConfig {
     // inverse the least). The game's own skater height is a scale as well, so 1 shows every
     // skater at one height and build; 2, the default, leaves height alone. 0 is no limit.
     float bone_scale_limit = 2;
+    // How far (metres) a bone of a skater's body or board may be from the one it hangs from
+    // for the other players (limit_bone_reach). 0: no limit.
+    float bone_reach_limit = 1;
     // How players reach the server: true, through Steam's relay network only; false, straight
     // to `port` (UDP). A direct server still answers through the relays, for a player the port
     // does not reach, one who has turned direct connections off, or an older game.
@@ -145,6 +158,7 @@ struct ServerConfig {
     bool enforce_tuning = true;
     VoteSettings votes; // all off until the owner turns them on
     Announcements announcements;
+    std::vector<CustomCommand> commands;
     ParkChoices parks{"skatepark_01", "megapark_05", "flumppark_08"};
     // Forced on every player while world_layer_sync is on: layer key -> mode.
     // Needs world-layers.json (the players' catalog) next to the server.
@@ -173,6 +187,10 @@ std::string config_error(const ServerConfig &config);
 // Why the owner's custom votes cannot run, or empty; and whether a custom vote may be called
 // `name` (not a word "/vote" already takes: map, kick, tod, yes, poll...).
 std::string custom_votes_error(const std::vector<CustomVote> &votes);
+// Why the owner's custom chat commands cannot run, or empty; and whether a chat command may be
+// called `name` (not one players or admins already type: help, party, vote, kick, map...).
+bool custom_command_name_free(std::string_view name) noexcept;
+std::string custom_commands_error(const std::vector<CustomCommand> &commands);
 bool custom_vote_name_free(std::string_view name) noexcept;
 // A scoring fingerprint as the config and console write it (16 hex digits), and read back
 // (nothing for text that is not one, or for 0: the game's own scoring needs no entry).
