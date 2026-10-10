@@ -56,6 +56,8 @@ into scripts are in the source's Server/scripts: rules.lua (/rules), goto.lua
 objects). The console can run script commands too (as "hello world"), and so
 can admins. Commands the server already has always win over a script's. /help
 (and help in the console) lists the script commands each player may use.
+The full reference, with every function's results and limits, is
+Server/scripts/README.md in the source.
 
   server.command(name, function(player, args) ... end [, {admin = true}])
                          A /name command: what the function returns is the reply.
