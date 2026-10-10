@@ -169,6 +169,8 @@ struct ServerConfig {
     bool world_layer_sync{};
     std::map<std::string, std::string> layers;
     std::vector<std::uint64_t> admins;
+    // The server's Locals: a rank its admins give out, shown as a badge before the name.
+    std::vector<std::uint64_t> locals;
     std::vector<MultiplayerBan> bans;
 };
 // Reads `file`, writing a default one first when it does not exist. Settings this version

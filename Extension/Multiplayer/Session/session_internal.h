@@ -223,9 +223,9 @@ struct Session {
     SteamTransport transport;
     SteamLobbies lobbies{make_steam_lobby_api(), [](std::uint64_t host) { return banned_host(host) || reskate_banned(host); }};
     SteamServerBrowser servers;
-    // Guest of a dedicated server: whether the roster lists us as an admin,
+    // Guest of a dedicated server: whether the roster lists us as an admin or a Local,
     // and the server's voice range from it.
-    bool server_admin{};
+    bool server_admin{}, server_local{};
     float roster_voice_range = default_voice_range;
     // The colours of the dedicated server's own chat lines, as its roster gives them.
     std::uint32_t server_chat_badge = default_server_chat_badge, server_chat_text = default_server_chat_text;
@@ -439,7 +439,7 @@ bool identity_link(Session &s, std::uint64_t other);
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local = false, bool marks = true);
 // The colour and badge of one of the backend's categories.
 std::pair<std::uint32_t, std::string> mark_role(IdentityList list);
-// A player's role colour and badge ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or none), shown in chat
+// A player's role colour and badge ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Local", "Host", "Friend" or none), shown in chat
 // and on their nametag. `local`: the local player.
 std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t id, bool local, bool marks = true);
 // Sends one line from this player; returns why not when it cannot.

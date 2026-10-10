@@ -316,6 +316,7 @@ class Host {
     std::string guest_name(const Guest &) const;
     std::string player_name(std::string_view wanted, std::uint64_t id) const;
     bool is_admin(std::uint64_t id) const;
+    bool is_local(std::uint64_t id) const;
     bool is_banned(std::uint64_t id) const;
     void save();
 

@@ -108,6 +108,9 @@ std::string Host::player_name(std::string_view wanted, std::uint64_t id) const {
 bool Host::is_admin(std::uint64_t id) const {
     return std::find(config_.admins.begin(), config_.admins.end(), id) != config_.admins.end();
 }
+bool Host::is_local(std::uint64_t id) const {
+    return std::find(config_.locals.begin(), config_.locals.end(), id) != config_.locals.end();
+}
 bool Host::is_banned(std::uint64_t id) const {
     return std::any_of(config_.bans.begin(), config_.bans.end(), [&](const auto &ban) { return ban.id == id; });
 }
@@ -676,6 +679,7 @@ void Host::send_roster() {
     for (auto &[id, guest] : guests_)
         if (guest->handshaken) {
             guest->member.admin = is_admin(id);
+            guest->member.local = is_local(id);
             const auto party = parties_.party_of(id);
             const auto *details = parties_.party(party);
             guest->member.party = party;
@@ -1099,7 +1103,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
             send_roster();
             meet_later(*link);
             if (!config_.welcome.empty()) send_chat(config_.welcome, link);
-            log_(guest_name(*link) + " joined (" + std::to_string(peer) + (is_admin(peer) ? ", admin" : "") + "), " +
+            log_(guest_name(*link) + " joined (" + std::to_string(peer) + (is_admin(peer) ? ", admin" : "") + (is_local(peer) ? ", local" : "") + "), " +
                  std::to_string(players()) + "/" + std::to_string(config_.max_players) + " players" +
                  (link->connected_at && now_ > link->connected_at
                       ? ", loaded in " + std::to_string((now_ - link->connected_at) / 1000000) + " s" : ""));

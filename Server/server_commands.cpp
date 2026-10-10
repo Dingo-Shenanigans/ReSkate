@@ -26,7 +26,7 @@ constexpr std::string_view help_text =
     "park <lot> <layout> | park random | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>]\n"
-    "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | update | quit";
+    "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | local add|remove <player or SteamID64> | locals | update | quit";
 } // namespace
 
 std::string Host::command(std::string_view line, std::uint64_t admin) {
@@ -740,6 +740,31 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
             return changed(std::to_string(id) + " is no longer an admin.");
         }
         return "admin add|remove <player or SteamID64>";
+    }
+    if (name == "locals" || name == "local") {
+        // The Local rank: the console and the admins give it out (a badge, no powers).
+        const auto [sub, who] = split(argument);
+        if (name == "locals" || sub.empty()) {
+            std::string text = std::to_string(config_.locals.size()) + " locals";
+            for (const auto id : config_.locals) {
+                const auto *guest = find(id);
+                text += "\n  " + std::to_string(id) + (guest ? "  " + guest_name(*guest) : std::string{});
+            }
+            return text;
+        }
+        auto *guest = target(who);
+        const auto id = guest ? guest->member.id : number(who).value_or(0);
+        if (!individual_steam_id(id) || (sub != "add" && sub != "remove")) return "local add|remove <player or SteamID64>";
+        const auto shown = guest ? guest_name(*guest) : std::to_string(id);
+        if (sub == "add") {
+            if (!is_local(id)) {
+                if (config_.locals.size() >= 1024) return "The locals list is full.";
+                config_.locals.push_back(id);
+            }
+            return changed(shown + " is a Local.");
+        }
+        std::erase(config_.locals, id);
+        return changed(shown + " is no longer a Local.");
     }
     return "Unknown command \"" + std::string(action) + "\". Type help.";
 }

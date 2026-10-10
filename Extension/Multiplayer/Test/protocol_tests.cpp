@@ -802,7 +802,7 @@ void dedicated_server_codec() {
 
     Packet roster;
     roster.kind = PacketKind::roster; roster.session = 9; roster.epoch = 10; roster.map = 11; roster.source = server;
-    roster.members = {{server, 10, "My server"}, {player, 20, "Skater", true}, {other, 30, "Other"}};
+    roster.members = {{server, 10, "My server"}, {player, 20, "Skater", true}, {other, 30, "Other", false, true}};
     roster.voice_range = 450;
     roster.guest_noclip = false;
     roster.object_limit = 50;
@@ -983,6 +983,9 @@ void dedicated_server_codec() {
     auto crowned = roster;
     crowned.members[0].admin = true;
     check(reject(crowned), "A host marked as an admin");
+    auto settled = roster;
+    settled.members[0].local = true;
+    check(reject(settled), "A host marked as a Local");
     auto far = roster;
     far.voice_range = 5;
     check(reject(far), "Invalid voice range encoded");

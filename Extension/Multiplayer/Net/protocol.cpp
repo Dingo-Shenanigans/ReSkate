@@ -179,7 +179,7 @@ bool valid_roster(std::span<const Member> members, unsigned capacity) noexcept {
         // The host comes first, and may be a dedicated server rather than a player.
         const bool server = i == 0 && game_server_steam_id(m.id);
         const bool identity = individual_steam_id(m.id) || server;
-        if (!identity || !m.epoch || m.name.size() > 128 || (i == 0 && m.admin))
+        if (!identity || !m.epoch || m.name.size() > 128 || (i == 0 && (m.admin || m.local)))
             return false;
         // A server is in no party; only a party's leader leads or opens it.
         if ((server && m.party) || (!m.party && (m.party_leader || m.party_open)) || (m.party_open && !m.party_leader))
@@ -228,7 +228,7 @@ bool valid_routes(std::span<const Member> members) noexcept {
         return false;
     for (std::size_t i = 0; i < members.size(); ++i) {
         const auto &m = members[i];
-        if (!individual_steam_id(m.id) || !m.epoch || !m.name.empty() || m.admin)
+        if (!individual_steam_id(m.id) || !m.epoch || !m.name.empty() || m.admin || m.local)
             return false;
         for (std::size_t j = 0; j < i; ++j)
             if (members[j].id == m.id)
@@ -634,7 +634,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.integer(m.name.size(), 1);
             w.bytes.insert(w.bytes.end(), m.name.begin(), m.name.end());
             w.integer((m.admin ? 1U : 0U) | (m.party_leader ? 2U : 0U) | (m.party_open ? 4U : 0U) | (m.speeding ? 8U : 0U) |
-                          (m.scoring ? 16U : 0U), 1);
+                          (m.scoring ? 16U : 0U) | (m.local ? 32U : 0U), 1);
             w.integer(m.party, 4);
         }
         w.integer(p.distances.full_rate_return, 2);
@@ -1013,8 +1013,9 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                               static_cast<std::size_t>(length));
                 r.at += static_cast<std::size_t>(length);
                 const auto flags = r.integer(1);
-                if (flags > 31) return {};
+                if (flags > 63) return {};
                 m.admin = (flags & 1) != 0;
+                m.local = (flags & 32) != 0;
                 m.speeding = (flags & 8) != 0;
                 m.scoring = (flags & 16) != 0;
                 m.party_leader = (flags & 2) != 0;

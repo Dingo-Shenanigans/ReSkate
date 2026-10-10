@@ -76,6 +76,7 @@ Layout layout(const ServerConfig &c) {
 
     auto &access = root.section("access");
     access.set("admins", ids(c.admins));
+    access.set("locals", ids(c.locals));
     access.set("reserved_players_slots", ids(c.reserved));
     access.set("use_global_bans", c.global_bans);
 
@@ -276,6 +277,8 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
 
     if (const auto *admins = find("access", "admins"); admins && admins->is_array())
         for (const auto &id : *admins) c.admins.push_back(steam_id(id));
+    if (const auto *locals = find("access", "locals"); locals && locals->is_array())
+        for (const auto &id : *locals) c.locals.push_back(steam_id(id));
     if (const auto *reserved = find("access", "reserved_players_slots", {"reserved"}); reserved && reserved->is_array())
         for (const auto &id : *reserved) c.reserved.push_back(steam_id(id));
     c.global_bans = get("access", "use_global_bans", c.global_bans, {"global_bans"});
@@ -535,7 +538,7 @@ bool custom_command_name_free(std::string_view name) noexcept {
          {"help", "party", "p", "w", "whisper", "tell", "poll", "vote", "yes", "y", "no", "n", "tp",
           "activity-log", "admin", "admins", "afk-kick", "announce", "announce-throwdowns", "announce-to", "announcements",
           "ban", "bans", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
-          "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
+          "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "local", "locals", "map", "map-pool", "maps", "msg",
           "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
           "object-placement", "object-scaling", "objects", "park", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "tod",
@@ -575,6 +578,9 @@ std::string config_error(const ServerConfig &c) {
     for (const auto id : c.reserved)
         if (!individual_steam_id(id)) return "reserved_players_slots must be SteamID64s (17 digits starting 7656119).";
     if (c.reserved.size() > 1024) return "reserved_players_slots holds at most 1024 players.";
+    for (const auto id : c.locals)
+        if (!individual_steam_id(id)) return "locals must be SteamID64s (17 digits starting 7656119).";
+    if (c.locals.size() > 1024) return "locals holds at most 1024 players.";
     if (c.send_rate < 128 || c.send_rate > 16384) return "send_rate must be 128 to 16384 (KB/s for each player).";
     if (c.bone_scale_limit != 0 && !(c.bone_scale_limit >= 1.f && c.bone_scale_limit <= 8.f))
         return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";

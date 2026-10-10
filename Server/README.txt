@@ -84,6 +84,11 @@ activity_log       Log what players do (default true): throwdown drops placed,
 
 "access" - Who runs the server and who always has a place on it.
 admins             SteamID64s (as strings) who may change settings in-game.
+locals             SteamID64s (as strings) of the server's Locals (default none):
+                   a rank with a mint "Local" badge before the name, in chat
+                   and on nametags, and no other powers. The console and the
+                   admins give it out with "local add|remove <player>" (in
+                   game: /local add <player>); "locals" lists them.
 reserved_players_slots
                    SteamID64s of the players with a reserved slot, e.g.
                    ["76561198000000000"] (default none). They can join when

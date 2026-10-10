@@ -274,7 +274,7 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
     bool nametags = mp.nametags;
     if (toggle_row(menu, "Player nametags",
                    "The name above each skater, with their distance: purple for ReSkate developers, red for content creators, "
-                   "gold for homies, pink for server admins, blue for the host, green for your Steam friends.",
+                   "gold for homies, pink for server admins, mint for a server's locals, blue for the host, green for your Steam friends.",
                    nametags)) {
         std::array<char, 65> unused{};
         send_private(menu, "nametags", nametags ? "on" : "off", unused, false);
