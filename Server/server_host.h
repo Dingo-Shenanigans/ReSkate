@@ -369,6 +369,8 @@ class Host {
     void tick_announcements(); // the owner's messages in turn, on their timer
     void reply(Guest &, std::string_view text, unsigned max_lines = 12);
     Guest *match_player(std::string_view text);
+    // Sends each mover to a ring of `radius` around `at`, 1 m up, so nobody lands inside anyone; how many were sent.
+    unsigned teleport_ring(const std::vector<Guest *> &movers, const std::array<float, 3> &at, float radius = 2.5f);
     void tick_rotation();
     std::string pool_text() const;     // the map pool, one map a line
     std::string rotation_text() const; // the rotation's interval and next map
