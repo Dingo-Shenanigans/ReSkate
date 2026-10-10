@@ -75,7 +75,10 @@ using namespace dingosdk;
 using namespace dingosdk::multiplayer;
 
 constexpr const char *script = R"lua(
-server.on("join", function(p) print("join", p.name, p.id, p.admin, p.objects) end)
+server.on("join", function(p)
+  print("join", p.name, p.id, p.admin, p.objects)
+  print("announce to", server.announce("hi " .. p.name, p), server.announce("nobody", "zzz"))
+end)
 server.on("chat", function(p, text)
   print("chat", p.name, text)
   if text == "kick me" then print("kicked:", server.kick(p)) end
@@ -158,6 +161,8 @@ int main() {
     for (const auto &line : log)
         if (line.starts_with("[script]")) std::printf("  log: %s\n", line.c_str());
     check(has("[script] join Tester 76561198000000001 false 0") == 1, "join: the player's table");
+    check(has("[announcement -> Tester] hi Tester") == 1 && has("[script] announce to true false") == 1,
+          "announce: a card for one player; false for nobody");
     check(has("[script] chat Tester hello there") == 1, "chat: the player and their text");
     check(has("[script] kicked: Tester was kicked") == 1, "a chat handler kicks the player who spoke");
     check(has("[script] leave Tester 76561198000000001 nil") == 1, "leave: who they were, and that they are gone");

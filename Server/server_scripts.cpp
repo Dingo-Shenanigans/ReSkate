@@ -448,12 +448,22 @@ int Scripts::open(lua_State *state) {
                  return 1;
              });
          }},
-        // server.announce(text): a chat line and the announcement card.
+        // server.announce(text [, who]): the announcement card on everyone's screen, or one player's;
+        // false when `who` matches nobody.
         {"announce",
          [](lua_State *lua) -> int {
              return guarded(lua, [&] {
-                 self(lua).host_.announce(text(lua, 1));
-                 return 0;
+                 auto &scripts = self(lua);
+                 const auto line = text(lua, 1);
+                 if (lua_isnoneornil(lua, 2)) {
+                     scripts.host_.announce(line);
+                     lua_pushboolean(lua, true);
+                     return 1;
+                 }
+                 const auto id = scripts.target(lua, 2);
+                 if (id) scripts.host_.announce(line, id);
+                 lua_pushboolean(lua, id != 0);
+                 return 1;
              });
          }},
         // server.kick(who), server.ban(who or an offline SteamID64): the server's answer.

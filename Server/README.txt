@@ -56,8 +56,9 @@ into scripts are in the source's Server/scripts: rules.lua (/rules), goto.lua
 (/goto <player>), props.lua (/props, for admins: who placed the most
 objects), welcome.lua (greets players who join) and tips.lua (a tip every few
 minutes). The console can run script commands too (as "hello world"), and so
-can admins. Commands the server already has always win over a script's. /help
-(and help in the console) lists the script commands each player may use.
+can admins. Commands the server already has, and the owner's "commands" in
+ReSkateServer.json, always win over a script's of the same name. /help (and
+help in the console) lists the script commands each player may use.
 The full reference, with every function's results and limits, is
 Server/scripts/README.md in the source.
 
@@ -69,7 +70,8 @@ Server/scripts/README.md in the source.
   server.player(who)     One player's table, or nil.
   server.say(text)       A chat line to everyone.
   server.tell(who, text) Chat lines to one player; false if nobody matches.
-  server.announce(text)  Chat and the announcement card.
+  server.announce(text [, who])   The announcement card, for everyone or for
+                         one player.
   server.kick(who)       Like the kick command; returns the server's answer.
   server.ban(who)        Like ban; also takes the SteamID64 of a player who left.
   server.teleport(who, x, y, z)   Sends a player there; true if sent.

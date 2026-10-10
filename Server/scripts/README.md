@@ -57,7 +57,14 @@ The server loads scripts when it starts:
 | An admin | `/hello world` | All script commands. |
 | The server console | `hello world` | All script commands. The caller is the console's [player table](#the-player-table). |
 
-The server's own commands always come first. A script command named `kick`, `vote`, `party` or `w`, for example, never runs from chat. Give your commands names the server doesn't already use.
+When a player types `/name`, the server looks in this order and runs the first match:
+
+1. The chat's own commands: `help`, `vote`, `poll`, `party`, `w` and so on.
+2. The owner's commands from the `"commands"` list in `ReSkateServer.json` (see `Server/README.txt`).
+3. For admins, the server's console commands: `kick`, `map`, `scripts` and so on.
+4. Script commands.
+
+So a script command that shares its name with any of those never runs from chat, even though it still loads. Give your commands names the server doesn't already use.
 
 `/help` in chat lists the script commands that player may run, and `help` in the console lists them all.
 
@@ -156,8 +163,12 @@ Sends one chat line, from the server, to everyone. Returns nothing.
 ### `server.tell(who, text)`
 Sends chat lines to one player. Each `\n` starts a new line, up to 12 lines. Returns `true`, or `false` when `who` matches nobody.
 
-### `server.announce(text)`
-Posts a chat line to everyone, and shows it on the announcement card if the server's announcement card is on. It is logged as an announcement. Returns nothing.
+### `server.announce(text [, who])`
+Shows `text` on the announcement card at the top of the screen, like the `announce` console command. Announcements show only on the card, not in chat.
+- `server.announce(text)` shows it to everyone, and returns `true`.
+- `server.announce(text, who)` shows it to that one player only, like `announce-to`. Returns `true`, or `false` when `who` matches nobody.
+
+Only one announcement shows at a time, so a new one replaces the last. Every announcement is logged.
 
 ## Moderation
 

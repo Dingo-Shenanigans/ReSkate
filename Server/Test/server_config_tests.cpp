@@ -372,6 +372,7 @@ int run() {
         refused([](ServerConfig &c) { c.votes.custom.resize(17, c.votes.custom[0]); }, "More than 16 custom votes accepted");
         refused([](ServerConfig &c) { c.commands[0].name = "kick"; }, "A custom command named like a server command accepted");
         refused([](ServerConfig &c) { c.commands[0].name = "party"; }, "A custom command named like a chat command accepted");
+        refused([](ServerConfig &c) { c.commands[0].name = "scripts"; }, "A custom command named like the scripts command accepted");
         refused([](ServerConfig &c) { c.commands[0].name = "Discord"; }, "A custom command name with capitals accepted");
         refused([](ServerConfig &c) { c.commands[1].name = "discord"; }, "Two custom commands with one name accepted");
         refused([](ServerConfig &c) { c.commands[0].reply.clear(); }, "A custom command with no reply or command accepted");

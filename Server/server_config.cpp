@@ -538,7 +538,7 @@ bool custom_command_name_free(std::string_view name) noexcept {
           "object-placement", "object-scaling", "objects", "park", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "tod",
           "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
-          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
+          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update", "scripts"})
         if (name == taken) return false;
     // A number is an answer to a poll ("/2").
     return !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; });
