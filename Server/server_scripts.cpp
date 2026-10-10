@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <vector>
 
 namespace dingosdk::server {
@@ -50,7 +52,7 @@ Scripts::~Scripts() {
     if (lua_) lua_close(lua_);
 }
 
-std::string Scripts::load(const std::string &folder) {
+std::string Scripts::load(const std::filesystem::path &folder) {
     if (lua_) lua_close(lua_); // loading again starts over
     lua_ = nullptr;
     commands_.clear();
@@ -84,17 +86,35 @@ std::string Scripts::load(const std::string &folder) {
     std::sort(files.begin(), files.end());
     std::string errors;
     for (const auto &file : files) {
+        // Read here, not by Lua's fopen: a Windows path need not fit the ANSI code page.
+        const auto u8 = file.filename().u8string();
+        const std::string name(u8.begin(), u8.end());
+        std::ifstream in(file, std::ios::binary);
+        std::ostringstream source;
+        source << in.rdbuf();
+        auto text = std::move(source).str();
+        if (text.starts_with("\xEF\xBB\xBF")) text.erase(0, 3); // a UTF-8 mark, as Notepad may save
         // "t": source text only. Lua does not check bytecode, so a precompiled chunk could do anything.
-        if (luaL_loadfilex(lua_, file.string().c_str(), "t") != LUA_OK) {
+        if (!in) {
+            why = "could not be read";
+        } else if (luaL_loadbufferx(lua_, text.data(), text.size(), ("@" + name).c_str(), "t") != LUA_OK) {
             const char *error = lua_tostring(lua_, -1);
             why = error ? error : "could not load";
             lua_pop(lua_, 1);
         } else if (call(0, why)) {
             continue;
         }
-        errors += "Script " + file.filename().string() + ": " + why + "\n";
+        errors += "Script " + name + ": " + why + "\n";
     }
     return errors;
+}
+
+std::string Scripts::help(std::uint64_t caller) const {
+    const bool admin = !caller || host_.is_admin(caller);
+    std::string names;
+    for (const auto &[name, command] : commands_)
+        if (admin || !command.admin) names += (names.empty() ? "" : ", ") + name;
+    return names;
 }
 
 std::optional<std::string> Scripts::run(std::string_view verb, std::uint64_t caller, std::string_view args) {
@@ -109,10 +129,10 @@ std::optional<std::string> Scripts::run(std::string_view verb, std::uint64_t cal
     } request{found->second.function, caller, args};
     // The arguments are made inside the pcall: building them can fail at the memory cap.
     constexpr lua_CFunction invoke = [](lua_State *lua) -> int {
-        const auto &request = *static_cast<const Request *>(lua_touserdata(lua, 1));
-        lua_rawgeti(lua, LUA_REGISTRYINDEX, request.function);
-        self(lua).push_player(lua, request.caller);
-        lua_pushlstring(lua, request.args.data(), request.args.size());
+        const auto &asked = *static_cast<const Request *>(lua_touserdata(lua, 1));
+        lua_rawgeti(lua, LUA_REGISTRYINDEX, asked.function);
+        self(lua).push_player(lua, asked.caller);
+        lua_pushlstring(lua, asked.args.data(), asked.args.size());
         lua_call(lua, 2, 1);
         return 1;
     };
@@ -198,29 +218,29 @@ void Scripts::push_player(lua_State *lua, std::uint64_t id) {
     }
 }
 
-int Scripts::open(lua_State *lua) {
+int Scripts::open(lua_State *state) {
     // The libraries a script needs, and none that reach files, processes, other code or Lua's insides.
     static constexpr luaL_Reg libraries[] = {{LUA_GNAME, luaopen_base},       {LUA_STRLIBNAME, luaopen_string},
                                              {LUA_TABLIBNAME, luaopen_table},   {LUA_MATHLIBNAME, luaopen_math},
                                              {LUA_UTF8LIBNAME, luaopen_utf8},   {LUA_OSLIBNAME, luaopen_os}};
     for (const auto &library : libraries) {
-        luaL_requiref(lua, library.name, library.func, 1);
-        lua_pop(lua, 1);
+        luaL_requiref(state, library.name, library.func, 1);
+        lua_pop(state, 1);
     }
     // No code but the scripts' own files: load and loadfile take bytecode, string.dump makes it.
     for (const char *name : {"dofile", "loadfile", "load", "collectgarbage"}) {
-        lua_pushnil(lua);
-        lua_setglobal(lua, name);
+        lua_pushnil(state);
+        lua_setglobal(state, name);
     }
-    lua_getglobal(lua, LUA_STRLIBNAME);
-    lua_pushnil(lua);
-    lua_setfield(lua, -2, "dump");
-    lua_pop(lua, 1);
+    lua_getglobal(state, LUA_STRLIBNAME);
+    lua_pushnil(state);
+    lua_setfield(state, -2, "dump");
+    lua_pop(state, 1);
     // No finalizers: Lua runs __gc with hooks off (lgc.c GCTM), out of the instruction budget, and
     // lua_close runs them too. An object is only finalized if its metatable has __gc when set.
-    lua_getglobal(lua, "setmetatable");
+    lua_getglobal(state, "setmetatable");
     lua_pushcclosure(
-        lua,
+        state,
         [](lua_State *lua) -> int {
             if (lua_istable(lua, 2)) {
                 lua_pushliteral(lua, "__gc");
@@ -233,16 +253,16 @@ int Scripts::open(lua_State *lua) {
             return 1;
         },
         1);
-    lua_setglobal(lua, "setmetatable");
+    lua_setglobal(state, "setmetatable");
     // os: the clock and calendar only (not execute, exit, getenv, remove, rename, tmpname, setlocale).
-    lua_newtable(lua);
-    lua_getglobal(lua, LUA_OSLIBNAME);
+    lua_newtable(state);
+    lua_getglobal(state, LUA_OSLIBNAME);
     for (const char *name : {"time", "clock", "date"}) {
-        lua_getfield(lua, -1, name);
-        lua_setfield(lua, -3, name);
+        lua_getfield(state, -1, name);
+        lua_setfield(state, -3, name);
     }
-    lua_pop(lua, 1);
-    lua_setglobal(lua, LUA_OSLIBNAME);
+    lua_pop(state, 1);
+    lua_setglobal(state, LUA_OSLIBNAME);
 
     // A server command with `argument` from a script, as the console runs it; logged, since the
     // console logs only what is typed into it. The argument goes through the chat cleaner: no
@@ -407,10 +427,10 @@ int Scripts::open(lua_State *lua) {
              });
          }},
         {nullptr, nullptr}};
-    luaL_newlib(lua, api);
-    lua_getfield(lua, -1, "log");
-    lua_setglobal(lua, "print");
-    lua_setglobal(lua, "server");
+    luaL_newlib(state, api);
+    lua_getfield(state, -1, "log");
+    lua_setglobal(state, "print");
+    lua_setglobal(state, "server");
     return 0;
 }
 } // namespace dingosdk::server

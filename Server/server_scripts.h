@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <string>
@@ -24,10 +25,12 @@ class Scripts {
     Scripts &operator=(const Scripts &) = delete;
     ~Scripts();
     // Every .lua file in the folder, in name order; the scripts' errors, one a line ("" = none).
-    std::string load(const std::string &folder);
+    std::string load(const std::filesystem::path &folder);
     // The script's reply, or nothing when no script has this command (or it is for admins and
     // `caller` is not one). `caller` is the player's SteamID64, 0 for the console.
     std::optional<std::string> run(std::string_view verb, std::uint64_t caller, std::string_view args);
+    // The commands `caller` may run (0: the console), as "goto, rules"; "" for none.
+    std::string help(std::uint64_t caller) const;
 
   private:
     struct Command {

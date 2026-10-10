@@ -141,6 +141,8 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (polls != ServerPolls::off) text += "/1, /2...: answer the running poll\n";
         if (config_.map_rotation) text += "The map changes every " + std::to_string(config_.map_rotation) + " min.\n";
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
+        if (const auto scripted = scripts_.help(guest.member.id); !scripted.empty())
+            text += "This server's own commands (type /<name>): " + scripted + "\n";
         if (is_admin(guest.member.id))
             text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /msg, /msg-party, /msg-admins\n";
         const std::string whisper = "/w <player> <message>: send a private message";

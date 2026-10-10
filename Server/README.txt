@@ -52,9 +52,10 @@ logged and that file is skipped. Example, scripts/hello.lua:
 
 A player typing /hello world gets "hi <name>: world". More examples to copy
 into scripts are in the source's Server/scripts: rules.lua (/rules), goto.lua
-(/goto <player>) and props.lua (/props, for admins: who placed the most objects). The console can run script
-commands too (as "hello world"), and so can admins. Commands the server already
-has always win over a script's.
+(/goto <player>) and props.lua (/props, for admins: who placed the most
+objects). The console can run script commands too (as "hello world"), and so
+can admins. Commands the server already has always win over a script's. /help
+(and help in the console) lists the script commands each player may use.
 
   server.command(name, function(player, args) ... end [, {admin = true}])
                          A /name command: what the function returns is the reply.
@@ -83,9 +84,8 @@ and os.date; nothing that reads or writes files, runs programs or loads other
 code (only source files load, never compiled Lua), and no __gc finalizers.
 All scripts share 32 MB, and a command that runs too long (a few milliseconds
 of Lua) is stopped; either way the player is told the command failed and the
-log says why. Search players'
-text with string.find(text, word, 1, true): a pattern a player typed can take
-the server a very long time to match.
+log says why. A string pattern that would take too long to match (one a player
+typed, say) stops with "pattern too complex".
 
 ReSkateServer.json
 ------------------

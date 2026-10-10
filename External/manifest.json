@@ -263,7 +263,7 @@
     "version": "5.4.9",
     "archive": "https://www.lua.org/ftp/lua-5.4.9.tar.gz",
     "archive_sha256": "2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6",
-    "configuration": "Unmodified src/ without the standalone lua.c and luac.c. Built as C++ (errors unwind as exceptions). LICENSE.txt is the copyright notice from lua.h.",
+    "configuration": "src/ without the standalone lua.c and luac.c, unmodified but for the local patch. Built as C++ (errors unwind as exceptions). LICENSE.txt is the copyright notice from lua.h.",
     "files": {
       "src/lapi.c": "cd369dc6900a7696ca55ccbd4f50eadfa799b975f34b7afe450e1b859517a56e",
       "src/lapi.h": "9522209670086adfbb11379416078a7f4dafe154043e320cd435fa1811aaabfb",
@@ -326,6 +326,12 @@
       "src/lzio.c": "fba61ceeeb257a3fe5f63310f21e14fc26c4be647583dcf8e74cbc7fb7e43e8a",
       "src/lzio.h": "9673f62eac2d0fe3010f9d23148be7b8113319fdf4c4490015cd9feae2ecaad4",
       "LICENSE.txt": "d1f51991ae78b089d96ed969246ddaa2b95fccda29a567b4235dfbd3335b81f3"
+    },
+    "local_patches": {
+      "src/lstrlib.c": {
+        "sha256": "517314550b368d4a73618cf6bf8c5cee5376f9a843d3651fa7c8aaf45f7ccf04",
+        "description": "A work budget (MAXMATCHSTEPS) for pattern matching, so a pattern a player types cannot stall the server."
+      }
     }
   }
 }

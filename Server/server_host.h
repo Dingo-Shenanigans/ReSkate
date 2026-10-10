@@ -38,7 +38,7 @@ class Host {
     bool start(std::string &error);
     void tick(std::uint64_t now);
     // The Lua scripts in `folder` (server_scripts.h); their errors, one a line.
-    std::string load_scripts(const std::string &folder) { return scripts_.load(folder); }
+    std::string load_scripts(const std::filesystem::path &folder) { return scripts_.load(folder); }
 
     // A console line, or an admin's request (`admin` = their SteamID64, 0 for the console).
     std::string command(std::string_view line, std::uint64_t admin = 0);

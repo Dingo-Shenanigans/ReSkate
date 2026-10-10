@@ -361,6 +361,7 @@ typedef struct MatchState {
   const char *p_end;  /* end ('\0') of pattern */
   lua_State *L;
   int matchdepth;  /* control for recursive depth (to avoid C stack overflow) */
+  ptrdiff_t steps;  /* ReSkate: work left for this match (see MAXMATCHSTEPS) */
   unsigned char level;  /* total number of captures (finished or unfinished) */
   struct {
     const char *init;
@@ -371,6 +372,21 @@ typedef struct MatchState {
 
 /* recursive function */
 static const char *match (MatchState *ms, const char *s, const char *p);
+
+
+/*
+** ReSkate: the most work one find/match/gsub (or one gmatch step) may do,
+** counted in pattern items and subject characters tried. Without it a
+** pattern with a few repetitions ("a*a*a*a*b") takes exponential time,
+** and C code is out of reach of Lua's instruction-count hooks.
+*/
+#if !defined(MAXMATCHSTEPS)
+#define MAXMATCHSTEPS	2000000
+#endif
+
+#define matchsteps(ms,n) \
+  { if (l_unlikely(((ms)->steps -= (n)) < 0)) \
+      luaL_error((ms)->L, "pattern too complex"); }
 
 
 /* maximum recursion depth for 'match' */
@@ -473,6 +489,7 @@ static int singlematch (MatchState *ms, const char *s, const char *p,
     return 0;
   else {
     int c = uchar(*s);
+    matchsteps(ms, *p == '[' ? ep - p : 1);  /* ReSkate */
     switch (*p) {
       case '.': return 1;  /* matches any char */
       case L_ESC: return match_class(c, uchar(*(p+1)));
@@ -493,6 +510,7 @@ static const char *matchbalance (MatchState *ms, const char *s,
     int e = *(p+1);
     int cont = 1;
     while (++s < ms->src_end) {
+      matchsteps(ms, 1);  /* ReSkate */
       if (*s == e) {
         if (--cont == 0) return s+1;
       }
@@ -571,6 +589,7 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
   if (l_unlikely(ms->matchdepth-- == 0))
     luaL_error(ms->L, "pattern too complex");
   init: /* using goto to optimize tail recursion */
+  matchsteps(ms, 1);  /* ReSkate */
   if (p != ms->p_end) {  /* end of pattern? */
     switch (*p) {
       case '(': {  /* start capture */
@@ -760,6 +779,7 @@ static void prepstate (MatchState *ms, lua_State *L,
   ms->src_init = s;
   ms->src_end = s + ls;
   ms->p_end = p + lp;
+  ms->steps = MAXMATCHSTEPS;  /* ReSkate */
 }
 
 
@@ -838,6 +858,7 @@ static int gmatch_aux (lua_State *L) {
   GMatchState *gm = (GMatchState *)lua_touserdata(L, lua_upvalueindex(3));
   const char *src;
   gm->ms.L = L;
+  gm->ms.steps = MAXMATCHSTEPS;  /* ReSkate: per step of the loop */
   for (src = gm->src; src <= gm->ms.src_end; src++) {
     const char *e;
     reprepstate(&gm->ms);

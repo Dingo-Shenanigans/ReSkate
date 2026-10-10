@@ -62,7 +62,10 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (!console) log_(text); // the console logs its own replies
         return text;
     };
-    if (name.empty() || name == "help") return std::string(help_text);
+    if (name.empty() || name == "help") {
+        const auto scripted = scripts_.help(0);
+        return std::string(help_text) + (scripted.empty() ? "" : "\nscripts: " + scripted);
+    }
     if (name == "status")
         return config_.name + " | " + map_name() + " | " + std::to_string(players()) + "/" +
                std::to_string(config_.max_players) + " players | " + std::to_string(config_.tps) + " TPS | voice " +
