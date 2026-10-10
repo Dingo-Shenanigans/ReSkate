@@ -158,8 +158,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         const bool slash = key && (wp == VK_DIVIDE ||
                                    (MapVirtualKeyW(static_cast<UINT>(wp), MAPVK_VK_TO_CHAR) == L'/' &&
                                     !(GetKeyState(VK_SHIFT) & 0x8000)));
+        // With only the menu open, T opens the chat over it as well, unless a field in the
+        // menu is being typed in.
+        const bool menu_only = s.visible.load() && !s.console_visible.load() && !s.editor_visible.load() &&
+                               !s.chat_visible.load() && !s.hub_typing.load() && !s.menu_text_input.load();
         if (key && (wp == 'T' || slash) && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0 &&
-            s.chat_available.load() && !interactive_visible(s) &&
+            s.chat_available.load() && (!interactive_visible(s) || menu_only) &&
             !(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
             s.chat_character_pending.store(true);
             s.chat_command_requested.store(slash);
@@ -171,8 +175,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             s.input.clear();
             return 0;
         }
+        // Esc closes an open chat first, over the menu too (the menu stays open).
         if ((s.chat_visible.load() || s.chat_escape_pending.load()) && !s.console_visible.load() &&
-            !s.visible.load() && wp == VK_ESCAPE && (key || release)) {
+            wp == VK_ESCAPE && (key || release)) {
             if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
                 s.chat_escape_pending.store(true);
                 s.chat_visible.store(false);

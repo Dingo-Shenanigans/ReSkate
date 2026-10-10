@@ -435,10 +435,15 @@ void draw_menu() {
         return;
     }
     s.editor_flight.store(false);
-    if (!s.visible.load()) return;
+    if (!s.visible.load()) {
+        s.menu_text_input.store(false);
+        return;
+    }
     bool visible = true;
     dingosdk::overlay::draw_skate_menu(s.menu, s.model, s.callbacks, visible);
     if (!visible) s.visible.store(false);
+    // A field in the menu has the keyboard: T types there instead of opening the chat.
+    s.menu_text_input.store(ImGui::GetIO().WantTextInput && !s.chat_visible.load());
 }
 
 void render(IDXGISwapChain* presented, UINT flags) {
