@@ -6,7 +6,7 @@ The example scripts in this folder (`hello.lua`, `rules.lua`, `goto.lua`, `props
 
 - [Quick start](#quick-start)
 - [Where commands run](#where-commands-run)
-- [server.command](#servercommand)
+- [`server.command`](#servercommand)
 - [Players](#players)
 - [Chat](#chat)
 - [Moderation](#moderation)
@@ -50,7 +50,7 @@ The server's own commands always come first. A script command named `kick`, `vot
 
 `/help` in chat lists the script commands that player may run, and `help` in the console lists them all.
 
-## server.command
+## `server.command`
 
 ```lua
 server.command(name, function(player, args) ... end [, options])
@@ -79,7 +79,7 @@ Adds the chat command `/name`.
 
 | Field | Meaning |
 |---|---|
-| `admin = true` | Only admins and the console can run it. To other players it doesn't exist: they get "Unknown command", and `/help` doesn't list it. |
+| `admin = true` | Only admins and the console can run it. To other players it doesn't exist: they get `Unknown command`, and `/help` doesn't list it. |
 
 ```lua
 server.command("bring", function(player, args)
@@ -98,11 +98,11 @@ Functions that describe a player return a plain table:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | integer | SteamID64. `0` for the console. |
-| `name` | string | The name shown in game. `"Server"` for the console. |
-| `admin` | boolean | Whether they are an admin. Always `true` for the console. |
-| `objects` | integer | How many objects they have placed. Not set for the console. |
-| `x`, `y`, `z` | number | Their position, in metres. Not set until their game has sent one, and never for the console. |
+| `id` | `integer` | SteamID64. `0` for the console. |
+| `name` | `string` | The name shown in game. `"Server"` for the console. |
+| `admin` | `boolean` | Whether they are an admin. Always `true` for the console. |
+| `objects` | `integer` | How many objects they have placed. Not set for the console. |
+| `x`, `y`, `z` | `number` | Their position, in metres. Not set until their game has sent one, and never for the console. |
 
 The table is a snapshot taken when you asked. It doesn't update, and changing it changes nothing on the server.
 
@@ -121,7 +121,7 @@ Wherever a function takes `who`, you can pass any of:
 
 A name that matches no one, or more than one player, matches nobody. Only connected players count, except for [`server.ban`](#serverbanwho).
 
-### server.players()
+### `server.players()`
 
 Returns an array of player tables, one per connected player. The console is not included.
 
@@ -131,7 +131,7 @@ for _, p in ipairs(server.players()) do
 end
 ```
 
-### server.player(who)
+### `server.player(who)`
 
 Returns that player's table, or `nil, "no such player"`.
 
@@ -139,49 +139,49 @@ Returns that player's table, or `nil, "no such player"`.
 
 Text sent to players is cleaned before it goes out. Control characters and line breaks are removed, invalid UTF-8 is dropped, and each line is cut to 200 bytes.
 
-### server.say(text)
+### `server.say(text)`
 Sends one chat line, from the server, to everyone. Returns nothing.
 
-### server.tell(who, text)
+### `server.tell(who, text)`
 Sends chat lines to one player. Each `\n` starts a new line, up to 12 lines. Returns `true`, or `false` when `who` matches nobody.
 
-### server.announce(text)
+### `server.announce(text)`
 Posts a chat line to everyone, and shows it on the announcement card if the server's announcement card is on. It is logged as an announcement. Returns nothing.
 
 ## Moderation
 
 These functions work like the console commands of the same name, with console rights. They return the server's answer as a string (`"Bob was kicked until the server restarts."`), or `nil, "no such player"`. Every use is written to the log as `[script] ...`.
 
-### server.kick(who)
+### `server.kick(who)`
 Disconnects the player. They can't rejoin until the server restarts.
 
-### server.ban(who)
+### `server.ban(who)`
 Bans the player and disconnects them. `who` can also be the SteamID64 (an integer) of someone who has already left. The ban is saved in `ReSkateServer.json`.
 
 > Scripts act with console rights, so they **can** kick and ban admins. If a command lets players choose who gets kicked or banned, check `target.admin` first.
 
-### server.teleport(who, x, y, z)
+### `server.teleport(who, x, y, z)`
 Moves the player to that position (metres). Returns `true` if the teleport was sent. Returns `false` if `who` matches nobody or their game hasn't finished loading the map.
 
-`x`, `y` and `z` must be ordinary numbers within 1,000,000 of the origin. NaN, infinity or anything further away is an error. To put someone next to another player, offset the position a little (as `goto.lua` does) so they don't land inside them.
+`x`, `y` and `z` must be ordinary numbers within 1,000,000 of the origin. `NaN`, infinity or anything further away is an error. To put someone next to another player, offset the position a little (as `goto.lua` does) so they don't land inside them.
 
 ## World
 
-### server.map([name])
+### `server.map([name])`
 - `server.map()` returns the current map's name.
 - `server.map(name)` changes the map. It takes the same names as the `map` console command, and returns the server's answer, such as `"Changing map to ..."` or `"No single map is called ..."`.
 
 Only maps the server has can be loaded: the game's own maps, or ones from mods in the `Mods` folder next to the server.
 
-### server.tod(time)
+### `server.tod(time)`
 Sets the time of day for everyone: `morning`, `noon`, `afternoon`, `evening`, `night`, `weatherday`, `weathernight`, or `default`. Returns the server's answer. This needs `world-layers.json` next to the server; without it, the answer says so.
 
-### server.clear_objects()
+### `server.clear_objects()`
 Deletes every object players have placed. Returns the server's answer, such as `"Deleted 12 placed objects."`
 
 ## Logging
 
-### server.log(...) and print(...)
+### `server.log(...)` and `print(...)`
 These write one line to the server's log and console, starting with `[script]`. The arguments are joined with spaces, the same way `print` joins them. Line breaks become spaces, and the line is cut to 200 bytes.
 
 ## What Lua can do here
@@ -221,7 +221,7 @@ A few things to know:
 | A command errors | The player sees `The /<name> command failed.`, and the log shows `[script] /<name> failed: <file>:<line>: <message>`. Players never see the file or the message. |
 | A bad argument to a `server` function | A normal Lua error, such as `bad argument #2 to 'teleport' (not a place in the world)`. Catch it with `pcall` if you want to handle it. |
 
-`server.player`, `kick` and `ban` don't error when no one matches. They return `nil, "no such player"`. `tell` and `teleport` return `false`.
+`server.player`, `server.kick` and `server.ban` don't error when no one matches. They return `nil, "no such player"`. `server.tell` and `server.teleport` return `false`.
 
 ## Recipes
 
