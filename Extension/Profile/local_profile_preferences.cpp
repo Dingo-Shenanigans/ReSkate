@@ -137,6 +137,10 @@ bool set_local_up_velocity_binding(std::uint32_t combo) {
 }
 
 namespace profile_runtime {
+bool local_profile_store_ready() noexcept {
+    try { return local_runtime().store != nullptr; } catch (...) { return false; }
+}
+
 std::optional<bool> local_preference(std::string_view key) noexcept {
     try {
         auto& s = local_runtime();
