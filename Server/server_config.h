@@ -61,6 +61,22 @@ struct CustomCommand {
     std::vector<std::string> commands;
     bool admin{}; // only admins may use it
 };
+// A park built in the Park Editor and shipped as a mod: <Mods>\<folder>\parks\<key>.park.json.
+// Its objects only fit the map it was built on, so it is bound to a map by name (custom maps
+// share a base map's key, "bam" for many). It is spawned with "park-mod add <name>" while that
+// map runs, as objects the server owns.
+struct ParkMod {
+    std::string name;   // 1-16 of a-z 0-9 - _: what commands and votes use
+    std::string folder; // the mod folder in Mods (may contain spaces)
+    std::string map;    // the map it belongs to, named as "map" names one
+    std::string key;    // which base map's park in the mod (bam, grom...); empty: the only one
+};
+// How much of the parks can be spawned at once: parks, and their objects in all.
+struct ParkLimits {
+    unsigned parks = 3, objects = 512;
+};
+inline constexpr std::size_t max_park_mods = 32;
+inline constexpr unsigned max_spawned_parks = 16;
 // ReSkateServer.json. Every setting an admin or the console changes is saved
 // back, so a restart keeps it.
 inline constexpr unsigned dedicated_tps = 20;
@@ -168,6 +184,10 @@ struct ServerConfig {
     // Needs world-layers.json (the players' catalog) next to the server.
     bool world_layer_sync{};
     std::map<std::string, std::string> layers;
+    std::vector<ParkMod> park_mods;
+    ParkLimits park_limits;
+    // Where the park mods' folders are: Mods next to the server. Not part of the file.
+    std::filesystem::path mods;
     std::vector<std::uint64_t> admins;
     std::vector<MultiplayerBan> bans;
 };
@@ -196,6 +216,13 @@ std::string custom_votes_error(const std::vector<CustomVote> &votes);
 bool custom_command_name_free(std::string_view name) noexcept;
 std::string custom_commands_error(const std::vector<CustomCommand> &commands);
 bool custom_vote_name_free(std::string_view name) noexcept;
+// Why the park mods or their limits cannot run, or empty. A folder that is not there is not one:
+// it is reported when the park is spawned.
+std::string park_mods_error(const ServerConfig &config);
+// A mod folder's name as the game's mod list allows it: no path, no leading dot.
+bool valid_mod_folder(std::string_view folder) noexcept;
+// A base map's key as park files are named by it: bam, grom, stadium_1... (1-32 of a-z 0-9 _).
+bool valid_park_key(std::string_view key) noexcept;
 // A scoring fingerprint as the config and console write it (16 hex digits), and read back
 // (nothing for text that is not one, or for 0: the game's own scoring needs no entry).
 std::string scoring_text(std::uint64_t fingerprint);

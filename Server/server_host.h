@@ -379,5 +379,22 @@ class Host {
     void send_party(Guest &to, PartyAction, std::uint64_t player);
     void party_notice(std::uint32_t party, std::string_view text, std::uint64_t except = 0);
     std::string party_status(std::uint64_t id) const;
+    // Park mods (server_parks.cpp): parks from config_.park_mods, spawned for everyone as the
+    // layout of the server's own SteamID and epoch, which no player can have.
+    struct SpawnedPark {
+        std::string name;
+        std::vector<NetworkObject> objects; // with the server's own IDs
+        unsigned minutes{};                 // 0: until removed
+        std::uint64_t expires{};
+        bool warned{}; // told a minute before
+    };
+    std::vector<SpawnedPark> parks_spawned_;
+    ObjectState park_objects_; // never reset: its revisions only grow, so no game holds a newer one
+    std::uint64_t park_object_ids_{};
+    bool by_vote_{}; // a passed custom vote's command is running (as the console)
+    std::string park_mod_command(std::string_view argument, std::uint64_t admin);
+    void publish_parks();
+    void remove_parks(std::string_view reason); // all of them, with the reason for the log
+    void tick_parks();                          // expiry, and the minute's warning
 };
 } // namespace dingosdk::server

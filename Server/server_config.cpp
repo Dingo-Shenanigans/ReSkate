@@ -92,6 +92,20 @@ Layout layout(const ServerConfig &c) {
     auto layers = Json::object();
     for (const auto &[key, mode] : c.layers) layers[key] = mode;
     maps.set("layers", std::move(layers));
+    auto park_mods = Json::array();
+    for (const auto &park : c.park_mods) {
+        auto item = Json::object();
+        item["name"] = park.name;
+        item["folder"] = park.folder;
+        item["map"] = park.map;
+        item["key"] = park.key;
+        park_mods.push_back(std::move(item));
+    }
+    maps.set("park_mods", std::move(park_mods));
+    auto park_limits = Json::object();
+    park_limits["parks"] = c.park_limits.parks;
+    park_limits["objects"] = c.park_limits.objects;
+    maps.set("park_limits", std::move(park_limits));
 
     auto &players = root.section("players");
     players.set("allow_boosts", c.boosts);
@@ -291,6 +305,18 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     if (const auto *layers = find("maps", "layers"); layers && layers->is_object())
         for (const auto &[key, mode] : layers->items())
             if (mode.is_string()) c.layers[key] = mode.string();
+    if (const auto *parks = find("maps", "park_mods"); parks && !parks->is_null()) {
+        if (!parks->is_array()) throw std::runtime_error("park_mods must be a list of parks, each a JSON object.");
+        for (const auto &item : *parks) {
+            if (!item.is_object()) throw std::runtime_error("park_mods must be a list of parks, each a JSON object.");
+            c.park_mods.push_back({item.value("name", std::string{}), item.value("folder", std::string{}),
+                                   item.value("map", std::string{}), item.value("key", std::string{})});
+        }
+    }
+    if (const auto *limits = find("maps", "park_limits"); limits && limits->is_object()) {
+        c.park_limits.parks = limits->value("parks", c.park_limits.parks);
+        c.park_limits.objects = limits->value("objects", c.park_limits.objects);
+    }
 
     c.boosts = get("players", "allow_boosts", c.boosts, {"boosts"});
     c.no_bail = get("players", "allow_no_bail", c.no_bail, {"no_bail"});
@@ -537,7 +563,7 @@ bool custom_command_name_free(std::string_view name) noexcept {
           "ban", "bans", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
           "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
           "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
-          "object-placement", "object-scaling", "objects", "park", "parties", "party-size", "password", "placement",
+          "object-placement", "object-scaling", "objects", "park", "park-mod", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "tod",
           "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
           "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
@@ -562,6 +588,40 @@ std::string custom_commands_error(const std::vector<CustomCommand> &commands) {
             return where + "at most " + std::to_string(max_custom_command_runs) + " server commands.";
         for (const auto &run : c.commands)
             if (!valid_admin_text(run)) return where + "each command must be one server command, e.g. \"announce-to {player} Hi\".";
+    }
+    return {};
+}
+bool valid_mod_folder(std::string_view folder) noexcept {
+    // What the game's mod list takes (mods::valid_mod_name), without blanks at either end.
+    if (folder.empty() || folder.size() > 64 || folder.front() == '.' || folder.front() == ' ' || folder.back() == ' ') return false;
+    return std::all_of(folder.begin(), folder.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ' ';
+    });
+}
+bool valid_park_key(std::string_view key) noexcept {
+    return !key.empty() && key.size() <= 32 &&
+           std::all_of(key.begin(), key.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; });
+}
+std::string park_mods_error(const ServerConfig &c) {
+    using namespace multiplayer;
+    if (c.park_limits.parks < 1 || c.park_limits.parks > max_spawned_parks)
+        return "park_limits.parks must be 1 to " + std::to_string(max_spawned_parks) + ".";
+    if (c.park_limits.objects < 1 || c.park_limits.objects > max_object_limit)
+        return "park_limits.objects must be 1 to " + std::to_string(max_object_limit) + ".";
+    if (c.park_mods.size() > max_park_mods) return "park_mods: at most " + std::to_string(max_park_mods) + " parks.";
+    for (std::size_t i = 0; i < c.park_mods.size(); ++i) {
+        const auto &park = c.park_mods[i];
+        if (!valid_server_vote_name(park.name))
+            return "park_mods: each park needs a name of 1 to 16 lowercase letters, digits, - or _ (\"" + park.name + "\" is not).";
+        const auto where = "park_mods \"" + park.name + "\": ";
+        for (std::size_t j = 0; j < i; ++j)
+            if (c.park_mods[j].name == park.name) return where + "two parks have that name.";
+        if (!valid_mod_folder(park.folder))
+            return where + "folder must be the name of a mod folder in Mods (letters, digits, spaces, _ - and ., no path).";
+        if (!find_level(park.map) || !valid_map_destination(map_destination(park.map)))
+            return where + "map \"" + park.map + "\" is not a single known map. Use the map's name, e.g. \"San Vansterdam\".";
+        if (!park.key.empty() && !valid_park_key(park.key))
+            return where + "key must be a base map's key such as bam, grom or stadium_1, or empty.";
     }
     return {};
 }
@@ -612,6 +672,7 @@ std::string config_error(const ServerConfig &c) {
     for (unsigned lot = 0; lot < park_lots.size(); ++lot)
         if (c.parks[lot].empty() || !valid_park(lot, c.parks[lot]))
             return "parks." + std::string(park_lots[lot].key) + " is not a park layout (e.g. skatepark_01, or empty).";
+    if (auto error = park_mods_error(c); !error.empty()) return error;
     if (!c.port || !c.query_port || c.port == c.query_port) return "port and query_port must differ.";
     for (const auto id : c.admins)
         if (!individual_steam_id(id)) return "admins must be SteamID64s (17 digits starting 7656119).";

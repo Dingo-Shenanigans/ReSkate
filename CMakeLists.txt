@@ -226,7 +226,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json

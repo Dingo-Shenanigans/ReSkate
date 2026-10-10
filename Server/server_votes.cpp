@@ -500,7 +500,12 @@ void Host::check_vote(bool expired) {
     switch (done.kind) {
     case VoteKind::map: log_(command("map " + done.value)); break;
     case VoteKind::time: log_(command("tod " + done.value)); break;
-    case VoteKind::custom: log_(command(done.value)); break; // the owner's command, as the console
+    case VoteKind::custom: { // the owner's command, as the console
+        by_vote_ = true;
+        struct Reset { bool &flag; ~Reset() { flag = false; } } reset{by_vote_};
+        log_(command(done.value));
+        break;
+    }
     case VoteKind::kick:
         if (find(done.target)) {
             kicked_.insert(done.target);
