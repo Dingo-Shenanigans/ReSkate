@@ -131,6 +131,7 @@ struct State {
     // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
     // for that long, as for chat.
     std::atomic<bool> hub_pointer{false}, hub_typing{false};
+    std::atomic<bool> menu_text_input{false}; // a field in the open menu has the keyboard (overlay_render.cpp)
     std::atomic<bool> input_attached{false};
     std::atomic<bool> stop{false};
     std::atomic<HWND> window{nullptr};

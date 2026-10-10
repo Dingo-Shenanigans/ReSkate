@@ -274,6 +274,7 @@ void note_remote_distance(float) noexcept {}
 void update_native_party(std::uintptr_t, const PartyRoster &, unsigned, bool) noexcept {}
 void set_native_party_changes(bool) noexcept {}
 bool post_native_party_invite(std::uint64_t) noexcept { return false; }
+bool native_party_spectating() noexcept { return false; }
 void set_native_nametags_enabled(bool) noexcept {}
 void set_native_compass_enabled(bool) noexcept {}
 void prepare_native_indicators(std::uintptr_t) noexcept {}

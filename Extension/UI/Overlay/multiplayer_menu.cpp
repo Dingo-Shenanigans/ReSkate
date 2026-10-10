@@ -316,6 +316,27 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         send_private(menu, "chat-filter", filter ? "on" : "off", unused, false);
     }
+    bool keep_up = mp.chat_hold <= 0.f;
+    if (toggle_row(menu, "Keep chat up", "Keep the newest chat lines in the corner instead of fading them out.", keep_up,
+                   mp.chat_visible, "OFF")) {
+        std::array<char, 65> unused{};
+        send_private(menu, "chat-hold", keep_up ? "always" : std::to_string(static_cast<int>(chat_hold_default)), unused,
+                     false);
+    }
+    if (mp.chat_visible && mp.chat_hold > 0.f) {
+        std::array<char, 65> unused{};
+        field(menu, "Chat duration", "How many seconds a chat line stays in the corner before it fades.");
+        float hold = menu.chat_hold_pending.value_or(mp.chat_hold);
+        ImGui::SliderFloat("##chat-hold", &hold, chat_hold_least, chat_hold_most, "%.0f s", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemActive()) menu.chat_hold_pending = hold;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            send_private(menu, "chat-hold", std::to_string(static_cast<int>(hold)), unused, false);
+            menu.chat_hold_until = ImGui::GetTime() + 2;
+        }
+        if (!ImGui::IsItemActive() && menu.chat_hold_pending &&
+            (*menu.chat_hold_pending == mp.chat_hold || ImGui::GetTime() >= menu.chat_hold_until))
+            menu.chat_hold_pending.reset();
+    }
     if (dingosdk::discord_presence::available()) {
         bool discord = dingosdk::discord_presence::enabled();
         if (toggle_row(menu, "Discord status",

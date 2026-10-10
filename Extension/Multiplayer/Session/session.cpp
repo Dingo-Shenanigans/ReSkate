@@ -301,6 +301,10 @@ void publish_party(Session &s) {
         s.nametags_friends = profile_runtime::local_preference("NametagsFriendsOnly").value_or(false);
         s.chat_visible = profile_runtime::local_preference("ChatVisible").value_or(true);
         s.chat_filter = profile_runtime::local_preference("ChatFilter").value_or(true);
+        if (const auto saved = profile_runtime::local_value("ChatHold"); saved && saved->is_number()) {
+            const auto hold = saved->get<float>();
+            s.chat_hold = hold == 0.f ? 0.f : std::clamp(hold, chat_hold_least, chat_hold_most);
+        }
         s.chat_bubbles = profile_runtime::local_preference("ChatBubbles").value_or(true);
         s.chat_bubbles_own = profile_runtime::local_preference("ChatBubblesOwn").value_or(false);
         if (const auto saved = profile_runtime::local_value("ChatBubblesDistance"); saved && saved->is_number())

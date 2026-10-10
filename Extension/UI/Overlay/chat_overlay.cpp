@@ -7,7 +7,8 @@
 #include <optional>
 
 // Multiplayer text chat in the bottom-right corner. Closed, the newest lines
-// show for a few seconds and fade, taking no input. T opens it (overlay_input.cpp):
+// show for the player's chat-hold seconds and fade (or, held "always", stay until
+// newer ones push them out), taking no input. T opens it (overlay_input.cpp):
 // the whole session log with a text box, Enter sends and closes, Esc closes.
 // Lines come from the session through a small feed rather than the full model,
 // so they can be polled on every presented frame.
@@ -24,7 +25,12 @@ namespace dingosdk::overlay::detail {
 namespace {
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
-constexpr auto chat_hold = 10s, chat_fade = 1s;
+constexpr auto chat_fade = 1s;
+// How long a closed line stays before it fades (MultiplayerChat::hold); none when held always.
+std::optional<Clock::duration> chat_hold(const MultiplayerChat& feed) {
+    if (!(feed.hold > 0.0f)) return std::nullopt;
+    return std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(feed.hold));
+}
 constexpr std::size_t closed_lines = 6;
 
 struct ChatState {
@@ -292,8 +298,9 @@ bool chat_pending() {
                 else layouts->erase(layouts->begin(), layouts->lower_bound(c.feed.lines.front().sequence));
             }
         }
-        s.chat_available.store(c.feed.available);
-        // Leaving the session closes an open chat box.
+        // T opens the chat only outside the game's menus.
+        s.chat_available.store(c.feed.available && !c.feed.menu);
+        // Leaving the session closes an open chat box; a game menu does not.
         if (!c.feed.available) s.chat_visible.store(false);
         for (const auto& line : c.feed.lines)
             if (line.sequence > c.seen) {
@@ -304,10 +311,12 @@ bool chat_pending() {
         while (c.arrivals.size() > multiplayer_chat_history) c.arrivals.pop_front();
     }
     if (s.chat_visible.load()) return true;
-    if (!c.feed.available) return false;
+    if (!c.feed.available || c.feed.menu) return false;
     if (c.feed.vote.id || c.feed.announcement.id) return true; // the vote and announcement cards
+    const auto hold = chat_hold(c.feed);
+    if (!hold) return !c.feed.lines.empty();
     for (const auto& [line, at] : c.arrivals)
-        if (now - at < chat_hold + chat_fade) return true;
+        if (now - at < *hold + chat_fade) return true;
     return false;
 }
 
@@ -670,9 +679,13 @@ void draw_chat() {
     const auto display = ImGui::GetIO().DisplaySize;
     const float scale = std::clamp(display.y / 1080.0f, 1.0f, 2.0f);
     const float width = 520.0f * scale, margin = 24.0f * scale;
+    // While spectating, the game's Teleport / Hide UI / Back prompts run along the bottom of the
+    // screen, and Esc brings the Social page (its FIND SKATERS button and button row, about
+    // 190 px at 1080p) up over the spectate: the chat sits above both.
+    const float chat_bottom = display.y - margin - (c.feed.spectating ? 200.0f * scale : 0.0f);
 
     if (s.chat_visible.load()) {
-        ImGui::SetNextWindowPos(ImVec2(display.x - margin, display.y - margin), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowPos(ImVec2(display.x - margin, chat_bottom), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
         ImGui::SetNextWindowSize(ImVec2(width, 320.0f * scale), ImGuiCond_Always);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, with_alpha(theme::ink, 0.92f));
         ImGui::PushStyleColor(ImGuiCol_Border, with_alpha(theme::blue, 0.9f));
@@ -785,23 +798,26 @@ void draw_chat() {
     }
 
     // Closed: the newest lines still within their hold, stacked up from the
-    // corner, each fading on its own. Drawn without a window, so no input.
+    // corner, each fading on its own (held always, the newest stay). Drawn
+    // without a window, so no input. A game menu hides them, and the cards, until it closes.
+    if (c.feed.menu) return;
     const auto now = Clock::now();
+    const auto hold = chat_hold(c.feed);
     std::vector<std::pair<const MultiplayerChatLine*, float>> shown;
     for (auto it = c.feed.lines.rbegin(); it != c.feed.lines.rend() && shown.size() < closed_lines; ++it) {
         const auto at = arrived(c, it->sequence);
         if (at == Clock::time_point{}) continue;
         const auto age = now - at;
-        if (age >= chat_hold + chat_fade) break;
-        const float alpha = age <= chat_hold ? 1.0f
-            : 1.0f - std::chrono::duration<float>(age - chat_hold) / std::chrono::duration<float>(chat_fade);
+        if (hold && age >= *hold + chat_fade) break;
+        const float alpha = !hold || age <= *hold ? 1.0f
+            : 1.0f - std::chrono::duration<float>(age - *hold) / std::chrono::duration<float>(chat_fade);
         shown.emplace_back(&*it, alpha);
     }
     auto* draw = ImGui::GetForegroundDrawList();
     const float size = body->FontSize * scale * 0.9f, name_size = heading->FontSize * scale * 0.9f;
     const float pad_x = 10.0f * scale, pad_y = 5.0f * scale, gap = 4.0f * scale;
     const float text_width = width - pad_x * 2.0f;
-    float bottom = display.y - margin;
+    float bottom = chat_bottom;
     auto& layouts = chat_layouts().closed;
     for (const auto& [line, alpha] : shown) {
         auto& layout = line_layout(layouts, *line);

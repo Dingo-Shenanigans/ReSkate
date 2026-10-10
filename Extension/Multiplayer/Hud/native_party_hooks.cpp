@@ -792,6 +792,7 @@ void execute_native_party_expression(std::uintptr_t vm, std::uint32_t pc, std::u
                                     void (*runner)(std::uintptr_t, std::uint32_t, std::uintptr_t)) {
     run_expression(vm, pc, profiler, runner);
 }
+bool native_party_spectating() noexcept { return state().spectating.load(std::memory_order_acquire) != 0; }
 void spectate_party_member(std::uint64_t id) noexcept {
     try {
         auto &s = state();

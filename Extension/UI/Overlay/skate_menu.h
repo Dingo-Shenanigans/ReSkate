@@ -61,6 +61,9 @@ struct SkateMenu {
     double player_distance_until{};
     std::optional<int> chat_bubbles_history_pending;
     double chat_bubbles_distance_until{}, chat_bubbles_duration_until{}, chat_bubbles_history_until{};
+    // The chat-hold slider, held the same way.
+    std::optional<float> chat_hold_pending;
+    double chat_hold_until{};
     std::map<std::uint64_t, std::pair<float, double>> voice_volume_pending;
     std::array<bool, 256> voice_keys_down{};
     std::string multiplayer_distance_lobby;
