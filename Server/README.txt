@@ -50,7 +50,9 @@ logged and that file is skipped. Example, scripts/hello.lua:
     return "hi " .. player.name .. ": " .. args
   end)
 
-A player typing /hello world gets "hi <name>: world". The console can run script
+A player typing /hello world gets "hi <name>: world". More examples to copy
+into scripts are in the source's Server/scripts: rules.lua (/rules), goto.lua
+(/goto <player>) and props.lua (/props, for admins: who placed the most objects). The console can run script
 commands too (as "hello world"), and so can admins. Commands the server already
 has always win over a script's.
 
