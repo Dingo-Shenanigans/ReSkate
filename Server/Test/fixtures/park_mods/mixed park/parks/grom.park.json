@@ -1,0 +1,82 @@
+{
+  "format": "reskate-park",
+  "schema_version": 1,
+  "revision": 3,
+  "maps": {
+    "grom": [
+      {
+        "id": 1,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          0,
+          10,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": 2,
+        "item": "vehicle_car_00001",
+        "position": [
+          1,
+          10,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": 3,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          2,
+          10,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "id": 4,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          3,
+          10
+        ]
+      },
+      {
+        "id": 5,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          4,
+          10,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ]
+      }
+    ]
+  },
+  "object_scales": {
+    "grom": {
+      "5": 2.5
+    }
+  }
+}

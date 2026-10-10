@@ -329,6 +329,12 @@ int run(int argc, char **argv, bool skip_update) {
             map = level->name;
             renamed = true;
         }
+    for (auto &park : config.park_mods) // and so are the maps the park mods belong to
+        if (const auto *level = find_level(park.map); level && level->name != park.map) {
+            park.map = level->name;
+            renamed = true;
+        }
+    config.mods = here / "Mods";
     if (renamed) try { save_config(config); } catch (...) {}
     if (const auto error = config_error(config); !error.empty()) {
         write_log("Config problem: " + error);

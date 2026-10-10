@@ -8,7 +8,7 @@
 
 namespace {
 int failures{};
-void check(bool ok, const char *what) {
+void check(bool ok, const std::string &what) {
     if (!ok) {
         std::cerr << "FAIL: " << what << '\n';
         ++failures;
@@ -46,6 +46,10 @@ int run() {
     check(has("votes.map.seconds") && has("votes.map.min_players") && has("votes.polls") && has("votes.custom") &&
               has("announcements.messages") && has("announcements.interval_minutes") && has("commands"),
           "The new vote and announcement settings were not reported");
+    // Park mods came after commands.
+    check(has("maps.park_mods") && has("maps.park_limits") && config.park_mods.empty() && config.park_limits.parks == 3 &&
+              config.park_limits.objects == 512,
+          "park_mods and park_limits are not new settings with their defaults");
     const auto written = text(file);
     check(written.find("\"enforce_tuning\"") != std::string::npos && written.find("\"seconds\"") != std::string::npos,
           "New settings not written into the file");
@@ -391,6 +395,65 @@ int run() {
                   hand.announcements.messages == std::vector<std::string>{"hi"} && hand.announcements.interval == 1440 &&
                   hand.commands.size() == 1 && hand.commands[0].commands == std::vector<std::string>{"say hello"},
               "A hand-written custom vote, announcement list or command was not read sensibly");
+    }
+
+    // Park mods: spawned by name on the map each belongs to; the folder may have spaces in it, and
+    // need not be there yet (spawning says so).
+    {
+        ServerConfig parks;
+        parks.file = file;
+        parks.park_mods = {{"street", "popular skate 2 street park", "San Vansterdam", "bam"},
+                           {"plaza-2", "Not Installed Yet", "Isle of Grom", ""}};
+        parks.park_limits = {16, 1024};
+        check(config_error(parks).empty(), "Valid park mods refused: " + config_error(parks));
+        save_config(parks);
+        const auto written_parks = text(file);
+        check(written_parks.find("\"park_mods\"") != std::string::npos && written_parks.find("\"park_limits\"") != std::string::npos,
+              "Park mods not written into the maps section");
+        const auto back = load_config(file);
+        check(back.park_mods.size() == 2 && back.park_mods[0].name == "street" && back.park_mods[0].folder == "popular skate 2 street park" &&
+                  back.park_mods[0].map == "San Vansterdam" && back.park_mods[0].key == "bam" && back.park_mods[1].key.empty() &&
+                  back.park_limits.parks == 16 && back.park_limits.objects == 1024,
+              "Park mods lost on save");
+        // Written in by hand: a park needs no more than its name, folder and map.
+        std::ofstream(file, std::ios::binary) << R"({"maps": {"park_mods": [{"name": "street", "folder": "street park", "map": "San Vansterdam"}],
+            "park_limits": {"parks": 2}}})";
+        const auto hand = load_config(file);
+        check(hand.park_mods.size() == 1 && hand.park_mods[0].key.empty() && hand.park_limits.parks == 2 && hand.park_limits.objects == 512,
+              "A hand-written park mod was not read");
+        std::ofstream(file, std::ios::binary) << R"({"maps": {"park_mods": ["street"]}})";
+        bool thrown{};
+        try { load_config(file); } catch (const std::exception &) { thrown = true; }
+        check(thrown, "A park mod that is not an object was accepted");
+        const auto refused = [&](auto change, const char *what) {
+            auto bad = parks;
+            change(bad);
+            check(config_error(bad).find("park_") != std::string::npos, what);
+        };
+        refused([](ServerConfig &c) { c.park_mods[0].name = "Street!"; }, "A park name with capitals and marks accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].name = std::string(17, 'a'); }, "A park name over 16 characters accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].name.clear(); }, "A park without a name accepted");
+        refused([](ServerConfig &c) { c.park_mods[1].name = "street"; }, "Two parks with one name accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].folder = "parks/street"; }, "A folder with a path accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].folder = "..\\street"; }, "A folder with a backslash accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].folder = ".."; }, "The parent folder accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].folder = " street"; }, "A folder starting with a blank accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].folder.clear(); }, "A park without a folder accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].map = "Nowhere"; }, "A park on an unknown map accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].map.clear(); }, "A park without a map accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].key = "BAM"; }, "A key that is not a base map's accepted");
+        refused([](ServerConfig &c) { c.park_mods[0].key = "../bam"; }, "A key with a path accepted");
+        refused([](ServerConfig &c) { c.park_limits.parks = 0; }, "A limit of no parks accepted");
+        refused([](ServerConfig &c) { c.park_limits.parks = 17; }, "More than 16 parks at once accepted");
+        refused([](ServerConfig &c) { c.park_limits.objects = 0; }, "A limit of no park objects accepted");
+        refused([](ServerConfig &c) { c.park_limits.objects = 1025; }, "More park objects than one owner can have accepted");
+        refused([](ServerConfig &c) { c.park_mods.resize(33, c.park_mods[0]); }, "More than 32 park mods accepted");
+        check(!custom_command_name_free("park-mod"), "A custom command may be called park-mod");
+        // The vote README.txt shows: "park" is a server command, and still a fine vote name.
+        auto voting = parks;
+        voting.votes.custom = {{"park", "Spawn a park for 30 min", "park-mod add {arg} 30", {"street", "plaza-2"}, {true, 60}},
+                               {"unpark", "Remove a park", "park-mod remove {arg}", {"street", "plaza-2"}, {true, 60}}};
+        check(config_error(voting).empty(), "The park votes from README.txt were refused: " + config_error(voting));
     }
 
     std::filesystem::remove_all(folder);

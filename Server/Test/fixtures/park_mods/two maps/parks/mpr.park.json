@@ -1,0 +1,54 @@
+{
+  "format": "reskate-park",
+  "schema_version": 1,
+  "revision": 0,
+  "maps": {
+    "mpr": [
+      {
+        "id": 86,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -583.0,
+          1948.35,
+          1651.0
+        ],
+        "rotation": [
+          0.0,
+          0.3827,
+          0.0,
+          0.9239
+        ]
+      },
+      {
+        "id": 87,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -579.0,
+          1948.35,
+          1648.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "id": 88,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -575.0,
+          1948.35,
+          1645.0
+        ],
+        "rotation": [
+          0.0,
+          0.3827,
+          0.0,
+          0.9239
+        ]
+      }
+    ]
+  }
+}

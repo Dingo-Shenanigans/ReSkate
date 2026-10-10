@@ -31,6 +31,33 @@ tells players that name, and the version from manifest.json when the file is
 there. A map under any other folder name
 works as before: players install it themselves.
 
+Park mods
+---------
+A park built in the game's Park Editor and saved as a mod (a folder with
+manifest.json and parks/<map>.park.json) can be put up by the server for
+everyone. Copy the mod's folder into the Mods folder next to the server, list it
+in maps.park_mods with a name and the map it was built on, and spawn it with
+"park-mod add <name>" while that map runs: from the console, as an admin in chat
+(/park-mod add street 30), or by a player vote (see votes.custom). With minutes
+(1-1440) it goes by itself when the time is up; players are told a minute before
+and when it goes. Without, it stays until removed. Every park goes when the map
+changes, and none come back after a restart.
+
+Nothing needs a restart: a mod copied into Mods can be set up with
+"park-mod config add" (saved to the config like the map pool), and a park whose
+mod was updated is read again with "park-mod reload <name>". Every park-mod
+add reads the park's file afresh. Don't edit ReSkateServer.json by hand while
+the server runs: it writes its settings back whenever an admin changes one.
+
+A spawned park belongs to the server, not to a player: it counts against nobody's
+object limit, nobody can move or delete it, and it stays when players leave.
+Players need no mod for it: its objects are Build Kit items the game has. An
+object players' games would not show (not a Build Kit item, or broken) is left
+out, and the log says which. A park only fits the map it was built on, so the
+server spawns it on that map alone, even where custom maps share a base map's
+parks (most use bam). The log has a [parks] line for each park spawned or
+removed, and for each one that could not be.
+
 Players connect through Steam's relay network, so no ports need opening. If you
 do forward UDP 27015-27016 (port, query_port), the browser also shows the
 server's ping and players can join a little faster.
@@ -113,6 +140,20 @@ rotation_minutes   Minutes on each map before the server moves to the next
 parks              Layout for each park lot, e.g. "skatepark_01", or "empty".
 world_layer_sync   Force the "layers" below on every player.
 layers             World layer key -> "on" / "off".
+park_mods          Parks built in the game's Park Editor and shared as mods,
+                   which the server can spawn for everyone (see Park mods).
+                   A list, e.g.
+                     [{"name": "street", "folder": "popular skate 2 street park",
+                       "map": "San Vansterdam", "key": "bam"}]
+                   name: what park-mod and votes call it, 1-16 of a-z, 0-9, -
+                   and _. folder: the mod's folder in Mods next to the server
+                   (copied from the game's Mods folder; spaces are fine).
+                   map: the map it was built on; it is only spawned while that
+                   map runs. key: which of the mod's parks, by the base map it
+                   is for (the file parks/<key>.park.json: bam, grom, mpr,
+                   ftue, stadium_1, stadium_2); empty when the mod has one.
+park_limits        How much may be spawned at once (default {"parks": 3,
+                   "objects": 512}): parks 1-16, their objects in all 1-1024.
 
 "players" - What players may do.
 allow_noclip, allow_no_bail, allow_boosts
@@ -286,6 +327,11 @@ custom             Votes of your own: a list, each running a server command
                       "command": "map {map}", "percent": 60}
                      {"name": "noclip", "description": "Turn noclip on or off",
                       "command": "noclip {arg}", "choices": ["on", "off"]}
+                     {"name": "park", "description": "Spawn a park for 30 min",
+                      "command": "park-mod add {arg} 30",
+                      "choices": ["street", "plaza"], "percent": 60}
+                     {"name": "unpark", "description": "Remove a park",
+                      "command": "park-mod remove {arg}", "choices": ["street", "plaza"]}
                    Players start them with /vote restart, /vote noclip off; /vote
                    list shows them. A name and each choice is 1-16 of a-z, 0-9,
                    - and _, and not one of the server's own (map, kick, tod,
@@ -386,6 +432,18 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   tphere <player>               One player to you (admins in game).
   park <construction|historic|financial> <layout>
   park random                  Randomize all three park slots (excludes empty lots).
+  park-mod list                 The park mods (maps.park_mods); spawned ones with
+                                their minutes left.
+  park-mod add <name> [<name>...] [minutes]   Spawn parks on the current map:
+                                for 1-1440 minutes, or until removed. All or none.
+  park-mod remove <name> [<name>...]   park-mod clear   Remove spawned parks.
+  park-mod reload <name> [<name>...]   Read a spawned park's file again (its mod
+                                was updated) and swap its objects in place; it keeps
+                                its timer.
+  park-mod config add <name> | <mod folder> | <map> [| <key>]   Set up a park mod
+                                while the server runs, saved to maps.park_mods, e.g.
+                                park-mod config add street | popular skate 2 street park | San Vansterdam | bam
+  park-mod config remove <name>   Take one out of the setup (removing it if spawned).
   layer-sync on|off   layer <key> default|on|off
   layers <key>=<mode> ...       Several world layers at once, each default, on or off.
   tod <default|morning|noon|afternoon|evening|night|weatherday|weathernight>
