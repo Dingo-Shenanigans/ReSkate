@@ -98,6 +98,27 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     target_include_directories(dingosdk_global_bans_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_global_bans_tests PRIVATE dingosdk_json $<$<BOOL:${WIN32}>:dingosdk_https>)
     add_test(NAME server_global_bans COMMAND dingosdk_global_bans_tests)
+    # The server's Lua scripts on a real Host with a simulated player (Server/server_scripts.cpp).
+    add_executable(dingosdk_server_scripts_tests Server/Test/server_scripts_tests.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
+        Server/server_update.cpp Server/server_release.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
+        Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
+        Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_scripts.cpp
+        Extension/Throwdowns/throwdown_wire.cpp)
+    target_include_directories(dingosdk_server_scripts_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_server_scripts_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+    if(WIN32)
+        target_link_libraries(dingosdk_server_scripts_tests PRIVATE dingosdk_lua dingosdk_launcher_support dingosdk_world_layer_scan
+            dingosdk_json dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+    else()
+        find_package(OpenSSL REQUIRED)
+        target_link_libraries(dingosdk_server_scripts_tests PRIVATE dingosdk_lua dingosdk_launcher_support dingosdk_world_layer_scan
+            dingosdk_json dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
+    endif()
+    add_test(NAME server_scripts COMMAND dingosdk_server_scripts_tests)
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
     target_link_libraries(dingosdk_word_filter_tests PRIVATE dingosdk_word_filter)
     add_test(NAME word_filter COMMAND dingosdk_word_filter_tests)
@@ -221,10 +242,11 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_scripts.cpp
+        Extension/Throwdowns/throwdown_wire.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
-    target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+    target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_lua dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
         dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
 endif()
 # The route and logging tests live in the local, untracked tests/ folder.

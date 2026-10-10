@@ -1,8 +1,17 @@
 # Server scripts: the Lua API
 
-A ReSkate dedicated server can run Lua 5.4 scripts that add chat commands. A script can list players, message them, kick, ban or teleport them, and change the map, the time of day and the placed objects.
+A ReSkate dedicated server can run Lua 5.4 scripts that add chat commands. A script can list players, message them, kick, ban or teleport them, and change the map, the time of day and the placed objects. It can also react when players join, leave or chat, and run code on a timer.
 
-The example scripts in this folder (`hello.lua`, `rules.lua`, `goto.lua`, `props.lua`) are ready to copy.
+The example scripts in this folder are ready to copy:
+
+| File | What it does |
+|---|---|
+| `hello.lua` | `/hello <text>`: the smallest command. |
+| `rules.lua` | `/rules`: the server's rules. |
+| `goto.lua` | `/goto <player>`: teleport next to someone. |
+| `props.lua` | `/props` (admins): who placed the most objects; `/props clear` deletes them. |
+| `welcome.lua` | Greets players as they join, and says when they leave. |
+| `tips.lua` | A tip in chat every 5 minutes. |
 
 - [Quick start](#quick-start)
 - [Where commands run](#where-commands-run)
@@ -11,6 +20,8 @@ The example scripts in this folder (`hello.lua`, `rules.lua`, `goto.lua`, `props
 - [Chat](#chat)
 - [Moderation](#moderation)
 - [World](#world)
+- [Events](#events)
+- [Timers](#timers)
 - [Logging](#logging)
 - [What Lua can do here](#what-lua-can-do-here)
 - [Limits](#limits)
@@ -179,6 +190,62 @@ Sets the time of day for everyone: `morning`, `noon`, `afternoon`, `evening`, `n
 ### `server.clear_objects()`
 Deletes every object players have placed. Returns the server's answer, such as `"Deleted 12 placed objects."`
 
+## Events
+
+### `server.on(event, function)`
+
+Runs `function` each time `event` happens. A script can add several functions for the same event, and they run in the order they were added.
+
+| `event` | When | The function gets |
+|---|---|---|
+| `"join"` | A player has finished joining. | `player`: their [player table](#the-player-table) |
+| `"leave"` | A player has left for any reason: quit, kicked, banned, timed out. | `player`: a table with `id`, `name` and `admin` |
+| `"chat"` | A player sent a chat message (not a `/command`). | `player`, then `text`: what they wrote |
+
+```lua
+server.on("chat", function(player, text)
+  if text:lower():find("discord", 1, true) then
+    server.tell(player, "Our Discord: discord.gg/example")
+  end
+end)
+```
+
+A few things to know:
+- **Events run a moment later.** They're handled once per server pass (a few milliseconds), not in the middle of the server's own work. That's why a handler can safely kick, ban or teleport anyone, including the player the event is about.
+- **A player may already be gone.** By the time a `join` or `chat` handler runs, the player might have left. Their table then has only `id`, `name` and `admin`, and `server.player(player.id)` returns `nil`.
+- **Chat events observe only.** The message has already gone out to everyone; a handler can't block or change it.
+- **What a handler returns is ignored.** If one errors, the log shows `[script] <event> handler failed: ...` and the other handlers still run.
+
+## Timers
+
+### `server.after(seconds, function)`
+Runs `function` once, `seconds` from now (0 to 1,000,000; `0` means the next server pass). Returns the timer's id.
+
+### `server.every(seconds, function)`
+Runs `function` every `seconds` (0.1 to 1,000,000), until it is cancelled. Returns the timer's id. If the server falls behind, a missed run is skipped rather than run twice.
+
+### `server.cancel(id)`
+Stops a timer. Returns `true` if it was still waiting, `false` if it had already run (an `after` timer) or was already cancelled. A timer may cancel itself.
+
+```lua
+-- Count down, then change the map.
+local left = 3
+local countdown
+countdown = server.every(1, function()
+  if left == 0 then
+    server.cancel(countdown)
+    server.map("San Vansterdam")
+  else
+    server.say("Map change in " .. left .. "...")
+    left = left - 1
+  end
+end)
+```
+
+Timer functions take no arguments, and what they return is ignored. A timer that errors is logged as `[script] timer failed: ...`. An `every` timer that errors is cancelled, since it would most likely fail the same way every time.
+
+Timers are kept until the server restarts. They start counting when the script loads, so `server.every` at the top of a file starts at server start.
+
 ## Logging
 
 ### `server.log(...)` and `print(...)`
@@ -206,6 +273,10 @@ These keep a buggy command from freezing or crashing the server. A command that 
 | Work per command (and per file while it loads) | About 2 million Lua instructions, a few milliseconds | `the script ran too long` |
 | Memory, all scripts together | 32 MB | `not enough memory` |
 | Work per string-pattern call (`find`, `match`, `gsub`, or each step of `gmatch`) | About 2 million matching steps | `pattern too complex` |
+| Each event handler and each timer run | The same as a command | As above |
+| Handlers per event | 64 | `too many <event> handlers` |
+| Timers waiting at once | 256 | `too many timers` |
+| Events waiting for one server pass | 64 | Further ones that pass aren't reported |
 
 A few things to know:
 - **`pcall` can't extend the time limit.** It can catch the error, but from then on every instruction raises it again, so the command still stops.
@@ -219,6 +290,8 @@ A few things to know:
 |---|---|
 | Loading, at startup | The log shows `Script <file>: <file>:<line>: <message>`. The file's remaining code doesn't run. Commands it already registered stay. |
 | A command errors | The player sees `The /<name> command failed.`, and the log shows `[script] /<name> failed: <file>:<line>: <message>`. Players never see the file or the message. |
+| An event handler errors | The log shows `[script] <event> handler failed: <file>:<line>: <message>`. The other handlers still run. |
+| A timer errors | The log shows `[script] timer failed: <file>:<line>: <message>`. An `every` timer is cancelled. |
 | A bad argument to a `server` function | A normal Lua error, such as `bad argument #2 to 'teleport' (not a place in the world)`. Catch it with `pcall` if you want to handle it. |
 
 `server.player`, `server.kick` and `server.ban` don't error when no one matches. They return `nil, "no such player"`. `server.tell` and `server.teleport` return `false`.

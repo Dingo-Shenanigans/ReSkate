@@ -6,6 +6,7 @@
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,15 @@ constexpr std::size_t memory_limit = 32u << 20; // all scripts together
 constexpr int hook_every = 1000;                // instructions between budget checks
 constexpr unsigned step_limit = 2000;           // ~2M instructions a call (a few ms), or a file's first run
 constexpr float world_limit = 1e6f;             // metres from the origin: anything further is a mistake
+// What the scripts can make the server hold for them outside Lua's memory cap.
+constexpr std::size_t max_handlers = 64; // of each event
+constexpr std::size_t max_timers = 256;
+constexpr std::size_t max_events = 64; // waiting for tick(); a burst beyond it is not reported
+
+std::uint64_t clock_us() {
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+}
 
 // Each state keeps its Scripts in its extra space (lua.h), which hooks reach too.
 Scripts &self(lua_State *lua) { return **static_cast<Scripts **>(lua_getextraspace(lua)); }
@@ -56,6 +66,9 @@ std::string Scripts::load(const std::filesystem::path &folder) {
     if (lua_) lua_close(lua_); // loading again starts over
     lua_ = nullptr;
     commands_.clear();
+    for (auto &handlers : handlers_) handlers.clear();
+    happened_.clear();
+    timers_.clear();
     memory_ = 0;
     // Every allocation counts against memory_limit; a refused one is a Lua "not enough memory" error.
     lua_ = lua_newstate(
@@ -122,27 +135,68 @@ std::optional<std::string> Scripts::run(std::string_view verb, std::uint64_t cal
     // running_: a script's own server.kick() and the like never come back into a script.
     if (!lua_ || running_ || found == commands_.end()) return {};
     if (found->second.admin && caller && !host_.is_admin(caller)) return {};
-    struct Request {
-        int function;
-        std::uint64_t caller;
-        std::string_view args;
-    } request{found->second.function, caller, args};
+    std::string answer;
+    if (call({found->second.function, 2, caller, {}, args}, answer)) return answer;
+    // The details (with the script's path) are for the owner's log, not the player.
+    host_.log_("[script] /" + std::string(verb) + " failed: " + clean_chat_text(answer));
+    return "The /" + std::string(verb) + " command failed.";
+}
+
+bool Scripts::call(const Request &request, std::string &result) {
     // The arguments are made inside the pcall: building them can fail at the memory cap.
     constexpr lua_CFunction invoke = [](lua_State *lua) -> int {
         const auto &asked = *static_cast<const Request *>(lua_touserdata(lua, 1));
         lua_rawgeti(lua, LUA_REGISTRYINDEX, asked.function);
-        self(lua).push_player(lua, asked.caller);
-        lua_pushlstring(lua, asked.args.data(), asked.args.size());
-        lua_call(lua, 2, 1);
+        if (asked.arguments >= 1) self(lua).push_player(lua, asked.id, asked.name);
+        if (asked.arguments >= 2) lua_pushlstring(lua, asked.text.data(), asked.text.size());
+        lua_call(lua, asked.arguments, 1);
         return 1;
     };
     lua_pushcfunction(lua_, invoke);
-    lua_pushlightuserdata(lua_, &request);
-    std::string answer;
-    if (call(1, answer)) return answer;
-    // The details (with the script's path) are for the owner's log, not the player.
-    host_.log_("[script] /" + std::string(verb) + " failed: " + clean_chat_text(answer));
-    return "The /" + std::string(verb) + " command failed.";
+    lua_pushlightuserdata(lua_, const_cast<Request *>(&request));
+    return call(1, result);
+}
+
+void Scripts::happened(Event event, std::uint64_t id, std::string name, std::string text) {
+    if (handlers_[static_cast<std::size_t>(event)].empty() || happened_.size() >= max_events) return;
+    happened_.push_back({event, id, std::move(name), std::move(text)});
+}
+
+void Scripts::tick() {
+    if (!lua_ || running_) return;
+    static constexpr const char *names[] = {"join", "leave", "chat"};
+    std::string why;
+    for (const auto &event : std::exchange(happened_, {})) {
+        const auto kind = static_cast<std::size_t>(event.event);
+        const auto handlers = handlers_[kind]; // a copy: a handler may add another
+        for (const int function : handlers)
+            if (!call({function, event.event == Event::chat ? 2 : 1, event.id, event.name, event.text}, why))
+                host_.log_("[script] " + std::string(names[kind]) + " handler failed: " + clean_chat_text(why));
+    }
+    const auto now = clock_us();
+    std::vector<std::int64_t> due;
+    for (const auto &[id, timer] : timers_)
+        if (timer.due <= now) due.push_back(id);
+    for (const auto id : due) {
+        const auto found = timers_.find(id);
+        if (found == timers_.end()) continue; // cancelled by one that ran before it
+        const auto timer = found->second;
+        if (!timer.every) timers_.erase(found);
+        // A server that fell behind runs a repeating timer once, not once for every time it missed.
+        else found->second.due = std::max(timer.due + timer.every, now + 1);
+        if (!call({timer.function, 0}, why)) {
+            host_.log_("[script] timer failed: " + clean_chat_text(why));
+            if (timer.every) cancel(id); // it would fail again every time
+        }
+        if (!timer.every) luaL_unref(lua_, LUA_REGISTRYINDEX, timer.function);
+    }
+}
+
+void Scripts::cancel(std::int64_t timer) {
+    const auto found = timers_.find(timer);
+    if (found == timers_.end()) return;
+    luaL_unref(lua_, LUA_REGISTRYINDEX, found->second.function);
+    timers_.erase(found);
 }
 
 bool Scripts::call(int arguments, std::string &result) {
@@ -197,9 +251,9 @@ std::uint64_t Scripts::target(lua_State *lua, int at) {
     return guest && guest->handshaken ? id : 0;
 }
 
-void Scripts::push_player(lua_State *lua, std::uint64_t id) {
+void Scripts::push_player(lua_State *lua, std::uint64_t id, std::string_view gone) {
     const auto *guest = id ? host_.find(id) : nullptr;
-    const std::string name = guest ? host_.guest_name(*guest) : "Server";
+    const std::string name = guest ? host_.guest_name(*guest) : id ? std::string(gone) : "Server";
     lua_createtable(lua, 0, 7);
     lua_pushinteger(lua, static_cast<lua_Integer>(id));
     lua_setfield(lua, -2, "id");
@@ -274,6 +328,22 @@ int Scripts::open(lua_State *state) {
         lua_pushlstring(lua, answer.data(), answer.size());
         return 1;
     };
+    // server.after(seconds, fn) and server.every(seconds, fn): the timer's id, for server.cancel.
+    static constexpr auto timer = [](lua_State *lua, bool repeat) {
+        auto &scripts = self(lua);
+        const auto seconds = luaL_checknumber(lua, 1);
+        luaL_checktype(lua, 2, LUA_TFUNCTION);
+        if (!std::isfinite(seconds) || seconds < (repeat ? 0.1 : 0) || seconds > 1e6)
+            return luaL_argerror(lua, 1, repeat ? "0.1 to 1000000 seconds" : "0 to 1000000 seconds");
+        if (scripts.timers_.size() >= max_timers) return luaL_error(lua, "too many timers (%d)", static_cast<int>(max_timers));
+        const auto every = static_cast<std::uint64_t>(seconds * 1e6);
+        lua_pushvalue(lua, 2);
+        const int function = luaL_ref(lua, LUA_REGISTRYINDEX);
+        const auto id = ++scripts.timer_ids_;
+        scripts.timers_[id] = {clock_us() + every, repeat ? every : 0, function};
+        lua_pushinteger(lua, id);
+        return 1;
+    };
     static constexpr luaL_Reg api[] = {
         // server.command(name, function(player, args) ... end [, {admin = true}])
         {"command",
@@ -297,6 +367,35 @@ int Scripts::open(lua_State *state) {
                  if (const auto old = commands.find(name); old != commands.end()) luaL_unref(lua, LUA_REGISTRYINDEX, old->second.function);
                  commands[name] = {function, admin};
                  return 0;
+             });
+         }},
+        // server.on("join" | "leave" | "chat", function(player [, text]) ... end)
+        {"on",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 static constexpr const char *const events[] = {"join", "leave", "chat", nullptr};
+                 const int event = luaL_checkoption(lua, 1, nullptr, events);
+                 luaL_checktype(lua, 2, LUA_TFUNCTION);
+                 auto &handlers = self(lua).handlers_[static_cast<std::size_t>(event)];
+                 if (handlers.size() >= max_handlers)
+                     return luaL_error(lua, "too many %s handlers (%d)", events[event], static_cast<int>(max_handlers));
+                 lua_pushvalue(lua, 2);
+                 handlers.push_back(luaL_ref(lua, LUA_REGISTRYINDEX));
+                 return 0;
+             });
+         }},
+        {"after", [](lua_State *lua) -> int { return guarded(lua, [&] { return timer(lua, false); }); }},
+        {"every", [](lua_State *lua) -> int { return guarded(lua, [&] { return timer(lua, true); }); }},
+        // server.cancel(id): true if that timer was waiting.
+        {"cancel",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const std::int64_t id = luaL_checkinteger(lua, 1);
+                 const bool waiting = scripts.timers_.contains(id);
+                 scripts.cancel(id);
+                 lua_pushboolean(lua, waiting);
+                 return 1;
              });
          }},
         // server.players(): every connected player's table.

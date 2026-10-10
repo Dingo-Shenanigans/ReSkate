@@ -52,8 +52,9 @@ logged and that file is skipped. Example, scripts/hello.lua:
 
 A player typing /hello world gets "hi <name>: world". More examples to copy
 into scripts are in the source's Server/scripts: rules.lua (/rules), goto.lua
-(/goto <player>) and props.lua (/props, for admins: who placed the most
-objects). The console can run script commands too (as "hello world"), and so
+(/goto <player>), props.lua (/props, for admins: who placed the most
+objects), welcome.lua (greets players who join) and tips.lua (a tip every few
+minutes). The console can run script commands too (as "hello world"), and so
 can admins. Commands the server already has always win over a script's. /help
 (and help in the console) lists the script commands each player may use.
 The full reference, with every function's results and limits, is
@@ -74,6 +75,12 @@ Server/scripts/README.md in the source.
   server.map([name])     The map's name, or change it (like the map command).
   server.tod(time)       Like the tod command.
   server.clear_objects() Deletes every placed object.
+  server.on(event, function)   Runs on "join" (player), "leave" (player) or
+                         "chat" (player, text). Handlers run just after it happens.
+  server.after(seconds, function), server.every(seconds, function)
+                         A timer, once or repeating (every 0.1 s at most often);
+                         returns its id.
+  server.cancel(id)      Stops a timer.
   server.log(...), print(...)   A line in the server's log.
 
 A player table has id (SteamID64), name, admin, objects (how many they have
