@@ -174,7 +174,10 @@ void Tracker::track_bones(const Sample &previous, const Sample &now, double dt) 
             bone_hit_[i] = now.bone_centres[i][1] - lowest < 0.3f ? bone_change_[i] : std::max(0.0f, bone_change_[i] - mean);
         // Just after skate. switches the skater on or off the board the pose snaps over and flings the
         // limbs: a real impact then stops the whole body, so no bone counts more than the torso lost.
-        if (switch_time_ >= 0 && now.time - switch_time_ <= 0.2) {
+        bone_hit_raw_ = bone_hit_;
+        // (Only before a bail: those hits are kept for one that may start later. In a bail, and on
+        // the very crash that takes the skater off the board, they are the impact.)
+        if (phase_ != Phase::bailing && switch_time_ >= 0 && now.time - switch_time_ <= 0.2) {
             const float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]});
             for (auto &hit : bone_hit_) hit = std::min(hit, torso);
         }
@@ -239,7 +242,7 @@ void Tracker::hit_part(int part, float impact, double time) {
 
 // During a bail: each X-ray bone's own hit lands on its body part.
 void Tracker::apply_bone_hits(const Sample &now) {
-    if (now.time - start_.time < 0.15) return; // the wipeout's own first jolt
+    if (!jolt_is_impact_ && now.time - start_.time < 0.15) return; // the wipeout's own first jolt
     const auto &list = bones();
     for (std::size_t i = 0; i < list.size() && i < 19; ++i) {
         const float change = bone_hit_[i];
@@ -454,8 +457,9 @@ bool Tracker::update(const Sample &s) {
             // has stayed down: a glide's landing rides on, a jolt mid-glide keeps flying.
             const bool gliding = last_glide_time_ >= 0 && s.time - last_glide_time_ <= 1.0;
             pending_until_ = wipeout ? -1 : gliding ? s.time + 0.65 : from_air_ ? s.time + 0.25 : -1;
-            pending_fall_since_ = -1;
+            pending_glide_ = gliding;
             pending_from_ = s.time;
+            pending_fall_since_ = -1;
             if ((thrown || slammed || knocked || crash_landed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
                 start_ = offboard_start_;
                 live_.air_time = pre_air_;
@@ -467,6 +471,13 @@ bool Tracker::update(const Sample &s) {
             frozen_ = false;
             still_since_ = -1;
             // The impact that showed this was a crash came before the bail was recognised: count it.
+            jolt_is_impact_ = !wipeout && (knocked || crash_landed);
+            if (jolt_is_impact_)
+                for (std::size_t i = 0; i < 19; ++i)
+                    if (bone_hit_raw_[i] > recent_hit_[i] || s.time - recent_hit_time_[i] > 3.0) {
+                        recent_hit_[i] = bone_hit_raw_[i];
+                        recent_hit_time_[i] = s.time;
+                    }
             if (thrown || slammed || knocked || crash_landed) {
                 const auto &list = bones();
                 for (std::size_t i = 0; i < list.size() && i < 19; ++i) {
@@ -492,6 +503,9 @@ bool Tracker::update(const Sample &s) {
         // Stayed down: a crash. A glide's landing that is still sliding along on the belly (a big
         // glide, a trainer-boosted jump) is not settled yet: it waits while the body keeps its speed,
         // up to 2.5 s, for the skater to pop back up.
+        // A crash from the air (not a glide's landing) shows as soon as the body has stopped dropping:
+        // only one still falling has to wait out the check.
+        if (pending_until_ >= 0 && !pending_glide_ && s.time - pending_from_ >= 0.03 && hips_velocity_[1] > -1.5f) pending_until_ = -1;
         if (pending_until_ >= 0 && s.time >= pending_until_) {
             const bool sliding = body_speed_ >= 2.5f && std::abs(hips_vertical_) < 1.5f && s.time - pending_from_ < 2.5;
             pending_until_ = sliding ? s.time + 0.1 : -1;
