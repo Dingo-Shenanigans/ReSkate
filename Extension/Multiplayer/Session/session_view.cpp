@@ -500,6 +500,8 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/map", "/map <map>", "Admin: change the server's map", "map"});
             list.push_back({"/tpall", "/tpall [player]", "Admin: teleport everyone to you (or to a player)", "player"});
             list.push_back({"/tphere", "/tphere <player>", "Admin: teleport a player to you", "player"});
+            list.push_back({"/teleport", "/teleport <player|SteamID64,SteamID64,...> <player|x y z>",
+                            "Admin: teleport players to a player or a place (y is up)", "player"});
             list.push_back({"/tod", "/tod <time>", "Admin: set the time of day", "time"});
             list.push_back({"/votes", "/votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>]", "Admin: the server's vote settings"});
             list.push_back({"/announce", "/announce <text>", "Admin: announce something to everyone, on a card on their screen"});

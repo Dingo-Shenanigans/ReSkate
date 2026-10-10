@@ -17,7 +17,8 @@ constexpr std::string_view help_text =
     "map <name, e.g. San Vansterdam> | maps | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
     "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off | bone-reach <0.5-20>|off\n"
     "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
-    "tpall [player] | tphere <player> | votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>] | vote-cancel\n"
+    "tpall [player] | tphere <player> | teleport <player|SteamID64,SteamID64,...> <player|x y z (y is up)>\n"
+    "votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>] | vote-cancel\n"
     "votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off\n"
     "vote <map|kick|tod|<custom vote>> [argument] | poll <question> | <answer> | <answer>... | poll end\n"
     "poll-run <command with {answer}> | <question> | <answer> | <answer>...\n"
@@ -565,19 +566,57 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         }
         if (!to || !to->latest_root) return "There is no position for " + (to ? guest_name(*to) : std::string("you")) + " yet.";
         if (movers.empty()) return "Nobody else is in the world.";
-        const auto at = to->latest_root->position;
-        unsigned sent{};
-        for (std::size_t i = 0; i < movers.size(); ++i) {
-            // A ring around them, so nobody lands inside anyone else.
-            const float angle = 6.2831853f * static_cast<float>(i) / static_cast<float>(movers.size());
-            auto p = packet(PacketKind::teleport, now_);
-            p.teleport = {at[0] + 2.5f * std::cos(angle), at[1] + 1.0f, at[2] + 2.5f * std::sin(angle)};
-            if (send_packet(*movers[i], p, true, false)) ++sent;
-        }
+        const auto sent = teleport_ring(movers, to->latest_root->position);
         const auto text = movers.size() == 1 && sent ? guest_name(*movers[0]) + " was teleported to " + guest_name(*to) + "."
                                                      : std::to_string(sent) + " player(s) teleported to " + guest_name(*to) + ".";
         if (!console) log_(text);
         return text;
+    }
+    if (name == "teleport") {
+        // teleport <players> <player|x y z>: for the console and scripts, so players by
+        // SteamID64 and places by the coordinates the log prints.
+        TeleportRequest request;
+        if (auto why = parse_teleport(argument, request); !why.empty()) return why;
+        Guest *to{};
+        std::string where;
+        std::array<float, 3> at{};
+        if (request.point) {
+            at = *request.point;
+            char text[64];
+            std::snprintf(text, sizeof text, "(%.0f, %.0f, %.0f)", at[0], at[1], at[2]);
+            where = text;
+        } else {
+            to = match_player(request.player);
+            if (!to) return "No single connected player matches \"" + std::string(request.player) + "\".";
+            if (!to->latest_root) return "There is no position for " + guest_name(*to) + " yet.";
+            at = to->latest_root->position;
+            where = guest_name(*to);
+        }
+        if (!request.name.empty()) {
+            auto *guest = match_player(request.name);
+            if (!guest) return "No single connected player matches \"" + std::string(request.name) + "\".";
+            request.ids.push_back(guest->member.id);
+        }
+        std::vector<Guest *> movers;
+        std::string skipped;
+        const auto skip = [&](std::string who, std::string_view why) {
+            skipped += (skipped.empty() ? " Skipped: " : ", ") + who + " (" + std::string(why) + ")";
+        };
+        for (const auto id : request.ids) {
+            auto *guest = find(id);
+            if (!guest || !guest->handshaken) skip(std::to_string(id), "not connected");
+            else if (!guest->world_ready) skip(guest_name(*guest), "not in the world yet");
+            else if (guest == to) skip(guest_name(*guest), "the target");
+            else movers.push_back(guest);
+        }
+        if (!skipped.empty()) skipped += ".";
+        if (movers.empty()) return "Nobody to teleport." + skipped;
+        // One player to a place lands on it; several stand round it as tpall's do.
+        const auto sent = teleport_ring(movers, at, to || movers.size() > 1 ? 2.5f : 0.f);
+        const auto *by = console ? nullptr : find(admin);
+        log_("[teleport] " + std::to_string(sent) + " player(s) to " + where + " by " +
+             (console ? std::string("console") : by ? guest_name(*by) : std::to_string(admin)));
+        return std::to_string(sent) + " player(s) teleported to " + where + "." + skipped;
     }
     if (name == "noclip" || name == "nobail" || name == "boosts") {
         auto &allowed = name == "noclip" ? config_.noclip : name == "nobail" ? config_.no_bail : config_.boosts;
@@ -742,6 +781,16 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return "admin add|remove <player or SteamID64>";
     }
     return "Unknown command \"" + std::string(action) + "\". Type help.";
+}
+unsigned Host::teleport_ring(const std::vector<Guest *> &movers, const std::array<float, 3> &at, float radius) {
+    unsigned sent{};
+    for (std::size_t i = 0; i < movers.size(); ++i) {
+        const float angle = 6.2831853f * static_cast<float>(i) / static_cast<float>(movers.size());
+        auto p = packet(PacketKind::teleport, now_);
+        p.teleport = {at[0] + radius * std::cos(angle), at[1] + 1.0f, at[2] + radius * std::sin(angle)};
+        if (send_packet(*movers[i], p, true, false)) ++sent;
+    }
+    return sent;
 }
 // A player's mods change how tricks score (their report; Engine/Vfs/mod_scoring.h): flagged
 // players are taken out of linked throwdowns and coop challenges (the roster's scoring flag, and

@@ -384,6 +384,15 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   tuning on|off                 Everyone on the game's own physics tuning.
   tpall [player]                Everyone to you (admins in game) or to a player.
   tphere <player>               One player to you (admins in game).
+  teleport <players> <player|x y z>
+                                Players to a player or a place. <players> is one
+                                player, or SteamID64s joined by commas with no
+                                spaces (at most 64); ones not on or not in the
+                                world yet are skipped and named. x y z are world
+                                units as the log prints them, e.g. "placed ... at
+                                (-247, 2172, -259)"; y is up. Several players
+                                stand in a ring round the target. Logged as
+                                "[teleport] <n> player(s) to <target> by <who>".
   park <construction|historic|financial> <layout>
   park random                  Randomize all three park slots (excludes empty lots).
   layer-sync on|off   layer <key> default|on|off
