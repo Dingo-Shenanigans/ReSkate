@@ -15,7 +15,8 @@ using Address = std::uintptr_t;
 
 // UI/Foundations/State/DelMar_UI_ScreenData: the game's own menu and HUD visibility state.
 constexpr std::uint32_t screen_data_hash = 0x2c5645a1;
-constexpr std::uint32_t in_menu_offset = 20, hide_indicators_offset = 40, hide_nametags_offset = 56, hide_ui_offset = 80;
+constexpr std::uint32_t in_menu_offset = 20, hide_indicators_offset = 40, hide_nametags_offset = 56, hide_ui_offset = 80,
+                        menu_focus_offset = 84;
 
 struct State {
     std::mutex mutex;
@@ -57,7 +58,8 @@ GameUiState read(Address base, State &s) {
     const auto at = context.address(s.screen);
     if (!at) return {};
     const auto flag = [&](std::uint32_t offset) { return menu_data::read<std::uint8_t>(at + offset) != 0; };
-    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset)};
+    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset),
+            flag(menu_focus_offset)};
 }
 } // namespace
 

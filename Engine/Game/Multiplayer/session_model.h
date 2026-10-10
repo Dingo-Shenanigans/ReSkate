@@ -145,6 +145,10 @@ struct MultiplayerAnnouncement {
 };
 struct MultiplayerChat {
     bool available{};           // in a session that can carry chat
+    // A game menu is up (or the game hides its UI): no closed lines or cards, and T waits, but a
+    // chat box the player has open stays open (a S.K.A.T.E. score card comes up mid-sentence).
+    bool menu{};
+    bool spectating{}; // the party Spectate camera is on: the chat rises above the game's prompts
     float hold = chat_hold_default; // seconds a closed line stays before it fades; 0: always
     std::uint64_t latest{};     // sequence of the newest line, 0 when empty
     std::vector<MultiplayerChatLine> lines;

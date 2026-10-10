@@ -5,6 +5,7 @@
 #include "Extension/Multiplayer/Steam/steam_social.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
 #include "Engine/Core/Log/logging.h"
@@ -135,9 +136,12 @@ void refresh_friends(Session &s) {
 }
 void publish(Session &s, const NativeFrame *local) {
     // Chat stays off screen in the main and pause menus and while the game hides its UI, as
-    // the nametags do.
+    // the nametags do. Only a menu page with the player counts: the game's menu flag is also up
+    // while it rebuilds the skater (each bail, each S.K.A.T.E. turn). A Spectate started from
+    // the Social menu keeps that page focused underneath, so spectating is never a menu; the
+    // chat sits high enough then to clear both the spectate prompts and the Social page.
     const auto ui = sample_game_ui_state(s.base);
-    s.game_menu = ui.in_menu || ui.ui_hidden;
+    s.game_menu = ui.ui_hidden || (ui.in_menu && ui.menu_focus && !native_party_spectating());
     MultiplayerModel view;
     load_bans(s);
     view.bans = s.bans;
@@ -545,6 +549,8 @@ void publish_chat(Session &s) {
     signature.add(static_cast<std::uint64_t>(s.chat_filter));
     signature.add(static_cast<std::uint64_t>(s.chat_hold * 1000.f));
     signature.add(static_cast<std::uint64_t>(s.game_menu));
+    const bool spectating = native_party_spectating();
+    signature.add(static_cast<std::uint64_t>(spectating));
     for (const auto &peer : active_peers(s))
         if (listed(peer)) signature.add(peer.member.name.empty() ? s.transport.name(peer.member.id) : peer.member.name);
     for (const auto &asset : s.server_maps) signature.add(asset);
@@ -580,8 +586,10 @@ void publish_chat(Session &s) {
     std::sort(view.maps.begin(), view.maps.end());
     view.maps.erase(std::unique(view.maps.begin(), view.maps.end()), view.maps.end());
     // Hidden chat is not offered at all: no lines on screen and T does nothing. A game menu
-    // (or the game's hidden UI) also closes an open chat box.
-    view.available = (s.mode == Mode::host || s.mode == Mode::join) && s.chat_visible && !s.game_menu;
+    // (or the game's hidden UI) holds the lines and T back but leaves an open chat box open.
+    view.available = (s.mode == Mode::host || s.mode == Mode::join) && s.chat_visible;
+    view.menu = s.game_menu;
+    view.spectating = spectating;
     view.hold = s.chat_hold;
     view.latest = s.chat.empty() ? 0 : s.chat.back().sequence;
     if (dedicated && s.vote.id) {

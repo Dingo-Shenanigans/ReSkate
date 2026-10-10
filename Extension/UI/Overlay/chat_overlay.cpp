@@ -298,8 +298,9 @@ bool chat_pending() {
                 else layouts->erase(layouts->begin(), layouts->lower_bound(c.feed.lines.front().sequence));
             }
         }
-        s.chat_available.store(c.feed.available);
-        // Leaving the session closes an open chat box.
+        // T opens the chat only outside the game's menus.
+        s.chat_available.store(c.feed.available && !c.feed.menu);
+        // Leaving the session closes an open chat box; a game menu does not.
         if (!c.feed.available) s.chat_visible.store(false);
         for (const auto& line : c.feed.lines)
             if (line.sequence > c.seen) {
@@ -310,7 +311,7 @@ bool chat_pending() {
         while (c.arrivals.size() > multiplayer_chat_history) c.arrivals.pop_front();
     }
     if (s.chat_visible.load()) return true;
-    if (!c.feed.available) return false;
+    if (!c.feed.available || c.feed.menu) return false;
     if (c.feed.vote.id || c.feed.announcement.id) return true; // the vote and announcement cards
     const auto hold = chat_hold(c.feed);
     if (!hold) return !c.feed.lines.empty();
@@ -678,9 +679,13 @@ void draw_chat() {
     const auto display = ImGui::GetIO().DisplaySize;
     const float scale = std::clamp(display.y / 1080.0f, 1.0f, 2.0f);
     const float width = 520.0f * scale, margin = 24.0f * scale;
+    // While spectating, the game's Teleport / Hide UI / Back prompts run along the bottom of the
+    // screen, and Esc brings the Social page (its FIND SKATERS button and button row, about
+    // 190 px at 1080p) up over the spectate: the chat sits above both.
+    const float chat_bottom = display.y - margin - (c.feed.spectating ? 200.0f * scale : 0.0f);
 
     if (s.chat_visible.load()) {
-        ImGui::SetNextWindowPos(ImVec2(display.x - margin, display.y - margin), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowPos(ImVec2(display.x - margin, chat_bottom), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
         ImGui::SetNextWindowSize(ImVec2(width, 320.0f * scale), ImGuiCond_Always);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, with_alpha(theme::ink, 0.92f));
         ImGui::PushStyleColor(ImGuiCol_Border, with_alpha(theme::blue, 0.9f));
@@ -794,7 +799,8 @@ void draw_chat() {
 
     // Closed: the newest lines still within their hold, stacked up from the
     // corner, each fading on its own (held always, the newest stay). Drawn
-    // without a window, so no input.
+    // without a window, so no input. A game menu hides them, and the cards, until it closes.
+    if (c.feed.menu) return;
     const auto now = Clock::now();
     const auto hold = chat_hold(c.feed);
     std::vector<std::pair<const MultiplayerChatLine*, float>> shown;
@@ -811,7 +817,7 @@ void draw_chat() {
     const float size = body->FontSize * scale * 0.9f, name_size = heading->FontSize * scale * 0.9f;
     const float pad_x = 10.0f * scale, pad_y = 5.0f * scale, gap = 4.0f * scale;
     const float text_width = width - pad_x * 2.0f;
-    float bottom = display.y - margin;
+    float bottom = chat_bottom;
     auto& layouts = chat_layouts().closed;
     for (const auto& [line, alpha] : shown) {
         auto& layout = line_layout(layouts, *line);

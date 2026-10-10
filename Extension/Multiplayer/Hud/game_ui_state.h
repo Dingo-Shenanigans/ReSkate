@@ -10,6 +10,10 @@ struct GameUiState {
     bool ui_hidden{};         // the game's UI is hidden (captures)
     bool nametags_hidden{};   // the game's nametag setting is off
     bool indicators_hidden{}; // the game's player indicator setting is off
+    // A menu page has the player (pause, map, Social, a S.K.A.T.E. score card...). `in_menu` is
+    // also up, without this, for the second or so the game rebuilds the skater (a respawn after
+    // a bail, each S.K.A.T.E. turn) and the whole time the party Spectate camera follows someone.
+    bool menu_focus{};
 };
 
 // Client thread only (it takes the UI model lock): reads the state at most every 100 ms and
