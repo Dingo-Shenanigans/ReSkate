@@ -287,6 +287,13 @@ bool Tracker::update(const Sample &s) {
     bool finished = false;
     if (phase_ == Phase::finished) phase_ = Phase::idle;
     if (s.vehicle) vehicle_time_ = s.time;
+    // While a crash from the air waits to be confirmed, a body that keeps dropping is still flying
+    // (a glide that jolted, a jump off the board mid-air, a trainer-boosted jump): no crash yet.
+    if (phase_ == Phase::bailing && pending_until_ >= 0 && hips_velocity_[1] < -2.0f) {
+        if (pending_fall_since_ < 0) pending_fall_since_ = s.time;
+    } else {
+        pending_fall_since_ = -1;
+    }
     if (have_previous_ && previous_.physics_state != s.physics_state) {
         const auto off = [&](std::uint32_t state) { return state == config_.wipeout_state || state == 504; };
         if (off(previous_.physics_state) != off(s.physics_state) || s.physics_state == config_.wipeout_state) switch_time_ = s.time;
@@ -443,7 +450,11 @@ bool Tracker::update(const Sample &s) {
             start_ = thrown ? down_start_ : s;
             // The bail started where the skater left the board or their feet, if that was just now.
             left_board_time_ = -1;
-            pending_until_ = !wipeout && last_glide_time_ >= 0 && s.time - last_glide_time_ <= 1.0 ? s.time + 0.65 : -1;
+            // Off the board from the air (a glide, a jump off mid-air), a crash is only shown once the body
+            // has stayed down: a glide's landing rides on, a jolt mid-glide keeps flying.
+            const bool gliding = last_glide_time_ >= 0 && s.time - last_glide_time_ <= 1.0;
+            pending_until_ = wipeout ? -1 : gliding ? s.time + 0.65 : from_air_ ? s.time + 0.25 : -1;
+            pending_fall_since_ = -1;
             pending_from_ = s.time;
             if ((thrown || slammed || knocked || crash_landed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
                 start_ = offboard_start_;
@@ -468,8 +479,9 @@ bool Tracker::update(const Sample &s) {
         }
     } else if (have_previous_ && pending_until_ >= 0 &&
                ((s.physics_state >= 100 && s.physics_state < 300) || (s.physics_state >= 600 && s.physics_state < 700) ||
-                (s.bones_valid && s.upright))) {
-        // The glide landed and the skater rode or stood straight on: it was no crash.
+                (s.bones_valid && s.upright) || (pending_fall_since_ >= 0 && s.time - pending_fall_since_ >= 0.2))) {
+        // The glide landed and the skater rode or stood straight on, or the body is still dropping
+        // through the air: it was no crash (a real landing later starts one).
         phase_ = Phase::idle;
         live_ = {};
         pending_until_ = -1;

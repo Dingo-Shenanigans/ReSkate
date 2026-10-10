@@ -202,6 +202,7 @@ private:
     // over then, which flings the hands and feet, so no limb takes more than the torso's hit then.
     double switch_time_{-1};
     double pending_from_{-1}; // when the glide-landing wait began
+    double pending_fall_since_{-1}; // the body has kept dropping since then: still in the air
     double riding_since_{-1};
     // The last bail as it ended, so a crash straight after it (still falling, a second drop) carries
     // on as the same bail instead of starting another.
