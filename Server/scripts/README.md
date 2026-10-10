@@ -42,11 +42,11 @@ The example scripts in this folder are ready to copy:
 
 3. Start the server. Typing `/hello world` in chat answers `hi <your name>: world`.
 
-The server loads scripts once, when it starts:
+The server loads scripts when it starts:
 - **Order:** files load in name order. Prefix names with numbers (`10-rules.lua`, `20-goto.lua`) to control the order.
 - **Loading errors:** a file that fails to load is logged and skipped. Commands it registered before the error stay registered.
-- **Changes:** to pick up edits, restart the server.
-- **Shared state:** all files share one Lua state, so a global set in one file is visible in the others. Globals keep their values between commands until the server restarts.
+- **Changes:** type `scripts reload` in the console (or `/scripts reload` as an admin) to load the folder again without a restart. Everything starts over: commands, event handlers, timers and globals. `scripts` on its own lists the loaded commands.
+- **Shared state:** all files share one Lua state, so a global set in one file is visible in the others. Globals keep their values between commands until the server restarts or the scripts are reloaded.
 - **Encoding:** files can be saved as UTF-8 with or without a byte-order mark. Only source text is accepted; see [What Lua can do here](#what-lua-can-do-here).
 
 ## Where commands run
@@ -244,7 +244,7 @@ end)
 
 Timer functions take no arguments, and what they return is ignored. A timer that errors is logged as `[script] timer failed: ...`. An `every` timer that errors is cancelled, since it would most likely fail the same way every time.
 
-Timers are kept until the server restarts. They start counting when the script loads, so `server.every` at the top of a file starts at server start.
+Timers are kept until the server restarts or the scripts are reloaded. They start counting when the script loads, so `server.every` at the top of a file starts at server start.
 
 ## Logging
 
@@ -319,7 +319,7 @@ end, {admin = true})
 
 **Remember something between commands**
 ```lua
-local seen = {}   -- lives until the server restarts
+local seen = {}   -- lives until the server restarts or the scripts reload
 
 server.command("checkin", function(player)
   seen[player.id] = os.time()

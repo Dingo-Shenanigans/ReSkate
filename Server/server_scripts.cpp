@@ -63,6 +63,8 @@ Scripts::~Scripts() {
 }
 
 std::string Scripts::load(const std::filesystem::path &folder) {
+    if (running_) return "Scripts cannot be reloaded while one is running.\n";
+    folder_ = folder;
     if (lua_) lua_close(lua_); // loading again starts over
     lua_ = nullptr;
     commands_.clear();

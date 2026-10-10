@@ -26,7 +26,7 @@ constexpr std::string_view help_text =
     "park <lot> <layout> | park random | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>]\n"
-    "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | update | quit";
+    "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | scripts [reload] | update | quit";
 } // namespace
 
 std::string Host::command(std::string_view line, std::uint64_t admin) {
@@ -721,6 +721,18 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
             return changed(std::to_string(id) + " is no longer an admin.");
         }
         return "admin add|remove <player or SteamID64>";
+    }
+    if (name == "scripts") {
+        // The scripts folder read again, so an owner can change a script without a restart.
+        if (lower(argument) == "reload") {
+            if (const auto *by = console ? nullptr : find(admin)) log_(guest_name(*by) + " reloaded the scripts.");
+            const auto errors = scripts_.load(scripts_.folder());
+            const auto loaded = scripts_.help(0);
+            return errors + "Scripts reloaded; commands: " + (loaded.empty() ? "none" : loaded) + ".";
+        }
+        if (!argument.empty()) return "scripts [reload]";
+        const auto loaded = scripts_.help(0);
+        return "Script commands: " + (loaded.empty() ? "none" : loaded) + ". Type scripts reload after changing a script.";
     }
     // A script's command (server_scripts.cpp): the console and admins may run the admin-only ones too.
     if (auto answer = scripts_.run(verb, admin, argument)) return std::move(*answer);

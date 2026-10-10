@@ -43,8 +43,9 @@ straight away (players are told to rejoin). Turn this off with
 Scripts
 -------
 Lua files (.lua, Lua 5.4) in a scripts folder next to the server add your own
-chat commands. They are loaded in name order when the server starts; errors are
-logged and that file is skipped. Example, scripts/hello.lua:
+chat commands. They are loaded in name order when the server starts, and again
+with "scripts reload" (no restart needed); errors are logged and that file is
+skipped. Example, scripts/hello.lua:
 
   server.command("hello", function(player, args)
     return "hi " .. player.name .. ": " .. args
@@ -431,5 +432,7 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   score-allow [<fingerprint>|remove <fingerprint>]   Accept a scoring mod's
                                 fingerprint like the game's own (or list them).
   admin add|remove <player or id>   admins      (console only)
+  scripts [reload]              List the script commands, or load the scripts
+                                folder again (see Scripts).
   update                        Check for a new release and install it now (console only).
   quit, exit or stop            Shut the server down (console only).

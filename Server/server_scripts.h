@@ -27,7 +27,9 @@ class Scripts {
     Scripts &operator=(const Scripts &) = delete;
     ~Scripts();
     // Every .lua file in the folder, in name order; the scripts' errors, one a line ("" = none).
+    // Loading again (scripts reload) starts over: commands, handlers, timers and globals.
     std::string load(const std::filesystem::path &folder);
+    const std::filesystem::path &folder() const { return folder_; }
     // The script's reply, or nothing when no script has this command (or it is for admins and
     // `caller` is not one). `caller` is the player's SteamID64, 0 for the console.
     std::optional<std::string> run(std::string_view verb, std::uint64_t caller, std::string_view args);
@@ -47,6 +49,7 @@ class Scripts {
     };
     Host &host_;
     lua_State *lua_{};
+    std::filesystem::path folder_;
     std::map<std::string, Command, std::less<>> commands_;
     struct Happened {
         Event event{};
