@@ -121,10 +121,10 @@ const char *title_for(int total, std::size_t n) {
 std::string Tracker::watch_line() const {
     float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
     for (const float c : bone_change_) any = std::max(any, c);
-    char text[200];
-    std::snprintf(text, sizeof(text), "state %u%s, speed %.1f (peak %.1f), hips %+.1f m/s, lying %d, hit torso %.1f any %.1f, fell %.2fs ago",
+    char text[240];
+    std::snprintf(text, sizeof(text), "state %u%s, speed %.1f (peak %.1f), hips %+.1f m/s, lying %d, ragdoll %d, hit torso %.1f any %.1f, fell %.2fs ago",
                   previous_.physics_state, from_air_ ? " from the air" : "", body_speed_, recent_peak_speed_, hips_vertical_,
-                  previous_.lying ? 1 : 0, torso, any, fast_fall_time_ < 0 ? -1.0 : previous_.time - fast_fall_time_);
+                  previous_.lying ? 1 : 0, previous_.ragdoll, torso, any, fast_fall_time_ < 0 ? -1.0 : previous_.time - fast_fall_time_);
     return text;
 }
 
@@ -290,6 +290,7 @@ bool Tracker::update(const Sample &s) {
     bool finished = false;
     if (phase_ == Phase::finished) phase_ = Phase::idle;
     if (s.vehicle) vehicle_time_ = s.time;
+    if (s.ragdoll == 1) seen_ragdoll_ = true;
     // While a crash from the air waits to be confirmed, a body that keeps dropping is still flying
     // (a glide that jolted, a jump off the board mid-air, a trainer-boosted jump): no crash yet.
     if (phase_ == Phase::bailing && pending_until_ >= 0 && hips_velocity_[1] < -2.0f && s.ragdoll != 1) {
@@ -459,6 +460,10 @@ bool Tracker::update(const Sample &s) {
             pending_until_ = wipeout ? -1 : gliding ? s.time + 0.65 : from_air_ ? s.time + 0.25 : -1;
             pending_glide_ = gliding;
             pending_from_ = s.time;
+            // An off-board crash that skate. itself still calls under control (a hard landing on the
+            // feet, a stumble): only shown if the body goes ragdoll in the next moment.
+            pending_needs_ragdoll_ = !wipeout && seen_ragdoll_ && s.ragdoll == 0;
+            if (pending_needs_ragdoll_) pending_until_ = std::max(pending_until_, s.time + 0.3);
             pending_fall_since_ = -1;
             if ((thrown || slammed || knocked || crash_landed) && have_offboard_start_ && s.time - offboard_start_.time < 4.0) {
                 start_ = offboard_start_;
@@ -490,7 +495,8 @@ bool Tracker::update(const Sample &s) {
         }
     } else if (have_previous_ && pending_until_ >= 0 &&
                ((s.physics_state >= 100 && s.physics_state < 300) || (s.physics_state >= 600 && s.physics_state < 700) ||
-                (s.bones_valid && s.upright) || (pending_fall_since_ >= 0 && s.time - pending_fall_since_ >= 0.2))) {
+                (s.bones_valid && s.upright) || (pending_fall_since_ >= 0 && s.time - pending_fall_since_ >= 0.2) ||
+                (pending_needs_ragdoll_ && s.time >= pending_until_ && s.ragdoll != 1))) {
         // The glide landed and the skater rode or stood straight on, or the body is still dropping
         // through the air: it was no crash (a real landing later starts one).
         phase_ = Phase::idle;
@@ -505,11 +511,14 @@ bool Tracker::update(const Sample &s) {
         // up to 2.5 s, for the skater to pop back up.
         // A crash from the air (not a glide's landing) shows as soon as the body has stopped dropping:
         // only one still falling has to wait out the check.
-        if (pending_until_ >= 0 && !pending_glide_ && s.time - pending_from_ >= 0.03 && hips_velocity_[1] > -1.5f) pending_until_ = -1;
+        if (pending_until_ >= 0 && !pending_glide_ && !pending_needs_ragdoll_ && s.time - pending_from_ >= 0.03 && hips_velocity_[1] > -1.5f) pending_until_ = -1;
         // skate. itself calls the body a ragdoll: a crash, whatever the glide checks would say.
-        if (pending_until_ >= 0 && s.ragdoll == 1 && s.time - pending_from_ >= 0.03) pending_until_ = -1;
+        if (pending_until_ >= 0 && s.ragdoll == 1 && s.time - pending_from_ >= 0.03) {
+            pending_until_ = -1;
+            pending_needs_ragdoll_ = false;
+        }
         // A glide that ends stopped dead (a slam, not a belly slide) is a crash at once too.
-        if (pending_until_ >= 0 && pending_glide_ && s.time - pending_from_ >= 0.1 && body_speed_ < 2.5f && hips_velocity_[1] > -1.5f)
+        if (pending_until_ >= 0 && pending_glide_ && !pending_needs_ragdoll_ && s.time - pending_from_ >= 0.1 && body_speed_ < 2.5f && hips_velocity_[1] > -1.5f)
             pending_until_ = -1;
         if (pending_until_ >= 0 && s.time >= pending_until_) {
             const bool sliding = body_speed_ >= 2.5f && std::abs(hips_vertical_) < 1.5f && s.time - pending_from_ < 2.5;

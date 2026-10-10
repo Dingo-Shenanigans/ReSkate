@@ -205,6 +205,8 @@ private:
     double pending_from_{-1}; // when the glide-landing wait began
     double pending_fall_since_{-1}; // the body has kept dropping since then: still in the air
     bool pending_glide_{};          // the wait is a glide landing's (else a crash from the air)
+    bool pending_needs_ragdoll_{};  // skate. said under control at the start: only a ragdoll makes it a crash
+    bool seen_ragdoll_{};           // the ragdoll flag has read 1 at least once: it can be trusted
     bool jolt_is_impact_{};         // the bail began on the impact itself (crash landing, knocked off)
     std::array<float, 19> bone_hit_raw_{}; // this tick's hits before the board-switch cap
     double riding_since_{-1};
