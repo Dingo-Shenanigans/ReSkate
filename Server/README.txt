@@ -34,6 +34,12 @@ in maps.park_mods with a name and the map it was built on, and spawn it with
 and when it goes. Without, it stays until removed. Every park goes when the map
 changes, and none come back after a restart.
 
+Nothing needs a restart: a mod copied into Mods can be set up with
+"park-mod config add" (saved to the config like the map pool), and a park whose
+mod was updated is read again with "park-mod reload <name>". Every park-mod
+add reads the park's file afresh. Don't edit ReSkateServer.json by hand while
+the server runs: it writes its settings back whenever an admin changes one.
+
 A spawned park belongs to the server, not to a player: it counts against nobody's
 object limit, nobody can move or delete it, and it stays when players leave.
 Players need no mod for it: its objects are Build Kit items the game has. An
@@ -422,6 +428,13 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   park-mod add <name> [<name>...] [minutes]   Spawn parks on the current map:
                                 for 1-1440 minutes, or until removed. All or none.
   park-mod remove <name> [<name>...]   park-mod clear   Remove spawned parks.
+  park-mod reload <name> [<name>...]   Read a spawned park's file again (its mod
+                                was updated) and swap its objects in place; it keeps
+                                its timer.
+  park-mod config add <name> | <mod folder> | <map> [| <key>]   Set up a park mod
+                                while the server runs, saved to maps.park_mods, e.g.
+                                park-mod config add street | popular skate 2 street park | San Vansterdam | bam
+  park-mod config remove <name>   Take one out of the setup (removing it if spawned).
   layer-sync on|off   layer <key> default|on|off
   layers <key>=<mode> ...       Several world layers at once, each default, on or off.
   tod <default|morning|noon|afternoon|evening|night|weatherday|weathernight>

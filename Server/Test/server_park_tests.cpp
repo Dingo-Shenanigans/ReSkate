@@ -14,6 +14,7 @@
 #include "Engine/Game/Build/supported_build.h"
 
 #include <algorithm>
+#include <fstream>
 #include <cstdio>
 #include <map>
 #include <optional>
@@ -212,7 +213,11 @@ int run(const std::filesystem::path &fixtures) {
     load_levels(empty); // the retail maps
     ServerConfig config;
     config.file = std::filesystem::temp_directory_path() / "reskate_server_park_tests" / "ReSkateServer.json";
-    config.mods = fixtures;
+    // A copy of the fixtures the test may change, as an owner updates a mod while the server runs.
+    const auto mods = std::filesystem::temp_directory_path() / "reskate_server_park_tests_live";
+    std::filesystem::remove_all(mods);
+    std::filesystem::copy(fixtures, mods, std::filesystem::copy_options::recursive);
+    config.mods = mods;
     config.auto_update = false;
     config.park_mods = {{"street", "popular skate 2 street park", "San Vansterdam", "bam"},
                         {"street2", "popular skate 2 street park", "San Vansterdam", "bam"},
@@ -350,6 +355,64 @@ int run(const std::filesystem::path &fixtures) {
     reply = command("park-mod clear");
     check(reply == "[parks] street3 removed (by console)", "clear: " + reply);
     check(command("park-mod clear") == "No parks are spawned.", "clear with nothing spawned");
+
+    // Live: a spawned park's file read again, in place, keeping its timer.
+    const auto street_file = mods / "popular skate 2 street park" / "parks" / "bam.park.json";
+    command("park-mod add street 10");
+    run_for(1000000);
+    std::ofstream(street_file, std::ios::binary | std::ios::trunc) << R"({"format": "reskate-park", "schema_version": 1, "revision": 1,
+        "maps": {"bam": [{"id": 1, "item": "own_bkpads_generic_padlow_00001", "position": [0, 10, 0], "rotation": [0, 0, 0, 1]},
+                         {"id": 2, "item": "own_bkpads_generic_padlow_00001", "position": [4, 10, 0], "rotation": [0, 0, 0, 1]},
+                         {"id": 3, "item": "own_bkpads_generic_padlow_00001", "position": [8, 10, 0], "rotation": [0, 0, 0, 1]}]}})";
+    reply = command("park-mod reload street");
+    check(reply == "[parks] street reloaded (3 objects) by console", "reload: " + reply);
+    run_for(1000000);
+    check(!a.refused && a.park.objects().size() == 3, "A reloaded park did not reach the player");
+    check(has(a.chat, "The street park was updated."), "Players were not told of the update");
+    check(command("park-mod list").find("3 objects, 10 min left") != std::string::npos, "A reload lost the park's timer");
+    check(command("park-mod reload street2").find("street2 is not spawned") != std::string::npos, "A park that is not up was reloaded");
+    check(command("park-mod reload nothing").find("no park mod called") != std::string::npos, "An unknown park was reloaded");
+    std::ofstream(street_file, std::ios::binary | std::ios::trunc) << "{ not json";
+    check(command("park-mod reload street").find("[parks] street could not be reloaded: ") == 0, "A broken file was reloaded");
+    run_for(1000000);
+    check(a.park.objects().size() == 3, "A failed reload changed the park");
+    std::filesystem::copy_file(fixtures / "popular skate 2 street park" / "parks" / "bam.park.json", street_file,
+                               std::filesystem::copy_options::overwrite_existing);
+    command("park-mod clear");
+
+    // Live: parks set up from the console or an admin, saved to the config, no restart.
+    reply = command("park-mod config add newpark | popular skate 2 street park | san vansterdam | bam");
+    check(reply == "[parks] newpark set up (\"popular skate 2 street park\", bam on San Vansterdam) by console", "config add: " + reply);
+    {
+        const auto saved = load_config(config.file);
+        check(!saved.park_mods.empty() && saved.park_mods.back().name == "newpark" && saved.park_mods.back().map == "San Vansterdam" &&
+                  saved.park_mods.back().folder == "popular skate 2 street park" && saved.park_mods.back().key == "bam",
+              "A park set up live was not saved to the config");
+    }
+    check(command("park-mod add newpark") == "[parks] newpark spawned (8 objects, until removed) by console", "A park set up live did not spawn");
+    check(command("park-mod config add newpark | popular skate 2 street park | San Vansterdam").find("already set up") != std::string::npos,
+          "A park was set up twice");
+    check(command("park-mod config add New Park! | x | San Vansterdam").find("could not be set up: park_mods") != std::string::npos,
+          "A bad park name was set up");
+    check(command("park-mod config add elsewhere | x | Nowhere").find("is not a single known map") != std::string::npos, "A park on an unknown map was set up");
+    check(command("park-mod config add later | ../x | San Vansterdam").find("folder must be") != std::string::npos, "A path was set up as a folder");
+    check(command("park-mod config add half | x").find("park-mod config add <name>") == 0, "A park without a map was set up");
+    reply = command("park-mod config add later | copied later | Isle of Grom");
+    check(reply.find("its folder is not in the Mods folder yet") != std::string::npos, "A missing folder was not mentioned: " + reply);
+    a.say("/park-mod config remove later", now);
+    run_for(500000);
+    check(logged("[parks] later no longer set up (by Robin)"), "An admin could not remove a park from the setup");
+    reply = command("park-mod config remove newpark");
+    check(reply == "[parks] newpark removed (by console)\n[parks] newpark no longer set up (by console)", "config remove: " + reply);
+    run_for(1000000);
+    check(a.park.objects().empty(), "A park removed from the setup stayed on the map");
+    {
+        const auto saved = load_config(config.file);
+        check(std::none_of(saved.park_mods.begin(), saved.park_mods.end(),
+                           [](const auto &park) { return park.name == "newpark" || park.name == "later"; }),
+              "A park removed from the setup is still in the config");
+    }
+    check(command("park-mod config remove newpark").find("no park mod called") != std::string::npos, "A park was removed from the setup twice");
 
     // A map change takes the parks with it.
     command("park-mod add street");

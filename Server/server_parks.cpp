@@ -167,9 +167,10 @@ void Host::tick_parks() {
     publish_parks();
 }
 
-// "park-mod list | add <name> [<name>...] [minutes] | remove <name> [<name>...] | clear". What it
-// did is a "[parks]" line: the console and a vote log the reply, so it is logged here only for an
-// admin in game. A vote's refusal also goes to chat, where the players who voted can read it.
+// "park-mod list | add <name> [<name>...] [minutes] | remove <name> [<name>...] | clear |
+// reload <name> [<name>...] | config add <name> | <folder> | <map> [| <key>] | config remove <name>".
+// What it did is a "[parks]" line: the console and a vote log the reply, so it is logged here only
+// for an admin in game. A vote's refusal also goes to chat, where the players who voted can read it.
 std::string Host::park_mod_command(std::string_view argument, std::uint64_t admin) {
     const auto [action, rest] = split(argument);
     const auto verb = lower(action);
@@ -196,6 +197,69 @@ std::string Host::park_mod_command(std::string_view argument, std::uint64_t admi
         for (const auto &park : parks_spawned_) count += park.objects.size();
         return count;
     };
+    // What of a park's file players' games would not show, for the log.
+    const auto skipped_line = [](std::string_view name, const std::vector<std::string> &skipped) {
+        std::string items;
+        for (std::size_t j = 0; j < skipped.size() && j < 8; ++j) items += (j ? ", " : "") + skipped[j];
+        return "[parks] " + std::string(name) + ": skipped " + std::to_string(skipped.size()) +
+               " object(s) players' games would not show: " + items + (skipped.size() > 8 ? ", ..." : "");
+    };
+    const auto named_twice = [](const std::vector<std::string> &names) -> std::optional<std::string> {
+        for (std::size_t i = 1; i < names.size(); ++i)
+            if (std::find(names.begin(), names.begin() + static_cast<std::ptrdiff_t>(i), names[i]) != names.begin() + static_cast<std::ptrdiff_t>(i))
+                return names[i];
+        return {};
+    };
+    // Setting parks up while the server runs: saved to ReSkateServer.json like the map pool, so a
+    // park mod copied into Mods needs no restart.
+    if (verb == "config") {
+        const auto [what, fields] = split(rest);
+        const auto sub = lower(what);
+        if (sub == "add") {
+            std::vector<std::string> parts;
+            for (auto left = fields;;) {
+                const auto bar = left.find('|');
+                parts.emplace_back(trim(left.substr(0, bar)));
+                if (bar == std::string_view::npos) break;
+                left = left.substr(bar + 1);
+            }
+            if (parts.size() < 3 || parts.size() > 4 || parts[0].empty())
+                return "park-mod config add <name> | <mod folder> | <map> [| <key>], e.g. park-mod config add street | "
+                       "popular skate 2 street park | San Vansterdam | bam";
+            ParkMod park{lower(parts[0]), parts[1], parts[2], parts.size() > 3 ? lower(parts[3]) : std::string{}};
+            const auto refuse = [&](const std::string &why) { return done({"[parks] " + park.name + " could not be set up: " + why}); };
+            if (configured(park.name)) return refuse(park.name + " is already set up (park-mod config remove " + park.name + " first).");
+            if (const auto *level = find_level(park.map)) park.map = level->name;
+            auto next = config_;
+            next.park_mods.push_back(park);
+            if (const auto error = park_mods_error(next); !error.empty()) return refuse(error);
+            config_.park_mods.push_back(park);
+            save();
+            std::error_code missing;
+            const bool there = std::filesystem::is_directory(config_.mods / std::filesystem::path(park.folder), missing);
+            return done({"[parks] " + park.name + " set up (\"" + park.folder + "\"" + (park.key.empty() ? "" : ", " + park.key) + " on " +
+                         park.map + ") by " + who + (there ? "" : "; its folder is not in the Mods folder yet")});
+        }
+        if (sub == "remove") {
+            const auto name = lower(trim(fields));
+            if (name.empty()) return "park-mod config remove <name>";
+            const auto found = std::find_if(config_.park_mods.begin(), config_.park_mods.end(), [&](const auto &park) { return park.name == name; });
+            if (found == config_.park_mods.end())
+                return done({"[parks] " + name + " could not be removed from the setup: there is no park mod called \"" + name + "\" (park-mod list)."});
+            std::vector<std::string> lines;
+            if (const auto up = spawned(name); up != parks_spawned_.end()) {
+                parks_spawned_.erase(up);
+                publish_parks();
+                send_chat("The " + name + " park was removed.");
+                lines.push_back("[parks] " + name + " removed (by " + who + ")");
+            }
+            config_.park_mods.erase(found);
+            save();
+            lines.push_back("[parks] " + name + " no longer set up (by " + who + ")");
+            return done(lines);
+        }
+        return "park-mod config add <name> | <mod folder> | <map> [| <key>] | park-mod config remove <name>";
+    }
     std::vector<std::string> words;
     for (auto left = rest; !left.empty();) {
         const auto [word, more] = split(left);
@@ -203,7 +267,8 @@ std::string Host::park_mod_command(std::string_view argument, std::uint64_t admi
         left = more;
     }
     if (verb.empty() || verb == "list") {
-        if (config_.park_mods.empty()) return "No park mods are set up (maps.park_mods in ReSkateServer.json).";
+        if (config_.park_mods.empty())
+            return "No park mods are set up (maps.park_mods in ReSkateServer.json, or park-mod config add <name> | <mod folder> | <map>).";
         std::string text = "Park mods (" + std::to_string(parks_spawned_.size()) + " of " + std::to_string(config_.park_limits.parks) +
                            " spawned, " + std::to_string(objects()) + " of " + std::to_string(config_.park_limits.objects) + " objects):";
         for (const auto &park : config_.park_mods) {
@@ -269,12 +334,7 @@ std::string Host::park_mod_command(std::string_view argument, std::uint64_t admi
             }
             lines.push_back("[parks] " + park.name + " spawned (" + std::to_string(park.objects.size()) + " objects, " +
                             (minutes ? std::to_string(*minutes) + " min" : std::string("until removed")) + ") by " + who);
-            if (const auto &skipped = loaded[i].skipped; !skipped.empty()) {
-                std::string items;
-                for (std::size_t j = 0; j < skipped.size() && j < 8; ++j) items += (j ? ", " : "") + skipped[j];
-                lines.push_back("[parks] " + park.name + ": skipped " + std::to_string(skipped.size()) +
-                                " object(s) players' games would not show: " + items + (skipped.size() > 8 ? ", ..." : ""));
-            }
+            if (!loaded[i].skipped.empty()) lines.push_back(skipped_line(park.name, loaded[i].skipped));
             parks_spawned_.push_back(std::move(park));
         }
         publish_parks();
@@ -289,9 +349,7 @@ std::string Host::park_mod_command(std::string_view argument, std::uint64_t admi
             if (words.empty()) return "No parks are spawned.";
         }
         if (words.empty()) return "park-mod remove <name> [<name>...]";
-        for (std::size_t i = 1; i < words.size(); ++i)
-            if (std::find(words.begin(), words.begin() + static_cast<std::ptrdiff_t>(i), words[i]) != words.begin() + static_cast<std::ptrdiff_t>(i))
-                return done({"[parks] " + words[i] + " could not be removed: it is named twice."});
+        if (const auto twice = named_twice(words)) return done({"[parks] " + *twice + " could not be removed: it is named twice."});
         for (const auto &name : words)
             if (spawned(name) == parks_spawned_.end()) {
                 const auto why = configured(name) ? name + " is not spawned." : "there is no park mod called \"" + name + "\" (park-mod list).";
@@ -307,6 +365,46 @@ std::string Host::park_mod_command(std::string_view argument, std::uint64_t admi
         send_chat(words.size() > 1 ? "The " + listed(words) + " parks were removed." : "The " + words.front() + " park was removed.");
         return done(lines);
     }
-    return "park-mod list | add <name> [<name>...] [minutes] | remove <name> [<name>...] | clear";
+    // A spawned park's file read again (its mod was updated): its objects are swapped in place, and
+    // it keeps its timer. All of them, or none.
+    if (verb == "reload") {
+        if (words.empty()) return "park-mod reload <name> [<name>...]";
+        const auto names = listed(words);
+        const auto refuse = [&](const std::string &why) {
+            if (by_vote_) send_chat("The " + names + " park" + (words.size() > 1 ? "s" : "") + " could not be reloaded: " + why);
+            return done({"[parks] " + names + " could not be reloaded: " + why});
+        };
+        if (const auto twice = named_twice(words)) return refuse(*twice + " is named twice.");
+        std::vector<LoadedPark> loaded;
+        auto total = objects();
+        for (const auto &name : words) {
+            const auto *park = configured(name);
+            if (!park) return refuse("there is no park mod called \"" + name + "\" (park-mod list).");
+            const auto up = spawned(name);
+            if (up == parks_spawned_.end()) return refuse(name + " is not spawned (park-mod add " + name + ").");
+            try {
+                loaded.push_back(load_park_mod(config_.mods, *park));
+            } catch (const std::exception &e) {
+                return refuse(e.what());
+            }
+            total = total - up->objects.size() + loaded.back().objects.size();
+        }
+        if (total > config_.park_limits.objects)
+            return refuse("that makes " + std::to_string(total) + " park objects, and at most " + std::to_string(config_.park_limits.objects) +
+                          " can be spawned at once.");
+        std::vector<std::string> lines;
+        for (std::size_t i = 0; i < words.size(); ++i) {
+            auto &park = *spawned(words[i]);
+            park.objects = std::move(loaded[i].objects);
+            for (auto &object : park.objects) object.id = ++park_object_ids_;
+            lines.push_back("[parks] " + park.name + " reloaded (" + std::to_string(park.objects.size()) + " objects) by " + who);
+            if (!loaded[i].skipped.empty()) lines.push_back(skipped_line(park.name, loaded[i].skipped));
+        }
+        publish_parks();
+        send_chat(words.size() > 1 ? "The " + names + " parks were updated." : "The " + names + " park was updated.");
+        return done(lines);
+    }
+    return "park-mod list | add <name> [<name>...] [minutes] | remove <name> [<name>...] | clear | reload <name> [<name>...]\n"
+           "park-mod config add <name> | <mod folder> | <map> [| <key>] | park-mod config remove <name>";
 }
 } // namespace dingosdk::server

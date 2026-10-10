@@ -512,6 +512,11 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
                             "Admin: spawn park mods on this map, for 1-1440 minutes or until removed"});
             list.push_back({"/park-mod remove", "/park-mod remove <name> [<name>...]", "Admin: remove spawned park mods"});
             list.push_back({"/park-mod clear", "/park-mod clear", "Admin: remove every spawned park mod"});
+            list.push_back({"/park-mod reload", "/park-mod reload <name> [<name>...]",
+                            "Admin: read a spawned park mod's file again and update it in place"});
+            list.push_back({"/park-mod config add", "/park-mod config add <name> | <mod folder> | <map> [| <key>]",
+                            "Admin: set up a park mod from the server's Mods folder, without a restart"});
+            list.push_back({"/park-mod config remove", "/park-mod config remove <name>", "Admin: remove a park mod from the server's setup"});
         }
     }
     return list;
