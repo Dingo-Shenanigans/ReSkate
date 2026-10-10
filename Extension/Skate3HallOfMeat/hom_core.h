@@ -207,7 +207,10 @@ private:
     bool pending_glide_{};          // the wait is a glide landing's (else a crash from the air)
     bool pending_needs_ragdoll_{};  // skate. said under control at the start: only a ragdoll makes it a crash
     bool seen_ragdoll_{};
-    float hit_peak_{}; // the body's recent peak speed when it last hit something           // the ragdoll flag has read 1 at least once: it can be trusted
+    // The ragdoll flag has read 1 at least once: it can be trusted.
+    // What the last hit was (kept together while one hit lasts): the body's pace then, and how hard the
+    // torso and the hardest bone were hit.
+    float hit_peak_{}, hit_torso_{}, hit_any_{};
     bool jolt_is_impact_{};         // the bail began on the impact itself (crash landing, knocked off)
     std::array<float, 19> bone_hit_raw_{}; // this tick's hits before the board-switch cap
     double riding_since_{-1};

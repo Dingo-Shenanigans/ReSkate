@@ -121,10 +121,10 @@ const char *title_for(int total, std::size_t n) {
 std::string Tracker::watch_line() const {
     float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
     for (const float c : bone_change_) any = std::max(any, c);
-    char text[240];
-    std::snprintf(text, sizeof(text), "state %u%s, speed %.1f (peak %.1f), hips %+.1f m/s, lying %d, ragdoll %d, hit torso %.1f any %.1f, fell %.2fs ago",
+    char text[300];
+    std::snprintf(text, sizeof(text), "state %u%s, speed %.1f (peak %.1f), hips %+.1f m/s, lying %d, ragdoll %d, hit torso %.1f any %.1f (last hit %.1f/%.1f peak %.1f), fell %.2fs ago",
                   previous_.physics_state, from_air_ ? " from the air" : "", body_speed_, recent_peak_speed_, hips_vertical_,
-                  previous_.lying ? 1 : 0, previous_.ragdoll, torso, any, fast_fall_time_ < 0 ? -1.0 : previous_.time - fast_fall_time_);
+                  previous_.lying ? 1 : 0, previous_.ragdoll, torso, any, hit_torso_, hit_any_, hit_peak_, fast_fall_time_ < 0 ? -1.0 : previous_.time - fast_fall_time_);
     return text;
 }
 
@@ -363,7 +363,10 @@ bool Tracker::update(const Sample &s) {
             for (const float c : bone_change_) any = std::max(any, c);
             if (off_board && (torso >= config_.hit_torso || any >= config_.hit_any)) {
                 // The pace the body had when this hit began (it decays fast once the body stops).
-                hit_peak_ = hit_time_ >= 0 && s.time - hit_time_ < 0.25 ? std::max(hit_peak_, recent_peak_speed_) : recent_peak_speed_;
+                const bool same_hit = hit_time_ >= 0 && s.time - hit_time_ < 0.25;
+                hit_peak_ = same_hit ? std::max(hit_peak_, recent_peak_speed_) : recent_peak_speed_;
+                hit_torso_ = same_hit ? std::max(hit_torso_, torso) : torso;
+                hit_any_ = same_hit ? std::max(hit_any_, any) : any;
                 hit_time_ = s.time;
             }
             // A body that falls hard and smashes into something is a crash at that instant, as Skate 3
@@ -393,7 +396,12 @@ bool Tracker::update(const Sample &s) {
         // Straight after a bail ends the next crash needs no re-arming: it carries that bail on.
         const bool may_start = armed_ || (ended_at_ >= 0 && s.time - ended_at_ <= 1.5);
         // Thrown down: it needs some pace behind it (a roll or a climb on foot goes down slowly).
-        const bool thrown = may_start && hit_peak_ >= 4.5f && grounded && stopping && came_down && supported && down_since_ >= 0 &&
+        // On foot for a while (no board in the last 2 s): vaults, climbs and drops off ledges are driven
+        // through skate.'s ragdoll too, so a fall there only counts when it hits like a slam.
+        const bool on_foot = (left_board_time_ < 0 || s.time - left_board_time_ > 2.0) &&
+                             (last_glide_time_ < 0 || s.time - last_glide_time_ > 3.0); // (a glide's landing is no walk)
+        const bool slam_grade = hit_torso_ >= 6.0f || (hit_any_ >= 12.0f && hit_peak_ >= 9.0f);
+        const bool thrown = may_start && (!on_foot || slam_grade) && hit_peak_ >= 4.5f && grounded && stopping && came_down && supported && down_since_ >= 0 &&
                             s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
         // Coming off the board, skate. switches the skater's pose over in a tick or two: that jump is
