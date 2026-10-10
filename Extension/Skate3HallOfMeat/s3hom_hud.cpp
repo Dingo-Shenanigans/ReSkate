@@ -417,7 +417,8 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
         // body it is drawn over. Read from the physics bodies, the pose is this frame's: carry it only by the time since
         // the read. From the animation pose (a frame behind) add that frame.
         const float extra = skate3_hom::rig_from_bodies().load() ? 0.0f : rig.period;
-        const float ahead = std::clamp(static_cast<float>(std::chrono::duration<double>(Clock::now() - rig.at).count()) + extra, 0.0f, 0.09f);
+        const float lead = skate3_hom::bone_lead_ms().load() / 1000.0f;
+        const float ahead = std::clamp(static_cast<float>(std::chrono::duration<double>(Clock::now() - rig.at).count()) + extra + lead, 0.0f, 0.15f);
         for (auto &seg : rig.bones)
             for (std::size_t k = 0; k < 3; ++k) {
                 seg.a[k] += std::clamp(seg.va[k], -30.0f, 30.0f) * ahead;
@@ -645,6 +646,17 @@ void skate3_hom_tick(bool stand_down) {
 void skate3_hom_set_level(std::string_view level) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    // The saved X-ray lead, once.
+    static bool lead_loaded = false;
+    if (!lead_loaded) {
+        lead_loaded = true;
+        if (const auto saved = profile_runtime::local_value("Skate3HallOfMeat.LeadMs")) {
+            try {
+                const double ms = saved->get<double>();
+                if (std::isfinite(ms)) skate3_hom::bone_lead_ms().store(std::clamp(static_cast<float>(ms), -50.0f, 60.0f));
+            } catch (...) {}
+        }
+    }
     if (level == s.level) return;
     s.level = level;
     s.best_known = !level.empty();
@@ -689,6 +701,19 @@ bool skate3_hom_hud_pending() {
 std::string skate3_hom_command(std::string_view verb, const std::vector<std::string> &words) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    if (verb == "lead") {
+        if (!words.empty()) {
+            float ms{};
+            try {
+                ms = std::clamp(std::stof(words[0]), -50.0f, 60.0f);
+            } catch (...) {
+                return "Hall Of Meat: hom lead <milliseconds>, -50 to 60.";
+            }
+            skate3_hom::bone_lead_ms().store(ms);
+            profile_runtime::set_local_values({{"Skate3HallOfMeat.LeadMs", static_cast<double>(ms)}});
+        }
+        return std::format("Hall Of Meat: the X-ray is carried {:.0f} ms further ahead of the skeleton read.", skate3_hom::bone_lead_ms().load());
+    }
     if (verb == "roll") {
         if (!words.empty()) skate3_hom::roll_from_joints().store(words[0] != "0");
         return std::string("Hall Of Meat: bone roll from ") + (skate3_hom::roll_from_joints().load() ? "the joints." : "the body forward.");

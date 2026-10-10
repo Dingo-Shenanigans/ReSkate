@@ -11,6 +11,7 @@ void register_skate3_hom_commands(Commands &registry) {
         {"status", "Hall Of Meat state and best bail", nullptr},
         {"rig", "Log the skater skeleton (diagnostic)", nullptr},
         {"phys", "Log the skater physics bodies (diagnostic)", nullptr},
+        {"lead", "carry the X-ray this many milliseconds further ahead, if the bones trail the body (saved)", "<ms>"},
         {"roll", "X-ray bone roll from the joints (1) or from the body forward (0)", "0|1"},
     };
     for (const auto &verb : verbs) {

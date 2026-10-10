@@ -78,6 +78,12 @@ inline std::atomic<bool> &rig_from_bodies() {
     static std::atomic<bool> value{};
     return value;
 }
+// Extra milliseconds the X-ray is carried ahead of the last skeleton read (`hom lead`), saved with
+// the profile: a machine whose picture shows the body later than the read can catch the bones up.
+inline std::atomic<float> &bone_lead_ms() {
+    static std::atomic<float> value{0.0f};
+    return value;
+}
 inline std::atomic<bool> &roll_from_joints() {
     static std::atomic<bool> value{true};
     return value;

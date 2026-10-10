@@ -1,7 +1,9 @@
 #include "hom_art.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/mod_list.h"
+#include <atomic>
 #include <chrono>
+#include <thread>
 #include <mutex>
 #include <Windows.h>
 #include <filesystem>
@@ -60,19 +62,47 @@ fs::path game_directory() {
     path.resize(length);
     return fs::path(path).parent_path();
 }
+// The Mods folder's Hall of Meat assets, read now (slow: every mod's description).
+fs::path scan_hom_directory() noexcept;
 } // namespace
 
 fs::path hom_directory() noexcept {
+    // Asked every game tick and every frame: answered from the last scan, and the Mods folder is
+    // scanned again every 2 s on a thread of its own, never on the caller's.
     static std::mutex mutex;
     static fs::path found;
     static std::chrono::steady_clock::time_point next{};
+    static std::atomic<bool> scanning{};
+    {
+        std::lock_guard lock(mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next || scanning.exchange(true)) return found;
+        next = now + std::chrono::seconds(2);
+    }
+    try {
+        std::thread([] {
+            const auto result = scan_hom_directory();
+            {
+                std::lock_guard lock(mutex);
+                if (result != found)
+                    logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: {}.",
+                                 result.empty() ? std::string("assets not installed, off") : "assets in " + mods::ascii_path(result));
+                found = result;
+            }
+            scanning.store(false);
+        }).detach();
+    } catch (...) {
+        scanning.store(false);
+    }
     std::lock_guard lock(mutex);
-    const auto now = std::chrono::steady_clock::now();
-    if (now < next) return found;
-    next = now + std::chrono::seconds(2);
+    return found;
+}
+
+namespace {
+fs::path scan_hom_directory() noexcept {
+    fs::path result;
     try {
         const auto game = game_directory();
-        fs::path result;
         std::error_code error;
         const auto list = mods::scan_mods(game);
         if (list.issue.empty())
@@ -86,14 +116,12 @@ fs::path hom_directory() noexcept {
             }
         // A mod installed by hand into a disabled slot does not count; the game folder copy is for development.
         if (result.empty() && !game.empty() && fs::is_regular_file(game / L"HallOfMeat" / L"bones.bin", error)) result = game / L"HallOfMeat";
-        if (result != found)
-            logging::log(logging::Level::info, logging::Channel::assets, "Hall Of Meat: {}.",
-                         result.empty() ? std::string("assets not installed, off") : "assets in " + mods::ascii_path(result));
-        found = result;
     } catch (...) {
+        result.clear();
     }
-    return found;
+    return result;
 }
+} // namespace
 
 std::size_t reserve_hom_art(ImFontAtlas &atlas) noexcept {
     try {
