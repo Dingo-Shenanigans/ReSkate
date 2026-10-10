@@ -268,7 +268,7 @@ void publish_pose(std::uintptr_t base, std::uintptr_t holder, std::uintptr_t cli
         {P(103), head_top, 0.085f},
         {P(101), P(103), 0.035f},
         {P(44), P(101), 0.12f},
-        {P(7), P(43), 0.05f},
+        {P(7), P(44), 0.05f},
         {P(341), P(8), 0.06f},
         {P(276), P(277), 0.035f}, {P(47), P(48), 0.035f},
         {P(277), P(278), 0.03f}, {P(48), P(49), 0.03f},

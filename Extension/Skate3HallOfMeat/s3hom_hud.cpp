@@ -468,12 +468,20 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
     const bool meshes = hom_bones_ready();
     // Getting up, or the bail is over: the original's X-ray is gone (only the grade fades out).
     if (bones_alpha <= 0.0f) return;
+    // The bones shown: every hurt one, and the spine between two shown ones so the column is whole.
+    std::array<bool, skate3_hom::rig_bones> shown{};
+    for (std::size_t i = 0; i < shown.size(); ++i) shown[i] = broken[i] || r.damage[i] > 0.0f;
+    if (shown[2] && shown[4]) shown[3] = true; // rib cage .. lower spine .. hips
+    if (shown[0] && shown[2]) shown[1] = true; // skull .. neck .. rib cage
+    // How orange a bone is: Skate 3 keeps bruised and scraped bones white and turns them orange
+    // from a bad sprain on, all the way at a break.
+    const auto heat_of = [&](std::size_t i) { return broken[i] ? 1.0f : std::clamp((r.damage[i] - 0.45f) / 0.4f, 0.0f, 1.0f); };
     // Skate 3's hurt bones glow orange through the body, hotter the worse the damage; a break
     // burns red-orange and throbs. Measured from the original: core (255, 190, 170), glow
     // (250, 150, 126) out to (146, 45, 36) at its edge, through its colour matrix.
     for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i) {
-        const float heat = broken[i] ? 1.0f : std::clamp((r.damage[i] - 0.25f) / 0.75f, 0.0f, 1.0f);
-        if (!broken[i] && r.damage[i] <= 0.0f) continue;
+        const float heat = heat_of(i);
+        if (!shown[i]) continue;
         const auto &seg = rig.bones[i];
         ImVec2 a, b;
         float da{}, db{};
@@ -498,7 +506,7 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
     for (int pass = 0; pass < 2; ++pass)
         for (std::size_t i = 0; i < skate3_hom::rig_bones; ++i) {
             const float damage = r.damage[i];
-            if (!broken[i] && damage <= 0.0f) continue;
+            if (!shown[i]) continue;
             if (broken[i] != (pass == 1)) continue;
             const auto &seg = rig.bones[i];
             if (!meshes) {
@@ -514,7 +522,7 @@ void draw_xray(ImDrawList *draw, const Result &r, float bones_alpha, float fade,
             // Skate 3's colours, measured from the original: hurt (223, 212, 214), broken (198, 87, 64),
             // fracture (158, 43, 23), after its bone map; these tints give those through the map.
             // Lightly hurt stays bone white; from sprained on it heats up to orange, broken burns red-orange.
-            const float heat = std::clamp((damage - 0.25f) / 0.75f, 0.0f, 1.0f);
+            const float heat = heat_of(i);
             const auto mix = [](int x, int y, float t) { return static_cast<int>(static_cast<float>(x) + (static_cast<float>(y) - static_cast<float>(x)) * t); };
             // The rim colour (the core runs to white): Skate 3's cool white, heating to its red-orange.
             const ImU32 tint = broken[i] ? IM_COL32(236, 70, 26, 255) : IM_COL32(mix(198, 236, heat), mix(212, 92, heat), mix(234, 40, heat), 255);
