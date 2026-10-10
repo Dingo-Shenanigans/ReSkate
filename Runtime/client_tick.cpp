@@ -32,6 +32,9 @@
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/Skate3HallOfMeat/s3hom_hud.h"
+#include "Extension/Skate3HallOfMeat/hom_rig.h"
+#include "Extension/HallOfMeat/hall_of_meat_slow_motion.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
 #include <dxgi.h>
@@ -1252,6 +1255,21 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             DINGO_PROFILE_ZONE("tick/trainer");
             // A custom map is a sublevel of the root level: that is the map the player means.
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/Skate 3 Hall Of Meat");
+            // Stands down while ReSkate's own Hall of Meat is switched on: one at a time.
+            // Off (ReSkate's own Hall of Meat on, or the asset pack off): nothing of the skater is read.
+            const bool official = dingosdk::hall_of_meat::enabled() || !dingosdk::overlay::skate3_hom_installed();
+            dingosdk::overlay::skate3_hom_set_level(r.catalog_level.empty() ? r.last_level : r.catalog_level);
+            if (!official) dingosdk::skate3_hom::rig_tick(r.base, client);
+            dingosdk::overlay::skate3_hom_tick(official);
+            // Skate 3's broken-bone slow motion: never in a multiplayer session (SlowMotion refuses
+            // it there), and given back while ReSkate's own Hall of Meat runs its own.
+            static dingosdk::hall_of_meat::SlowMotion skate3_slow_motion;
+            const float speed = official ? 1.0f : dingosdk::overlay::skate3_hom_game_speed();
+            const bool slowed = skate3_slow_motion.set(speed);
+            dingosdk::overlay::skate3_hom_set_applied_speed(slowed && speed < 1.0f ? speed : 1.0f);
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");

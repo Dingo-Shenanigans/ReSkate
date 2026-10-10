@@ -313,6 +313,13 @@ int main() {
         check(park && park->author == "Someone" && park->park_maps == std::vector<std::string>{"bam"},
               "An author the manifest already names is kept");
 
+        make_zip(sources / L"meat.zip", {{"manifest.json", R"({"name":"Hall_of_Meat","version_number":"1.0.0"})"},
+            {"icon.png", "png"}, {"README.md", "readme"}, {"HallOfMeat/bones.bin", "HOM2"}, {"HallOfMeat/art/thrasher.png", "png"}});
+        options.folder = "Team-Hall_of_Meat";
+        check(launcher_mods::install(store, sources / L"meat.zip", true, {}, cancel, options) == "Team-Hall_of_Meat" &&
+                  read(store / L"Team-Hall_of_Meat" / L"HallOfMeat" / L"bones.bin") == "HOM2",
+              "A Hall of Meat asset package installs with its HallOfMeat folder");
+
         make_zip(sources / L"empty.zip", {{"manifest.json", manifest}, {"icon.png", "png"}, {"README.md", "readme"}});
         options.folder = "Team-Empty";
         check(error_of([&] { launcher_mods::install(store, sources / L"empty.zip", true, {}, cancel, options); })

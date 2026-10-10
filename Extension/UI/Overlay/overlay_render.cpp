@@ -4,6 +4,9 @@
 #include "overlay_internal.h"
 #include "Extension/Trainer/trainer_page.h"
 #include "Extension/HallOfMeat/hall_of_meat_overlay.h"
+#include "Extension/Skate3HallOfMeat/hom_art.h"
+#include "Extension/Skate3HallOfMeat/hom_grade.h"
+#include "Extension/Skate3HallOfMeat/s3hom_hud.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
@@ -73,6 +76,7 @@ void destroy_graphics() {
     s.frames.clear();
     s.card_texture.Reset(); s.card_upload.Reset();
     card_image_lost();
+    hom_grade_release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -316,9 +320,11 @@ bool setup_graphics() {
     // Emotes and Hall of Meat's images reserve their room before the park previews build the atlas, and fill it after.
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     reserve_hall_of_meat_images(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
+    reserve_hom_art(*ImGui::GetIO().Fonts);
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     fill_chat_emotes(*ImGui::GetIO().Fonts);
     fill_hall_of_meat_images(*ImGui::GetIO().Fonts);
+    fill_hom_art(*ImGui::GetIO().Fonts);
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -565,8 +571,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool nametag_frame = nametags_pending();
     const bool meat_frame = hall_of_meat_pending();
     const bool item_browser_frame = item_browser_pending();
-    const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
+    const bool perf_frame = perf_hud_pending() || trainer_hud_pending() || skate3_hom_hud_pending();
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
@@ -640,6 +646,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
+    draw_skate3_hom_hud();
     draw_notices();
     draw_item_browser();
     draw_chat();
@@ -669,7 +676,10 @@ void render(IDXGISwapChain* presented, UINT flags) {
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    s.commands->ResourceBarrier(1, &barrier);
+    // Skate 3 Hall of Meat's colour pass (Skate 3's colour matrix on the game picture) leaves the
+    // buffer as a render target itself; otherwise it becomes one here.
+    if (!hom_grade_record(s.device.Get(), s.commands.Get(), frame.buffer.Get(), frame.rtv, hom_colour_strength().load()))
+        s.commands->ResourceBarrier(1, &barrier);
     s.commands->OMSetRenderTargets(1, &frame.rtv, FALSE, nullptr);
     ID3D12DescriptorHeap* heaps[] = {s.srvs.Get()};
     s.commands->SetDescriptorHeaps(1, heaps);
