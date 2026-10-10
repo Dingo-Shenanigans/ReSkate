@@ -115,6 +115,9 @@ struct SampleRequest {
     std::uint32_t thread_id{};        // for Target::thread
     double seconds = 10;
     unsigned rate = 1000;             // samples per second
+    // Above 0: a spike sample. Presented frames that took longer than this many milliseconds are
+    // the spikes, and the report only counts samples taken during them (`perf spikes`).
+    double spike_ms = 0;
 };
 struct SampledFunction {
     std::string name;                 // "Skate 0x14xxxxxxx [label]" or "module!symbol"
@@ -131,6 +134,9 @@ struct SampleReport {
     double busy_percent{};            // samples not waiting in the kernel
     std::vector<SampledFunction> functions; // by self, then total
     std::vector<ThreadRow> threads;   // Target::all: each thread's share of the busy samples
+    double spike_ms{};                // a spike sample's threshold, 0 for an ordinary sample
+    std::uint32_t spikes{};           // frames over the threshold
+    double spike_longest_ms{}, spike_total_ms{};
     std::filesystem::path report, folded;   // written next to ReSkate.log
     std::string error;
 };

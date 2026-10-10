@@ -247,7 +247,10 @@ std::string sanitize(std::string text) {
 
 struct Sampled { HANDLE handle{}; std::uint32_t id{}; std::string label; };
 // One sample: where its frames start in the pool, how many, and which thread it came from.
-struct Record { std::uint32_t offset{}; std::uint16_t thread{}; std::uint8_t depth{}; };
+// `at` is microseconds since the run started (a spike sample matches it against presented frames).
+struct Record { std::uint32_t offset{}; std::uint32_t at{}; std::uint16_t thread{}; std::uint8_t depth{}; };
+// A presented frame longer than a spike sample's threshold, in microseconds since the run started.
+struct Spike { std::uint64_t begin{}, end{}; };
 // The pool holds at most this many frames (64 MiB); a sample that no longer fits ends the run.
 constexpr std::size_t pool_limit = 8u << 20;
 
@@ -279,6 +282,11 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
     }
     publish(report);
 
+    const bool spiky = request.spike_ms > 0;
+    if (spiky) {
+        detail::present_log_count.store(0, std::memory_order_relaxed);
+        detail::present_log_on.store(true, std::memory_order_release);
+    }
     const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     const auto period = std::chrono::nanoseconds(1'000'000'000 / request.rate);
     const auto start = std::chrono::steady_clock::now();
@@ -305,7 +313,9 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             if (GetThreadContext(threads[t].handle, &context)) depth = walk(modules, context, pool.data() + used);
             ResumeThread(threads[t].handle);
             if (!depth) continue;
-            records.push_back({static_cast<std::uint32_t>(used), static_cast<std::uint16_t>(t), static_cast<std::uint8_t>(depth)});
+            records.push_back({static_cast<std::uint32_t>(used),
+                static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - start).count()),
+                static_cast<std::uint16_t>(t), static_cast<std::uint8_t>(depth)});
             used += depth;
         }
         if (!any && !full) { report.error = "The thread has ended."; break; }
@@ -334,6 +344,39 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
     report.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     report.progress = 1;
 
+    // ---- a spike sample: the presented frames that took too long ----
+    std::vector<Spike> spikes;
+    if (spiky) {
+        detail::present_log_on.store(false, std::memory_order_release);
+        const auto presented = detail::present_log_count.load(std::memory_order_acquire);
+        const auto origin = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count());
+        const auto threshold = static_cast<std::uint64_t>(request.spike_ms * 1e6);
+        const auto since_start = [&](std::uint64_t ns) { return ns > origin ? (ns - origin) / 1000 : 0; };
+        for (std::uint32_t i = 1; i < presented; ++i) {
+            const auto a = detail::present_log[i - 1].load(std::memory_order_relaxed);
+            const auto b = detail::present_log[i].load(std::memory_order_relaxed);
+            if (b <= a || b - a <= threshold) continue;
+            const double ms = static_cast<double>(b - a) / 1e6;
+            spikes.push_back({since_start(a), since_start(b)});
+            report.spike_longest_ms = std::max(report.spike_longest_ms, ms);
+            report.spike_total_ms += ms;
+        }
+        report.spike_ms = request.spike_ms;
+        report.spikes = static_cast<std::uint32_t>(spikes.size());
+    }
+    // Records are in time order and so are the spikes: one pass decides which records count.
+    std::size_t spike_at = 0;
+    const auto during_spike = [&](std::uint32_t at) {
+        while (spike_at < spikes.size() && spikes[spike_at].end < at) ++spike_at;
+        return spike_at < spikes.size() && spikes[spike_at].begin <= at;
+    };
+    // In a spike, the client update and present threads waiting is the interesting part: their
+    // stacks show what they were stuck on (the GPU, a file, a lock).
+    const auto client = detail::client_thread.load(std::memory_order_relaxed);
+    const auto present = detail::present_thread.load(std::memory_order_relaxed);
+    const auto stalls = [&](std::uint16_t t) { return threads[t].id == client || threads[t].id == present; };
+
     // ---- aggregate: by function, and whole stacks for the flame graph ----
     try {
         struct Counts { std::uint32_t self{}, total{}; const Module* module{}; };
@@ -357,8 +400,10 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             return names.emplace(key, std::move(name)).first->second;
         };
         std::vector<std::uint32_t> busy_by_thread(threads.size());
-        std::uint32_t idle{}, counted{};
+        std::uint32_t idle{}, counted{}, considered{};
         for (const auto& record : records) {
+            if (spiky && !during_spike(record.at)) continue;
+            ++considered;
             const auto* sample = pool.data() + record.offset;
             stack.clear();
             for (std::uint32_t f = 0; f < record.depth; ++f) {
@@ -369,7 +414,7 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             const bool waits = !stack.empty() && waiting(name_of(stack.front(), owners[stack.front()]));
             if (waits) ++idle; else ++busy_by_thread[record.thread];
             // Across threads, a profile of the work: waiting threads are not where CPU went.
-            if (all && waits) continue;
+            if (all && waits && !(spiky && stalls(record.thread))) continue;
             ++counted;
             for (std::size_t f = 0; f < stack.size(); ++f) {
                 auto& counts = functions[stack[f]];
@@ -386,7 +431,7 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             }
             ++folded[line];
         }
-        const auto total = records.size();
+        const auto total = considered;
         report.samples = counted;
         report.busy_percent = total ? 100.0 * static_cast<double>(total - idle) / static_cast<double>(total) : 0.0;
         if (all) {
@@ -410,7 +455,7 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
         GetLocalTime(&now);
         const auto stem = std::format("profile-{:04}{:02}{:02}-{:02}{:02}{:02}-{}", now.wYear, now.wMonth, now.wDay,
             now.wHour, now.wMinute, now.wSecond, request.target == Target::client ? "client" :
-            request.target == Target::present ? "present" : all ? "all" : std::to_string(threads.front().id));
+            request.target == Target::present ? "present" : all ? (spiky ? "spikes" : "all") : std::to_string(threads.front().id));
         report.report = directory / (stem + ".txt");
         report.folded = directory / (stem + ".folded");
         const double per = static_cast<double>(std::max<std::uint32_t>(1, counted));
@@ -428,6 +473,19 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
                 out << std::format("ReSkate profile: {} (thread {}), {:.1f} s, {} samples at {} Hz\n", report.target,
                     threads.front().id, report.seconds, total, request.rate);
                 out << std::format("Busy {:.1f}% (the rest waiting in the kernel)\n", report.busy_percent);
+            }
+            if (spiky) {
+                out << std::format("\nSpike sample: {} presented frames took longer than {:.0f} ms (longest {:.0f} ms, "
+                    "{:.0f} ms in all).\n", spikes.size(), request.spike_ms, report.spike_longest_ms, report.spike_total_ms);
+                out << "Only samples taken during those frames are counted below. Waits on the client update and\n"
+                       "present threads are kept: they show what those threads were stuck on.\n";
+                std::size_t listed{};
+                for (const auto& spike : spikes) {
+                    if (listed++ == 40) { out << "  ...\n"; break; }
+                    out << std::format("  at {:6.1f} s  {:4.0f} ms\n", static_cast<double>(spike.begin) / 1e6,
+                        static_cast<double>(spike.end - spike.begin) / 1e3);
+                }
+                out << "\n";
             }
             out << "Skate.exe functions are Ghidra addresses (image base 0x140000000). Name them in\n"
                    "ReSkate.labels.tsv next to Skate.exe (\"<address> <name>\" per line) for the next report.\n"
@@ -461,8 +519,9 @@ std::uint64_t cpu_time(HANDLE thread) {
 }
 
 // The process's threads that used 3% of a core or more over a quarter second (at most 48),
-// other than ReSkate's own profiler threads.
-std::vector<Sampled> busy_threads() {
+// other than ReSkate's own profiler threads. `minimum` is that CPU time in 100 ns units: a spike
+// sample asks for less, since what causes a hitch can sleep most of the time.
+std::vector<Sampled> busy_threads(std::uint64_t minimum = 75'000) {
     std::vector<Sampled> candidates;
     const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (snapshot == INVALID_HANDLE_VALUE) return {};
@@ -491,7 +550,7 @@ std::vector<Sampled> busy_threads() {
             LocalFree(description);
         }
         // 3% of a core over 250 ms, in 100 ns units.
-        if (ours || time < 75'000 || result.size() == 48) { CloseHandle(c.handle); continue; }
+        if (ours || time < minimum || result.size() == 48) { CloseHandle(c.handle); continue; }
         c.label = detail::thread_label(c.handle, c.id);
         result.push_back(std::move(c));
     }
@@ -502,7 +561,8 @@ std::vector<Sampled> busy_threads() {
 bool start_sampling(const SampleRequest& request, std::string& error) {
     if (detail::sampling.exchange(true, std::memory_order_acq_rel)) { error = "A sample is already running."; return false; }
     auto bounded = request;
-    bounded.seconds = std::clamp(bounded.seconds, 0.5, 60.0);
+    bounded.seconds = std::clamp(bounded.seconds, 0.5, bounded.spike_ms > 0 ? 180.0 : 60.0);
+    if (bounded.spike_ms > 0) bounded.spike_ms = std::clamp(bounded.spike_ms, 20.0, 2000.0);
     bounded.rate = std::clamp(bounded.rate, 50u, 4000u);
     stop_requested.store(false, std::memory_order_release);
     detail::wake_monitor();
@@ -512,7 +572,8 @@ bool start_sampling(const SampleRequest& request, std::string& error) {
             std::vector<Sampled> threads;
             std::string failure;
             if (bounded.target == Target::all) {
-                threads = busy_threads();
+                // A spike sample: anything that ran at all (0.1 ms in the quarter second).
+                threads = busy_threads(bounded.spike_ms > 0 ? 1'000 : 75'000);
                 if (threads.empty()) failure = "No busy threads found.";
             } else {
                 const std::uint32_t id = bounded.target == Target::client ? detail::client_thread.load()

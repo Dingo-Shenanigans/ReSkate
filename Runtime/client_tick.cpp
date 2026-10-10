@@ -5,6 +5,7 @@
 #include "Extension/Assets/map_download.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
+#include "Extension/Settings/graphics_tuning.h"
 #include "Extension/Settings/job_spin.h"
 #include "Engine/Game/World/client_state.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
@@ -280,12 +281,19 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // quickly (and hand them over) only while one of them is reading.
     const auto settings_now = GetTickCount64();
     const bool settings_wanted = settings_now < r.named_settings_wanted_until.load(std::memory_order_relaxed);
-    dingosdk::refresh_named_settings(settings_wanted);
-    apply_throwdown_modes();
-    apply_performance_settings();
-    dingosdk::job_spin::apply_default();
-    apply_mesh_streaming_pool();
-    dingosdk::multiplayer::apply_throwdown_strings(r.base);
+    {
+        DINGO_PROFILE_ZONE("tick/update_model/engine settings");
+        dingosdk::refresh_named_settings(settings_wanted);
+    }
+    {
+        DINGO_PROFILE_ZONE("tick/update_model/startup and performance settings");
+        apply_throwdown_modes();
+        apply_performance_settings();
+        dingosdk::job_spin::apply_default();
+        apply_mesh_streaming_pool();
+        dingosdk::graphics_tuning::tick(state);
+        dingosdk::multiplayer::apply_throwdown_strings(r.base);
+    }
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {
         std::lock_guard lock(r.mutex);
@@ -592,6 +600,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     if (debug_request || r.debug_model.free_camera || r.debug_model.first_person || r.debug_model.noclip ||
         now >= r.next_debug) {
         ScheduledWorkScope work{r, debug_request.has_value()};
+        DINGO_PROFILE_ZONE("tick/update_model/flight and camera (100 ms)");
         r.next_debug = now + 100;
         const bool debug_ready = !r.observer_failed && !debug_busy && (state == 13 || state == 21) && native_context_ready();
         dingosdk::overlay::FlightInput flight_input;
