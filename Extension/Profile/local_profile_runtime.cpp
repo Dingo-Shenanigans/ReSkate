@@ -1,5 +1,6 @@
 #include "Extension/News/live_news.h"
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Skater/traffic_vehicle_provider.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Extension/Customization/local_cosmetic_catalog.h"
 #include "Extension/Customization/local_customization_runtime.h"
@@ -338,6 +339,7 @@ void update_local_customization() noexcept {
 }
 void local_profile_before_level_transition(unsigned next) noexcept {
     PreserveError preserve;
+    car_grab_native::invalidate();
     auto& s = local_runtime();
     if (!s.active.load(std::memory_order_acquire)) return;
     std::lock_guard lock(s.native_mutex);
@@ -587,6 +589,7 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         start_park_rotation();
         start_world_controls();
         start_graphics_controls();
+        car_grab_native::start(base);
         set_local_profile_event_provider(base, true);
         set_local_object_browser_provider(base, &local_object_browser_ready);
         set_main_mission_profile_provider(base, &saved_quest, &save_quest_completion);

@@ -452,6 +452,22 @@ static bool raw_mouse_live(const State& s) {
     return time && GetTickCount64() < time + 10000;
 }
 
+// Car Grab only observes steering and focus. It must not touch the freecam
+// sampler's thread-local mouse baseline, cursor, raw deltas or capture state.
+extern "C" void DingoSDKOverlayReadCarGrabInput(dingosdk::overlay::FlightInput* output) {
+    if (!output) return;
+    struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
+    *output = {};
+    const auto& s = state();
+    const HWND window = s.window.load();
+    if (!window || s.stop.load() || s.failed.load() || s.editor_visible.load() || s.hub_pointer.load() ||
+        interactive_visible(s) || !game_window_foreground(window)) return;
+    OverlayInputAccess access;
+    const auto held = [](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; };
+    const auto controller = read_player_flight_controller();
+    output->active = true;
+    output->right = std::clamp(static_cast<float>(held('D')) - static_cast<float>(held('A')) + controller.right, -1.0f, 1.0f);
+}
 extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* output, bool flight_active, bool player_flight) {
     if (!output) return;
     struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;

@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Skater/traffic_vehicle_provider.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "local_park_rotation.h"
 #include "local_world_layers.h"
@@ -76,6 +77,7 @@ std::uintptr_t seasonal_construct_hook(std::uintptr_t entity, std::uintptr_t inf
 }
 
 std::uintptr_t seasonal_destroy_hook(std::uintptr_t entity, unsigned flags) {
+    car_grab_native::invalidate_root(entity);
     auto& r = world_layers_runtime();
     {
         PreserveError preserve;
@@ -91,6 +93,7 @@ std::uintptr_t seasonal_destroy_hook(std::uintptr_t entity, unsigned flags) {
 }
 
 void reset_world_layer_session() {
+    car_grab_native::invalidate();
     auto& r = world_layers_runtime();
     r.context = 0; r.root_generation = 0; r.next_poll = 0;
     r.original.assign(world_layer_nodes().size(), std::nullopt);
