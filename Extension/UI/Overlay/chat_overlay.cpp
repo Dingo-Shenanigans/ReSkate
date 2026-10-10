@@ -7,7 +7,8 @@
 #include <optional>
 
 // Multiplayer text chat in the bottom-right corner. Closed, the newest lines
-// show for a few seconds and fade, taking no input. T opens it (overlay_input.cpp):
+// show for the player's chat-hold seconds and fade (or, held "always", stay until
+// newer ones push them out), taking no input. T opens it (overlay_input.cpp):
 // the whole session log with a text box, Enter sends and closes, Esc closes.
 // Lines come from the session through a small feed rather than the full model,
 // so they can be polled on every presented frame.
@@ -24,7 +25,12 @@ namespace dingosdk::overlay::detail {
 namespace {
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
-constexpr auto chat_hold = 10s, chat_fade = 1s;
+constexpr auto chat_fade = 1s;
+// How long a closed line stays before it fades (MultiplayerChat::hold); none when held always.
+std::optional<Clock::duration> chat_hold(const MultiplayerChat& feed) {
+    if (!(feed.hold > 0.0f)) return std::nullopt;
+    return std::chrono::duration_cast<Clock::duration>(std::chrono::duration<float>(feed.hold));
+}
 constexpr std::size_t closed_lines = 6;
 
 struct ChatState {
@@ -306,8 +312,10 @@ bool chat_pending() {
     if (s.chat_visible.load()) return true;
     if (!c.feed.available) return false;
     if (c.feed.vote.id || c.feed.announcement.id) return true; // the vote and announcement cards
+    const auto hold = chat_hold(c.feed);
+    if (!hold) return !c.feed.lines.empty();
     for (const auto& [line, at] : c.arrivals)
-        if (now - at < chat_hold + chat_fade) return true;
+        if (now - at < *hold + chat_fade) return true;
     return false;
 }
 
@@ -785,16 +793,18 @@ void draw_chat() {
     }
 
     // Closed: the newest lines still within their hold, stacked up from the
-    // corner, each fading on its own. Drawn without a window, so no input.
+    // corner, each fading on its own (held always, the newest stay). Drawn
+    // without a window, so no input.
     const auto now = Clock::now();
+    const auto hold = chat_hold(c.feed);
     std::vector<std::pair<const MultiplayerChatLine*, float>> shown;
     for (auto it = c.feed.lines.rbegin(); it != c.feed.lines.rend() && shown.size() < closed_lines; ++it) {
         const auto at = arrived(c, it->sequence);
         if (at == Clock::time_point{}) continue;
         const auto age = now - at;
-        if (age >= chat_hold + chat_fade) break;
-        const float alpha = age <= chat_hold ? 1.0f
-            : 1.0f - std::chrono::duration<float>(age - chat_hold) / std::chrono::duration<float>(chat_fade);
+        if (hold && age >= *hold + chat_fade) break;
+        const float alpha = !hold || age <= *hold ? 1.0f
+            : 1.0f - std::chrono::duration<float>(age - *hold) / std::chrono::duration<float>(chat_fade);
         shown.emplace_back(&*it, alpha);
     }
     auto* draw = ImGui::GetForegroundDrawList();

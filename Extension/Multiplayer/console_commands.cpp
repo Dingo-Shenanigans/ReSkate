@@ -25,6 +25,7 @@ void register_multiplayer_commands(Commands &registry) {
                           Command{"echo", "Test a delayed remote skater locally"},
                           Command{"stop", "Disconnect and remove the remote skater"},
                           Command{"chat", "Send a text message to everyone in the session (T opens the chat box)"},
+                          Command{"chat-hold", "How many seconds chat lines stay in the corner before they fade (3-120), or always"},
                           Command{"server", "Send a command to the dedicated server you are an admin of (try: help)"},
                           Command{"tp", "Teleport to a player (name start) or to x y z"},
                           Command{"party", "Your party in a session: invite|join|kick|promote <player>, "
@@ -68,7 +69,8 @@ void register_multiplayer_commands(Commands &registry) {
             args.push_back(argument("choice"));
         if (std::string_view(c.name) == "chat-bubbles-distance" || std::string_view(c.name) == "nametag-distance")
             args.push_back(argument("metres"));
-        if (std::string_view(c.name) == "chat-bubbles-duration" || std::string_view(c.name) == "pose-dump")
+        if (std::string_view(c.name) == "chat-bubbles-duration" || std::string_view(c.name) == "pose-dump" ||
+            std::string_view(c.name) == "chat-hold")
             args.push_back(argument("seconds"));
         if (std::string_view(c.name) == "player-distance")
             args.push_back(argument("metres"));

@@ -94,6 +94,9 @@ struct MultiplayerHostPreferences {
 // this many bytes; the log keeps the most recent lines of the session.
 inline constexpr std::size_t multiplayer_chat_max_bytes = 200;
 inline constexpr std::size_t multiplayer_chat_history = 50;
+// How long a line stays in the closed chat corner before it fades, in seconds (the player's
+// chat-hold setting). 0 is "always": the newest lines stay until newer ones push them out.
+inline constexpr float chat_hold_default = 10.f, chat_hold_least = 3.f, chat_hold_most = 120.f;
 struct MultiplayerChatLine {
     std::uint64_t sequence{};   // local arrival order, increasing within the process
     std::uint64_t sender{};     // Steam id; 0 for a notice from ReSkate itself
@@ -142,6 +145,7 @@ struct MultiplayerAnnouncement {
 };
 struct MultiplayerChat {
     bool available{};           // in a session that can carry chat
+    float hold = chat_hold_default; // seconds a closed line stays before it fades; 0: always
     std::uint64_t latest{};     // sequence of the newest line, 0 when empty
     std::vector<MultiplayerChatLine> lines;
     std::vector<MultiplayerChatCommand> commands; // what "/" offers in this session
@@ -177,6 +181,9 @@ struct MultiplayerModel {
     bool nametags{true};
     // Local: whether session text chat shows at all (and T opens it).
     bool chat_visible{true};
+    // Local: seconds a chat line stays in the corner before it fades (chat_hold_least to
+    // chat_hold_most); 0 keeps the newest lines up.
+    float chat_hold{chat_hold_default};
     // Local: bad words in chat names and messages show as **** (on by default).
     bool chat_filter{true};
     // Local, for ReSkate's nametags: `nametag_distance` is how far away a player's name still

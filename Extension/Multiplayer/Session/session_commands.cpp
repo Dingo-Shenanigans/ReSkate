@@ -402,6 +402,21 @@ std::string edit_chat_filter(Session &s, std::string_view argument) {
     publish_chat(s);
     return s.chat_filter ? "Bad words in chat are hidden." : "Chat is shown unfiltered.";
 }
+// "always" keeps the newest lines in the corner; a number is the seconds before each fades.
+std::string edit_chat_hold(Session &s, std::string_view argument) {
+    float value{};
+    if (argument != "always") {
+        const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !std::isfinite(value) ||
+            value < chat_hold_least || value > chat_hold_most)
+            return "Chat hold is a number of seconds from 3 to 120, or always.";
+    }
+    s.chat_hold = value;
+    profile_runtime::set_local_values({{"ChatHold", static_cast<double>(value)}});
+    publish_chat(s);
+    return value == 0.f ? "Chat stays up: the newest lines stay until newer ones push them out."
+                        : "Chat lines stay " + std::to_string(static_cast<int>(value)) + " seconds before they fade.";
+}
 std::string edit_player_distance(Session &s, std::string_view argument) {
     float value{};
     const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
@@ -615,7 +630,7 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
     if (launcher::offline_mode() && !own_mark_command(action)) return false;
     if ((action != "host" && action != "host-config" && action != "join" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
-         action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
+         action != "nametags" && action != "chat-visible" && action != "chat-filter" && action != "chat-hold" &&
          action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" && action != "vote" && action != "voice-chat" &&
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
@@ -824,7 +839,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             {"nametag-distance", edit_nametag_distance}, {"nametag-dots", edit_nametag_dots},
             {"nametags-friends", edit_nametags_friends}, {"player-distance", edit_player_distance}, {"direct-connections", edit_direct_connections}, {"pose-dump", start_pose_dump},
             {"mark-tag", edit_own_tag}, {"mark-items", edit_own_items}, {"mark-style", edit_mark_style},
-            {"chat-visible", edit_chat_visible}, {"chat-filter", edit_chat_filter},
+            {"chat-visible", edit_chat_visible}, {"chat-filter", edit_chat_filter}, {"chat-hold", edit_chat_hold},
             {"chat-bubbles", edit_chat_bubbles}, {"chat-bubbles-own", edit_chat_bubbles_own},
             {"chat-bubbles-distance", edit_chat_bubbles_distance},
             {"chat-bubbles-duration", edit_chat_bubbles_duration},

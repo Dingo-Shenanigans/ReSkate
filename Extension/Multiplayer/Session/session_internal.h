@@ -282,6 +282,7 @@ struct Session {
     std::uint64_t next_shown_rank{};
     bool nametag_dots = true, nametags_friends{};
     bool chat_filter = true;     // bad words in chat show as **** (Engine/Core/Text/word_filter.h)
+    float chat_hold = chat_hold_default; // seconds a closed chat line stays; 0: always (chat_overlay.cpp)
     // Chat bubbles above each skater's head (Hud/custom_nametags.h, nametag_overlay.cpp).
     bool chat_bubbles = true, chat_bubbles_own{};
     float chat_bubbles_distance = 40.f, chat_bubbles_duration = 5.f;

@@ -236,6 +236,7 @@ void publish(Session &s, const NativeFrame *local) {
     view.nametags_friends = s.nametags_friends;
     view.chat_visible = s.chat_visible;
     view.chat_filter = s.chat_filter;
+    view.chat_hold = s.chat_hold;
     view.chat_bubbles = s.chat_bubbles;
     view.chat_bubbles_own = s.chat_bubbles_own;
     view.chat_bubbles_distance = s.chat_bubbles_distance;
@@ -542,6 +543,7 @@ void publish_chat(Session &s) {
     signature.add(static_cast<std::uint64_t>(s.server_admin));
     signature.add(static_cast<std::uint64_t>(s.chat_visible));
     signature.add(static_cast<std::uint64_t>(s.chat_filter));
+    signature.add(static_cast<std::uint64_t>(s.chat_hold * 1000.f));
     signature.add(static_cast<std::uint64_t>(s.game_menu));
     for (const auto &peer : active_peers(s))
         if (listed(peer)) signature.add(peer.member.name.empty() ? s.transport.name(peer.member.id) : peer.member.name);
@@ -580,6 +582,7 @@ void publish_chat(Session &s) {
     // Hidden chat is not offered at all: no lines on screen and T does nothing. A game menu
     // (or the game's hidden UI) also closes an open chat box.
     view.available = (s.mode == Mode::host || s.mode == Mode::join) && s.chat_visible && !s.game_menu;
+    view.hold = s.chat_hold;
     view.latest = s.chat.empty() ? 0 : s.chat.back().sequence;
     if (dedicated && s.vote.id) {
         auto &vote = view.vote;
