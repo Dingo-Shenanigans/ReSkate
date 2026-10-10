@@ -361,13 +361,20 @@ bool Tracker::update(const Sample &s) {
         {
             float torso = std::max({bone_change_[2], bone_change_[3], bone_change_[4]}), any = 0;
             for (const float c : bone_change_) any = std::max(any, c);
-            if (off_board && (torso >= config_.hit_torso || any >= config_.hit_any)) hit_time_ = s.time;
+            if (off_board && (torso >= config_.hit_torso || any >= config_.hit_any)) {
+                // The pace the body had when this hit began (it decays fast once the body stops).
+                hit_peak_ = hit_time_ >= 0 && s.time - hit_time_ < 0.25 ? std::max(hit_peak_, recent_peak_speed_) : recent_peak_speed_;
+                hit_time_ = s.time;
+            }
             // A body that falls hard and smashes into something is a crash at that instant, as Skate 3
             // starts its Hall of Meat on the bail: no waiting for it to lie flat.
             // It must have landed: the fall stopped dead and the body lost much of its speed (a dive
             // or a glide that brushes something keeps sinking and flying).
             slam_now_ = off_board && s.bones_valid && !s.upright && hard_fall_time_ >= 0 && s.time - hard_fall_time_ <= 0.3 &&
-                        (torso >= 6.0f || any >= 12.0f) && hips_velocity_[1] > -2.0f && body_speed_ < 0.6f * recent_peak_speed_;
+                        (torso >= 6.0f || (any >= 12.0f && recent_peak_speed_ >= 9.0f)) && hips_velocity_[1] > -2.0f &&
+                        body_speed_ < 0.6f * recent_peak_speed_;
+            // (A hand or foot knocking a ledge at walking pace is climbing or rolling, not a slam: skate.
+            // drives those on foot through its ragdoll too.)
             for (std::size_t i = 0; i < 19; ++i)
                 if (bone_hit_[i] > 0 && (s.time - recent_hit_time_[i] > 3.0 || bone_hit_[i] >= recent_hit_[i])) {
                     recent_hit_[i] = bone_hit_[i];
@@ -385,7 +392,9 @@ bool Tracker::update(const Sample &s) {
         const bool supported = (free_fall_time_ < 0 || s.time - free_fall_time_ > 0.25) && hips_velocity_[1] < 1.0f;
         // Straight after a bail ends the next crash needs no re-arming: it carries that bail on.
         const bool may_start = armed_ || (ended_at_ >= 0 && s.time - ended_at_ <= 1.5);
-        const bool thrown = may_start && grounded && stopping && came_down && supported && down_since_ >= 0 && s.time - down_since_ >= config_.down_time &&
+        // Thrown down: it needs some pace behind it (a roll or a climb on foot goes down slowly).
+        const bool thrown = may_start && hit_peak_ >= 4.5f && grounded && stopping && came_down && supported && down_since_ >= 0 &&
+                            s.time - down_since_ >= config_.down_time &&
                             hit_time_ >= 0 && s.time - hit_time_ <= 0.8 && hit_time_ >= down_since_ - 0.4;
         // Coming off the board, skate. switches the skater's pose over in a tick or two: that jump is
         // no impact. Crashes at that moment are the knocked-off and crash-landing cases below.
