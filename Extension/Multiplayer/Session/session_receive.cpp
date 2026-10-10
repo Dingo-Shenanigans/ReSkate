@@ -257,9 +257,11 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
         return;
     s.roster_sequence = p.sequence;
     s.server_admin = false;
+    s.server_local = false;
     for (const auto &m : p.members)
         if (m.id == s.transport.status().local_id) {
             s.server_admin = m.admin && game_server_steam_id(s.host_id);
+            s.server_local = m.local && game_server_steam_id(s.host_id);
             set_local_party(s, m);
             s.local_speeding = m.speeding && game_server_steam_id(s.host_id);
             if (m.scoring && !s.local_scoring) add_chat(s, 0, "ReSkate", own_scoring_notice());

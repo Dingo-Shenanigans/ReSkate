@@ -646,6 +646,7 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     if (marks && vouched && (local ? own_tag_shown() : shows_tag(*peer)))
         if (const auto mark = identity_mark(sender)) return mark_role(*mark);
     if (dedicated && (local ? s.server_admin : peer && peer->member.admin)) return {nametag_admin, "Admin"};
+    if (dedicated && (local ? s.server_local : peer && peer->member.local)) return {nametag_local, "Local"};
     if (!dedicated && (local ? s.mode == Mode::host : sender == s.host_id)) return {nametag_host, "Host"};
     if (!local && vouched) {
         refresh_friends(s);

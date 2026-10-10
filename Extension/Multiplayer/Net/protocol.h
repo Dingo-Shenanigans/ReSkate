@@ -26,7 +26,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 46;
+constexpr std::uint16_t protocol_version = 47;
 // A dedicated server's chat lines unless its owner says otherwise: violet (#8E5CFF) and lavender (#D9C8FF).
 inline constexpr std::uint32_t default_server_chat_badge = 0xffff5c8eU, default_server_chat_text = 0xffffc8d9U;
 constexpr std::size_t max_throwdown_message = 4096;
@@ -177,6 +177,7 @@ struct Member {
     std::uint64_t id{}, epoch{};
     std::string name;
     bool admin{}; // roster: may change a dedicated server's settings
+    bool local{}; // roster: a Local of the dedicated server, a rank its admins give out
     // roster: the player's party (0 = none), whether they lead it, and (on the leader) whether
     // anyone may join it. Each party has exactly one leader.
     std::uint32_t party{};

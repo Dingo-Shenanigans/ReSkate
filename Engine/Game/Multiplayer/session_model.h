@@ -101,7 +101,7 @@ struct MultiplayerChatLine {
     std::string name, text;
     bool local{};               // sent by this player
     // The sender's role, as their nametag shows it: its colour (IM_COL32 layout, 0 = none)
-    // and a tag shown in a box before the name ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend", "Server" or empty).
+    // and a tag shown in a box before the name ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Local", "Host", "Friend", "Server" or empty).
     std::uint32_t color{};
     std::string tag;
     // With the chat filter on, `text` is masked and this is the line as sent (same length), so

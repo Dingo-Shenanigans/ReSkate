@@ -119,6 +119,16 @@ int run() {
         save_config(kept);
         const auto back = load_config(file);
         check(back.reserved == std::vector<std::uint64_t>{vip} && text(file).find("\"reserved_slots\"") == std::string::npos, "Reserved slots were not kept");
+        // Locals: a rank the admins give out, kept with the admins.
+        kept.locals = {vip2};
+        save_config(kept);
+        check(load_config(file).locals == std::vector<std::uint64_t>{vip2}, "Locals were not kept");
+        const auto refused_locals = [](const ServerConfig &c) { return config_error(c).find("locals") != std::string::npos; };
+        ServerConfig ranked;
+        ranked.locals = {vip2};
+        check(!refused_locals(ranked), "Valid locals were refused");
+        ranked.locals = {vip2, 42};
+        check(refused_locals(ranked), "A Local that is not a player was accepted");
         save_config(reloaded);
     }
     // object_limit: 100 unless set (0 is no limit), and kept on a rewrite.
