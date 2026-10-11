@@ -190,11 +190,10 @@ struct StyleRotation {
 };
 // The load of the trick that the editor shows. A new trick starts a new load.
 struct EditorLoad {
-    enum class Phase : std::uint8_t { none, loading, recording, failed, ready };
+    enum class Phase : std::uint8_t { none, loading, failed, ready };
     std::uint8_t trick{};
     Phase phase{};
-    int attempt{};      // recordings of the game's demonstration started for this trick
-    std::string reason; // why the last attempt failed. Empty: no failure
+    std::string reason; // why the load failed
     bool operator==(const EditorLoad &) const = default;
 };
 struct StyleModel {
@@ -213,6 +212,7 @@ struct StyleModel {
     BlendOuts blend_outs;
     Pace pace{even_pace}; // the shown clip's pop, fall and landing
     std::uint64_t clips{}; // the tricks that have a clip, one bit for each trick
+    std::uint64_t outdated_clips{}; // the clips that a newer recording would replace
     EditorLoad editor_load;
     bool operator==(const StyleModel &) const = default;
 };

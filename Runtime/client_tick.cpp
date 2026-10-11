@@ -24,6 +24,10 @@
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/style_editor.h"
 #include "Extension/Skater/style_stage.h"
+#include "Extension/Skater/trick_pad.h"
+#include "Extension/Skater/style_capture.h"
+#include "Extension/Skater/trick_recorder.h"
+#include "Extension/Skater/trick_stage.h"
 #include "Extension/Skater/style_layer.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
@@ -1035,6 +1039,10 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
                 GetTickCount64() < r.named_settings_wanted_until.load(std::memory_order_relaxed));
             dingosdk::style_editor::tick(r.base,client,multiplayer_ready);
             dingosdk::style_stage::tick(r.base,multiplayer_ready);
+            dingosdk::trick_pad::tick();
+            dingosdk::trick_stage::tick(r.base, client, multiplayer_ready);
+            dingosdk::trick_recorder::tick(r.base, multiplayer_ready);
+            dingosdk::style_capture::tick(r.base, client, multiplayer_ready);
         }
         {
             DINGO_PROFILE_ZONE("tick/trainer");

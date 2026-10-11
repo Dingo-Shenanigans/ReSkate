@@ -3,20 +3,15 @@
 #include <functional>
 #include <string>
 
-// The style editor's stage: the game's Skatepedia, opened through the pause menu. Solo play. The game window needs the keyboard.
+// The style editor's stage: the character room of the game's menu, opened on its Skaters page. Its backdrop is plain, not the
+// HUB page's season art. Solo play.
 namespace dingosdk::style_stage {
-// Opens Skatepedia if it is closed, then calls `then` on the client thread when its stage exists.
+// Opens the menu's Skaters page if it is closed, then calls `then` on the client thread when the room's skater shows.
 void open(std::function<void()> then);
-// Closes the game's menu and Skatepedia, and returns to the world. Any thread.
+// Closes the game's menu and returns to the world. Any thread.
 void leave() noexcept;
-// Makes Skatepedia's skater perform this trick, so that the editor can learn the clip. Skatepedia must be open.
-void fetch(std::uint8_t trick);
-// Stops the fetch of a trick. The highlighted entry stays.
-void cancel_fetch();
-// Sets the board-only entry (true), or restores the highlighted entry. Returns false on failure. Client thread only.
-bool park(std::uintptr_t base, bool park) noexcept;
-// The flip trick that Skatepedia shows, 0 for none. `title` gets the highlighted entry's name, empty when Skatepedia is closed.
-[[nodiscard]] std::uint8_t shown_trick(std::uintptr_t base, std::string *title = nullptr) noexcept;
+// True when no open and no leave is in progress. Any thread.
+[[nodiscard]] bool idle() noexcept;
 // Client thread only, after the native client tick.
 void tick(std::uintptr_t base, bool ready) noexcept;
 } // namespace dingosdk::style_stage

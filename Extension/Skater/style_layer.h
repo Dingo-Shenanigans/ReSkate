@@ -43,9 +43,12 @@ void request_restyle(bool restyle);
 [[nodiscard]] bool restyling() noexcept;
 // The replayed trick on screen and its timeline time. Thread-safe.
 [[nodiscard]] style::Playhead replay_playhead() noexcept;
-// Records all other rigs for one loop of Skatepedia's demonstration, or 10 s at most.
-// `at_switch`: the demonstration started at the recording's start, so the first restart ends the loop.
-void request_learn(bool at_switch);
+// Records the local skater and the boards for 4 s. The local skater shows the game's own animation meanwhile, without the style.
+void request_recording();
+// The local skater's pose holder, as the recording names it. 0 before the skater is followed.
+[[nodiscard]] std::uintptr_t local_holder() noexcept;
+// The local skater's physics state and FlipTrickType (-1 none), as last read. False before the skater is followed.
+bool local_trick(std::uint32_t &state, std::int32_t &flip) noexcept;
 [[nodiscard]] bool enabled() noexcept;
 [[nodiscard]] bool sharing() noexcept;
 // Presets are named style files. `action`: load, new (an empty preset), copy (the style in use, under a new name),

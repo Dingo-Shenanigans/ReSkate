@@ -109,7 +109,12 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/style_layer.cpp
     Extension/Skater/style_commands.cpp
     Extension/Skater/style_editor.cpp
+    Extension/Skater/style_capture.cpp
     Extension/Skater/style_stage.cpp
+    Extension/Skater/trick_pad.cpp
+    Extension/Skater/trick_gestures.cpp
+    Extension/Skater/trick_stage.cpp
+    Extension/Skater/trick_recorder.cpp
     Extension/Skater/style_takes.cpp
     Extension/Skater/style_file.cpp
     Extension/Skater/style_skeleton.cpp

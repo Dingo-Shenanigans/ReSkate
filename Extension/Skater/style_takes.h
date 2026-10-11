@@ -17,26 +17,40 @@ struct ClipFrame {
     // Timeline time: 0 to 3 in the trick, seconds below 0 before the flick, 3 plus seconds after the end.
     float time = -1;
     std::uint32_t at{}; // milliseconds from the clip's first frame
-    std::uint32_t recorded{}; // `at` on the recording clock, before unwarp. Not saved
-    // The game's camera for this frame (rows: right, up, backward, position). fov is 0 when not recorded.
-    std::array<float, 16> view{};
-    float fov{};
     std::vector<Transform> rig; // the joints of the game's board
+};
+// A clip keeps this long before the flick and after the touchdown.
+inline constexpr std::uint32_t lead_ms = 800, follow_ms = 800;
+// Everything that shapes a recorded clip. Its key is the one value that tells whether a clip is current: a clip whose key
+// differs from the current recipe's key has a newer recording available. Raise recipe_version for a change that no field
+// shows, such as a change to the recorder's steps, the trick stage or the cut.
+inline constexpr std::uint32_t recipe_version = 2;
+struct Recipe {
+    std::uint32_t version{recipe_version};
+    std::string game;                     // the game's Steam build: its animations and gestures
+    std::uint32_t flick_ms{}, still_ms{}; // the scripted pad's flick, and the still time before it
+    std::uint32_t lead_ms{style::lead_ms}, follow_ms{style::follow_ms};
+};
+// The recipe as one line of text, the input of its key.
+[[nodiscard]] std::string recipe_text(const Recipe &recipe);
+// 64-bit FNV-1a of the recipe's text.
+[[nodiscard]] std::uint64_t recipe_key(const Recipe &recipe);
+// How a clip was recorded.
+struct Capture {
+    std::uint64_t key{};         // recipe_key of the recipe
+    std::string recipe;          // recipe_text, for people. At most 95 characters
+    std::string reskate;         // the ReSkate version that recorded it. Not in the key: a release that records the same keeps its clips
+    std::uint64_t recorded_at{}; // seconds since 1970
+    bool operator==(const Capture &) const = default;
 };
 struct Clip {
     std::uint8_t trick{};
-    bool learned{}; // learned from Skatepedia's demonstration
     std::vector<ClipFrame> frames;
+    Capture capture;
     std::uint32_t began{}; // the recording-clock time of the first frame. Not saved
 };
-// A root move longer than this between two frames is a jump of the demonstration back to its start.
-// The laser flip's demonstration starts again only 0.9 m from where it ends.
-inline constexpr float teleport_metres = 0.5f;
-
 // Sets the exact timeline time of each frame from its part number. Returns false if the trick has no catch or no landing.
 bool retime(Clip &clip);
-// The game slows parts of its demonstration. Rewrites frame times from ground distance at constant roll speed. False if not possible.
-bool unwarp(Clip &clip);
 // The pose at a timeline time, blended between the two frames around it.
 [[nodiscard]] Pose sample(const Clip &clip, float time);
 // `a` moved by `amount` (0 to 1) toward `b`. Poses of different shapes give `a`.
@@ -47,10 +61,14 @@ bool unwarp(Clip &clip);
 [[nodiscard]] float ms_at(const Clip &clip, float time) noexcept;
 [[nodiscard]] std::uint32_t duration(const Clip &clip) noexcept;
 
-// A clip as a file. decode_clip throws on invalid data. A file of another version is refused, and the editor learns that clip again.
-inline constexpr std::uint32_t clip_version = 6;
+// A clip as a file. decode_clip throws on invalid data. A file of another format version is refused: record that trick again.
+inline constexpr std::uint32_t clip_version = 8;
 [[nodiscard]] std::vector<std::uint8_t> encode_clip(const Clip &clip);
 [[nodiscard]] Clip decode_clip(std::span<const std::uint8_t> bytes);
+// The capture of a clip file from its first clip_header_bytes, without reading the frames. Nothing for a file of
+// another format version.
+inline constexpr std::size_t clip_header_bytes = 176;
+[[nodiscard]] std::optional<Capture> clip_capture(std::span<const std::uint8_t> head);
 
 // One frame of another character's pose as read from the game: parent-local joints.
 struct RigFrame {
@@ -66,7 +84,7 @@ struct RigJoints {
 [[nodiscard]] Transform world(const std::vector<Transform> &joints, std::span<const std::int32_t> parents, std::size_t joint);
 [[nodiscard]] Transform compose(const Transform &parent, const Transform &child) noexcept;
 [[nodiscard]] Transform inverse(const Transform &transform) noexcept;
-// Cuts one jump from a recording of Skatepedia's skater. `board` is a live board pose, entity transform first. Sets `why` on failure.
+// Cuts one jump from a recording of a skater. `board` is a live board pose, entity transform first. Sets `why` on failure.
 std::optional<Clip> clip_from_capture(std::uint8_t trick, const std::vector<RigFrame> &frames, const RigJoints &joints,
                                       const std::vector<Transform> &board, const Transform &deck_to_board, std::string &why);
 } // namespace dingosdk::style

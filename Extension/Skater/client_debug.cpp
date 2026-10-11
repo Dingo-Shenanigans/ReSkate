@@ -9,6 +9,7 @@
 #include "Engine/Game/Skater/velocity_boost.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
+#include "Extension/Skater/style_capture.h"
 #include "Extension/Skater/style_editor.h"
 #include "Extension/Skater/style_stage.h"
 #include "Engine/Game/Build/addresses.h"
@@ -144,26 +145,6 @@ void debug_restore_camera(SourceTrial& trial, std::uintptr_t client, bool phase,
 void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bool phase,
     const overlay::FlightInput* input, DWORD error, std::optional<SourceCameraSnapshot>& taken) {
     auto& debug = trial.debug;
-    // Skatepedia's camera is noted while its demonstration plays, also behind the editor's own.
-    static std::uintptr_t game_camera, game_camera_vtable;
-    // The stage goes for a moment on each loop of the demonstration, so only a world change forgets the camera.
-    if (!ready) game_camera = game_camera_vtable = 0;
-    else if (style_editor::wants_view()) {
-        try {
-            if (!debug.camera_owned)
-                if (const auto seen = source_camera_snapshot(trial, client);
-                    seen.active && first_person_read(seen.active, &game_camera_vtable, sizeof(game_camera_vtable)))
-                    game_camera = seen.active;
-            std::uintptr_t vtable{};
-            std::array<float, 16> matrix{};
-            float fov{};
-            // The game can free its camera while the editor holds the view, so its type must not change.
-            if (game_camera && first_person_read(game_camera, &vtable, sizeof(vtable)) && vtable == game_camera_vtable &&
-                first_person_read(game_camera + addr::style::camera_transform, matrix.data(), sizeof(matrix)) &&
-                first_person_read(game_camera + camera_fov_offset, &fov, sizeof(fov)))
-                style_editor::note_view(matrix, fov);
-        } catch (...) {}
-    }
     const auto now = source_flight_now();
     const auto elapsed = std::clamp(now - debug.flight_time, 0.0, .05);
     debug.flight_time = now;
@@ -240,6 +221,8 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         }
     } else if (debug.style_editor && style_editor::camera_pose(next)) {
         // The style editor's camera circles its stand-in.
+    } else if (style_capture::camera_pose(next)) {
+        // A capture on the trick stage shows the skater at the style editor's angle.
     } else {
         next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
     }
@@ -407,7 +390,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
     }
     if (request.action == overlay::DebugAction::set_style_editor) {
         if (request.enabled == debug.style_editor) return;
-        // The open went into Skatepedia first, so a refused open leaves it.
+        // The open went into the menu first, so a refused open leaves it.
         if (request.enabled && (debug.park_editor || !can_control || !phase)) {
             style_editor::request_hide();
             style_stage::leave();
@@ -426,7 +409,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         const auto restore = [&] {
             debug.style_editor = false;
             style_editor::screen_open(false);
-            // However the screen closes, its skater goes, and the game returns to the world: Skatepedia is only the editor's stage.
+            // However the screen closes, its skater goes, and the game returns to the world: the menu is only the editor's stage.
             style_editor::request_hide();
             style_stage::leave();
             if (debug.style_editor_saved_fov > 0 && debug.camera_owned && debug.camera_identity.camera)

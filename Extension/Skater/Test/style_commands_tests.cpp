@@ -3,6 +3,8 @@
 #include "Extension/Skater/style_editor.h"
 #include "Extension/Skater/style_stage.h"
 #include "Extension/Skater/style_layer.h"
+#include "Extension/Skater/trick_recorder.h"
+#include <format>
 #include <iostream>
 
 namespace {
@@ -74,11 +76,35 @@ void request_auto_save(bool on) { calls.auto_save = on; }
 bool auto_saving() noexcept { return calls.auto_save; }
 bool enabled() noexcept { return calls.enabled; }
 bool sharing() noexcept { return calls.share; }
+bool local_trick(std::uint32_t &state, std::int32_t &flip) noexcept { return state = 100, flip = -1, true; }
 std::string status() { return "status line"; }
 } // namespace dingosdk::style_layer
+namespace dingosdk::trick_stage {
+void open(bool) { calls.editor = "stage open"; }
+void close() { calls.editor = "stage close"; }
+std::string status() { return "stage status"; }
+bool ready() noexcept { return true; }
+} // namespace dingosdk::trick_stage
+namespace dingosdk::trick_recorder {
+bool start(std::vector<std::uint8_t> tricks, std::string flick, bool, std::string &, bool) {
+    return calls.editor = std::format("record {} tricks from {} {}", tricks.size(), tricks.front(), flick), true;
+}
+void stop() { calls.editor = "record stop"; }
+} // namespace dingosdk::trick_recorder
+namespace dingosdk::style_editor {
+std::uint64_t to_record() { return 1ull << 2 | 1ull << 27; }
+void request_record_always(bool always) { calls.editor = always ? "always on" : "always off"; }
+bool record_always() noexcept { return false; }
+} // namespace dingosdk::style_editor
+namespace dingosdk::trick_recorder {
+std::string status() { return "record status"; }
+} // namespace dingosdk::trick_recorder
 namespace dingosdk::style_stage {
 void open(std::function<void()> then) { then(); }
 } // namespace dingosdk::style_stage
+namespace dingosdk::style_capture {
+void forget_failure(std::uint8_t) noexcept {}
+} // namespace dingosdk::style_capture
 namespace dingosdk::style_editor {
 void request_show(std::uint8_t trick) { calls.editor = "show " + std::to_string(trick); }
 void request_open() { calls.editor = "open"; }
@@ -200,6 +226,11 @@ int main() {
         check(run("style editor close") && calls.editor == "hide" && calls.debug == "closed" && calls.history_cleared,
               "style editor close removes the stand-in, closes the screen and forgets the undo steps");
         check(run("style status") && printed == "status line", "style status prints the status");
+        check(run("style record all") && calls.editor == "record 32 tricks from 1 ", "style record all records every flip trick");
+        check(run("style record kickflip 40") && calls.editor == "record 1 tricks from 2 40", "style record passes one trick and its flick");
+        check(run("style record stop") && calls.editor == "record stop", "style record stop stops the session");
+        check(run("style record outdated") && calls.editor == "record 2 tricks from 2 ", "style record outdated records the missing and outdated clips");
+        check(run("style record always 1") && calls.editor == "always on", "style record always counts every clip as outdated");
     } catch (const std::exception &failure) {
         std::cerr << "FAIL: " << failure.what() << '\n';
         ++failures;

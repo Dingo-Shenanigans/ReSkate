@@ -17,6 +17,14 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
 void clear_remote_network_objects();
 void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch);
 std::string network_object_status();
+// The style stage's objects on `map`. They are made, moved and removed like other players' objects, and never
+// saved. Each call moves them again, even where nothing changed. An empty list removes them. False when the map is
+// not the one being placed on.
+bool set_stage_objects(std::string_view map, std::span<const profile::PlacedObject> objects);
+// The stage object `id` as the game has it, once it exists.
+std::optional<profile::PlacedObject> stage_object(std::uint64_t id);
+// The map objects are placed on now, or nothing when they cannot be placed.
+std::optional<std::string> stage_map();
 // Client update thread, every frame: queues the next of other players' objects
 // while some are still to be created (a no-op otherwise).
 void tick_network_objects() noexcept;

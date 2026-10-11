@@ -1,8 +1,12 @@
 #include "Extension/Console/commands.h"
+#include "style_capture.h"
 #include "style_editor.h"
 #include "style_stage.h"
 #include "style_layer.h"
+#include "trick_recorder.h"
+#include "trick_stage.h"
 #include <algorithm>
+#include <format>
 namespace dingosdk::console {
 void register_style_commands(Commands &registry) {
     const auto on_off = [](const char *name, const char *description, void (*request)(bool), bool (*value)() noexcept) {
@@ -171,8 +175,17 @@ void register_style_commands(Commands &registry) {
                        Group::gameplay, {clip});
     show.run = [clip_of](const Model &, const Values &args, const Output &) { style_editor::request_show(clip_of(args)); };
     registry.add(std::move(show));
+    auto capture = action("style editor capture", "Show a flip trick on the editor screen; with no clip, capture it on the trick stage, also after a failed capture",
+                          Group::gameplay, {clip});
+    capture.run = [clip_of](const Model &, const Values &args, const Output &out) {
+        const auto trick = clip_of(args);
+        if (!trick) return out("Give a flip trick.");
+        style_capture::forget_failure(trick);
+        style_editor::request_show(trick);
+    };
+    registry.add(std::move(capture));
     auto which = argument("trick", Type::text);
-    auto forget = action("style editor forget", "Delete the saved clip of a flip trick, or all clips. The editor learns a deleted clip again", Group::gameplay, {which});
+    auto forget = action("style editor forget", "Delete the saved clip of a flip trick, or all clips. 'style record' records a deleted clip again", Group::gameplay, {which});
     forget.run = [](const Model &, const Values &args, const Output &out) {
         const auto &name = std::get<std::string>(args[0]);
         const auto found = std::find(style::flip_trick_names.begin() + 1, style::flip_trick_names.end(), name);
@@ -247,6 +260,52 @@ void register_style_commands(Commands &registry) {
     takes.execution = Execution::local;
     takes.run = [](const Model &, const Values &, const Output &out) { out(style_editor::status()); };
     registry.add(std::move(takes));
+    auto stage_mode = argument("open|close|status");
+    stage_mode.choices = {"open", "close", "status"};
+    auto stage = action("style stage", "Open or close the trick stage: a plain floor far from the map, for showing tricks", Group::gameplay,
+                        {stage_mode});
+    stage.execution = Execution::local;
+    stage.run = [](const Model &m, const Values &args, const Output &out) {
+        const auto &mode = std::get<std::string>(args[0]);
+        if (mode == "open") {
+            trick_stage::open(m.debug.game_ui_hidden);
+            out("Opening the stage.");
+        } else if (mode == "close") {
+            trick_stage::close();
+            out("Closing the stage.");
+        } else {
+            out(trick_stage::status());
+        }
+    };
+    registry.add(std::move(stage));
+    auto record_trick = argument("trick|all|outdated|stop|status");
+    record_trick.choices.assign(style::flip_trick_names.begin() + 1, style::flip_trick_names.end());
+    record_trick.choices.insert(record_trick.choices.end(), {"all", "outdated", "stop", "status"});
+    auto record_flick = argument("flick ms", Type::text, true);
+    auto record = action("style record",
+                         "Record flip tricks on the trick stage with the scripted pad. Each clip replaces its trick's clip. The stage opens and closes by itself",
+                         Group::gameplay, {record_trick, record_flick});
+    record.execution = Execution::local;
+    record.run = [](const Model &m, const Values &args, const Output &out) {
+        const auto &name = std::get<std::string>(args[0]);
+        if (name == "stop") return trick_recorder::stop(), out("Stopping the recording session.");
+        if (name == "status") return out(trick_recorder::status());
+        std::vector<std::uint8_t> tricks;
+        const auto wanted = name == "outdated" ? style_editor::to_record() : 0;
+        for (std::uint8_t trick = 1; trick < style::flip_trick_names.size(); ++trick)
+            if (name == "all" || name == style::flip_trick_names[trick] || (wanted >> trick & 1)) tricks.push_back(trick);
+        if (tricks.empty()) return out(name == "outdated" ? "Every clip is current." : "error: That is not a flip trick.");
+        std::string error;
+        const auto count = tricks.size();
+        if (!trick_recorder::start(std::move(tricks), args.size() > 1 ? std::get<std::string>(args[1]) : std::string{}, m.debug.game_ui_hidden, error))
+            return out("error: " + error);
+        out(name == "all" ? "Recording every flip trick."
+            : name == "outdated" ? std::format("Recording {} trick(s) with no clip or an outdated one.", count)
+                                 : "Recording the " + name + ".");
+    };
+    registry.add(std::move(record));
+    registry.add(on_off("style record always", "Count every clip as outdated (1), so that 'style record outdated' records all of them. For development",
+                        style_editor::request_record_always, style_editor::record_always));
     auto status = action("style status", "Show whether the style is applied and its counters", Group::gameplay);
     status.execution = Execution::local;
     status.run = [](const Model &, const Values &, const Output &out) { out(style_layer::status()); };

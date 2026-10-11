@@ -522,6 +522,7 @@ void preset_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
 void load_status(Editing& e) {
     using Phase = style::EditorLoad::Phase;
     const auto& load = e.model.style.editor_load;
+    if (e.model.style.outdated_clips >> e.trick_id & 1) note("A newer recording of this trick is available: 'style record outdated'.");
     // The game has not seen the selection yet: a trick with a clip shows at once.
     if (load.trick != e.trick_id) {
         if (!(e.model.style.clips >> e.trick_id & 1)) warn("Loading this trick...");
@@ -534,16 +535,11 @@ void load_status(Editing& e) {
     if (load.phase == Phase::failed) {
         warn("This trick did not load.");
         note(sentence(load.reason).c_str());
-        if (ImGui::Button("Try again")) send_console(e.menu, e.callbacks, "style editor show " + e.trick);
-    } else if (load.phase == Phase::loading || load.phase == Phase::recording) {
-        if (load.reason.empty()) {
-            warn("Loading this trick...");
-            note("A few seconds, the first time only.");
-        } else {
-            // A failed attempt: the next recording has the next number.
-            warn(std::format("Trying again (attempt {})...", load.attempt + (load.phase == Phase::loading ? 1 : 0)).c_str());
-            note(sentence("the last attempt failed: " + load.reason).c_str());
-        }
+        // A trick with no clip is captured again.
+        if (ImGui::Button("Try again"))
+            send_console(e.menu, e.callbacks, std::string(e.model.style.clips >> e.trick_id & 1 ? "style editor show " : "style editor capture ") + e.trick);
+    } else if (load.phase == Phase::loading) {
+        warn("Loading this trick...");
     }
 }
 void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool exit_requested) {
@@ -592,7 +588,7 @@ void draw_style_editor(SkateMenu& menu, const Model& model, const CallbacksV3& c
         ImGui::SetNextItemWidth(-1);
         trick_picker(e);
         if (!e.standing_in) {
-            // A selected trick is shown. A trick without a clip is first fetched from Skatepedia.
+            // A selected trick is shown.
             if (e.now >= menu.styling.closing_until && menu.styling.asked != e.trick) {
                 menu.styling.asked = e.trick;
                 send_console(menu, callbacks, "style editor show " + e.trick);
@@ -767,7 +763,7 @@ void style_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
 
     begin_card(menu, "style-editor", "EDITOR", "Edit each trick of the preset on a timeline.");
     if (primary_button(menu, "Open the style editor", true)) send_console(menu, callbacks, "style editor open");
-    note("A trick that you open for the first time takes a few seconds to load.");
+    note("A trick that has no clip yet is captured first: your skater does it on the trick stage, then the editor opens on it.");
     end_card();
     ImGui::EndChild();
 }

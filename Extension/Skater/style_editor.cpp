@@ -3,14 +3,20 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/style.h"
 #include "style_internal.h"
+#include "style_capture.h"
 #include "style_layer.h"
 #include "style_takes.h"
+#include "trick_pad.h"
+#include "trick_recorder.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Extension/Multiplayer/Remote/native_cosmetics.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
 #include "Extension/Profile/local_profile.h"
+#include "Extension/Profile/local_profile_runtime.h"
+#include "Engine/Game/Build/supported_build.h"
+#include "reskate_version.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include <windows.h>
 #include <algorithm>
@@ -18,6 +24,7 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <ctime>
 #include <cmath>
 #include <filesystem>
 #include <format>
@@ -38,41 +45,28 @@ constexpr float loop_blend_ms = 250;
 // A held clip eases to a new moment with this time constant, so a scrub or a frame step does not jump.
 constexpr float ease_ms = 45;
 constexpr float frame_ms = 1000.0f / 60.0f;
-// Measured 2026-10-04: the position of Skatepedia's skater on its stage.
-constexpr auto &skatepedia_room = addr::style::skatepedia_stage, &skatepedia_reach = addr::style::skatepedia_stage_reach;
+constexpr auto &menu_room = addr::style::menu_room;
 
 struct State {
     std::mutex mutex;
     // Requests.
     std::optional<std::uint8_t> show; // the trick to show. 0 clears the stand-in
     bool hide{};
-    std::uint64_t retry_after{}; // the earliest time for the next learn attempt
-    std::uint8_t learn{}; // the trick that the current recording is for
-    // One clip for each trick, learned from Skatepedia's demonstration. Read from disk on first use.
+    std::uint8_t recording{}; // the trick that the current recording is for
+    std::uint8_t record{};    // a recording of the local skater to start
+    std::uint32_t flick_ms{}; // the flick of the recording
+    std::int32_t local_flip{-1}; // the last flip trick the local skater did during the recording
+    bool local_did{};            // the local skater did the recorded trick
+    std::string failure;         // why the last take was not kept
+    std::optional<Recorded> recorded; // the end of the last recording
+    // One clip for each trick, recorded on the trick stage. Read from disk on first use.
     std::map<std::uint8_t, Clip> references;
-    std::uint64_t on_disk{}, learned{}; // one bit for each trick
-    bool listed{};
-    std::uint64_t stage_until{}, next_named{};
-    // Samples of the game's camera, on the recording clock.
-    struct View {
-        std::uint32_t at{};
-        std::array<float, 16> matrix{};
-        float fov{};
-    };
-    std::vector<View> views;
-    // The recorded fov of the shown clip. 0 when the clip has no camera.
-    float view_fov{};
+    std::uint64_t on_disk{}, outdated{}; // one bit for each trick. outdated: a newer recording is available
+    bool listed{}, record_always{};      // record_always: every clip counts as outdated (for development)
+    std::uint64_t stage_until{};
     std::uint8_t framed{}; // the trick that last set the initial camera framing
-    std::uint8_t named{}; // the trick that Skatepedia highlights
-    std::uint64_t next_park{};
-    bool parked{}; // Skatepedia shows the board-only entry
-    bool open{};   // Skatepedia was open at the last check
-    std::uint8_t fetching{}; // the trick to show when its clip is learned
-    std::uint64_t named_since{}, named_seen{};
-    bool spoiled{};   // the highlight moved during the recording
-    bool switched{};  // the editor changed Skatepedia's trick, and the next learn starts at that change
     int forget{-1};   // the trick whose clip to delete. 0 is all, -1 is none
-    std::uint64_t demos_wanted{}; // learned clips that the layer does not have yet, one bit for each trick
+    std::uint64_t demos_wanted{}; // clips that the layer does not have yet, one bit for each trick
     // Playback, in milliseconds of the shown clip.
     std::optional<Clip> shown;
     bool playing{true};
@@ -123,31 +117,36 @@ void tell(overlay::NoticeLevel level, const std::string &text) {
     logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {}.", text);
     overlay::notify(level, "Style editor", text + ".");
 }
-// An attempt to get the clip of `trick` failed. Only the load of that trick shows it.
-void attempt_failed(State &s, std::uint8_t trick, std::string reason) {
-    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: could not learn the {}: {}.", style::flip_trick_names[trick], reason);
-    if (s.load.trick != trick || s.load.phase == Phase::ready || s.load.phase == Phase::failed) return;
-    s.load.phase = Phase::loading;
-    s.load.reason = std::move(reason);
+// A take of `trick` was not kept.
+void take_failed(State &s, std::uint8_t trick, std::string reason) {
+    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the take of the {} was not kept: {}.", style::flip_trick_names[trick], reason);
+    s.failure = std::move(reason);
 }
-// Stops the learn and the fetch of a trick that the menu no longer selects.
-void drop_fetch(State &s) {
-    s.learn = s.fetching = 0;
-    s.spoiled = false;
-    s.retry_after = 0;
+// The recipe of a recording with this flick, on this game build.
+style::Recipe recipe(std::uint32_t flick_ms) {
+    return {style::recipe_version, std::string(supported_build::steam_build_id), flick_ms, trick_recorder::still_ms};
 }
-// Finds the tricks that have a learned clip on disk.
+// True if a clip has the key of the recordings that `style record` makes now.
+bool current(const style::Capture &capture) {
+    static const auto key = style::recipe_key(recipe(trick_pad::default_flick_ms));
+    return capture.key == key;
+}
+// The clips that a new recording would replace.
+std::uint64_t stale(const State &s) { return s.record_always ? s.on_disk : s.outdated; }
+// Finds the tricks that have a clip on disk, and the clips that are outdated.
 void list(State &s) {
     s.listed = true;
+    s.record_always = profile_runtime::local_preference("Style.RecordAlways").value_or(false);
     for (std::uint8_t trick = 1; trick < style::flip_trick_names.size(); ++trick) {
         std::ifstream file(file_of(trick), std::ios::binary);
-        std::array<std::uint32_t, 4> head{}; // magic, version, trick, learned
-        // Only a clip learned from Skatepedia's demonstration counts.
-        if (!file.read(reinterpret_cast<char *>(head.data()), sizeof(head)) || !head[3] || head[1] != style::clip_version) continue;
+        std::array<std::uint8_t, style::clip_header_bytes> head{};
+        if (!file.read(reinterpret_cast<char *>(head.data()), head.size())) continue;
+        const auto capture = style::clip_capture(head);
+        if (!capture) continue;
         s.on_disk |= 1ull << trick;
-        s.learned |= 1ull << trick;
+        if (!current(*capture)) s.outdated |= 1ull << trick;
     }
-    s.demos_wanted = s.learned;
+    s.demos_wanted = s.on_disk;
 }
 // Copies the trucks and wheels of the game's board into the shown board. Returns the anchor distance on the first frame, or -1 if unused.
 float use_game_board(Clip &clip) {
@@ -165,6 +164,20 @@ float use_game_board(Clip &clip) {
             board[joint + 1].rotation = frame.rig[joint].rotation;
         }
     }
+    if (apart < 0) return apart;
+    // The board turns with the game's board, with its offset at the first frame. The skater's deck joint turns back after a trick
+    // that turns the board half a turn, so the board would swing back on the catch; the game's board lands turned.
+    const auto to_board = style::compose(style::inverse(clip.frames.front().rig[1]), clip.frames.front().pose.board.front());
+    for (auto &frame : clip.frames) {
+        auto &board = frame.pose.board;
+        const auto from_deck = board.front();
+        auto turned = style::compose(frame.rig[1], to_board);
+        turned.scale = from_deck.scale;
+        auto anchor = style::compose(turned, style::compose(style::inverse(from_deck), board[2]));
+        anchor.scale = board[2].scale;
+        board.front() = turned;
+        board[2] = anchor;
+    }
     return apart;
 }
 const Clip *reference(State &s, std::uint8_t trick) {
@@ -179,8 +192,7 @@ const Clip *reference(State &s, std::uint8_t trick) {
         return &(s.references[trick] = std::move(clip));
     } catch (const std::exception &failure) {
         s.on_disk &= ~(1ull << trick);
-        s.learned &= ~(1ull << trick);
-        attempt_failed(s, trick, std::format("the saved clip could not be read ({})", failure.what()));
+        if (s.load.trick == trick) s.load = {trick, Phase::failed, std::format("the saved clip could not be read ({})", failure.what())};
         return nullptr;
     }
 }
@@ -200,15 +212,14 @@ void keep(State &s, Clip clip) {
         }
         if (!MoveFileExW(temporary.c_str(), file_of(trick).c_str(), MOVEFILE_REPLACE_EXISTING)) throw std::runtime_error("the file replace failed");
         s.on_disk |= 1ull << trick;
+        s.outdated = current(clip.capture) ? s.outdated & ~(1ull << trick) : s.outdated | 1ull << trick;
     } catch (const std::exception &failure) {
         tell(overlay::NoticeLevel::warning, std::format("Could not save the {} clip: {}", style::flip_trick_titles[trick], failure.what()));
     }
-    if (clip.learned) s.learned |= 1ull << trick;
-    else s.learned &= ~(1ull << trick);
     s.references[trick] = std::move(clip);
     // The layer rebuilds its demo frames from the current clips.
     style_layer::clear_demos();
-    s.demos_wanted = s.learned;
+    s.demos_wanted = s.on_disk;
 }
 // The sample nearest to `when` within 60 ms, or null. Samples have a millisecond time `at`.
 template <class Sample> const Sample *nearest_at(const std::vector<Sample> &samples, std::uint32_t when) noexcept {
@@ -221,19 +232,17 @@ template <class Sample> const Sample *nearest_at(const std::vector<Sample> &samp
         }
     return nearest;
 }
-// Makes the clip of the trick from the layer's recording of Skatepedia's demonstration.
-void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<std::uint8_t> &recorded) {
-    const auto trick = std::exchange(s.learn, std::uint8_t{});
+// Makes the trick's clip from the layer's recording of the local skater and the boards.
+void take(State &s, const multiplayer::NativeFrame &local, const std::vector<std::uint8_t> &recorded) {
+    const auto trick = std::exchange(s.recording, std::uint8_t{});
     const auto rig = style_layer::rig();
     if (!trick) return;
-    if (!rig.parents) {
-        attempt_failed(s, trick, "the skater skeleton is not read yet");
-        return;
-    }
+    if (!rig.parents) return take_failed(s, trick, "the skater skeleton is not read yet");
     struct Bone {
         std::array<float, 4> scale, rotation, position;
     };
-    std::map<std::uint64_t, std::vector<style::RigFrame>> rigs, boards;
+    std::vector<style::RigFrame> skater;
+    std::map<std::uint64_t, std::vector<style::RigFrame>> boards;
     for (std::size_t at = 0; at + 24 <= recorded.size();) {
         std::uint64_t header[3];
         std::memcpy(header, recorded.data() + at, sizeof(header));
@@ -241,23 +250,25 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         const auto count = static_cast<std::size_t>(header[2]);
         if (count > 512 || at + count * sizeof(Bone) > recorded.size()) break;
         // A small rig is a skateboard. Its recorded scale can be the hidden scale, so it gets 1.
-        const bool skater = count == rig.parents->size();
-        if (skater || (count >= 2 && count <= 32)) {
+        const bool is_skater = count == rig.parents->size();
+        if (is_skater || (count >= 2 && count <= 32)) {
             style::RigFrame frame{static_cast<std::uint32_t>(header[0]), {}};
             frame.joints.reserve(count);
             for (std::size_t i = 0; i < count; ++i) {
                 Bone bone;
                 std::memcpy(&bone, recorded.data() + at + i * sizeof(Bone), sizeof(Bone));
                 frame.joints.push_back({{bone.position[0], bone.position[1], bone.position[2]}, style::normalized(bone.rotation),
-                                        skater ? std::array<float, 3>{bone.scale[0], bone.scale[1], bone.scale[2]} : std::array<float, 3>{1, 1, 1}});
+                                        is_skater ? std::array<float, 3>{bone.scale[0], bone.scale[1], bone.scale[2]} : std::array<float, 3>{1, 1, 1}});
             }
-            (skater ? rigs : boards)[header[1]].push_back(std::move(frame));
+            (is_skater ? skater : boards[header[1]]).push_back(std::move(frame));
         }
         at += count * sizeof(Bone);
     }
-    if (rigs.empty()) {
-        attempt_failed(s, trick, "Skatepedia's skater was not on screen");
-        return;
+    if (skater.empty()) return take_failed(s, trick, "the skater was not recorded");
+    if (!s.local_did || s.local_flip != trick) {
+        const bool named = s.local_flip > 0 && s.local_flip < static_cast<std::int32_t>(style::flip_trick_names.size());
+        return take_failed(s, trick, named ? std::format("the skater did a {}", style::flip_trick_names[static_cast<std::size_t>(s.local_flip)])
+                                           : std::string("the skater did no flip trick"));
     }
     // The clip borrows the player's board. A measured deck offset of 1 m or more is ignored.
     const style::RigJoints joints{rig.trajectory, rig.deck, rig.left_foot, rig.right_foot, *rig.parents};
@@ -272,48 +283,9 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         if (apart < 1.0f) deck_to_board = measured;
         deck_to_board.scale = {1, 1, 1};
     }
-    // World skaters also jump. Skatepedia's stage is far from the player, so the farthest jumping skater is Skatepedia's.
     std::string why;
-    std::optional<Clip> clip;
-    float farthest = -1;
-    for (const auto &[holder, frames] : rigs) {
-        std::string reason;
-        auto found = style::clip_from_capture(trick, frames, joints, local.pose.board, deck_to_board, reason);
-        if (!found) {
-            if (why.empty()) why = reason;
-            continue;
-        }
-        const auto &at = found->frames.front().pose.root.position, &here = local.pose.root.position;
-        // Accept only a skater on Skatepedia's stage.
-        if (std::abs(at[0] - skatepedia_room[0]) > 2 * skatepedia_reach[0] || std::abs(at[1] - skatepedia_room[1]) > 2 * skatepedia_reach[1] ||
-            std::abs(at[2] - skatepedia_room[2]) > 2 * skatepedia_reach[2]) {
-            if (why.empty()) why = "the only jump seen was not on the stage";
-            continue;
-        }
-        const float away = std::sqrt((at[0] - here[0]) * (at[0] - here[0]) + (at[1] - here[1]) * (at[1] - here[1]) + (at[2] - here[2]) * (at[2] - here[2]));
-        if (away > farthest) {
-            farthest = away;
-            clip = std::move(found);
-        }
-    }
-    if (!clip) {
-        attempt_failed(s, trick, why);
-        return;
-    }
-    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} skater(s) were on screen. The learned skater was {:.0f} m away.",
-                 rigs.size(), farthest);
-    // Each frame gets the camera sample nearest to its time.
-    std::size_t viewed{}, unviewed{clip->frames.size()}; // unviewed: the first frame with no camera
-    for (auto &frame : clip->frames) {
-        const auto *nearest = nearest_at(s.views, clip->began + frame.recorded);
-        if (!nearest) {
-            unviewed = std::min(unviewed, static_cast<std::size_t>(&frame - clip->frames.data()));
-            continue;
-        }
-        frame.view = nearest->matrix;
-        frame.fov = nearest->fov;
-        ++viewed;
-    }
+    auto clip = style::clip_from_capture(trick, skater, joints, local.pose.board, deck_to_board, why);
+    if (!clip) return take_failed(s, trick, why);
     // The game's board is the small rig nearest to the skater at the start of the clip.
     {
         const std::vector<style::RigFrame> *board{};
@@ -331,7 +303,7 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
         std::size_t boarded{}, unboarded{clip->frames.size()}; // unboarded: the first frame with no board
         if (board)
             for (auto &frame : clip->frames) {
-                const auto *best = nearest_at(*board, clip->began + frame.recorded);
+                const auto *best = nearest_at(*board, clip->began + frame.at);
                 if (!best) {
                     unboarded = std::min(unboarded, static_cast<std::size_t>(&frame - clip->frames.data()));
                     continue;
@@ -347,14 +319,10 @@ void learn(State &s, const multiplayer::NativeFrame &local, const std::vector<st
     }
     if (const float apart = use_game_board(*clip); apart >= 0)
         logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the board uses the game's trucks and wheels. Its anchor is {:.3f} m from the calculated anchor.", apart);
-    // A clip keeps its camera only if every frame has one.
-    if (viewed != clip->frames.size())
-        for (auto &frame : clip->frames) frame.fov = 0;
-    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: {} of {} frames have a camera ({} samples, first frame without one {}).", viewed,
-                 clip->frames.size(), s.views.size(), unviewed);
-    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: learned the {} from the game's demonstration ({} frames).",
-                 style::flip_trick_names[trick], clip->frames.size());
-    s.retry_after = 0;
+    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: recorded the {} ({} frames).", style::flip_trick_names[trick], clip->frames.size());
+    tell(overlay::NoticeLevel::info, std::format("Recorded the {}", style::flip_trick_titles[trick]));
+    const auto made = recipe(s.flick_ms);
+    clip->capture = {style::recipe_key(made), style::recipe_text(made), std::string(reskate_version), static_cast<std::uint64_t>(std::time(nullptr))};
     keep(s, std::move(*clip));
 }
 // Applies the menu's requests, then moves shown_ms: at recorded speed with a blend into each loop, or eased to the held moment.
@@ -428,10 +396,10 @@ void remove(std::uintptr_t base, State &s) {
 void request_show(std::uint8_t trick) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
-    if (trick && trick < style::flip_trick_names.size() && s.show != trick && s.fetching != trick)
+    if (trick && trick < style::flip_trick_names.size() && s.show != trick)
         logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the {} was picked.", style::flip_trick_names[trick]);
     // A new trick, or another try after a failure, starts a new load.
-    if (trick != s.load.trick || s.load.phase == Phase::failed) s.load = {trick, trick ? Phase::loading : Phase::none};
+    if (trick != s.load.trick || s.load.phase == Phase::failed) s.load = {trick, trick ? Phase::loading : Phase::none, {}};
     s.show = trick;
     s.hide = false;
 }
@@ -440,7 +408,6 @@ void request_hide() {
     std::lock_guard lock(s.mutex);
     s.hide = true;
     s.show.reset();
-    s.fetching = 0;
     s.load = {};
     s.wanted.store(false, std::memory_order_relaxed);
 }
@@ -467,54 +434,69 @@ void request_speed(float speed) noexcept {
     std::lock_guard lock(s.controls);
     s.speed_request = std::clamp(std::isfinite(speed) ? speed : 1.0f, 0.1f, 1.0f);
 }
-bool wants_view() noexcept { return style_layer::stage_present(); }
-void note_view(const std::array<float, 16> &matrix, float fov) {
-    for (const auto value : matrix)
-        if (!std::isfinite(value)) return;
-    if (!std::isfinite(fov) || fov < 1.0f || fov > 175.0f) return;
-    auto &s = state();
-    std::lock_guard lock(s.mutex);
-    if (s.views.size() >= 4000) s.views.erase(s.views.begin(), s.views.begin() + 2000);
-    s.views.push_back({static_cast<std::uint32_t>(clock_ms()), matrix, fov});
-}
-float camera_fov() noexcept {
-    auto &s = state();
-    std::lock_guard lock(s.mutex);
-    return s.view_fov;
-}
+float camera_fov() noexcept { return state().targeted.load(std::memory_order_relaxed) ? addr::style::editor_camera_fov : 0.0f; }
 void request_open() {
     auto &s = state();
     s.wanted_until.store(clock_ms() + 8000, std::memory_order_relaxed);
     s.wanted.store(true, std::memory_order_relaxed);
+    std::lock_guard lock(s.mutex);
+    if (!s.listed) list(s);
+    if (const auto old = std::popcount(stale(s)))
+        tell(overlay::NoticeLevel::info, std::format("{} trick(s) have a newer recording available. 'style record outdated' records them", old));
 }
 void screen_open(bool open) noexcept { state().screen.store(open, std::memory_order_relaxed); }
+std::optional<Recorded> take_recorded() {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    return std::exchange(s.recorded, std::nullopt);
+}
+bool request_record(std::uint8_t trick, std::uint32_t flick_ms, std::string &error) {
+    if (!trick || trick >= style::flip_trick_names.size()) {
+        error = "That is not a flip trick.";
+        return false;
+    }
+    if (!style_layer::enabled()) {
+        error = "The style layer is off (style enabled 1).";
+        return false;
+    }
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.recording || s.record) {
+        error = "A recording is already running.";
+        return false;
+    }
+    s.record = trick;
+    s.flick_ms = flick_ms;
+    return true;
+}
+std::uint64_t to_record() {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.listed) list(s);
+    return (~s.on_disk | stale(s)) & ((1ull << style::flip_trick_names.size()) - 2);
+}
+void request_record_always(bool always) {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.listed) list(s);
+    s.record_always = always;
+    profile_runtime::set_local_preference("Style.RecordAlways", always);
+}
+bool record_always() noexcept {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    return s.record_always;
+}
 void request_forget(std::uint8_t trick) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     s.forget = trick;
 }
-void expect(std::uint8_t trick) {
-    auto &s = state();
-    std::lock_guard lock(s.mutex);
-    s.fetching = trick;
-    // Skatepedia starts the demonstration again at the change. The next tick reads the highlight, so the recording starts with it.
-    s.next_named = 0;
-    s.switched = true;
-}
-void fetch_failed(std::string_view why) {
-    auto &s = state();
-    std::lock_guard lock(s.mutex);
-    drop_fetch(s);
-    if (s.load.phase != Phase::loading && s.load.phase != Phase::recording) return;
-    s.load.phase = Phase::failed;
-    // The reason of the last attempt says more than the reason of the fetch. The fetch's reason follows its colon.
-    if (const auto colon = why.find(": "); s.load.reason.empty()) s.load.reason = colon == why.npos ? why : why.substr(colon + 2);
-}
 bool has_clip(std::uint8_t trick) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     if (!s.listed) list(s);
-    return trick < 64 && (s.learned >> trick & 1);
+    return trick < 64 && (s.on_disk >> trick & 1);
 }
 void request_orbit(float yaw, float pitch, float distance, float height) noexcept {
     auto &s = state();
@@ -569,6 +551,7 @@ void fill(style::StyleModel &model) {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     model.clips = s.on_disk;
+    model.outdated_clips = stale(s);
     model.editor_load = s.load;
     model.pace = s.pace;
 }
@@ -578,13 +561,13 @@ std::string status() {
     std::string result;
     for (std::uint8_t trick = 1; trick < style::flip_trick_names.size(); ++trick)
         if (s.on_disk >> trick & 1)
-            result += std::format("{}{}{}", result.empty() ? "Clips: " : ", ", style::flip_trick_names[trick], s.learned >> trick & 1 ? " (demonstration)" : "");
+            result += std::format("{}{}{}", result.empty() ? "Clips: " : ", ", style::flip_trick_names[trick], stale(s) >> trick & 1 ? " (outdated)" : "");
     if (result.empty()) result = "No clips yet";
+    if (s.record_always) result += ". Every clip counts as outdated (style record always 1)";
     result += s.shown ? std::format(". Showing the {}, {}", style::flip_trick_names[s.shown->trick], s.playing ? "playing" : "held")
                       : std::string(". Nothing shown");
     if (!s.detail.empty()) result += " (" + s.detail + ")";
     if (s.load.phase == Phase::failed) result += std::format(". The {} did not load: {}", style::flip_trick_names[s.load.trick], s.load.reason);
-    else if (!s.load.reason.empty()) result += std::format(". The last attempt for the {} failed: {}", style::flip_trick_names[s.load.trick], s.load.reason);
     return result;
 }
 
@@ -593,7 +576,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     try {
         std::lock_guard lock(s.mutex);
         if (!s.listed) list(s);
-        // The editor screen did not open: the request for it ends, and the game leaves Skatepedia.
+        // The editor screen did not open: the request for it ends, and the game leaves the menu.
         if (s.wanted.load(std::memory_order_relaxed) && !s.screen.load(std::memory_order_relaxed) && clock_ms() > s.wanted_until.load(std::memory_order_relaxed)) {
             s.wanted.store(false, std::memory_order_relaxed);
             style_stage::leave();
@@ -604,38 +587,48 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.shown.reset();
             return;
         }
-        // Nothing to show, load or learn: the full capture of the skater is not paid for.
-        if (!s.shown && !s.show && !s.hide && !s.learn && !s.fetching && !s.demos_wanted && s.forget < 0 && !s.parked && !s.wanted.load(std::memory_order_relaxed)) {
-            (void)style_layer::collect_learned();
+        // A recording of the local skater starts here, so that its end is collected below.
+        if (const auto trick = std::exchange(s.record, std::uint8_t{}); trick && !s.recording) {
+            s.recording = trick;
+            s.local_flip = -1;
+            s.local_did = false;
+            style_layer::request_recording();
+            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: recording the skater's {}.", style::flip_trick_names[trick]);
+        }
+        // Nothing to show, record or forget: the full capture of the skater is not paid for.
+        if (!s.shown && !s.show && !s.hide && !s.recording && !s.demos_wanted && s.forget < 0 && !s.wanted.load(std::memory_order_relaxed)) {
+            (void)style_layer::collect_recording();
             return;
         }
         style_layer::watch_stage();
-        // The skater's bones are read only for a learn. The stand-in needs the entity and the root.
+        // The take is kept only if the skater did the recorded trick.
+        if (s.recording) {
+            std::uint32_t physics{};
+            std::int32_t flip{};
+            if (style_layer::local_trick(physics, flip) && flip > 0) {
+                s.local_flip = flip;
+                s.local_did |= flip == s.recording;
+            }
+        }
+        // The skater's bones are read only for a take. The stand-in needs the entity and the root.
         const auto local = multiplayer::capture_local(base, client, false);
         if (!local.ready) return;
         const auto now = clock_ms();
-        // Each tick gives one learned clip to the layer, for the restyle of Skatepedia's skater.
+        // Each tick gives one clip to the layer, for the restyle of Skatepedia's skater.
         if (s.demos_wanted) {
             const auto trick = static_cast<std::uint8_t>(std::countr_zero(s.demos_wanted));
             if (style_layer::rig().parents) {
                 s.demos_wanted &= s.demos_wanted - 1;
-                if (const auto *clip = reference(s, trick); clip && clip->learned)
+                if (const auto *clip = reference(s, trick))
                     for (const auto &frame : clip->frames)
                         if (frame.time >= 0 && frame.time <= style::trick_end) (void)style_layer::add_demo(trick, frame.time, frame.pose.skater);
             }
         }
-        // A recording with no learn is for a trick that the menu no longer selects.
-        if (const auto recorded = style_layer::collect_learned(); !recorded.empty() && s.learn) {
-            if (std::exchange(s.spoiled, false)) {
-                // The recording contains part of a different trick.
-                attempt_failed(s, std::exchange(s.learn, std::uint8_t{}), "Skatepedia changed to a different trick during the recording");
-            } else {
-                const auto wanted = s.learn;
-                s.retry_after = now + 60000;
-                learn(s, multiplayer::capture_local(base, client, true), recorded);
-                // If the learn of the fetched trick failed, record it again after 500 ms.
-                if (wanted && wanted == s.fetching && !(s.learned >> wanted & 1)) s.retry_after = now + 500;
-            }
+        if (const auto recorded = style_layer::collect_recording(); !recorded.empty() && s.recording) {
+            const auto trick = s.recording;
+            s.failure.clear();
+            take(s, multiplayer::capture_local(base, client, true), recorded);
+            s.recorded = Recorded{trick, s.failure};
         }
         if (s.forget >= 0) {
             for (std::uint8_t trick = 1; trick < style::flip_trick_names.size(); ++trick) {
@@ -644,65 +637,21 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 std::filesystem::remove(file_of(trick), error);
                 s.references.erase(trick);
                 s.on_disk &= ~(1ull << trick);
-                s.learned &= ~(1ull << trick);
             }
             s.forget = -1;
-            s.retry_after = 0;
             style_layer::clear_demos();
-            s.demos_wanted = s.learned;
-            tell(overlay::NoticeLevel::info, "The clip was deleted. The editor learns it again the next time it loads that trick");
+            s.demos_wanted = s.on_disk;
+            tell(overlay::NoticeLevel::info, "The clip was deleted. Record it again with 'style record'");
         }
-        // Read Skatepedia's highlighted trick two times each second.
-        const bool checked = now >= s.next_named;
-        if (checked) {
-            s.next_named = now + 500;
-            // A parked Skatepedia has no skater on its stage, so `parked` also permits the check.
-            std::string title;
-            // Only for the editor. Nothing is learned when the player browses Skatepedia.
-            const bool look = (s.wanted.load(std::memory_order_relaxed) || s.fetching) && (style_layer::stage_present() || s.parked);
-            const auto named = look ? style_stage::shown_trick(base, &title) : std::uint8_t{};
-            s.open = look && !title.empty();
-            if (!s.open) s.parked = false;
-            if (named) {
-                if (named != s.named) {
-                    s.named_since = now;
-                    logging::log(logging::Level::info, logging::Channel::skater, "Style editor: Skatepedia now shows the {} (learning {}, waiting {} ms)",
-                                 style::flip_trick_names[named], s.learn, now < s.retry_after ? s.retry_after - now : 0);
-                }
-                s.named = named;
-                s.named_seen = now;
-            } else if (now > s.named_seen + 3000) s.named = 0;
-            if (s.learn && s.named && s.named != s.learn) s.spoiled = true;
-        }
-        // Learn only the fetched trick. The recording keeps the first whole loop of the demonstration.
-        if (const auto named = !s.learn && now >= s.retry_after ? s.named : std::uint8_t{};
-            named && !(s.learned >> named & 1) && named == s.fetching) {
-            s.spoiled = false;
-            s.learn = named;
-            if (s.load.trick == named) {
-                s.load.phase = Phase::recording;
-                ++s.load.attempt;
-            }
-            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: watching the game's demonstration of the {}.", style::flip_trick_names[named]);
-            style_layer::request_learn(s.switched);
-        }
-        // Only the first check after a change can start at it. A later learn waits for a restart.
-        if (checked) s.switched = false;
         if (s.hide) {
             s.hide = false;
             s.shown.reset();
         }
         if (s.show) {
             const auto trick = *s.show;
-            const Clip *clip = trick ? reference(s, trick) : nullptr;
-            // A fetch or a learn of another trick stops.
-            if (s.fetching != trick && (s.fetching || s.learn)) {
-                drop_fetch(s);
-                style_stage::cancel_fetch();
-            }
-            if (clip) {
-                s.show.reset();
-                if (s.load.trick == trick) s.load = {trick, Phase::ready, s.load.attempt};
+            s.show.reset();
+            if (const Clip *clip = trick ? reference(s, trick) : nullptr) {
+                if (s.load.trick == trick) s.load = {trick, Phase::ready, {}};
                 s.shown = *clip;
                 const float flick = style::ms_at(*clip, 0), caught = style::ms_at(*clip, 1), touchdown = style::ms_at(*clip, 2);
                 s.low_ms = flick;
@@ -713,37 +662,16 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 s.shown_ms = s.target_ms = 0;
                 s.playing = true;
                 s.detail.clear();
-            } else if (trick && style_layer::stage_present()) {
-                // Skatepedia is open, so fetch the trick from it. A fetch of the same trick continues.
-                s.show.reset();
-                s.shown.reset();
-                if (std::exchange(s.fetching, trick) != trick) style_stage::fetch(trick);
-                s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
-            } else if (trick && s.wanted.load(std::memory_order_relaxed)) {
-                // Skatepedia's skater is not on its stage: Skatepedia is parked, opening, or between two loops.
-                // The request stays until the skater is back. A parked Skatepedia is unparked now.
-                s.shown.reset();
-                if (s.parked) s.next_park = 0;
-                s.detail = std::format("loading the {}", style::flip_trick_names[trick]);
             } else {
-                s.show.reset();
                 s.shown.reset();
                 s.detail = trick ? std::format("no clip of the {} yet", style::flip_trick_names[trick]) : std::string();
-                if (trick && s.load.trick == trick) s.load = {trick, Phase::failed, s.load.attempt, "the editor is not open"};
+                // A trick picked on the editor screen is captured on the trick stage, in view.
+                if (trick && s.load.trick == trick && s.load.phase != Phase::failed) {
+                    std::string why = "the editor screen is not open";
+                    if (s.screen.load(std::memory_order_relaxed) && style_capture::start(trick, why)) s.load = {trick, Phase::loading, {}};
+                    else s.load = {trick, Phase::failed, std::format("it has no clip yet, and it cannot be captured now: {}", why)};
+                }
             }
-        }
-        if (s.fetching && (s.learned >> s.fetching & 1)) {
-            const auto fetched = std::exchange(s.fetching, std::uint8_t{});
-            if (s.wanted.load(std::memory_order_relaxed)) s.show = fetched;
-        }
-        // While a clip is shown, Skatepedia shows the board-only entry.
-        if (now >= s.next_park) {
-            s.next_park = now + 1000;
-            const bool park = s.shown && s.wanted.load(std::memory_order_relaxed) && !s.learn && !s.fetching &&
-                              (style_layer::stage_present() || (s.parked && s.open));
-            // A fetch sets its own entry, so do not park over it.
-            if (!park && (s.learn || s.fetching)) s.parked = false;
-            else if (park != s.parked && style_stage::park(base, park)) s.parked = park;
         }
         if (!s.shown || s.shown->frames.empty()) {
             remove(base, s);
@@ -757,7 +685,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         if (!s.spawned && slot_taken) {
             s.shown.reset();
             s.detail = "the lobby is full, so there is no slot for the stand-in";
-            if (s.load.trick && s.load.phase == Phase::ready) s.load = {s.load.trick, Phase::failed, s.load.attempt, s.detail};
+            if (s.load.trick && s.load.phase == Phase::ready) s.load = {s.load.trick, Phase::failed, s.detail};
             return;
         }
         advance(s, playback_ms());
@@ -768,48 +696,44 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             const float amount = std::clamp((s.shown_ms - length) / loop_blend_ms, 0.0f, 1.0f);
             return style::blend(styled(s, length), styled(s, 0), amount * amount * (3 - 2 * amount));
         }();
-        // The fov that Skatepedia's camera had on the first frame.
         const auto &opening = s.shown->frames.front();
-        s.view_fov = opening.fov;
-        // The camera starts with Skatepedia's framing, calculated one time for each shown trick.
-        if (s.view_fov > 0 && s.framed != s.shown->trick) {
+        // The camera starts with the editor's angle to the skater, farther back and lower, so that the whole skater shows at the top
+        // of the pop. One time for each shown trick. The skater's facing, not the board's: a board can start a clip turned round.
+        if (s.framed != s.shown->trick) {
             s.framed = s.shown->trick;
-            const auto &view = opening.view;
-            const auto &root = opening.pose.root.position;
-            const std::array<float, 3> back{view[8], view[9], view[10]}, away{view[12] - root[0], view[13] - root[1], view[14] - root[2]};
-            const float flat = std::sqrt(back[0] * back[0] + back[2] * back[2]);
-            if (flat > 0.1f && std::isfinite(flat)) {
-                const float distance = std::clamp(std::sqrt(away[0] * away[0] + away[2] * away[2]) / flat, 0.6f, 12.0f);
-                s.yaw.store(std::bit_cast<std::uint32_t>(std::atan2(back[0], back[2])), std::memory_order_relaxed);
-                s.pitch.store(std::bit_cast<std::uint32_t>(std::clamp(std::asin(std::clamp(back[1], -1.0f, 1.0f)), -0.15f, 1.45f)), std::memory_order_relaxed);
-                s.distance.store(std::bit_cast<std::uint32_t>(distance), std::memory_order_relaxed);
-                s.height.store(std::bit_cast<std::uint32_t>(std::clamp(away[1] - back[1] * distance, 0.0f, 2.2f)), std::memory_order_relaxed);
-            }
+            const auto &q = opening.pose.root.rotation;
+            const float along = std::atan2(1 - 2 * (q[1] * q[1] + q[2] * q[2]), 2 * (q[0] * q[2] - q[3] * q[1]));
+            s.yaw.store(std::bit_cast<std::uint32_t>(std::remainder(along + addr::style::editor_camera_turn, 6.2831853f)), std::memory_order_relaxed);
+            s.pitch.store(std::bit_cast<std::uint32_t>(0.05f), std::memory_order_relaxed);
+            s.distance.store(std::bit_cast<std::uint32_t>(3.6f), std::memory_order_relaxed);
+            s.height.store(std::bit_cast<std::uint32_t>(0.1f), std::memory_order_relaxed);
         }
-        if (s.view_fov <= 0) s.framed = 0;
         s.shown_time.store(std::bit_cast<std::uint32_t>(std::clamp(time, 0.0f, style::trick_end)), std::memory_order_relaxed);
         s.shown_playing.store(s.playing, std::memory_order_relaxed);
         s.shown_trick.store(s.shown->trick, std::memory_order_relaxed);
-        // The anchor is Skatepedia's stage position, or a position 2 m from the player.
+        // The anchor is the menu room, or a position 2 m from the player.
         const auto &here = local.pose.root.position;
-        // Skatepedia's skater disappears briefly on each loop, so the stage state holds for 4 s.
-        if (style_layer::stage_present() || (s.parked && s.open)) s.stage_until = GetTickCount64() + 4000;
+        // The stage state holds for 4 s, so that a moment without the room's skater does not move the stand-in.
+        if (style_layer::stage_present()) s.stage_until = GetTickCount64() + 4000;
         const bool on_stage = GetTickCount64() < s.stage_until;
         if (std::exchange(s.anchored_on_stage, on_stage) != on_stage)
-            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the stand-in skates {}.", on_stage ? "on Skatepedia's stage" : "beside the player");
-        // The clip was recorded on the stage, so there it keeps its own heights.
-        const auto anchor = on_stage ? std::array<float, 3>{skatepedia_room[0], opening.pose.root.position[1], skatepedia_room[2]}
+            logging::log(logging::Level::info, logging::Channel::skater, "Style editor: the stand-in skates {}.", on_stage ? "in the menu room" : "beside the player");
+        // In the menu room the clip's board starts on the room's floor, wherever the clip was recorded.
+        const float lift = !on_stage ? here[1] - opening.pose.root.position[1]
+                           : opening.pose.board.empty() ? 0.0f
+                                                        : addr::style::menu_room_board_height - opening.pose.board.front().position[1];
+        const auto anchor = on_stage ? std::array<float, 3>{menu_room[0], opening.pose.root.position[1] + lift, menu_room[2]}
                                      : std::array<float, 3>{here[0] + 2.0f, here[1], here[2]};
         // The stand-in skates in place, so the camera neither lags it nor jumps back at each loop.
         for (std::size_t i = 0; i < 3; ++i) s.target[i].store(std::bit_cast<std::uint32_t>(anchor[i]), std::memory_order_relaxed);
         s.targeted.store(true, std::memory_order_relaxed);
-        multiplayer::offset_pose(pose, {anchor[0] - pose.root.position[0], anchor[1] - opening.pose.root.position[1], anchor[2] - pose.root.position[2]});
+        multiplayer::offset_pose(pose, {anchor[0] - pose.root.position[0], lift, anchor[2] - pose.root.position[2]});
         const multiplayer::PeerScope scope(stand_in_slot);
         s.spawned = multiplayer::show_remote(base, client, local, pose, s.detail) || multiplayer::remote_skater_entity();
         if (const auto entity = multiplayer::remote_skater_entity())
             style_layer::ignore_holder(memory::peek_pointer(memory::peek_pointer(entity, addr::style::entity_component), addr::style::component_pose_holder),
                                        memory::peek_pointer(multiplayer::remote_board_entity(), addr::style::board_pose_holder));
-        // On Skatepedia's stage, the stand-in replaces Skatepedia's skater.
+        // In the menu room, the stand-in replaces the menu's skater.
         if (on_stage) style_layer::keep_stage_clear();
         // The stand-in wears the player's cosmetics.
         if (s.spawned && now >= s.next_cosmetics) {

@@ -13,6 +13,8 @@ const std::vector<NamedSettingModel> &named_settings_model();
 // Increases whenever any row of named_settings_model() changes.
 std::uint64_t named_settings_revision();
 std::string change_named_setting(std::string_view name, std::string_view value, bool restore);
+// A setting's value as the console shows it, read now. Empty if the setting is unknown or cannot be read.
+std::string named_setting_value(std::string_view name);
 // The same for a player's own change (the console): one that changes how the game plays is
 // refused during a multiplayer session (Engine/Game/Settings/multiplayer_settings_lock.h), and
 // any such change made before a session is put back when it starts.

@@ -21,11 +21,12 @@ inline constexpr std::uintptr_t core_trick_selection = 0x3c8;
 inline constexpr std::uintptr_t trick_selection_flip_trick = 0x28;
 // Riding states with the board on the ground: plain riding, and a state seen after some landings. Measured 2026-10-04.
 inline constexpr std::uint32_t riding_ground_state = 100, riding_landed_state = 101;
-// Skatepedia's UI models by schema hash (TypeNameHash of the game's type) and field hash. Found in a UI model dump on 2026-10-04.
-// UI/Features/Skatepedia/SkatepediaTrickEntryDataModel: one for each row, and one for the highlighted entry that its skater performs.
-inline constexpr std::uint32_t skatepedia_entry = 0xbf835c8e, skatepedia_entry_name = 0x53bac52d;
-// UI/Foundations/Components/InfoCard/InfoCardViewModel: its title label names the highlighted entry.
-inline constexpr std::uint32_t info_card = 0xa8080640, info_card_title = 0xe08a935d, label_text = 0x4d8e01b9;
+// UI models by schema hash (TypeNameHash of the game's type) and field hash. Found in UI model dumps on 2026-10-04 and 2026-10-10.
+// The menu's button bar: the buttons of the page that shows now. Each 16-byte element holds its button model's handle at +8, and
+// the model's action has a navigation.
+inline constexpr std::uint32_t button_bar = 0xe6ab1489, button_bar_buttons = 0x5fc6738b;
+inline constexpr std::uintptr_t button_model_handle = 8;
+inline constexpr std::uint32_t button_action = 0xa2b71c93, button_navigation = 0xb1e14cd6;
 // UI/Legacy/Flow/State/StateNavigationModel: the menu's current and queued named navigations. The event is UI/Legacy/Flow/State/StateNavigationChanged.
 inline constexpr std::uint32_t navigation_queue = 0xcc4776b5, navigation_current = 0xf3ba9cf8, navigation_queued = 0xf437b255;
 inline constexpr std::uint32_t navigation_changed_event = 0xcb03d3ec;
@@ -37,8 +38,12 @@ inline constexpr std::uintptr_t holder_animation_interface = 0xc0;
 inline constexpr std::uintptr_t bone_size = 0x30, bone_rotation = 0x10, bone_position = 0x20;
 // UI manager -> model manager.
 inline constexpr std::uintptr_t ui_model_manager = 0x140;
-// A camera's world transform: 4x4 floats, rows right, up, backward, position.
-inline constexpr std::uintptr_t camera_transform = 0x50;
-// Skatepedia's stage in the world, and how far its skater goes from that point. Measured 2026-10-04.
-inline constexpr std::array<float, 3> skatepedia_stage{0.0f, -168.22f, -2.0f}, skatepedia_stage_reach{4.0f, 4.0f, 9.0f};
+// The menu's character room, below the origin of every map: the root of the menu's skater, and how far from it a rig counts as in
+// the room. Its floor is at -69.99. Measured 2026-10-10 on Stadium 1 and San Vansterdam.
+inline constexpr std::array<float, 3> menu_room{1.0f, -69.04f, -5.25f}, menu_room_reach{2.0f, 2.0f, 2.0f};
+// The height of a board on that floor: a board at rest has its root 0.0868 m above the floor. Measured 2026-10-10 in 32 clips.
+inline constexpr float menu_room_board_height = -69.903f;
+// The editor camera: Skatepedia's camera at the start of its demonstrations, its fov, and its turn from the board's long axis
+// (radians). Measured 2026-10-10 in four clips. A skater standing on the board faces along that axis (their root's x axis).
+inline constexpr float editor_camera_fov = 46.8f, editor_camera_turn = -1.780f;
 }

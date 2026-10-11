@@ -3,6 +3,7 @@
 #include "style_takes.h"
 #include "style_internal.h"
 #include "style_file.h"
+#include "trick_pad.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -44,8 +45,7 @@ using namespace addr::style;
 using style::Family;
 using style::Quat;
 using addr::style::bone_size, addr::style::bone_rotation, addr::style::bone_position;
-// Measured 2026-10-04: Skatepedia's skater rolls approximately 10 m along Z on its stage.
-constexpr auto &stage_centre = addr::style::skatepedia_stage, &stage_reach = addr::style::skatepedia_stage_reach;
+constexpr auto &stage_centre = addr::style::menu_room, &stage_reach = addr::style::menu_room_reach;
 constexpr float blend_seconds = 0.08f; // smooths sudden changes, such as the catch or a slam
 constexpr float preview_play_seconds = 1.6f; // one pass of a previewed timeline
 constexpr float preview_part_ms = preview_play_seconds * 1000.0f / style::trick_end;
@@ -105,7 +105,7 @@ struct Live {
     std::atomic<bool> restyle{true};
     // The frames of the player's own tricks as shown, for the restyle of replays.
     style::Takes takes;
-    // The frames of the learned clips, for the restyle of Skatepedia's skater.
+    // The frames of the saved clips, for the restyle of Skatepedia's skater.
     style::Takes demos;
     std::atomic<std::uint64_t> stage_seen{};
     std::vector<style::JointDelta> restyled;
@@ -113,23 +113,20 @@ struct Live {
     std::atomic<std::uint32_t> replay_trick{}, replay_time{}, replay_distance{};
     // The pose holder of the stand-in. The layer does not change it.
     std::atomic<std::uintptr_t> ignored{};
-    // The recording of other rigs that request_learn() starts. pose_mutex guards the buffers.
-    std::atomic<std::uint64_t> learn_until{};
-    std::vector<std::uint8_t> learned, learned_done;
-    // Skatepedia's skater as last seen on the stage, and the loop restarts in the current recording.
-    std::uintptr_t stage_holder{};
-    std::array<float, 3> stage_position{};
-    std::uint64_t learn_started{};
-    std::uint32_t learn_restarts{}, learn_frames{}, learn_seen{};
-    float learn_low{}, learn_high{}; // the stage skater's lowest and highest root in the recording
+    // The recording that request_recording() starts, in game ticks. pose_mutex guards the buffers and the last tick of each
+    // recorded rig.
+    std::atomic<std::uint64_t> record_until{};
+    std::vector<std::uint8_t> recording, recorded;
+    std::vector<std::pair<std::uintptr_t, std::uint64_t>> recorded_ticks;
+    std::uint64_t record_started{};
     // A cache of the kind of each other rig.
     struct Seen {
         std::uintptr_t holder{};
         std::uint64_t checked{};
         std::uint8_t kind{}; // 1: a skater. 2: a small rig such as a skateboard
     };
-    std::atomic<std::uint64_t> clear_stage{}; // the time until which Skatepedia's skater and board stay hidden
-    std::atomic<std::uint64_t> stage_watch{};  // the time until which other rigs are checked for Skatepedia's stage
+    std::atomic<std::uint64_t> clear_stage{}; // the time until which the menu's skater and board stay hidden
+    std::atomic<std::uint64_t> stage_watch{};  // the time until which other rigs are checked for the menu room
     std::atomic<std::uintptr_t> ignored_board{};
     std::array<Seen, 64> seen;
     std::vector<style::JointDelta> timeline;
@@ -290,47 +287,12 @@ std::uint8_t other_kind(std::uintptr_t holder) noexcept {
             const auto pose = multiplayer::read_native_pose_layout(memory::peek_bytes, l.base.load(std::memory_order_acquire), holder, 512);
             if (pose.buffer) kind = pose.count == skeleton_joints ? 1 : pose.count >= 2 && pose.count <= 32 ? 2 : 0;
         } catch (...) {}
-        // Skatepedia makes a new rig on each loop, so an unreadable rig is examined again soon.
+        // A new rig can have no pose yet, so an unreadable rig is examined again soon.
         *slot = {holder, kind ? now : now < l.clear_stage.load(std::memory_order_relaxed) ? now - 2001 : now - 1900, kind};
     }
     return slot->kind;
 }
-// The demonstration restarts with a new rig or with a jump of the skater back to the start.
-// In a recording, the first restart starts the loop that is kept, and the next one ends the recording.
-void note_stage_skater(std::uintptr_t holder, const std::array<float, 3> &position) noexcept {
-    auto &l = live();
-    const auto now = GetTickCount64();
-    std::string restart;
-    std::uint32_t restarts{};
-    std::uint64_t started{};
-    {
-        std::lock_guard lock(l.pose_mutex);
-        const float dx = position[0] - l.stage_position[0], dy = position[1] - l.stage_position[1], dz = position[2] - l.stage_position[2];
-        const bool new_rig = l.stage_holder && holder != l.stage_holder;
-        const bool jumped = l.stage_holder && std::sqrt(dx * dx + dy * dy + dz * dz) > style::teleport_metres;
-        l.stage_holder = holder;
-        l.stage_position = position;
-        if (now >= l.learn_until.load(std::memory_order_relaxed)) return;
-        l.learn_low = l.learn_seen ? std::min(l.learn_low, position[1]) : position[1];
-        l.learn_high = l.learn_seen ? std::max(l.learn_high, position[1]) : position[1];
-        ++l.learn_seen;
-        if (l.learn_restarts) ++l.learn_frames;
-        // A loop has at least 60 frames, so a restart sooner than that is not the end of the loop.
-        if (!(new_rig || jumped) || (l.learn_restarts && l.learn_frames < 60)) return;
-        restarts = ++l.learn_restarts;
-        restart = new_rig ? "new rig" : "jump back";
-        started = l.learn_started;
-        if (restarts == 1) {
-            l.learned.clear();
-            l.learn_frames = 0;
-        } else {
-            l.learn_until.store(now, std::memory_order_relaxed);
-        }
-    }
-    logging::log(logging::Level::info, logging::Channel::skater, "Style: Skatepedia's demonstration restarted ({}) {} ms into the recording.{}", restart,
-                 now - started, restarts == 1 ? " The recording keeps this loop." : " The loop is complete.");
-}
-// Hides a rig that is on Skatepedia's stage, so that only the stand-in shows there.
+// Hides a rig that is in the menu room, so that only the stand-in shows there.
 void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
     auto &l = live();
     try {
@@ -347,10 +309,7 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
                 std::abs(position[1] + (moved ? 2000.0f : 0.0f) - stage_centre[1]) > stage_reach[1]) {
                 continue;
             }
-            if (skater) {
-                l.stage_seen.store(GetTickCount64(), std::memory_order_relaxed);
-                note_stage_skater(holder, {position[0], position[1] + (moved ? 2000.0f : 0.0f), position[2]});
-            }
+            if (skater) l.stage_seen.store(GetTickCount64(), std::memory_order_relaxed);
             // The game does not restore the scale, so the layer restores it when the skater is no longer hidden.
             if (skater && !clear) {
                 float scale{};
@@ -364,7 +323,7 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
             }
             if (moved || !clear) continue;
             if (skater) {
-                // Scale 0.001, not a move: Skatepedia's camera follows a moved skater, and at scale 0 the stage disappears.
+                // Scale 0.001, not a move or scale 0: these can move the game's camera or hide the room.
                 (void)write_scale(pose.buffer + bone_size, 0.001f);
                 continue;
             }
@@ -375,51 +334,41 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
         }
     } catch (...) {}
 }
-// Appends the pose of `holder` to the recording: time, holder, joint count, then the stored bones.
-void learn(std::uintptr_t holder) noexcept {
+// Appends the pose of `holder` to the recording: time, holder, joint count, then the stored bones. The time is the game tick's,
+// so that a recording is the same at any frame rate. A rig is recorded once a tick.
+void record(std::uintptr_t holder) noexcept {
     auto &l = live();
     try {
         const auto pose = multiplayer::read_native_pose_layout(memory::peek_bytes, l.base.load(std::memory_order_acquire), holder, 512);
         // Only skaters and boards. Other rigs would fill the recording.
         if (!pose.buffer || !pose.count || (pose.count != skeleton_joints && pose.count > 32)) return;
         std::lock_guard lock(l.pose_mutex);
-        if (l.learned.size() > 96u * 1024 * 1024) return;
-        // A recording of 10 s is about 45 MB. One reservation saves copies of the buffer as it grows.
-        if (l.learned.empty()) l.learned.reserve(48u * 1024 * 1024);
-        const std::uint64_t header[3]{steady_us() / 1000, holder, pose.count};
-        const auto at = l.learned.size();
-        l.learned.resize(at + sizeof(header) + pose.count * bone_size);
-        std::memcpy(l.learned.data() + at, header, sizeof(header));
-        if (!memory::peek_bytes(pose.buffer, l.learned.data() + at + sizeof(header), pose.count * bone_size)) {
-            l.learned.resize(at);
-            return;
-        }
-        // A skater that the editor hid this frame has scale 0.001 in joint 1. The recording keeps scale 1.
-        if (pose.count == skeleton_joints) {
-            auto *const bytes = l.learned.data() + at + sizeof(header) + bone_size;
-            std::array<float, 3> scale;
-            std::memcpy(scale.data(), bytes, sizeof(scale));
-            if (scale[0] < 0.01f) {
-                scale = {1, 1, 1};
-                std::memcpy(bytes, scale.data(), sizeof(scale));
-            }
-        }
+        if (l.recording.size() > 96u * 1024 * 1024) return;
+        // One reservation saves copies of the buffer as it grows.
+        if (l.recording.empty()) l.recording.reserve(8u * 1024 * 1024);
+        const auto tick = trick_pad::game_ticks();
+        auto seen = std::ranges::find(l.recorded_ticks, holder, &std::pair<std::uintptr_t, std::uint64_t>::first);
+        if (seen == l.recorded_ticks.end()) seen = l.recorded_ticks.insert(seen, {holder, ~0ull});
+        if (std::exchange(seen->second, tick) == tick) return;
+        const std::uint64_t header[3]{trick_pad::to_ms(tick), holder, pose.count};
+        const auto at = l.recording.size();
+        l.recording.resize(at + sizeof(header) + pose.count * bone_size);
+        std::memcpy(l.recording.data() + at, header, sizeof(header));
+        if (!memory::peek_bytes(pose.buffer, l.recording.data() + at + sizeof(header), pose.count * bone_size)) l.recording.resize(at);
     } catch (...) {}
 }
 // Shows the preview or a restyle on another skater. Solo play only, because other players use the same skeleton.
 void preview_other(std::uintptr_t holder) noexcept {
     auto &l = live();
     if (holder == l.ignored.load(std::memory_order_acquire) || holder == l.ignored_board.load(std::memory_order_acquire)) return;
-    const bool recording = GetTickCount64() < l.learn_until.load(std::memory_order_relaxed);
-    if (recording) learn(holder);
     const auto kind = other_kind(holder);
-    // Skatepedia's skater shows that the stage exists. It stays visible while it is recorded.
-    // Only the editor needs the stage, so other rigs are not read for it at other times.
-    if (kind && (recording || GetTickCount64() < l.stage_watch.load(std::memory_order_relaxed))) clear_from_stage(holder, kind == 1, !recording && GetTickCount64() < l.clear_stage.load(std::memory_order_relaxed));
+    // A recording of the local skater keeps the boards too: one of them is the skater's.
+    if (kind == 2 && trick_pad::game_ticks() < l.record_until.load(std::memory_order_relaxed)) record(holder);
+    // The menu's skater shows that the room exists. Only the editor needs the stage, so other rigs are not read for it at other times.
+    if (kind && GetTickCount64() < l.stage_watch.load(std::memory_order_relaxed))
+        clear_from_stage(holder, kind == 1, GetTickCount64() < l.clear_stage.load(std::memory_order_relaxed));
     if (kind != 1) return;
-    // During a recording, Skatepedia's skater shows the game's own animation.
-    const bool learning = GetTickCount64() < l.learn_until.load(std::memory_order_relaxed) + 300;
-    const auto preview = learning ? std::uint8_t{} : l.preview.load(std::memory_order_acquire);
+    const auto preview = l.preview.load(std::memory_order_acquire);
     const auto snapshot = l.snapshot.load(std::memory_order_acquire);
     static const std::vector<style::JointDelta> none;
     const auto error = GetLastError();
@@ -432,7 +381,7 @@ void preview_other(std::uintptr_t holder) noexcept {
             if (other.seen < oldest->seen) oldest = &other;
         }
         const bool solo = snapshot && style_layer::solo();
-        const bool matching = solo && !preview && !learning && l.active.load(std::memory_order_acquire) && l.restyle.load(std::memory_order_acquire) && (l.takes.size() || l.demos.size());
+        const bool matching = solo && !preview && l.active.load(std::memory_order_acquire) && l.restyle.load(std::memory_order_acquire) && (l.takes.size() || l.demos.size());
         if (!slot && !(solo && preview) && !matching) {
             SetLastError(error);
             return;
@@ -501,6 +450,11 @@ void on_render(std::uintptr_t animation_interface) noexcept {
         return;
     }
     if (!holder || animation_interface != holder + addr::style::holder_animation_interface) return;
+    // A recording keeps the game's own animation, so the style waits until it ends.
+    if (trick_pad::game_ticks() < l.record_until.load(std::memory_order_relaxed)) {
+        record(holder);
+        return;
+    }
     const auto error = GetLastError();
     l.render_calls.fetch_add(1, std::memory_order_relaxed);
     try {
@@ -1022,6 +976,15 @@ void ignore_holder(std::uintptr_t holder, std::uintptr_t board) noexcept {
     live().ignored.store(holder, std::memory_order_release);
     live().ignored_board.store(board, std::memory_order_release);
 }
+bool local_trick(std::uint32_t &state, std::int32_t &flip) noexcept {
+    auto &l = live();
+    const auto selection = l.trick_selection.load(std::memory_order_acquire);
+    // Read now: the stored state stops while a recording keeps the game's animation.
+    if (!memory::peek(l.context.load(std::memory_order_acquire) + context_physics_state, state)) state = l.state.load(std::memory_order_relaxed);
+    flip = -1;
+    if (selection) (void)memory::peek(selection + trick_selection_flip_trick, flip);
+    return selection != 0;
+}
 bool stage_present() noexcept { return GetTickCount64() < live().stage_seen.load(std::memory_order_relaxed) + 500; }
 bool add_demo(std::uint8_t trick, float time, const std::vector<multiplayer::Transform> &skater) {
     auto &l = live();
@@ -1048,23 +1011,21 @@ Rig rig() {
     const auto snapshot = live().snapshot.load(std::memory_order_acquire);
     return snapshot ? snapshot->rig : Rig{};
 }
-std::vector<std::uint8_t> collect_learned() {
+std::vector<std::uint8_t> collect_recording() {
     auto &l = live();
     std::lock_guard lock(l.pose_mutex);
-    return std::exchange(l.learned_done, {});
+    return std::exchange(l.recorded, {});
 }
-void request_learn(bool at_switch) {
+std::uintptr_t local_holder() noexcept { return live().holder.load(std::memory_order_acquire); }
+void request_recording() {
     auto &l = live();
     std::lock_guard lock(l.pose_mutex);
-    // A finished recording that the editor did not collect is for an earlier learn.
-    l.learned.clear();
-    l.learned_done.clear();
-    l.stage_holder = 0;
-    l.learn_restarts = at_switch ? 1 : 0;
-    l.learn_frames = l.learn_seen = 0;
-    l.learn_started = GetTickCount64();
-    // The restart at the end of the loop ends the recording. Without it, the recording ends after 10 s.
-    l.learn_until.store(l.learn_started + 10000, std::memory_order_release);
+    // A finished recording that the editor did not collect is for an earlier take.
+    l.recording.clear();
+    l.recorded.clear();
+    l.recorded_ticks.clear();
+    l.record_started = trick_pad::game_ticks();
+    l.record_until.store(l.record_started + trick_pad::to_ticks(4000), std::memory_order_release);
 }
 void request_restyle(bool on) { live().restyle.store(on, std::memory_order_release); }
 bool restyling() noexcept { return live().restyle.load(std::memory_order_acquire); }
@@ -1106,24 +1067,13 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool menu_open
     try {
         if (!menu_open) l.preview.store(0, std::memory_order_release);
         // The editor collects a finished recording.
-        if (const auto until = l.learn_until.load(std::memory_order_relaxed); until && GetTickCount64() > until + 200) {
-            l.learn_until.store(0, std::memory_order_relaxed);
-            std::vector<std::uint8_t> recorded;
-            std::uint32_t restarts{}, seen{};
-            float rise{};
-            {
-                std::lock_guard lock(l.pose_mutex);
-                recorded.swap(l.learned);
-                restarts = l.learn_restarts;
-                seen = l.learn_seen;
-                rise = l.learn_high - l.learn_low;
-            }
-            logging::log(logging::Level::info, logging::Channel::skater, "Style: Skatepedia's skater was on the stage in {} frames of the recording. Its root rose {:.2f} m.", seen, rise);
-            logging::log(logging::Level::info, logging::Channel::skater, "Style: recorded {} bytes of other rigs in {} ms{}.", recorded.size(), until - l.learn_started,
-                         restarts >= 2 ? ", one whole loop" : restarts == 1 ? ", until the time limit from one restart" : ", until the time limit with no restart");
-            if (recorded.empty()) recorded.push_back(0); // an empty recording must also reach the editor
+        if (const auto until = l.record_until.load(std::memory_order_relaxed); until && trick_pad::game_ticks() > until + trick_pad::to_ticks(200)) {
+            l.record_until.store(0, std::memory_order_relaxed);
             std::lock_guard lock(l.pose_mutex);
-            l.learned_done = std::move(recorded);
+            logging::log(logging::Level::info, logging::Channel::skater, "Style: recorded {} bytes of the local skater and the boards in {} ms.",
+                         l.recording.size(), trick_pad::to_ms(until - l.record_started));
+            l.recorded = std::exchange(l.recording, {});
+            if (l.recorded.empty()) l.recorded.push_back(0); // an empty recording must also reach the editor
         }
         auto &s = settings();
         {

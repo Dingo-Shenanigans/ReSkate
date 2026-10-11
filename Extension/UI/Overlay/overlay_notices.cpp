@@ -16,21 +16,68 @@ std::mutex notices_mutex;
 std::deque<Notice> notices;
 constexpr std::size_t maximum_notices = 6;
 
-std::atomic<std::uint64_t> cover_until{};
+// The cover fades in when it starts and fades out when its time ends.
+constexpr std::uint64_t cover_fade_ms = 300;
+std::atomic<std::uint64_t> cover_until{}, cover_started{};
 std::mutex cover_mutex;
 std::string cover_text;
-bool cover_pending() { return GetTickCount64() < cover_until.load(std::memory_order_relaxed); }
+bool cover_pending() { return GetTickCount64() < cover_until.load(std::memory_order_relaxed) + cover_fade_ms; }
+// How much the cover hides now, 0 to 1.
+float cover_alpha(std::uint64_t now) {
+    const auto until = cover_until.load(std::memory_order_relaxed), started = cover_started.load(std::memory_order_relaxed);
+    if (now >= until + cover_fade_ms) return 0;
+    const float in = std::clamp(static_cast<float>(now - std::min(now, started)) / cover_fade_ms, 0.0f, 1.0f);
+    const float out = now < until ? 1.0f : 1.0f - static_cast<float>(now - until) / cover_fade_ms;
+    return std::min(in, out);
+}
+std::atomic<std::uint64_t> banner_until{};
+std::string banner_text; // guarded by cover_mutex
+bool banner_pending() { return GetTickCount64() < banner_until.load(std::memory_order_relaxed); }
 }
 void dingosdk::overlay::cover(std::string text, unsigned milliseconds) noexcept {
     try {
         std::lock_guard lock(cover_mutex);
+        const auto now = GetTickCount64();
+        const bool showing = cover_pending();
+        if (!milliseconds) {
+            // The cover fades out from now.
+            if (showing) cover_until.store(std::min(cover_until.load(std::memory_order_relaxed), now), std::memory_order_relaxed);
+            return;
+        }
         cover_text = std::move(text);
-        cover_until.store(milliseconds ? GetTickCount64() + milliseconds : 0, std::memory_order_relaxed);
+        // A new cover fades in. One that is fading out comes back from where it is.
+        if (!showing) cover_started.store(now, std::memory_order_relaxed);
+        else if (now >= cover_until.load(std::memory_order_relaxed))
+            cover_started.store(now - static_cast<std::uint64_t>(cover_alpha(now) * cover_fade_ms), std::memory_order_relaxed);
+        cover_until.store(now + milliseconds, std::memory_order_relaxed);
+    } catch (...) {}
+}
+bool dingosdk::overlay::covered() noexcept { return cover_pending(); }
+void dingosdk::overlay::banner(std::string text, unsigned milliseconds) noexcept {
+    try {
+        std::lock_guard lock(cover_mutex);
+        banner_text = std::move(text);
+        banner_until.store(milliseconds ? GetTickCount64() + milliseconds : 0, std::memory_order_relaxed);
     } catch (...) {}
 }
 namespace dingosdk::overlay::detail {
+void draw_banner() {
+    if (!banner_pending() || cover_pending()) return;
+    std::string text;
+    {
+        std::lock_guard lock(cover_mutex);
+        text = banner_text;
+    }
+    const auto size = ImGui::GetIO().DisplaySize;
+    auto* draw = ImGui::GetForegroundDrawList();
+    const float height = std::max(20.0f, size.y * 0.03f), strip = height * 2.2f;
+    draw->AddRectFilled({0, 0}, {size.x, strip}, IM_COL32(10, 10, 12, 200));
+    const auto extent = ImGui::GetFont()->CalcTextSizeA(height, FLT_MAX, 0.0f, text.c_str());
+    draw->AddText(ImGui::GetFont(), height, {(size.x - extent.x) / 2, (strip - extent.y) / 2}, IM_COL32(235, 235, 235, 255), text.c_str());
+}
 void draw_cover() {
-    if (!cover_pending()) return;
+    const float alpha = cover_alpha(GetTickCount64());
+    if (alpha <= 0) return;
     std::string text;
     {
         std::lock_guard lock(cover_mutex);
@@ -38,13 +85,14 @@ void draw_cover() {
     }
     const auto size = ImGui::GetIO().DisplaySize;
     auto* draw = ImGui::GetForegroundDrawList();
-    draw->AddRectFilled({0, 0}, size, IM_COL32(10, 10, 12, 255));
+    const auto shade = static_cast<int>(alpha * 255);
+    draw->AddRectFilled({0, 0}, size, IM_COL32(10, 10, 12, shade));
     const float height = std::max(22.0f, size.y * 0.035f);
     const auto extent = ImGui::GetFont()->CalcTextSizeA(height, FLT_MAX, 0.0f, text.c_str());
-    draw->AddText(ImGui::GetFont(), height, {(size.x - extent.x) / 2, (size.y - extent.y) / 2}, IM_COL32(235, 235, 235, 255), text.c_str());
+    draw->AddText(ImGui::GetFont(), height, {(size.x - extent.x) / 2, (size.y - extent.y) / 2}, IM_COL32(235, 235, 235, shade), text.c_str());
 }
 bool notices_pending() {
-    if (cover_pending()) return true;
+    if (cover_pending() || banner_pending()) return true;
     std::lock_guard lock(notices_mutex);
     return !notices.empty();
 }

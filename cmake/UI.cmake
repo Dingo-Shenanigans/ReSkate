@@ -25,6 +25,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/park_previews.cpp
     Extension/UI/Overlay/gpu_diagnostics.cpp
     Extension/UI/Overlay/input_capture.cpp
+    Extension/UI/Overlay/scripted_pad.cpp
     Extension/UI/Overlay/playstation_input.cpp
     Extension/UI/Overlay/cursor.cpp
     Extension/UI/Overlay/progression_menu.cpp

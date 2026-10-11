@@ -259,6 +259,10 @@ void draw_console();
 bool notices_pending();
 void draw_notices();
 void draw_cover();
+void draw_banner();
+// True while the cover or the banner shows. The game's input reads then stop (input_capture.cpp).
+bool cover_pending();
+bool banner_pending();
 
 // Multiplayer text chat in the bottom-right corner (chat_overlay.cpp).
 // chat_pending also refreshes the feed, so it runs every presented frame.

@@ -35,7 +35,10 @@ struct State {
     std::uint64_t next_poll{};
     std::optional<Key> move_cursor;
     std::optional<Key> dirty_cursor;
+    std::map<Key, profile::PlacedObject> stage; // also in `desired`
 };
+// The style stage's owner. Steam ids are far larger, so no player has it.
+constexpr std::uint64_t stage_owner = 1;
 State &state() {
     static State value;
     return value;
@@ -253,15 +256,15 @@ void update_network_object_moves() {
     if (s.map != placements_runtime().map || !network_object_native_ready() || s.live.empty())
         return;
     const auto now = GetTickCount64();
-    // An object whose target differs from what was last applied is moved at once; the
+    // An object marked dirty, or whose target differs from what was last applied, is moved at once; the
     // rest are put back where their owner has them every 10 s (the game's own tools can
     // move a copy, and a move made before its physics body existed placed only the
     // model), not every second as before. A failed move retries a second later.
-    const auto move = [&](auto it) {
+    const auto move = [&](auto it, bool dirty) {
         auto &live = it->second;
         const auto wanted = s.desired.find(it->first);
         if (!live.delete_sent && wanted != s.desired.end() && wanted->second.item == live.applied.item &&
-            (wanted->second != live.applied || now >= live.refresh)) {
+            (dirty || wanted->second != live.applied || now >= live.refresh)) {
             try {
                 move_network_object(live.entity, wanted->second);
                 live.applied = wanted->second;
@@ -284,7 +287,7 @@ void update_network_object_moves() {
         s.dirty_cursor = key;
         s.dirty.erase(next);
         if (auto found = s.live.find(key); found != s.live.end()) {
-            move(found);
+            move(found, true);
             ++used;
         }
     }
@@ -293,7 +296,7 @@ void update_network_object_moves() {
         it = s.live.begin();
     const auto budget = std::min<std::size_t>(128 - used, s.live.size());
     for (std::size_t i = 0; i < budget; ++i) {
-        move(it);
+        move(it, false);
         s.move_cursor = it->first;
         if (++it == s.live.end())
             it = s.live.begin();
@@ -332,7 +335,7 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
                        found->second.scale == object.scale;
             }
         }
-        if (same && total == s.desired.size() &&
+        if (same && total + s.stage.size() == s.desired.size() &&
             std::all_of(s.failed_creates.begin(), s.failed_creates.end(),
                         [&](const auto &key) { return s.desired.contains(key); }))
             return;
@@ -355,6 +358,7 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
     }
     std::lock_guard lock(local_runtime().native_mutex);
     auto &s = network_objects_detail::state();
+    desired.insert(s.stage.begin(), s.stage.end());
     for (const auto &[key, object] : desired) {
         const auto found = s.live.find(key);
         if (found != s.live.end() && found->second.applied != object)
@@ -368,7 +372,7 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
 void clear_remote_network_objects() {
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
     auto &s = profile_runtime::network_objects_detail::state();
-    s.desired.clear(); // Retain live handles until native deletion is acknowledged.
+    s.desired = s.stage; // Retain live handles until native deletion is acknowledged.
     s.dirty.clear();
     profile_runtime::network_objects_detail::refresh_budget();
 }
@@ -383,6 +387,44 @@ void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch) {
     std::erase_if(s.dirty,
                   [&](const auto &key) { return std::get<0>(key) == owner && std::get<1>(key) == epoch; });
     profile_runtime::network_objects_detail::refresh_budget();
+}
+bool set_stage_objects(std::string_view map, std::span<const profile::PlacedObject> objects) {
+    using namespace profile_runtime;
+    using network_objects_detail::Key, network_objects_detail::stage_owner;
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto &s = network_objects_detail::state();
+    if (map.empty() || placements_runtime().map != map) return false;
+    // Other players' objects on another map: not the stage's to replace.
+    if (s.map != map && std::ranges::any_of(s.desired, [](const auto &row) { return std::get<0>(row.first) != stage_owner; }))
+        return false;
+    std::map<Key, profile::PlacedObject> stage;
+    for (const auto &object : objects) stage.emplace(Key{stage_owner, 1, object.id}, object);
+    for (const auto &[key, object] : s.stage)
+        if (!stage.contains(key)) s.desired.erase(key);
+    // Moved again even when unchanged: a move made before an object's physics body exists places only its model.
+    for (const auto &[key, object] : stage) {
+        if (s.live.contains(key)) s.dirty.insert(key);
+        s.desired[key] = object;
+    }
+    s.stage = std::move(stage);
+    s.map = map;
+    network_objects_detail::refresh_budget();
+    network_objects_detail::creates_pending.store(true, std::memory_order_release);
+    return true;
+}
+std::optional<profile::PlacedObject> stage_object(std::uint64_t id) {
+    std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
+    const auto &s = profile_runtime::network_objects_detail::state();
+    const auto live = s.live.find({profile_runtime::network_objects_detail::stage_owner, 1, id});
+    if (live == s.live.end() || live->second.delete_sent) return std::nullopt;
+    return live->second.applied;
+}
+std::optional<std::string> stage_map() {
+    using namespace profile_runtime;
+    std::lock_guard lock(local_runtime().native_mutex);
+    if (!local_runtime().active.load(std::memory_order_acquire) || !placement_session_ready() || !network_object_native_ready())
+        return std::nullopt;
+    return placements_runtime().map;
 }
 std::string network_object_status() {
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
