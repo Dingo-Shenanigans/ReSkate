@@ -119,16 +119,18 @@ struct Live {
     std::vector<std::uint8_t> recording, recorded;
     std::vector<std::pair<std::uintptr_t, std::uint64_t>> recorded_ticks;
     std::uint64_t record_started{};
-    // A cache of the kind of each other rig.
+    // A cache of the kind of each other rig, one slot for each hash of the holder. It has its own lock, so that render calls do
+    // not wait on the pose bookkeeping.
     struct Seen {
         std::uintptr_t holder{};
         std::uint64_t checked{};
         std::uint8_t kind{}; // 1: a skater. 2: a small rig such as a skateboard
     };
+    std::mutex seen_mutex;
     std::atomic<std::uint64_t> clear_stage{}; // the time until which the menu's skater and board stay hidden
     std::atomic<std::uint64_t> stage_watch{};  // the time until which other rigs are checked for the menu room
     std::atomic<std::uintptr_t> ignored_board{};
-    std::array<Seen, 64> seen;
+    std::array<Seen, 256> seen;
     std::vector<style::JointDelta> timeline;
     // Other skaters on the standard skeleton that show the preview or a restyle.
     struct Other {
@@ -138,6 +140,8 @@ struct Live {
         std::vector<style::JointDelta> shown;
     };
     std::array<Other, 8> others;
+    std::atomic<bool> others_held{}; // a slot of `others` is in use, so its rig must get the game's rotations back
+    std::atomic<bool> frames_known{}; // `takes` or `demos` has frames, so a replay can be restyled
     std::atomic<std::uint64_t> other_calls{};
 };
 Live &live() { static auto *value = new Live; return *value; }
@@ -265,32 +269,29 @@ void apply(std::uintptr_t component) {
     (void)write_pose(l.tracker, memory::peek_pointer(component, addr::style::component_pose_holder), written, &l.buffer);
     // The layer keeps the frame as shown, so that it can restyle a replay of this trick.
     if (moment.trick && snapshot && !preview)
-        if (const auto shown = signature(memory::peek_pointer(component, addr::style::component_pose_holder), *snapshot, nullptr))
+        if (const auto shown = signature(memory::peek_pointer(component, addr::style::component_pose_holder), *snapshot, nullptr)) {
             l.takes.add({moment.trick, moment.time, *shown, written});
+            l.frames_known.store(true, std::memory_order_release);
+        }
 }
 // Returns 1 for the skater skeleton, 2 for a small rig such as a skateboard, 0 for all others. The answer is cached for 2 s.
 std::uint8_t other_kind(std::uintptr_t holder) noexcept {
     auto &l = live();
     const auto now = GetTickCount64();
-    std::lock_guard lock(l.pose_mutex);
-    Live::Seen *slot = &l.seen[0];
-    for (auto &seen : l.seen) {
-        if (seen.holder == holder) {
-            slot = &seen;
-            break;
-        }
-        if (seen.checked < slot->checked) slot = &seen;
+    auto &slot = l.seen[static_cast<std::size_t>((static_cast<std::uint64_t>(holder) >> 4) * 0x9e3779b97f4a7c15ull >> 56)];
+    {
+        std::lock_guard lock(l.seen_mutex);
+        if (slot.holder == holder && now <= slot.checked + 2000) return slot.kind;
     }
-    if (slot->holder != holder || now > slot->checked + 2000) {
-        std::uint8_t kind{};
-        try {
-            const auto pose = multiplayer::read_native_pose_layout(memory::peek_bytes, l.base.load(std::memory_order_acquire), holder, 512);
-            if (pose.buffer) kind = pose.count == skeleton_joints ? 1 : pose.count >= 2 && pose.count <= 32 ? 2 : 0;
-        } catch (...) {}
-        // A new rig can have no pose yet, so an unreadable rig is examined again soon.
-        *slot = {holder, kind ? now : now < l.clear_stage.load(std::memory_order_relaxed) ? now - 2001 : now - 1900, kind};
-    }
-    return slot->kind;
+    std::uint8_t kind{};
+    try {
+        const auto pose = multiplayer::read_native_pose_layout(memory::peek_bytes, l.base.load(std::memory_order_acquire), holder, 512);
+        if (pose.buffer) kind = pose.count == skeleton_joints ? 1 : pose.count >= 2 && pose.count <= 32 ? 2 : 0;
+    } catch (...) {}
+    // A new rig can have no pose yet, so an unreadable rig is examined again soon.
+    std::lock_guard lock(l.seen_mutex);
+    slot = {holder, kind ? now : now < l.clear_stage.load(std::memory_order_relaxed) ? now - 2001 : now - 1900, kind};
+    return kind;
 }
 // Hides a rig that is in the menu room, so that only the stand-in shows there.
 void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
@@ -315,10 +316,14 @@ void clear_from_stage(std::uintptr_t holder, bool skater, bool clear) noexcept {
                 float scale{};
                 if (memory::peek(pose.buffer + bone_size, scale) && scale < 0.01f) (void)write_scale(pose.buffer + bone_size, 1.0f);
             }
-            // The layer restores the scale of a board in the same way.
-            if (!skater && !clear && joint == 1) {
+            // The layer restores a board in the same way: each moved joint goes back up, and the board gets its scale back.
+            if (!skater && !clear) {
+                if (moved) {
+                    position[1] += 2000.0f;
+                    (void)poke(at, position);
+                }
                 Quat scale{};
-                if (memory::peek(pose.buffer + bone_size, scale) && scale[0] == 0.0f && scale[1] == 0.0f)
+                if (joint == 1 && memory::peek(pose.buffer + bone_size, scale) && scale[0] == 0.0f && scale[1] == 0.0f)
                     for (std::size_t each = 0; each < std::min<std::size_t>(pose.count, 32); ++each) (void)write_scale(pose.buffer + each * bone_size, 1.0f);
             }
             if (moved || !clear) continue;
@@ -361,6 +366,15 @@ void record(std::uintptr_t holder) noexcept {
 void preview_other(std::uintptr_t holder) noexcept {
     auto &l = live();
     if (holder == l.ignored.load(std::memory_order_acquire) || holder == l.ignored_board.load(std::memory_order_acquire)) return;
+    // Most calls need nothing: the rig's kind is looked up only for a recording, the menu room, a rig to put back, or a preview
+    // or restyle, which show only in solo play.
+    const bool recording = trick_pad::game_ticks() < l.record_until.load(std::memory_order_relaxed);
+    const bool watching = GetTickCount64() < l.stage_watch.load(std::memory_order_relaxed);
+    const bool styling = (l.preview.load(std::memory_order_acquire) ||
+                          (l.active.load(std::memory_order_acquire) && l.restyle.load(std::memory_order_acquire) &&
+                           l.frames_known.load(std::memory_order_acquire))) &&
+                         style_layer::solo();
+    if (!recording && !watching && !styling && !l.others_held.load(std::memory_order_acquire)) return;
     const auto kind = other_kind(holder);
     // A recording of the local skater keeps the boards too: one of them is the skater's.
     if (kind == 2 && trick_pad::game_ticks() < l.record_until.load(std::memory_order_relaxed)) record(holder);
@@ -424,6 +438,7 @@ void preview_other(std::uintptr_t holder) noexcept {
             }
             slot = oldest;
             *slot = {holder, std::make_unique<style::PoseTracker>(skeleton_joints), now, {}};
+            l.others_held.store(true, std::memory_order_release);
         }
         slot->seen = now;
         if (solo && preview) {
@@ -436,6 +451,7 @@ void preview_other(std::uintptr_t holder) noexcept {
         if (write_pose(*slot->tracker, holder, wanted ? slot->shown : none))
             l.other_calls.fetch_add(1, std::memory_order_relaxed);
         if (!wanted && slot->tracker->adjusted().empty()) *slot = {};
+        l.others_held.store(std::ranges::any_of(l.others, [](const Live::Other &other) { return other.holder != 0; }), std::memory_order_release);
     } catch (...) {
         l.failures.fetch_add(1, std::memory_order_relaxed);
     }
@@ -553,7 +569,8 @@ std::vector<std::string> list_presets(const std::string &in_use) {
         for (const auto c : wide) file.push_back(static_cast<char>(c));
         if (file.size() <= preset_extension.size() || !file.ends_with(preset_extension)) continue;
         auto name = file.substr(0, file.size() - preset_extension.size());
-        if (style::preset_name(name) && name != in_use) names.push_back(std::move(name));
+        // Windows file names ignore case, so a name in another case is the preset in use.
+        if (style::preset_name(name) && !style::same_text(name, in_use)) names.push_back(std::move(name));
     }
     std::ranges::sort(names);
     return names;
@@ -998,12 +1015,14 @@ bool add_demo(std::uint8_t trick, float time, const std::vector<multiplayer::Tra
     }
     std::lock_guard lock(l.pose_mutex);
     l.demos.add(std::move(frame));
+    l.frames_known.store(true, std::memory_order_release);
     return true;
 }
 void clear_demos() {
     auto &l = live();
     std::lock_guard lock(l.pose_mutex);
     l.demos = {};
+    l.frames_known.store(l.takes.size() != 0, std::memory_order_release);
 }
 void keep_stage_clear() noexcept { live().clear_stage.store(GetTickCount64() + 500, std::memory_order_relaxed); }
 void watch_stage() noexcept { live().stage_watch.store(GetTickCount64() + 2000, std::memory_order_relaxed); }

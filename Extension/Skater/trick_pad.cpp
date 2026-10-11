@@ -2,6 +2,8 @@
 #include "style_layer.h"
 #include "trick_gestures.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/style.h"
 #include "Engine/Game/Skater/style_pose.h"
 #include "Extension/UI/Overlay/scripted_pad.h"
 #include <windows.h>
@@ -141,7 +143,7 @@ bool play(std::string_view gesture, std::string_view steps, std::string &error) 
         // Y also has a use on the board, so a skater who is on it already is left alone.
         std::uint32_t physics{};
         std::int32_t flip{};
-        if (style_layer::local_trick(physics, flip) && physics != 504) {
+        if (style_layer::local_trick(physics, flip) && physics != addr::style::offboard_state) {
             log(std::format("mount skipped: the skater is in physics state {}, not on foot.", physics));
             return true;
         }

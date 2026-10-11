@@ -26,8 +26,10 @@ void register_style_commands(Commands &registry) {
                         style_layer::sharing);
     share.reset = [](const Model &, const Output &) { style_layer::request_share(true); };
     registry.add(std::move(share));
-    registry.add(on_off("style restyle", "Show replayed flip tricks with your current style (1) or as you skated them (0)",
-                        style_layer::request_restyle, style_layer::restyling));
+    auto restyle = on_off("style restyle", "Show replayed flip tricks with your current style (1) or as you skated them (0)",
+                          style_layer::request_restyle, style_layer::restyling);
+    restyle.reset = [](const Model &, const Output &) { style_layer::request_restyle(true); };
+    registry.add(std::move(restyle));
     auto state = argument("target");
     state.choices.assign(style::family_names.begin(), style::family_names.end());
     state.choices.insert(state.choices.end(), style::flip_trick_names.begin() + 1, style::flip_trick_names.end());

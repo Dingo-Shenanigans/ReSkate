@@ -13,6 +13,8 @@ inline constexpr std::uintptr_t core_context = 0x3c0;
 inline constexpr std::uintptr_t context_physics_state = 0x1414;
 // State id families: ground and air riding, grinds, and on foot.
 inline constexpr std::uint32_t riding_states_begin = 100, riding_states_end = 300;
+// The riding states in the air: from here to riding_states_end.
+inline constexpr std::uint32_t air_states_begin = 200;
 inline constexpr std::uint32_t grind_states_begin = 400, grind_states_end = 500;
 inline constexpr std::uint32_t offboard_state = 504;
 // Physics core -> trick selection object. No code site is fingerprinted, so readers range-check the value.

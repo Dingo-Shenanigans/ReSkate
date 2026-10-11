@@ -23,8 +23,15 @@ std::string network_object_status();
 bool set_stage_objects(std::string_view map, std::span<const profile::PlacedObject> objects);
 // The stage object `id` as the game has it, once it exists.
 std::optional<profile::PlacedObject> stage_object(std::uint64_t id);
-// The map objects are placed on now, or nothing when they cannot be placed.
-std::optional<std::string> stage_map();
+// Where objects are placed now. `world` changes each time the world's objects are reset (a new map, or the same map
+// loaded again), which removes the stage's objects.
+struct StagePlace {
+    std::string map;
+    std::uint64_t world{};
+    bool operator==(const StagePlace &) const = default;
+};
+// Where objects are placed now, or nothing when they cannot be placed now (a load, or a failed save).
+std::optional<StagePlace> stage_map();
 // Client update thread, every frame: queues the next of other players' objects
 // while some are still to be created (a no-op otherwise).
 void tick_network_objects() noexcept;

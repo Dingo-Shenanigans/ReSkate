@@ -4,6 +4,8 @@
 #include "trick_pad.h"
 #include "trick_stage.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/style.h"
 #include "Engine/Game/Skater/style_pose.h"
 #include "Extension/Settings/named_settings.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
@@ -18,7 +20,7 @@
 namespace dingosdk::trick_recorder {
 namespace {
 // Physics states: on foot, and on the board on the ground.
-constexpr std::uint32_t on_foot = 504, on_board = 100;
+constexpr std::uint32_t on_foot = addr::style::offboard_state, on_board = addr::style::riding_ground_state;
 constexpr int tries_each = 3;
 // The game's simulation while it records: the tick rate of the recording, at normal speed. A slow machine then only takes
 // longer to record the same ticks.

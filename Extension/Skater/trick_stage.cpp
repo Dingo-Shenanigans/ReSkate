@@ -29,7 +29,8 @@ struct State {
     std::mutex mutex;
     Phase phase{};
     bool want_open{}, want_close{}, ui_was_hidden{}, hid_ui{};
-    std::string map, message{"The stage is closed."};
+    StagePlace place;
+    std::string message{"The stage is closed."};
     std::array<float, 3> back{};
     std::array<float, 2> centre{spot[0], spot[2]};
     std::uint64_t since{}, steady_since{}, made{};
@@ -49,11 +50,11 @@ void say(State &s, std::string message, logging::Level level = logging::Level::i
 float floor_height() { return spot[1] + floor_top + standing; }
 bool place(State &s) {
     const profile::PlacedObject floor{floor_id, floor_item, {s.centre[0], spot[1], s.centre[1]}, {0, 0, 0, 1}, floor_scale};
-    return set_stage_objects(s.map, std::span(&floor, 1));
+    return set_stage_objects(s.place.map, std::span(&floor, 1));
 }
 // Removes the floor and, once the skater is on it, takes them back. `left` is false when the map went away with it.
 void finish(State &s, std::string message, bool left = true) {
-    if (left) (void)set_stage_objects(s.map, {});
+    if (left) (void)set_stage_objects(s.place.map, {});
     const bool sent = left && s.phase != Phase::placing && teleport_local_skater(s.back);
     if (s.hid_ui) console::request_debug(overlay::DebugAction::set_game_ui_hidden, false);
     s.hid_ui = false;
@@ -134,7 +135,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 s.want_open = true;
                 return;
             }
-            s.map = *map;
+            s.place = *map;
             s.back = *at;
             s.centre = {spot[0], spot[2]};
             if (!place(s)) return say(s, "The stage's floor could not be asked for.");
@@ -144,8 +145,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.moved = false;
             return say(s, "Placing the stage.");
         }
-        // A new map takes the stage's objects with it.
-        if (!map || *map != s.map) return finish(s, "The stage closed: the map changed.", false);
+        // Objects cannot be placed for a moment (a load, or a save that failed): the stage waits.
+        if (!map) return;
+        // A new map, or the same map loaded again, takes the stage's objects with it.
+        if (*map != s.place) return finish(s, "The stage closed: the map changed.", false);
         switch (s.phase) {
         case Phase::placing:
             // The game makes a pad at scale 1 and the move that follows gives it its scale. A move made before the

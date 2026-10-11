@@ -89,6 +89,8 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     const auto missions = dingosdk::local_profile_missions();
     std::vector<dingosdk::overlay::MissionRow> rows;
     for (const auto& row : missions.rows) rows.push_back({row.id, row.group, row.completed});
+    auto style = dingosdk::style_layer::model();
+    dingosdk::style_editor::fill(style);
     std::lock_guard lock(r.mutex);
     r.model.world = std::move(world);
     r.model.world_controls = std::move(controls);
@@ -99,8 +101,7 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     r.model.object_persistence = std::move(object_persistence);
     r.model.editor = std::move(editor);
     r.model.bindings = std::move(bindings);
-    r.model.style = dingosdk::style_layer::model();
-    dingosdk::style_editor::fill(r.model.style);
+    r.model.style = std::move(style);
     r.model.missions_available = missions.available;
     r.model.mission_feedback = missions.feedback;
     r.model.missions = std::move(rows);

@@ -514,28 +514,8 @@ bool camera_pose(std::array<float, 16> &matrix) noexcept {
     auto &s = state();
     if (!s.targeted.load(std::memory_order_relaxed)) return false;
     const auto value = [](const std::atomic<std::uint32_t> &bits) { return std::bit_cast<float>(bits.load(std::memory_order_relaxed)); };
-    const float yaw = value(s.yaw), pitch = value(s.pitch), distance = value(s.distance);
-    // Rows: right, up, backward, position. Backward points from the stand-in to the camera.
-    const std::array<float, 3> back{std::cos(pitch) * std::sin(yaw), std::sin(pitch), std::cos(pitch) * std::cos(yaw)};
-    const auto cross = [](const std::array<float, 3> &a, const std::array<float, 3> &b) {
-        return std::array<float, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-    };
-    auto right = cross({0, 1, 0}, back);
-    const float length = std::sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
-    if (length < 1e-4f) return false;
-    for (auto &axis : right) axis /= length;
-    const auto up = cross(back, right);
-    // The camera keeps the handedness it had.
-    const auto had = cross({matrix[0], matrix[1], matrix[2]}, {matrix[4], matrix[5], matrix[6]});
-    if (had[0] * matrix[8] + had[1] * matrix[9] + had[2] * matrix[10] < 0)
-        for (auto &axis : right) axis = -axis;
-    for (std::size_t i = 0; i < 3; ++i) {
-        matrix[i] = right[i];
-        matrix[4 + i] = up[i];
-        matrix[8 + i] = back[i];
-        matrix[12 + i] = value(s.target[i]) + (i == 1 ? value(s.height) : 0.0f) + back[i] * distance;
-    }
-    return true;
+    return style_layer::orbit_camera(matrix, value(s.yaw), value(s.pitch), value(s.distance),
+                                     {value(s.target[0]), value(s.target[1]), value(s.target[2])}, value(s.height));
 }
 style::Playhead playhead() noexcept {
     auto &s = state();
@@ -701,12 +681,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         // of the pop. One time for each shown trick. The skater's facing, not the board's: a board can start a clip turned round.
         if (s.framed != s.shown->trick) {
             s.framed = s.shown->trick;
-            const auto &q = opening.pose.root.rotation;
-            const float along = std::atan2(1 - 2 * (q[1] * q[1] + q[2] * q[2]), 2 * (q[0] * q[2] - q[3] * q[1]));
-            s.yaw.store(std::bit_cast<std::uint32_t>(std::remainder(along + addr::style::editor_camera_turn, 6.2831853f)), std::memory_order_relaxed);
-            s.pitch.store(std::bit_cast<std::uint32_t>(0.05f), std::memory_order_relaxed);
-            s.distance.store(std::bit_cast<std::uint32_t>(3.6f), std::memory_order_relaxed);
-            s.height.store(std::bit_cast<std::uint32_t>(0.1f), std::memory_order_relaxed);
+            s.yaw.store(std::bit_cast<std::uint32_t>(style_layer::editor_yaw(opening.pose.root.rotation)), std::memory_order_relaxed);
+            s.pitch.store(std::bit_cast<std::uint32_t>(style_layer::editor_pitch), std::memory_order_relaxed);
+            s.distance.store(std::bit_cast<std::uint32_t>(style_layer::editor_distance), std::memory_order_relaxed);
+            s.height.store(std::bit_cast<std::uint32_t>(style_layer::editor_height), std::memory_order_relaxed);
         }
         s.shown_time.store(std::bit_cast<std::uint32_t>(std::clamp(time, 0.0f, style::trick_end)), std::memory_order_relaxed);
         s.shown_playing.store(s.playing, std::memory_order_relaxed);

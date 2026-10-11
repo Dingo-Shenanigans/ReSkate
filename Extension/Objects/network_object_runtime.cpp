@@ -48,6 +48,7 @@ State &state() {
 // customization update, which paced a big park at two objects a second.
 std::atomic<bool> creates_pending{};
 std::atomic<std::uint32_t> extra_budget{};
+std::uint64_t world_resets{}; // under the native mutex
 // Do not reuse a tag after level teardown: a late queued message must be rejected.
 std::uint32_t next_source{};
 void refresh_budget() {
@@ -72,6 +73,7 @@ std::uint32_t network_object_extra_budget() noexcept {
 }
 void reset_network_object_world() {
     network_objects_detail::state() = {};
+    ++network_objects_detail::world_resets;
     network_objects_detail::creates_pending.store(false, std::memory_order_release);
     network_objects_detail::refresh_budget();
 }
@@ -419,12 +421,12 @@ std::optional<profile::PlacedObject> stage_object(std::uint64_t id) {
     if (live == s.live.end() || live->second.delete_sent) return std::nullopt;
     return live->second.applied;
 }
-std::optional<std::string> stage_map() {
+std::optional<StagePlace> stage_map() {
     using namespace profile_runtime;
     std::lock_guard lock(local_runtime().native_mutex);
     if (!local_runtime().active.load(std::memory_order_acquire) || !placement_session_ready() || !network_object_native_ready())
         return std::nullopt;
-    return placements_runtime().map;
+    return StagePlace{placements_runtime().map, network_objects_detail::world_resets};
 }
 std::string network_object_status() {
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);

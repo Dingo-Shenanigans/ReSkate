@@ -165,6 +165,8 @@ int main() {
         check(run("style") && printed.find("status line") != std::string::npos, "style alone shows the status");
         check(run("style share 0") && !calls.share, "style share 0 hides the style from others");
         check(run("style restyle 0") && !calls.restyle, "style restyle 0 leaves replays as they were skated");
+        if (const auto *restyle = registry.find("style restyle"); restyle && restyle->reset) restyle->reset(model, out);
+        check(calls.restyle, "a reset of style restyle turns it on, its default");
         check(run("style joint grind LeftArm 10 -20 30.5") && calls.target == dingosdk::style::Target{false, 1} &&
                   calls.joint == "LeftArm" && calls.x == 10 && calls.y == -20 && calls.z == 30.5f,
               "style joint passes the state, joint and angles");
