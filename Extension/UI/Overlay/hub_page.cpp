@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -885,7 +886,7 @@ void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- Mod Options
 
-enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
+enum ToolsTab : int { quick_tab, official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
 
 // The next (or the one before) of a setting's steps from where it is now; it stops at the ends.
 template<std::size_t N> float stepped(float current, const std::array<float, N> &steps, int direction) {
@@ -1035,6 +1036,46 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     };
 
     switch (h.tools_tab) {
+    case quick_tab: {
+        Column list(ui, hash("quick"), a, ImVec2(a.x + column_width, z.y));
+        list.heading("RESKATE CENTRAL");
+        list.note("Travel, set the session time or open the Trainer without digging through the full menus.");
+
+        std::vector<const Level*> maps;
+        for (const auto& entry : m.levels)
+            if (native_tools::listed(entry)) maps.push_back(&entry);
+        std::sort(maps.begin(), maps.end(), [](const auto* x, const auto* y) {
+            if (x->custom != y->custom) return x->custom < y->custom;
+            return native_tools::level_name(*x) < native_tools::level_name(*y);
+        });
+        const auto* selected = native_tools::level(m, h.tools.destination);
+        const std::string selected_name = selected ? native_tools::level_name(*selected) : "Choose a map";
+        if (const int way = list.adjust("Map", selected_name, !maps.empty() && !multiplayer_controls_level(mp))) {
+            auto at = maps.begin();
+            if (selected) at = std::find(maps.begin(), maps.end(), selected);
+            if (at == maps.end()) at = way > 0 ? maps.begin() : std::prev(maps.end());
+            else if (way > 0) at = std::next(at) == maps.end() ? maps.begin() : std::next(at);
+            else at = at == maps.begin() ? std::prev(maps.end()) : std::prev(at);
+            h.tools.destination = (*at)->asset;
+        }
+        if (list.setting("Load selected map", {}, native_tools::can_load(h.tools, m, cb))) act("load-level");
+        if (selected) list.note(selected->custom ? "Custom map" : "Official map");
+
+        list.title("TIME OF DAY");
+        const bool time_ready = native_tools::time_of_day_available(m, cb);
+        const unsigned current = native_tools::time_of_day(m);
+        if (const int way = list.adjust("Time", native_tools::time_of_day_labels[current], time_ready)) {
+            const auto count = static_cast<unsigned>(native_tools::time_of_day_labels.size());
+            const auto next = static_cast<unsigned>((current + count + (way > 0 ? 1 : count - 1)) % count);
+            for (const auto& line : native_tools::time_of_day_commands(m, next)) run(line);
+        }
+
+        list.title("TOOLS");
+        if (list.setting("Open Trainer", {}, console)) run("trainer open");
+        list.note(h.notice);
+        list.end();
+        break;
+    }
     case official_tab: levels(false, "FIND YOUR SPOT", "Waiting for available levels...", ""); break;
     case custom_tab: levels(true, "CUSTOM MAPS", "No custom maps installed.", "Custom maps from the Mods folder appear here."); break;
     case world_tab: {
@@ -1498,7 +1539,7 @@ void draw_hub_page() {
         int multiplayer_tab = static_cast<int>(h.tab);
         int &open = tools ? h.tools_tab : multiplayer_tab;
         if (tools) {
-            tabs = {{official_tab, "OFFICIAL MAPS"}, {custom_tab, "CUSTOM MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
+            tabs = {{quick_tab, "QUICK"}, {official_tab, "OFFICIAL MAPS"}, {custom_tab, "CUSTOM MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
                     {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};

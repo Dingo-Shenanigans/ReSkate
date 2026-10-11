@@ -433,8 +433,8 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     context.set(context.field(backdrop_stack, 0x3b14d43c), false);
     context.set(context.field(backdrop_stack, 0x2a98baa3), false);
     build_back_action(context, s);
-    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "MOD OPTIONS"},
-        tab_names{"Multiplayer", "Mod Options"};
+    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "RESKATE CENTRAL"},
+        tab_names{"Multiplayer", "ReSkate"};
     context.text(context.path(s.page, {0x3781b603, text_field}), titles[s.slot]);
     context.set(context.field(s.page, 0xe1d821a3), true);
     context.set(context.field(s.page, 0x616cb924), false);
