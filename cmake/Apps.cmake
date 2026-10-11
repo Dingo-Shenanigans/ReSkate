@@ -246,4 +246,42 @@ else()
     target_link_libraries(dingosdk_server PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
         dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
     set_target_properties(dingosdk_server PROPERTIES OUTPUT_NAME "ReSkateServer")
+
+    # ReSkateServerGUI: the same server with the Windows server's window (Server/GUI), on SDL3 and
+    # OpenGL 3. Built only where SDL3 is installed; ReSkateServer itself needs neither, so headless
+    # hosts keep running it as before.
+    find_package(SDL3 QUIET CONFIG)
+    if(SDL3_FOUND)
+        # The window's fonts, built in as the Windows build's resources are (server_gui_fonts.h).
+        set(server_gui_fonts "${CMAKE_CURRENT_BINARY_DIR}/generated/server_gui_fonts.h")
+        set(server_gui_font_header "#pragma once\n#include <span>\n\nnamespace dingosdk::server_gui::embedded_fonts {\n")
+        foreach(entry "body;Montserrat-SemiBold.ttf" "heading;Montserrat-ExtraBold.ttf" "brush;PermanentMarker-Regular.ttf")
+            list(GET entry 0 font_name)
+            list(GET entry 1 font_file)
+            set(font_path "${PROJECT_SOURCE_DIR}/External/fonts/${font_file}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${font_path}")
+            file(READ "${font_path}" font_hex HEX)
+            string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," font_bytes "${font_hex}")
+            string(APPEND server_gui_font_header "inline constexpr unsigned char ${font_name}_data[] = {${font_bytes}};\n"
+                "inline constexpr std::span<const unsigned char> ${font_name}{${font_name}_data};\n")
+        endforeach()
+        string(APPEND server_gui_font_header "} // namespace dingosdk::server_gui::embedded_fonts\n")
+        file(CONFIGURE OUTPUT "${server_gui_fonts}" CONTENT "${server_gui_font_header}" @ONLY)
+
+        add_library(dingosdk_imgui_gl STATIC
+            External/imgui/imgui.cpp External/imgui/imgui_draw.cpp External/imgui/imgui_tables.cpp
+            External/imgui/imgui_widgets.cpp External/imgui/backends/imgui_impl_sdl3.cpp
+            External/imgui/backends/imgui_impl_opengl3.cpp)
+        target_include_directories(dingosdk_imgui_gl SYSTEM PUBLIC "${PROJECT_SOURCE_DIR}/External/imgui")
+        target_link_libraries(dingosdk_imgui_gl PUBLIC SDL3::SDL3 dl)
+
+        get_target_property(server_sources dingosdk_server SOURCES)
+        add_executable(dingosdk_server_gui ${server_sources} Server/GUI/server_gui.cpp)
+        target_compile_definitions(dingosdk_server_gui PRIVATE DINGOSDK_SERVER_GUI)
+        target_include_directories(dingosdk_server_gui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+        target_include_directories(dingosdk_server_gui SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+        target_link_libraries(dingosdk_server_gui PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dingosdk_imgui_gl dl pthread)
+        set_target_properties(dingosdk_server_gui PROPERTIES OUTPUT_NAME "ReSkateServerGUI")
+    endif()
 endif()

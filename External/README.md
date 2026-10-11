@@ -50,6 +50,10 @@ append sink. The launcher resets the single file before the runtime appends to
 it, so two processes never use competing buffered file offsets. This layout
 takes inspiration from [R5SDK's logger](https://github.com/R5Reloaded/r5sdk/blob/p4sync/src/core/logger.cpp).
 
+ImGui's SDL3 and OpenGL 3 backends (`backends/imgui_impl_sdl3.*`, `backends/imgui_impl_opengl3*`) come
+from the same pinned revision, unmodified. Only the Linux server window (`ReSkateServerGUI`) uses them; it
+is built when SDL3 is installed, and the OpenGL loader opens `libGL` at run time.
+
 SQLite is the unmodified official C amalgamation, compiled into the runtime. `manifest.json` includes the archive SHA3-256 and individual source
 SHA-256 hashes. Extension loading and double-quoted SQL string literals are
 disabled; thread safety is enabled. ReSkate uses prepared statements, strict domain

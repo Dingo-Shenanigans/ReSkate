@@ -760,7 +760,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int cmd_show) {
     }
 }
 #else
+#ifdef DINGOSDK_SERVER_GUI
+#include "GUI/server_gui.h"
+#endif
 int main(int argc, char **argv) {
+#ifdef DINGOSDK_SERVER_GUI
+    // ReSkateServerGUI: the window, as on Windows, unless asked for the console server.
+    bool headless = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--headless" || arg == "--cli" || arg == "--no-gui" || arg == "-nogui" || arg == "-headless" || arg == "-cli" ||
+            arg == "--export-world-layers")
+            headless = true;
+    }
+    if (!headless) return dingosdk::server_gui::run_gui();
+#endif
     const int code = serve(argc, argv);
     finished = true;
     console().flush(std::chrono::seconds(2));
