@@ -2106,11 +2106,19 @@ void draw_telemetry_tab() {
 
         // Card 3: Process Threads & Memory
         begin_card("card_process_mem", "SERVER PROCESS & MEMORY", "Host execution environment metrics");
+#ifdef _WIN32
         std::snprintf(buf, sizeof(buf), "%.1f MB Working Set", mem_mb);
+#else
+        std::snprintf(buf, sizeof(buf), "%.1f MB Resident", mem_mb);
+#endif
         stat_row("Physical Memory (RAM)", buf);
         stat_row("Worker Thread Dispatch", "Multi-Threaded (Up to 8 cores)", good);
         stat_row("Monotonic Clock", "High-Resolution Monotonic Epoch", good);
+#ifdef _WIN32
         stat_row("Release Build Platform", "Windows x64 (MSVC Release)", good);
+#else
+        stat_row("Release Build Platform", "Linux x64", good);
+#endif
         end_card();
 
         // Card 4: Traffic & Relay Protocol
