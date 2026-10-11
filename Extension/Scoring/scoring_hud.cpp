@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <charconv>
+#include <chrono>
 #include <mutex>
 #include <utility>
 
@@ -23,6 +24,7 @@ struct State {
     std::atomic<Style> style{Style::game};
     std::mutex mutex;
     overlay::ScoringHud view;
+    std::chrono::steady_clock::time_point visible_until{};
     bool warned{};
 };
 State& state() { static auto* value = new State; return *value; }
@@ -103,10 +105,19 @@ void on_client_tick() noexcept {
         const data::Context context(s.base, manager);
         game::ModelWriteLock lock(manager);
         auto next = capture(context, selected);
-        hall_of_meat::replace_score_hud(custom && next.active);
+        const auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard guard(s.mutex);
+            const bool scoring = next.active || !next.tricks.empty();
+            if (custom && scoring) {
+                next.active = true;
+                s.visible_until = now + std::chrono::milliseconds(2600);
+            } else if (custom && now < s.visible_until && s.view.style == selected) {
+                next = s.view;
+                next.active = true;
+            }
             s.view = std::move(next);
+            hall_of_meat::replace_score_hud(custom && s.view.active);
         }
         s.warned = false;
     } catch (const std::exception& error) {
