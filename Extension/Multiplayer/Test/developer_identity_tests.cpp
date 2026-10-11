@@ -62,6 +62,13 @@ void parsing() {
               blocks[static_cast<std::size_t>(L::official_server)].empty() && servers[static_cast<std::size_t>(L::blocked_server)].empty(),
           "The blocked server list was not read");
     check(rejected(R"({"categories":{},"blocked_servers":["76561198000000001"]})"), "A player was accepted as a blocked server");
+    // Players who may not host: players' IDs, their own list, and none when the answer has none.
+    const auto no_hosts = parse_identity_lists(R"({"categories":{},"banned":["76561198000000001"],"banned_hosts":["76561198000000007","76561198000000003"]})");
+    check(no_hosts[static_cast<std::size_t>(L::banned_host)] == std::vector<std::uint64_t>{76561198000000003ULL, 76561198000000007ULL} &&
+              no_hosts[static_cast<std::size_t>(L::banned)] == std::vector<std::uint64_t>{76561198000000001ULL} &&
+              blocks[static_cast<std::size_t>(L::banned_host)].empty(),
+          "The list of players banned from hosting was not read");
+    check(rejected(R"({"categories":{},"banned_hosts":["85568392924040001"]})"), "A server was accepted as a banned host");
     check(parse_server_tokens_required(R"({"categories":{},"server_tokens_required":true})") &&
               !parse_server_tokens_required(R"({"categories":{},"server_tokens_required":false})") &&
               !parse_server_tokens_required(R"({"categories":{}})") && !parse_server_tokens_required(R"({"server_tokens_required":"yes"})"),

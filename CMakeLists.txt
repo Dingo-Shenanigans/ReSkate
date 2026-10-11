@@ -52,6 +52,9 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_executable(dingosdk_profile_change_tests Extension/Profile/Test/profile_change_tests.cpp)
     target_link_libraries(dingosdk_profile_change_tests PRIVATE dingosdk_local_profile)
     add_test(NAME profile_changes COMMAND dingosdk_profile_change_tests)
+    add_executable(dingosdk_music_favorites_tests Extension/Music/Test/local_music_favorites_tests.cpp)
+    target_link_libraries(dingosdk_music_favorites_tests PRIVATE dingosdk_local_profile)
+    add_test(NAME music_favorites COMMAND dingosdk_music_favorites_tests)
     add_executable(dingosdk_object_categories_tests Extension/Objects/Test/object_categories_tests.cpp)
     target_link_libraries(dingosdk_object_categories_tests PRIVATE dingosdk_local_profile)
     add_test(NAME object_categories COMMAND dingosdk_object_categories_tests)
@@ -78,6 +81,9 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_speed_check_tests Server/Test/speed_check_tests.cpp)
     target_include_directories(dingosdk_speed_check_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME server_speed_check COMMAND dingosdk_speed_check_tests)
+    add_executable(dingosdk_board_check_tests Server/Test/board_check_tests.cpp)
+    target_include_directories(dingosdk_board_check_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME server_board_check COMMAND dingosdk_board_check_tests)
     add_executable(dingosdk_server_config_tests Server/Test/server_config_tests.cpp Server/server_config.cpp
         Extension/Multiplayer/Net/protocol.cpp)
     target_include_directories(dingosdk_server_config_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -94,15 +100,15 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     target_link_libraries(dingosdk_server_release_tests PRIVATE dingosdk_json)
     add_test(NAME server_release COMMAND dingosdk_server_release_tests)
     add_executable(dingosdk_global_bans_tests Server/Test/global_bans_tests.cpp Server/global_bans.cpp
-        Extension/Multiplayer/developer_identity.cpp)
+        Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp)
     target_include_directories(dingosdk_global_bans_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_link_libraries(dingosdk_global_bans_tests PRIVATE dingosdk_json $<$<BOOL:${WIN32}>:dingosdk_https>)
+    target_link_libraries(dingosdk_global_bans_tests PRIVATE dingosdk_json dingosdk_word_filter $<$<BOOL:${WIN32}>:dingosdk_https>)
     add_test(NAME server_global_bans COMMAND dingosdk_global_bans_tests)
     # The server's Lua scripts on a real Host with a simulated player (Server/server_scripts.cpp).
     add_executable(dingosdk_server_scripts_tests Server/Test/server_scripts_tests.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
         Server/server_update.cpp Server/server_release.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
-        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
@@ -213,14 +219,15 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Test/mesh_tests.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
         Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Net/delta_codec.cpp
         Extension/Multiplayer/Session/password.cpp Extension/Multiplayer/Session/party_book.cpp
-        Extension/Multiplayer/Steam/steam_lobbies.cpp Extension/Multiplayer/Steam/steam_server_browser.cpp)
+        Extension/Multiplayer/Steam/steam_lobbies.cpp Extension/Multiplayer/Steam/steam_server_browser.cpp
+        Extension/Multiplayer/word_lists.cpp)
     target_link_libraries(dingosdk_multiplayer_mesh_tests PRIVATE dingosdk_logging dingosdk_launcher_support dingosdk_lz4 dingosdk_zstd bcrypt
-        dingosdk_word_filter)
+        dingosdk_word_filter dingosdk_json)
     add_test(NAME multiplayer_mesh COMMAND dingosdk_multiplayer_mesh_tests)
     add_executable(dingosdk_developer_identity_tests
         Extension/Multiplayer/Test/developer_identity_tests.cpp Extension/Multiplayer/developer_identity.cpp
-        Extension/Multiplayer/developer_identity_fetch.cpp)
-    target_link_libraries(dingosdk_developer_identity_tests PRIVATE dingosdk_json dingosdk_https dingosdk_logging winhttp)
+        Extension/Multiplayer/developer_identity_fetch.cpp Extension/Multiplayer/word_lists.cpp)
+    target_link_libraries(dingosdk_developer_identity_tests PRIVATE dingosdk_json dingosdk_https dingosdk_logging dingosdk_word_filter winhttp)
     add_test(NAME developer_identity COMMAND dingosdk_developer_identity_tests)
     add_executable(dingosdk_settings_lock_tests Engine/Game/Settings/Test/multiplayer_settings_lock_tests.cpp)
     target_include_directories(dingosdk_settings_lock_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -233,12 +240,16 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_ea_service_block_tests Extension/Boot/Test/ea_service_block_tests.cpp)
     target_include_directories(dingosdk_ea_service_block_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME ea_service_block COMMAND dingosdk_ea_service_block_tests)
+    add_executable(dingosdk_discord_presence_tests Extension/Boot/Test/discord_presence_tests.cpp Extension/Boot/discord_presence.cpp)
+    target_include_directories(dingosdk_discord_presence_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_discord_presence_tests PRIVATE dingosdk_json dingosdk_logging)
+    add_test(NAME discord_presence COMMAND dingosdk_discord_presence_tests)
     # The dedicated server's host under a full server of simulated players, over a transport
     # that is not Steam's: what its passes cost, and a hash of what it sent (not run by ctest).
     add_executable(dingosdk_server_load_tests Server/Test/server_load_tests.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
         Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
-        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp
+        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
@@ -290,6 +301,14 @@ if(DINGOSDK_BUILD_TRAINER_TESTS)
     add_executable(dingosdk_trainer_asset_list Extension/Trainer/Test/asset_list.cpp)
     target_include_directories(dingosdk_trainer_asset_list PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_trainer_asset_list PRIVATE dingosdk_game_archives)
+endif()
+option(DINGOSDK_BUILD_ROAD_RASH_TESTS "Build Road Rash regression tests" OFF)
+if(DINGOSDK_BUILD_ROAD_RASH_TESTS)
+    enable_testing()
+    # The side of a fall, the marks a count of bails leaves, the items' names and where a decal goes.
+    add_executable(dingosdk_road_rash_tests Extension/RoadRash/Test/road_rash_tests.cpp)
+    target_include_directories(dingosdk_road_rash_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME road_rash COMMAND dingosdk_road_rash_tests)
 endif()
 option(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS "Build Hall of Meat regression tests" OFF)
 if(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS)

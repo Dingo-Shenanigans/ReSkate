@@ -26,7 +26,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 46;
+constexpr std::uint16_t protocol_version = 48;
 // A dedicated server's chat lines unless its owner says otherwise: violet (#8E5CFF) and lavender (#D9C8FF).
 inline constexpr std::uint32_t default_server_chat_badge = 0xffff5c8eU, default_server_chat_text = 0xffffc8d9U;
 constexpr std::size_t max_throwdown_message = 4096;
@@ -119,7 +119,10 @@ enum class PacketKind : std::uint16_t {
     physics_extras = 30,
     // A player's skater touching the world (effects.h): the game's sparks, dust and puffs for
     // it, shown on that player's skater by everyone near. Unreliable, relayed like voice.
-    effects = 31
+    effects = 31,
+    // A dedicated server telling one player what their role lets them do (Server/roles.h):
+    // its name, the server commands they may use and their permissions beyond commands.
+    permissions = 32
 };
 // Packet::party_action. Requests go from a player to whoever hosts, a dedicated server or a
 // lobby's host (party_player = the other player involved, 0 for leave/open/close); invited
@@ -154,6 +157,13 @@ inline bool persistent_server_steam_id(std::uint64_t id) noexcept {
 }
 // A player's own name as sent in their hello: at most this many bytes.
 constexpr std::size_t max_member_name = 64;
+// A role's tag (the word before a player's name), a role's name, and the commands a
+// permissions packet may list.
+constexpr std::size_t max_role_tag = 16, max_role_name = 24, max_role_commands = 128, max_role_command = 24;
+// What a role gives beyond commands (permissions packet; the names are in Server/roles.h).
+inline constexpr std::uint32_t role_reserved_slot = 1, role_objects = 2, role_movement = 4, role_afk = 8,
+                               role_vote_immune = 16, role_alerts = 32, role_polls = 64, role_votes = 128,
+                               role_parties = 256, role_whisper = 512, role_chat = 1024, role_permission_bits = 2047;
 constexpr std::size_t max_admin_text = 320;
 constexpr std::size_t max_ban_rows = 256;
 constexpr std::size_t max_server_maps = 128, max_map_asset = 128;
@@ -161,6 +171,20 @@ constexpr std::size_t max_server_maps = 128, max_map_asset = 128;
 bool valid_map_asset(std::string_view asset) noexcept;
 bool valid_map_pool(std::span<const std::uint16_t> pool, std::size_t maps) noexcept; // distinct indices below `maps`
 bool valid_map_label(std::string_view label) noexcept; // empty, or a name like a member's
+// How long a host goes on waiting for a player who says they are fetching the map
+// (Packet::map_fetching), from the first time they say so: a large map on a slow line. Past
+// it they are held to the time a load takes again.
+inline constexpr std::uint64_t map_fetch_limit_us = 45ull * 60 * 1000000;
+// The Thunderstore package a map comes from, so a player without it can be offered it:
+// "Owner-Name", or "Owner-Name-1.2.3" when the host knows its version. Empty for the game's own
+// maps and for a map mod that is not from Thunderstore.
+inline constexpr std::size_t max_map_package = 96;
+bool valid_map_package(std::string_view package) noexcept;
+// That name for a mod folder and the version its manifest gives; empty when the folder is not
+// named as a package: "Owner-Name", as the launcher installs one, or "Owner-Name-1.2.3", as its
+// zip unpacks by hand. The manifest's version comes before the folder's; one that is not three
+// numbers is left off.
+std::string map_package_name(std::string_view folder, std::string_view version);
 struct Transform {
     std::array<float, 3> position{};
     std::array<float, 4> rotation{0, 0, 0, 1};
@@ -176,7 +200,7 @@ struct Pose {
 struct Member {
     std::uint64_t id{}, epoch{};
     std::string name;
-    bool admin{}; // roster: may change a dedicated server's settings
+    bool admin{}; // roster: their role on a dedicated server has every command (Server/roles.h)
     // roster: the player's party (0 = none), whether they lead it, and (on the leader) whether
     // anyone may join it. Each party has exactly one leader.
     std::uint32_t party{};
@@ -187,6 +211,10 @@ struct Member {
     // roster: the host or dedicated server found the player's mods change trick scoring: the same
     // as speeding, nobody plays linked throwdowns or coop challenges with them.
     bool scoring{};
+    // roster: the tag their role on a dedicated server gives them and its colour (IM_COL32
+    // layout); empty: none.
+    std::string tag;
+    std::uint32_t tag_color{};
     bool operator==(const Member &) const = default;
 };
 bool valid_roster(std::span<const Member>, unsigned capacity) noexcept;
@@ -201,6 +229,9 @@ struct Packet {
     std::string destination;
     bool map_authorized{};
     bool world_ready{};
+    // map_request, world_ready: the player does not have the map and is downloading it
+    // (never with world_ready). A host gives such a player longer than a load takes.
+    bool map_fetching{};
     Pose pose;
     std::uint32_t pose_interval_us = 50000;
     // pose: the sender has the game's party collision on (the top bit of the pose's rate field)
@@ -257,11 +288,18 @@ struct Packet {
     std::vector<std::uint16_t> map_pool;      // maps: the pool as indices into `maps`, rotation order (empty: every map)
     std::uint16_t map_rotation{};             // maps: minutes per map (0: off)
     std::string map_label;                    // map_offer, world_state: the map's name for people (may be empty)
+    std::string map_package;                  // map_offer, world_state: valid_map_package (may be empty)
     std::vector<std::uint8_t> throwdown;      // throwdown: one encoded message (1..max_throwdown_message bytes)
     std::array<float, 3> teleport{};          // teleport: where the receiver goes (world position)
     std::vector<std::uint8_t> tuning;         // physics_tuning: 0..max_physics_tuning bytes
     std::vector<std::uint8_t> extras;         // physics_extras: 0..max_physics_extras bytes
     std::vector<Impact> impacts;              // effects: 1..max_impacts contacts
+    // permissions: the receiver's role (empty: none), whether it has every command or the ones
+    // listed, and its role_* bits.
+    std::string role;
+    bool role_all_commands{};
+    std::vector<std::string> role_commands;
+    std::uint32_t role_permissions{};
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)
     // scoring: the sender's scoring fingerprint, 0 for the game's own; `text` names the mods
@@ -278,6 +316,10 @@ bool valid_transform(const Transform &) noexcept;
 bool valid_chat_text(std::string_view) noexcept;
 // A player name in a hello or roster: UTF-8 without control characters.
 bool valid_member_name(std::string_view) noexcept;
+// A role's tag: 1 to max_role_tag bytes of whole characters, no controls, no blank at either
+// end. And a role's name or a command's: lower-case letters, digits, - and _.
+bool valid_role_tag(std::string_view) noexcept;
+bool valid_role_word(std::string_view, std::size_t most) noexcept;
 bool valid_admin_text(std::string_view) noexcept;
 // 1 to server_vote_name_bytes of a-z, 0-9, - and _.
 bool valid_server_vote_name(std::string_view) noexcept;
@@ -300,6 +342,13 @@ void coarsen_rotations(Pose &pose, unsigned bits) noexcept;
 // Keeps every bone's scale within 1/limit to limit on each axis (1: no scaling at all). A mod
 // that resizes part of a skater (a head four times the size) does it with a bone's scale,
 // which travels in the pose and so shows to everyone, mod or not.
+// The skateboard is held closer, to board_scale_limit: nothing in the game resizes one, and a
+// hacked client that does shows everyone a board the size of a car.
+inline constexpr float board_scale_limit = 1.1f;
+// How far from its skater a skateboard still stops other players (remote_collision.cpp). One
+// left lying further off is seen and not felt, so a hacked client that keeps its board on
+// another player cannot knock them about with it.
+inline constexpr float board_solid_reach = 3.f;
 void limit_bone_scale(Pose &pose, float limit) noexcept;
 // Keeps every bone of the body and the board within `limit` metres of the bone it hangs from
 // (0: no limit). A bone's place is relative to its parent and, on the game's rigs, never

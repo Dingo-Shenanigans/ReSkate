@@ -124,11 +124,16 @@ std::string Scripts::load(const std::filesystem::path &folder) {
     return errors;
 }
 
+// An admin-only command is a role's like any server command (roles.h): "*" gives it, or the
+// role lists it by name. The console runs all of them.
+bool Scripts::allowed(const Command &command, std::string_view name, std::uint64_t caller) const {
+    return !command.admin || !caller || host_.can(caller, name);
+}
+
 std::string Scripts::help(std::uint64_t caller) const {
-    const bool admin = !caller || host_.is_admin(caller);
     std::string names;
     for (const auto &[name, command] : commands_)
-        if (admin || !command.admin) names += (names.empty() ? "" : ", ") + name;
+        if (allowed(command, name, caller)) names += (names.empty() ? "" : ", ") + name;
     return names;
 }
 
@@ -136,7 +141,7 @@ std::optional<std::string> Scripts::run(std::string_view verb, std::uint64_t cal
     const auto found = commands_.find(verb);
     // running_: a script's own server.kick() and the like never come back into a script.
     if (!lua_ || running_ || found == commands_.end()) return {};
-    if (found->second.admin && caller && !host_.is_admin(caller)) return {};
+    if (!allowed(found->second, found->first, caller)) return {};
     std::string answer;
     if (call({found->second.function, 2, caller, {}, args}, answer)) return answer;
     // The details (with the script's path) are for the owner's log, not the player.
@@ -256,13 +261,19 @@ std::uint64_t Scripts::target(lua_State *lua, int at) {
 void Scripts::push_player(lua_State *lua, std::uint64_t id, std::string_view gone) {
     const auto *guest = id ? host_.find(id) : nullptr;
     const std::string name = guest ? host_.guest_name(*guest) : id ? std::string(gone) : "Server";
-    lua_createtable(lua, 0, 7);
+    lua_createtable(lua, 0, 8);
     lua_pushinteger(lua, static_cast<lua_Integer>(id));
     lua_setfield(lua, -2, "id");
     lua_pushlstring(lua, name.data(), name.size());
     lua_setfield(lua, -2, "name");
-    lua_pushboolean(lua, !id || host_.is_admin(id));
+    // admin: a role with every command (as the game marks them); role: its name, if any.
+    const auto *role = id ? host_.role_of(id) : nullptr;
+    lua_pushboolean(lua, !id || (role && role->granted_all));
     lua_setfield(lua, -2, "admin");
+    if (role) {
+        lua_pushlstring(lua, role->name.data(), role->name.size());
+        lua_setfield(lua, -2, "role");
+    }
     if (!guest) return;
     lua_pushinteger(lua, static_cast<lua_Integer>(guest->shared.objects().size()));
     lua_setfield(lua, -2, "objects");

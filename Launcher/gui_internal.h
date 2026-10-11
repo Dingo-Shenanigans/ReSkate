@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gamepad_input.h"
+#include "game_settings.h"
 #include "launch.h"
 #include "text_encoding.h"
 #include "thunderstore.h"
@@ -179,6 +180,7 @@ struct Settings {
     int height{1080};
     bool loose_files{true};
     bool gpu_diagnostics{};
+    bool discord_status{true};
     bool offline{};
     int menu_key{static_cast<int>(launcher::default_menu_key)};
     int console_key{static_cast<int>(launcher::default_console_key)};
@@ -299,10 +301,43 @@ private:
     void run_play();
 };
 
+// The CHANGELOGS panel's release, the newest: fetched on a worker the first time the panel
+// opens and kept while the launcher runs. `note` and `text` belong to the UI thread.
+struct Changelog {
+    std::thread worker;
+    std::atomic<bool> loading{};
+    std::mutex mutex;
+    bool arrived{};                                  // worker -> UI, under mutex
+    update::ReleaseNote incoming;
+    std::string incoming_error;
+
+    bool loaded{};
+    std::string error;                               // why the last fetch failed
+    update::ReleaseNote note;
+    thunderstore::Readme text;
+
+    ~Changelog() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
+// Settings > GRAPHICS, AUDIO, CAMERA, CONTROLS, REPLAY: skate.'s own settings, read from its
+// save each time Settings opens (game_settings.h).
+struct GamePages {
+    bool loaded{};
+    launcher_game_settings::Saved saved;
+    launcher_game_settings::Values values;          // as shown; stored once no control is held
+    std::vector<std::pair<int, int>> resolutions;   // this PC's, for the Resolution setting
+    std::string error;          // why they could not be read, or the last change not stored
+};
+
 // Panels the main screen can show; one at a time.
 struct Ui {
     bool settings{};
-    int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED
+    GamePages game;
+    bool changelog{};
+    Changelog notes;
+    int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED, then the game's own pages
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
     bool mods{};
@@ -491,6 +526,8 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
 // The README section of an overview: the installed mod's own README.md when it has one, else
 // the package's from Thunderstore. Either may be null. False, with nothing drawn, when there is none.
 bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod);
+// A README's lines, wrapped to the window (also a release's notes: the same markdown).
+void draw_readme(const Fonts& fonts, const thunderstore::Readme& readme);
 // An overview's body: the README in a child of `readme` width (the caller's), then
 // begin_overview_details ... end_overview_details around its facts, each an overview_fact.
 struct OverviewColumns { float readme{}, details{}, height{}, gap{}; };
@@ -507,6 +544,8 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
 void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui);
 void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::vector<std::string>& rows);
 void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui);
+// What the newest release changed: its notes on GitHub.
+void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui);
 void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window);
 void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel, HWND window);
 // Shown instead of launching when the merge left mods out.

@@ -983,6 +983,51 @@ void dedicated_server_codec() {
     auto crowned = roster;
     crowned.members[0].admin = true;
     check(reject(crowned), "A host marked as an admin");
+    {
+        // A dedicated server's roles: the tags its players wear, and what one player may do.
+        auto tagged = roster;
+        tagged.members[1].tag = "Mod";
+        tagged.members[1].tag_color = 0xffffc85eU;
+        const auto worn = decode(encode(tagged));
+        check(worn && worn->members[1].tag == "Mod" && worn->members[1].tag_color == 0xffffc85eU && worn->members[2].tag.empty(),
+              "A role's tag failed to round-trip");
+        auto self = tagged;
+        self.members[0].tag = "Boss";
+        check(reject(self), "A server wearing a tag was accepted");
+        auto lobby = roster;
+        lobby.members.erase(lobby.members.begin());
+        lobby.source = player;
+        lobby.members[0].admin = false;
+        check(!reject(lobby), "A lobby roster was refused");
+        lobby.members[1].tag = "Mod";
+        check(reject(lobby), "A lobby's host gave out a tag");
+        auto wide = tagged;
+        wide.members[1].tag = std::string(max_role_tag + 1, 'a');
+        check(reject(wide), "A tag past its length was accepted");
+        wide.members[1].tag = " Mod";
+        check(reject(wide), "A tag starting with a blank was accepted");
+        Packet rights;
+        rights.kind = PacketKind::permissions; rights.session = 9; rights.epoch = 10; rights.map = 11; rights.source = server;
+        rights.role = "moderator";
+        rights.role_commands = {"kick", "ban", "msg-admins"};
+        rights.role_permissions = role_alerts | role_chat | role_votes;
+        const auto given = decode(encode(rights));
+        check(given && given->role == "moderator" && !given->role_all_commands && given->role_commands == rights.role_commands &&
+                  given->role_permissions == rights.role_permissions, "A player's permissions failed to round-trip");
+        auto none = rights;
+        none.role.clear(); none.role_commands.clear(); none.role_permissions = 0; none.role_all_commands = true;
+        const auto bare = decode(encode(none));
+        check(bare && bare->role.empty() && bare->role_all_commands && bare->role_commands.empty(), "Permissions with no role failed to round-trip");
+        auto bad = rights;
+        bad.role_commands = {"Kick"};
+        check(reject(bad), "A command that is not a command's name was accepted");
+        bad = rights;
+        bad.role_permissions = role_permission_bits + 1;
+        check(reject(bad), "An unknown permission was accepted");
+        bad = rights;
+        bad.source = 0;
+        check(reject(bad), "Permissions from nobody were accepted");
+    }
     auto far = roster;
     far.voice_range = 5;
     check(reject(far), "Invalid voice range encoded");
@@ -1043,6 +1088,66 @@ void dedicated_server_codec() {
     auto unnamed = changed_map;
     unnamed.map_label.assign(max_member_name + 1, 'a');
     check(reject(unnamed), "An overlong map name encoded");
+    // The Thunderstore package a map is from, beside its name.
+    check(arrived && arrived->map_package.empty(), "A map with no package arrived with one");
+    auto packaged = changed_map;
+    packaged.map_package = "Sandos-Vancouver_Plaza-2.0.0";
+    const auto with_package = decode_wire(encode_wire(packaged));
+    check(with_package && with_package->map_package == packaged.map_package && with_package->map_label == "Momentum Park",
+          "The map's package lost from a map change");
+    auto offered = packaged;
+    offered.kind = PacketKind::map_offer;
+    offered.map_package = "Sandos-Vancouver_Plaza";
+    const auto offer_arrived = decode_wire(encode_wire(offered));
+    check(offer_arrived && offer_arrived->map_package == "Sandos-Vancouver_Plaza" && offer_arrived->destination == offered.destination,
+          "The map's package lost from a map offer");
+    for (const char *bad : {"Sandos", "Sandos-", "-Plaza", "San dos-Plaza", "Sandos-Plaza-2.0", "Sandos-Plaza-2.0.0.1", "../x-y",
+                            "Sandos-Pla/za", "Sandos-Plaza-1.2.3-4", "https://thunderstore.io/x-y"}) {
+        auto wrong = packaged;
+        wrong.map_package = bad;
+        check(reject(wrong) && !valid_map_package(bad), "A map package that is not one encoded");
+    }
+    auto long_package = packaged;
+    long_package.map_package = std::string(60, 'a') + "-" + std::string(60, 'b');
+    check(reject(long_package), "An overlong map package encoded");
+    check(valid_map_package("") && valid_map_package("A_1-b_2") && valid_map_package("A-B-10.20.30"), "A map package refused");
+    {
+        // A player fetching the map says so on what they already send while they wait.
+        Packet waiting;
+        waiting.kind = PacketKind::world_ready; waiting.session = 9; waiting.epoch = 10; waiting.source = server + 1; waiting.world = 2;
+        waiting.map = changed_map.map;
+        waiting.map_fetching = true;
+        const auto heard = decode_wire(encode_wire(waiting));
+        check(heard && heard->map_fetching && !heard->world_ready, "A map fetch notice lost from a readiness message");
+        waiting.map_fetching = false;
+        const auto plain = decode_wire(encode_wire(waiting));
+        check(plain && !plain->map_fetching && !plain->world_ready, "A readiness message gained a map fetch notice");
+        waiting.world_ready = true;
+        const auto ready = decode_wire(encode_wire(waiting));
+        check(ready && ready->world_ready && !ready->map_fetching, "Readiness lost");
+        waiting.map_fetching = true;
+        check(reject(waiting), "Ready and fetching at once encoded");
+        Packet asking;
+        asking.kind = PacketKind::map_request; asking.session = 9; asking.epoch = 10; asking.source = server + 1; asking.world = 1;
+        asking.map = changed_map.map;
+        asking.map_fetching = true;
+        const auto requested = decode_wire(encode_wire(asking));
+        check(requested && requested->map_fetching, "A map fetch notice lost from a map request");
+        asking.map_fetching = false;
+        const auto quiet = decode_wire(encode_wire(asking));
+        check(quiet && !quiet->map_fetching, "A map request gained a map fetch notice");
+        auto elsewhere = changed_map;
+        elsewhere.map_fetching = true;
+        check(reject(elsewhere), "A map fetch notice on a map change encoded");
+    }
+    check(map_package_name("Sandos-Vancouver_Plaza", "2.0.0") == "Sandos-Vancouver_Plaza-2.0.0" &&
+          map_package_name("Sandos-Vancouver_Plaza", "") == "Sandos-Vancouver_Plaza" &&
+          map_package_name("Sandos-Vancouver_Plaza", "two") == "Sandos-Vancouver_Plaza" &&
+          map_package_name("My Map", "1.0.0").empty() && map_package_name("bbcity", "1.0.0").empty() &&
+          map_package_name("Realeza-CODOL_RUST_2_LONG-1.0.0", "") == "Realeza-CODOL_RUST_2_LONG-1.0.0" &&
+          map_package_name("Realeza-CODOL_RUST_2_LONG-1.0.0", "1.2.0") == "Realeza-CODOL_RUST_2_LONG-1.2.0" &&
+          map_package_name("Team-Map-latest", "1.0.0").empty() && map_package_name("Team-Map-1.0.0-x", "").empty(),
+          "A mod folder named as a package, or not");
     auto stray = maps;
     stray.map_pool = {2};
     check(reject(stray), "A map pool entry past the map list encoded");

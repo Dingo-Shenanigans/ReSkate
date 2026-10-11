@@ -1,7 +1,7 @@
 #include "hall_of_meat.h"
 #include "Extension/Console/commands.h"
 
-// The `hallofmeat` console switch; the menu's (Custom Stuff > Player) sends it too.
+// The `hallofmeat` console switch; the menu's (Mod Options > Player) sends it too.
 namespace dingosdk::console {
 void register_hall_of_meat_commands(Commands &registry) {
     auto meat = variable("hallofmeat", "Show the bones a bail hurt, bruised yellow and broken red, and its Meat score",

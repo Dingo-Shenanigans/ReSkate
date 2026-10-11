@@ -52,7 +52,7 @@ bool initialize_bootstrap(std::uintptr_t base) {
     error.clear(); ready = start_native_render_resource_pool(base, error);
     if (!stage(Channel::assets, "Native render-resource pools", ready, error)) return false;
     error.clear(); ready = start_native_entity_pages(base, error);
-    if (!stage(Channel::world, "Native entity pages (1048576 entity/update/render slots, 16384 spatial blocks/bucket, 128 MiB arena minimum)", ready, error)) return false;
+    if (!stage(Channel::world, "Native entity pages (524288 entity/update slots, 1048576 render slots, 16384 spatial blocks/bucket, 128 MiB arena minimum)", ready, error)) return false;
     error.clear(); ready = start_physics_world_size(base, error);
     if (!stage(Channel::world, "Physics world pools (65000 static bodies)", ready, error)) return false;
     error.clear(); ready = start_native_route_lookahead(base, error);

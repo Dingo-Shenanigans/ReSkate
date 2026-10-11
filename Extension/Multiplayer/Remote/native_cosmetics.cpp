@@ -10,6 +10,7 @@
 #include <Windows.h>
 #include <mutex>
 #include <set>
+#include <tuple>
 
 namespace dingosdk::multiplayer {
 namespace {
@@ -71,6 +72,33 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
     // Items this PC does not have (a player's cosmetics mod) would reject the
     // whole outfit: they become the matching default, or an empty slot.
     auto usable = recipe;
+    // A slot the peer's game does not have takes this player's own parameters for it: they
+    // are the right shape for the slot, and it is shown empty.
+    const auto own = [&](std::uint32_t slot, std::size_t size) {
+        std::vector<std::uint32_t> out;
+        try {
+            for (const auto &item : memory.array<NativeCosmeticItem>(memory.ptr(local, 0x158), max_cosmetic_slots))
+                if (item.slot == slot) {
+                    out = memory.array<std::uint32_t>(reinterpret_cast<std::uintptr_t>(item.parameters),
+                                                      max_cosmetic_parameters);
+                    break;
+                }
+        } catch (const std::exception &) {
+            out.clear();
+        }
+        if (out.size() != size) out.assign(size, 0);
+        return out;
+    };
+    if (const auto [empty, left_out] = memory.fit_slots(resource, usable, own); empty || left_out) {
+        static std::mutex logged_mutex;
+        static std::set<std::tuple<std::uint32_t, std::size_t, std::size_t>> logged;
+        std::lock_guard lock(logged_mutex);
+        if (logged.size() < 32 && logged.emplace(recipe.key, empty, left_out).second)
+            logging::log(logging::Level::info, logging::Channel::runtime,
+                         "Multiplayer: a player's {} has different cosmetic slots from this game's (a mod adds or "
+                         "removes some): {} of this game's slots left empty, {} of their items left out.",
+                         recipe.key == board_recipe_key ? "board" : "skater", empty, left_out);
+    }
     const auto reserved = [](const std::string &asset) { return profile_runtime::reserved_cosmetic(asset); };
     for (const auto &[missing, replacement] :
          memory.substitute_missing(resource, usable, default_cosmetic_items, reserved)) {

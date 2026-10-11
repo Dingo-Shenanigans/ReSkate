@@ -70,4 +70,6 @@ Address named_asset(const Context& context, Address anchor, const char* name);
 // Keep the registry lock until native publication has retained the icon. Missing
 // optional art leaves the caller's already-published fallback untouched.
 bool publish_tab_icons(const Context& context, Value tab, std::string_view idle, std::string_view focused);
+// Publishes one loaded texture or image asset, by name, into an asset reference field.
+bool publish_texture(const Context& context, Value target, std::string_view name);
 } // namespace dingosdk::multiplayer::menu_data

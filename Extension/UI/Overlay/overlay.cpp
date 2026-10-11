@@ -43,7 +43,8 @@ bool is_input(UINT message) {
 }
 
 bool interactive_visible(const State& s) {
-    return s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
+    return s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() ||
+           s.hub_typing.load() || s.prompt_pointer.load() || s.item_search_visible.load();
 }
 
 void restore_input(bool hide_menu) {
@@ -52,6 +53,8 @@ void restore_input(bool hide_menu) {
         s.visible.store(false);
         s.console_visible.store(false);
         s.chat_visible.store(false);
+        s.hub_typing.store(false);
+        s.item_search_visible.store(false);
         s.editor_visible.store(false);
         s.editor_flight.store(false);
     }
@@ -107,6 +110,20 @@ HRESULT STDMETHODCALLTYPE present1(IDXGISwapChain1* chain, UINT interval, UINT f
     return result;
 }
 
+template<std::size_t I>
+HRESULT STDMETHODCALLTYPE present_more(IDXGISwapChain* chain, UINT interval, UINT flags) {
+    PresentGuard guard;
+    if (guard.outermost) guarded_render(chain, flags);
+    return original<PresentFn>(state().present_more[I])(chain, interval, flags);
+}
+template<std::size_t I>
+HRESULT STDMETHODCALLTYPE present1_more(IDXGISwapChain1* chain, UINT interval, UINT flags,
+    const DXGI_PRESENT_PARAMETERS* parameters) {
+    PresentGuard guard;
+    if (guard.outermost) guarded_render(chain, flags);
+    return original<Present1Fn>(state().present1_more[I])(chain, interval, flags, parameters);
+}
+
 bool before_resize(IDXGISwapChain* chain) {
     auto& s = state();
     if (!s.swapchain) return true;
@@ -128,6 +145,72 @@ HRESULT STDMETHODCALLTYPE resize(IDXGISwapChain* chain, UINT count, UINT width, 
     if (!before_resize(chain)) return DXGI_ERROR_WAS_STILL_DRAWING;
     return original<ResizeFn>(state().resize)(chain, count, width, height, format, flags);
 }
+template<std::size_t I>
+HRESULT STDMETHODCALLTYPE resize_more(IDXGISwapChain* chain, UINT count, UINT width, UINT height,
+    DXGI_FORMAT format, UINT flags) {
+    std::lock_guard lock(state().render_mutex);
+    if (!before_resize(chain)) return DXGI_ERROR_WAS_STILL_DRAWING;
+    return original<ResizeFn>(state().resize_more[I])(chain, count, width, height, format, flags);
+}
+template<std::size_t I>
+HRESULT STDMETHODCALLTYPE resize1_more(IDXGISwapChain3* chain, UINT count, UINT width, UINT height,
+    DXGI_FORMAT format, UINT flags, const UINT* masks, IUnknown* const* queues) {
+    std::lock_guard lock(state().render_mutex);
+    if (!before_resize(chain)) return DXGI_ERROR_WAS_STILL_DRAWING;
+    return original<Resize1Fn>(state().resize1_more[I])(chain, count, width, height, format, flags, masks, queues);
+}
+// The module an address is in, for the log.
+std::string module_of_address(void* address) {
+    HMODULE module{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(address), &module) || !module) return "unknown";
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(module, path, MAX_PATH);
+    const wchar_t* name = path;
+    for (const wchar_t* c = path; *c; ++c) if (*c == L'\\') name = c + 1;
+    std::string text;
+    for (; *name; ++name) text += static_cast<char>(*name);
+    return text;
+}
+// Hooks the presentation and resize of the swapchain under a wrapper, when the game was given
+// one: a presentation that does not go through the wrapper still reaches the overlay then.
+// Returns that swapchain's identity (null when `chain` is no wrapper): it presents with the
+// queue the wrapper was made with, and does not give one itself when asked.
+ComPtr<IUnknown> hook_wrapped_swapchain(IDXGISwapChain* chain) {
+    auto& s = state();
+    // Streamline's wrappers give the object they wrap for this interface (its
+    // StreamlineRetrieveBaseInterface); anything else says no.
+    static constexpr GUID base_interface{0xadec44e2, 0x61f0, 0x45c3, {0xad, 0x9f, 0x1b, 0x37, 0x37, 0x92, 0x84, 0xff}};
+    ComPtr<IUnknown> under;
+    if (FAILED(chain->QueryInterface(base_interface, reinterpret_cast<void**>(under.GetAddressOf()))) || !under) return {};
+    ComPtr<IDXGISwapChain> plain;
+    ComPtr<IDXGISwapChain3> extended;
+    if (FAILED(under.As(&plain)) || FAILED(under.As(&extended)) || plain.Get() == chain) return {};
+    auto** base = *reinterpret_cast<void***>(plain.Get());
+    auto** table = *reinterpret_cast<void***>(extended.Get());
+    const auto add = [](Hook& first, auto& more, void* target, const auto& detours) {
+        if (first.target == target) return true;
+        for (const auto& hook : more) if (hook.target == target) return true;
+        for (std::size_t slot = 0; slot < more.size(); ++slot)
+            if (!more[slot].target) return install(more[slot], target, detours[slot]);
+        return false;
+    };
+    const std::array presents{reinterpret_cast<void*>(present_more<0>), reinterpret_cast<void*>(present_more<1>), reinterpret_cast<void*>(present_more<2>)};
+    const std::array presents1{reinterpret_cast<void*>(present1_more<0>), reinterpret_cast<void*>(present1_more<1>), reinterpret_cast<void*>(present1_more<2>)};
+    const std::array resizes{reinterpret_cast<void*>(resize_more<0>), reinterpret_cast<void*>(resize_more<1>), reinterpret_cast<void*>(resize_more<2>)};
+    const std::array resizes1{reinterpret_cast<void*>(resize1_more<0>), reinterpret_cast<void*>(resize1_more<1>), reinterpret_cast<void*>(resize1_more<2>)};
+    const bool fresh = std::none_of(s.present_more.begin(), s.present_more.end(), [&](const Hook& hook) { return hook.target == base[8]; }) &&
+                       s.present.target != base[8];
+    const bool okay = add(s.present, s.present_more, base[8], presents) && add(s.present1, s.present1_more, table[22], presents1) &&
+                      add(s.resize, s.resize_more, base[13], resizes) && add(s.resize1, s.resize1_more, table[39], resizes1);
+    if (fresh || !okay)
+        dingosdk::logging::printf(okay ? dingosdk::logging::Level::info : dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+            okay ? "The game's swapchain is a wrapper (%s) over %s's: both are watched for presentations."
+                 : "The game's swapchain is a wrapper (%s) over %s's, which could not be hooked as well.",
+            module_of_address((*reinterpret_cast<void***>(chain))[8]).c_str(), module_of_address(base[8]).c_str());
+    return okay ? object_identity(plain.Get()) : ComPtr<IUnknown>{};
+}
+
 HRESULT STDMETHODCALLTYPE resize1(IDXGISwapChain3* chain, UINT count, UINT width, UINT height,
     DXGI_FORMAT format, UINT flags, const UINT* masks, IUnknown* const* queues) {
     std::lock_guard lock(state().render_mutex);
@@ -397,6 +480,17 @@ extern "C" bool DingoSDKOverlayBindDx12(IDXGISwapChain* chain, ID3D12CommandQueu
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics, "Swapchain hook setup incomplete; candidate ignored.");
         return false;
     }
+    // The swapchain under a wrapper is the same chain to draw on, by the same queue: when it is
+    // the one that presents (on Intel's GPUs it is), the overlay draws there.
+    if (const auto under = hook_wrapped_swapchain(chain)) {
+        if (auto* alias = find_binding(under.Get())) {
+            alias->queue = queue;
+            alias->window = description.OutputWindow;
+            if (s.swapchain_identity == under.Get()) s.queue = queue;
+        } else if (s.bindings.size() < maximum_bindings) {
+            s.bindings.push_back({under.Get(), queue, description.OutputWindow});
+        }
+    }
 
     if (auto* existing = find_binding(identity.Get())) {
         existing->queue = queue;
@@ -411,7 +505,8 @@ extern "C" bool DingoSDKOverlayBindDx12(IDXGISwapChain* chain, ID3D12CommandQueu
         s.bindings.erase(evict);
     }
     s.bindings.push_back({identity.Get(), queue, description.OutputWindow});
-    dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics, "Registered DX12 swapchain and its creation queue.");
+    dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+        "Registered DX12 swapchain and its creation queue. (Its Present is %s's.)", module_of_address(base[8]).c_str());
     return true;
 }
 

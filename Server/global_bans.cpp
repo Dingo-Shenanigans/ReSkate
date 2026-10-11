@@ -1,5 +1,6 @@
 #include "global_bans.h"
 #include "Extension/Multiplayer/developer_identity.h"
+#include "Extension/Multiplayer/word_lists.h"
 #ifdef _WIN32
 #include "Engine/Vfs/https_download.h"
 #else
@@ -50,12 +51,17 @@ BanListCheck use_ban_list(std::string_view answer) {
     BanListCheck check;
     try {
         auto lists = multiplayer::parse_identity_lists(answer);
+        // (Read before anything is put in use: an answer that is wrong anywhere changes nothing.)
+        const auto words = multiplayer::use_word_lists(answer);
         multiplayer::server_tokens_rule = multiplayer::parse_server_tokens_required(answer);
         const auto &bans = lists[static_cast<std::size_t>(multiplayer::IdentityList::banned)];
         check.banned = bans.size();
         check.changed = last != bans;
         last = bans;
         multiplayer::publish_identity_lists(std::move(lists));
+        check.words_changed = words.changed;
+        check.filtered_words = words.filtered;
+        check.forbidden_words = words.forbidden;
         check.ok = true;
     } catch (const std::exception &e) {
         check.problem = std::string("the answer was not the lists: ") + e.what();

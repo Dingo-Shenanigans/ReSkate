@@ -29,12 +29,12 @@ void apply_distances(Session &s, const MultiplayerDistances &distances) {
 }
 void apply_object_limit(Session &s, unsigned limit) {
     s.object_limit = limit;
-    set_lobby_object_limit(s.mode == Mode::host || s.server_admin ? 0 : limit);
+    set_lobby_object_limit(s.mode == Mode::host || (s.role_permissions & role_objects) ? 0 : limit);
 }
 void apply_object_placement(Session &s, ObjectPlacement policy) {
     s.object_placement = policy;
-    // On a dedicated server "host only" means its admins.
-    set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || s.server_admin));
+    // On a dedicated server "host only" means the roles that may always build.
+    set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || (s.role_permissions & role_objects)));
 }
 void apply_nametags(const Session &s) {
     // The feed also runs when only chat bubbles are on: the overlay draws whichever of the
@@ -49,7 +49,7 @@ void apply_guest_tools(Session &s, bool noclip, bool no_bail, bool boosts) {
     s.guest_noclip = noclip;
     s.guest_no_bail = no_bail;
     s.guest_boosts = boosts;
-    const bool exempt = s.mode == Mode::host || s.server_admin;
+    const bool exempt = s.mode == Mode::host || (s.role_permissions & role_movement);
     set_session_tools_allowed(noclip || exempt, no_bail || exempt, boosts || exempt);
 }
 } // namespace session_detail
@@ -196,7 +196,10 @@ std::string teleport_self(Session &s, std::string_view argument) {
     std::string error;
     auto *p = find_player(s, argument, error);
     if (!p) return error;
-    if (!p->visible) return peer_name(s, *p) + " is not in the world right now.";
+    // Where they were last heard to be: a player further away than skaters are shown has no
+    // skater here, and is exactly who a teleport is for. Only one no pose has placed yet has
+    // nowhere to go to.
+    if (!p->placed) return peer_name(s, *p) + " is not in the world right now.";
     at = p->render_pose.root.position;
     at[0] += 2.0f; // beside them, not inside
     at[1] += 1.0f;
@@ -613,7 +616,7 @@ bool own_mark_command(std::string_view action) {
 } // namespace
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action)) return false;
-    if ((action != "host" && action != "host-config" && action != "join" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
+    if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
          action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
          action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" && action != "vote" && action != "voice-chat" &&
@@ -656,7 +659,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         // A dedicated server's admin changes the server's settings instead of
         // their own: the same menu actions, sent to the server. "server" sends
         // any server console command.
-        if (dedicated_host(s) && (action == "server" || (s.server_admin &&
+        if (dedicated_host(s) && (action == "server" || (role_allows(s.role_all_commands, s.role_commands, action) &&
             (action == "distances" || action == "object-placement" || action == "object-limit" || action == "voice-allow" || action == "voice-range" ||
              action == "clear-objects" || action == "kick" || action == "ban" || action == "unban" ||
              action == "world-layer-sync" || action == "noclip-allow" || action == "nobail-allow" ||
@@ -922,8 +925,17 @@ std::string command(std::string_view action, std::string_view argument, std::str
             publish(s);
             return s.status;
         }
-        if (action != "host" && action != "join" && action != "echo")
+        // "rejoin": back to the session a missing map ended, once the map is installed
+        // (session.h: take_map_need), with the password that session was joined with.
+        std::optional<Session::Rejoin> rejoin;
+        if (action == "rejoin") {
+            rejoin = std::exchange(s.rejoin, std::nullopt);
+            if (!rejoin) return "There is no session to go back to.";
+        }
+        if (action != "host" && action != "join" && action != "echo" && !rejoin)
             return "Unknown multiplayer action.";
+        s.rejoin.reset();
+        s.map_need.reset();
         unsigned capacity = multiplayer_lobby_player_limit;
         unsigned tps = multiplayer_default_tps;
         std::string_view lobby_name;
@@ -936,6 +948,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         };
         // Joining is for the host or the server to refuse (a server may opt out of the bans).
         if (action == "host" && reskate_banned(s.transport.status().local_id)) return refuse(std::string(banned_notice));
+        if (action == "host" && banned_host(s.transport.status().local_id)) return refuse(std::string(banned_host_notice));
         if (action == "host") {
             const auto space = argument.find(' ');
             if (space != std::string_view::npos) {
@@ -970,11 +983,13 @@ std::string command(std::string_view action, std::string_view argument, std::str
                 return refuse("That lobby name contains blocked words. Choose another one.");
         }
         std::optional<Invite> invitation;
-        if (action == "join") {
-            invitation = parse_invite(argument);
+        if (rejoin) invitation = rejoin->invite;
+        if (action == "join" || rejoin) {
+            if (!rejoin) invitation = parse_invite(argument);
             if (!invitation)
                 return refuse("Invalid join code. Paste the complete SteamID-session code from the host.");
             if (blocked_server(invitation->steam_id)) return refuse(std::string(blocked_server_notice));
+            if (banned_host(invitation->steam_id)) return refuse(std::string(banned_host_lobby_notice));
         }
         stop(s, "Starting multiplayer...");
         s.chat.clear(); // A new session starts with an empty chat.
@@ -983,7 +998,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         s.epoch = nonce();
         s.secret = invitation ? invitation->secret : nonce();
         if (action != "echo")
-            s.password = password_key(input.password, s.secret);
+            s.password = rejoin ? rejoin->password : password_key(input.password, s.secret);
         if (action == "echo") {
             s.mode = Mode::echo;
             s.peers[0].member = {1, s.epoch, "Local Echo"};

@@ -283,14 +283,18 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
     // A disabled container takes precedence over enabled children. Otherwise
     // a later row could silently turn it back on or leave the plan oscillating.
     std::vector<bool> disabled(targets.size());
+    // A layer ReSkate keeps off (world_layers.h) is "off" whatever the player or a host chose.
+    const auto choice_of = [&](unsigned i) -> std::string_view {
+        return world_layer_kept_off(world_layers()[i].key) ? std::string_view("off") : std::string_view(r.model.choices[i]);
+    };
     for (unsigned i = 0; i < world_layers().size(); ++i)
-        if (world_layers()[i].map == map && r.model.choices[i] == "off") {
+        if (world_layers()[i].map == map && choice_of(i) == "off") {
             const auto slot = world_switch(i);
             desired[slot] = false; explicit_choice[slot] = disabled[slot] = true;
         }
     for (unsigned i = 0; i < world_layers().size(); ++i) {
         if (world_layers()[i].map != map) { r.model.status[i] = "Available in " + std::string(world_map_label(world_layers()[i].map)); continue; }
-        if (r.model.choices[i] != "on") continue;
+        if (choice_of(i) != "on") continue;
         bool blocked{};
         for (int at = static_cast<int>(world_leaf(i)); at >= 0; at = world_parent(at)) blocked = blocked || disabled[at];
         if (blocked) continue;
@@ -337,7 +341,7 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
     }
     for (unsigned i = 0; i < world_layers().size(); ++i) {
         if (world_layers()[i].map != map) continue;
-        const auto& choice = r.model.choices[i];
+        const auto choice = choice_of(i);
         const auto slot = choice == "off" ? world_switch(i) : world_leaf(i);
         r.model.status[i] = done[slot] ? (choice == "default" ? "Default" : inactive[slot] ? "Disabled" : "Loaded") : status[slot];
     }

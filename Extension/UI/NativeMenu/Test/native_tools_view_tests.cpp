@@ -124,6 +124,22 @@ int main() {
         model.hall_of_meat = {true, true};
         activate(state, model, cb, "hall-of-meat", "");
         check(meat_row().title == "Hall of Meat: On" && capture.command == "hallofmeat 0", "and off again");
+        // Road Rash's switches sit there too; its blood and its healing wait for it to be on.
+        const auto rash_row = [&](std::string_view id) {
+            const auto page = render(state, model, cb, player_section);
+            return *find(page.main, id);
+        };
+        check(rash_row("road-rash").title == "Road Rash: Off" && rash_row("road-rash").command.empty(), "Road Rash waits until it started");
+        model.road_rash = {true, false, true};
+        check(rash_row("road-rash-blood").command.empty() && rash_row("road-rash-heal").command.empty(), "Its blood and healing wait for it");
+        activate(state, model, cb, "road-rash", "");
+        check(rash_row("road-rash").command == "road-rash" && capture.command == "roadrash 1", "Road Rash turns on");
+        model.road_rash = {true, true, true};
+        check(rash_row("road-rash").title == "Road Rash: On" && rash_row("road-rash-blood").title == "Road Rash blood: On", "and shows it");
+        activate(state, model, cb, "road-rash-blood", "");
+        check(capture.command == "roadrashblood 0", "The blood switches off");
+        activate(state, model, cb, "road-rash-heal", "");
+        check(capture.command == "roadrash heal", "and the skater heals");
         model.multiplayer.local_name = "steam_name";
         model.player_card = {true, "Card Name", {}};
         const auto card_page = render(state, model, cb, player_section);
@@ -172,7 +188,8 @@ int main() {
             activate(parks, m, controls, "park-random-on-launch", {});
             check(log.calls == 3 && log.command == "park random-on-launch 0", "Launch toggle uses the latest shared state");
 
-            m.multiplayer.server_admin = true;
+            // A role on a dedicated server with every command (the park one among them).
+            m.multiplayer.dedicated = m.multiplayer.server_admin = m.multiplayer.server_all_commands = true;
             page = render(parks, m, controls, parks_section);
             check(!control(page, "load-random-parks").command.empty(), "Dedicated-server admins keep random park controls");
             activate(parks, m, controls, "load-random-parks", {});

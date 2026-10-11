@@ -430,7 +430,9 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case multiplayer: multiplayer_page(menu, model, callbacks); break;
         case progress: progression_page(menu, model, callbacks); break;
         case mods:
-            category_tabs(menu, menu.mods_tab, {"INSTALLED", "SCRIPTS"}, "mods-tabs");
+            // The SCRIPTS tab (custom Lua scripts, modding_menu.cpp) is not offered for now:
+            // nothing uses them. The page is the installed mods.
+            menu.mods_tab = 0;
             ImGui::PushID(menu.mods_tab);
             ImGui::BeginChild("mods-tab", ImVec2(0, page_body_height(menu)));
             draw_modding_menu(menu, menu.mods_tab);

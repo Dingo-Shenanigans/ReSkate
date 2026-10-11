@@ -137,13 +137,18 @@ void update_menu_pointer() {
     auto& s = state();
     auto& io = ImGui::GetIO();
     const bool active = owns_menu_cursor(s);
-    io.AddFocusEvent(active);
+    // The pause menu's server browser watches the pointer while the game keeps it: the same
+    // reads, with the game's own cursor on screen and nothing taken from the game.
+    const bool watching = !active && s.hub_pointer.load() && s.input_attached && !s.stop && !s.failed &&
+                          game_window_foreground(s.window);
+    io.AddFocusEvent(active || watching);
     io.MouseDrawCursor = active;
-    if (!active) {
+    if (!active && !watching) {
         io.ClearInputKeys(); io.ClearInputMouse();
         s.raw_mouse_buttons.store(0);
         return;
     }
+    if (watching) io.ClearInputKeys();
     OverlayInputAccess access;
     POINT point{};
     // The Win32 backend only polls when it thinks WM_MOUSEMOVE tracking ended.

@@ -125,7 +125,11 @@ void disconnect(Session &s, std::uint64_t id, const std::string &reason) {
             s.roster_dirty |= s.peers[i].handshaken;
             // Never admitted: it held a player slot meanwhile. An ID that keeps failing waits
             // longer each time before its connection is taken again.
-            if (s.mode == Mode::host && !s.peers[i].handshaken) {
+            // Not one that was let in and left while fetching the map (they turned the download
+            // down, or stopped it): that is no failed attempt.
+            if (s.mode == Mode::host && !s.peers[i].handshaken && s.peers[i].map_authorized && s.peers[i].fetching_since) {
+                logging::log(logging::Level::info, logging::Channel::runtime, "Multiplayer: {} left without the map ({}).", id, reason);
+            } else if (s.mode == Mode::host && !s.peers[i].handshaken) {
                 const auto failures = s.join_backoff.failed(id, s.network_now);
                 logging::log(logging::Level::info, logging::Channel::runtime,
                              "Multiplayer: {} did not finish joining ({}), attempt {}.", id, reason, failures);
@@ -161,6 +165,7 @@ void send_required(Session &s, std::uint64_t id, const std::vector<std::uint8_t>
 void send_world_state(Session &s, std::uint64_t now) {
     auto state = packet(s, PacketKind::world_state, now);
     state.destination = s.map_name;
+    state.map_package = host_map_package(s.map_name);
     state.world_ready = s.host_world_ready;
     const auto bytes = encode_wire(state);
     for (const auto &peer : active_peers(s))

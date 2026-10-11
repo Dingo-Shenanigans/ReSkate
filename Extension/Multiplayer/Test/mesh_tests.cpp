@@ -43,6 +43,7 @@ bool clear_lobby_guest_objects() { ++simulated_guest_wipes; return true; }
 }
 namespace dingosdk {
 bool teleport_local_skater(const std::array<float, 3>&) { return true; }
+ControllerBindingsModel local_profile_controller_bindings() { return {}; }
 void update_board_lock(std::uintptr_t, std::uintptr_t, bool) noexcept {}
 void update_developer_hoodie(std::uintptr_t, std::uintptr_t, std::uint64_t, std::uint64_t, DeveloperHoodieState &,
                              const multiplayer::MarkStyles &) noexcept {}

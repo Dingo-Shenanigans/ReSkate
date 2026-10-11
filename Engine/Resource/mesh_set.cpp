@@ -68,6 +68,69 @@ MeshLod read_mesh_lod(std::span<const std::byte> resource, std::size_t lod) {
     return result;
 }
 
+std::size_t mesh_lod_count(std::span<const std::byte> resource) {
+    const Reader r{resource};
+    for (std::size_t i = 0; i < known_header.size(); ++i)
+        require(r.at<std::uint32_t>(i * 4) == known_header[i], "its layout is not the one this reader knows");
+    return r.at<std::uint16_t>(lod_count);
+}
+
+MeshLod mesh_lod_geometry(std::span<const std::byte> resource, std::size_t lod) {
+    require(lod < mesh_lod_count(resource), "it has no such level of detail");
+    const Reader r{resource};
+    const auto at = r.pointer(lod_table + lod * 8);
+    require(r.at<std::uint32_t>(at + lod_kind) == known_lod_kind, "the level of detail is of another kind");
+    MeshLod result;
+    result.chunk = r.at<Guid>(at + geometry_chunk);
+    result.vertex_bytes = r.at<std::uint32_t>(at + vertex_bytes);
+    result.index_bytes = r.at<std::uint32_t>(at + index_bytes);
+    require(result.chunk != Guid{} && result.vertex_bytes > 0, "the level of detail is empty");
+    return result;
+}
+
+std::vector<std::array<float, 3>> read_mesh_positions(std::span<const std::byte> resource, std::size_t lod,
+                                                      std::span<const std::byte> geometry) {
+    const auto layout = mesh_lod_geometry(resource, lod);
+    const Reader r{resource}, g{geometry};
+    require(geometry.size() >= layout.vertex_bytes, "the geometry chunk is too short");
+    const auto at = r.pointer(lod_table + lod * 8);
+    const auto sections = r.at<std::uint32_t>(at + section_count);
+    require(sections <= 4096, "it has too many sections");
+    const auto table = r.pointer(at + section_table);
+    std::vector<std::array<float, 3>> result;
+    for (std::uint32_t section = 0; section < sections; ++section) {
+        const auto s = table + section * section_size;
+        const std::size_t count = r.at<std::uint32_t>(s + vertex_count);
+        if (!count) continue;
+        const auto d = s + declaration;
+        const auto elements = r.at<std::uint8_t>(d + element_total), streams = r.at<std::uint8_t>(d + stream_total);
+        require(elements <= 16 && streams > 0 && streams <= 16, "a vertex declaration is malformed");
+        // Each stream's vertices follow the one before, from where the section starts.
+        std::array<std::size_t, 16> bases{}, strides{};
+        std::size_t end = r.at<std::uint32_t>(s + vertex_start);
+        for (std::size_t stream = 0; stream < streams; ++stream) {
+            strides[stream] = r.at<std::uint8_t>(d + stream_table + stream * 2);
+            require(strides[stream] > 0, "a vertex stream has no size");
+            bases[stream] = end;
+            end += strides[stream] * count;
+        }
+        require(end <= layout.vertex_bytes, "a section's vertices run past the vertex buffer");
+        bool found{};
+        for (std::size_t element = 0; element < elements && !found; ++element) {
+            if (r.at<std::uint8_t>(d + element * 4) != position) continue;
+            const auto stream = r.at<std::uint8_t>(d + element * 4 + 3);
+            const std::size_t offset = r.at<std::uint8_t>(d + element * 4 + 2);
+            require(r.at<std::uint8_t>(d + element * 4 + 1) == usage_format[position] && stream < streams &&
+                    offset + usage_size[position] <= strides[stream], "its positions have another format");
+            for (std::size_t vertex = 0; vertex < count; ++vertex)
+                result.push_back(g.at<std::array<float, 3>>(bases[stream] + vertex * strides[stream] + offset));
+            found = true;
+        }
+        require(found, "a section has no positions");
+    }
+    return result;
+}
+
 SkinnedMesh read_skinned_mesh(std::span<const std::byte> resource, std::size_t lod, std::span<const std::byte> geometry) {
     const auto layout = read_mesh_lod(resource, lod);
     const Reader r{resource}, g{geometry};

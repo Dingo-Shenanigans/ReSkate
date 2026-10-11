@@ -256,10 +256,14 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     if (s.roster_sequence && !newer_sequence(p.sequence, s.roster_sequence))
         return;
     s.roster_sequence = p.sequence;
-    s.server_admin = false;
+    s.own_tag.clear();
+    s.own_tag_color = 0;
     for (const auto &m : p.members)
         if (m.id == s.transport.status().local_id) {
-            s.server_admin = m.admin && game_server_steam_id(s.host_id);
+            if (game_server_steam_id(s.host_id)) {
+                s.own_tag = m.tag;
+                s.own_tag_color = m.tag_color;
+            }
             set_local_party(s, m);
             s.local_speeding = m.speeding && game_server_steam_id(s.host_id);
             if (m.scoring && !s.local_scoring) add_chat(s, 0, "ReSkate", own_scoring_notice());
@@ -454,6 +458,15 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         stop(s, "This host is banned from ReSkate multiplayer.");
         return;
     }
+    // The same for a player who may not host (banned_host): theirs stops, and nobody stays in it.
+    if (s.mode == Mode::host && banned_host(s.transport.status().local_id)) {
+        stop(s, std::string(banned_host_notice));
+        return;
+    }
+    if (s.mode == Mode::join && banned_host(s.host_id)) {
+        stop(s, std::string(banned_host_lobby_notice));
+        return;
+    }
     for (const auto &link : links) {
         if (s.mode == Mode::host && s.banned.contains(link.id)) {
             s.transport.disconnect(link.id, "You were kicked from this session.");
@@ -496,6 +509,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         (s.awaiting_map || !local.ready) && now - s.last_map_request >= 1000000) {
         auto request = packet(s, PacketKind::map_request, now);
         request.map = s.join_destination.empty() ? 0 : map_hash(s.join_destination);
+        request.map_fetching = s.fetching_since != 0;
         if (s.password && host->password_challenge && request.map) {
             request.challenge = host->password_challenge;
             request.proof = password_proof(*s.password, s.secret, request.map, s.host_id, request.source,
@@ -602,6 +616,9 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 s.join_destination.clear();
                 s.map_name.clear();
                 s.map_label.clear();
+                s.map_package.clear();
+                s.fetching_since = 0;
+                fetching_map_flag.store(false, std::memory_order_relaxed);
                 s.map = 0;
                 s.map_load_submitted = false;
                 s.last_map_load_check = 0;
@@ -614,6 +631,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             if (!p.destination.empty()) {
                 s.join_destination = s.map_name = p.destination;
                 s.map_label = p.map_label;
+                s.map_package = p.map_package;
                 s.map = p.map;
             }
             s.host_world_ready = p.world_ready;
@@ -636,6 +654,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 continue;
             link->ready_sequence = p.sequence;
             link->last_packet = now;
+            if (p.map_fetching) guest_fetching(*link, now);
             const bool arrived = p.world_ready && !link->world_ready;
             link->world_ready = p.world_ready;
             if (p.world_ready) link->travel_since = 0;
@@ -662,6 +681,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 disconnect(s, message.peer, "The host changed maps while you were joining. Join again.");
                 continue;
             }
+            if (p.map_fetching) guest_fetching(*link, now);
             link->member.epoch = p.epoch;
             bool authorized = !s.password;
             if (s.password) {
@@ -682,6 +702,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             if (newly_authorized || !link->last_map_offer || now - link->last_map_offer >= 1000000) {
                 auto offer = packet(s, PacketKind::map_offer, now);
                 offer.destination = s.map_name;
+                offer.map_package = host_map_package(s.map_name);
                 offer.challenge = link->password_challenge;
                 offer.map_authorized = authorized;
                 send_required(s, message.peer, encode_wire(offer));
@@ -713,6 +734,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             link->map_authorized |= p.map_authorized;
             s.join_destination = p.destination;
             s.map_label = p.map_label;
+            s.map_package = p.map_package;
             s.world = p.world;
             s.join_map_authorized |= p.map_authorized;
             if (new_challenge)
@@ -893,6 +915,22 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 s.host_extras = p.extras;
             continue;
         }
+        // What the player's role on the server lets them do: the rules that depend on it are applied again.
+        if (p.kind == PacketKind::permissions) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                s.role = p.role;
+                s.role_all_commands = p.role_all_commands;
+                s.role_commands = p.role_commands;
+                s.role_permissions = p.role_permissions;
+                s.server_admin = s.role_all_commands || !s.role_commands.empty();
+                apply_object_limit(s, s.object_limit);
+                apply_object_placement(s, s.object_placement);
+                apply_guest_tools(s, s.guest_noclip, s.guest_no_bail, s.guest_boosts);
+                publish(s);
+                publish_chat(s);
+            }
+            continue;
+        }
         if (p.kind == PacketKind::maps) {
             if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
                 s.server_maps = p.maps;
@@ -949,6 +987,20 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             // Everyone holds everyone to the same pace, so a modified client cannot flood.
             if (!server && sender->chat_rate.accept(now, p.text, 1) != ChatRate::Verdict::accepted) continue;
             sender->last_packet = now;
+            // A word that is not allowed at all: a lobby's host does not show or pass the line on,
+            // warns the guest, and after the last warning removes them (a dedicated server
+            // does the same with its own count).
+            if (s.mode == Mode::host && text::contains_forbidden_words(p.text)) {
+                const auto count = ++s.word_warnings[sender->member.id];
+                if (count > word_warnings_default) {
+                    s.transport.disconnect(sender->member.id, word_kick_notice.data());
+                } else {
+                    auto notice = packet(s, PacketKind::admin, now);
+                    notice.text = clean_chat_text(word_warning(count, word_warnings_default));
+                    send_packet(s, sender->member.id, notice, true, false);
+                }
+                continue;
+            }
             // "/p": party chat, which a lobby's host relays to the sender's party and nobody else.
             if (s.mode == Mode::host && p.text.starts_with("/p ")) {
                 host_party_chat(s, sender->member.id, std::string_view(p.text).substr(3), now);
@@ -1085,6 +1137,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         if (const auto *host_peer = find_peer(s, s.host_id); host_peer && host_peer->handshaken) {
             auto ready = packet(s, PacketKind::world_ready, now);
             ready.world_ready = local.ready && !s.awaiting_map;
+            ready.map_fetching = !ready.world_ready && s.fetching_since != 0;
             send_required(s, s.host_id, encode_wire(ready));
             s.last_world_ready = now;
         }

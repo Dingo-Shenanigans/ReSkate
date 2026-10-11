@@ -47,6 +47,18 @@ Config parse_config(std::string_view text);
 // Returns nothing when offline or the config is invalid; the reason is logged.
 std::optional<Config> fetch_config();
 
+// One GitHub release, for the launcher's changelogs: its patch notes are what its page on
+// GitHub shows, the release's description or, without one, its commit's message.
+struct ReleaseNote {
+    std::string tag, title, date, notes;   // date: YYYY-MM-DD; notes: markdown
+};
+// The releases page's Atom feed (<repo>/releases.atom), newest first as it comes.
+std::vector<ReleaseNote> parse_release_feed(std::string_view feed);
+// The newest release of the repo the launcher updates from. Throws when GitHub cannot be reached.
+ReleaseNote fetch_release_note();
+// That repo's releases page on GitHub.
+std::string releases_page();
+
 // Streams an HTTPS GET into `sink`, following HTTPS redirects; throws past
 // `limit` bytes, on a non-200 answer, or whatever `sink` throws (to cancel).
 void http_stream(const std::wstring& url, std::uint64_t limit, int timeout_ms,

@@ -13,6 +13,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Console/perf_commands.cpp
     Extension/Skater/console_commands.cpp
     Extension/Multiplayer/console_commands.cpp
+    Extension/Customization/console_commands.cpp
     Extension/Multiplayer/Session/session.cpp
     Extension/Multiplayer/Session/session_view.cpp
     Extension/Multiplayer/Session/session_send.cpp
@@ -23,6 +24,7 @@ add_library(dingosdk_runtime SHARED
     Extension/UI/NativeMenu/native_menu.cpp
     Extension/UI/NativeMenu/native_menu_rows.cpp
     Extension/UI/NativeMenu/native_menu_multiplayer.cpp
+    Extension/UI/NativeMenu/ui_sound.cpp
     Extension/UI/NativeMenu/native_menu_dump.cpp
     Extension/UI/NativeMenu/native_hub.cpp
     Extension/UI/NativeMenu/native_menu_data.cpp
@@ -63,9 +65,12 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Session/password.cpp
     Extension/Multiplayer/developer_identity.cpp
     Extension/Multiplayer/developer_identity_fetch.cpp
+    Extension/Multiplayer/word_lists.cpp
     Extension/Settings/console_commands.cpp
     Extension/Settings/job_spin.cpp
     Extension/Settings/engine_tweaks.cpp
+    Extension/Settings/replay_guard.cpp
+    Extension/Settings/replay_drafts.cpp
     Extension/UI/ui_pointer_skip.cpp
     Extension/Settings/named_settings.cpp
     Extension/World/console_commands.cpp
@@ -84,6 +89,9 @@ add_library(dingosdk_runtime SHARED
     Extension/Assets/native_patch_support.cpp
     Extension/Assets/mod_layers.cpp
     Extension/Assets/live_mods.cpp
+    Extension/Assets/map_download.cpp
+    Engine/Vfs/thunderstore_package.cpp
+    Launcher/mod_manager.cpp
     Extension/Assets/loose_files.cpp
     Extension/Scripting/lua_startup.cpp
     Extension/Scripting/custom_script_loader.cpp
@@ -98,6 +106,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/loading_screen.cpp
     Extension/Customization/preset_lookup_guard.cpp
     Extension/Boot/exit_watch.cpp
+    Extension/Boot/discord_presence.cpp
     Extension/Customization/developer_hoodie.cpp
     Extension/Customization/developer_board.cpp
     Extension/Skater/skater_model.cpp
@@ -121,6 +130,8 @@ add_library(dingosdk_runtime SHARED
     Extension/HallOfMeat/hall_of_meat_skater.cpp
     Extension/HallOfMeat/hall_of_meat_skeleton.cpp
     Extension/HallOfMeat/hall_of_meat_slow_motion.cpp
+    Extension/RoadRash/road_rash.cpp
+    Extension/RoadRash/road_rash_commands.cpp
     Extension/Trainer/trainer.cpp
     Extension/Trainer/trainer_presets.cpp
     Extension/Trainer/trainer_jump.cpp
@@ -146,6 +157,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Profile/local_profile_missions.cpp
     Extension/Customization/local_cosmetic_catalog.cpp
     Extension/Customization/local_customization_runtime.cpp
+    Extension/Customization/item_browser.cpp
     Extension/Progression/local_entitlement_trigger_runtime.cpp
     Extension/Progression/local_neighborhood_runtime.cpp
     Extension/Customization/local_player_card_runtime.cpp
@@ -191,7 +203,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Boot/ea_service_block.cpp)
 
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_logging dingosdk_profiler dingosdk_supported_build dingosdk_overlay dingosdk_console_core dingosdk_steam_restart_guard
-    dingosdk_startup_interventions dingosdk_fast_travel_unlock dingosdk_local_profile dingosdk_initfs dingosdk_mods dingosdk_startup_window dingosdk_custom_scripts dingosdk_world_layer_scan bcrypt
+    dingosdk_startup_interventions dingosdk_fast_travel_unlock dingosdk_local_profile dingosdk_initfs dingosdk_mods dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz shell32 dingosdk_startup_window dingosdk_custom_scripts dingosdk_world_layer_scan bcrypt
     dingosdk_https winhttp ws2_32 xaudio2 ole32 dingosdk_game_archives dingosdk_word_filter)
 
 add_library(dingosdk_custom_level_manifest STATIC

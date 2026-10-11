@@ -114,6 +114,14 @@ struct VERTEX_CONSTANT_BUFFER_DX12
     float   mvp[4][4];
 };
 
+// [ReSkate] mode, white in nits, unused, unused: see ImGui_ImplDX12_SetOutputTransfer.
+static float g_ReSkateOutputTransfer[4] = { 0.0f, 200.0f, 0.0f, 0.0f };
+void ImGui_ImplDX12_SetOutputTransfer(int mode, float white_nits)
+{
+    g_ReSkateOutputTransfer[0] = (float)mode;
+    g_ReSkateOutputTransfer[1] = white_nits;
+}
+
 // Functions
 static void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, ID3D12GraphicsCommandList* command_list, ImGui_ImplDX12_RenderBuffers* fr)
 {
@@ -163,6 +171,7 @@ static void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, ID3D12Graphic
     command_list->SetPipelineState(bd->pPipelineState);
     command_list->SetGraphicsRootSignature(bd->pRootSignature);
     command_list->SetGraphicsRoot32BitConstants(0, 16, &vertex_constant_buffer, 0);
+    command_list->SetGraphicsRoot32BitConstants(0, 4, g_ReSkateOutputTransfer, 16); // [ReSkate] see ImGui_ImplDX12_SetOutputTransfer
 
     // Setup blend factor
     const float blend_factor[4] = { 0.f, 0.f, 0.f, 0.f };
@@ -440,8 +449,8 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
         param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         param[0].Constants.ShaderRegister = 0;
         param[0].Constants.RegisterSpace = 0;
-        param[0].Constants.Num32BitValues = 16;
-        param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+        param[0].Constants.Num32BitValues = 20;                        // [ReSkate] the matrix, then the output transfer
+        param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;       // [ReSkate] the pixel shader reads the transfer
 
         param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         param[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -582,12 +591,35 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
               float4 col : COLOR0;\
               float2 uv  : TEXCOORD0;\
             };\
+            cbuffer vertexBuffer : register(b0) \
+            {\
+              float4x4 ProjectionMatrix; \
+              float4 OutputTransfer; \
+            };\
             SamplerState sampler0 : register(s0);\
             Texture2D texture0 : register(t0);\
             \
+            float3 srgb_to_linear(float3 c)\
+            {\
+              return lerp(c / 12.92, pow(abs((c + 0.055) / 1.055), 2.4), step(0.04045, c)); \
+            }\
             float4 main(PS_INPUT input) : SV_Target\
             {\
               float4 out_col = input.col * texture0.Sample(sampler0, input.uv); \
+              if (OutputTransfer.x > 0.5) \
+              {\
+                float3 lin = srgb_to_linear(saturate(out_col.rgb)); \
+                if (OutputTransfer.x < 1.5) \
+                {\
+                  out_col.rgb = lin * (OutputTransfer.y / 80.0); \
+                }\
+                else \
+                {\
+                  float3 wide = float3(dot(lin, float3(0.6274, 0.3293, 0.0433)), dot(lin, float3(0.0691, 0.9195, 0.0114)), dot(lin, float3(0.0164, 0.0880, 0.8956))); \
+                  float3 y = pow(saturate(wide * (OutputTransfer.y / 10000.0)), 0.1593017578125); \
+                  out_col.rgb = pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375); \
+                }\
+              }\
               return out_col; \
             }";
 

@@ -45,7 +45,7 @@ The example scripts in this folder are ready to copy:
 The server loads scripts when it starts:
 - **Order:** files load in name order. Prefix names with numbers (`10-rules.lua`, `20-goto.lua`) to control the order.
 - **Loading errors:** a file that fails to load is logged and skipped. Commands it registered before the error stay registered.
-- **Changes:** type `scripts reload` in the console (or `/scripts reload` as an admin) to load the folder again without a restart. Everything starts over: commands, event handlers, timers and globals. `scripts` on its own lists the loaded commands.
+- **Changes:** type `scripts reload` in the console (or `/scripts reload` with a role that gives `scripts`) to load the folder again without a restart. Everything starts over: commands, event handlers, timers and globals. `scripts` on its own lists the loaded commands.
 - **Shared state:** all files share one Lua state, so a global set in one file is visible in the others. Globals keep their values between commands until the server restarts or the scripts are reloaded.
 - **Encoding:** files can be saved as UTF-8 with or without a byte-order mark. Only source text is accepted; see [What Lua can do here](#what-lua-can-do-here).
 
@@ -53,15 +53,14 @@ The server loads scripts when it starts:
 
 | Who | Types | Notes |
 |---|---|---|
-| A player | `/hello world` | Normal commands only, never `admin = true` ones. |
-| An admin | `/hello world` | All script commands. |
+| A player | `/hello world` | Normal commands, and the `admin = true` ones their role gives (see below). |
 | The server console | `hello world` | All script commands. The caller is the console's [player table](#the-player-table). |
 
 When a player types `/name`, the server looks in this order and runs the first match:
 
 1. The chat's own commands: `help`, `vote`, `poll`, `party`, `w` and so on.
 2. The owner's commands from the `"commands"` list in `ReSkateServer.json` (see `Server/README.txt`).
-3. For admins, the server's console commands: `kick`, `map`, `scripts` and so on.
+3. For players with a role, the server's console commands it gives: `kick`, `map`, `scripts` and so on.
 4. Script commands.
 
 So a script command that shares its name with any of those never runs from chat, even though it still loads. Give your commands names the server doesn't already use.
@@ -97,7 +96,7 @@ Adds the chat command `/name`.
 
 | Field | Meaning |
 |---|---|
-| `admin = true` | Only admins and the console can run it. To other players it doesn't exist: they get `Unknown command`, and `/help` doesn't list it. |
+| `admin = true` | Only the console and the roles that give it can run it, like a server command: a role with `"*"` in its `commands` in `data/roles.json`, or one that lists the command's name (`"bring"`). To other players it doesn't exist: they get `Unknown command`, and `/help` doesn't list it. |
 
 ```lua
 server.command("bring", function(player, args)
@@ -118,7 +117,8 @@ Functions that describe a player return a plain table:
 |---|---|---|
 | `id` | `integer` | SteamID64. `0` for the console. |
 | `name` | `string` | The name shown in game. `"Server"` for the console. |
-| `admin` | `boolean` | Whether they are an admin. Always `true` for the console. |
+| `admin` | `boolean` | Whether their role gives every command (`"*"`). Always `true` for the console. |
+| `role` | `string` | Their role's name (`data/roles.json`). Not set when they have none, nor for the console. |
 | `objects` | `integer` | How many objects they have placed. Not set for the console. |
 | `x`, `y`, `z` | `number` | Their position, in metres. Not set until their game has sent one, and never for the console. |
 

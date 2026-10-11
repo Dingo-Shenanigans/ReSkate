@@ -184,6 +184,20 @@ bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2
     return pressed;
 }
 
+// A small tile in the bottom-left corner: what each release changed.
+bool changelog_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled) {
+    bool hovered{};
+    const bool pressed = tile_hit("##changelog", position, size, enabled, hovered);
+    const ImVec2 end(position.x + size.x, position.y + size.y);
+    rough_rect(draw, position, end, hovered ? color::tile_grey : color::tile, 9);
+    if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
+    const char* label = "CHANGELOGS";
+    const auto extent = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, 0, label);
+    draw->AddText(fonts.heading, fonts.heading->FontSize,
+        ImVec2(position.x + (size.x - extent.x) * 0.5f, position.y + (size.y - extent.y) * 0.5f), color::text, label);
+    return pressed;
+}
+
 // The MODS tile, the biggest after PLAY: a mod browser nobody finds is no use.
 bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled,
                const std::string& detail, const std::string& mark, bool bad) {
@@ -385,7 +399,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
             ui.steam_offline = !launcher.settings().offline && !launcher_app::steam_signed_in();
         }
     }
-    const bool modal = ui.settings || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
+    const bool modal = ui.settings || ui.changelog || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
         ui.steam_offline || state.phase == Phase::mods_broken || ui.mods_update_prompt;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -498,6 +512,11 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         mods_panel.scanned = false;
     }
 
+    // Level with PLAY's bottom edge, in the opposite corner.
+    const ImVec2 changelog_size(S(200), S(52));
+    if (changelog_tile(draw, fonts, ImVec2(S(60), size.y - S(56) - changelog_size.y), changelog_size, !modal))
+        ui.changelog = true;
+
     if (enabled && !secondary && !modal &&
         (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) act();
     ImGui::EndDisabled();
@@ -512,6 +531,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     else if (qr_open) qr_window(launcher, fonts, size, state.qr);
     else if (ui.sign_in) sign_in_window(launcher, fonts, size, ui);
     else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
+    else if (ui.changelog) changelog_window(fonts, size, ui);
     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
     else if (state.phase == Phase::mods_broken)
         mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);

@@ -268,6 +268,11 @@ std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Instal
         });
     else if (panel.order == 2)
         std::stable_sort(view.begin(), view.end(), [&](int a, int b) { return size(a) > size(b); });
+    // Mods with an update waiting come first, whatever the order: they are what the player has
+    // something to do about. Among themselves, and the rest among themselves, the order stands.
+    std::stable_partition(view.begin(), view.end(), [&](int index) {
+        return update_waiting(panel, installed, entries[static_cast<std::size_t>(index)].mod.name);
+    });
     return view;
 }
 
@@ -403,7 +408,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
 
     const float arrow = ImGui::GetFrameHeight();
     const float arrows_x = switch_x - S(18) - arrow * 2 - S(6);
-    const char* fixed = "Show all mods in load order to move them";
+    const char* fixed = "To move mods, show all of them in load order, with no update waiting (those are listed first)";
     ImGui::SetCursorScreenPos(ImVec2(arrows_x, start.y + (tall - arrow) * 0.5f));
     ImGui::BeginDisabled(!reorder || index == 0);
     if (ImGui::ArrowButton("##up", ImGuiDir_Up)) request = {Request::Kind::up, {mod.name}};
@@ -518,7 +523,13 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     const auto view = visible_mods(panel, installed);
     // Arrows move a mod past its neighbour in the load order, which is only
     // what the list shows when nothing is filtered out or sorted another way.
-    const bool reorder = panel.order == 0 && view.size() == entries.size();
+    // (Mods moved to the top for their updates are out of that order too.)
+    const bool in_load_order = [&] {
+        for (int at = 0; at < static_cast<int>(view.size()); ++at)
+            if (view[static_cast<std::size_t>(at)] != at) return false;
+        return true;
+    }();
+    const bool reorder = panel.order == 0 && view.size() == entries.size() && in_load_order;
     const auto shown = [&](int at) -> const std::string& {
         return entries[static_cast<std::size_t>(view[static_cast<std::size_t>(at)])].mod.name;
     };

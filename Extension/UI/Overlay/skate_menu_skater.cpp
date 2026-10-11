@@ -164,6 +164,15 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
         : "Your bails show the bones they hurt and score a Meat card. A break slows the game in single player.";
     if (toggle_row(menu, "Hall of Meat", meat_help, hall_of_meat, model.hall_of_meat.available && callbacks.queue_console_command))
         send_console(menu, callbacks, hall_of_meat ? "hallofmeat 1" : "hallofmeat 0");
+    bool road_rash = model.road_rash.enabled;
+    const bool rash_console = model.road_rash.available && callbacks.queue_console_command;
+    if (toggle_row(menu, "Road Rash", "Bails leave marks that build up: dust, scrapes, bruises, wounds. Needs the Road Rash item pack.",
+            road_rash, rash_console))
+        send_console(menu, callbacks, road_rash ? "roadrash 1" : "roadrash 0");
+    bool rash_blood = model.road_rash.blood;
+    if (toggle_row(menu, "Road Rash blood", "Fresh blood on the worst wounds. Off, they are dry and scabbed.", rash_blood,
+            rash_console && model.road_rash.enabled))
+        send_console(menu, callbacks, rash_blood ? "roadrashblood 1" : "roadrashblood 0");
     end_card();
 
     begin_card(menu, "boosts", "BOOSTS", "Buttons are set in Settings > Controls");

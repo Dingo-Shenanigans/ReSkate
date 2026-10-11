@@ -18,6 +18,7 @@ constexpr std::array<std::pair<std::string_view, IdentityList>, 5> categories{{
 constexpr auto banned = static_cast<std::size_t>(IdentityList::banned);
 constexpr auto servers = static_cast<std::size_t>(IdentityList::official_server);
 constexpr auto blocked = static_cast<std::size_t>(IdentityList::blocked_server);
+constexpr auto hosts = static_cast<std::size_t>(IdentityList::banned_host);
 
 std::atomic<std::shared_ptr<const IdentityLists>> current;
 
@@ -65,6 +66,7 @@ IdentityLists parse_identity_lists(std::string_view json) {
     if (answer.contains("banned")) read(answer.at("banned"), lists[banned]);
     if (answer.contains("official_servers")) read(answer.at("official_servers"), lists[servers], server_id);
     if (answer.contains("blocked_servers")) read(answer.at("blocked_servers"), lists[blocked], any_server_id);
+    if (answer.contains("banned_hosts")) read(answer.at("banned_hosts"), lists[hosts]);
     return lists;
 }
 bool parse_server_tokens_required(std::string_view json) {

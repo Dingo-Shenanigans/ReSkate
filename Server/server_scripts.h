@@ -30,8 +30,8 @@ class Scripts {
     // Loading again (scripts reload) starts over: commands, handlers, timers and globals.
     std::string load(const std::filesystem::path &folder);
     const std::filesystem::path &folder() const { return folder_; }
-    // The script's reply, or nothing when no script has this command (or it is for admins and
-    // `caller` is not one). `caller` is the player's SteamID64, 0 for the console.
+    // The script's reply, or nothing when no script has this command (or it is admin-only and
+    // `caller`'s role does not give it). `caller` is the player's SteamID64, 0 for the console.
     std::optional<std::string> run(std::string_view verb, std::uint64_t caller, std::string_view args);
     // The commands `caller` may run (0: the console), as "goto, rules"; "" for none.
     std::string help(std::uint64_t caller) const;
@@ -47,6 +47,7 @@ class Scripts {
         int function{}; // luaL_ref in the registry
         bool admin{};
     };
+    bool allowed(const Command &, std::string_view name, std::uint64_t caller) const;
     Host &host_;
     lua_State *lua_{};
     std::filesystem::path folder_;
