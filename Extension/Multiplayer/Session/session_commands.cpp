@@ -196,7 +196,10 @@ std::string teleport_self(Session &s, std::string_view argument) {
     std::string error;
     auto *p = find_player(s, argument, error);
     if (!p) return error;
-    if (!p->visible) return peer_name(s, *p) + " is not in the world right now.";
+    // Where they were last heard to be: a player further away than skaters are shown has no
+    // skater here, and is exactly who a teleport is for. Only one no pose has placed yet has
+    // nowhere to go to.
+    if (!p->placed) return peer_name(s, *p) + " is not in the world right now.";
     at = p->render_pose.root.position;
     at[0] += 2.0f; // beside them, not inside
     at[1] += 1.0f;

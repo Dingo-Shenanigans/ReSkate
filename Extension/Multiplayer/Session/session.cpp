@@ -648,7 +648,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 p.native_status = !p.shown_wanted ? "Further away than players are shown."
                                   : sampled       ? "Waiting for the player's cosmetic recipe."
                                                   : "Waiting for player poses.";
-                // No skater for them, but still their name or dot where they are.
+                // No skater for them, but still their name or dot where they are, and where the
+                // Social menu's teleport and spectate find them.
+                if (!p.shown_wanted && sampled) update_party_position(&p.render_pose);
                 if (!p.shown_wanted && sampled && labels) label(p);
             }
         }
