@@ -401,6 +401,9 @@ bool setup_graphics() {
     // Font upload uses the exact swapchain queue, and this pinned backend waits
     // for its own upload fence before returning from device-object creation.
     const bool objects = s.dx12_ready && ImGui_ImplDX12_CreateDeviceObjects();
+    if (objects && !ImGui_ImplDX12_HasOutputTransfer())
+        dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+            "Overlay output: this system could not build the HDR-aware shader; drawing in SDR, so an HDR game shows the overlay off-colour.");
     ImGui::SetCurrentContext(previous);
     if (!objects) {
         dingosdk::logging::printf(dingosdk::logging::Level::error, dingosdk::logging::Channel::graphics, "Graphics setup failed in ImGui initialization: win32=%d dx12=%d objects=%d",

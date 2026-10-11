@@ -127,6 +127,9 @@ bool Renderer::init(HWND window) {
             "Launcher renderer: this driver cannot create the Direct3D 12 pipeline the window draws with.");
         return false;
     }
+    if (!ImGui_ImplDX12_HasOutputTransfer())
+        logging::write(logging::Level::info, logging::Channel::launcher,
+            "Launcher renderer: drawing with ImGui's stock shader; this system could not build the HDR-aware one.");
     return true;
 }
 
