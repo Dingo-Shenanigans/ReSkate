@@ -26,6 +26,85 @@ std::string level_name(const Level& level) {
     return level.display_name.empty() ? level_name(level.asset) : level.display_name;
 }
 
+void quick_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    namespace tod = dingosdk::native_tools;
+    const Level* root = nullptr;
+    const Level* selected = nullptr;
+    std::vector<const Level*> destinations;
+    for (const auto& level : model.levels) {
+        if (same(level.asset, root_asset)) root = &level;
+        else if (tod::listed(level)) {
+            destinations.push_back(&level);
+            if (same(level.asset, menu.destination)) selected = &level;
+        }
+    }
+    std::sort(destinations.begin(), destinations.end(), [](const auto* a, const auto* b) {
+        if (a->custom != b->custom) return a->custom < b->custom;
+        return level_name(*a) < level_name(*b);
+    });
+
+    begin_card(menu, "quick-map", "QUICK MAP CHANGER", selected ? (selected->custom ? "CUSTOM MAP" : "OFFICIAL MAP") : nullptr);
+    field(menu, "Destination");
+    if (ImGui::BeginCombo("##quick-destination", selected ? level_name(*selected).c_str() : "Choose a level")) {
+        bool custom_group = false;
+        for (const auto* level : destinations) {
+            if (level->custom != custom_group) {
+                custom_group = true;
+                ImGui::SeparatorText("CUSTOM MAPS");
+            }
+            ImGui::PushID(level->asset.c_str());
+            if (ImGui::Selectable(level_name(*level).c_str(), selected == level)) {
+                menu.destination = level->asset;
+                selected = level;
+                menu.feedback.clear();
+            }
+            ImGui::PopID();
+        }
+        if (destinations.empty()) ImGui::TextDisabled("Waiting for levels...");
+        ImGui::EndCombo();
+    }
+    const bool can_load = root && selected && root->can_load && selected->can_load && model.can_queue_load &&
+        !multiplayer_controls_level(model.multiplayer) && callbacks.queue_load;
+    if (primary_button(menu, "LOAD SELECTED MAP", can_load)) {
+        std::array<char, 512> result{};
+        const auto* point = selected->automatic_start_point();
+        const bool queued = callbacks.queue_load(callbacks.user, root->asset.c_str(), "", selected->asset.c_str(),
+            point ? point->c_str() : "", result.data(), result.size());
+        result.back() = '\0';
+        feedback(menu, result[0] ? result.data() : (queued ? "Loading level..." : "Load unavailable."));
+    }
+    if (!can_load) {
+        const std::string reason = multiplayer_controls_level(model.multiplayer) ? "Only the lobby host can change levels." :
+            !root ? "Waiting for levels..." : !selected ? "Choose a destination." :
+            !root->can_load ? root->load_block_reason : !selected->can_load ? selected->load_block_reason : model.load_block_reason;
+        note(reason.empty() ? "Level loading is unavailable." : reason.c_str());
+    }
+    end_card();
+
+    begin_card(menu, "quick-time", "TIME OF DAY");
+    const bool time_available = tod::time_of_day_available(model, callbacks);
+    const unsigned current = tod::time_of_day(model);
+    info(menu, "Current", tod::time_of_day_labels[current]);
+    const auto apply_time = [&](unsigned next) {
+        for (const auto& line : tod::time_of_day_commands(model, next)) send_console(menu, callbacks, line);
+    };
+    ImGui::BeginDisabled(!time_available);
+    if (ImGui::Button("<  PREVIOUS", ImVec2((ImGui::GetContentRegionAvail().x - px(8)) * .5f, px(40))))
+        apply_time(static_cast<unsigned>((current + tod::time_of_day_labels.size() - 1) % tod::time_of_day_labels.size()));
+    ImGui::SameLine();
+    if (ImGui::Button("NEXT  >", ImVec2(-FLT_MIN, px(40))))
+        apply_time(static_cast<unsigned>((current + 1) % tod::time_of_day_labels.size()));
+    ImGui::EndDisabled();
+    if (!time_available) note("Time controls become available after a supported map finishes loading.");
+    end_card();
+
+    begin_card(menu, "quick-trainer", "TRAINER");
+    note("Open tuning, practice tools, teleport markers and the trainer HUD.");
+    if (primary_button(menu, "OPEN TRAINER", callbacks.queue_console_command != nullptr))
+        send_console(menu, callbacks, "trainer open");
+    end_card();
+}
+
 void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     begin_card(menu, "travel", "FIND YOUR SPOT");
     std::vector<const Level*> destinations;

@@ -48,6 +48,7 @@ void atmosphere_menu(SkateMenu&, const Model&, const CallbacksV3&);
 void progression_page(SkateMenu&, const Model&, const CallbacksV3&);
 void multiplayer_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Sidebar pages.
+void quick_page(SkateMenu&, const Model&, const CallbacksV3&);
 void map_page(SkateMenu&, const Model&, const CallbacksV3&);
 void world_page(SkateMenu&, const Model&, const CallbacksV3&);
 void build_page(SkateMenu&, const Model&, const CallbacksV3&);

@@ -276,11 +276,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, training, multiplayer, progress, mods, settings, special, developer, page_count };
+enum Page { quick, map, world, build, skater, training, multiplayer, progress, mods, settings, special, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "SETTINGS", "SPECIAL", "DEVELOPER"};
+    "QUICK", "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "SETTINGS", "SPECIAL", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
-    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.",
+    "Map, time and trainer.", "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.",
     "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your controls, your screen.", "Not everyone gets this page.",
     "Under the hood."};
 }
@@ -375,7 +375,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
             return page == developer || (model.steam_offline && page == multiplayer) ||
                    (page == special && model.multiplayer.identity_tag.empty());
         };
-        if (hidden(menu.page)) menu.page = map;
+        if (hidden(menu.page)) menu.page = quick;
         ImGui::SetCursorPos(ImVec2(px(10), px(96)));
         ImGui::BeginChild("navigation", ImVec2(sidebar - px(20), size.y - px(140)), ImGuiChildFlags_None);
         const float tab_height = px(40);
@@ -422,6 +422,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         ImGui::SetCursorPos(ImVec2(sidebar + px(20), px(76)));
         ImGui::BeginChild("page", ImVec2(size.x - sidebar - px(40), size.y - px(96)), ImGuiChildFlags_None);
         switch (menu.page) {
+        case quick: quick_page(menu, model, callbacks); break;
         case map: map_page(menu, model, callbacks); break;
         case world: world_page(menu, model, callbacks); break;
         case build: build_page(menu, model, callbacks); break;
