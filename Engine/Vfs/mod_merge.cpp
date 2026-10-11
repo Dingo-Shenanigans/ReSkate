@@ -6,6 +6,8 @@
 #include "mod_store_copies.h"
 #include "native_db.h"
 
+#include <Windows.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -45,12 +47,22 @@ constexpr std::array<std::string_view, 2> launch_superbundles{"Win32/globals.toc
 // more than that the mod could not be merged: what was found is not for the
 // mod's author to read. The catalogue is only read once a mod turns out to add
 // an item at all.
-bool store_copy_problems(const Catalog& catalog, MergeReport& report) {
+bool store_copy_problems(const Catalog& all, MergeReport& report, const std::vector<std::string>& checked,
+                         std::size_t threads, bool background) {
+    // (Only when some are skipped is the catalogue copied, without them.)
+    std::optional<Catalog> fewer;
+    if (!checked.empty()) {
+        fewer = all;
+        std::erase_if(fewer->mods, [&](const Mod& mod) {
+            return std::ranges::any_of(checked, [&](const std::string& name) { return lower(name) == lower(mod.name); });
+        });
+    }
+    const Catalog& catalog = fewer ? *fewer : all;
     std::optional<content_cache::Catalogs> store;
     const auto found = check_store_copies(catalog, [&store](const std::string& key) {
         if (!store) store = content_cache::read_catalogs(content_cache::directory());
         return store->reserved(key);
-    }, &report.notes);
+    }, &report.notes, threads, background);
     for (const auto& source : found.mods) report.problems[source.mod].emplace_back(store_copies_problem);
     return !found.mods.empty();
 }
@@ -95,7 +107,12 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // anything is built: the caller merges again without it, as it does for a
         // mod that cannot be merged, and the patch on disk stays for that merge to
         // reuse or replace.
-        if (storeKnown && store_copy_problems(catalog, report)) return report;
+        // Threads for the three steps that read many files: as many as there are cores at
+        // launch (the player is waiting on nothing else), half of them and fewer while the game runs.
+        const auto cores = std::max(1U, std::thread::hardware_concurrency());
+        const std::size_t readers = std::min<std::size_t>(options.live ? std::max(1U, cores / 2) : cores, options.live ? 6U : 8U);
+        if (storeKnown && store_copy_problems(catalog, report, options.live ? options.checked : std::vector<std::string>{},
+                                              readers - 1, options.live)) return report;
         if (!options.live) fs::remove_all(output, error);
         lap("checking the mods");
 
@@ -347,7 +364,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             lap("load screens");
         }
         advance("Collecting asset overrides");
-        auto overrides = collect_asset_overrides(mods, modFiles, store, baseRoot, gameRoot, report);
+        auto overrides = collect_asset_overrides(mods, modFiles, store, baseRoot, gameRoot, report, readers - 1, options.live);
         // Carried chunks point into their mod's archives; move them to where those landed.
         for (auto& [name, chunks] : overrides.chunks)
             for (const auto* mod : mods)
@@ -362,8 +379,8 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // what was worked out above, and what it writes waits in its own copy of the store
         // (CasStore::waiting). So they are merged on several threads, and settled here one
         // after another in the order they always were, which puts every byte where merging
-        // them in turn would have. A merge while the game runs does them in turn, on this
-        // thread: the game is using the others.
+        // them in turn would have. A merge while the game runs uses fewer threads, at a lower
+        // priority: the game is using the others, and a player is waiting on this one.
         struct Job {
             std::string relative;
             std::optional<CasStore> store;   // waiting: what the merge wrote
@@ -426,13 +443,15 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             std::atomic<bool>& flag;
             ~Stop() { flag = true; }
         } stopOnExit{stopJobs};
-        const std::size_t wantedWorkers = options.live || jobs.size() < 2 ? 0
-            : std::min<std::size_t>({jobs.size(), std::max(1U, std::thread::hardware_concurrency()), 8});
+        const std::size_t wantedWorkers = jobs.size() < 2 ? 0
+            : std::min<std::size_t>({jobs.size(), options.live ? std::max(1U, cores / 2) : cores, options.live ? 6U : 8U});
         try {
             // Threads of their own, not the system's pool: the launcher holds the pool's
             // threads back while the game starts (see world_layer_scan.cpp).
             for (std::size_t index = 0; index < wantedWorkers; ++index)
                 workers.emplace_back([&] {
+                    // (Under the game's own threads, so a merge shows as a wait and not as stutter.)
+                    if (options.live) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                     for (;;) {
                         const auto mine = nextJob.fetch_add(1);
                         if (mine >= jobs.size() || stopJobs) return;

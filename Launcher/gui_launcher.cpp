@@ -472,6 +472,9 @@ void Launcher::run_play() {
     if (std::find(arguments_.begin(), arguments_.end(), L"-offline") != arguments_.end() ||
         std::find(arguments_.begin(), arguments_.end(), L"--offline") != arguments_.end())
         options.offline = true;
+    // And a map to start on, over one in the saved launch options.
+    if (auto arguments = arguments_; true)
+        if (auto map = launcher::take_map_option(arguments); !map.empty()) options.map = std::move(map);
     launched_ = false;
     launcher_app::start_game(session_, options, [this](DWORD id) { game_ = id; });
     launched_ = true;

@@ -1,16 +1,21 @@
 #include "runtime_internal.h"
+#include "Extension/Customization/item_browser.h"
 #include "bootstrap.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/engine_tweaks.h"
+#include "Extension/Settings/replay_guard.h"
+#include "Extension/Console/commands.h"
 #include "Extension/UI/ui_pointer_skip.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/profiler_labels.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Vfs/mod_catalog.h"
+#include "Extension/Assets/map_download.h"
 #include "Extension/Boot/offline_boot.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/RoadRash/road_rash.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
@@ -189,9 +194,38 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::multiplayer::set_native_menu_callbacks(native_callbacks);
         dingosdk::overlay::set_multiplayer_queue(queue_multiplayer_command);
         dingosdk::overlay::set_chat_feed(dingosdk::multiplayer::chat);
+        // A map a session needs: hosts say which Thunderstore package theirs is from, and a
+        // guest without it is offered it on a card (Extension/Assets/map_download.h).
+        dingosdk::multiplayer::set_map_package_lookup(dingosdk::map_download::package_of);
+        dingosdk::overlay::set_map_download_feed([]() {
+            const auto view = dingosdk::map_download::view();
+            using Stage = dingosdk::map_download::Stage;
+            dingosdk::overlay::MapDownloadCard card;
+            card.stage = view.stage == Stage::asking ? 1 : view.stage == Stage::downloading ? 2 : view.stage == Stage::installing ? 3
+                       : view.stage == Stage::applying ? 4 : view.stage == Stage::joining ? 5 : 0;
+            card.map = view.map;
+            card.package = view.package;
+            card.author = view.author;
+            card.version = view.version;
+            card.description = view.description;
+            card.step = view.step;
+            card.steps = view.steps;
+            card.step_name = view.step_name;
+            card.server = view.server;
+            card.moved = view.moved;
+            card.installed = view.installed;
+            card.choice = view.choice;
+            card.received = view.received;
+            card.total = view.total;
+            card.yes_bind = view.yes_bind;
+            card.no_bind = view.no_bind;
+            return card;
+        });
+        dingosdk::overlay::set_map_download_answer(dingosdk::map_download::answer);
         dingosdk::overlay::set_hub_page_feed(dingosdk::multiplayer::native_menu_page);
         dingosdk::overlay::set_hub_callbacks(native_callbacks);
         dingosdk::overlay::set_ui_sound(dingosdk::multiplayer::queue_ui_sound);
+        dingosdk::overlay::set_item_browser(dingosdk::item_browser::overlay_host());
         dingosdk::overlay::set_game_text_feed(dingosdk::multiplayer::skate_debug_text);
         dingosdk::overlay::set_skate_hud_feed(dingosdk::multiplayer::skate_hud);
         dingosdk::overlay::set_nametag_feed(dingosdk::multiplayer::custom_nametags);
@@ -278,6 +312,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         start_frame_timing();
         (void)dingosdk::ui_pointer::install(r.base);
         (void)dingosdk::engine_tweaks::install(r.base);
+        (void)dingosdk::replay_guard::install(r.base);
+        dingosdk::console::start_memory_trace_from_environment();
         const bool fixed_stop_provider = (global_offline_hook && progression_guard_armed) &&
             dingosdk::prepare_fixed_stop_entitlement_provider(r.base);
         record("{\"event\":\"fixed_stop_entitlement_provider_initialized\",\"prepared\":" +
@@ -375,6 +411,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::start_no_bail(r.base);
         const bool meat = dingosdk::hall_of_meat::start(r.base);
         record("{\"event\":\"hall_of_meat_initialized\",\"active\":" + std::string(meat ? "true" : "false") + "}");
+        const bool rash = dingosdk::road_rash::start(r.base);
+        record("{\"event\":\"road_rash_initialized\",\"active\":" + std::string(rash ? "true" : "false") + "}");
         const bool noclip_velocity = dingosdk::start_client_noclip_velocity(r.base);
         record("{\"event\":\"noclip_velocity_initialized\",\"active\":" + std::string(noclip_velocity ? "true" : "false") + "}");
         const bool loading_screens = dingosdk::loading_screen::start(r.base);

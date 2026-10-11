@@ -711,6 +711,15 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         command += quote_argument(argument);
     }
     set_environment(L"RESKATE_GPU_DIAGNOSTICS", options.gpu_diagnostics ? L"1" : L"0");
+    // -map: the game loads it once it is up, as the console's "load" would (client_tick.cpp),
+    // ahead of any startup commands already asked for.
+    if (!options.map.empty()) {
+        std::wstring commands = L"load " + options.map;
+        std::wstring already(4096, L'\0');
+        const auto length = GetEnvironmentVariableW(L"RESKATE_STARTUP_COMMANDS", already.data(), 4096);
+        if (length && length < 4096) commands += L";" + already.substr(0, length);
+        set_environment(L"RESKATE_STARTUP_COMMANDS", commands.c_str());
+    }
     set_environment(L"RESKATE_DISCORD", options.discord ? L"1" : L"0");
     if (options.menu_key == options.console_key)
         throw std::runtime_error("The menu and console need different keys. Change one in Settings.");

@@ -266,7 +266,14 @@ void update_remote_collision(std::uintptr_t base, std::uintptr_t context, const 
         // Upright at the skater's root, as retail's proxy stands.
         if (s.skater.created) move_part(n, s.skater, pose.root.position, {0, 0, 0, 1}, now);
         if (s.board.created) {
-            if (pose.board.empty()) switch_off(n, s.board);
+            // Solid under and beside its skater only (board_solid_reach).
+            float apart{};
+            if (!pose.board.empty())
+                for (unsigned i = 0; i < 3; ++i) {
+                    const float d = pose.board.front().position[i] - pose.root.position[i];
+                    apart += d * d;
+                }
+            if (pose.board.empty() || !(apart <= board_solid_reach * board_solid_reach)) switch_off(n, s.board);
             else move_part(n, s.board, pose.board.front().position, pose.board.front().rotation, now);
         }
     } catch (...) {}

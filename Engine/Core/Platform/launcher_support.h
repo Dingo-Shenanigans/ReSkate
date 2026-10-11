@@ -52,12 +52,19 @@ struct LaunchOptions {
     unsigned menu_key{0x2D};     // VK_INSERT
     unsigned console_key{0xC0};  // VK_OEM_3, the key left of 1
     std::string log_level{"info"};
+    // -map <name>: the map the game loads once it is up, named as the console's "load" names
+    // one (a map's name, short name or asset path, or the start of one). Empty: none.
+    std::wstring map;
     std::vector<std::wstring> game_arguments;
 };
 
 // Arguments exclude argv[0]. Saved game display settings apply by default.
 // --windowed or an explicit width/height requests the windowed override.
 LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments);
+// Takes "-map <name>" (--map, -map=<name>) out of `arguments` and returns the name it gave,
+// checked as parse_launch_options checks it; empty when there is none. For a launch whose
+// other options come from somewhere else (the launcher's saved settings).
+std::wstring take_map_option(std::vector<std::wstring>& arguments);
 std::wstring windowed_arguments(const LaunchOptions& options);
 // Detect mods beside Skate.exe. Explicit game data paths take precedence.
 std::wstring mod_data_arguments(const std::filesystem::path& game_directory,

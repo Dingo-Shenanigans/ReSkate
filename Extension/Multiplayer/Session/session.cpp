@@ -79,6 +79,12 @@ void stop(Session &s, std::string reason) {
     s.sync_effects = true;
     set_lobby_object_limit(0);
     s.server_admin = false;
+    s.role.clear();
+    s.own_tag.clear();
+    s.own_tag_color = 0;
+    s.role_all_commands = false;
+    s.role_commands.clear();
+    s.role_permissions = 0;
     s.server_bans.clear();
     s.server_ban_total = 0;
     s.server_maps.clear();
@@ -140,6 +146,9 @@ void stop(Session &s, std::string reason) {
     s.join_started = s.last_map_request = s.last_map_load_check = 0;
     s.join_destination.clear();
     s.map_label.clear();
+    s.map_package.clear();
+    s.fetching_since = 0;
+    fetching_map_flag.store(false, std::memory_order_relaxed);
     s.world = 1;
     s.travelling = false;
     s.host_world_ready = true;
@@ -208,6 +217,7 @@ void clear_world(Session &s, std::uint64_t now) {
         peer.password_challenge = challenge;
         peer.world_ready = false;
         peer.travel_since = admitted ? now : 0;
+        peer.fetching_since = 0;
         peer.last_packet = now;
     }
     reset_audio();
@@ -644,7 +654,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 p.native_status = !p.shown_wanted ? "Further away than players are shown."
                                   : sampled       ? "Waiting for the player's cosmetic recipe."
                                                   : "Waiting for player poses.";
-                // No skater for them, but still their name or dot where they are.
+                // No skater for them, but still their name or dot where they are, and where the
+                // Social menu's teleport and spectate find them.
+                if (!p.shown_wanted && sampled) update_party_position(&p.render_pose);
                 if (!p.shown_wanted && sampled && labels) label(p);
             }
         }
@@ -688,6 +700,9 @@ MultiplayerModel model() {
     return s.view;
 }
 std::string take_leave_notice() { return std::exchange(session().leave_notice, {}); }
+std::optional<MapNeed> take_map_need() { return std::exchange(session().map_need, std::nullopt); }
+void set_map_package_lookup(MapPackageLookup lookup) noexcept { map_package_lookup.store(lookup, std::memory_order_relaxed); }
+bool fetching_map() noexcept { return fetching_map_flag.load(std::memory_order_relaxed); }
 MultiplayerChat chat() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
@@ -756,7 +771,8 @@ bool observe_local_world(Session &s, const NativeFrame &local, std::string_view 
 bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoader loader, std::uint64_t now) {
     if (!s.awaiting_map)
         return true;
-    if (now - s.join_started > 180000000) {
+    // (While the map is being fetched the clock is held: see below.)
+    if (!s.fetching_since && now - s.join_started > 180000000) {
         stop(s, "Joining timed out while waiting for the host's map to load.");
         return false;
     }
@@ -768,6 +784,8 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
             return false;
         }
         s.awaiting_map = false;
+        s.fetching_since = 0;
+        fetching_map_flag.store(false, std::memory_order_relaxed);
         s.last_hello = 0;
         s.status = s.travelling ? "Your map is ready. Waiting for the host..." : "Host map ready. Joining the session...";
         return true;
@@ -783,8 +801,31 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
         if (result == MapLoadResult::missing) {
             const auto name = s.map_label.empty() ? world_level_name(world_destination_asset(s.join_destination)) : s.map_label;
             const char *who = dedicated_host(s) ? "server" : "host";
-            s.leave_notice = (s.travelling ? std::string("The ") + who + " moved to " : std::string("The ") + who + " is on ") +
-                             name + ", which is not installed on this PC. Install its map mod and join again.";
+            const auto where = (s.travelling ? std::string("The ") + who + " moved to " : std::string("The ") + who + " is on ") + name;
+            // A map the host named the package of can be downloaded (take_map_need). The
+            // session waits for it: the host is told the map is being fetched and gives that
+            // far longer than a load, and the map is tried again here until it is installed,
+            // when it loads like any other. The wait has an end of its own.
+            if (!s.map_package.empty()) {
+                if (!s.fetching_since) {
+                    s.fetching_since = now;
+                    fetching_map_flag.store(true, std::memory_order_relaxed);
+                    s.map_need = MapNeed{s.map_package, name, dedicated_host(s), s.travelling};
+                    s.rejoin = Session::Rejoin{{s.host_id, s.secret}, s.password};
+                    s.last_map_request = s.last_world_ready = 0;   // say so at once
+                }
+                if (now - s.fetching_since > map_fetch_limit_us) {
+                    s.leave_notice = where + ", which did not finish downloading in time. Install its map mod and join again.";
+                    stop(s, s.leave_notice);
+                    return false;
+                }
+                // The time a load gets starts when the map is here.
+                s.join_started = now;
+                if (s.travelling) s.travel_started = now;
+                s.status = "Waiting for " + name + " to download...";
+                return false;
+            }
+            s.leave_notice = where + ", which is not installed on this PC. Install its map mod and join again.";
             stop(s, s.leave_notice);
             return false;
         }

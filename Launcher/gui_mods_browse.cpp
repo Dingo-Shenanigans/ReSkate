@@ -196,13 +196,21 @@ std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Pa
 }
 
 // Search, category and the sort order, pinned packages first like the site.
+// Not safe for work: Thunderstore's own mark on the package, or a category of that name.
+bool nsfw(const ts::Package& package) {
+    return package.nsfw || std::any_of(package.categories.begin(), package.categories.end(),
+                                       [](const std::string& category) { return lower(category) == "nsfw"; });
+}
+
 std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed) {
     const auto query = lower(store.search.data());
     std::vector<const ts::Package*> result;
     for (const auto& package : store.packages) {
         const bool have = installed.contains(ts::folder_for(package.full_name));
-        // Deprecated and NSFW packages only show once installed.
-        if ((package.deprecated || package.nsfw) && !have) continue;
+        // NSFW packages are never listed here, installed or not: by Thunderstore's own mark,
+        // or a category of that name. A deprecated one only shows once installed.
+        if (nsfw(package)) continue;
+        if (package.deprecated && !have) continue;
         if (!store.category.empty() && !package.in_category(store.category)) continue;
         if (!query.empty() && lower(package.title()).find(query) == std::string::npos &&
             lower(package.owner).find(query) == std::string::npos &&
@@ -437,9 +445,11 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     ImGui::InputTextWithHint("##search", "Search mods", store.search.data(), store.search.size());
     ImGui::SameLine();
     std::vector<std::string> categories;
-    for (const auto& package : store.packages)
+    for (const auto& package : store.packages) {
+        if (nsfw(package)) continue;   // (and no category that only they have)
         for (const auto& category : package.categories)
             if (std::find(categories.begin(), categories.end(), category) == categories.end()) categories.push_back(category);
+    }
     std::sort(categories.begin(), categories.end());
     ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##category", store.category.empty() ? "All categories" : store.category.c_str())) {

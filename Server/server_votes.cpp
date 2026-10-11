@@ -136,16 +136,25 @@ void Host::chat_command(Guest &guest, std::string_view line) {
             text += "/vote <name>: this server's own votes (" + joined(names, ", ") + "); /vote list says what each does\n";
         }
         if (votes || !custom.empty()) text += "/yes or /no: vote in the running vote\n";
-        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && is_admin(guest.member.id)))
+        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && has(guest.member.id, multiplayer::role_polls)))
             text += "/poll <question> | <answer> | <answer>...: ask everyone a question\n";
         if (polls != ServerPolls::off) text += "/1, /2...: answer the running poll\n";
         if (config_.map_rotation) text += "The map changes every " + std::to_string(config_.map_rotation) + " min.\n";
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
-        if (is_admin(guest.member.id))
-            text += "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins\n";
+        if (const auto *role = role_of(guest.member.id); staff(role))
+            text += role->all_commands
+                ? "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins\n"
+                : "Your role (" + role->name + "): these server commands as /<command>: " + joined(role->commands, ", ") + "\n";
         const std::string whisper = "/w <player> <message>: send a private message";
         return reply(guest, (text.empty() ? "This server has no player votes. Type /tp <player> to teleport.\n" : text) + whisper);
     }
+    if ((verb == "party" || verb == "p") && !may(guest.member.id, multiplayer::role_parties))
+        return reply(guest, role_refusal(guest.member.id, "use parties"));
+    if ((verb == "w" || verb == "whisper" || verb == "tell") && !may(guest.member.id, multiplayer::role_whisper))
+        return reply(guest, role_refusal(guest.member.id, "send private messages"));
+    if ((verb == "vote" || verb == "yes" || verb == "y" || verb == "no" || verb == "n" || (verb.size() == 1 && verb[0] >= '1' && verb[0] <= '9')) &&
+        !may(guest.member.id, multiplayer::role_votes))
+        return reply(guest, role_refusal(guest.member.id, "vote"));
     if (verb == "party") return party_command(guest, rest);
     if (verb == "p") {
         if (!config_.parties) return reply(guest, "Parties are off on this server.");
@@ -201,11 +210,11 @@ void Host::chat_command(Guest &guest, std::string_view line) {
     }
     // The owner's own commands (ReSkateServer.json "commands"), never listed in /help.
     for (const auto &custom_command : config_.commands)
-        if (custom_command.name == verb && (!custom_command.admin || is_admin(guest.member.id)))
+        if (custom_command.name == verb && (!custom_command.admin || is_staff(guest.member.id)))
             return run_custom_command(guest, custom_command, trim(rest));
     // Admins run any server command from chat, as they do with "mp server". The caller
     // has already logged the line with any password hidden, so it is not logged again here.
-    if (is_admin(guest.member.id)) {
+    if (is_staff(guest.member.id)) {
         const auto id = guest.member.id;
         const auto answer_text = command(line, id);
         if (auto *still = find(id)) reply(*still, answer_text.empty() ? std::string("Done.") : answer_text);
@@ -270,7 +279,7 @@ std::string Host::start_vote(Guest *starter, VoteKind kind, std::string_view arg
         auto *target = match_player(argument);
         if (!target) return "No single connected player matches \"" + std::string(argument) + "\".";
         if (target == starter) return "You cannot vote to kick yourself.";
-        if (is_admin(target->member.id)) return "Admins cannot be kicked by a vote.";
+        if (has(target->member.id, multiplayer::role_vote_immune)) return guest_name(*target) + " cannot be kicked by a vote.";
         vote.target = target->member.id;
         vote.label = "kick " + guest_name(*target);
         break;
@@ -321,7 +330,7 @@ std::string Host::start_poll(Guest *starter, std::string_view text, std::string 
     using multiplayer::ServerPolls;
     const auto polls = enabled_polls();
     const std::string slash = starter ? "/" : "";
-    const bool admin = !starter || is_admin(starter->member.id);
+    const bool admin = !starter || has(starter->member.id, multiplayer::role_polls);
     if (starter && polls == ServerPolls::off) return "Polls are off on this server.";
     if (polls == ServerPolls::admins && !admin) return "Only admins can start a poll on this server.";
     if (vote_) return running_vote_text();
@@ -389,7 +398,7 @@ void Host::answer_poll(Guest &guest, std::size_t answer) {
 // `by` nullptr: the server console, which may always end it.
 std::string Host::end_poll(Guest *by) {
     if (!vote_ || vote_->kind != VoteKind::poll) return "No poll is running.";
-    if (by && vote_->starter != by->member.id && !is_admin(by->member.id))
+    if (by && vote_->starter != by->member.id && !has(by->member.id, multiplayer::role_polls))
         return "Only whoever started the poll, or an admin, can end it early.";
     check_vote(true);
     return {};

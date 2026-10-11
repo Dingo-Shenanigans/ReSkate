@@ -141,7 +141,8 @@ accepts `park random` from its console or an admin.
   on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
   routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
 
-Only install mods you trust. Mods change game data, and custom scripts can run code.
+Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
+switched off in this version: nothing in that folder is read or run.
 
 ## Dedicated servers
 
@@ -214,6 +215,7 @@ Useful launcher flags:
 | `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
 | `-wconsole` | also show the log live in a console window while the game runs |
 | `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
+| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
 

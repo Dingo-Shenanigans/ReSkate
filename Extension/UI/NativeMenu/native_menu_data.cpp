@@ -455,4 +455,7 @@ bool publish_tab_icons(const Context& context, Value tab, std::string_view idle,
         context.set(context.field(tab, 0xbc92d1fa), assets[1]); // FocusIcon.
     });
 }
+bool publish_texture(const Context& context, Value target, std::string_view name) {
+    return with_texture_assets(context, std::array{name}, [&](const auto& assets) { context.set(target, assets[0]); });
+}
 } // namespace dingosdk::multiplayer::menu_data

@@ -131,6 +131,12 @@ struct State {
     // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
     // for that long, as for chat.
     std::atomic<bool> hub_pointer{false}, hub_typing{false};
+    // The map download card is asking (map_download_card.cpp): the overlay has the pointer, with
+    // its own cursor, so the card's buttons can be clicked whatever is behind it.
+    std::atomic<bool> prompt_pointer{false};
+    // The item grids' search box (item_browser_overlay.cpp): "-" opens it while a grid has the focus.
+    std::atomic<bool> item_search_visible{false}, item_search_focus_requested{false};
+    std::atomic<bool> item_search_character_pending{false}, item_search_escape_pending{false};
     std::atomic<bool> input_attached{false};
     std::atomic<bool> stop{false};
     std::atomic<HWND> window{nullptr};
@@ -145,12 +151,18 @@ struct State {
     bool win32_ready = false;
     bool dx12_ready = false;
     std::atomic<bool> freecam_controller_active{false};
+    std::atomic<bool> prompt_input_active{false}; // DingoSDKOverlaySetPromptInputCapture
     bool show_on_ready = false;
     bool force_windowed = false;
     HANDLE stop_event = nullptr;
     HANDLE provider_event = nullptr;
     void* dll_notification_cookie = nullptr;
     Hook factory, create, create_hwnd, present, present1, resize, resize1, fullscreen;
+    // The same four of other swapchain implementations: DXGI's own under a wrapper the game
+    // was given (Streamline's), which is what presents when something else presents for the
+    // game (Intel's frame generation does).
+    static constexpr std::size_t more_swapchains = 3;
+    std::array<Hook, more_swapchains> present_more, present1_more, resize_more, resize1_more;
     Hook clip_cursor, set_cursor_pos;
     std::vector<Binding> bindings;
     IUnknown* swapchain_identity = nullptr;
@@ -164,6 +176,9 @@ struct State {
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12DescriptorHeap> rtvs, srvs;
+    // The map download card's icon (map_download_card.cpp), in the SRV heap's second slot, and
+    // the buffer it was uploaded from, which lives until the next one replaces it.
+    ComPtr<ID3D12Resource> card_texture, card_upload;
     ComPtr<ID3D12GraphicsCommandList> commands;
     ComPtr<ID3D12Fence> fence;
     HANDLE fence_event = nullptr;
@@ -270,6 +285,19 @@ void draw_notices();
 // chat_pending also refreshes the feed, so it runs every presented frame.
 bool chat_pending();
 void draw_chat();
+// The map download card (map_download_card.cpp): whether there is one this frame, and drawing it.
+bool map_download_pending();
+void draw_map_download();
+// Its icon on the way to the GPU: decoded pixels the render thread takes once, then says where
+// they went; lost when the device is torn down, after which they are handed out again.
+struct CardPixels {
+    std::vector<unsigned char> rgba;
+    UINT width{}, height{};
+    unsigned serial{};
+};
+bool take_card_pixels(CardPixels& pixels);
+void card_image_uploaded(ImTextureID texture, unsigned serial);
+void card_image_lost();
 // Game debug text (game_text_overlay.cpp): polled every presented frame.
 bool game_text_pending();
 void draw_game_text();
@@ -284,6 +312,13 @@ void draw_nametags();
 bool perf_hud_pending();
 void draw_perf_hud();
 void draw_perf_window();
+// The skater item grids' search bar and prompts (item_browser_overlay.cpp): polled every presented frame.
+enum class ItemBrowserKey { favorite, filter };
+bool item_browser_pending();
+bool item_browser_open();
+void item_browser_key(ItemBrowserKey key);
+void item_browser_search_cleared(); // Esc in the search box
+void draw_item_browser();
 // Queues a private multiplayer action from outside the menu (multiplayer_menu.cpp).
 bool queue_multiplayer_action(const char* action, const std::string& argument);
 bool queue_multiplayer_action(const char* action, const std::string& argument, const std::string& password);

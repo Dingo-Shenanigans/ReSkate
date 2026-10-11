@@ -8,8 +8,10 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/overlay_render.cpp
     Extension/UI/Overlay/overlay_console.cpp
     Extension/UI/Overlay/overlay_input.cpp
+    Extension/UI/Overlay/item_browser_overlay.cpp
     Extension/UI/Overlay/overlay_notices.cpp
     Extension/UI/Overlay/chat_overlay.cpp
+    Extension/UI/Overlay/map_download_card.cpp
     Extension/UI/Overlay/hub_page.cpp
     Extension/UI/Overlay/game_text_overlay.cpp
     Extension/UI/Overlay/perf_overlay.cpp

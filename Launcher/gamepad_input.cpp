@@ -112,7 +112,15 @@ void PadFeed::update(ImGuiIO& io, const PadState& input, float scale) {
 
     const PointerFeel& feel = trackpad_ ? trackpad_feel : stick_feel;
     const float raw_x = axis(pad.right_x), raw_y = -axis(pad.right_y);   // screen Y grows downward
-    if (std::abs(raw_x - last_x_) < rest_jitter && std::abs(raw_y - last_y_) < rest_jitter &&
+    if (!pad.connected) {
+        // No pad is being read (none there, or the launcher is in the background, which reads
+        // as none): that is not the stick at rest. Taking the middle for its rest here made a
+        // stick that rests off it, or a wheel or throttle on that axis, steer the pointer for
+        // good once the launcher had the focus again, and the mouse with it.
+        steady_ = 0;
+        rest_known_ = false;
+        pointing_ = false;
+    } else if (std::abs(raw_x - last_x_) < rest_jitter && std::abs(raw_y - last_y_) < rest_jitter &&
         std::sqrt(raw_x * raw_x + raw_y * raw_y) < rest_limit) {
         steady_ += io.DeltaTime;
         if (steady_ >= rest_seconds) {

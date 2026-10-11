@@ -565,8 +565,22 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             // Tell the overlay while this page is the one on screen: it draws the body.
             const bool ours = shown_tab == our_key || shown_tab == our_key + tools_page * 0x100;
             const auto& shown_page = page_state(shown_tab == our_key ? 0 : tools_page);
-            const bool on_screen = ours && game_in_menu.load(std::memory_order_relaxed) && shown_page.page.handle &&
-                                   context.type_of(shown_page.page.handle) == shown_page.page.type;
+            bool on_screen = ours && game_in_menu.load(std::memory_order_relaxed) && shown_page.page.handle &&
+                             context.type_of(shown_page.page.handle) == shown_page.page.type;
+            // The game's side menu (pause pressed again) and what opens from it (Settings...) go
+            // over the page without closing it: the page's focused index is -1 for that long,
+            // and 0 or more while the page has the player. Not ours to draw over then.
+            if (on_screen) {
+                try {
+                    // (The page's screen record, the part every screen of the game has, and in it the index.)
+                    on_screen = read<int>(context.address(context.path(shown_page.page, {0xfafda1a6, 0x20a39d92, 0x6b01fd01}))) >= 0;
+                } catch (const std::exception& e) {
+                    // A page laid out another way: as before, and said once.
+                    static bool said{};
+                    if (!std::exchange(said, true)) logging::write(logging::Level::warning, logging::Channel::ui,
+                        std::string("Native menu: the page's focus could not be read (") + e.what() + "); it stays up under the game's side menu.");
+                } catch (...) {}
+            }
             // (Said at once when another page takes its place, not left to go stale.)
             page_shown.store(shown_tab == our_key ? 0 : 1, std::memory_order_relaxed);
             page_seen.store(on_screen ? now : 0, std::memory_order_relaxed);

@@ -150,7 +150,7 @@ bool set_local_world_layer(std::string_view layer, std::string_view mode) {
         !park_runtime().active.load(std::memory_order_acquire)) return false;
     try {
         const auto it = std::find_if(world_layers().begin(), world_layers().end(), [&](const auto& row) { return row.key == layer; });
-        if (it == world_layers().end() || !valid_world_layer_mode(mode)) {
+        if (it == world_layers().end() || !valid_world_layer_mode(mode) || world_layer_kept_off(it->key)) {
             r.model.feedback = "Choose a valid world layer and mode."; return false;
         }
         const auto index = static_cast<unsigned>(it - world_layers().begin());

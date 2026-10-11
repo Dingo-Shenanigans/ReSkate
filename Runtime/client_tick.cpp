@@ -2,11 +2,14 @@
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
 #include "Extension/Assets/live_mods.h"
+#include "Extension/Assets/map_download.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/job_spin.h"
+#include "Extension/Settings/replay_drafts.h"
 #include "Engine/Game/World/client_state.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/RoadRash/road_rash.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
@@ -33,6 +36,7 @@
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
 #include <dxgi.h>
+#include <Psapi.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -292,7 +296,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
         r.next_named_settings_publish = settings_now + 250;
         publish_named_settings(r);
     }
-    // RESKATE_STARTUP_COMMANDS="load skate1map;noclip 1" (development): console commands
+    // RESKATE_STARTUP_COMMANDS="load skate1map;noclip 1" (development, and the launcher's
+    // -map <name>, which is a "load" at the front of it): console commands
     // queued in order once the world is up and can accept them, so a build can be exercised
     // without anyone driving the overlay. A load waits for its destination to be listed.
     {
@@ -391,6 +396,26 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // The switches on buttons (action_binds): each runs its console command.
     std::array<std::uint32_t, dingosdk::action_binds.size()> action_combos{};
     const bool vote_open = dingosdk::multiplayer::server_vote_open();
+    // The map download's card (map_download.h) is answered with the same two binds, and by a
+    // controller, whose buttons are kept from the game while it asks.
+    const bool map_prompt = dingosdk::map_download::asking();
+    // The hold on the game's input outlasts the card's question until everything pressed is let
+    // go (or a moment has passed): the button that answered must not also be a press in the
+    // game, or in the pause menu behind the card.
+    static bool prompt_held{};
+    static ULONGLONG prompt_release_by{};
+    if (map_prompt) {
+        prompt_held = true;
+        prompt_release_by = 0;
+    } else if (prompt_held) {
+        if (!prompt_release_by) prompt_release_by = GetTickCount64() + 1500;
+        dingosdk::ControllerInput held;
+        DingoSDKOverlayReadControllerInput(&held, true);
+        const bool pressed = (held.available && held.buttons) || DingoSDKOverlayReadPromptKeys() ||
+                             std::ranges::any_of(held.keys, [](std::uint64_t word) { return word != 0; });
+        if (!pressed || GetTickCount64() >= prompt_release_by) prompt_held = false;
+    }
+    DingoSDKOverlaySetPromptInputCapture(map_prompt || prompt_held);
     const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
     bool freecam_controller = dingosdk::local_freecam_controller();
     {
@@ -405,10 +430,12 @@ void update_model(std::uintptr_t client, TickState& frame) {
         up_velocity_combo = r.model.bindings.available ? r.model.bindings.up_velocity_combo : 0;
         offboard_up_velocity_combo = r.model.bindings.available ? r.model.bindings.offboard_up_velocity_combo : 0;
         if (r.model.bindings.available) action_combos = r.model.bindings.action_combos;
-        if (vote_open && r.model.bindings.available) {
+        if ((vote_open || map_prompt) && r.model.bindings.available) {
             vote_yes_combo = r.model.bindings.vote_yes_combo;
             vote_no_combo = r.model.bindings.vote_no_combo;
         }
+        if (r.model.bindings.available)
+            dingosdk::map_download::set_binds(r.model.bindings.vote_yes_combo, r.model.bindings.vote_no_combo);
         debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
     }
     // Capture belongs to the freecam state itself. Keep it active across brief
@@ -416,8 +443,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
     DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
-        vote_yes_combo || vote_no_combo || poll_answers || std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
-        DingoSDKOverlayReadControllerInput(&controller);
+        vote_yes_combo || vote_no_combo || poll_answers || map_prompt ||
+        std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
+        // (The card that asks has the pointer, as a menu does: it is still read for.)
+        DingoSDKOverlayReadControllerInput(&controller, map_prompt);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
         if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
             std::array<char, 256> result{};
@@ -427,10 +456,48 @@ void update_model(std::uintptr_t client, TickState& frame) {
         }
     // (The input reads as nothing while the menu, the console or the chat box is open, so typing
     // a bound key answers no vote.)
-    if (r.vote_yes_bind_latch.update(vote_yes_combo, controller, !vote_open) && dingosdk::multiplayer::queue_command("vote", "yes", ""))
-        record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_yes\"}");
-    if (r.vote_no_bind_latch.update(vote_no_combo, controller, !vote_open) && dingosdk::multiplayer::queue_command("vote", "no", ""))
-        record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_no\"}");
+    if (r.vote_yes_bind_latch.update(vote_yes_combo, controller, !vote_open && !map_prompt)) {
+        if (map_prompt) dingosdk::map_download::answer(true);
+        else if (dingosdk::multiplayer::queue_command("vote", "yes", ""))
+            record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_yes\"}");
+    }
+    if (r.vote_no_bind_latch.update(vote_no_combo, controller, !vote_open && !map_prompt)) {
+        if (map_prompt) dingosdk::map_download::answer(false);
+        else if (dingosdk::multiplayer::queue_command("vote", "no", ""))
+            record("{\"event\":\"controller_binding_triggered\",\"action\":\"vote_no\"}");
+    }
+    {
+        // A controller on the card: D-pad left and right pick, A takes the pick, B is no. Only a
+        // button pressed since the card came up counts, so the one that was held does not answer.
+        static bool prompt_before{};
+        static std::uint32_t buttons_before{};
+        // The keyboard's arrows, Enter and Esc do the same, above the pad's bits.
+        const std::uint32_t buttons = !map_prompt ? 0
+            : (controller.available ? controller.buttons : 0) | (DingoSDKOverlayReadPromptKeys() << 20);
+        if (map_prompt && prompt_before) {
+            const auto pressed = buttons & ~buttons_before;
+            if (pressed & (0x0004 | 1u << 20)) dingosdk::map_download::pick(true);
+            if (pressed & (0x0008 | 1u << 21)) dingosdk::map_download::pick(false);
+            if (pressed & (0x1000 | 1u << 22)) dingosdk::map_download::answer(dingosdk::map_download::picked());
+            else if (pressed & (0x2000 | 1u << 23)) dingosdk::map_download::answer(false);
+        }
+        prompt_before = map_prompt;
+        buttons_before = buttons;
+    }
+    // While it downloads, the No bind stops it.
+    if (!map_prompt && !vote_open && dingosdk::map_download::view().stage == dingosdk::map_download::Stage::downloading) {
+        std::uint32_t stop_combo{};
+        {
+            std::lock_guard lock(r.mutex);
+            if (r.model.bindings.available) stop_combo = r.model.bindings.vote_no_combo;
+        }
+        if (stop_combo) {
+            dingosdk::ControllerInput input;
+            DingoSDKOverlayReadControllerInput(&input);
+            static dingosdk::ControllerComboLatch stop_latch;
+            if (stop_latch.update(stop_combo, input, false)) dingosdk::map_download::answer(false);
+        }
+    }
     // A poll's answers are on the number keys, 1 for the first: only while one is running, so
     // the keys are the game's own the rest of the time.
     for (unsigned answer = 0; answer < r.poll_answer_latches.size(); ++answer) {
@@ -723,6 +790,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     dingosdk::hall_of_meat::on_client_tick();
+    dingosdk::road_rash::on_client_tick(client);
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;
     DINGO_PROFILE_ZONE("tick/update_model/world model (500 ms)");
@@ -731,6 +799,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto& current_level = description.lm_level.empty() ? description.level : description.lm_level;
     dingosdk::live_mods::set_current_level(current_level);
     dingosdk::hall_of_meat::set_level(current_level);
+    dingosdk::replay_drafts::on_client_tick(r.base, state);
     // A live mod apply hands over the destinations its mods declare. A map
     // being played that is no longer among them (its mod disabled or deleted)
     // cannot stay loaded: the player goes to San Van.
@@ -860,6 +929,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.progression = dingosdk::local_profile_progression();
     model.player_card = dingosdk::local_profile_player_card();
     model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
+    model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood()};
     model.bindings = dingosdk::local_profile_controller_bindings();
     model.parks = dingosdk::local_profile_parks();
     model.world = dingosdk::local_profile_world_layers();
@@ -1114,8 +1184,38 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             dingosdk::multiplayer::tick(r.base,client,multiplayer_ready,r.multiplayer_map,load_multiplayer_map);
             if (auto notice = dingosdk::multiplayer::take_leave_notice(); !notice.empty())
                 dingosdk::overlay::notify(dingosdk::overlay::NoticeLevel::warning, "Map not installed", std::move(notice));
+            // Or, when the host said which Thunderstore package its map is from, the offer to
+            // fetch it (map_download.h), which then applies it and joins the session again.
+            if (const auto need = dingosdk::multiplayer::take_map_need()) dingosdk::map_download::offer(*need);
+            dingosdk::map_download::tick();
         }
         dingosdk::multiplayer::refresh_identity_lists();
+        // How much memory the game holds, beside what a session adds to it: said when it has
+        // moved by a quarter of a gigabyte or the players or skaters have changed much, at most
+        // every ten seconds. For telling what a full server's memory goes on (the map, every
+        // player, or only the skaters that are built).
+        if (static std::uint64_t next_memory{}; GetTickCount64() >= next_memory) {
+            next_memory = GetTickCount64() + 10000;
+            PROCESS_MEMORY_COUNTERS_EX counters{};
+            counters.cb = sizeof(counters);
+            if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) {
+                const auto mp = dingosdk::multiplayer::model();
+                const bool session = mp.active && !mp.echo && (mp.hosting || mp.connected);
+                const int players = session ? static_cast<int>(mp.roster.size()) : 0;
+                const int skaters = session ? static_cast<int>(std::ranges::count_if(mp.roster, [](const auto& player) { return player.visible; })) : 0;
+                static std::uint64_t said_private{};
+                static int said_players = -1, said_skaters = -1;
+                const auto moved = counters.PrivateUsage > said_private ? counters.PrivateUsage - said_private : said_private - counters.PrivateUsage;
+                if (moved >= (256ull << 20) || std::abs(players - said_players) >= 5 || std::abs(skaters - said_skaters) >= 5) {
+                    said_private = counters.PrivateUsage; said_players = players; said_skaters = skaters;
+                    const auto gigabytes = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0); };
+                    dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+                        "Memory: %.2f GB committed, %.2f GB in RAM; %d player(s) in the session, %d built as skaters (player distance %.0f m); map %s.",
+                        gigabytes(counters.PrivateUsage), gigabytes(counters.WorkingSetSize), players, skaters, mp.player_distance,
+                        (session && !mp.map.empty() ? mp.map : r.multiplayer_map).c_str());
+                }
+            }
+        }
         // The player's Discord status (discord_presence.h): where they skate and with whom,
         // looked at every couple of seconds.
         if (static std::uint64_t next_presence{}; dingosdk::discord_presence::available() && GetTickCount64() >= next_presence) {

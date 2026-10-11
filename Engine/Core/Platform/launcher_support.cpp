@@ -144,6 +144,39 @@ std::uint64_t offline_steam_id() noexcept {
 }
 
 #ifdef _WIN32
+namespace {
+bool map_option(std::wstring_view argument) {
+    return argument == L"-map" || argument == L"--map" || argument.starts_with(L"-map=") || argument.starts_with(L"--map=");
+}
+// The name goes into a console command the game runs: one line of plain text.
+std::wstring map_name(std::wstring_view value) {
+    while (!value.empty() && value.front() == L' ') value.remove_prefix(1);
+    while (!value.empty() && value.back() == L' ') value.remove_suffix(1);
+    if (value.empty() || value.size() > 96) fail("-map requires a map's name, at most 96 characters");
+    for (const auto character : value)
+        if (character < 0x20 || character > 0x7e || character == L';' || character == L'"')
+            fail("-map takes a map's name in plain letters, digits and spaces");
+    return std::wstring(value);
+}
+} // namespace
+
+std::wstring take_map_option(std::vector<std::wstring>& arguments) {
+    std::wstring map;
+    for (std::size_t index = 0; index < arguments.size();) {
+        const std::wstring_view argument(arguments[index]);
+        if (!map_option(argument)) { ++index; continue; }
+        const auto equals = argument.find(L'=');
+        if (equals != std::wstring_view::npos) map = map_name(argument.substr(equals + 1));
+        else {
+            if (index + 1 == arguments.size()) fail("-map requires a map's name");
+            map = map_name(arguments[index + 1]);
+            arguments.erase(arguments.begin() + static_cast<std::ptrdiff_t>(index) + 1);
+        }
+        arguments.erase(arguments.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+    return map;
+}
+
 LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
     LaunchOptions options;
     bool log_level_explicit = false;
@@ -180,6 +213,15 @@ LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
             }
             if (!logging::parse_level(level)) fail("--log-level requires trace, debug, info, warning, error, critical, or off");
             options.log_level = std::move(level); log_level_explicit = true; continue;
+        }
+        if (map_option(argument)) {
+            const auto equals = argument.find(L'=');
+            if (equals != std::wstring_view::npos) options.map = map_name(argument.substr(equals + 1));
+            else {
+                if (++index == arguments.size()) fail("-map requires a map's name");
+                options.map = map_name(arguments[index]);
+            }
+            continue;
         }
         if (argument == L"--gpu-diagnostics") { options.gpu_diagnostics = true; continue; }
         if (argument == L"--no-discord") { options.discord = false; continue; }

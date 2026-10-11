@@ -62,6 +62,11 @@ struct MergeOptions {
     // only read at startup and stays as it is; the stamp goes, so the next
     // launch builds a clean patch.
     bool live{};
+    // Mods (folder names) already loaded in the running game, by the launch's merge or an
+    // earlier live one: they passed the store-copies check then, so a live merge holds only
+    // the others against it. Reading every mod's items and meshes again is most of what
+    // adding one map would otherwise wait on.
+    std::vector<std::string> checked;
 };
 
 // Combines every enabled mod into one patch under Mods/.reskate: superbundle
