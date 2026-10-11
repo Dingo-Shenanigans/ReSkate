@@ -27,6 +27,7 @@
 #include "Extension/Progression/neighborhood_unlock_override.h"
 #include "Extension/Settings/gameplay_settings_override.h"
 #include "Extension/Rendering/saved_texture_quality.h"
+#include "Extension/Rendering/texture_refresh.h"
 #include "Extension/Settings/named_settings.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/client_source_spawn.h"
@@ -240,6 +241,10 @@ void apply_texture_quality(DWORD level_state) {
     const auto saved = dingosdk::saved_texture_quality();
     if (!saved.generation) return;
     if (saved.generation != handled || level_state != handled_state) {
+        // A new Texture Filtering leaves the composited skater and board textures as they were too.
+        static std::optional<std::string> filtering;
+        if (filtering && *filtering != saved.filtering) dingosdk::texture_refresh::request();
+        filtering = saved.filtering;
         handled = saved.generation;
         handled_state = level_state;
         attempts = 0;
@@ -256,7 +261,12 @@ void apply_texture_quality(DWORD level_state) {
             report += (report.empty() ? "" : " | ") + result;
         }
         if (pending) return; // the settings registry is not ready; try again next second
-        if (changed) { ++attempts; next_check = now + 3000; } else attempts = 4;
+        if (changed) {
+            ++attempts;
+            next_check = now + 3000;
+            // Textures composited before the change keep its old quality (texture_refresh.h).
+            dingosdk::texture_refresh::request();
+        } else attempts = 4;
         if (report != last_report) {
             last_report = report;
             dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
@@ -836,6 +846,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     dingosdk::hall_of_meat::on_client_tick();
+    dingosdk::texture_refresh::on_client_tick(r.base, client);
     dingosdk::road_rash::on_client_tick(client);
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;

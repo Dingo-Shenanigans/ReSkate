@@ -39,12 +39,16 @@ SavedTextureQuality saved_texture_quality() {
         // A save caught mid-write throws; it is read again on the next call.
         const auto values = gs::load(root).values;
         texture_tier::Tier tier = texture_tier::unknown;
+        std::string filtering;
         if (const auto options = values.find(gs::options_key);
             options != values.end() && std::holds_alternative<std::string>(options->second))
-            for (const auto& option : gs::parse_options(std::get<std::string>(options->second)))
+            for (const auto& option : gs::parse_options(std::get<std::string>(options->second))) {
                 if (option.name == "Texture Quality") tier = texture_tier::from_choice_key(option.value);
+                else if (option.name == "Texture Filtering") filtering = option.value;
+            }
         read_at = newest;
         saved.tier = tier;
+        saved.filtering = std::move(filtering);
         ++saved.generation;
     } catch (...) {}
     return saved;
