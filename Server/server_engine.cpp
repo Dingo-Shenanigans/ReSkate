@@ -818,6 +818,14 @@ double ServerEngine::process_memory_mb() const {
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
         return static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
     }
+#else
+    // Resident pages, the second field: the counterpart of Windows' working set.
+    if (std::FILE *statm = std::fopen("/proc/self/statm", "r")) {
+        unsigned long long size{}, resident{};
+        const bool read = std::fscanf(statm, "%llu %llu", &size, &resident) == 2;
+        std::fclose(statm);
+        if (read) return static_cast<double>(resident) * static_cast<double>(sysconf(_SC_PAGESIZE)) / (1024.0 * 1024.0);
+    }
 #endif
     return 0.0;
 }
