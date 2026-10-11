@@ -351,6 +351,19 @@ struct SkateHud {
 };
 using SkateHudFeed = SkateHud (*)();
 void set_skate_hud_feed(SkateHudFeed) noexcept;
+
+// The regular scoring HUD, copied from ScoringHUDViewModel on the client thread.
+// The overlay only sees detached strings and never reads game memory while presenting.
+enum class ScoringHudStyle : std::uint8_t { game, skate1, skate2, skate3 };
+struct ScoringHudTrick { std::string name, score; };
+struct ScoringHud {
+    ScoringHudStyle style{ScoringHudStyle::game};
+    bool active{};
+    std::string line_score, multiplier;
+    std::vector<ScoringHudTrick> tricks;
+};
+using ScoringHudFeed = ScoringHud (*)();
+void set_scoring_hud_feed(ScoringHudFeed) noexcept;
 // ReSkate's own nametags: one per other player, placed over the world with the camera the
 // client last used. Close ones show a name and distance, far ones a dot, and players off
 // screen a dot at the screen's edge. Empty = nothing to draw (off, or the game hides its UI).

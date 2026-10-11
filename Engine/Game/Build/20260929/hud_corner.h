@@ -38,4 +38,14 @@ inline constexpr std::uint32_t score_view_schema = 0x9b74fc7c; // ScoringHUDView
 inline constexpr std::uint32_t hud_widget_active = 0x3aa2f739; // bool HudWidgetActive
 inline constexpr std::uint32_t extra_info_style = 0x0426783f;  // int32 ScoringWidgetExtraInfoStyle
 inline constexpr std::int32_t extra_info_none = 2;
+
+// Read-only fields captured from live ScoringHUDViewModel dumps. Text fields use the
+// game's shared TextViewModel (text_value); trick_history is a StackViewModel whose
+// item presenters hold TrickHistoryStackItem models.
+inline constexpr std::uint32_t trick_history = 0x84db5623;
+inline constexpr std::uint32_t line_score = 0x7d1e237c;
+inline constexpr std::uint32_t multiplier = 0x9acb7cf0;
+inline constexpr std::uint32_t text_value = 0x4d8e01b9;
+inline constexpr std::uint32_t trick_name = 0x53bac52d;
+inline constexpr std::uint32_t trick_score = 0xd491db6a;
 }

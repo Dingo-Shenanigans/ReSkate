@@ -130,6 +130,7 @@ add_library(dingosdk_runtime SHARED
     Extension/HallOfMeat/hall_of_meat_skater.cpp
     Extension/HallOfMeat/hall_of_meat_skeleton.cpp
     Extension/HallOfMeat/hall_of_meat_slow_motion.cpp
+    Extension/Scoring/scoring_hud.cpp
     Extension/RoadRash/road_rash.cpp
     Extension/RoadRash/road_rash_commands.cpp
     Extension/Trainer/trainer.cpp

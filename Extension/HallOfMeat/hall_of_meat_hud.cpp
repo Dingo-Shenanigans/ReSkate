@@ -53,6 +53,7 @@ struct Hook {
     void* target{};
     bool ready{};  // prepared
     std::atomic<bool> hooked{}; // and enabled (hook_hud)
+    std::atomic<unsigned> users{}; // bit 0 Hall of Meat, bit 1 custom scoring HUD
     std::array<Taken, score_switches.size()> fields;
 };
 Hook& hook() {
@@ -110,6 +111,7 @@ struct Corner {
     menu_data::Value score_model; // ScoringHUDViewModel, once found
     std::array<std::uint16_t, score_switches.size()> score_offsets{};
     Clock::time_point next_stack_scan, next_score_scan;
+    bool hall_hidden{}, score_replaced{};
     bool warned{}, slip_logged{};
 };
 Corner& corner_state() {
@@ -273,32 +275,45 @@ void start_hud(std::uintptr_t base) noexcept {
     (void)start_model_write_hook(base); // without it the d-pad still hides
 }
 
-bool hook_hud(bool on) noexcept {
+bool set_hook_user(unsigned bit, bool on) noexcept {
     auto& h = hook();
     if (!h.ready) return !on; // nothing to hook
-    if (h.hooked.load(std::memory_order_acquire) == on) return true;
-    const auto status = on ? hook_enable(h.target) : hook_disable(h.target);
+    const auto before = h.users.load(std::memory_order_acquire);
+    const auto after = on ? before | bit : before & ~bit;
+    if (before == after) return true;
+    h.users.store(after, std::memory_order_release);
+    const bool wanted = after != 0;
+    if (h.hooked.load(std::memory_order_acquire) == wanted) return true;
+    const auto status = wanted ? hook_enable(h.target) : hook_disable(h.target);
     if (status != HookOk) {
+        h.users.store(before, std::memory_order_release);
         logging::log(logging::Level::warning, logging::Channel::ui, "Hall of Meat could not {} its UI model write hook ({}).",
-            on ? "enable" : "disable", hook_status_string(status));
+            wanted ? "enable" : "disable", hook_status_string(status));
         return false;
     }
-    h.hooked.store(on, std::memory_order_release);
+    h.hooked.store(wanted, std::memory_order_release);
     return true;
+}
+
+bool hook_hud(bool on) noexcept { return set_hook_user(1U, on); }
+bool hook_score_hud(bool on) noexcept { return set_hook_user(2U, on); }
+
+void update_corner(Corner& c) {
+    const bool hold = (c.hall_hidden || c.score_replaced) && hook().hooked.load(std::memory_order_acquire);
+    if (!c.hall_hidden && !hold && !c.cover.handle && !score_held()) return;
+    with_ui_models(c.base, [&](const menu_data::Context& context) {
+        follow_registry(c, context);
+        if (find_stack(c, context)) hide_dpad(c, context, c.hall_hidden);
+        if ((hold || score_held()) && find_score(c, context)) hold_score(c, context, hold);
+        c.warned = false;
+    });
 }
 
 bool hide_hud(bool hidden) noexcept {
     auto& c = corner_state();
-    // Without the hook the score HUD is never taken, but what was taken is always given back.
-    const bool hold = hidden && hook().hooked.load(std::memory_order_acquire);
+    c.hall_hidden = hidden;
     try {
-        if (!hidden && !c.cover.handle && !score_held()) return true; // the game's own corner, untouched
-        with_ui_models(c.base, [&](const menu_data::Context& context) {
-            follow_registry(c, context);
-            if (find_stack(c, context)) hide_dpad(c, context, hidden);
-            if ((hold || score_held()) && find_score(c, context)) hold_score(c, context, hold);
-            c.warned = false;
-        });
+        update_corner(c);
     } catch (const std::exception& error) {
         c.stack = {};
         c.score_model = {};
@@ -308,6 +323,21 @@ bool hide_hud(bool hidden) noexcept {
         c.stack = {};
         c.score_model = {};
     }
-    return !c.cover.handle && !score_held();
+    return !c.cover.handle && !c.hall_hidden;
+}
+
+void replace_score_hud(bool hidden) noexcept {
+    auto& c = corner_state();
+    c.score_replaced = hidden;
+    try {
+        update_corner(c);
+    } catch (const std::exception& error) {
+        c.score_model = {};
+        if (!std::exchange(c.warned, true))
+            logging::log(logging::Level::warning, logging::Channel::ui,
+                "Custom scoring HUD cannot replace skate.'s score widget: {}.", error.what());
+    } catch (...) {
+        c.score_model = {};
+    }
 }
 }

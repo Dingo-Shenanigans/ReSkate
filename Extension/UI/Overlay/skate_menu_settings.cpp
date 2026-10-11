@@ -3,6 +3,7 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Scoring/scoring_hud.h"
 
 #include <algorithm>
 #include <array>
@@ -26,6 +27,13 @@ void ui_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) 
         debug_request(menu, callbacks, {DebugAction::set_game_ui_hidden, hidden});
     const auto back = dingosdk::launcher::key_name(dingosdk::launcher::overlay_keys().menu) + " always brings ReSkate back.";
     note(back.c_str());
+    field(menu, "Scoring HUD style");
+    int hud_style = static_cast<int>(dingosdk::scoring_hud::style());
+    constexpr const char* styles[] = {"Default skate.", "skate.", "skate 2", "skate 3"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##scoring-hud-style", &hud_style, styles, static_cast<int>(std::size(styles))))
+        dingosdk::scoring_hud::set_style(static_cast<dingosdk::scoring_hud::Style>(hud_style));
+    note("Changes only the scoring and trick display. Saved with your profile.");
     end_card();
 
     begin_card(menu, "menu-scale", "MENU SIZE");

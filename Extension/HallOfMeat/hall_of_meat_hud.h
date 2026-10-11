@@ -18,7 +18,12 @@ void start_hud(std::uintptr_t base) noexcept;
 // Client thread: the model write hook on while Hall of Meat is, off otherwise, so the game's UI writes
 // never pass through it while it is switched off. False when it could not be changed (logged).
 bool hook_hud(bool on) noexcept;
+// Client thread: a custom scoring renderer shares the same validated model-write hook.
+// Its ownership is independent, so Hall of Meat cannot disable the hook underneath it.
+bool hook_score_hud(bool on) noexcept;
 // Client thread, every tick: hides the corner while `hidden`, and gives the game's own back after.
 // True once nothing of ours is left in it.
 bool hide_hud(bool hidden) noexcept;
+// Client thread: hides only skate.'s scoring widget, leaving the d-pad stack alone.
+void replace_score_hud(bool hidden) noexcept;
 }
