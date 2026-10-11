@@ -188,7 +188,8 @@ int main() {
             activate(parks, m, controls, "park-random-on-launch", {});
             check(log.calls == 3 && log.command == "park random-on-launch 0", "Launch toggle uses the latest shared state");
 
-            m.multiplayer.server_admin = true;
+            // A role on a dedicated server with every command (the park one among them).
+            m.multiplayer.dedicated = m.multiplayer.server_admin = m.multiplayer.server_all_commands = true;
             page = render(parks, m, controls, parks_section);
             check(!control(page, "load-random-parks").command.empty(), "Dedicated-server admins keep random park controls");
             activate(parks, m, controls, "load-random-parks", {});

@@ -79,6 +79,12 @@ void stop(Session &s, std::string reason) {
     s.sync_effects = true;
     set_lobby_object_limit(0);
     s.server_admin = false;
+    s.role.clear();
+    s.own_tag.clear();
+    s.own_tag_color = 0;
+    s.role_all_commands = false;
+    s.role_commands.clear();
+    s.role_permissions = 0;
     s.server_bans.clear();
     s.server_ban_total = 0;
     s.server_maps.clear();

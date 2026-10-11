@@ -105,8 +105,22 @@ std::string Host::player_name(std::string_view wanted, std::uint64_t id) const {
     cut_text(unique, 128);
     return unique;
 }
-bool Host::is_admin(std::uint64_t id) const {
-    return std::find(config_.admins.begin(), config_.admins.end(), id) != config_.admins.end();
+void Host::send_permissions(Guest &guest) {
+    auto p = packet(PacketKind::permissions, now_);
+    if (const auto *role = role_of(guest.member.id)) {
+        p.role = role->name;
+        p.role_all_commands = role->granted_all;
+        p.role_commands = role->granted_commands;
+        p.role_permissions = role->granted;
+    }
+    if (send_packet(guest, p, true, false)) guest.permissions_sent = roles_revision_;
+}
+void Host::roles_changed() {
+    ++roles_revision_;
+    ++bans_revision_;
+    roster_dirty_ = true;
+    role_tags_checked_ = false;
+    resend_maps();
 }
 bool Host::is_banned(std::uint64_t id) const {
     return std::any_of(config_.bans.begin(), config_.bans.end(), [&](const auto &ban) { return ban.id == id; });
@@ -299,9 +313,11 @@ Host::Guest::KeptPose *Host::keep_pose(Guest &from, const Packet &packet) {
     std::erase_if(kept, [&](const Guest::KeptPose &pose) { return now_ - pose.kept_at > pose_kept_for[std::min<std::size_t>(pose.keep, 3)]; });
     while (kept.size() >= 96) kept.pop_front();
     if (!kept.empty() && kept.back().sequence == packet.sequence) return &kept.back();
-    // What a mod resized on its player's skater reaches the others only as far as the server allows.
-    if (config_.bone_scale_limit >= 1.f || config_.bone_reach_limit > 0.f) {
+    // What a mod resized on its player's skater reaches the others only as far as the server allows,
+    // and a board kept on another player (check_board) not at all.
+    if (config_.bone_scale_limit >= 1.f || config_.bone_reach_limit > 0.f || from.board_hidden) {
         auto pose = packet.pose;
+        if (from.board_hidden) pose.board.clear();
         limit_bone_scale(pose, config_.bone_scale_limit);
         limit_bone_reach(pose, config_.bone_reach_limit);
         kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(pose)});
@@ -552,6 +568,7 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
             data.packet.pose_interval_us = interval;
             if (packet.kind == PacketKind::pose) {
                 // What a mod resized on its player's skater reaches the others only as far as the server allows.
+                if (source && source->board_hidden) data.packet.pose.board.clear();
                 if (config_.bone_scale_limit >= 1.f) limit_bone_scale(data.packet.pose, config_.bone_scale_limit);
                 limit_bone_reach(data.packet.pose, config_.bone_reach_limit);
             }
@@ -642,6 +659,15 @@ void Host::introduce() {
     }
 }
 void Host::send_roster() {
+    // A tag the ReSkate team does not allow as a word is not worn (once per change of the roles).
+    if (!role_tags_checked_) {
+        role_tags_checked_ = true;
+        for (auto &role : config_.roles.list)
+            if (!role.tag.empty() && text::contains_forbidden_words(role.tag)) {
+                log_("The role " + role.name + "'s tag is a word that is not allowed: the role has no tag.");
+                role.tag.clear();
+            }
+    }
     auto p = packet(PacketKind::roster, now_);
     p.voice_policy = voice_policy_;
     p.voice_range = config_.voice_range;
@@ -675,7 +701,10 @@ void Host::send_roster() {
     p.members.push_back({id_, epoch_, config_.name, false});
     for (auto &[id, guest] : guests_)
         if (guest->handshaken) {
-            guest->member.admin = is_admin(id);
+            const auto *role = role_of(id);
+            guest->member.admin = role && role->granted_all;
+            guest->member.tag = role ? role->tag : std::string{};
+            guest->member.tag_color = role && !role->tag.empty() ? parse_colour(role->color).value_or(0xffffffffU) : 0;
             const auto party = parties_.party_of(id);
             const auto *details = parties_.party(party);
             guest->member.party = party;
@@ -767,7 +796,7 @@ void Host::send_maps(Guest &guest) { // admins: every map and the pool; players:
     const auto add = [&](const ServerLevel &level) {
         if (valid_map_asset(level.asset) && list.maps.size() < max_server_maps) list.maps.push_back(level.asset);
     };
-    if (is_admin(guest.member.id)) {
+    if (can(guest.member.id, "map")) {
         for (const auto &level : levels()) add(level);
         if (!config_.map_pool.empty())
             for (const auto *level : pool_levels(config_)) {
@@ -804,6 +833,7 @@ void Host::change_map(std::string_view map) {
         g.party_budget = old.party_budget;
         g.scoring_budget = old.scoring_budget;
         g.speeding = old.speeding;
+        g.board_hidden = old.board_hidden;
         g.scoring = old.scoring;
         g.scoring_mods = std::move(old.scoring_mods);
         g.scoring_flagged = old.scoring_flagged;
@@ -892,7 +922,8 @@ bool Host::accept_data(Guest &source, const Packet &p) {
                 active(source);
             }
         }
-        return check_speed(source, p.time_us); // last: a speed-check kick frees `source`
+        // Last: a kick by either check frees `source`.
+        return check_board(source, p.pose) && check_speed(source, p.time_us);
     }
     return true;
 }
@@ -1099,7 +1130,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
             send_roster();
             meet_later(*link);
             if (!config_.welcome.empty()) send_chat(config_.welcome, link);
-            log_(guest_name(*link) + " joined (" + std::to_string(peer) + (is_admin(peer) ? ", admin" : "") + "), " +
+            log_(guest_name(*link) + " joined (" + std::to_string(peer) + (role_of(peer) ? ", " + role_of(peer)->name : std::string{}) + "), " +
                  std::to_string(players()) + "/" + std::to_string(config_.max_players) + " players" +
                  (link->connected_at && now_ > link->connected_at
                       ? ", loaded in " + std::to_string((now_ - link->connected_at) / 1000000) + " s" : ""));
@@ -1154,6 +1185,10 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
             chat_command(*link, std::string_view(p.text).substr(1));
             return;
         }
+        if (!may(peer, multiplayer::role_chat)) {
+            send_chat(role_refusal(peer, "use chat"), link);
+            return;
+        }
         log_("[chat] " + guest_name(*link) + ": " + p.text);
         broadcast(p, true, false, p.source);
         return;
@@ -1175,6 +1210,10 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
     if (p.kind == PacketKind::party) {
         if (!routed_source(p, link->member, peer, true, id_) || !link->party_budget.accept(now_, 20)) return;
         link->last_packet = now_;
+        if (!may(peer, multiplayer::role_parties)) {
+            send_chat(role_refusal(peer, "use parties"), link);
+            return;
+        }
         party_request(*link, p.party_action, p.party_player);
         return;
     }
@@ -1182,7 +1221,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
         if (!routed_source(p, link->member, peer, true, id_) || !link->admin_budget.accept(now_, 30)) return;
         link->last_packet = now_;
         std::string answer;
-        if (!is_admin(peer)) answer = "You are not an admin on this server.";
+        if (!is_staff(peer)) answer = "You are not an admin on this server.";
         else {
             log_("[admin] " + guest_name(*link) + ": " + loggable(p.text));
             answer = command(p.text, peer);
@@ -1287,7 +1326,7 @@ void Host::remove_away() {
     std::vector<std::uint64_t> away;
     for (auto &[id, guest] : guests_) {
         auto &g = *guest;
-        if (!g.handshaken || !g.world_ready || !g.active_at || is_admin(id)) continue;
+        if (!g.handshaken || !g.world_ready || !g.active_at || has(id, multiplayer::role_afk)) continue;
         const auto idle = now_ - g.active_at;
         if (idle >= limit) away.push_back(id);
         else if (!g.away_warned && limit > 60000000 && idle >= limit - 60000000) {
@@ -1310,15 +1349,16 @@ void Host::sync_objects() {
     for (auto &[id, guest] : guests_)
         if (guest->handshaken && guest->objects.revision() != guest->shared_from && now_ >= guest->objects_held_until &&
             (config_.object_placement == ObjectPlacement::everyone ||
-             (config_.object_placement == ObjectPlacement::host_only && is_admin(id)))) {
+             (config_.object_placement == ObjectPlacement::host_only && has(id, multiplayer::role_objects)))) {
             auto layout = guest->objects.layout();
             std::erase_if(layout, [&](const auto &object) { return guest->cleared.contains(object.id); });
-            // No more of a player's objects than the server allows each of them; admins are not limited.
-            if (!is_admin(id)) layout = limited_layout(std::move(layout), guest->shared.objects(), config_.object_limit);
+            // No more of a player's objects than the server allows each of them; a role may lift that.
+            const bool unlimited = has(id, multiplayer::role_objects);
+            if (!unlimited) layout = limited_layout(std::move(layout), guest->shared.objects(), config_.object_limit);
             // Nobody places objects by the hundred, minute after minute: a game that does is
             // spawning and removing them to animate them. Theirs are deleted for everyone, and
             // nothing they place is shared for a minute (or they would be back at once).
-            if (!is_admin(id)) {
+            if (!unlimited) {
                 if (now_ - guest->placed_since >= 60000000) {
                     guest->placed_since = now_;
                     guest->placed = 0;
@@ -1345,7 +1385,7 @@ void Host::sync_objects() {
             }
             // With scaling off, a player's objects reach everyone else at their own size, whatever
             // that player's game made of them.
-            if (!config_.object_scaling && !is_admin(id))
+            if (!config_.object_scaling && !unlimited)
                 for (auto &object : layout) object.scale = 1.f;
             if (config_.activity_log) activity_.objects(id, guest->shared.layout(), layout);
             guest->shared.replace(layout);
@@ -1728,9 +1768,10 @@ void Host::tick(std::uint64_t now) {
     if (roster_dirty_ || now_ - last_roster_ > 2000000) send_roster();
     for (auto &[id, guest] : guests_)
         if (guest->handshaken) {
-            if (is_admin(id) && guest->bans_sent != bans_revision_) send_bans(*guest);
-            // Admins pick maps from it; with map votes on, everyone completes /vote map from it.
-            if (!guest->maps_sent && (is_admin(id) || config_.votes.map.enabled)) send_maps(*guest);
+            if ((can(id, "ban") || can(id, "unban") || can(id, "bans")) && guest->bans_sent != bans_revision_) send_bans(*guest);
+            // Whoever may change the map picks from it; with map votes on, everyone completes /vote map from it.
+            if (!guest->maps_sent && (can(id, "map") || config_.votes.map.enabled)) send_maps(*guest);
+            if (guest->permissions_sent != roles_revision_) send_permissions(*guest);
         }
     const bool loading = std::any_of(guests_.begin(), guests_.end(),
                                      [](const auto &g) { return g.second->handshaken && !g.second->world_ready; });

@@ -1,4 +1,5 @@
 #pragma once
+#include "roles.h"
 #include "Engine/Game/Multiplayer/distance_settings.h"
 #include "Engine/Game/Multiplayer/object_placement.h"
 #include "Engine/Game/Multiplayer/session_model.h"
@@ -130,6 +131,10 @@ struct ServerConfig {
     // Players whose game runs fast (a speedhack; Server/speed_check.h): "warn" takes them out of
     // throwdowns and coop challenges and tells the admins, "kick" also removes them, "off" does not check.
     std::string speed_check = "warn";
+    // Players whose skateboard stays on another player as they move (a hacked game; Server/
+    // board_check.h): "warn" stops showing their board to the others and tells the admins,
+    // "kick" removes them, "off" does not check.
+    std::string board_check = "warn";
     // Players whose mods change how tricks score (Engine/Vfs/mod_scoring.h): "warn" takes them out
     // of throwdowns and coop challenges (the server stops relaying theirs) and tells everyone,
     // "kick" removes them, "off" does not check.
@@ -168,7 +173,7 @@ struct ServerConfig {
     // Needs world-layers.json (the players' catalog) next to the server.
     bool world_layer_sync{};
     std::map<std::string, std::string> layers;
-    std::vector<std::uint64_t> admins;
+    Roles roles; // data/roles.json
     std::vector<MultiplayerBan> bans;
 };
 // Reads `file`, writing a default one first when it does not exist. Settings this version
@@ -178,10 +183,17 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
 void save_config(const ServerConfig &config);
 // Where the bans are kept: data/bans.json, beside the config.
 std::filesystem::path bans_file(const ServerConfig &config);
-// How many players may be on beyond max_players: one for each reserved player and each admin.
+// Where the roles are kept: data/roles.json. A server without the file starts with
+// default_roles(); the admins an older config listed are moved into its admin role.
+std::filesystem::path roles_file(const ServerConfig &config);
+// The roles a file's text holds (throws what is wrong with it), and the text for these.
+Roles read_roles(std::string_view text);
+std::string roles_text(const Roles &roles);
+// How many players may be on beyond max_players: one for each reserved player and each player
+// whose role has a reserved slot.
 std::size_t extra_slots(const ServerConfig &config) noexcept;
 // Whether a player who is not yet on may join a server with `on` players on it. Anyone, until
-// max_players are on; the reserved players and the admins after that too, in the extra slots
+// max_players are on; the reserved players and those roles after that too, in the extra slots
 // (a full server of 32 shows 33/32 with one of them on).
 bool may_join(const ServerConfig &config, std::uint64_t id, std::size_t on) noexcept;
 // "#RRGGBB" (or "RRGGBB") as a colour in the layout the protocol and the overlay use, or nothing.

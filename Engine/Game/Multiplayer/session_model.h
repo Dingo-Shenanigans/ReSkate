@@ -1,6 +1,7 @@
 #pragma once
 #include "distance_settings.h"
 #include "object_placement.h"
+#include "role_commands.h"
 #include "session_limits.h"
 #include "tick_settings.h"
 #include "voice_settings.h"
@@ -227,7 +228,14 @@ struct MultiplayerModel {
     float voice_range = default_voice_range;  // how far the host (or server) forwards proximity voice
     // In a dedicated server's session: the server is the host but not a player.
     // Admins it lists may change its settings, and its map through Levels.
+    // server_admin: the player's role there has at least one of the server's commands.
     bool dedicated{}, server_admin{};
+    // Their role on it (empty: none), the tag it wears, whether it has every command or the
+    // ones listed, and what it gives beyond commands (the protocol's role_* bits).
+    std::string server_role, server_role_tag;
+    bool server_all_commands{};
+    std::vector<std::string> server_commands;
+    std::uint32_t server_permissions{};
     // `bans` is the dedicated server's list (for its admins) rather than this PC's.
     bool server_bans{};
     unsigned server_ban_total{};
@@ -281,8 +289,12 @@ struct MultiplayerModel {
     std::uint64_t queue_us{}, skipped_updates{}, send_failures{}, invalid_messages{}, sent_bytes{},
         raw_sent_bytes{};
 };
+// Whether the player's role on the dedicated server they are on has one of its commands.
+inline bool server_can(const MultiplayerModel& model, std::string_view command) noexcept {
+    return model.dedicated && role_allows(model.server_all_commands, model.server_commands, command);
+}
 inline bool multiplayer_controls_level(const MultiplayerModel& model) noexcept {
-    // A server admin's level choice is sent to the server, which moves everyone.
-    return model.lobby_joining || (model.active && !model.hosting && !model.echo && !model.server_admin);
+    // The level choice of a player who may change the server's map is sent to the server, which moves everyone.
+    return model.lobby_joining || (model.active && !model.hosting && !model.echo && !server_can(model, "map"));
 }
 } // namespace dingosdk

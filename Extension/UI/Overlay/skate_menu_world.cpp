@@ -371,8 +371,8 @@ void parks(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
 }
 
 void world_layers_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    if (model.world.controlled_by_host && model.multiplayer.server_admin)
-        note("The server is syncing world layers. You are an admin, so your changes apply to everyone.");
+    if (model.world.controlled_by_host && server_can(model.multiplayer, "layers"))
+        note("The server is syncing world layers. Your role may change them, so your changes apply to everyone.");
     else if (model.world.controlled_by_host)
         warn("The host is syncing world layers. Your own choices come back when sync ends or you leave.");
     if (model.world.map == WorldMap::none) {
@@ -531,8 +531,8 @@ void time_of_day_page(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     int bottom = current >= 4 ? current - 4 : -1;
     if (choice(menu, "tod-bottom", bottom, {"Evening", "Night", "Weather day", "Weather night"}, available))
         apply(static_cast<unsigned>(bottom + 4));
-    if (model.world.controlled_by_host && model.multiplayer.server_admin)
-        note("You are an admin of this server: the time you pick applies to everyone.");
+    if (model.world.controlled_by_host && server_can(model.multiplayer, "tod"))
+        note("Your role on this server sets the time: the one you pick applies to everyone.");
     else if (model.world.controlled_by_host) warn("The lobby host controls world layers, including time of day.");
     else if (model.world.map == WorldMap::none) note("Load a map in Map > Travel to change its time of day.");
     else if (!available) note("Time of day is not available on this map right now.");

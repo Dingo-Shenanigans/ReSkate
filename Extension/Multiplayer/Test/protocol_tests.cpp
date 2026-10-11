@@ -983,6 +983,51 @@ void dedicated_server_codec() {
     auto crowned = roster;
     crowned.members[0].admin = true;
     check(reject(crowned), "A host marked as an admin");
+    {
+        // A dedicated server's roles: the tags its players wear, and what one player may do.
+        auto tagged = roster;
+        tagged.members[1].tag = "Mod";
+        tagged.members[1].tag_color = 0xffffc85eU;
+        const auto worn = decode(encode(tagged));
+        check(worn && worn->members[1].tag == "Mod" && worn->members[1].tag_color == 0xffffc85eU && worn->members[2].tag.empty(),
+              "A role's tag failed to round-trip");
+        auto self = tagged;
+        self.members[0].tag = "Boss";
+        check(reject(self), "A server wearing a tag was accepted");
+        auto lobby = roster;
+        lobby.members.erase(lobby.members.begin());
+        lobby.source = player;
+        lobby.members[0].admin = false;
+        check(!reject(lobby), "A lobby roster was refused");
+        lobby.members[1].tag = "Mod";
+        check(reject(lobby), "A lobby's host gave out a tag");
+        auto wide = tagged;
+        wide.members[1].tag = std::string(max_role_tag + 1, 'a');
+        check(reject(wide), "A tag past its length was accepted");
+        wide.members[1].tag = " Mod";
+        check(reject(wide), "A tag starting with a blank was accepted");
+        Packet rights;
+        rights.kind = PacketKind::permissions; rights.session = 9; rights.epoch = 10; rights.map = 11; rights.source = server;
+        rights.role = "moderator";
+        rights.role_commands = {"kick", "ban", "msg-admins"};
+        rights.role_permissions = role_alerts | role_chat | role_votes;
+        const auto given = decode(encode(rights));
+        check(given && given->role == "moderator" && !given->role_all_commands && given->role_commands == rights.role_commands &&
+                  given->role_permissions == rights.role_permissions, "A player's permissions failed to round-trip");
+        auto none = rights;
+        none.role.clear(); none.role_commands.clear(); none.role_permissions = 0; none.role_all_commands = true;
+        const auto bare = decode(encode(none));
+        check(bare && bare->role.empty() && bare->role_all_commands && bare->role_commands.empty(), "Permissions with no role failed to round-trip");
+        auto bad = rights;
+        bad.role_commands = {"Kick"};
+        check(reject(bad), "A command that is not a command's name was accepted");
+        bad = rights;
+        bad.role_permissions = role_permission_bits + 1;
+        check(reject(bad), "An unknown permission was accepted");
+        bad = rights;
+        bad.source = 0;
+        check(reject(bad), "Permissions from nobody were accepted");
+    }
     auto far = roster;
     far.voice_range = 5;
     check(reject(far), "Invalid voice range encoded");

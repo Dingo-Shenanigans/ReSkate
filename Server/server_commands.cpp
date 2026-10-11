@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <fstream>
+#include <sstream>
 
 // Admin commands, from the server console or an admin's game, and the anti-cheat checks they switch.
 namespace dingosdk::server {
@@ -24,9 +26,9 @@ constexpr std::string_view help_text =
     "announce <text> | announce-to <player> <text> | announcements [list|add <text>|remove <n>|clear|interval <minutes>|off]\n"
     "map-pool [add|remove <map>|clear] | rotation [<minutes>|off]\n"
     "park <lot> <layout> | park random | layer-sync on|off | layer <key> default|on|off | tod <time|default>\n"
-    "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick\n"
+    "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick | board-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>]\n"
-    "reserved [slots <n> | add|remove <SteamID64>] | admin add|remove <SteamID64> | admins | update | quit";
+    "reserved [slots <n> | add|remove <SteamID64>] | roles [reload] | role <player or SteamID64> <role>|none | update | quit";
 } // namespace
 
 std::string Host::command(std::string_view line, std::uint64_t admin) {
@@ -34,11 +36,15 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     auto [action, argument] = split(line);
     const auto verb = lower(action);
     // The in-game menu's names for the same settings.
-    const std::string name = verb == "voice-allow" ? "voice" : verb == "object-placement" ? "placement"
-                           : verb == "object-limit" ? "objects"
-                           : verb == "world-layer-sync" ? "layer-sync" : verb == "noclip-allow" ? "noclip"
-                           : verb == "nobail-allow" ? "nobail" : verb == "boosts-allow" ? "boosts"
-                           : verb == "tuning-enforce" ? "tuning" : verb;
+    const std::string name(canonical_command(verb));
+    // From a player's game: what their role gives them (roles.h). The console may do anything.
+    if (!console && !can(admin, name)) {
+        const auto *role = role_of(admin);
+        return staff(role) ? "Your role (" + role->name + ") cannot use " + (name.empty() ? std::string("that") : name) + "."
+                           : std::string("You are not an admin on this server.");
+    }
+    // Nobody acts on a player whose rank is theirs or above, or hands out a role that is.
+    const auto outranks = [&](std::uint64_t other) { return console || rank(admin) > rank(other); };
     const auto target = [&](std::string_view text) -> Guest * {
         // A SteamID64 (optionally followed by the player's session epoch, as the
         // in-game menu sends it), or the start of a connected player's name.
@@ -73,7 +79,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         std::string text = std::to_string(players()) + " players";
         for (const auto &[id, guest] : guests_)
             if (guest->handshaken)
-                text += "\n  " + std::to_string(id) + "  " + guest_name(*guest) + (is_admin(id) ? "  (admin)" : "");
+                text += "\n  " + std::to_string(id) + "  " + guest_name(*guest) + (role_of(id) ? "  (" + role_of(id)->name + ")" : std::string{});
         return text;
     }
     if (name == "say") {
@@ -94,7 +100,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (to_admins) {
             scope = label = "admins";
             for (auto &[id, guest] : guests_)
-                if (guest->handshaken && is_admin(id)) recipients.push_back(guest.get());
+                if (guest->handshaken && is_staff(id)) recipients.push_back(guest.get());
         } else {
             auto *guest = match_player(who);
             if (!guest) return "No single connected player matches \"" + std::string(who) + "\".";
@@ -120,8 +126,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     if (name == "kick") {
         auto *guest = target(argument);
         if (!guest || !guest->handshaken) return "No single connected player matches \"" + std::string(argument) + "\".";
-        // Admins answer to the console, not to each other.
-        if (!console && is_admin(guest->member.id)) return "Admins cannot kick other admins.";
+        if (!outranks(guest->member.id)) return "You cannot kick a player of your rank or above.";
         const auto label = guest_name(*guest);
         kicked_.insert(guest->member.id);
         drop(guest->member.id, "You were kicked from this server.");
@@ -133,7 +138,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         std::uint64_t id = guest ? guest->member.id : number(who).value_or(0);
         if (!individual_steam_id(id)) return "Enter a connected player or a SteamID64 (17 digits starting 7656119).";
         if (id == admin) return "You cannot ban yourself.";
-        if (!console && is_admin(id)) return "Admins cannot ban other admins.";
+        if (!outranks(id)) return "You cannot ban a player of your rank or above.";
         if (is_banned(id)) return std::to_string(id) + " is already banned.";
         auto label = guest ? guest->member.name : clean_chat_text(reason);
         // Banned by SteamID after they left: the name they were last here under.
@@ -278,6 +283,20 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(value == "off" ? "Game speed is no longer checked."
                        : value == "kick" ? "Players whose game runs fast are kicked."
                                          : "Players whose game runs fast are taken out of throwdowns and challenges.");
+    }
+    if (name == "board-check") {
+        const auto value = lower(argument);
+        if (value != "off" && value != "warn" && value != "kick")
+            return "board-check off|warn|kick (now " + config_.board_check + ")";
+        config_.board_check = value;
+        if (value == "off")
+            for (auto &[id, guest] : guests_) {
+                guest->board.restart();
+                guest->board_hidden = false;
+            }
+        return changed(value == "off" ? "Skateboards kept on other players are no longer checked for."
+                       : value == "kick" ? "Players who keep their skateboard on another player are kicked."
+                                         : "A skateboard kept on another player is hidden from the others, and the admins are told.");
     }
     if (name == "score-check") {
         const auto value = lower(argument);
@@ -692,11 +711,10 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     }
     if (name == "reserved") {
         // reserved | reserved add|remove <player or SteamID64>
-        if (!console) return "Only the server console manages reserved slots.";
         const auto [sub, who] = split(argument);
         if (sub.empty()) {
             std::string text = std::to_string(extra_slots(config_)) + " extra slots beyond the " + std::to_string(config_.max_players) +
-                               ": the admins and these players can join when the server is full";
+                               ": players whose role has a reserved slot and these players can join when the server is full";
             for (const auto id : config_.reserved) {
                 const auto *guest = find(id);
                 text += "\n  " + std::to_string(id) + (guest ? "  " + guest_name(*guest) : std::string{});
@@ -715,31 +733,64 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         std::erase(config_.reserved, id);
         return changed(std::to_string(id) + " no longer has a reserved slot.");
     }
-    if (name == "admins" || name == "admin") {
-        if (!console) return "Only the server console manages admins.";
-        const auto [sub, who] = split(argument);
-        if (name == "admins" || sub.empty()) {
-            std::string text = std::to_string(config_.admins.size()) + " admins";
-            for (const auto id : config_.admins) {
-                const auto *guest = find(id);
-                text += "\n  " + std::to_string(id) + (guest ? "  " + guest_name(*guest) : std::string{});
+    if (name == "admins" || name == "admin")
+        return "Admins are a role now: roles lists them, and role <player or SteamID64> admin makes one (role ... none takes it away).";
+    if (name == "roles") {
+        if (lower(argument) == "reload") {
+            if (!console && !can(admin, "role")) return "Your role cannot reload the roles.";
+            // The file as it is on disk now: an owner's edit, checked before anything changes.
+            std::stringstream held;
+            {
+                std::ifstream in(roles_file(config_), std::ios::binary);
+                if (!in) return "There is no data/roles.json to read.";
+                held << in.rdbuf();
             }
-            return text;
+            try {
+                config_.roles = read_roles(held.str());
+            } catch (const std::exception &e) {
+                return std::string("data/roles.json was not loaded: ") + e.what();
+            }
+            roles_changed();
+            return changed("Roles reloaded: " + std::to_string(config_.roles.list.size()) + " roles, " +
+                           std::to_string(config_.roles.players.size()) + " players with one.");
         }
+        std::string text = std::to_string(config_.roles.list.size()) + " roles (data/roles.json)" +
+                           (config_.roles.default_role.empty() ? std::string{} : "; everybody given none is " + config_.roles.default_role);
+        for (const auto &role : config_.roles.list) {
+            text += "\n  " + role.name + " (rank " + std::to_string(role.rank) + (role.tag.empty() ? std::string{} : ", tag " + role.tag) + "): ";
+            text += role.granted_all ? "every command" : role.granted_commands.empty() ? "no commands" : std::to_string(role.granted_commands.size()) + " commands";
+            for (const auto &[id, held] : config_.roles.players)
+                if (held == role.name) {
+                    const auto *guest = find(id);
+                    text += "\n    " + std::to_string(id) + (guest ? "  " + guest_name(*guest) : std::string{});
+                }
+        }
+        return text;
+    }
+    if (name == "role") {
+        // role <player or SteamID64> <role>|none
+        const auto [who, wanted_text] = split(argument);
+        const auto wanted = lower(trim(wanted_text));
         auto *guest = target(who);
         const auto id = guest ? guest->member.id : number(who).value_or(0);
-        if (!individual_steam_id(id)) return "admin add|remove <player or SteamID64>";
-        if (sub == "add") {
-            if (!is_admin(id)) config_.admins.push_back(id);
-            resend_maps();
-            return changed(std::to_string(id) + " is an admin.");
-        }
-        if (sub == "remove") {
-            std::erase(config_.admins, id);
-            resend_maps();
-            return changed(std::to_string(id) + " is no longer an admin.");
-        }
-        return "admin add|remove <player or SteamID64>";
+        if (!individual_steam_id(id) || wanted.empty()) return "role <player or SteamID64> <role>|none";
+        if (id == admin) return "You cannot change your own role.";
+        const auto *role = wanted == "none" ? nullptr : config_.roles.find(wanted);
+        if (wanted != "none" && !role) return "There is no role \"" + wanted + "\". Type roles to list them.";
+        if (!outranks(id)) return "You cannot change the role of a player of your rank or above.";
+        if (role && !console && role->rank >= rank(admin)) return "You cannot give out a role of your rank or above.";
+        if (!role && !config_.roles.players.contains(id)) return std::to_string(id) + " was given no role.";
+        if (role && config_.roles.players.size() >= max_role_players && !config_.roles.players.contains(id)) return "Too many players have a role.";
+        if (role) config_.roles.players[id] = role->name;
+        else config_.roles.players.erase(id);
+        roles_changed();
+        const auto label = guest ? guest_name(*guest) : std::to_string(id);
+        if (guest && guest->handshaken)
+            send_chat(role ? "Your role on this server is now " + role->name + "."
+                           : config_.roles.default_role.empty() ? std::string("You no longer have a role on this server.")
+                                                                : "Your role on this server is " + config_.roles.default_role + " again.", guest);
+        return changed(role ? label + " is now " + role->name + "."
+                            : label + (config_.roles.default_role.empty() ? " no longer has a role." : " is " + config_.roles.default_role + " again."));
     }
     return "Unknown command \"" + std::string(action) + "\". Type help.";
 }
@@ -802,6 +853,45 @@ bool Host::check_speed(Guest &guest, std::uint64_t sent) {
             send_chat("Your game speed is back to normal: throwdowns and challenges are on again.", &guest);
         }
     } else guest.speed_normal_since = 0;
+    return true;
+}
+void Host::tell_admins(const std::string &text) {
+    for (auto &[id, guest] : guests_)
+        if (guest->handshaken && has(id, multiplayer::role_alerts)) send_chat(text, guest.get());
+}
+// A hacked game can say its skateboard is wherever another player is, and keep it on them
+// (board_check.h). The board of a player doing that is no longer passed on to the others, the
+// log and the admins in the game are told who, and with "kick" the player is removed. It is
+// shown again once it has behaved for half a minute.
+bool Host::check_board(Guest &guest, const Pose &pose) {
+    if (config_.board_check == "off" || !guest.handshaken || !guest.world_ready) return true;
+    // The other players whose place is known now (a pose within the last second).
+    std::array<BoardCheck::Other, max_players> others;
+    std::size_t count{};
+    for (const auto &[id, other] : guests_)
+        if (other.get() != &guest && other->handshaken && other->world_ready && other->latest_root && other->pose_arrival &&
+            now_ >= other->pose_arrival && now_ - other->pose_arrival <= 1000000 && count < others.size())
+            others[count++] = {id, other->latest_root->position};
+    if (!guest.board.sample(now_, pose.root.position, pose.board.empty() ? nullptr : &pose.board.front().position,
+                            std::span<const BoardCheck::Other>(others.data(), count)))
+        return true;
+    const auto name = guest_name(guest);
+    if (!guest.board.flagged()) {
+        guest.board_hidden = false;
+        log_("[anticheat] " + name + "'s skateboard is shown to the others again.");
+        return true;
+    }
+    const auto *victim = find(guest.board.victim());
+    const auto text = name + " (" + std::to_string(guest.member.id) + ") is keeping their skateboard on " +
+                      (victim ? guest_name(*victim) : std::string("another player")) + " (a hacked game?).";
+    log_("[anticheat] " + text);
+    if (config_.board_check == "kick") {
+        tell_admins("[anticheat] " + text + " Kicked.");
+        drop(guest.member.id, "Your skateboard was being kept on another player. Turn off cheats to play here.");
+        return false;
+    }
+    guest.board_hidden = true;
+    tell_admins("[anticheat] " + text + " Their board is hidden from everyone else.");
     return true;
 }
 } // namespace dingosdk::server

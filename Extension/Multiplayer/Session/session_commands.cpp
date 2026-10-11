@@ -29,12 +29,12 @@ void apply_distances(Session &s, const MultiplayerDistances &distances) {
 }
 void apply_object_limit(Session &s, unsigned limit) {
     s.object_limit = limit;
-    set_lobby_object_limit(s.mode == Mode::host || s.server_admin ? 0 : limit);
+    set_lobby_object_limit(s.mode == Mode::host || (s.role_permissions & role_objects) ? 0 : limit);
 }
 void apply_object_placement(Session &s, ObjectPlacement policy) {
     s.object_placement = policy;
-    // On a dedicated server "host only" means its admins.
-    set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || s.server_admin));
+    // On a dedicated server "host only" means the roles that may always build.
+    set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || (s.role_permissions & role_objects)));
 }
 void apply_nametags(const Session &s) {
     // The feed also runs when only chat bubbles are on: the overlay draws whichever of the
@@ -49,7 +49,7 @@ void apply_guest_tools(Session &s, bool noclip, bool no_bail, bool boosts) {
     s.guest_noclip = noclip;
     s.guest_no_bail = no_bail;
     s.guest_boosts = boosts;
-    const bool exempt = s.mode == Mode::host || s.server_admin;
+    const bool exempt = s.mode == Mode::host || (s.role_permissions & role_movement);
     set_session_tools_allowed(noclip || exempt, no_bail || exempt, boosts || exempt);
 }
 } // namespace session_detail
@@ -659,7 +659,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         // A dedicated server's admin changes the server's settings instead of
         // their own: the same menu actions, sent to the server. "server" sends
         // any server console command.
-        if (dedicated_host(s) && (action == "server" || (s.server_admin &&
+        if (dedicated_host(s) && (action == "server" || (role_allows(s.role_all_commands, s.role_commands, action) &&
             (action == "distances" || action == "object-placement" || action == "object-limit" || action == "voice-allow" || action == "voice-range" ||
              action == "clear-objects" || action == "kick" || action == "ban" || action == "unban" ||
              action == "world-layer-sync" || action == "noclip-allow" || action == "nobail-allow" ||

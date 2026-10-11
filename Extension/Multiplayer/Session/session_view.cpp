@@ -151,8 +151,8 @@ void publish(Session &s, const NativeFrame *local) {
     view.distances = s.distances;
     view.object_placement = s.object_placement;
     view.object_limit = s.object_limit;
-    view.object_scaling = s.object_scaling || s.server_admin || s.mode != Mode::join;
-    view.object_limit_own = s.mode == Mode::host || s.server_admin ? 0 : s.object_limit; // as apply_object_limit gives this game
+    view.object_scaling = s.object_scaling || (s.role_permissions & role_objects) || s.mode != Mode::join;
+    view.object_limit_own = s.mode == Mode::host || (s.role_permissions & role_objects) ? 0 : s.object_limit; // as apply_object_limit gives this game
     view.objects_placed = s.mode == Mode::off ? 0 : static_cast<unsigned>(s.local_objects.objects().size());
     view.guest_noclip = s.guest_noclip;
     view.guest_no_bail = s.guest_no_bail;
@@ -216,6 +216,13 @@ void publish(Session &s, const NativeFrame *local) {
                      : dedicated_host(s) ? s.roster_voice_range : s.host_preferences.voice_range;
     view.dedicated = dedicated_host(s);
     view.server_admin = view.dedicated && s.server_admin;
+    if (view.dedicated) {
+        view.server_role = s.role;
+        view.server_role_tag = s.own_tag;
+        view.server_all_commands = s.role_all_commands;
+        view.server_commands = s.role_commands;
+        view.server_permissions = s.role_permissions;
+    }
     view.party = s.local_party;
     view.party_leader = s.local_party_leader;
     view.party_open = s.local_party_open;
@@ -225,10 +232,12 @@ void publish(Session &s, const NativeFrame *local) {
         view.party_invites.push_back({invite.from, from && !from->member.name.empty() ? from->member.name
                                                                                      : s.transport.name(invite.from)});
     }
-    if (view.server_admin) {
+    if (server_can(view, "ban") || server_can(view, "unban") || server_can(view, "bans")) {
         view.bans = s.server_bans;
         view.server_bans = true;
         view.server_ban_total = s.server_ban_total;
+    }
+    if (server_can(view, "map")) {
         view.server_maps = s.server_maps;
         view.server_map_pool = s.server_map_pool;
         view.server_map_rotation = s.server_map_rotation;
@@ -488,9 +497,11 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
         }
         if (!s.server_custom_votes.empty()) list.push_back({"/vote list", "/vote list", "This server's own votes, and what each does"});
         const auto polls = static_cast<ServerPolls>(s.server_polls);
-        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && s.server_admin))
+        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && (s.role_permissions & role_polls)))
             list.push_back({"/poll", "/poll <question> | <answer> | <answer>...", "Ask everyone a question, with up to six answers"});
         if (polls != ServerPolls::off) list.push_back({"/1", "/1, /2...", "Answer the running poll"});
+        // The server commands their role gives them (the rest it would refuse).
+        const auto before_commands = list.size();
         if (s.server_admin) {
             list.push_back({"/msg", "/msg <player> <message>", "Admin: message a player privately", "player"});
             list.push_back({"/msg-party", "/msg-party <player> <message>", "Admin: message everyone in a player's party", "player"});
@@ -511,6 +522,14 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/vote-cancel", "/vote-cancel", "Admin: stop the running vote"});
             list.push_back({"/map-pool", "/map-pool [add|remove <map>|clear]", "Admin: the maps players vote between and the rotation uses"});
             list.push_back({"/rotation", "/rotation [<minutes>|off]", "Admin: change the map on a timer, through the map pool"});
+            list.push_back({"/role", "/role <player> <role>|none", "Admin: give a player a role, or take theirs away", "player"});
+            list.push_back({"/roles", "/roles", "Admin: the server's roles and who has them"});
+            list.erase(std::remove_if(list.begin() + static_cast<std::ptrdiff_t>(before_commands), list.end(), [&](const auto &entry) {
+                // "/poll end" is the polls permission's; the others are named for their command.
+                const std::string_view shown = entry.name;
+                if (shown == "/poll end") return !(s.role_permissions & role_polls);
+                return !role_allows(s.role_all_commands, s.role_commands, shown.substr(1));
+            }), list.end());
         }
     }
     return list;
@@ -545,6 +564,9 @@ void publish_chat(Session &s) {
     signature.add(static_cast<std::uint64_t>(dedicated));
     signature.add(static_cast<std::uint64_t>(s.server_votes));
     signature.add(static_cast<std::uint64_t>(s.server_admin));
+    signature.add(static_cast<std::uint64_t>(s.role_all_commands) | static_cast<std::uint64_t>(s.role_permissions) << 1);
+    for (const auto &command : s.role_commands) signature.add(std::hash<std::string>{}(command));
+    signature.add(std::hash<std::string>{}(s.role + '|' + s.own_tag));
     signature.add(static_cast<std::uint64_t>(s.chat_visible));
     signature.add(static_cast<std::uint64_t>(s.chat_filter));
     signature.add(static_cast<std::uint64_t>(s.game_menu));
@@ -650,7 +672,11 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     // have turned their tag off (the Special page), which their appearance tells everyone.
     if (marks && vouched && (local ? own_tag_shown() : shows_tag(*peer)))
         if (const auto mark = identity_mark(sender)) return mark_role(*mark);
-    if (dedicated && (local ? s.server_admin : peer && peer->member.admin)) return {nametag_admin, "Admin"};
+    // On a dedicated server: the tag the player's role there gives them, in its colour.
+    if (dedicated) {
+        const auto &worn = local ? s.own_tag : peer ? peer->member.tag : std::string{};
+        if (!worn.empty()) return {(local ? s.own_tag_color : peer->member.tag_color) | 0xff000000U, worn};
+    }
     if (!dedicated && (local ? s.mode == Mode::host : sender == s.host_id)) return {nametag_host, "Host"};
     if (!local && vouched) {
         refresh_friends(s);

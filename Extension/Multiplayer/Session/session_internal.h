@@ -225,7 +225,14 @@ struct Session {
     SteamServerBrowser servers;
     // Guest of a dedicated server: whether the roster lists us as an admin,
     // and the server's voice range from it.
+    // On a dedicated server: what the player's role gives them (its permissions packet), and the
+    // tag it wears (the roster's). server_admin: it has at least one of the server's commands.
     bool server_admin{};
+    std::string role, own_tag;
+    std::uint32_t own_tag_color{};
+    bool role_all_commands{};
+    std::vector<std::string> role_commands;
+    std::uint32_t role_permissions{};
     float roster_voice_range = default_voice_range;
     // The colours of the dedicated server's own chat lines, as its roster gives them.
     std::uint32_t server_chat_badge = default_server_chat_badge, server_chat_text = default_server_chat_text;

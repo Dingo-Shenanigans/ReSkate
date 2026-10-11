@@ -464,8 +464,14 @@ int run(int argc, char **argv, bool skip_update) {
         write_log("No steam_token: the server browser can be set to show only servers that have one, and then "
                   "this server is not in it (players can still join with the code). It takes a minute to make "
                   "one: see steam_token in README.");
-    write_log(config.admins.empty() ? "No admins yet: type \"admin add <SteamID64>\" to add one."
-                              : std::to_string(config.admins.size()) + " admin(s). Type help for commands.");
+    {
+        std::size_t admins{};
+        for (const auto &[id, name] : config.roles.players)
+            if (const auto *role = config.roles.find(name); role && role->granted_all) ++admins;
+        write_log(!admins ? "No admins yet: type \"role <SteamID64> admin\" to add one. Roles are in data/roles.json."
+                          : std::to_string(admins) + " admin(s), " + std::to_string(config.roles.players.size()) +
+                            " player(s) with a role. Type help for commands.");
+    }
 
     auto &input = console_input();
 #ifdef _WIN32

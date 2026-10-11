@@ -256,10 +256,14 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     if (s.roster_sequence && !newer_sequence(p.sequence, s.roster_sequence))
         return;
     s.roster_sequence = p.sequence;
-    s.server_admin = false;
+    s.own_tag.clear();
+    s.own_tag_color = 0;
     for (const auto &m : p.members)
         if (m.id == s.transport.status().local_id) {
-            s.server_admin = m.admin && game_server_steam_id(s.host_id);
+            if (game_server_steam_id(s.host_id)) {
+                s.own_tag = m.tag;
+                s.own_tag_color = m.tag_color;
+            }
             set_local_party(s, m);
             s.local_speeding = m.speeding && game_server_steam_id(s.host_id);
             if (m.scoring && !s.local_scoring) add_chat(s, 0, "ReSkate", own_scoring_notice());
@@ -909,6 +913,22 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         if (p.kind == PacketKind::physics_extras) {
             if (s.mode == Mode::join && message.peer == s.host_id && p.source == s.host_id && !dedicated_host(s))
                 s.host_extras = p.extras;
+            continue;
+        }
+        // What the player's role on the server lets them do: the rules that depend on it are applied again.
+        if (p.kind == PacketKind::permissions) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                s.role = p.role;
+                s.role_all_commands = p.role_all_commands;
+                s.role_commands = p.role_commands;
+                s.role_permissions = p.role_permissions;
+                s.server_admin = s.role_all_commands || !s.role_commands.empty();
+                apply_object_limit(s, s.object_limit);
+                apply_object_placement(s, s.object_placement);
+                apply_guest_tools(s, s.guest_noclip, s.guest_no_bail, s.guest_boosts);
+                publish(s);
+                publish_chat(s);
+            }
             continue;
         }
         if (p.kind == PacketKind::maps) {

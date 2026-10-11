@@ -1045,7 +1045,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
         if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
         if (m.world.controlled_by_host)
-            list.note(mp.server_admin ? "You are an admin: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
+            list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
         list.note(h.notice);
         list.end();
         break;
@@ -1084,7 +1084,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (all.setting("Randomize on launch", on_off(m.parks.randomize_on_launch), m.parks.available && console)) act("park-random-on-launch");
         all.note(m.world.map != WorldMap::bam ? std::string("Load San Vansterdam to change parks.")
                  : native_tools::parks_locked(m) ? std::string("The lobby host controls park layouts.")
-                 : m.parks.controlled_by_host ? std::string("You are an admin: layouts you load change for the whole server.") : h.notice);
+                 : m.parks.controlled_by_host ? std::string("Your role sets them: layouts you load change for the whole server.") : h.notice);
         all.end();
         break;
     }

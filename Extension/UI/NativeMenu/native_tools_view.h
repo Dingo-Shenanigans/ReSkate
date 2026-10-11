@@ -64,8 +64,9 @@ inline bool can_load(const State& s, const overlay::Model& m, const overlay::Cal
 }
 // Layers and parks the host controls are locked, except for a dedicated
 // server's admins: their changes go to the server, which applies them to everyone.
-inline bool layers_locked(const overlay::Model& m) { return m.world.controlled_by_host && !m.multiplayer.server_admin; }
-inline bool parks_locked(const overlay::Model& m) { return m.parks.controlled_by_host && !m.multiplayer.server_admin; }
+// (On a dedicated server: unless the player's role has the command that changes them for everyone.)
+inline bool layers_locked(const overlay::Model& m) { return m.world.controlled_by_host && !server_can(m.multiplayer, "layers"); }
+inline bool parks_locked(const overlay::Model& m) { return m.parks.controlled_by_host && !server_can(m.multiplayer, "park"); }
 inline bool can_park(const overlay::Model& m, const overlay::CallbacksV3& cb) {
     return m.world.map == WorldMap::bam && m.parks.available && !parks_locked(m) && cb.queue_console_command;
 }
@@ -113,7 +114,7 @@ inline std::vector<std::string> time_of_day_commands(const overlay::Model& m, un
         if (slot + 1 == next) { commands.push_back(line); pairs.push_back(std::string(key) + "=" + mode); }
         else { commands.insert(commands.begin(), line); pairs.insert(pairs.begin(), std::string(key) + "=" + mode); }
     }
-    if (m.multiplayer.server_admin && m.world.controlled_by_host) {
+    if (server_can(m.multiplayer, "layers") && m.world.controlled_by_host) {
         std::string batch = "mp server layers";
         for (const auto& pair : pairs) batch += " " + pair;
         return {batch};
@@ -265,7 +266,7 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         button(p.side, "time-of-day", std::string("Time of day: ") + time_of_day_labels[time_of_day(m)],
             "time-of-day", time_of_day_available(m, cb));
         if (m.world.controlled_by_host)
-            text(p.side, "time-status", m.multiplayer.server_admin ? "You are an admin: time of day changes for the whole server."
+            text(p.side, "time-status", server_can(m.multiplayer, "tod") ? "Your role sets it: time of day changes for the whole server."
                                                                    : "The lobby host controls world layers, including time of day.");
         load_status("load-status");
     } else if (section == custom_section) {
