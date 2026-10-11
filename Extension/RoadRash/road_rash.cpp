@@ -6,6 +6,7 @@
 #include "Extension/HallOfMeat/hall_of_meat_skater.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Rendering/texture_refresh.h"
 #include "Extension/Skater/no_bail.h"
 #include <Windows.h>
 #include <atomic>
@@ -312,6 +313,12 @@ void on_client_tick(std::uintptr_t client) noexcept {
         const char* why = !marks ? "nothing to show" : s.afresh ? "the marks are worked out again" : nullptr;
         if (!why && multiplayer::sample_game_ui_state(skater.base).in_menu) {
             why = "a game menu is up";
+            s.menu_seen = now;
+        }
+        // A texture refresh takes the outfit's items off and gives them back: the skater is the
+        // game's until it is done, and the marks go on after it as after a menu.
+        if (!why && texture_refresh::busy()) {
+            why = "its textures are composited again";
             s.menu_seen = now;
         }
         if (why) {

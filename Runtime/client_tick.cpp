@@ -26,6 +26,8 @@
 #include "Extension/Progression/mission_progression_override.h"
 #include "Extension/Progression/neighborhood_unlock_override.h"
 #include "Extension/Settings/gameplay_settings_override.h"
+#include "Extension/Rendering/saved_texture_quality.h"
+#include "Extension/Rendering/texture_refresh.h"
 #include "Extension/Settings/named_settings.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/client_source_spawn.h"
@@ -218,6 +220,60 @@ void apply_mesh_streaming_pool() {
         last_result = result;
     } catch (...) {}
 }
+// Issue #160: the game sets the engine's texture controls (mip skipping, free streaming,
+// compositor) once, from the quality scripts' hardware preset, and never from the Texture
+// Quality menu: on a card the scripts rate Low, Ultra leaves deck art, tattoos, stickers and
+// clothing blurry, and changing the menu changes nothing. So the tier the player chose, as the
+// game saved it (saved_texture_quality.h), is set through the named setter: at startup, whenever
+// the save changes, and after a level change, since the scripts run again on level loads. A
+// change is looked at again a few seconds later in case a script wrote after it; once the values
+// hold, they are left alone until one of those happens, so a console change to them stays.
+// TextureStreaming.PoolSize is not touched (texture_tier.h).
+void apply_texture_quality(DWORD level_state) {
+    static std::uint32_t handled = 0;
+    static DWORD handled_state = 0;
+    static unsigned attempts = 0;
+    static ULONGLONG next_check = 0;
+    static std::string last_report;
+    const auto now = GetTickCount64();
+    if (now < next_check) return;
+    next_check = now + 1000;
+    const auto saved = dingosdk::saved_texture_quality();
+    if (!saved.generation) return;
+    if (saved.generation != handled || level_state != handled_state) {
+        // A new Texture Filtering leaves the composited skater and board textures as they were too.
+        static std::optional<std::string> filtering;
+        if (filtering && *filtering != saved.filtering) dingosdk::texture_refresh::request();
+        filtering = saved.filtering;
+        handled = saved.generation;
+        handled_state = level_state;
+        attempts = 0;
+    }
+    const auto* values = dingosdk::texture_tier::settings_for(saved.tier);
+    if (!values || attempts >= 4) return;
+    try {
+        bool pending = false, changed = false;
+        std::string report;
+        for (const auto& [name, value] : *values) {
+            const auto result = dingosdk::change_named_setting(name, value, false);
+            pending = pending || result.starts_with("error: ");
+            changed = changed || (!result.starts_with("error: ") && !result.ends_with("(unchanged)"));
+            report += (report.empty() ? "" : " | ") + result;
+        }
+        if (pending) return; // the settings registry is not ready; try again next second
+        if (changed) {
+            ++attempts;
+            next_check = now + 3000;
+            // Textures composited before the change keep its old quality (texture_refresh.h).
+            dingosdk::texture_refresh::request();
+        } else attempts = 4;
+        if (report != last_report) {
+            last_report = report;
+            dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+                "Texture quality {} (saved choice): {}", static_cast<int>(saved.tier), report);
+        }
+    } catch (...) {}
+}
 void apply_throwdown_modes() {
     // The throwdowner flow picks between the mode-select page and straight Jam
     // placement by reading these by name (GetBoolSetting). Retail receives them
@@ -285,6 +341,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     apply_performance_settings();
     dingosdk::job_spin::apply_default();
     apply_mesh_streaming_pool();
+    apply_texture_quality(state);
     dingosdk::multiplayer::apply_throwdown_strings(r.base);
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {
@@ -789,6 +846,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     dingosdk::hall_of_meat::on_client_tick();
+    dingosdk::texture_refresh::on_client_tick(r.base, client);
     dingosdk::road_rash::on_client_tick(client);
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;

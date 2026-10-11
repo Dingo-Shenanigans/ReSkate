@@ -1,5 +1,6 @@
 #include "Extension/Console/commands.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Rendering/texture_refresh.h"
 namespace dingosdk::console {
 void register_graphics_commands(Commands &registry) {
     constexpr const char *names[]{"filmgrain", "vignette", "chromaticaberration"};
@@ -38,5 +39,12 @@ void register_graphics_commands(Commands &registry) {
                                                     : "error: Could not restore graphics.");
     };
     registry.add(std::move(reset));
+    auto refresh = action("textures refresh", "Composite your skater's tattoos and board's deck, grip and stickers "
+                          "again at the current texture quality, once no menu is up", Group::graphics);
+    refresh.run = [](const Model &, const Values &, const Output &out) {
+        texture_refresh::request();
+        out("Queued; the result is in the log.");
+    };
+    registry.add(std::move(refresh));
 }
 } // namespace dingosdk::console
