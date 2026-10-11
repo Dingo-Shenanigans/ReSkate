@@ -149,6 +149,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/gameplay_settings_model.cpp
     Extension/Skater/skater_slot_override.cpp
     Extension/Rendering/graphics_labels.cpp
+    Extension/Rendering/saved_texture_quality.cpp
+    Launcher/game_settings.cpp
     Extension/Profile/local_profile_runtime.cpp
     Extension/Profile/local_profile_world.cpp
     Extension/Profile/local_profile_preferences.cpp
