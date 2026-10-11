@@ -3,6 +3,8 @@
 #include "trainer_jump.h"
 #include "trainer_presets.h"
 #include "trainer_session.h"
+#include "trainer_landing.h"
+#include "trainer_waypoint.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -146,6 +148,14 @@ struct State {
     bool wipeouts_known{}; // the wipeout count the session started with was read
     int open_tab{};
     std::uint32_t pad_previous{};
+    // The pause map's waypoint. The registry is read only while the player has a use for the
+    // answer (the TELEPORT card is on screen, or `trainer waypoint`), and the waypoint is
+    // forgotten on a new level: it belonged to the old one.
+    std::optional<Vec3> waypoint;
+    std::string waypoint_detail, waypoint_level;
+    std::uint64_t waypoint_wanted_until{}, waypoint_next_read{};
+    // A ground-snapped arrival being watched (trainer_landing.h).
+    landing::Watch landing;
     Motion motion;
     Telemetry telemetry;
     std::ofstream log;
@@ -930,6 +940,7 @@ void enter_map(const std::string &level) {
     s.motion = {};
     s.telemetry.last = {};
     s.telemetry.best = {};
+    s.landing = {};
     s.telemetry.top_speed = 0;
     s.return_at = 0;
     s.profile_due = false;
@@ -961,6 +972,73 @@ std::string go_to(const Vec3 &position, const std::string &what) {
     if (!teleport_local_skater(position)) return "error: teleporting is unavailable right now.";
     state().motion.valid = false;
     return "Teleporting to " + what + ".";
+}
+
+// ---- ground-safe arrivals -------------------------------------------------------------
+// The topmost collision surface at x, z (trainer_landing.h for the ray), from the client
+// physics world. Empty while collision there is still streaming in.
+std::optional<float> topmost_ground(float x, float z, float hint_y) {
+    const auto first = landing::first_ray(hint_y);
+    if (const auto hit = local_ground_height(x, z, first.top, first.bottom)) return hit;
+    if (const auto retry = landing::retry_ray(first)) return local_ground_height(x, z, retry->top, retry->bottom);
+    return std::nullopt;
+}
+
+// Teleports onto the surface at x, z rather than to a raw height: a map waypoint's height is
+// not the ground, and arriving under it drops the skater through the map.
+std::string land_at(float x, float z, float hint_y, const std::string &what) {
+    auto &s = state();
+    const auto ground = topmost_ground(x, z, hint_y);
+    // Collision far away may not be loaded yet: go to the hint's height, and the landing
+    // watch puts the skater on the surface once it streams in.
+    const Vec3 to{x, ground ? *ground + landing::stand_height : hint_y + 2.0f, z};
+    const auto answer = go_to(to, what);
+    if (answer.starts_with("error")) return answer;
+    s.landing = landing::start(x, z, to[1], GetTickCount64());
+    say(logging::Level::info, ground ? std::format("Trainer: landing on the surface at {:.1f}, {:.1f}, {:.1f}.", to[0], to[1], to[2])
+                                     : std::format("Trainer: no collision at {:.1f}, {:.1f} yet; going to height {:.1f} and waiting for the ground.", x, z, to[1]));
+    const auto stem = answer.substr(0, answer.size() - 1);
+    return ground ? stem + std::format(" (ground at {:.1f}).", *ground)
+                  : stem + " (the ground there is still loading; you'll be put on it when it arrives).";
+}
+
+void update_landing(std::uint64_t now) {
+    auto &s = state();
+    auto &w = s.landing;
+    if (!w.active || now < w.next || !s.telemetry.skater) return;
+    const auto &p = s.telemetry.position;
+    landing::Sample sample{.now = now, .position = p, .vertical = s.telemetry.vertical, .ground = std::nullopt, .may_resend = true};
+    const float dx = p[0] - w.x, dz = p[2] - w.z;
+    if (dx * dx + dz * dz <= landing::arrived_radius * landing::arrived_radius) sample.ground = topmost_ground(p[0], p[2], p[1]);
+    switch (landing::step(w, sample)) {
+    case landing::Step::resend: {
+        const auto ground = topmost_ground(w.x, w.z, w.y);
+        (void)go_to({w.x, ground ? *ground + landing::stand_height : w.y, w.z}, "the same spot");
+        say(logging::Level::info, "Trainer: the teleport hadn't arrived; sent it again.");
+        break;
+    }
+    case landing::Step::put_back:
+        (void)go_to({p[0], *sample.ground + landing::stand_height, p[2]}, "the surface");
+        say(logging::Level::info, std::format("Trainer: sank to {:.1f} under the surface at {:.1f}; put back on it.", p[1], *sample.ground));
+        break;
+    case landing::Step::landed:
+        say(logging::Level::info, std::format("Trainer: landed at {:.1f}, {:.1f}, {:.1f}.", p[0], p[1], p[2]));
+        break;
+    case landing::Step::ended:
+        say(logging::Level::info, std::format("Trainer: landing watch ended at {:.1f}, {:.1f}, {:.1f} after {} correction(s).", p[0], p[1], p[2], w.fixes));
+        break;
+    case landing::Step::wait: break;
+    }
+}
+
+void refresh_waypoint() {
+    auto &s = state();
+    const auto read = read_map_waypoint(s.base);
+    s.waypoint_detail = read.detail;
+    if (const auto next = landing::remembered(s.waypoint, read.reading); next != s.waypoint) {
+        s.waypoint = next;
+        s.view_due = true;
+    }
 }
 
 // ---- telemetry -------------------------------------------------------------------------
@@ -1367,6 +1445,8 @@ void build_view() {
     next->map_note = s.map_file.note;
     next->map_preset = s.map_file.preset.empty() ? std::string{} : s.map_file.preset_name.empty() ? "Map preset" : s.map_file.preset_name;
     next->spots = s.map_file.spots;
+    next->waypoint_set = s.waypoint.has_value();
+    if (s.waypoint) next->waypoint = *s.waypoint;
     next->open_serial = s.open_serial;
     next->open_tab = s.open_tab;
     if (const auto found = s.maps.find(s.map); found != s.maps.end()) {
@@ -1399,9 +1479,20 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         sync_session();
         s.boosts = boosts_in_force();
         if (const auto key = lower(playing ? level : std::string{}); key != s.map) enter_map(key);
+        if (const auto key = lower(level); !key.empty() && key != s.waypoint_level) {
+            s.waypoint_level = key;
+            s.waypoint.reset();
+            s.view_due = true;
+        }
+        if (take_teleport_card_shown()) s.waypoint_wanted_until = now + 1000;
+        if (now < s.waypoint_wanted_until && now >= s.waypoint_next_read) {
+            s.waypoint_next_read = now + 250;
+            refresh_waypoint();
+        }
         if (playing) {
             observe(base, client, now);
             shortcuts();
+            update_landing(now);
             if (s.return_at && now >= s.return_at) {
                 s.return_at = 0;
                 const auto &marker = current_map().markers[static_cast<std::size_t>(s.slot)];
@@ -1603,6 +1694,19 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         }
         return "error: usage: trainer marker save|go|clear [slot]";
     }
+    if (v == "ground") {
+        const auto x = number(arg(0)), z = number(arg(1));
+        if (!x || !z) return "error: usage: trainer ground <x> <z>  (teleport to the topmost surface there)";
+        return land_at(static_cast<float>(*x), static_cast<float>(*z), s.telemetry.position[1], "the ground there");
+    }
+    if (v == "waypoint") {
+        refresh_waypoint();
+        if (lower(arg(0)) == "info")
+            return "Map waypoint: " + (s.waypoint ? std::format("{:.1f}, {:.1f}, {:.1f}", (*s.waypoint)[0], (*s.waypoint)[1], (*s.waypoint)[2]) : std::string("none")) +
+                   " (" + s.waypoint_detail + ").";
+        if (!s.waypoint) return "error: no waypoint on the map. Open the pause map and place one first.";
+        return land_at((*s.waypoint)[0], (*s.waypoint)[2], (*s.waypoint)[1], "your map waypoint");
+    }
     if (v == "tp") {
         const auto x = number(arg(0)), y = number(arg(1)), z = number(arg(2));
         if (!x || !y || !z) return "error: usage: trainer tp <x> <y> <z>";
@@ -1716,7 +1820,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         s.test.until = GetTickCount64() + 500;
         return "Self test started; see the log for \"trainer selftest:\" lines.";
     }
-    return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|spot|option|profile|jumps|where|states|dump|selftest";
+    return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where|states|dump|selftest";
 }
 } // namespace
 

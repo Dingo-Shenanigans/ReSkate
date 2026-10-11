@@ -6,6 +6,7 @@
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Music/local_music_ui.h"
 #include "Extension/Music/local_music_shelf.h"
+#include "Extension/Customization/item_browser.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/News/local_news_runtime.h"
 #include "Extension/Objects/local_buildkit_labels.h"
@@ -328,6 +329,7 @@ void update_local_customization() noexcept {
     catch (...) { dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_object_categories_failed\",\"operation\":\"update\"}"); }
     update_music_catalog();
     update_music_shelf();
+    item_browser::update(s.base);
     try {
         if (cosmetic_runtime().update_thread == GetCurrentThreadId() && !cosmetic_runtime().items.empty())
             update_player_card();
@@ -342,6 +344,7 @@ void local_profile_before_level_transition(unsigned next) noexcept {
     if (!s.active.load(std::memory_order_acquire)) return;
     std::lock_guard lock(s.native_mutex);
     music_shelf_before_level_transition(next);
+    item_browser::before_level_transition(next, s.base);
     news_runtime().pending.before_transition(next);
     object_runtime().pending.before_transition(next);
     auto& placements = placements_runtime();
@@ -529,6 +532,9 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         hook(object_subscribe_contract, &object_categories_hook, object_runtime().functions.subscribe);
         if (music_ready) {
             hook(music_ui_initialize_contract, &music_ui_initialize_hook, music_ui_runtime().functions.initialize);
+            if (music_ui_runtime().functions.favorite_apply)
+                hook(addr::local_music::favorite_change_contract, &music_favorite_change_hook,
+                    music_ui_runtime().functions.favorite_change);
             std::array<unsigned char, 32> construct_bytes{};
             if (read(base + music_model_construct_contract.rva, construct_bytes) &&
                 construct_bytes == music_model_construct_contract.bytes)

@@ -1,5 +1,6 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Boot/exit_watch.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
 #include "playstation_input.h"
@@ -120,6 +121,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     if (window != s.window.load())
         return previous ? CallWindowProcW(previous, window, message, wp, lp)
                         : DefWindowProcW(window, message, wp, lp);
+    // The player closing the game: it is ended if it does not finish by itself.
+    dingosdk::exit_watch::note_window_message(window, message, wp);
     struct ReleaseOnOpen {
         HWND window; WNDPROC previous; bool was_visible;
         ~ReleaseOnOpen() {
@@ -147,6 +150,42 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         const bool release = message == WM_KEYUP || message == WM_SYSKEYUP;
         if (console_character(message) && s.console_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.chat_character_pending.exchange(false)) return 0;
+        if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;
+        // The skater item grids (item_browser_overlay.cpp): while one has the focus and nothing of ours
+        // is open, F favorites the highlighted item, X steps the filter and "-" (or Ctrl+F) opens the
+        // search box, which then takes the keys until Enter or Esc. (The game uses Q, E, T and G here:
+        // G opens its feedback card.)
+        if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
+            if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
+                if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
+                    s.item_search_escape_pending.store(true);
+                    s.item_search_visible.store(false);
+                    item_browser_search_cleared();
+                    sync_menu_cursor();
+                    window_cursor_input(window, message, wp);
+                    std::lock_guard lock(s.input_mutex);
+                    s.input.clear();
+                } else if (release) s.item_search_escape_pending.store(false);
+                return 0;
+            }
+        } else if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0 && !interactive_visible(s) &&
+                   !(GetKeyState(VK_MENU) & 0x8000) && item_browser_open()) {
+            const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool minus = wp == VK_SUBTRACT || (MapVirtualKeyW(static_cast<UINT>(wp), MAPVK_VK_TO_CHAR) == L'-' &&
+                                                     !(GetKeyState(VK_SHIFT) & 0x8000));
+            if ((minus && !control) || (wp == 'F' && control)) {
+                s.item_search_character_pending.store(true);
+                s.item_search_visible.store(true);
+                s.item_search_focus_requested.store(true);
+                sync_menu_cursor();
+                window_cursor_input(window, message, wp);
+                std::lock_guard lock(s.input_mutex);
+                s.input.clear();
+                return 0;
+            }
+            if (!control && wp == 'F') item_browser_key(ItemBrowserKey::favorite);
+            if (!control && wp == 'X') item_browser_key(ItemBrowserKey::filter);
+        }
         // T opens the chat, the key the game itself reserves for it
         // (Processor_Keyboard_Gameplay_Chat), while in a session and nothing
         // else of ours is open. Its character is swallowed like the console's.
@@ -225,7 +264,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         if (message == WM_NCDESTROY) s.selected_window_destroyed.store(true);
         if (message == WM_KILLFOCUS || message == WM_SETFOCUS || message == WM_NCDESTROY) sync_menu_cursor();
         // ImGui's Win32 backend ignores raw input, so WM_INPUT is not queued.
-        if ((interactive_visible(s) || message == WM_KILLFOCUS || message == WM_SETFOCUS) && message != WM_INPUT) {
+        // (The pause menu's server browser scrolls with the wheel, which only arrives this way.)
+        if ((interactive_visible(s) || message == WM_KILLFOCUS || message == WM_SETFOCUS ||
+             (message == WM_MOUSEWHEEL && s.hub_pointer.load())) && message != WM_INPUT) {
             std::lock_guard lock(s.input_mutex);
             if (message == WM_MOUSEMOVE && !s.input.empty() && s.input.back().message == WM_MOUSEMOVE &&
                 s.input.back().window == window) {
@@ -241,7 +282,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             }
         }
         const bool capture = owns_pointer();
-        if (capture && is_input(message)) {
+        const bool freecam_capture = s.freecam_controller_active.load(std::memory_order_relaxed) ||
+                                     s.prompt_input_active.load(std::memory_order_relaxed);
+        if (freecam_capture) release_game_buttons(window, previous);
+        if ((capture || freecam_capture) && is_input(message)) {
             // Foreground raw-input packets still need DefWindowProc cleanup.
             return message == WM_INPUT ? DefWindowProcW(window, message, wp, lp) : 0;
         }
@@ -308,6 +352,7 @@ DWORD WINAPI probe_xinput_slots(void* parameter) noexcept {
     const auto get_state = xinput_get_state();
     for (;;) {
         WaitForSingleObject(slots.wake.load(), INFINITE);
+        keep_xinput_capture_first();
         OverlayInputAccess access;
         for (DWORD slot = 0; get_state && slot < XUSER_MAX_COUNT; ++slot) {
             const unsigned bit = 1u << slot;
@@ -390,9 +435,66 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
     const auto sample = read_controller_sample();
     if (!sample.device) return {};
     const auto& pad = sample.pad;
-    return dingosdk::controller_flight_input(pad.sThumbLX, pad.sThumbLY, pad.bLeftTrigger, pad.bRightTrigger,
+    auto input = dingosdk::controller_flight_input(pad.sThumbLX, pad.sThumbLY, pad.bLeftTrigger, pad.bRightTrigger,
         (pad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0);
+    const float rx = static_cast<float>(pad.sThumbRX), ry = static_cast<float>(pad.sThumbRY);
+    const float magnitude = std::sqrt(rx * rx + ry * ry);
+    constexpr float deadzone = 8689.0f;
+    if (magnitude > deadzone) {
+        const float scale = std::clamp((magnitude - deadzone) / (32767.0f - deadzone), 0.0f, 1.0f) / magnitude;
+        input.look_x = rx * scale * 25.0f;
+        input.look_y = ry * scale * -25.0f;
+    }
+    return input;
 }
+}
+
+extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active) {
+    const bool previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
+    if (previous != active)
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::input,
+            "Freecam controller input capture %s.", active ? "enabled" : "disabled");
+}
+
+extern "C" void DingoSDKOverlaySetPromptInputCapture(bool active) {
+    const bool before = state().prompt_input_active.exchange(active, std::memory_order_relaxed);
+    if (before == active) return;
+    // For the log: which of the ways input can be kept from the game the game actually read
+    // its controller by while it was held. All zero means it reads some other way, and the
+    // hold did not reach it.
+    if (active) {
+        keep_xinput_capture_first();
+        (void)take_prompt_reads();
+        dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::input, "Card input hold on.");
+    } else {
+        const auto reads = take_prompt_reads();
+        // And which controller libraries the game has loaded at all.
+        std::string loaded;
+        for (const auto* name : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll", L"gameinput.dll", L"gameinputredist.dll",
+                                 L"windows.gaming.input.dll", L"steamclient64.dll", L"dinput8.dll"})
+            if (GetModuleHandleW(name)) {
+                if (!loaded.empty()) loaded += ", ";
+                for (const wchar_t* at = name; *at; ++at) loaded += static_cast<char>(*at);
+            }
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::input,
+            "Card input hold off. While held the game read: XInput %u, DirectInput %u, raw input %u time(s). Controller libraries loaded: %s. XInput leads to: %s.",
+            reads.xinput, reads.direct_input, reads.raw, loaded.empty() ? "none" : loaded.c_str(), xinput_entry_owners().c_str());
+    }
+}
+
+extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
+    struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
+    const auto& s = state();
+    const HWND window = s.window.load();
+    // (Not while a menu, the console or chat has the keyboard; the card itself having the pointer is no reason.)
+    const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load();
+    if (!window || s.stop.load() || s.failed.load() || typing || !game_window_foreground(window)) return 0;
+    OverlayInputAccess access;
+    unsigned keys{};
+    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE};
+    for (unsigned bit = 0; bit < 4; ++bit)
+        if (GetAsyncKeyState(wanted[bit]) & 0x8000) keys |= 1u << bit;
+    return keys;
 }
 
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* output, bool allow_menu) {
@@ -403,6 +505,15 @@ extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* ou
     const HWND window = s.window.load();
     if (!window || s.stop.load() || s.failed.load() || (!allow_menu && interactive_visible(s)) ||
         !game_window_foreground(window)) return;
+    // Read through the overlay's bypass: freecam capture hides keys from the game.
+    {
+        OverlayInputAccess access;
+        for (unsigned key = 0; key < 256; ++key) {
+            if (dingosdk::bindable_keyboard_key(key) && (GetAsyncKeyState(key) & 0x8000)) {
+                output->keys[key / 64] |= std::uint64_t{1} << (key % 64);
+            }
+        }
+    }
     const auto sample = read_controller_sample();
     output->style = sample.style;
     if (!sample.device) return;
@@ -455,6 +566,8 @@ extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* o
         output->forward = std::clamp(output->forward + controller.forward, -1.0f, 1.0f);
         output->up = std::clamp(output->up + controller.up, -1.0f, 1.0f);
         output->boost = output->boost || controller.boost;
+        output->look_x = controller.look_x;
+        output->look_y = controller.look_y;
         looking = false;
         return; // Native camera owns look input; do not sample or recenter the cursor.
     }

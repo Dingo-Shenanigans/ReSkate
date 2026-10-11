@@ -15,6 +15,7 @@
 #include "Extension/Objects/network_object_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Remote/native_audio.h"
+#include "Extension/Multiplayer/Remote/native_vfx.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Skater/physics_tuning.h"
@@ -74,6 +75,8 @@ void stop(Session &s, std::string reason) {
     s.tps = multiplayer_default_tps;
     s.object_placement = ObjectPlacement::everyone;
     s.object_limit = 0;
+    s.object_scaling = true;
+    s.sync_effects = true;
     set_lobby_object_limit(0);
     s.server_admin = false;
     s.server_bans.clear();
@@ -99,6 +102,8 @@ void stop(Session &s, std::string reason) {
     set_session_tuning_enforced(false);
     set_host_physics_extras({});
     s.server_votes = 0;
+    s.server_polls = 0;
+    s.server_custom_votes.clear();
     set_session_tools_allowed(true, true, true);
     s.object_clears.reset();
     s.clear_pending = false;
@@ -129,11 +134,15 @@ void stop(Session &s, std::string reason) {
     s.used_slots = 0;
     s.object_owners_valid = false;
     reset_audio();
+    reset_effects();
     s.public_host = s.started_map = s.roster_dirty = false;
     s.awaiting_map = s.join_map_authorized = s.map_load_submitted = false;
     s.join_started = s.last_map_request = s.last_map_load_check = 0;
     s.join_destination.clear();
     s.map_label.clear();
+    s.map_package.clear();
+    s.fetching_since = 0;
+    fetching_map_flag.store(false, std::memory_order_relaxed);
     s.world = 1;
     s.travelling = false;
     s.host_world_ready = true;
@@ -155,6 +164,15 @@ void stop(Session &s, std::string reason) {
     s.next_send = s.last_hello = s.last_roster = s.last_cosmetic_capture = s.last_routes =
         s.last_network_log = 0;
     s.sequence = s.roster_sequence = 0;
+    s.server_chat_badge = default_server_chat_badge;
+    s.server_chat_text = default_server_chat_text;
+    s.vote = {};
+    s.vote_ends = 0;
+    s.vote_mine = 0;
+    s.announcement = {};
+    s.announcement_ends = 0;
+    server_vote_open_flag.store(false, std::memory_order_relaxed);
+    server_poll_answers_flag.store(0, std::memory_order_relaxed);
     s.pose_streams.clear();
     s.pose_ack = {};
     s.pose_ack_due = false;
@@ -193,9 +211,11 @@ void clear_world(Session &s, std::uint64_t now) {
         peer.password_challenge = challenge;
         peer.world_ready = false;
         peer.travel_since = admitted ? now : 0;
+        peer.fetching_since = 0;
         peer.last_packet = now;
     }
     reset_audio();
+    reset_effects();
     s.started_map = false;
     s.context = s.parent = 0;
     s.sent_appearance.reset();
@@ -480,11 +500,27 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             native_pass = true;
         }
         update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status);
+        // The effects their costume and board items come with follow the outfit.
+        if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;
         p.applied_cosmetics = p.cosmetic_revision;
     };
-    // The player's sound for this frame, every frame they are shown.
+    // The player's sound for this frame, every frame they are shown, and the effects of their
+    // skater's contacts that are due.
     const auto present_audio = [&](Peer &p) {
+        tick_remote_effects(now);
+        if (!s.sync_effects) p.impacts.clear();
+        while (!p.impacts.empty() && p.impacts.front().first <= now) {
+            const auto &impact = p.impacts.front().second;
+            float distance{};
+            for (unsigned i = 0; i < 3; ++i) {
+                const auto d = impact.position[i] - p.render_pose.root.position[i];
+                distance += d * d;
+            }
+            // Only where their skater is: a contact far from it is not theirs to place.
+            if (distance <= 30.f * 30.f) play_impact(impact);
+            p.impacts.pop_front();
+        }
         if (const auto audio = p.audio.sample(now)) {
             // Preserve discrete audio changes immediately, but let
             // unchanged continuous inputs and spatial transforms
@@ -612,7 +648,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 p.native_status = !p.shown_wanted ? "Further away than players are shown."
                                   : sampled       ? "Waiting for the player's cosmetic recipe."
                                                   : "Waiting for player poses.";
-                // No skater for them, but still their name or dot where they are.
+                // No skater for them, but still their name or dot where they are, and where the
+                // Social menu's teleport and spectate find them.
+                if (!p.shown_wanted && sampled) update_party_position(&p.render_pose);
                 if (!p.shown_wanted && sampled && labels) label(p);
             }
         }
@@ -656,6 +694,9 @@ MultiplayerModel model() {
     return s.view;
 }
 std::string take_leave_notice() { return std::exchange(session().leave_notice, {}); }
+std::optional<MapNeed> take_map_need() { return std::exchange(session().map_need, std::nullopt); }
+void set_map_package_lookup(MapPackageLookup lookup) noexcept { map_package_lookup.store(lookup, std::memory_order_relaxed); }
+bool fetching_map() noexcept { return fetching_map_flag.load(std::memory_order_relaxed); }
 MultiplayerChat chat() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
@@ -724,7 +765,8 @@ bool observe_local_world(Session &s, const NativeFrame &local, std::string_view 
 bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoader loader, std::uint64_t now) {
     if (!s.awaiting_map)
         return true;
-    if (now - s.join_started > 180000000) {
+    // (While the map is being fetched the clock is held: see below.)
+    if (!s.fetching_since && now - s.join_started > 180000000) {
         stop(s, "Joining timed out while waiting for the host's map to load.");
         return false;
     }
@@ -736,6 +778,8 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
             return false;
         }
         s.awaiting_map = false;
+        s.fetching_since = 0;
+        fetching_map_flag.store(false, std::memory_order_relaxed);
         s.last_hello = 0;
         s.status = s.travelling ? "Your map is ready. Waiting for the host..." : "Host map ready. Joining the session...";
         return true;
@@ -751,8 +795,31 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
         if (result == MapLoadResult::missing) {
             const auto name = s.map_label.empty() ? world_level_name(world_destination_asset(s.join_destination)) : s.map_label;
             const char *who = dedicated_host(s) ? "server" : "host";
-            s.leave_notice = (s.travelling ? std::string("The ") + who + " moved to " : std::string("The ") + who + " is on ") +
-                             name + ", which is not installed on this PC. Install its map mod and join again.";
+            const auto where = (s.travelling ? std::string("The ") + who + " moved to " : std::string("The ") + who + " is on ") + name;
+            // A map the host named the package of can be downloaded (take_map_need). The
+            // session waits for it: the host is told the map is being fetched and gives that
+            // far longer than a load, and the map is tried again here until it is installed,
+            // when it loads like any other. The wait has an end of its own.
+            if (!s.map_package.empty()) {
+                if (!s.fetching_since) {
+                    s.fetching_since = now;
+                    fetching_map_flag.store(true, std::memory_order_relaxed);
+                    s.map_need = MapNeed{s.map_package, name, dedicated_host(s), s.travelling};
+                    s.rejoin = Session::Rejoin{{s.host_id, s.secret}, s.password};
+                    s.last_map_request = s.last_world_ready = 0;   // say so at once
+                }
+                if (now - s.fetching_since > map_fetch_limit_us) {
+                    s.leave_notice = where + ", which did not finish downloading in time. Install its map mod and join again.";
+                    stop(s, s.leave_notice);
+                    return false;
+                }
+                // The time a load gets starts when the map is here.
+                s.join_started = now;
+                if (s.travelling) s.travel_started = now;
+                s.status = "Waiting for " + name + " to download...";
+                return false;
+            }
+            s.leave_notice = where + ", which is not installed on this PC. Install its map mod and join again.";
             stop(s, s.leave_notice);
             return false;
         }
@@ -865,6 +932,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             if (!install_entity_hooks(base, entity_detail) && !entity_detail.empty())
                 logging::log(logging::Level::warning, logging::Channel::runtime, "Multiplayer: {}", entity_detail);
             prepare_remote_audio(base);
+            prepare_effects(base);
             logging::log(logging::Level::info, logging::Channel::runtime,
                          "Multiplayer: remote-player hooks installed in {} ms (once, before anyone joins).",
                          (now_us() - started) / 1000);

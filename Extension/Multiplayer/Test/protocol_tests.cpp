@@ -3,6 +3,7 @@
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
 #include "Extension/Throwdowns/throwdown_wire.h"
+#include "Engine/Game/World/park_randomization.h"
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -46,6 +47,23 @@ void tick_rates_codec() {
             check(decoded && decoded->tps == rate, "Roster lost host TPS");
         }
     }
+}
+void random_parks_codec() {
+    std::mt19937 generator{9147};
+    auto p = frame(1, 0);
+    p.kind = PacketKind::roster;
+    p.members = {{76561198000000001ULL, p.epoch, "Host"}};
+    for (unsigned roll = 0; roll < 1000; ++roll) {
+        p.parks = dingosdk::random_park_choices(generator);
+        const auto decoded = decode_wire(encode_wire(p));
+        check(decoded && decoded->parks == p.parks, "A random park selection changed in the host roster");
+    }
+    // This variant exists at Historic, but not Construction: lot-specific
+    // validation must also hold when sharing randomized layouts.
+    p.parks[0] = "flumppark_10";
+    bool rejected{};
+    try { (void)encode(p); } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected, "A park layout for another lot was shared");
 }
 void compressed_codec() {
     auto p = frame(1, 125);
@@ -559,6 +577,72 @@ void object_codec() {
     check(decode(encode(roster))->members.size() == 32, "A 32-player roster failed to round-trip");
     roster.members.push_back({76561198000000033ULL, 50, "Extra"});
     check(reject(roster), "A 33rd roster member was accepted");
+    // A dedicated server lists its reserved players and admins past its limit, and the vote it runs.
+    Packet served = roster;
+    served.members.insert(served.members.begin(), Member{0x0130000100000001ULL, 7, "Server"});
+    check(dingosdk::multiplayer::game_server_steam_id(served.members[0].id), "The test's server ID is not a game server's");
+    served.vote = {7, server_vote_kick, vote_running, 3, 1, 5, 21, 76561198000000002ULL, 76561198000000003ULL, "kick Skater"};
+    const auto listed = decode(encode(served));
+    check(listed && listed->members.size() == 34 && listed->capacity == 32, "A server's roster past its limit failed to round-trip");
+    check(listed && listed->vote == served.vote, "A server's vote failed to round-trip");
+    served.sync_effects = false;
+    const auto plain = decode(encode(served));
+    check(plain && !plain->sync_effects && listed && listed->sync_effects, "The roster's skater effects rule failed to round-trip");
+    served.object_scaling = false;
+    const auto fixed = decode(encode(served));
+    check(fixed && !fixed->object_scaling && listed && listed->object_scaling, "The roster's object scaling rule failed to round-trip");
+    served.vote = {};
+    const auto quiet = decode(encode(served));
+    check(quiet && quiet->vote == ServerVote{}, "A roster without a vote did not come back without one");
+    served.vote.id = 1;
+    served.vote.label.assign(max_vote_label + 1, 'a');
+    check(reject(served), "An overlong vote label was encoded");
+    // A poll on the card: its question and answers, a count for each, and no yes or no.
+    served.vote = {8, server_vote_poll, vote_running, 0, 0, 0, 40, 76561198000000002ULL, 0, "Next map?",
+                   {"Grom", "San Vansterdam", "Stadium"}, {3, 1, 0}};
+    const auto polled = decode(encode(served));
+    check(polled && polled->vote == served.vote, "A server's poll failed to round-trip");
+    auto bad_poll = served;
+    bad_poll.vote.counts.pop_back();
+    check(reject(bad_poll), "A poll with a count missing was encoded");
+    bad_poll = served;
+    bad_poll.vote.answers = {"Only one"};
+    bad_poll.vote.counts = {1};
+    check(reject(bad_poll), "A poll with one answer was encoded");
+    bad_poll = served;
+    bad_poll.vote.answers[1].assign(max_vote_answer + 1, 'b');
+    check(reject(bad_poll), "An overlong poll answer was encoded");
+    bad_poll = served;
+    bad_poll.vote.answers.resize(max_vote_answers + 1, "x");
+    bad_poll.vote.counts.resize(max_vote_answers + 1);
+    check(reject(bad_poll), "A poll with seven answers was encoded");
+    bad_poll = served;
+    bad_poll.vote.kind = server_vote_map;
+    check(reject(bad_poll), "A yes/no vote with answers was encoded");
+    // Who may start polls, the owner's own votes, and an announcement ride on the roster too.
+    served.vote = {};
+    served.server_polls = static_cast<std::uint8_t>(ServerPolls::everyone);
+    served.server_custom_votes = {{"restart", "Reload the current map", {}}, {"noclip", "", {"on", "off"}}};
+    served.announcement = {4, 12, "Tournament starts in 10 minutes!"};
+    const auto extras = decode(encode(served));
+    check(extras && extras->server_polls == served.server_polls && extras->server_custom_votes == served.server_custom_votes &&
+              extras->announcement == served.announcement,
+          "Polls, custom votes or the announcement failed to round-trip");
+    auto bad_extras = served;
+    bad_extras.server_custom_votes[0].name = "Restart now";
+    check(reject(bad_extras), "A custom vote name with capitals and a space was encoded");
+    bad_extras = served;
+    bad_extras.server_custom_votes.resize(server_custom_vote_limit + 1, served.server_custom_votes[0]);
+    check(reject(bad_extras), "Too many custom votes were encoded");
+    bad_extras = served;
+    bad_extras.server_polls = 3;
+    check(reject(bad_extras), "An unknown poll setting was encoded");
+    bad_extras = served;
+    bad_extras.announcement.text = "two\nlines";
+    check(reject(bad_extras), "An announcement that is not one chat line was encoded");
+    const auto announced = encode(served);
+    for (std::size_t length = announced.size() - 40; length < announced.size(); ++length)
+        check(!decode(std::span(announced).first(length)), "A truncated roster with an announcement decoded");
 }
 void chat_codec() {
     const auto reject = [](const Packet &packet) {
@@ -854,6 +938,33 @@ void dedicated_server_codec() {
     tuning.tuning.assign(max_physics_tuning + 1, 0);
     check(reject(tuning), "Oversized physics tuning encoded");
     Packet extras;
+    // Skater effects: a player's contacts with the world, a few to a packet.
+    {
+        Packet fx;
+        fx.kind = PacketKind::effects; fx.session = 9; fx.epoch = 10; fx.map = 11; fx.source = 12;
+        dingosdk::multiplayer::Impact slide;
+        slide.position = {594.5f, 199.15f, 1070.1f};
+        slide.velocity = {16.97f, -8.44f, 0.f};
+        slide.normal = {0.f, 1.f, 0.f};
+        slide.material = 49;
+        fx.impacts = {dingosdk::multiplayer::wire_impact(slide), dingosdk::multiplayer::wire_impact(slide)};
+        const auto back = decode(encode(fx));
+        check(back && back->kind == PacketKind::effects && back->impacts == fx.impacts, "Skater effects failed to round-trip");
+        fx.impacts.assign(dingosdk::multiplayer::max_impacts + 1, slide);
+        bool refused{};
+        try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "More contacts than a packet carries were encoded");
+        fx.impacts = {slide};
+        fx.impacts[0].velocity = {60.f, 0.f, 0.f};
+        refused = false;
+        try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "A contact faster than the game allows was encoded");
+        fx.impacts[0] = slide;
+        fx.impacts[0].material = 0x2000;
+        refused = false;
+        try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "A material past the game's table was encoded");
+    }
     extras.kind = PacketKind::physics_extras; extras.session = 9; extras.epoch = 10; extras.map = 11; extras.source = player;
     check(decode(encode(extras)) && decode(encode(extras))->kind == PacketKind::physics_extras && decode(encode(extras))->extras.empty(),
           "Empty physics extras (the game's own) lost");
@@ -932,6 +1043,66 @@ void dedicated_server_codec() {
     auto unnamed = changed_map;
     unnamed.map_label.assign(max_member_name + 1, 'a');
     check(reject(unnamed), "An overlong map name encoded");
+    // The Thunderstore package a map is from, beside its name.
+    check(arrived && arrived->map_package.empty(), "A map with no package arrived with one");
+    auto packaged = changed_map;
+    packaged.map_package = "Sandos-Vancouver_Plaza-2.0.0";
+    const auto with_package = decode_wire(encode_wire(packaged));
+    check(with_package && with_package->map_package == packaged.map_package && with_package->map_label == "Momentum Park",
+          "The map's package lost from a map change");
+    auto offered = packaged;
+    offered.kind = PacketKind::map_offer;
+    offered.map_package = "Sandos-Vancouver_Plaza";
+    const auto offer_arrived = decode_wire(encode_wire(offered));
+    check(offer_arrived && offer_arrived->map_package == "Sandos-Vancouver_Plaza" && offer_arrived->destination == offered.destination,
+          "The map's package lost from a map offer");
+    for (const char *bad : {"Sandos", "Sandos-", "-Plaza", "San dos-Plaza", "Sandos-Plaza-2.0", "Sandos-Plaza-2.0.0.1", "../x-y",
+                            "Sandos-Pla/za", "Sandos-Plaza-1.2.3-4", "https://thunderstore.io/x-y"}) {
+        auto wrong = packaged;
+        wrong.map_package = bad;
+        check(reject(wrong) && !valid_map_package(bad), "A map package that is not one encoded");
+    }
+    auto long_package = packaged;
+    long_package.map_package = std::string(60, 'a') + "-" + std::string(60, 'b');
+    check(reject(long_package), "An overlong map package encoded");
+    check(valid_map_package("") && valid_map_package("A_1-b_2") && valid_map_package("A-B-10.20.30"), "A map package refused");
+    {
+        // A player fetching the map says so on what they already send while they wait.
+        Packet waiting;
+        waiting.kind = PacketKind::world_ready; waiting.session = 9; waiting.epoch = 10; waiting.source = server + 1; waiting.world = 2;
+        waiting.map = changed_map.map;
+        waiting.map_fetching = true;
+        const auto heard = decode_wire(encode_wire(waiting));
+        check(heard && heard->map_fetching && !heard->world_ready, "A map fetch notice lost from a readiness message");
+        waiting.map_fetching = false;
+        const auto plain = decode_wire(encode_wire(waiting));
+        check(plain && !plain->map_fetching && !plain->world_ready, "A readiness message gained a map fetch notice");
+        waiting.world_ready = true;
+        const auto ready = decode_wire(encode_wire(waiting));
+        check(ready && ready->world_ready && !ready->map_fetching, "Readiness lost");
+        waiting.map_fetching = true;
+        check(reject(waiting), "Ready and fetching at once encoded");
+        Packet asking;
+        asking.kind = PacketKind::map_request; asking.session = 9; asking.epoch = 10; asking.source = server + 1; asking.world = 1;
+        asking.map = changed_map.map;
+        asking.map_fetching = true;
+        const auto requested = decode_wire(encode_wire(asking));
+        check(requested && requested->map_fetching, "A map fetch notice lost from a map request");
+        asking.map_fetching = false;
+        const auto quiet = decode_wire(encode_wire(asking));
+        check(quiet && !quiet->map_fetching, "A map request gained a map fetch notice");
+        auto elsewhere = changed_map;
+        elsewhere.map_fetching = true;
+        check(reject(elsewhere), "A map fetch notice on a map change encoded");
+    }
+    check(map_package_name("Sandos-Vancouver_Plaza", "2.0.0") == "Sandos-Vancouver_Plaza-2.0.0" &&
+          map_package_name("Sandos-Vancouver_Plaza", "") == "Sandos-Vancouver_Plaza" &&
+          map_package_name("Sandos-Vancouver_Plaza", "two") == "Sandos-Vancouver_Plaza" &&
+          map_package_name("My Map", "1.0.0").empty() && map_package_name("bbcity", "1.0.0").empty() &&
+          map_package_name("Realeza-CODOL_RUST_2_LONG-1.0.0", "") == "Realeza-CODOL_RUST_2_LONG-1.0.0" &&
+          map_package_name("Realeza-CODOL_RUST_2_LONG-1.0.0", "1.2.0") == "Realeza-CODOL_RUST_2_LONG-1.2.0" &&
+          map_package_name("Team-Map-latest", "1.0.0").empty() && map_package_name("Team-Map-1.0.0-x", "").empty(),
+          "A mod folder named as a package, or not");
     auto stray = maps;
     stray.map_pool = {2};
     check(reject(stray), "A map pool entry past the map list encoded");
@@ -976,6 +1147,7 @@ int main() {
     try {
         codec();
         tick_rates_codec();
+        random_parks_codec();
         compressed_codec();
         sender_timeline();
         greetings();

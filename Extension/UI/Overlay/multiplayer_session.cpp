@@ -544,6 +544,19 @@ void session_page(SkateMenu &menu, const Model &model) {
         }
         ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
         ImGui::TextUnformatted(detail.c_str());
+        // The ReSkate team's lists see who is who: the Steam ID, copied by a click.
+        if (const auto id = peer ? peer->id : mp.local_id; mp.steam_ids_shown && id) {
+            const auto text = std::to_string(id);
+            ImGui::SameLine(0, 0);
+            ImGui::TextUnformatted("  -  ");
+            ImGui::SameLine(0, 0);
+            ImGui::TextUnformatted(text.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::SetTooltip("Steam ID. Click to copy.");
+            }
+            if (ImGui::IsItemClicked()) ImGui::SetClipboardText(text.c_str());
+        }
         ImGui::PopStyleColor();
         ImGui::EndGroup();
         ImGui::PopClipRect();

@@ -69,9 +69,17 @@ struct Runtime {
     std::vector<std::filesystem::path> patch_level_manifests;
     ULONGLONG next_debug{}, flight_unavailable_since{};
     std::string flight_unavailable_issue, flight_unavailable_logged;
+    dingosdk::ControllerComboLatch freecam_controller_bind_latch;
+    dingosdk::ControllerComboLatch freecam_bind_latch;
+    dingosdk::ControllerComboLatch tp_to_freecam_bind_latch;
     dingosdk::ControllerComboLatch noclip_bind_latch;
     dingosdk::ControllerComboLatch forward_velocity_bind_latch;
     dingosdk::ControllerComboLatch up_velocity_bind_latch;
+    dingosdk::ControllerComboLatch offboard_up_velocity_bind_latch;
+    dingosdk::ControllerComboLatch vote_yes_bind_latch, vote_no_bind_latch;
+    // The number keys 1 to 6, which answer a dedicated server's poll while one is running.
+    std::array<dingosdk::ControllerComboLatch, 6> poll_answer_latches;
+    std::array<dingosdk::ControllerComboLatch, dingosdk::action_binds.size()> action_bind_latches;
     ULONGLONG next_offline{};
     bool transition_seen{}, initialized{}, catalog_logged{},
         native_tick_ready{}, native_loading_logging{}, fixed_stop_entitlement_route_ready{}, menu_load_queued{}, startup_load_queued{};

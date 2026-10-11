@@ -478,7 +478,8 @@ int run(int argc, char **argv, bool skip_update) {
     std::future<UpdateCheck> update_check;
     bool update_now{}, update_waiting{}, restart{};
     // The backend's ban list (global_bans.h): read now and every ten minutes, a minute after a
-    // failure. "global_bans": false leaves it unread and lets those players in.
+    // failure. "global_bans": false lets those players in; the answer is still read, for the
+    // chat word lists that come in it.
     std::future<BanListCheck> ban_check;
     auto next_ban_check = next_advertise;
     bool bans_unread{};
@@ -552,17 +553,23 @@ int run(int argc, char **argv, bool skip_update) {
             }
             update_now = false;
         }
-        if (config.global_bans && !ban_check.valid() && now_time >= next_ban_check)
+        // (The chat word lists come in the same answer, and hold on every server: it is read
+        // for them whether or not the bans are used.)
+        if (!ban_check.valid() && now_time >= next_ban_check)
             ban_check = std::async(std::launch::async, read_global_bans);
         if (ban_check.valid() && ban_check.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             const auto check = ban_check.get();
             next_ban_check = now_time + (check.ok ? std::chrono::minutes(10) : std::chrono::minutes(1));
             // Said when it changes, not every ten minutes.
-            if (check.ok && (check.changed || bans_unread))
+            if (config.global_bans && check.ok && (check.changed || bans_unread))
                 write_log("Global bans: " + std::to_string(check.banned) + " player(s) banned from ReSkate multiplayer cannot join.");
+            if (check.ok && check.words_changed)
+                write_log("Word lists: " + std::to_string(check.filtered_words) + " filtered and " + std::to_string(check.forbidden_words) +
+                          " not allowed at all, from the ReSkate team's lists." +
+                          (config.word_warnings ? "" : " (\"word_warnings\" is 0: a message with one is not passed on, and nobody is warned or kicked.)"));
             else if (!check.ok && !bans_unread)
-                write_log("The global ban list could not be read (" + check.problem + "). Trying again every minute; " +
-                          "until then the bans already read hold.");
+                write_log("The ReSkate team's lists (global bans and chat words) could not be read (" + check.problem +
+                          "). Trying again every minute; until then the ones already read hold.");
             bans_unread = !check.ok;
         }
         if (update_waiting && !restart && host.players() == 0) {
@@ -611,31 +618,38 @@ int run(int argc, char **argv, bool skip_update) {
     return restart ? restart_for_update : 0;
 }
 
+namespace {
+// Both entry points: run the server, and install an update and start it when run() asks.
+int serve(int argc, auto **argv) {
 #ifdef _WIN32
-int wmain(int argc, wchar_t **argv) {
+    constexpr const char *exe = "ReSkateServer.exe";
+#else
+    constexpr const char *exe = "ReSkateServer";
+#endif
     bool skip_update{};
-    int code{};
     for (;;) {
-        code = run(argc, argv, skip_update);
-        if (code != restart_for_update) break;
+        const int code = run(argc, argv, skip_update);
+        if (code != restart_for_update) return code;
         // Steam has shut down, so every server file can be replaced now.
         try {
             write_log("Installing server update " + update_version + "...");
             install_update(folder());
             write_log("Server update " + update_version + " installed; starting it.");
             console().flush(std::chrono::seconds(2));
-            if (relaunch()) {
-                code = 0;
-                break;
-            }
-            write_log("Could not start the updated server; start ReSkateServer.exe again.");
-            code = 1;
-            break;
+            if (relaunch()) return 0;
+            write_log(std::string("Could not start the updated server; start ") + exe + " again.");
+            return 1;
         } catch (const std::exception &e) {
             write_log(std::string("Server update failed (") + e.what() + "); carrying on with this version.");
             skip_update = true;
         }
     }
+}
+} // namespace
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t **argv) {
+    const int code = serve(argc, argv);
     finished = true;
     // Keep a failure on screen until the host has read it, instead of the window
     // vanishing with it. Closing the window or Ctrl+C still ends it at once.
@@ -650,28 +664,7 @@ int wmain(int argc, wchar_t **argv) {
 }
 #else
 int main(int argc, char **argv) {
-    bool skip_update{};
-    int code{};
-    for (;;) {
-        code = run(argc, argv, skip_update);
-        if (code != restart_for_update) break;
-        try {
-            write_log("Installing server update " + update_version + "...");
-            install_update(folder());
-            write_log("Server update " + update_version + " installed; starting it.");
-            console().flush(std::chrono::seconds(2));
-            if (relaunch()) {
-                code = 0;
-                break;
-            }
-            write_log("Could not start the updated server; start ReSkateServer again.");
-            code = 1;
-            break;
-        } catch (const std::exception &e) {
-            write_log(std::string("Server update failed (") + e.what() + "); carrying on with this version.");
-            skip_update = true;
-        }
-    }
+    const int code = serve(argc, argv);
     finished = true;
     console().flush(std::chrono::seconds(2));
     return code;

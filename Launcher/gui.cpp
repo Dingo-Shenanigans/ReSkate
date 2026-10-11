@@ -6,7 +6,10 @@
 #include "Engine/Core/Log/logging.h"
 
 #include <dwmapi.h>
+#include <windowsx.h>
 #include <shellapi.h>
+
+#include <imgui_internal.h>
 
 #include <backends/imgui_impl_dx12.h>
 #include <backends/imgui_impl_win32.h>
@@ -20,6 +23,24 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 namespace dingosdk::launcher_gui {
 namespace detail {
 
+namespace {
+
+// Keeps a panel or page in front, but not over its own open combo or popup, and
+// not while the focus is already inside it: focusing the window again every
+// frame would pull a controller's focus out of its child panels.
+void keep_in_front(const char* id) {
+    if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) return;
+    const ImGuiWindow* window = ImGui::FindWindowByName(id);
+    const ImGuiWindow* focused = GImGui->NavWindow;
+    if (window && focused && focused->RootWindow == window) return;
+    // The install progress covers the Mods page and holds the focus; taking it
+    // back every frame would flash the page's own default item.
+    if (focused && focused->RootWindow == ImGui::FindWindowByName("##installing")) return;
+    ImGui::SetNextWindowFocus();
+}
+
+} // namespace
+
 void panel_title(const Fonts& fonts, const char* text) {
     ImGui::PushFont(fonts.tile);
     ImGui::TextUnformatted(text);
@@ -29,8 +50,7 @@ void panel_title(const Fonts& fonts, const char* text) {
 ImVec2 begin_panel(const char* id, ImVec2 size, ImVec2 panel) {
     ImGui::SetNextWindowPos(ImVec2((size.x - panel.x) * 0.5f, (size.y - panel.y) * 0.5f));
     ImGui::SetNextWindowSize(panel);
-    // Keep panels in front, but not over their own open combo or popup.
-    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) ImGui::SetNextWindowFocus();
+    keep_in_front(id);
     ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
     return panel;
 }
@@ -38,7 +58,7 @@ ImVec2 begin_panel(const char* id, ImVec2 size, ImVec2 panel) {
 ImVec2 begin_page(const char* id, ImVec2 size) {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(size);
-    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) ImGui::SetNextWindowFocus();
+    keep_in_front(id);
     // Opaque, and darker than a tile: a page covers the window, so the main
     // screen must not show through, and its tiles need something to sit on.
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(rgba(14, 15, 18)));
@@ -50,7 +70,7 @@ ImVec2 begin_page(const char* id, ImVec2 size) {
 bool tile_hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered) {
     ImGui::SetCursorScreenPos(position);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::InvisibleButton(id, size);
+    const bool pressed = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
     hovered = enabled && ImGui::IsItemHovered();
     ImGui::EndDisabled();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -125,7 +145,7 @@ bool list_row(const char* id, float width, float height, bool ticked) {
 bool toggle(const char* id, bool* on) {
     const ImVec2 size(S(42), S(22));
     const ImVec2 start = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, size);
+    const bool pressed = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
     if (pressed) *on = !*on;
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -140,7 +160,7 @@ bool toggle(const char* id, bool* on) {
 
 bool more_button(const char* id, float size) {
     const ImVec2 start = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size), ImGuiButtonFlags_EnableNav);
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     auto* draw = ImGui::GetWindowDrawList();
@@ -176,6 +196,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
     }
     if (g_capturing_key && (message == WM_CHAR || message == WM_SYSCHAR || message == WM_KEYUP || message == WM_SYSKEYUP))
         return 0;
+    if (message == WM_MOUSEMOVE && g_pad_feed)
+        g_pad_feed->mouse_moved(ImVec2(static_cast<float>(GET_X_LPARAM(lparam)), static_cast<float>(GET_Y_LPARAM(lparam))));
     if (ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam)) return 1;
     switch (message) {
     case WM_NCHITTEST: {
@@ -294,7 +316,8 @@ void apply_style() {
     colours[ImGuiCol_ModalWindowDimBg] = rgb(rgba(4, 6, 9, 0.72f));
     colours[ImGuiCol_Separator] = rgb(color::outline);
     colours[ImGuiCol_TextSelectedBg] = rgb(rgba(1, 131, 255, 0.45f));
-    colours[ImGuiCol_NavHighlight] = ImVec4(0, 0, 0, 0);
+    // Only shown once a controller moves the focus: the outline of the item A presses.
+    colours[ImGuiCol_NavCursor] = rgb(color::blue);
 }
 
 
@@ -366,6 +389,7 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().LogFilename = nullptr;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     const auto fonts = load_fonts();
     apply_style();
     ImGui_ImplWin32_Init(window);
@@ -415,6 +439,11 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         const auto ui_storage = std::make_unique<Ui>();
         auto& ui = *ui_storage;
         ModsPanel mods_panel;
+        // The Steam Deck's right trackpad reaches the launcher as the right stick
+        // (Steam sets SteamDeck=1 for what it starts there), which wants a
+        // trackpad's feel rather than a thumbstick's.
+        PadFeed pad_feed(GetEnvironmentVariableW(L"SteamDeck", nullptr, 0) > 0);
+        g_pad_feed = &pad_feed;
         bool running = true;
         HANDLE game{};
         DWORD game_id{};
@@ -463,8 +492,17 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
             if (hidden || IsIconic(window)) { Sleep(hidden ? 100 : 50); continue; }
             ImGui_ImplDX12_NewFrame();
             ImGui_ImplWin32_NewFrame();
+            // A pad pressed while another window has the focus is not meant for us;
+            // it reads as let go, so nothing stays held while we are in the background.
+            const bool foreground = GetForegroundWindow() == window;
+            pad_feed.update(ImGui::GetIO(), foreground ? read_pad() : PadState{}, g_scale);
             ImGui::NewFrame();
+            pad_feed.after_new_frame();
             frame(launcher, fonts, window, ui, mods_panel);
+            // While the pad moves the focus, the mouse cursor (the Deck's trackpad in its
+            // desktop layout) hides; the next mouse move hides the focus and brings it back.
+            if (GImGui->NavCursorVisible && GImGui->NavHighlightItemUnderNav && !pad_feed.pointing())
+                ImGui::SetMouseCursor(ImGuiMouseCursor_None);
             ImGui::Render();
             renderer.render();
             if (!drew) {
@@ -472,6 +510,7 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
                 logging::write(logging::Level::info, logging::Channel::launcher, "Launcher drew its first frame.");
             }
         }
+        g_pad_feed = nullptr;
         ShowWindow(window, SW_HIDE);
         if (game) CloseHandle(game);
         launcher.cancel();

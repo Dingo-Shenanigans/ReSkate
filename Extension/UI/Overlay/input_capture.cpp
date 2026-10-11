@@ -3,6 +3,8 @@
 #include "input_capture.h"
 #include "held_input.h"
 #include "scripted_pad.h"
+#include "Engine/Game/Input/playstation_report.h"
+#include <hidsdi.h>
 #include <atomic>
 #include <format>
 #include <array>
@@ -16,11 +18,21 @@
 namespace dingosdk::overlay::detail {
 // Window messages do not cover the game's independently polled input devices.
 // Only the overlay's own Win32 backend and binding reader may bypass these gates.
-thread_local unsigned overlay_input_access = 0;
 thread_local HRAWINPUT noted_raw_input = nullptr;
+namespace {
+std::atomic<unsigned> prompt_xinput{}, prompt_direct{}, prompt_hid{}, prompt_raw{};
+// A read the game made while a card held its input: counted, by the way it read.
+void note_prompt_read(std::atomic<unsigned>& count) {
+    if (!overlay_input_access && state().prompt_input_active.load(std::memory_order_relaxed)) count.fetch_add(1, std::memory_order_relaxed);
+}
+}
+PromptReads take_prompt_reads() noexcept {
+    return {prompt_xinput.exchange(0), 0, prompt_direct.exchange(0), prompt_hid.exchange(0), prompt_raw.exchange(0)};
+}
 bool block_polled_input() {
     const auto error = GetLastError();
-    const bool capture = !overlay_input_access && owns_menu_cursor(state());
+    const bool capture = !overlay_input_access && (owns_menu_cursor(state()) || state().freecam_controller_active.load(std::memory_order_relaxed) ||
+                                                    state().prompt_input_active.load(std::memory_order_relaxed));
     SetLastError(error);
     return capture;
 }
@@ -31,9 +43,18 @@ void note_input_record(const RAWINPUT& record) noexcept;
 HeldInput& held_input() { static auto* value = new HeldInput; return *value; }
 
 struct InputCaptureHooks {
+    Hook hid_attributes, read_file, overlapped, overlapped_ex, completion, completion_ex, close_handle;
+    struct HidRead { HANDLE file; void* buffer; DWORD capacity; PlayStationPad kind; };
+    std::mutex hid_mutex;
+    std::map<HANDLE, PlayStationPad> hid_devices;
+    std::map<OVERLAPPED*, HidRead> hid_reads;
     Hook register_raw;
     Hook async_key, key, keyboard, raw_data, raw_buffer, capture, release_capture, cursor, show_cursor, physical_cursor, cursor_position;
     std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke;
+    // Hooks other programs put in front of those, hooked in turn (keep_xinput_capture_first).
+    static constexpr std::size_t front_slots = 8;
+    std::array<Hook, front_slots> xinput_front;
+    std::mutex front_mutex;
     Hook direct_create;
     std::array<Hook, 2> device_create;
     // Mouse/keyboard and A/W devices may have distinct implementations. Slots
@@ -46,6 +67,254 @@ struct InputCaptureHooks {
 };
 InputCaptureHooks& input_hooks() { static auto* hooks = new InputCaptureHooks; return *hooks; }
 
+BOOLEAN __stdcall captured_hid_attributes(HANDLE file, PHIDD_ATTRIBUTES attributes) {
+    const auto result = original<decltype(&HidD_GetAttributes)>(input_hooks().hid_attributes)(file, attributes);
+    const auto error = GetLastError();
+    if (result && attributes) {
+        const auto kind = playstation_pad(attributes->VendorID, attributes->ProductID);
+        if (kind != PlayStationPad::none) {
+            std::lock_guard lock(input_hooks().hid_mutex);
+            input_hooks().hid_devices[file] = kind;
+        }
+    }
+    SetLastError(error);
+    return result;
+}
+void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
+    if (!block_input_reads() || !read.buffer || size > read.capacity) return;
+    auto* bytes = static_cast<std::uint8_t*>(read.buffer);
+    // USB or Bluetooth decides where the buttons are in a report with id 1. It is the device's
+    // report length that tells them apart, and Windows pads every read to that length, so it
+    // is how many bytes were read: not how large a buffer the game happens to read into. A
+    // game reading a USB DualSense into a larger buffer had its d-pad byte written as "up"
+    // here, and placed a session marker whenever a menu took the input. (Nothing is asked of
+    // the game's handle for this: 2.0.4 did, as the pad was first read.)
+    const bool bluetooth = playstation_bluetooth(size);
+    if (!parse_playstation_report(read.kind, bluetooth, bytes, size)) return;
+    const bool sense_full = read.kind == PlayStationPad::dualsense &&
+        (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
+    const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
+    auto* data = bytes + offset;
+    std::fill_n(data, 4, std::uint8_t{128});
+    if (sense_full) {
+        data[4] = data[5] = 0; // triggers; retain report sequence at +6
+        data[7] = 8; data[8] = data[9] = 0;
+    } else {
+        data[4] = 8; data[5] = 0; data[6] &= 0xfc; // retain DS4 sequence bits
+        data[7] = data[8] = 0;
+    }
+    // Full Bluetooth reports have a CRC over the 0xA1 input prefix and payload.
+    // A stale checksum makes the native reader discard the neutral report.
+    if (size == 78 && (bytes[0] == 0x31 || bytes[0] == 0x11)) {
+        std::uint32_t crc = 0xffffffffu;
+        const auto feed = [&](std::uint8_t byte) {
+            crc ^= byte;
+            for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+        };
+        feed(0xa1);
+        for (DWORD i = 0; i < size - 4; ++i) feed(bytes[i]);
+        crc = ~crc;
+        std::memcpy(bytes + size - 4, &crc, sizeof(crc));
+    }
+    static std::atomic<bool> reported{};
+    if (!reported.exchange(true)) logging::printf(logging::Level::info, logging::Channel::input,
+        "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s, report 0x%02x of %lu bytes, "
+        "the game's buffer %lu.)", read.kind == PlayStationPad::dualsense ? "DualSense" : "DualShock 4",
+        bluetooth ? "Bluetooth" : "USB", bytes[0], size, read.capacity);
+}
+void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished) {
+    auto& h = input_hooks();
+    InputCaptureHooks::HidRead read{};
+    {
+        std::lock_guard lock(h.hid_mutex);
+        const auto found = h.hid_reads.find(request);
+        if (found == h.hid_reads.end()) return;
+        read = found->second;
+        if (finished) h.hid_reads.erase(found);
+    }
+    if (success) neutral_hid(read, bytes);
+}
+BOOL WINAPI captured_read_file(HANDLE file, LPVOID buffer, DWORD size, LPDWORD bytes, LPOVERLAPPED request) {
+    auto& h = input_hooks();
+    InputCaptureHooks::HidRead read{file, buffer, size, PlayStationPad::none};
+    if (!overlay_input_access) {
+        // Some readers inspect a temporary enumeration handle, then open a
+        // second handle for reports. Identify that handle as well.
+        bool known{};
+        {
+            std::lock_guard lock(h.hid_mutex);
+            known = h.hid_devices.contains(file);
+        }
+        if (!known && size >= 10 && size <= 512) {
+            const auto error = GetLastError();
+            HIDD_ATTRIBUTES attributes{sizeof(attributes)};
+            const auto okay = original<decltype(&HidD_GetAttributes)>(h.hid_attributes)(file, &attributes);
+            const auto kind = okay ? playstation_pad(attributes.VendorID, attributes.ProductID) : PlayStationPad::none;
+            {
+                std::lock_guard lock(h.hid_mutex);
+                h.hid_devices[file] = kind;
+            }
+            SetLastError(error);
+        }
+        std::lock_guard lock(h.hid_mutex);
+        const auto found = h.hid_devices.find(file);
+        if (found != h.hid_devices.end() && found->second != PlayStationPad::none) {
+            read.kind = found->second;
+            if (request) h.hid_reads[request] = read;
+        }
+    }
+    const auto result = original<decltype(&ReadFile)>(h.read_file)(file, buffer, size, bytes, request);
+    const auto error = GetLastError();
+    if (read.kind != PlayStationPad::none) {
+        if (result) neutral_hid(read, bytes ? *bytes : request ? static_cast<DWORD>(request->InternalHigh) : 0);
+        if (!result && error != ERROR_IO_PENDING && request) complete_hid(request, 0, false, true);
+    }
+    SetLastError(error);
+    return result;
+}
+BOOL WINAPI captured_overlapped(HANDLE file, LPOVERLAPPED request, LPDWORD bytes, BOOL wait) {
+    const auto result = original<decltype(&GetOverlappedResult)>(input_hooks().overlapped)(file, request, bytes, wait);
+    const auto error = GetLastError();
+    complete_hid(request, result && bytes ? *bytes : 0, result != FALSE, result || error != ERROR_IO_INCOMPLETE);
+    SetLastError(error); return result;
+}
+BOOL WINAPI captured_overlapped_ex(HANDLE file, LPOVERLAPPED request, LPDWORD bytes, DWORD timeout, BOOL alertable) {
+    const auto result = original<decltype(&GetOverlappedResultEx)>(input_hooks().overlapped_ex)(file, request, bytes, timeout, alertable);
+    const auto error = GetLastError();
+    complete_hid(request, result && bytes ? *bytes : 0, result != FALSE,
+        result || (error != ERROR_IO_INCOMPLETE && error != WAIT_TIMEOUT && error != WAIT_IO_COMPLETION));
+    SetLastError(error); return result;
+}
+BOOL WINAPI captured_completion(HANDLE port, LPDWORD bytes, PULONG_PTR key, LPOVERLAPPED* request, DWORD timeout) {
+    const auto result = original<decltype(&GetQueuedCompletionStatus)>(input_hooks().completion)(port, bytes, key, request, timeout);
+    const auto error = GetLastError();
+    if (request && *request) complete_hid(*request, result && bytes ? *bytes : 0, result != FALSE, true);
+    SetLastError(error); return result;
+}
+BOOL WINAPI captured_completion_ex(HANDLE port, LPOVERLAPPED_ENTRY entries, ULONG count, PULONG removed, DWORD timeout, BOOL alertable) {
+    const auto result = original<decltype(&GetQueuedCompletionStatusEx)>(input_hooks().completion_ex)(port, entries, count, removed, timeout, alertable);
+    const auto error = GetLastError();
+    if (result && entries && removed) for (ULONG i = 0; i < *removed; ++i)
+        complete_hid(entries[i].lpOverlapped, entries[i].dwNumberOfBytesTransferred,
+            static_cast<LONG>(entries[i].Internal) >= 0, true);
+    SetLastError(error); return result;
+}
+BOOL WINAPI captured_close_handle(HANDLE file) {
+    auto& h = input_hooks();
+    {
+        std::lock_guard lock(h.hid_mutex);
+        if (h.hid_devices.erase(file))
+            std::erase_if(h.hid_reads, [&](const auto& entry) { return entry.second.file == file; });
+    }
+    return original<decltype(&CloseHandle)>(h.close_handle)(file);
+}
+
+// Where the jump at an entry point goes, through any stubs on the way: the first address inside
+// a module, and that module. Null when the entry point is not hooked (or cannot be read).
+struct Landing { void* at{}; HMODULE module{}; };
+Landing hook_landing(void* entry) {
+    const auto self = GetCurrentProcess();
+    const auto read = [&](const void* at, void* out, std::size_t size) {
+        SIZE_T got{};
+        return ReadProcessMemory(self, at, out, size, &got) && got == size;
+    };
+    auto* at = static_cast<std::uint8_t*>(entry);
+    for (int hop = 0; hop < 8; ++hop) {
+        std::uint8_t code[16]{};
+        if (!read(at, code, sizeof(code))) return {};
+        std::uint8_t* next{};
+        if (code[0] == 0xe9) {
+            std::int32_t offset; std::memcpy(&offset, code + 1, 4);
+            next = at + 5 + offset;
+        } else if (code[0] == 0xff && code[1] == 0x25) {
+            std::int32_t offset; std::memcpy(&offset, code + 2, 4);
+            if (!read(at + 6 + offset, &next, sizeof(next))) return {};
+        } else if (code[0] == 0x48 && code[1] == 0xb8 && code[10] == 0xff && code[11] == 0xe0) {
+            std::memcpy(&next, code + 2, 8);
+        } else return {};
+        at = next;
+        HMODULE module{};
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(at), &module) && module) return {at, module};
+    }
+    return {};
+}
+HMODULE module_of(const void* address) {
+    HMODULE module{};
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(address), &module);
+    return module;
+}
+std::string module_name(HMODULE module) {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(module, path, MAX_PATH);
+    const wchar_t* name = path;
+    for (const wchar_t* c = path; *c; ++c) if (*c == L'\\') name = c + 1;
+    std::string text;
+    for (; *name; ++name) text += static_cast<char>(*name);
+    return text;
+}
+std::string xinput_entry_owners() {
+    std::string text;
+    const auto& h = input_hooks();
+    const auto owner = [](void* entry) {
+        const auto landing = hook_landing(entry);
+        return landing.module ? module_name(landing.module) : std::string("not hooked");
+    };
+    constexpr std::array names{"xinput1_4", "xinput1_3", "xinput9_1_0", "xinput1_2", "xinput1_1"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (h.xinput_state[i].target) text += (text.empty() ? "" : ", ") + std::string(names[i]) + " " + owner(h.xinput_state[i].target);
+        if (h.xinput_extended[i].target) text += (text.empty() ? "" : ", ") + std::string(names[i]) + " (extended) " + owner(h.xinput_extended[i].target);
+    }
+    return text.empty() ? "none" : text;
+}
+
+// Another program's hook on XInput that was put in front of the capture's own after it was
+// installed (Steam's overlay does, for Steam Input, and answers the game with its own pad
+// without going on to XInput): the capture then never sees the game's reads, and a menu that
+// holds the game's input does not hold its controller. That hook's own function is hooked
+// then, so the capture is in front of it again.
+template<std::size_t I>
+DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
+    const bool capture = block_input_reads();
+    note_prompt_read(prompt_xinput);
+    DWORD result;
+    { // It may go on to XInput's own entry point, which is hooked as well.
+        OverlayInputAccess access;
+        result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
+    }
+    if (output && scripted_pad(user, *output)) return ERROR_SUCCESS;
+    if (result == ERROR_SUCCESS && output && capture) {
+        output->Gamepad = {};
+        output->dwPacketNumber ^= 0x80000000u;
+    }
+    return result;
+}
+void keep_xinput_capture_first() {
+    auto& h = input_hooks();
+    static const HMODULE self = module_of(&keep_xinput_capture_first);
+    const auto detours = []<std::size_t... I>(std::index_sequence<I...>) {
+        return std::array{reinterpret_cast<void*>(captured_front<I>)...};
+    }(std::make_index_sequence<InputCaptureHooks::front_slots>{});
+    std::lock_guard lock(h.front_mutex);
+    const auto guard = [&](void* entry) {
+        if (!entry) return;
+        const auto landing = hook_landing(entry);
+        // Not hooked over, the capture's own, or a jump inside XInput itself.
+        if (!landing.at || landing.module == self || landing.module == module_of(entry)) return;
+        for (const auto& hook : h.xinput_front) if (hook.target == landing.at) return;
+        for (std::size_t slot = 0; slot < h.xinput_front.size(); ++slot) {
+            if (h.xinput_front[slot].target) continue;
+            const bool okay = install(h.xinput_front[slot], landing.at, detours[slot]);
+            logging::printf(okay ? logging::Level::info : logging::Level::warning, logging::Channel::input,
+                okay ? "XInput is answered by %s ahead of ReSkate: its reads are now held with the rest of the game's input."
+                     : "XInput is answered by %s ahead of ReSkate, and that could not be hooked: a controller may reach the game behind a menu.",
+                module_name(landing.module).c_str());
+            return;
+        }
+    };
+    for (std::size_t i = 0; i < h.xinput_state.size(); ++i) guard(h.xinput_state[i].target), guard(h.xinput_extended[i].target);
+}
 SHORT WINAPI captured_async_key(int key) {
     const auto value = original<SHORT(WINAPI*)(int)>(input_hooks().async_key)(key);
     return block_input_reads() ? 0 : value;
@@ -163,6 +432,7 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
     const auto result = original<UINT(WINAPI*)(PRAWINPUT, PUINT, UINT)>(
         input_hooks().raw_buffer)(data, size, header_size);
     const bool capture = result != UINT(-1) && data && block_input_reads();
+    note_prompt_read(prompt_raw);
     if (result != UINT(-1) && data && header_size == sizeof(RAWINPUTHEADER)) {
         // Skate drains its mouse here; read the packets on the way past.
         // NEXTRAWINPUTBLOCK: records are 8-byte aligned on x64.
@@ -307,6 +577,7 @@ template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
     const bool capture = block_input_reads();
+    note_prompt_read(prompt_xinput);
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
         OverlayInputAccess access;
@@ -348,6 +619,7 @@ template<std::size_t I>
 HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID data) {
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPVOID)>(
         input_hooks().device_state[I])(device, size, data);
+    note_prompt_read(prompt_direct);
     if (SUCCEEDED(result) && data && block_input_reads()) {
         std::memset(data, 0, size);
         std::lock_guard lock(input_hooks().formats_mutex);
@@ -358,6 +630,7 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
                 DWORD neutral = 0;
                 if (object.dwType & DIDFT_POV) neutral = 0xffffffffu;
                 else if (object.dwType & DIDFT_ABSAXIS) {
+                    neutral = 32767; // Standard DirectInput axis midpoint if range lookup fails.
                     DIPROPRANGE range{};
                     range.diph = {sizeof(range), sizeof(range.diph), object.dwOfs, DIPH_BYOFFSET};
                     auto** vtable = *reinterpret_cast<void***>(device);
@@ -367,6 +640,17 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
                 } else continue;
                 std::memcpy(static_cast<std::byte*>(data) + object.dwOfs, &neutral, 4);
             }
+        } else if (size == sizeof(DIJOYSTATE) || size == sizeof(DIJOYSTATE2)) {
+            // A zeroed DirectInput axis is full travel, not the center. Some
+            // controllers use the standard joystick layout without a format
+            // record we can inspect; keep those pads neutral while captured.
+            auto* bytes = static_cast<std::byte*>(data);
+            const DWORD center = 32767;
+            const DWORD released_pov = 0xffffffffu;
+            for (std::size_t offset = 0; offset < 8 * sizeof(DWORD); offset += sizeof(DWORD))
+                std::memcpy(bytes + offset, &center, sizeof(center));
+            for (std::size_t offset = 8 * sizeof(DWORD); offset < 12 * sizeof(DWORD); offset += sizeof(DWORD))
+                std::memcpy(bytes + offset, &released_pov, sizeof(released_pov));
         }
     }
     return result;
@@ -527,6 +811,19 @@ void sync_raw_mouse_registration(bool overlay_owns_pointer) {
 
 bool install_input_capture() {
     auto& h = input_hooks();
+    const auto hid = LoadLibraryExW(L"hid.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    const auto kernel = GetModuleHandleW(L"kernel32.dll");
+    if (!hid || !install(h.hid_attributes, reinterpret_cast<void*>(GetProcAddress(hid, "HidD_GetAttributes")),
+            reinterpret_cast<void*>(captured_hid_attributes))) return false;
+    const auto kernel_hook = [&](Hook& hook, const char* name, void* detour) {
+        return install(hook, reinterpret_cast<void*>(GetProcAddress(kernel, name)), detour);
+    };
+    if (!kernel_hook(h.read_file, "ReadFile", reinterpret_cast<void*>(captured_read_file)) ||
+        !kernel_hook(h.overlapped, "GetOverlappedResult", reinterpret_cast<void*>(captured_overlapped)) ||
+        !kernel_hook(h.overlapped_ex, "GetOverlappedResultEx", reinterpret_cast<void*>(captured_overlapped_ex)) ||
+        !kernel_hook(h.completion, "GetQueuedCompletionStatus", reinterpret_cast<void*>(captured_completion)) ||
+        !kernel_hook(h.completion_ex, "GetQueuedCompletionStatusEx", reinterpret_cast<void*>(captured_completion_ex)) ||
+        !kernel_hook(h.close_handle, "CloseHandle", reinterpret_cast<void*>(captured_close_handle))) return false;
     const auto user32 = GetModuleHandleW(L"user32.dll");
     const auto add = [&](Hook& hook, const char* name, void* detour) {
         const bool okay = install(hook, reinterpret_cast<void*>(GetProcAddress(user32, name)), detour);
@@ -579,7 +876,7 @@ bool install_input_capture() {
         if (!install(h.direct_create, reinterpret_cast<void*>(GetProcAddress(direct, "DirectInput8Create")),
             reinterpret_cast<void*>(captured_direct_create))) return false;
     }
-    dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::input, "Menu input capture installed: keyboard, raw input, XInput, DirectInput and cursor ownership.");
+    dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::input, "Menu input capture installed: keyboard, raw input, XInput, DirectInput, PlayStation HID and cursor ownership.");
     return true;
 }
 

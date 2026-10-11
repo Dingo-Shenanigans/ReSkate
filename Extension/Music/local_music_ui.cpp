@@ -5,6 +5,7 @@
 #include "local_music_assets.h"
 #include "local_music_safety.h"
 #include "local_music_ui.h"
+#include "local_music_favorites.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -24,7 +25,8 @@ std::string music_artwork_url(std::string_view value) {
 
 // MusicGraphAsset metadata/TagRefs. No generated catalog, guessed memberships,
 
-// artwork, audio-residency gate, or preference persistence. Bounds: 1024 songs,
+// artwork or audio-residency gate. Favorite identities are saved separately in
+// the local profile and applied after song publication. Bounds: 1024 songs,
 
 // 256 authored groups, 8192 membership edges. Include after assets/news/model helpers.
 
@@ -61,8 +63,17 @@ bool initialize_music_functions(std::uintptr_t base) {
     f.songs = reinterpret_cast<decltype(f.songs)>(base + music::publish_songs);
     f.insert = reinterpret_cast<decltype(f.insert)>(base + music::context_insert);
     f.complete = reinterpret_cast<decltype(f.complete)>(base + music::complete_delegate);
+    f.favorite_apply = nullptr;
+    bool favorites_ready = true;
+    for (const auto& fp : {music::favorite_change_contract, music::favorite_apply_contract}) {
+        std::array<unsigned char, 32> actual{};
+        if (!read(base + fp.rva, actual) || actual != fp.bytes) favorites_ready = false;
+    }
+    if (favorites_ready)
+        f.favorite_apply = reinterpret_cast<decltype(f.favorite_apply)>(base + music::favorite_apply_contract.rva);
+    else logging::event(logging::Channel::music, "{\"event\":\"music_favorites_contract_mismatch\"}");
     f.allocator = {base + addr::engine::allocator_adapter_vtable, 0, 8};
-    return true; // Root installs only the initialize hook after these contracts pass.
+    return true; // Root installs the validated UI and selection hooks.
 }
 
 bool music_ui_identity(const MusicUiPending& pending) {
@@ -167,7 +178,7 @@ CosmeticShared music_ui_message(const std::string& wire, bool playlist) {
     const auto value = result.value; result.value = {}; return value;
 }
 
-bool music_ui_has_context(std::uintptr_t map, const std::string& id) {
+std::uint64_t music_ui_context(std::uintptr_t map, const std::string& id) {
     std::uintptr_t buckets{}, node{}, sentinel{}; std::uint32_t count{}, capacity{};
     if (!read(map, buckets) || !buckets || !read(map + 8, capacity) || !capacity || capacity > 4096 ||
         !read(map + 12, count) || count > 2048 || !read(buckets + capacity * 8ULL, sentinel) ||
@@ -176,10 +187,76 @@ bool music_ui_has_context(std::uintptr_t map, const std::string& id) {
     while (node && node != sentinel) {
         std::array<std::uintptr_t, 3> row{}; std::string name;
         if (seen.size() >= count || !seen.insert(node).second || !read(node, row) || !cosmetic_text(row[0], name)) return false;
-        if (name == id) return row[1] != 0;
+        if (name == id) return row[1];
         node = row[2];
     }
     return false;
+}
+
+bool music_ui_has_context(std::uintptr_t map, const std::string& id) {
+    return music_ui_context(map, id) != 0;
+}
+
+namespace {
+bool music_selection(std::uintptr_t model, std::uint64_t context, bool is_song, std::string& id, bool& favorite) {
+    auto& m = game::native_data().models;
+    const auto identity = m.field(model, context, 0, 0xffffffffU, false);
+    const auto selected = m.field(model, context, is_song ? 2 : 7, 0xffffffffU, false);
+    if (!identity || !selected) return false;
+    game::ModelWriteLock lock(model);
+    const auto text = m.value(model, identity, 0, 0);
+    const auto flag = m.value(model, selected, 0, 0);
+    std::uint8_t value{};
+    if (!text || !flag || !identifier(reinterpret_cast<const void*>(text), id) ||
+        !read(flag, value) || value > 1) return false;
+    favorite = value != 0;
+    return true;
+}
+}
+
+std::int32_t music_favorite_change_hook(std::uintptr_t manager, std::uint8_t favorite,
+    std::uint64_t context, std::uint64_t song_parent) {
+    auto& s = local_runtime(); auto& ui = music_ui_runtime();
+    const bool is_song = song_parent != 0;
+    const auto key = is_song ? music_favorites::profile_key : music_favorites::playlist_profile_key;
+    const auto failure_event = is_song ? "music_favorite_save_failed" : "music_playlist_like_save_failed";
+    bool handled{};
+    std::int32_t result = -2; // Initial native unavailable status; actual results are preserved.
+    try {
+        PreserveError preserve; std::lock_guard lock(s.native_mutex);
+        const auto* current = ui.initialized.get();
+        if (context && favorite <= 1 && s.active.load(std::memory_order_acquire) &&
+            s.store && ui.functions.favorite_apply && current && current->manager == manager &&
+            music_ui_current(*current)) {
+            CosmeticSharedGuard lease{music_ui_lease(*current)};
+            std::string id; bool selected{};
+            if (lease.value.control && music_selection(current->model, context, is_song, id, selected) &&
+                music_ui_context(manager + (is_song ? 0xd0 : 0xa8), id) == context) {
+                const auto model = current->model, generation = current->generation;
+                // Local selections must not remain queued for an unavailable service.
+                handled = true;
+                if (ui.restoring) return ui.functions.favorite_apply(manager, favorite, context, is_song);
+                music_favorites::apply_and_save(*s.store, id, favorite != 0, [&] {
+                    result = ui.functions.favorite_apply(manager, favorite, context, is_song);
+                    return result;
+                }, [&] {
+                    std::string after;
+                    return ui.initialized && ui.generation == generation && music_ui_current(*ui.initialized) &&
+                        music_selection(model, context, is_song, after, selected) && after == id && selected == (favorite != 0);
+                }, key);
+                logging::event(logging::Channel::music, Json{{"event", is_song ? "music_favorite_saved" : "music_playlist_like_saved"},
+                    {is_song ? "song" : "playlist", id}, {"favorite", selected}}.dump().c_str());
+            } else logging::event(logging::Channel::music, Json{{"event", failure_event},
+                {"reason", "selection_context_unavailable"}}.dump().c_str());
+        }
+    } catch (const std::exception& error) {
+        logging::event(logging::Channel::music, Json{{"event", failure_event},
+            {"reason", error.what()}}.dump().c_str());
+    } catch (...) {
+        logging::event(logging::Channel::music, Json{{"event", failure_event}}.dump().c_str());
+    }
+    // Generations not owned by the local provider retain their native behavior.
+    return handled ? result : ui.functions.favorite_change(manager, favorite, context, song_parent);
 }
 
 void music_ui_initialize_hook(std::uint64_t all, std::uint64_t hidden, std::uint64_t featured,
@@ -191,6 +268,7 @@ void music_ui_initialize_hook(std::uint64_t all, std::uint64_t hidden, std::uint
         // Even a forwarded initialization supersedes old local contexts.
         const auto generation = ++ui.generation;
         ui.pending.reset();
+        ui.initialized.reset();
         if (s.active.load(std::memory_order_acquire))
         try {
             const auto thread = GetCurrentThreadId();
@@ -294,6 +372,42 @@ void update_music_catalog() {
             if (!music_ui_has_context(manager + 0xa8, playlist.id)) throw std::runtime_error("Native playlist identity missing");
         for (const auto& song : catalog.songs)
             if (!music_ui_has_context(manager + 0xd0, song.id)) throw std::runtime_error("Native song identity missing");
+        if (!music_ui_current(*pending)) return;
+        auto initialized = std::make_unique<MusicUiPending>();
+        initialized->manager = manager; initialized->model = native_model;
+        initialized->owner = pending->owner; initialized->generation = pending->generation;
+        initialized->thread = pending->thread;
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(initialized->owner + 12));
+        ui.initialized = std::move(initialized);
+        if (ui.functions.favorite_apply && s.store) {
+            for (const bool is_song : {true, false}) {
+                const auto failure_event = is_song ? "music_favorites_restore_failed" : "music_playlist_likes_restore_failed";
+                try {
+                    const bool was_restoring = ui.restoring;
+                    ui.restoring = true;
+                    struct RestoreScope { bool& flag; bool before; ~RestoreScope() { flag = before; } }
+                        restore_scope{ui.restoring, was_restoring};
+                    const auto saved = music_favorites::load(*s.store,
+                        is_song ? music_favorites::profile_key : music_favorites::playlist_profile_key);
+                    const auto restored = music_favorites::restore(saved, [&](const std::string& id) -> std::uint64_t {
+                        if (!music_ui_current(*pending)) return 0;
+                        return music_ui_context(manager + (is_song ? 0xd0 : 0xa8), id);
+                    }, [&](std::uint64_t context) {
+                        if (!music_ui_current(*pending)) return false;
+                        ui.functions.favorite_apply(manager, 1, context, is_song);
+                        std::string id; bool selected{};
+                        return music_ui_current(*pending) && music_selection(native_model, context, is_song, id, selected) && selected;
+                    });
+                    logging::event(logging::Channel::music, Json{{"event", is_song ? "music_favorites_restored" : "music_playlist_likes_restored"},
+                        {"saved", saved.size()}, {"restored", restored}}.dump().c_str());
+                } catch (const std::exception& error) {
+                    logging::event(logging::Channel::music, Json{{"event", failure_event},
+                        {"reason", error.what()}}.dump().c_str());
+                } catch (...) {
+                    logging::event(logging::Channel::music, Json{{"event", failure_event}}.dump().c_str());
+                }
+            }
+        }
         if (!music_ui_current(*pending)) return;
         ui.functions.complete(&pending->delegate);
         dingosdk::logging::event(dingosdk::logging::Channel::music, dingosdk::Json{{"event", "native_music_ui_complete"}, {"playlists", playlist_count}, {"songs", song_count}, {"source", "runtime_music_assets"}}.dump().c_str());

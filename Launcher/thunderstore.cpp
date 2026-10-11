@@ -154,6 +154,166 @@ std::vector<Package> parse_listing(std::string_view json) {
     return packages;
 }
 
+std::wstring readme_url(const Package& package) {
+    return widen(std::string(site) + "/api/experimental/package/" + package.owner + "/" + package.name + "/" +
+                 package.latest().number + "/readme/");
+}
+
+std::string parse_readme(std::string_view json) {
+    const auto root = Json::parse(json, JsonLimits{2 * 1024 * 1024, 4, 1024 * 1024});
+    if (!root.is_object()) fail("The Thunderstore README answer is not a JSON object.");
+    if (!root.contains("markdown") || !root.at("markdown").is_string()) return {};
+    return root.at("markdown").string();
+}
+
+namespace {
+
+// One line's inline markdown as plain text: images and HTML tags go, links keep their text,
+// and the marks for bold, italic and code are dropped.
+std::string plain_inline(std::string_view line) {
+    std::string out;
+    for (std::size_t i = 0; i < line.size();) {
+        const char c = line[i];
+        // ![alt](url): nothing is shown for an image.   [text](url): the text.
+        const bool image = c == '!' && i + 1 < line.size() && line[i + 1] == '[';
+        if (image || c == '[') {
+            const auto open = i + (image ? 1 : 0);
+            const auto close = line.find(']', open);
+            if (close != std::string_view::npos && close + 1 < line.size() && line[close + 1] == '(') {
+                const auto end = line.find(')', close + 2);
+                if (end != std::string_view::npos) {
+                    if (!image) out += plain_inline(line.substr(open + 1, close - open - 1));
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        if (c == '<') {
+            const auto end = line.find('>', i + 1);
+            if (end != std::string_view::npos) {
+                const auto inside = line.substr(i + 1, end - i - 1);
+                // <https://...> is a link written out; anything else in brackets is an HTML tag.
+                if (inside.starts_with("https://") || inside.starts_with("http://")) out += inside;
+                i = end + 1;
+                continue;
+            }
+        }
+        if (c == '&') {
+            static constexpr std::pair<std::string_view, char> entities[]{{"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'},
+                                                                          {"&quot;", '"'}, {"&#39;", '\''}, {"&nbsp;", ' '}};
+            bool replaced{};
+            for (const auto& [name, value] : entities)
+                if (line.substr(i).starts_with(name)) {
+                    out += value;
+                    i += name.size();
+                    replaced = true;
+                    break;
+                }
+            if (replaced) continue;
+        }
+        if (c == '`') { ++i; continue; }
+        // ** and __ are bold, ~~ struck through; a lone * is italic. A lone _ is left: names have them.
+        if ((c == '*' || c == '_' || c == '~') && i + 1 < line.size() && line[i + 1] == c) { i += 2; continue; }
+        if (c == '*') { ++i; continue; }
+        if (c == '\\' && i + 1 < line.size() && std::string_view("\\`*_{}[]()#+-.!<>|~").find(line[i + 1]) != std::string_view::npos) {
+            out += line[i + 1];
+            i += 2;
+            continue;
+        }
+        // Tabs and other controls would only draw as boxes.
+        out += static_cast<unsigned char>(c) < 0x20 ? ' ' : c;
+        ++i;
+    }
+    const auto first = out.find_first_not_of(' ');
+    if (first == std::string::npos) return {};
+    return out.substr(first, out.find_last_not_of(' ') - first + 1);
+}
+
+} // namespace
+
+Readme readme_lines(std::string_view markdown, std::size_t max_lines) {
+    Readme out;
+    constexpr std::size_t max_line_bytes = 2000;
+    bool fenced{};
+    const auto add = [&](ReadmeLine::Kind kind, std::string text) {
+        // Blank lines run together into one gap, and none opens the README.
+        if (kind == ReadmeLine::Kind::gap && (out.lines.empty() || out.lines.back().kind == ReadmeLine::Kind::gap)) return;
+        if (text.size() > max_line_bytes) {
+            text.resize(max_line_bytes);
+            // (Never half a UTF-8 character.)
+            while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xc0) == 0x80) text.pop_back();
+            if (!text.empty() && (static_cast<unsigned char>(text.back()) & 0x80)) text.pop_back();
+        }
+        out.lines.push_back({kind, std::move(text)});
+    };
+    for (std::size_t at = 0; at <= markdown.size();) {
+        if (out.lines.size() >= max_lines) {
+            out.cut = markdown.substr(std::min(at, markdown.size())).find_first_not_of(" \t\r\n") != std::string_view::npos;
+            break;
+        }
+        const auto end = std::min(markdown.find('\n', at), markdown.size());
+        auto line = markdown.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        const auto indent = std::min(line.find_first_not_of(" \t"), line.size());
+        const auto body = line.substr(indent);
+        if (body.starts_with("```") || body.starts_with("~~~")) {
+            fenced = !fenced;
+            continue;
+        }
+        if (fenced) {
+            std::string code(line);
+            for (auto& c : code)
+                if (static_cast<unsigned char>(c) < 0x20) c = ' ';
+            add(ReadmeLine::Kind::code, std::move(code));
+            continue;
+        }
+        if (body.empty()) {
+            add(ReadmeLine::Kind::gap, {});
+            continue;
+        }
+        // --- *** ___ : a rule. (Also what underlines a heading written the other way; a rule does for it.)
+        if (body.size() >= 3 && (body[0] == '-' || body[0] == '*' || body[0] == '_' || body[0] == '=') &&
+            body.find_first_not_of(std::string{body[0]} + " ") == std::string_view::npos) {
+            add(ReadmeLine::Kind::rule, {});
+            continue;
+        }
+        if (body[0] == '#') {
+            const auto level = std::min(body.find_first_not_of('#'), body.size());
+            if (level <= 6 && (level == body.size() || body[level] == ' ')) {
+                auto text = body.substr(level);
+                while (!text.empty() && (text.back() == '#' || text.back() == ' ')) text.remove_suffix(1);
+                if (auto plain = plain_inline(text); !plain.empty()) add(ReadmeLine::Kind::heading, std::move(plain));
+                continue;
+            }
+        }
+        if (body.size() >= 2 && (body[0] == '-' || body[0] == '*' || body[0] == '+') && body[1] == ' ') {
+            if (auto plain = plain_inline(body.substr(2)); !plain.empty()) add(ReadmeLine::Kind::bullet, std::move(plain));
+            continue;
+        }
+        auto text = body;
+        while (!text.empty() && text.front() == '>') { // a quotation: its text
+            text.remove_prefix(1);
+            if (!text.empty() && text.front() == ' ') text.remove_prefix(1);
+        }
+        if (!text.empty() && text.front() == '|') {
+            // A table row: its cells side by side. The row of dashes under the header is not one.
+            if (text.find_first_not_of("|-: ") == std::string_view::npos) continue;
+            std::string row;
+            for (std::size_t cell = 1; cell < text.size();) {
+                const auto bar = std::min(text.find('|', cell), text.size());
+                if (auto plain = plain_inline(text.substr(cell, bar - cell)); !plain.empty()) row += (row.empty() ? "" : "   ") + plain;
+                cell = bar + 1;
+            }
+            if (!row.empty()) add(ReadmeLine::Kind::text, std::move(row));
+            continue;
+        }
+        if (auto plain = plain_inline(text); !plain.empty()) add(ReadmeLine::Kind::text, std::move(plain));
+    }
+    while (!out.lines.empty() && out.lines.back().kind == ReadmeLine::Kind::gap) out.lines.pop_back();
+    return out;
+}
+
 std::vector<std::wstring> parse_index(std::string_view json) {
     const auto root = Json::parse(json, JsonLimits{1024 * 1024, 4, 65536});
     if (!root.is_array()) fail("The Thunderstore listing index is not a JSON array.");

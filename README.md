@@ -21,6 +21,7 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - World: time of day, population, district levels, rotating parks.
   - The **Park Editor**: place, move and save objects with freecam, snapping and undo.
   - Skater options: first person, movement, boosts, noclip.
+  - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
@@ -48,6 +49,30 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 4. Press **PLAY**.
 
 ReSkate supports one game build at a time (Steam build `25414733`).
+
+### Linux (Proton)
+
+1. Install skate. with Steam and put `ReSkateLauncher.exe` and `ReSkate.dll` beside `Skate.exe`
+   (step 2 above, first option).
+2. In Steam → skate. → Properties → Launch Options, enter:
+
+   ```
+   bash -c 'exec "${@/EAAntiCheat.GameServiceLauncher.exe/ReSkateLauncher.exe}"' -- %command%
+   ```
+
+3. Press **Play** on skate. in your Steam library.
+
+Steam starts EA's anti-cheat launcher (`EAAntiCheat.GameServiceLauncher.exe`), not `Skate.exe`, and the
+anti-cheat refuses to run under Proton (*E111000B … Wine, Proton, and Steam Deck are not supported*).
+The launch option swaps it for ReSkate's launcher, which starts the game itself. Launching from the game's
+own Steam entry, rather than adding the launcher as a non-Steam game, keeps skate.'s app ID and its
+Proton prefix.
+
+Tested with ReSkate 1.1.3 and Proton Experimental on CachyOS: the launcher, the server browser, joining
+a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
+custom map and then join a server on another map, the screen can stay black
+([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
+
 ### Controls
 
 | Key | Opens |
@@ -57,6 +82,20 @@ ReSkate supports one game build at a time (Steam build `25414733`).
 | **T** | chat, in multiplayer |
 
 The menu and console keys can be changed in the launcher's Settings.
+
+In **MAP → ROTATING PARKS** and the controller-friendly **MOD OPTIONS → PARKS** screen,
+**Load Random Parks** chooses and loads one random layout for each of
+San Vansterdam's three slots. Each supported layout has an equal chance; empty lots are excluded and
+a roll can pick a layout already loaded. Choices save with your profile and are shared when you host.
+**Randomize on Launch** is off by default. Turn it on to pick fresh layouts once on each subsequent
+game launch, when the park controller is ready. Changing maps does not roll again. Guests follow the
+host's layouts; a dedicated server admin can use the button to randomize the server's parks for everyone.
+Both menus share the same launch preference. It only affects your own parks, including when you host
+a lobby. Joining a host cancels any pending startup roll, so leaving the lobby restores your saved
+layouts without unexpectedly randomizing them.
+
+The console equivalents are `park random` and `park random-on-launch 0|1`. A dedicated server also
+accepts `park random` from its console or an admin.
 
 ### Where things are
 
@@ -102,7 +141,8 @@ The menu and console keys can be changed in the launcher's Settings.
   on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
   routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
 
-Only install mods you trust. Mods change game data, and custom scripts can run code.
+Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
+switched off in this version: nothing in that folder is read or run.
 
 ## Dedicated servers
 
@@ -167,7 +207,7 @@ Useful launcher flags:
 
 | Flag | Effect |
 |---|---|
-| `--no-gui` | start the game straight away, without the launcher window |
+| `--no-gui` | start the game straight away, without the launcher window; with no other launch flags it uses the launcher's saved settings |
 | `--no-update` | skip the update check |
 | `--offline`, `-offline` | play offline, without Steam running |
 | `--windowed`, `--width=N`, `--height=N` | windowed mode and its size |
@@ -175,6 +215,7 @@ Useful launcher flags:
 | `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
 | `-wconsole` | also show the log live in a console window while the game runs |
 | `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
+| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
 
@@ -239,6 +280,10 @@ login name.
 
 To turn it off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
 environment variable `RESKATE_CRASH_REPORTING=0`.
+
+ReSkate also keeps the game off EA's online services: the game's own crash reports, telemetry and
+remote configuration requests are turned off and blocked. Fast-travel artwork still comes from EA's
+image CDN (`dingo-dev-assets.akamaized.net`), which only downloads images.
 
 ## Third-party code
 

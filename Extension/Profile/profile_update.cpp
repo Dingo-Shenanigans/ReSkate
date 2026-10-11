@@ -67,9 +67,12 @@ void Store::Update::encode(Json& patch) {
     if (settings) {
         detail::validate_settings(value);
         (void)park_choices(value); (void)world_layer_choices(value);
-        (void)world_controls(value); (void)graphics_controls(value); (void)profile::noclip_binding(value);
+        (void)world_controls(value); (void)graphics_controls(value); (void)profile::freecam_controller(value); (void)profile::freecam_controller_binding(value); (void)profile::freecam_binding(value); (void)profile::tp_to_freecam_binding(value); (void)profile::noclip_binding(value);
         (void)profile::forward_velocity_binding(value);
+        (void)profile::vote_yes_binding(value); (void)profile::vote_no_binding(value);
+        for (const auto& slot : action_binds) (void)profile::action_binding(value, slot.key);
         (void)profile::up_velocity_binding(value);
+        (void)profile::offboard_up_velocity_binding(value);
         remove("player_settings", [](const Json& row) { return row[0] != "options"; });
         auto residual = value.settings;
         const auto flatten = [&](auto&& self, Json& node, const std::string& scope) -> void {

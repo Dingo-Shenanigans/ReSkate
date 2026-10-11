@@ -30,6 +30,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     bool can_control, bool camera_phase_observed, const overlay::DebugRequest* request = nullptr,
     const overlay::FlightInput* flight_input = nullptr);
 bool restore_client_debug(std::uintptr_t base, std::uintptr_t client, bool camera_phase_observed);
+bool client_free_camera_active() noexcept;
 // Native camera lease for the party's Spectate action. Null restores only the
 // camera acquired by this function; it never changes another debug camera. A positive
 // `fov` is applied to the spectate camera while it is held; its own comes back after.

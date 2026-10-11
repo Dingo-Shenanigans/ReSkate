@@ -127,56 +127,89 @@ private:
     std::unordered_map<std::uint32_t, std::string> cache_;
 };
 
-// Appends `path` to the pool and a full/leaf row pair for it in `bundle`. A
-// leaf name another preset already answers to stays that preset's: the table
-// holds one row per hash, and mods number their presets alike (1_ap, 2_ap ...)
-// in different folders. Returns that preset's path, empty when the leaf row
-// went in too.
-std::string insert(std::vector<std::byte>& data, std::vector<std::byte>& meta, const std::string& path, std::uint32_t bundle) {
-    const auto table = Reader(data, meta).out;
-    const auto full = hash(path), short_name = hash(leaf(path));
-    const auto held = [&](std::uint64_t wanted) {
-        return std::ranges::any_of(table.rows, [&](const Row& row) { return row.hash == wanted; });
-    };
-    if (held(full)) throw std::runtime_error(path + " collides with an existing lookup");
-    // A path with no folder is its own leaf and has the one row.
-    const bool with_leaf = full != short_name && !held(short_name);
-    std::string holder;
-    if (full != short_name && !with_leaf) {
-        holder = "another lookup";
-        for (const auto& preset : table.presets)
-            if (hash(leaf(preset.first)) == short_name) { holder = preset.first; break; }
+// A table being added to: read once, each preset added in memory, written once. (Reading
+// the whole table again for every preset made a merge of many cosmetic mods quadratic.)
+class Builder {
+public:
+    Builder(std::span<const std::byte> base, const Parsed& parsed)
+        : base_(base), table_(parsed), rows_(parsed.rows), size_(base.size()) {
+        for (const auto& row : rows_) hashes_.insert(row.hash);
+        // In path order, so each leaf name keeps the first preset that answers to it.
+        for (const auto& preset : parsed.presets) leaves_.emplace(hash(leaf(preset.first)), preset.first);
     }
-    if (path.size() > 255) throw std::runtime_error(path + " is too long for a lookup");
-    const auto growth = (4 + path.size() + 15) & ~std::size_t{15};
-    const auto offset = table.bundles - table.pool;
-    if (offset > 0x7FFFFF) throw std::runtime_error("bundle-reference path pool is full");
-    const auto token = static_cast<std::uint32_t>(offset) | 0x800000U | (static_cast<std::uint32_t>(path.size()) << 24);
-    const auto bundles = table.bundles + growth, lookups = table.lookups + growth;
-    const auto payload = table.payload + growth + (with_leaf ? 32 : 16);
-    std::vector<std::byte> out(payload + 20);
-    std::copy_n(data.begin(), table.bundles, out.begin());
-    put32(out, table.bundles, none);
-    std::memcpy(out.data() + table.bundles + 4, path.data(), path.size());
-    std::copy(data.begin() + static_cast<std::ptrdiff_t>(table.bundles), data.begin() + static_cast<std::ptrdiff_t>(table.lookups),
-              out.begin() + static_cast<std::ptrdiff_t>(bundles));
-    auto rows = table.rows;
-    rows.push_back({full, bundle, token});
-    if (with_leaf) rows.push_back({short_name, bundle, token});
-    std::ranges::sort(rows, {}, &Row::hash);
-    for (std::size_t i = 0; i < rows.size(); ++i) {
-        put64(out, lookups + i * 16, rows[i].hash);
-        put32(out, lookups + i * 16 + 8, rows[i].bundle);
-        put32(out, lookups + i * 16 + 12, rows[i].token);
+    // Appends `path` to the pool and a full/leaf row pair for it in `bundle`. A
+    // leaf name another preset already answers to stays that preset's: the table
+    // holds one row per hash, and mods number their presets alike (1_ap, 2_ap ...)
+    // in different folders. Returns that preset's path, empty when the leaf row
+    // went in too.
+    std::string insert(const std::string& path, std::uint32_t bundle) {
+        // What reading the table back at this point would refuse.
+        if (size_ > maximum_bytes) throw std::runtime_error("not a bundle-reference table");
+        if (rows_.size() > 200000) throw std::runtime_error("bundle-reference table counts differ");
+        const auto full = hash(path), short_name = hash(leaf(path));
+        if (hashes_.contains(full)) throw std::runtime_error(path + " collides with an existing lookup");
+        // A path with no folder is its own leaf and has the one row.
+        const bool with_leaf = full != short_name && !hashes_.contains(short_name);
+        std::string holder;
+        if (full != short_name && !with_leaf) {
+            const auto found = leaves_.find(short_name);
+            holder = found != leaves_.end() ? found->second : std::string("another lookup");
+        }
+        if (path.size() > 255) throw std::runtime_error(path + " is too long for a lookup");
+        const auto growth = (4 + path.size() + 15) & ~std::size_t{15};
+        const auto offset = table_.bundles + pool_.size() - table_.pool;
+        if (offset > 0x7FFFFF) throw std::runtime_error("bundle-reference path pool is full");
+        const auto token = static_cast<std::uint32_t>(offset) | 0x800000U | (static_cast<std::uint32_t>(path.size()) << 24);
+        const auto at = pool_.size();
+        pool_.resize(at + growth);
+        put32(pool_, at, none);
+        std::memcpy(pool_.data() + at + 4, path.data(), path.size());
+        rows_.push_back({full, bundle, token});
+        hashes_.insert(full);
+        if (with_leaf) {
+            rows_.push_back({short_name, bundle, token});
+            hashes_.insert(short_name);
+        }
+        // The preset a later one with this leaf name is told about: the first in path order.
+        if (const auto [held, fresh] = leaves_.emplace(short_name, path); !fresh && path < held->second) held->second = path;
+        size_ += growth + (with_leaf ? 32 : 16);
+        changed_ = true;
+        return holder;
     }
-    std::copy(data.begin() + static_cast<std::ptrdiff_t>(table.payload), data.end(), out.begin() + static_cast<std::ptrdiff_t>(payload));
-    put64(out, 8, lookups);
-    put64(out, 24, bundles);
-    put32(out, 72, static_cast<std::uint32_t>(rows.size()));
-    put32(meta, 0, static_cast<std::uint32_t>(payload));
-    data = std::move(out);
-    return holder;
-}
+    // The table as it now is; untouched when nothing was added.
+    void write(std::vector<std::byte>& data, std::vector<std::byte>& meta) {
+        if (!changed_) return;
+        const auto bundles = table_.bundles + pool_.size(), lookups = table_.lookups + pool_.size();
+        const auto payload = lookups + rows_.size() * 16;
+        std::vector<std::byte> out(payload + 20);
+        std::copy_n(base_.begin(), table_.bundles, out.begin());
+        std::copy(pool_.begin(), pool_.end(), out.begin() + static_cast<std::ptrdiff_t>(table_.bundles));
+        std::copy(base_.begin() + static_cast<std::ptrdiff_t>(table_.bundles), base_.begin() + static_cast<std::ptrdiff_t>(table_.lookups),
+                  out.begin() + static_cast<std::ptrdiff_t>(bundles));
+        std::ranges::sort(rows_, {}, &Row::hash);
+        for (std::size_t i = 0; i < rows_.size(); ++i) {
+            put64(out, lookups + i * 16, rows_[i].hash);
+            put32(out, lookups + i * 16 + 8, rows_[i].bundle);
+            put32(out, lookups + i * 16 + 12, rows_[i].token);
+        }
+        std::copy(base_.begin() + static_cast<std::ptrdiff_t>(table_.payload), base_.end(), out.begin() + static_cast<std::ptrdiff_t>(payload));
+        put64(out, 8, lookups);
+        put64(out, 24, bundles);
+        put32(out, 72, static_cast<std::uint32_t>(rows_.size()));
+        put32(meta, 0, static_cast<std::uint32_t>(payload));
+        data = std::move(out);
+    }
+
+private:
+    std::span<const std::byte> base_;
+    const Parsed& table_;
+    std::vector<Row> rows_;
+    std::unordered_set<std::uint64_t> hashes_;
+    std::unordered_map<std::uint64_t, std::string> leaves_; // a leaf name's hash -> the preset that answers to it
+    std::vector<std::byte> pool_;                           // the path descriptors added after the base's
+    std::size_t size_{};                                    // the table's size in bytes with what was added
+    bool changed_{};
+};
 } // namespace
 
 bool is_table(std::string_view name) {
@@ -191,6 +224,7 @@ MergedTable merge(const Table& base, std::span<const Table> edits) {
     const std::span<const std::byte> base_bundles = base.resource.subspan(original.bundles, original.lookups - original.bundles);
     MergedTable result{{base.resource.begin(), base.resource.end()}, {base.resourceMeta.begin(), base.resourceMeta.end()}};
     std::map<std::string, std::uint32_t> added;
+    Builder builder(base.resource, original);
     for (std::size_t index = 0; index < edits.size(); ++index) {
         const auto& edit = edits[index];
         const auto copy = Reader(edit.resource, edit.resourceMeta).out;
@@ -209,12 +243,13 @@ MergedTable merge(const Table& base, std::span<const Table> edits) {
                 if (found->second != bundle) ++result.conflicts;
                 continue;
             }
-            if (auto holder = insert(result.resource, result.resourceMeta, path, bundle); !holder.empty())
+            if (auto holder = builder.insert(path, bundle); !holder.empty())
                 result.shadowed.push_back({index, path, std::move(holder)});
             added.emplace(path, bundle);
             ++result.added;
         }
     }
+    builder.write(result.resource, result.resourceMeta);
     return result;
 }
 

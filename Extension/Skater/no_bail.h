@@ -27,4 +27,16 @@ void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept;
 PhysicsStateWatch watched_physics_state() noexcept;
 // Stopping flight must not discard the independent manual preference.
 void clear_no_bail_flight() noexcept;
+// The local skater as No Bail follows it (update_no_bail publishes it), for a feature that reads it
+// (Hall of Meat): any thread, its ownership chain resolved again now.
+struct NoBailSkater {
+    std::uintptr_t base{}, entity{}, core{}, context{}, rig{};
+};
+bool no_bail_skater(NoBailSkater& skater) noexcept;
+// Every physics step of that skater, whether or not No Bail protects it: No Bail's hook on the
+// skeleton response runs once per step, right after the step's body contacts, and hands it on after
+// its own filtering, so a wipeout it filtered never happened. `seconds` is the step's simulated time.
+// One observer, nullptr for none; it runs on the physics thread.
+using NoBailStepObserver = void (*)(const NoBailSkater& skater, float seconds, bool wipeout) noexcept;
+void set_no_bail_step_observer(NoBailStepObserver observer) noexcept;
 }

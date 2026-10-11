@@ -25,6 +25,8 @@ void relaunch(const std::filesystem::path& self, const std::vector<std::wstring>
 // Steam's client process is running and signed in to an account. When it is
 // not, start_game runs the game in offline mode.
 bool steam_signed_in();
+// Why steam_signed_in() is false, for ReSkate.log; empty when it is true.
+std::wstring steam_offline_reason();
 // Display name of the signed-in Steam account (UTF-8), or empty when Steam is
 // not running, signed out, or the name cannot be read.
 std::string steam_persona_name();

@@ -19,6 +19,12 @@ Changes made when the trainer moved into ReSkate itself.
 - **Guests are locked by the session's own switch**, from the moment they join, rather than by
   whether the host's tuning had arrived yet. A guest's class values also no longer come back
   after a map change in such a session.
+- **Teleport to your map waypoint.** PRACTICE > TELEPORT shows the waypoint you placed on the
+  pause map, with a button to go there (`trainer waypoint [info]`). You land on the topmost
+  surface there, not at the waypoint's own height, which isn't the ground and could drop you
+  through the map. If collision there is still loading, a short watch puts you back on the
+  surface once it arrives. `trainer ground <x> <z>` does the same for any spot.
+  The map's registry is only read while the TELEPORT card is on screen or the command runs.
 
 ## v0.3.0 - 2026-10-04
 

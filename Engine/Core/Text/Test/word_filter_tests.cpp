@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -73,6 +74,29 @@ int main() {
     masks("f u c k", "* * * *");
     masks("Hello friends", "Hello friends");
     masks("fuckface", "****face");
+    // The backend's lists take the built-in one's place: its words are no longer filtered,
+    // theirs are, and the ones not allowed at all are both filtered and told apart.
+    {
+        using namespace dingosdk::text;
+        const auto expect = [&](bool ok, const char* what) {
+            if (!ok) { std::printf("FAIL: %s\n", what); ++failures; }
+        };
+        expect(!contains_forbidden_words("what the fuck"), "a word was forbidden before any list said so");
+        const std::vector<std::string> filtered{"Darn", "heck"}, forbidden{"Zorblat", "@$$hat"};
+        set_word_lists(filtered, forbidden);
+        expect(!contains_bad_words("what the fuck") && contains_bad_words("oh D4RN it") && contains_bad_words("check"),
+               "the given filtered words are not the ones filtered");
+        expect(contains_forbidden_words("you z0rblat") && contains_forbidden_words("megazorblatter") && contains_forbidden_words("a s s h a t") &&
+                   !contains_forbidden_words("darn heck") && !contains_forbidden_words("zorb lat"),
+               "the words not allowed at all are not matched as the filter matches");
+        expect(mask_bad_words("darn you zorblat") == "**** you *******", "a forbidden word is not masked like a filtered one");
+        set_word_lists({}, {});
+        expect(!contains_bad_words("darn zorblat fuck") && !contains_forbidden_words("zorblat") && mask_bad_words("darn") == "darn",
+               "empty lists still filter");
+        reset_word_lists();
+        expect(contains_bad_words("what the fuck") && !contains_bad_words("darn") && !contains_forbidden_words("zorblat"),
+               "the built-in list did not come back");
+    }
     if (failures == 0) std::printf("word filter: all checks passed\n");
     return failures == 0 ? 0 : 1;
 }

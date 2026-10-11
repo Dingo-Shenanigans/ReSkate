@@ -96,9 +96,9 @@ int main() {
         model.world_controls.choices.traffic = 3;
         activate(state, model, cb, "traffic", "");
         check(capture.command == "environment traffic -1", "Population cycles back to authored default");
-        const auto parks = render(state, model, cb, parks_section);
-        const auto load = std::find_if(parks.side.begin(), parks.side.end(), [](const auto& row) { return row.id == "load-park"; });
-        check(load != parks.side.end() && load->command.empty(), "Host-owned park action is visibly unavailable");
+        const auto locked_parks = render(state, model, cb, parks_section);
+        const auto load = std::find_if(locked_parks.side.begin(), locked_parks.side.end(), [](const auto& row) { return row.id == "load-park"; });
+        check(load != locked_parks.side.end() && load->command.empty(), "Host-owned park action is visibly unavailable");
         cb.queue_debug = [](void*, const overlay::DebugRequest&, char* result, std::size_t size) {
             std::snprintf(result, size, "Queued for the game update thread."); return true;
         };
@@ -112,6 +112,34 @@ int main() {
         const auto find = [](const std::vector<Row>& rows, std::string_view id) {
             return std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.id == id; });
         };
+        // Hall of Meat sits with the player's other switches.
+        const auto meat_row = [&] {
+            const auto page = render(state, model, cb, player_section);
+            return *find(page.main, "hall-of-meat");
+        };
+        check(meat_row().title == "Hall of Meat: Off" && meat_row().command.empty(), "Hall of Meat waits until it started");
+        model.hall_of_meat = {true, false};
+        activate(state, model, cb, "hall-of-meat", "");
+        check(meat_row().command == "hall-of-meat" && capture.command == "hallofmeat 1", "Hall of Meat turns on");
+        model.hall_of_meat = {true, true};
+        activate(state, model, cb, "hall-of-meat", "");
+        check(meat_row().title == "Hall of Meat: On" && capture.command == "hallofmeat 0", "and off again");
+        // Road Rash's switches sit there too; its blood and its healing wait for it to be on.
+        const auto rash_row = [&](std::string_view id) {
+            const auto page = render(state, model, cb, player_section);
+            return *find(page.main, id);
+        };
+        check(rash_row("road-rash").title == "Road Rash: Off" && rash_row("road-rash").command.empty(), "Road Rash waits until it started");
+        model.road_rash = {true, false, true};
+        check(rash_row("road-rash-blood").command.empty() && rash_row("road-rash-heal").command.empty(), "Its blood and healing wait for it");
+        activate(state, model, cb, "road-rash", "");
+        check(rash_row("road-rash").command == "road-rash" && capture.command == "roadrash 1", "Road Rash turns on");
+        model.road_rash = {true, true, true};
+        check(rash_row("road-rash").title == "Road Rash: On" && rash_row("road-rash-blood").title == "Road Rash blood: On", "and shows it");
+        activate(state, model, cb, "road-rash-blood", "");
+        check(capture.command == "roadrashblood 0", "The blood switches off");
+        activate(state, model, cb, "road-rash-heal", "");
+        check(capture.command == "roadrash heal", "and the skater heals");
         model.multiplayer.local_name = "steam_name";
         model.player_card = {true, "Card Name", {}};
         const auto card_page = render(state, model, cb, player_section);
@@ -122,6 +150,67 @@ int main() {
         model.player_card.custom_name.clear();
         const auto steam_page = render(state, model, cb, player_section);
         check(find(steam_page.side, "card-name-reset")->command.empty(), "Steam name reset is idle without a custom name");
+        {
+            State parks;
+            overlay::Model m;
+            m.world.map = WorldMap::bam;
+            m.parks.available = true;
+            m.parks.choices.fill("flumppark_01");
+            Capture log;
+            auto controls = cb;
+            controls.user = &log;
+            const auto control = [&](const Page& page, std::string_view id) -> const Row& {
+                const auto found = find(page.main, id);
+                check(found != page.main.end() && found->button, "Random park controls are controller-focusable buttons");
+                return *found;
+            };
+            auto page = render(parks, m, controls, parks_section);
+            check(control(page, "load-random-parks").title == "Load Random Parks" &&
+                control(page, "load-random-parks").command == "load-random-parks", "Controller exposes random loading for all lots");
+            check(control(page, "park-random-on-launch").title == "Randomize on Launch: Off", "Launch toggle reads the shared preference");
+            parks.parks.fill("megapark_01");
+            activate(parks, m, controls, "load-random-parks", {});
+            check(log.calls == 1 && log.command == "park random", "Random loading queues one shared command, not three separate rolls");
+            check(parks.parks == ParkChoices{}, "Accepted random loading discards every staged layout");
+            sync(parks, m);
+            check(parks.parks == m.parks.choices, "A reroll of the same saved layouts still replaces staged selections");
+
+            m.parks.controlled_by_host = true;
+            page = render(parks, m, controls, parks_section);
+            check(control(page, "load-random-parks").command.empty(), "Guests cannot activate random loading");
+            activate(parks, m, controls, "load-random-parks", {});
+            check(log.calls == 1, "A stale random button cannot load after joining a host");
+            activate(parks, m, controls, "park-random-on-launch", {});
+            check(log.calls == 2 && log.command == "park random-on-launch 1", "Guests can save their own next-launch preference");
+            m.parks.randomize_on_launch = true;
+            page = render(parks, m, controls, parks_section);
+            check(control(page, "park-random-on-launch").title == "Randomize on Launch: On", "Controller reflects changes from the other menu");
+            activate(parks, m, controls, "park-random-on-launch", {});
+            check(log.calls == 3 && log.command == "park random-on-launch 0", "Launch toggle uses the latest shared state");
+
+            m.multiplayer.server_admin = true;
+            page = render(parks, m, controls, parks_section);
+            check(!control(page, "load-random-parks").command.empty(), "Dedicated-server admins keep random park controls");
+            activate(parks, m, controls, "load-random-parks", {});
+            check(log.calls == 4 && log.command == "park random", "Server admin sends one shared command for server-side routing");
+            m.world.map = WorldMap::grom;
+            activate(parks, m, controls, "load-random-parks", {});
+            check(log.calls == 4, "Random loading is unavailable on maps without these park lots");
+            m.world.map = WorldMap::bam;
+            m.parks.available = false;
+            activate(parks, m, controls, "load-random-parks", {});
+            activate(parks, m, controls, "park-random-on-launch", {});
+            check(log.calls == 4, "Unavailable park controls cannot queue actions");
+            m.parks.available = true;
+            controls.queue_console_command = nullptr;
+            page = render(parks, m, controls, parks_section);
+            check(control(page, "load-random-parks").command.empty() && control(page, "park-random-on-launch").command.empty(),
+                "Missing command callbacks disable both controls");
+            controls.queue_console_command = [](void*, const char*, char*, std::size_t) { return false; };
+            parks.parks.fill("megapark_01");
+            activate(parks, m, controls, "load-random-parks", {});
+            check(parks.parks[0] == "megapark_01" && !parks.feedback.empty(), "A rejected queue retains staged choices and reports failure");
+        }
         {
             // Time of day forces one of a map's seven time layers, others off.
             overlay::Model world;

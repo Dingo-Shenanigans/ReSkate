@@ -1,6 +1,8 @@
 #include "runtime_internal.h"
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
+#include "Extension/Objects/ParkEditor/park_editor_surface.h"
+#include <cmath>
 #include "Extension/World/local_world_layers.h"
 
 namespace dingosdk {
@@ -56,6 +58,29 @@ bool teleport_local_skater(const std::array<float, 3>& position) {
     r.position_teleport = position;
     r.position_teleport_at = GetTickCount64();
     return true;
+}
+std::optional<float> local_ground_height(float x, float z, float top, float bottom) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.context) return {};
+    for (const auto v : {x, z, top, bottom})
+        if (!std::isfinite(v) || std::abs(v) > 1e5f) return {};
+    if (!(top > bottom)) return {};
+    static std::uintptr_t api_base{};
+    static editor::NativeSurfaceApi api;
+    if (api_base != local_runtime().base) { api = editor::surface_api(local_runtime().base); api_base = local_runtime().base; }
+    if (!api.ready) return {};
+    // The client physics world, resolved from the client TLS context like the park editor's
+    // surface probe (the server context has no world).
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    if (!context[0]) return {};
+    const auto world = api.world(context[0]);
+    if (!world) return {};
+    // Closest hit from the top: the topmost surface (a roof or deck above the street wins).
+    const auto hit = editor::cast_surface(api, world, {x, top, z}, {x, bottom, z});
+    if (!hit) return {};
+    return (*hit)[1];
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

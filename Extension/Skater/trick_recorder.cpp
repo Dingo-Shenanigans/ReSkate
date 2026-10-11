@@ -54,7 +54,7 @@ std::string_view name(std::uint8_t trick) { return style::flip_trick_names[trick
 bool set_simulation(State &s, std::string &error) {
     s.simulation_set = true;
     for (const auto &[name, value] : recording_settings) {
-        const auto before = named_setting_value(name);
+        const auto before = named_setting_value(name).value_or(std::string{});
         if (before.empty()) {
             error = std::format("The game's {} setting could not be read.", name);
             return false;

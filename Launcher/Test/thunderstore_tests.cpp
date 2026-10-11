@@ -127,6 +127,52 @@ int main() {
     installed.erase("Zee-Desert_Springs");
     check(!thunderstore::update_available(desert, installed), "A package that is not installed has no update");
 
+    // ------------------------------------------------ README
+    check(thunderstore::readme_url(desert) == L"https://thunderstore.io/api/experimental/package/" +
+              std::wstring(desert.owner.begin(), desert.owner.end()) + L"/" + std::wstring(desert.name.begin(), desert.name.end()) + L"/" +
+              std::wstring(desert.latest().number.begin(), desert.latest().number.end()) + L"/readme/",
+          "The README URL names the owner, the package and its newest version");
+    check(thunderstore::parse_readme(R"({"markdown": "# Hi\nthere"})") == "# Hi\nthere", "The README's markdown is read");
+    check(thunderstore::parse_readme(R"({"markdown": null})").empty() && thunderstore::parse_readme("{}").empty(),
+          "A package without a README has an empty one");
+    check(!error_of([] { (void)thunderstore::parse_readme("[]"); }).empty(), "A README answer that is not an object is refused");
+    {
+        using Kind = thunderstore::ReadmeLine::Kind;
+        const auto readme = thunderstore::readme_lines(
+            "\n\n# Desert **Springs** #\r\n"
+            "![banner](https://example.com/a.png)\n"
+            "A [big map](https://example.com) with `ramps`, *bowls* and a snake_run.\n\n\n"
+            "- first\n* second <b>bold</b>\n"
+            "```\nmp host   --now\n```\n"
+            "---\n"
+            "> quoted &amp; kept\n"
+            "| Key | Does |\n|-----|------|\n| F1 | Yes |\n"
+            "<img src=\"x.png\">\n"
+            "1. numbered stays as written\n");
+        const std::vector<thunderstore::ReadmeLine> expected{
+            {Kind::heading, "Desert Springs"},
+            {Kind::text, "A big map with ramps, bowls and a snake_run."},
+            {Kind::gap, ""},
+            {Kind::bullet, "first"},
+            {Kind::bullet, "second bold"},
+            {Kind::code, "mp host   --now"},
+            {Kind::rule, ""},
+            {Kind::text, "quoted & kept"},
+            {Kind::text, "Key   Does"},
+            {Kind::text, "F1   Yes"},
+            {Kind::text, "1. numbered stays as written"},
+        };
+        check(readme.lines == expected && !readme.cut, "A README's markdown is laid out as plain lines");
+        std::string many;
+        for (int i = 0; i < 50; ++i) many += "line " + std::to_string(i) + "\n";
+        const auto cut = thunderstore::readme_lines(many, 10);
+        check(cut.lines.size() == 10 && cut.cut && cut.lines.back().text == "line 9", "A long README is cut at the limit and says so");
+        check(thunderstore::readme_lines("").lines.empty() && thunderstore::readme_lines("\n \n![x](y)\n").lines.empty(),
+              "A README with nothing to show has no lines");
+        const auto wide = thunderstore::readme_lines(std::string(1999, 'a') + "\xC3\xA9\xC3\xA9");
+        check(wide.lines.size() == 1 && wide.lines[0].text == std::string(1999, 'a'), "An overlong line is cut between characters");
+    }
+
     // ------------------------------------------------ community
     check(thunderstore::listing_index_url("reskate") == L"https://thunderstore.io/c/reskate/api/v1/package-listing-index/",
           "The listing index URL");

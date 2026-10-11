@@ -9,7 +9,7 @@ telemetry HUD. It ships no game data: the list of values is built at run time fr
 | Tab | What you get |
 |---|---|
 | **TUNE** | Three lists: REALISTIC, FUN and EVERYTHING. Each opens on the dials: every built-in preset as one slider (Ollie height, Push speed, Body flip and spin speed, Bail resistance, Grind lock-on and friction, on-foot jump and sprint, glide, torpedo), where 1 is the game's own and the preset's button jumps to the preset; then the switches (Auto Push, No Speed Wobble, Smooth Surfaces, Long Wheelbase, Never bail), the trick sliders (flip trick speed, no comply, boneless, hippy and off-board jump height) and the values themselves: a short plainly named list, or under EVERYTHING the whole table (the physics tuning's values, one multiplier per curve and graph, and the 314 values of the game's other tuning classes) with search, groups, "only what I changed", locks, your own saved presets and a preset a map applies every time it loads. Changes apply while you skate. Values the game was never found or seen reading are hidden unless you ask for them. **Reset everything**, above the tabs, puts the game back as it shipped. |
-| **PRACTICE** | Game speed and pause, five marker slots per map (save / go / clear), return to the marker after a bail, teleport to coordinates, copy your position (game or Blender axes). |
+| **PRACTICE** | Game speed and pause, five marker slots per map (save / go / clear), return to the marker after a bail, teleport to coordinates or to the waypoint you placed on the pause map (onto the surface there), copy your position (game or Blender axes). |
 | **MAP & HUD** | Speed and air-time HUD, a read-out after every jump (takeoff speed and angle, height, distance, drop, landing speed, spin and flip), telemetry recording to CSV, and whatever the map's author ships for the trainer. |
 
 The HUD, the jump read-out and the controller shortcuts are off until you switch them on (MAP & HUD,
@@ -21,7 +21,7 @@ Controller, once switched on: hold **LB + RB**, then D-pad **up** saves the mark
 Everything is also a console command (`~`): `trainer open [tune|practice|map|realistic|fun|everything]`, `trainer status`, `trainer set <id> <value>`,
 `trainer find <words>`, `trainer preset apply|remove <name>`, `trainer dial <multiplier> <preset name>`,
 `trainer reset <id>|all|tricks|presets|everything`, `trainer marker save|go|clear [slot]`,
-`trainer tp <x> <y> <z>`, `trainer where`, `trainer jumps`, `trainer dump`, `trainer selftest`.
+`trainer tp <x> <y> <z>`, `trainer waypoint [info]`, `trainer ground <x> <z>`, `trainer where`, `trainer jumps`, `trainer dump`, `trainer selftest`.
 
 ## For map makers: `trainer.json`
 
@@ -73,6 +73,13 @@ It unlocks no cosmetics or entitlements.
   snapshots (`trainer_view.cpp`).
 - Jumps are measured from the skater's position each client tick: the game's own physics state says when the skater is in the air.
   Wipeouts come from the same state, which the no-bail hook already sees.
+- The pause map's waypoint is a point of interest in the map's registry (the one ReSkate's party
+  markers use, `addr::native_party::map_manager`), kind `DingoMapPOIType_Waypoint` (3). The registry
+  is walked only while the TELEPORT card is on screen or `trainer waypoint` runs (`trainer_waypoint.cpp`).
+- A waypoint's height is not the ground. `trainer waypoint` and `trainer ground` cast the park
+  editor's downward ray through the client physics world and land on the topmost surface; if
+  collision there is still streaming in, a short watch puts the skater back on it once it arrives.
+  The decisions are in `trainer_landing.h`, tested by `dingosdk_trainer_landing_tests`.
 - Settings, presets, markers: `%LOCALAPPDATA%\ReSkate\trainer\trainer.json`.
 
 ## Checking a build
@@ -83,7 +90,8 @@ ReSkateLauncher.exe --no-gui --no-update
 ```
 
 then read the `trainer selftest:` lines in `logs\ReSkate.log`. `dingosdk_trainer_tuning_dump <Skate
-folder>` (CMake option `DINGOSDK_BUILD_TRAINER_TESTS`) lists the tuning values without the game.
+folder>` (CMake option `DINGOSDK_BUILD_TRAINER_TESTS`) lists the tuning values without the game;
+the same option builds the `trainer_session_extras` and `trainer_landing` tests (`ctest -R trainer`).
 
 ## Known limits
 

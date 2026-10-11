@@ -38,7 +38,9 @@ struct LobbyStatus {
 };
 class SteamLobbies {
   public:
-    explicit SteamLobbies(std::unique_ptr<LobbyApi> api) : api_(std::move(api)) {}
+    // `hidden_host`: whether a player's lobbies are left out of the browser (the team's bans).
+    explicit SteamLobbies(std::unique_ptr<LobbyApi> api, std::function<bool(std::uint64_t)> hidden_host = {})
+        : api_(std::move(api)), hidden_host_(std::move(hidden_host)) {}
     void host(const std::string &code, unsigned capacity = multiplayer_lobby_player_limit, bool password_required = false,
               std::string_view name = {});
     void update_host(bool ready, unsigned players, std::string_view map, std::uint64_t now);
@@ -57,6 +59,7 @@ class SteamLobbies {
         bool cancelled{};
     };
     std::unique_ptr<LobbyApi> api_;
+    std::function<bool(std::uint64_t)> hidden_host_;
     LobbyStatus state_;
     Pending creating_, searching_, joining_;
     bool host_wanted_{}, failed_{}, ready_{}, password_required_{};

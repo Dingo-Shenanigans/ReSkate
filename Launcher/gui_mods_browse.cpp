@@ -196,13 +196,21 @@ std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Pa
 }
 
 // Search, category and the sort order, pinned packages first like the site.
+// Not safe for work: Thunderstore's own mark on the package, or a category of that name.
+bool nsfw(const ts::Package& package) {
+    return package.nsfw || std::any_of(package.categories.begin(), package.categories.end(),
+                                       [](const std::string& category) { return lower(category) == "nsfw"; });
+}
+
 std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed) {
     const auto query = lower(store.search.data());
     std::vector<const ts::Package*> result;
     for (const auto& package : store.packages) {
         const bool have = installed.contains(ts::folder_for(package.full_name));
-        // Deprecated and NSFW packages only show once installed.
-        if ((package.deprecated || package.nsfw) && !have) continue;
+        // NSFW packages are never listed here, installed or not: by Thunderstore's own mark,
+        // or a category of that name. A deprecated one only shows once installed.
+        if (nsfw(package)) continue;
+        if (package.deprecated && !have) continue;
         if (!store.category.empty() && !package.in_category(store.category)) continue;
         if (!query.empty() && lower(package.title()).find(query) == std::string::npos &&
             lower(package.owner).find(query) == std::string::npos &&
@@ -325,7 +333,11 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
     panel.worker = std::thread([&panel, root, packages = std::move(packages)] {
         std::string name, error, note;
         std::size_t done = 0;
+        // One that fails does not stop the ones after it: each is its own download, and the
+        // list ends with what could not be installed. Cancelling does stop the rest.
+        std::vector<std::string> failed;
         for (const auto& package : packages) {
+            if (panel.cancel) break;
             try {
                 const bool update = fs::exists(root / wide(ts::folder_for(package.full_name)));
                 name = install_package(panel, root, package);
@@ -337,9 +349,23 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
                     : std::format("{} {} v{}. It loads the next time Skate starts.", update ? "Updated" : "Installed",
                                   package.title(), package.latest().number);
             } catch (const std::exception& failure) {
-                error = package.title() + ": " + failure.what();
                 log(logging::Level::warning, "Thunderstore install of " + package.full_name + " failed: " + failure.what());
-                break;
+                if (panel.cancel) {
+                    error = package.title() + ": " + failure.what();
+                    break;
+                }
+                failed.push_back(package.title() + ": " + failure.what());
+            }
+        }
+        if (error.empty() && !failed.empty()) {
+            // The first few by name and reason; the log has every one.
+            constexpr std::size_t shown = 3;
+            error = packages.size() == 1 ? failed.front()
+                : std::format("{} of {} could not be installed{}. ", failed.size(), packages.size(),
+                              done ? std::format(" ({} were)", done) : std::string());
+            if (packages.size() > 1) {
+                for (std::size_t i = 0; i < failed.size() && i < shown; ++i) error += (i ? " | " : "") + failed[i];
+                if (failed.size() > shown) error += std::format(" | and {} more", failed.size() - shown);
             }
         }
         std::lock_guard lock(panel.mutex);
@@ -422,9 +448,11 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     ImGui::InputTextWithHint("##search", "Search mods", store.search.data(), store.search.size());
     ImGui::SameLine();
     std::vector<std::string> categories;
-    for (const auto& package : store.packages)
+    for (const auto& package : store.packages) {
+        if (nsfw(package)) continue;   // (and no category that only they have)
         for (const auto& category : package.categories)
             if (std::find(categories.begin(), categories.end(), category) == categories.end()) categories.push_back(category);
+    }
     std::sort(categories.begin(), categories.end());
     ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##category", store.category.empty() ? "All categories" : store.category.c_str())) {
@@ -449,8 +477,15 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     if (!store.picked.empty()) {
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(store.picked.size() == 1
-            ? "1 mod selected" : std::format("{} mods selected", store.picked.size()).c_str());
+        // What installing them all downloads: each one's newest version.
+        std::uint64_t bytes{};
+        for (const auto& name : store.picked)
+            for (const auto& package : store.packages)
+                if (package.full_name == name) bytes += package.latest().file_size;
+        auto chosen_text = store.picked.size() == 1 ? std::string("1 mod selected")
+                                                    : std::format("{} mods selected", store.picked.size());
+        if (bytes) chosen_text += "  /  " + size_text(bytes) + " to download";
+        ImGui::TextUnformatted(chosen_text.c_str());
         ImGui::SameLine();
         const float action = S(190);
         ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - action - S(90) - S(8));
@@ -475,7 +510,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     const auto packages = visible_packages(store, installed);
 
     // ------------------------------------------------ the list
-    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     const auto note = [](const char* text) {
         ImGui::Spacing();
         ImGui::Indent(S(14));
@@ -519,10 +554,12 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const float width = ImGui::GetContentRegionAvail().x;
         // The row itself opens the overview; the widgets on it keep their clicks.
+        begin_row();
         if (list_row("##row", width, tall, ticked)) {
             store.selected = package.full_name;
             store.overview = false;
         }
+        row_buttons();
         const float right = start.x + width;
         const float text_x = start.x + S(82);
         mod_icon(panel, &package, ImVec2(start.x + S(14), start.y + S(11)), S(56));
@@ -573,10 +610,169 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
             std::format("v{}{}  /  {} downloads  /  {}", version.number,
                 version.file_size ? "  /  " + size_text(version.file_size) : std::string(),
                 count_text(package.downloads), date_text(package.date_updated)).c_str());
+        end_row();
         ImGui::PopID();
     });
     ImGui::EndDisabled();
+    keep_focus_in_list();
     ImGui::EndChild();
+}
+
+namespace {
+
+// ---------------------------------------------------------------- READMEs
+
+constexpr std::uint64_t max_readme_bytes = 512 * 1024;
+
+void readme_worker(Readmes& readmes) {
+    std::atomic<bool> never{};
+    for (;;) {
+        Readmes::Job job;
+        {
+            std::unique_lock lock(readmes.mutex);
+            readmes.wake.wait(lock, [&] { return readmes.stop || !readmes.queue.empty(); });
+            if (readmes.stop) break;
+            job = std::move(readmes.queue.front());
+            readmes.queue.pop_front();
+        }
+        Readmes::Done done{job.key, {}, false};
+        try {
+            done.markdown = ts::parse_readme(fetch(job.url, max_readme_bytes, never));
+        } catch (const std::exception& failure) {
+            done.failed = true;
+            logging::write(logging::Level::warning, logging::Channel::launcher,
+                std::string("Could not get the README of ") + job.key + ": " + failure.what());
+        }
+        std::lock_guard lock(readmes.mutex);
+        readmes.done.push_back(std::move(done));
+    }
+}
+
+// The entry to draw, asked for or read the first time. Null: nothing to show.
+const Readmes::Entry* readme_for(ModsPanel& panel, const ts::Package* package, const mods::Mod* mod) {
+    auto& readmes = panel.readmes;
+    {
+        std::lock_guard lock(readmes.mutex);
+        for (auto& done : readmes.done) {
+            auto& entry = readmes.entries[done.key];
+            entry.loading = false;
+            entry.failed = done.failed;
+            entry.readme = ts::readme_lines(done.markdown);
+        }
+        readmes.done.clear();
+    }
+    // An installed mod's own README.md is what is on this PC, so it comes first.
+    if (mod) {
+        const auto key = "folder:" + mod->name + ":" + mod->version;
+        auto found = readmes.entries.find(key);
+        if (found == readmes.entries.end()) {
+            Readmes::Entry entry;
+            std::error_code error;
+            const auto file = mod->directory / "README.md";
+            if (const auto size = fs::file_size(file, error); !error && size > 0 && size <= max_readme_bytes) {
+                const auto bytes = read_bytes(file);
+                std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
+                entry.readme = ts::readme_lines(text);
+            }
+            found = readmes.entries.emplace(key, std::move(entry)).first;
+        }
+        if (!found->second.readme.lines.empty()) return &found->second;
+    }
+    if (!package) return nullptr;
+    const auto key = package->latest().full_name;
+    auto found = readmes.entries.find(key);
+    if (found == readmes.entries.end()) {
+        found = readmes.entries.emplace(key, Readmes::Entry{true, false, {}}).first;
+        {
+            std::lock_guard lock(readmes.mutex);
+            readmes.queue.push_back({key, ts::readme_url(*package)});
+        }
+        if (!readmes.worker.joinable()) readmes.worker = std::thread([&readmes] { readme_worker(readmes); });
+        readmes.wake.notify_one();
+    }
+    return &found->second;
+}
+
+} // namespace
+
+// The two columns of an overview, under its header: the README on the left, the facts in a panel
+// of their own on the right. Both are as tall as the room above the overview's last row.
+OverviewColumns overview_columns(float popup_height) {
+    OverviewColumns columns;
+    columns.gap = S(18);
+    columns.height = std::max(S(140), popup_height - ImGui::GetCursorPosY() - S(24) - ImGui::GetFrameHeight() - S(12));
+    const float room = ImGui::GetContentRegionAvail().x;
+    columns.details = std::clamp(room * 0.32f, S(220), S(320));
+    columns.readme = room - columns.details - columns.gap;
+    return columns;
+}
+
+void begin_overview_details(const char* id, const OverviewColumns& columns) {
+    ImGui::SameLine(0, columns.gap);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(rgba(31, 31, 34)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(6));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(16), S(14)));
+    ImGui::BeginChild(id, ImVec2(columns.details, columns.height),
+        ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
+    ImGui::PushTextWrapPos(0);
+}
+
+void end_overview_details() {
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+}
+
+void overview_fact(const Fonts& fonts, const char* name, const std::string& value) {
+    if (value.empty()) return;
+    field(fonts, name, value);
+    ImGui::Dummy(ImVec2(0, S(6)));
+}
+
+void draw_readme(const Fonts& fonts, const thunderstore::Readme& readme) {
+    using Kind = ts::ReadmeLine::Kind;
+    ImGui::PushTextWrapPos(0);
+    for (const auto& line : readme.lines) {
+        switch (line.kind) {
+        case Kind::heading:
+            if (&line != &readme.lines.front()) ImGui::Dummy(ImVec2(0, S(8)));
+            ImGui::PushFont(fonts.bold);
+            ImGui::TextUnformatted(line.text.c_str());
+            ImGui::PopFont();
+            break;
+        case Kind::bullet:
+            ImGui::Bullet();
+            ImGui::TextUnformatted(line.text.c_str());
+            break;
+        case Kind::code:
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextUnformatted(line.text.c_str());
+            ImGui::PopStyleColor();
+            break;
+        case Kind::rule: ImGui::Separator(); break;
+        case Kind::gap: ImGui::Spacing(); break;
+        case Kind::text: ImGui::TextUnformatted(line.text.c_str()); break;
+        }
+    }
+    ImGui::PopTextWrapPos();
+}
+
+bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod) {
+    const auto* entry = readme_for(panel, package, mod);
+    if (!entry || (!entry->loading && !entry->failed && entry->readme.lines.empty())) return false;
+    if (entry->loading) {
+        ImGui::TextDisabled("Loading the README...");
+        return true;
+    }
+    if (entry->failed) {
+        ImGui::TextDisabled("Could not load the README. It is on the mod's Thunderstore page.");
+        return true;
+    }
+    draw_readme(fonts, entry->readme);
+    if (entry->readme.cut) ImGui::TextDisabled("The rest is on the mod's Thunderstore page.");
+    return true;
 }
 
 void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool installing) {
@@ -598,7 +794,7 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
         ImGui::OpenPopup("##package_overview");
         store.overview = true;
     }
-    const ImVec2 extent(std::min(S(680), size.x - S(80)), std::min(S(560), size.y - S(80)));
+    const ImVec2 extent(std::min(S(1080), size.x - S(80)), std::min(S(740), size.y - S(60)));
     ImGui::SetNextWindowPos(ImVec2((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f));
     ImGui::SetNextWindowSize(extent);
     if (!ImGui::BeginPopupModal("##package_overview", nullptr,
@@ -612,21 +808,23 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
         store.selected.clear();
         ImGui::CloseCurrentPopup();
     };
-    mod_icon(panel, &package, ImGui::GetCursorScreenPos(), S(84));
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + S(84) + S(16));
+    // The icon, with the name, who made it and its one-line description beside it.
+    const float icon = S(104), header_top = ImGui::GetCursorPosY();
+    mod_icon(panel, &package, ImGui::GetCursorScreenPos(), icon);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon + S(20));
     ImGui::BeginGroup();
-    ImGui::PushFont(fonts.heading);
     ImGui::PushTextWrapPos(0);
+    ImGui::PushFont(fonts.heading);
     ImGui::TextUnformatted(package.title().c_str());
-    ImGui::PopTextWrapPos();
     ImGui::PopFont();
     ImGui::TextDisabled("by %s", package.owner.c_str());
-    const auto facts = std::format("v{}{}  /  {} downloads  /  updated {}", version.number,
-        version.file_size ? "  /  " + size_text(version.file_size) : std::string(),
-        count_text(package.downloads), date_text(package.date_updated));
-    ImGui::TextDisabled("%s", facts.c_str());
+    if (!version.description.empty()) {
+        ImGui::Dummy(ImVec2(0, S(4)));
+        ImGui::TextUnformatted(version.description.c_str());
+    }
+    ImGui::PopTextWrapPos();
     ImGui::EndGroup();
-    ImGui::Spacing();
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), header_top + icon) + S(14));
 
     const bool tool = package.in_category("Tools") && !package.in_category("Mods");
     if (tool) {
@@ -653,23 +851,31 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
     }
     ImGui::Spacing();
 
-    ImGui::BeginChild("##overview_body",
-        ImVec2(0, std::max(S(80), extent.y - ImGui::GetCursorPosY() - S(24) - ImGui::GetFrameHeight())));
+    ImGui::Dummy(ImVec2(0, S(6)));
+    const auto columns = overview_columns(extent.y);
+    ImGui::BeginChild("##overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
     ImGui::PushTextWrapPos(0);
     if (package.deprecated)
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
             "Deprecated: its author no longer supports it.");
     if (package.nsfw)
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning), "Marked as not safe for work.");
-    field(fonts, "DESCRIPTION", version.description);
-    if (found != installed.end())
-        field(fonts, "INSTALLED", found->second.empty() ? std::string("yes") : "v" + found->second);
-    std::string names;
-    for (const auto& category : package.categories) names += (names.empty() ? "" : ", ") + category;
-    field(fonts, "CATEGORIES", names);
-    field(fonts, "FOLDER", "Mods\\" + ts::folder_for(package.full_name));
+    if (!readme_field(fonts, panel, &package, nullptr)) ImGui::TextDisabled("This mod has no README.");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
+
+    begin_overview_details("##overview_details", columns);
+    overview_fact(fonts, "VERSION", "v" + version.number);
+    if (found != installed.end())
+        overview_fact(fonts, "INSTALLED", found->second.empty() ? std::string("yes") : "v" + found->second);
+    overview_fact(fonts, "DOWNLOADS", count_text(package.downloads));
+    overview_fact(fonts, "UPDATED", date_text(package.date_updated));
+    if (version.file_size) overview_fact(fonts, "SIZE", size_text(version.file_size));
+    std::string names;
+    for (const auto& category : package.categories) names += (names.empty() ? "" : ", ") + category;
+    overview_fact(fonts, "CATEGORIES", names);
+    overview_fact(fonts, "FOLDER", "Mods\\" + ts::folder_for(package.full_name));
+    end_overview_details();
 
     ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
     bool ticked = picked(store, package.full_name);
@@ -677,7 +883,8 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
     if (ImGui::Checkbox("Install with the others I tick", &ticked)) pick(store, package.full_name, ticked);
     ImGui::EndDisabled();
     ImGui::SameLine(extent.x - S(28) - S(110));
-    if (ImGui::Button("CLOSE", ImVec2(S(110), 0))) close();
+    // Escape too, and so a controller's B: the modal has no other way out but CLOSE.
+    if (ImGui::Button("CLOSE", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) close();
     ImGui::EndPopup();
 }
 

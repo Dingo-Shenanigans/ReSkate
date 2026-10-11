@@ -137,7 +137,9 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         s.feedback = accepted ? "" : "Couldn't apply that change. Try again when the game is ready.";
     };
     const auto console = [&](const std::string& text, bool enabled) {
-        report(enabled && cb.queue_console_command && cb.queue_console_command(cb.user, text.c_str(), result.data(), result.size()));
+        const bool accepted = enabled && cb.queue_console_command && cb.queue_console_command(cb.user, text.c_str(), result.data(), result.size());
+        report(accepted);
+        return accepted;
     };
     if (command == "select-level") {
         if (multiplayer_controls_level(m.multiplayer)) { s.feedback = "Only the lobby host can change levels."; return; }
@@ -172,6 +174,14 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         console("park " + std::string(park_lots[s.lot].key) + " " + s.parks[s.lot], can_park(m, cb) && valid_park(s.lot, s.parks[s.lot]));
     } else if (command == "style-editor") {
         console("style editor open", true);
+    } else if (command == "load-random-parks") {
+        // Use the shared command path: hosts load locally, server admins request
+        // one server roll, and guests cannot replace the host's layouts.
+        if (console("park random", can_park(m, cb))) s.parks = {};
+    } else if (command == "park-random-on-launch") {
+        // This is a personal preference, including while following a host.
+        console(m.parks.randomize_on_launch ? "park random-on-launch 0" : "park random-on-launch 1",
+            m.parks.available);
     } else if (command == "noclip" || command == "no-bail" || command == "freecam" || command == "speed") {
         const auto& d = m.debug;
         overlay::DebugRequest request;
@@ -191,6 +201,14 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const overlay::OfflineFeatureRequest request{overlay::OfflineFeatureGroup::board_wear, !wear.effective};
         report(wear.available && cb.queue_offline_feature &&
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
+    } else if (command == "hall-of-meat") {
+        console(m.hall_of_meat.enabled ? "hallofmeat 0" : "hallofmeat 1", m.hall_of_meat.available);
+    } else if (command == "road-rash") {
+        console(m.road_rash.enabled ? "roadrash 0" : "roadrash 1", m.road_rash.available);
+    } else if (command == "road-rash-blood") {
+        console(m.road_rash.blood ? "roadrashblood 0" : "roadrashblood 1", m.road_rash.available && m.road_rash.enabled);
+    } else if (command == "road-rash-heal") {
+        console("roadrash heal", m.road_rash.available && m.road_rash.enabled);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -266,6 +284,10 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         for (unsigned i = 0; i < park_lots.size(); ++i)
             button(p.main, "park-lot-" + std::to_string(i), std::string(park_lots[i].label) + (s.lot == i ? "  /  SELECTED" : ""),
                 "park-lot", true, std::string(park_lots[i].key));
+        text(p.main, "park-random-title", "ALL THREE PARK LOCATIONS");
+        button(p.main, "load-random-parks", "Load Random Parks", "load-random-parks", can_park(m, cb));
+        toggle(p.main, "park-random-on-launch", "Randomize on Launch", m.parks.randomize_on_launch,
+            m.parks.available && cb.queue_console_command);
         text(p.side, "park-options", "PARK LAYOUT");
         const bool available = can_park(m, cb);
         std::string family = "Empty lot";
@@ -282,6 +304,12 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
+        toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
+        toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
+        toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
+            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+        button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
+            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",

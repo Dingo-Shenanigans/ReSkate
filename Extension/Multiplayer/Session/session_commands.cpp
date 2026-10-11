@@ -196,7 +196,10 @@ std::string teleport_self(Session &s, std::string_view argument) {
     std::string error;
     auto *p = find_player(s, argument, error);
     if (!p) return error;
-    if (!p->visible) return peer_name(s, *p) + " is not in the world right now.";
+    // Where they were last heard to be: a player further away than skaters are shown has no
+    // skater here, and is exactly who a teleport is for. Only one no pose has placed yet has
+    // nowhere to go to.
+    if (!p->placed) return peer_name(s, *p) + " is not in the world right now.";
     at = p->render_pose.root.position;
     at[0] += 2.0f; // beside them, not inside
     at[1] += 1.0f;
@@ -613,10 +616,10 @@ bool own_mark_command(std::string_view action) {
 } // namespace
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action)) return false;
-    if ((action != "host" && action != "host-config" && action != "join" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
+    if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
          action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
-         action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" &&
+         action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" && action != "vote" && action != "voice-chat" &&
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
          !own_mark_command(action) &&
@@ -642,6 +645,8 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
     s.requests.push_back(std::move(request));
     return true;
 }
+bool server_vote_open() noexcept { return session_detail::server_vote_open_flag.load(std::memory_order_relaxed); }
+unsigned server_poll_answers() noexcept { return session_detail::server_poll_answers_flag.load(std::memory_order_relaxed); }
 std::string command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action))
         return "Multiplayer is unavailable in offline mode. Start Steam and relaunch ReSkate.";
@@ -662,6 +667,15 @@ std::string command(std::string_view action, std::string_view argument, std::str
             const auto text = action == "server" ? std::string(argument) : std::string(action) + " " + std::string(argument);
             const auto result = send_admin(s, text);
             if (result != "Sent to the server.") add_chat(s, 0, "Server", result);
+            return result;
+        }
+        if (action == "vote") {
+            // yes or no, or the number of a poll's answer
+            const bool answer = argument.size() == 1 && argument[0] >= '1' && argument[0] <= '0' + static_cast<char>(max_vote_answers);
+            if (argument != "yes" && argument != "no" && !answer) return "vote yes|no|<answer number>";
+            const auto result = answer ? answer_server_poll(s, static_cast<std::size_t>(argument[0] - '1'))
+                                       : cast_server_vote(s, argument == "yes");
+            if (!result.empty()) add_chat(s, 0, "ReSkate", result);
             return result;
         }
         if (action == "server") return "Server commands need a dedicated server session.";
@@ -733,6 +747,18 @@ std::string command(std::string_view action, std::string_view argument, std::str
             s.voice.configure(value);
             publish(s);
             return value.enabled ? (value.open_mic ? "Open microphone enabled." : "Push-to-talk voice enabled.") : "Voice chat disabled.";
+        }
+        if (action == "voice-chat") {
+            // The player's own voice chat, on or off; the rest of their voice settings stay.
+            if (argument != "on" && argument != "off" && argument != "toggle") return "Choose on, off or toggle.";
+            auto value = s.voice_settings;
+            value.enabled = argument == "toggle" ? !value.enabled : argument == "on";
+            s.voice_settings = value;
+            s.voice.configure(value);
+            publish(s);
+            const std::string result = value.enabled ? "Voice chat on." : "Voice chat off.";
+            add_chat(s, 0, "ReSkate", result);
+            return result;
         }
         if (action == "tp") return teleport_self(s, argument);
         if (action == "tpall" || action == "tphere") return teleport_players(s, action, argument);
@@ -899,8 +925,17 @@ std::string command(std::string_view action, std::string_view argument, std::str
             publish(s);
             return s.status;
         }
-        if (action != "host" && action != "join" && action != "echo")
+        // "rejoin": back to the session a missing map ended, once the map is installed
+        // (session.h: take_map_need), with the password that session was joined with.
+        std::optional<Session::Rejoin> rejoin;
+        if (action == "rejoin") {
+            rejoin = std::exchange(s.rejoin, std::nullopt);
+            if (!rejoin) return "There is no session to go back to.";
+        }
+        if (action != "host" && action != "join" && action != "echo" && !rejoin)
             return "Unknown multiplayer action.";
+        s.rejoin.reset();
+        s.map_need.reset();
         unsigned capacity = multiplayer_lobby_player_limit;
         unsigned tps = multiplayer_default_tps;
         std::string_view lobby_name;
@@ -913,6 +948,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         };
         // Joining is for the host or the server to refuse (a server may opt out of the bans).
         if (action == "host" && reskate_banned(s.transport.status().local_id)) return refuse(std::string(banned_notice));
+        if (action == "host" && banned_host(s.transport.status().local_id)) return refuse(std::string(banned_host_notice));
         if (action == "host") {
             const auto space = argument.find(' ');
             if (space != std::string_view::npos) {
@@ -947,11 +983,13 @@ std::string command(std::string_view action, std::string_view argument, std::str
                 return refuse("That lobby name contains blocked words. Choose another one.");
         }
         std::optional<Invite> invitation;
-        if (action == "join") {
-            invitation = parse_invite(argument);
+        if (rejoin) invitation = rejoin->invite;
+        if (action == "join" || rejoin) {
+            if (!rejoin) invitation = parse_invite(argument);
             if (!invitation)
                 return refuse("Invalid join code. Paste the complete SteamID-session code from the host.");
             if (blocked_server(invitation->steam_id)) return refuse(std::string(blocked_server_notice));
+            if (banned_host(invitation->steam_id)) return refuse(std::string(banned_host_lobby_notice));
         }
         stop(s, "Starting multiplayer...");
         s.chat.clear(); // A new session starts with an empty chat.
@@ -960,7 +998,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         s.epoch = nonce();
         s.secret = invitation ? invitation->secret : nonce();
         if (action != "echo")
-            s.password = password_key(input.password, s.secret);
+            s.password = rejoin ? rejoin->password : password_key(input.password, s.secret);
         if (action == "echo") {
             s.mode = Mode::echo;
             s.peers[0].member = {1, s.epoch, "Local Echo"};

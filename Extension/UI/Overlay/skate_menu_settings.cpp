@@ -67,12 +67,12 @@ void ui_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) 
 }
 
 void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    begin_card(menu, "controller-binds", "CONTROLLER BINDS");
+    begin_card(menu, "controller-binds", "ACTION BINDS");
     const bool available = model.bindings.available && callbacks.queue_console_command;
     const auto save = [&](int action, std::uint32_t combo) {
         std::array<char, 512> result{};
         const auto command = std::string("bind ") +
-            (action == 1 ? "noclip " : action == 2 ? "forwardvelocity " : "upvelocity ") + std::to_string(combo);
+            (action >= 10 ? std::string(action_binds[static_cast<std::size_t>(action - 10)].name) + " " : action == 1 ? "freecamcontroller " : action == 2 ? "freecam " : action == 3 ? "noclip " : action == 4 ? "forwardvelocity " : action == 5 ? "upvelocity " : action == 6 ? "tptofreecam " : action == 8 ? "voteyes " : action == 9 ? "voteno " : "offboardupvelocity ") + std::to_string(combo);
         const bool queued = callbacks.queue_console_command(callbacks.user, command.c_str(), result.data(), result.size());
         result.back() = '\0';
         feedback(menu, result[0] ? result.data() : queued ? "Saving binding..." : "Could not queue binding.");
@@ -83,7 +83,7 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         if (!available || ImGui::GetTime() >= menu.bind_capture_until) {
             menu.recording_bind = 0;
             feedback(menu, "Recording cancelled. Your binding is unchanged.");
-        } else if (const auto combo = menu.bind_capture.update(controller)) {
+        } else if (const auto combo = menu.bind_capture.update(controller, true)) {
             const auto action = menu.recording_bind;
             menu.recording_bind = 0;
             save(action, *combo);
@@ -92,7 +92,7 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     ImGui::BeginDisabled(!available);
     if (ImGui::BeginTable("controller-binds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, px(130));
-        ImGui::TableSetupColumn("Controller combo", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Controller combo / key", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("##controls", ImGuiTableColumnFlags_WidthFixed, px(170));
         ImGui::TableHeadersRow();
         const auto row = [&](int action, const char* name, std::uint32_t combo) {
@@ -120,19 +120,26 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
             }
             ImGui::PopID();
         };
-        row(1, "Noclip", model.bindings.noclip_combo);
-        row(2, "Forward Boost", model.bindings.forward_velocity_combo);
-        row(3, "Up Boost", model.bindings.up_velocity_combo);
+        row(1, "Freecam Controller", model.bindings.freecam_controller_combo);
+        row(2, "Freecam", model.bindings.freecam_combo);
+        row(3, "Noclip", model.bindings.noclip_combo);
+        row(4, "Forward Boost", model.bindings.forward_velocity_combo);
+        row(5, "Up Boost", model.bindings.up_velocity_combo);
+        row(6, "TP to Freecam", model.bindings.tp_to_freecam_combo);
+        row(7, "Off-board Up Boost", model.bindings.offboard_up_velocity_combo);
+        row(8, "Vote yes", model.bindings.vote_yes_combo);
+        row(9, "Vote no", model.bindings.vote_no_combo);
+        for (std::size_t i = 0; i < action_binds.size(); ++i)
+            row(10 + static_cast<int>(i), action_binds[i].label.data(), model.bindings.action_combos[i]);
         ImGui::EndTable();
     }
     ImGui::EndDisabled();
     if (menu.recording_bind) {
-        warn(!controller.available ? "Connect a controller and keep the game focused to record. PlayStation pads work directly or through DS4Windows / Steam Input." :
-             !menu.bind_capture.ready ? "Release all controller buttons first." :
-             "Hold the buttons you want together, then release them to save.");
+        warn(!menu.bind_capture.ready ? "Release controller buttons and keyboard keys first." :
+             "Hold up to five keys together, then release them. A-Z, 0-9, Space, F1-F12, Ctrl, Shift and Alt work; controller combos work too.");
     } else {
-        note(("Record a button or combo, such as " + controller_combo_label(0x300, controller.style) +
-              ". Noclip toggles; Forward Boost and Up Boost add their velocity once per press. Use a different combo for each.").c_str());
+        note(("Record a key, keyboard chord or controller combo, such as Ctrl + F5 or " + controller_combo_label(0x300, controller.style) +
+              ". Freecam, Freecam Controller, and Noclip toggle; boosts add velocity once per press. Off-board Up Boost also works while falling or gliding; release and press again to repeat. On-board and off-board boosts can share a combo. Give toggles different combos.").c_str());
         note("Saved to your profile.");
         if (!model.bindings.status.empty()) note(model.bindings.status.c_str());
         if (!model.bindings.available) warn("Waiting for the local profile.");

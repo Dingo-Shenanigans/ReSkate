@@ -39,7 +39,9 @@ inline constexpr std::uint32_t nametag_white = 0xffffffffU, nametag_developer = 
                                nametag_staff = 0xff71cc2eU,                              // green (#2ECC71)
                                nametag_admin = 0xffc674ffU,                              // pink
                                nametag_host = 0xffffc85eU,                               // blue
-                               nametag_friend = 0xff8ae07bU;                             // green
+                               nametag_friend = 0xff8ae07bU,                             // green
+                               nametag_server = 0xffff5c8eU,                             // violet (#8E5CFF)
+                               nametag_server_text = 0xffffc8d9U;                        // lavender (#D9C8FF), its lines' text
 // Developers, staff, content creators, homies and Centrix shimmer from these to their role
 // colour (Centrix between white and its blue).
 inline constexpr std::uint32_t nametag_developer_start = 0xffff206eU, // #6E20FF, IM_COL32 layout

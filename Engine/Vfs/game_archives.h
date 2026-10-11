@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
@@ -63,8 +64,17 @@ public:
     [[nodiscard]] const std::filesystem::path& root() const noexcept { return root_; }
 
     static std::optional<std::uint16_t> archive_index(const std::string& stem);
+    // From here on every archive read stays open until this object goes: for a merge, which
+    // reads tens of thousands of payloads out of a few hundred files. Opening a file costs
+    // far more than reading from it (the PC's anti-virus checks every open and close).
+    // Reads may then come from any thread.
+    void keep_open();
+    // Closes an archive kept open, before the file is replaced by another.
+    void forget(const std::filesystem::path& file) const;
 
 private:
+    struct Open; // the archives kept open (keep_open); null: each read opens its file
+    std::shared_ptr<Open> open_;
     std::filesystem::path root_;
     std::map<std::string, std::set<std::uint16_t>> directories_;
     std::map<std::uint32_t, std::string> chunkDirectory_;

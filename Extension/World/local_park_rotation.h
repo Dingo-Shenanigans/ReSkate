@@ -1,5 +1,6 @@
 #pragma once
 #include "Extension/Profile/runtime_internal.h"
+#include "Engine/Game/World/park_randomization.h"
 
 namespace dingosdk::profile_runtime {
 struct ParkRuntime {
@@ -12,6 +13,7 @@ struct ParkRuntime {
     Notify original_notify{};
     std::atomic<bool> active{};
     ParksModel model;
+    ParkLaunchRandomization launch_randomization;
     ParkChoices sent;
     bool lobby_active{};
     std::array<bool, park_lots.size()> clear_unset{};

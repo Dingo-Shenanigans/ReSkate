@@ -702,11 +702,17 @@ std::string change_named_setting(std::string_view name, std::string_view value, 
             return change(i, value, restore);
     return "error: Unknown native setting; only catalog entries can execute.";
 }
-std::string named_setting_value(std::string_view name) {
+std::optional<std::string> named_setting_value(std::string_view name) {
     auto &r = runtime();
-    if (!r.thread || r.thread != GetCurrentThreadId()) return {};
+    if (!r.thread || r.thread != GetCurrentThreadId())
+        return {};
     for (std::size_t i = 0; i < r.models.size(); ++i)
-        if (console::equal(r.models[i].name, name)) return observe(i) ? r.models[i].value : std::string{};
+        if (console::equal(r.models[i].name, name)) {
+            const auto current = observe(i);
+            if (current)
+                return text(current->value);
+            return {};
+        }
     return {};
 }
 std::string player_change_named_setting(std::string_view name, std::string_view value, bool restore) {

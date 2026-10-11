@@ -3,6 +3,7 @@
 #include "no_bail.h"
 #include "offboard_flight.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/offboard_flight.h"
@@ -77,6 +78,11 @@ NoclipBodies debug_noclip_bodies(std::uintptr_t base, std::uintptr_t client, std
     result.seconds = reader.value<float>(result.context, 0x17ec);
     source_require(std::isfinite(result.seconds) && result.seconds >= 0 && result.seconds <= .1f, "Invalid physics timestep.");
     result.offboard = reader.pointer(reader.pointer(result.core, 0x3b0)) == base + addr::offboard_flight::offboard_flight_vtable;
+    // Read the committed native state, not the selector's proposed next state
+    // (which is remapped by its caller and may be stale between selections).
+    const auto physics = reader.value<std::uint32_t>(result.context, 0x1414);
+    result.wipeout = physics == addr::no_bail::wipeout_physics_state ||
+        physics == addr::no_bail::offboard_physics_state;
     source_require(reader.pointer(board) == base + spawn::board_physics_vtable && reader.pointer(rig) == base + spawn::rig_physics_vtable,
         "Unsupported board or skeleton physics.");
     const auto board_parts = reader.pointer(board, 0x20), rig_parts = reader.pointer(rig, 0x20);
@@ -104,41 +110,76 @@ void noclip_apply_velocity(std::uintptr_t core) noexcept {
         state.busy.test_and_set(std::memory_order_acquire)) return;
     SourceBusyScope scope{state.busy};
     auto& debug = state.trial.debug;
-    const auto apply_boost = [&](InteractiveDebug::VelocityRequest& boost, std::uint64_t& updates, bool up) {
+    const auto apply_boost = [&](InteractiveDebug::VelocityRequest& boost, std::uint64_t& updates, bool up, bool offboard = false) {
         if (!boost.valid || boost.core != core) return;
         try {
+            if (offboard && boost.applied && GetTickCount64() >= boost.expires) {
+                boost.valid = false;
+                state.offboard_boost_core.store(0, std::memory_order_release);
+                return;
+            }
             source_require(GetTickCount64() < boost.expires, "Velocity boost timed out.");
             const auto bodies = debug_noclip_bodies(state.trial.base, boost.client, boost.entity);
             source_require(bodies.core == core, "Skater physics was replaced before the velocity boost could apply.");
-            source_require(!bodies.offboard, "Velocity boosts require the skater to be on the board.");
+            source_require(offboard ? (boost.applied || bodies.offboard || bodies.wipeout) : !bodies.offboard,
+                offboard ? "Off-board Up Boost requires walking, falling or gliding." :
+                "Velocity boosts require the skater to be on the board.");
             source_require(!debug.noclip && !debug.park_editor, "Velocity boost cancelled while editing or flying.");
             SourceReader reader;
             source_require(reader.value<std::uint8_t>(boost.entity, 0x7e0) == 0,
                 "Wait for the current teleport before using velocity boosts.");
             std::array<std::array<float, 3>, 32> velocities{};
             std::array<std::uint32_t, 32> flags{};
-            for (std::size_t i = 0; i < bodies.parts.size(); ++i) {
+            const std::size_t first = offboard ? 9 : 0; // Leave the carried/detached board alone.
+            if (offboard && !boost.applied) {
+                const auto current_up = reader.value<float>(bodies.parts[9], 0x74);
+                boost.velocity[1] = std::max(boost.velocity[1], current_up + boost.velocity[1]);
+            }
+            for (std::size_t i = first; i < bodies.parts.size(); ++i) {
                 velocities[i] = reader.value<std::array<float, 3>>(bodies.parts[i], 0x70);
                 flags[i] = reader.value<std::uint32_t>(bodies.parts[i], 0x60);
                 for (std::size_t axis = 0; axis < 3; ++axis) {
-                    velocities[i][axis] += boost.velocity[axis];
+                    if (offboard && axis == 1) velocities[i][axis] = std::max(velocities[i][axis], boost.velocity[1]);
+                    else velocities[i][axis] += boost.velocity[axis];
                     source_require(std::isfinite(velocities[i][axis]) && std::abs(velocities[i][axis]) <= 100000,
                         "Velocity boost produced an invalid physics velocity.");
                 }
             }
             reader.verify();
-            boost.valid = false;
-            for (std::size_t i = 0; i < bodies.parts.size(); ++i) {
+            if (offboard && bodies.offboard)
+                source_require(ensure_offboard_up_velocity(state.trial.base, core, bodies.context,
+                    bodies.rig_wrapper, boost.velocity[1]), "Off-board boost motion ownership changed.");
+            for (std::size_t i = first; i < bodies.parts.size(); ++i) {
                 body_write(bodies.parts[i] + 0x70, velocities[i]);
                 body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
             }
-            ++updates;
-            debug.status = up ? "Up velocity added." : "Forward velocity added.";
-        } catch (const SourceGuard& issue) { boost.valid = false; debug.status = issue.message; }
-          catch (...) { boost.valid = false; debug.status = "Velocity boost failed during the physics update."; }
+            if (offboard) {
+                if (!boost.applied) {
+                    ++updates;
+                    boost.applied = true;
+                    boost.expires = GetTickCount64() + 180;
+                    debug.status = "Off-board up velocity added.";
+                }
+            } else {
+                boost.valid = false;
+                ++updates;
+                debug.status = up ? "Up velocity added." : "Forward velocity added.";
+            }
+        } catch (const SourceGuard& issue) {
+            boost.valid = false;
+            if (offboard) state.offboard_boost_core.store(0, std::memory_order_release);
+            debug.status = issue.message;
+            if (offboard) logging::write(logging::Level::warning, logging::Channel::skater, issue.message);
+        } catch (...) {
+            boost.valid = false;
+            if (offboard) state.offboard_boost_core.store(0, std::memory_order_release);
+            debug.status = "Velocity boost failed during the physics update.";
+            if (offboard) logging::write(logging::Level::warning, logging::Channel::skater, debug.status);
+        }
     };
     apply_boost(debug.forward_velocity, debug.forward_velocity_updates, false);
     apply_boost(debug.up_velocity, debug.up_velocity_updates, true);
+    apply_boost(debug.offboard_up_velocity, debug.offboard_up_velocity_updates, true, true);
     const auto& request = debug.noclip_velocity;
     if (!debug.noclip || !request.valid || request.core != core) return;
     try {
@@ -318,6 +359,36 @@ bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
         state.busy.test_and_set(std::memory_order_acquire)) return false;
     SourceBusyScope scope{state.busy};
     auto& debug = state.trial.debug;
+    auto& boost = debug.offboard_up_velocity;
+    if (!debug.noclip && boost.valid && boost.applied) {
+        try {
+            SourceReader reader;
+            if (reader.pointer(boost.core, 0x438) != rig || reader.pointer(boost.core, 0x3c0) != context)
+                return false;
+            if (GetTickCount64() >= boost.expires) return false;
+            const auto bodies = debug_noclip_bodies(state.trial.base, boost.client, boost.entity);
+            source_require(bodies.core == boost.core && bodies.rig_wrapper == rig && bodies.context == context,
+                "Off-board boost skater changed.");
+            source_require(!debug.park_editor && reader.value<std::uint8_t>(boost.entity, 0x7e0) == 0,
+                "Off-board boost interrupted by editing or teleporting.");
+            source_require(reader.raw(reinterpret_cast<std::uintptr_t>(supplied), target.data(), sizeof(target)) &&
+                valid_flight_transform(target), "Invalid off-board motion target.");
+            // Native off-board movement drives the skeleton toward this target.
+            // Body velocity alone is undone by that drive on the same step.
+            // Lead only Y for the launch; keep native X/Z, rotation and collision flags.
+            target[13] = std::max(target[13], bodies.root[1] + boost.velocity[1] * bodies.seconds);
+            source_require(valid_flight_transform(target), "Off-board boost target is out of bounds.");
+            reader.verify();
+            if (bodies.offboard)
+                source_require(ensure_offboard_up_velocity(state.trial.base, bodies.core, context, rig, boost.velocity[1]),
+                    "Off-board boost motion ownership changed.");
+            return bodies.seconds > 0;
+        } catch (const SourceGuard& issue) { debug.status = issue.message; }
+          catch (...) { debug.status = "Off-board boost motion failed."; }
+        boost.valid = false;
+        state.offboard_boost_core.store(0, std::memory_order_release);
+        return false;
+    }
     const auto& request = debug.noclip_velocity;
     if (!debug.noclip || !request.valid) return false;
     try {
@@ -364,6 +435,12 @@ void noclip_skater_motion(std::uintptr_t rig, std::uintptr_t context,
     alignas(16) std::array<float,16> target{};
     const auto* motion = noclip_motion_target(rig, context, supplied, target) ? &target : supplied;
     if (original) original(rig, context, motion, flags);
+    if (source_state().offboard_boost_core.load(std::memory_order_acquire)) {
+        std::uintptr_t core{};
+        if (memory::peek(rig + 0x4630, core) &&
+            core == source_state().offboard_boost_core.load(std::memory_order_acquire))
+            noclip_apply_velocity(core);
+    }
 }
 }
 }

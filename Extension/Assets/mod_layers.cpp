@@ -127,7 +127,7 @@ bool read_memory(std::uintptr_t address, void* destination, std::size_t size) no
         destination, size, &read) && read == size;
 }
 
-// Supported September 8 build, checked after runtime image validation.
+// Supported game build, checked after runtime image validation.
 bool validate_contract(std::uintptr_t base) noexcept {
     struct Contract { std::uintptr_t rva; std::span<const std::uint8_t> bytes; };
     const Contract contracts[]{
@@ -135,7 +135,8 @@ bool validate_contract(std::uintptr_t base) noexcept {
         {layers::layout_bootstrap, layers::layout_bootstrap_prefix}};
     for (const auto& contract : contracts) {
         std::array<std::uint8_t, 32> actual{};
-        if (!read_memory(base + contract.rva, actual.data(), contract.bytes.size()) ||
+        if (contract.bytes.size() > actual.size() || // a longer prefix would overrun actual
+            !read_memory(base + contract.rva, actual.data(), contract.bytes.size()) ||
             std::memcmp(actual.data(), contract.bytes.data(), contract.bytes.size())) return false;
     }
     std::uintptr_t slot{};

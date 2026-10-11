@@ -51,6 +51,11 @@ IMGUI_IMPL_API bool     ImGui_ImplDX12_Init(ImGui_ImplDX12_InitInfo* info);
 IMGUI_IMPL_API void     ImGui_ImplDX12_Shutdown();
 IMGUI_IMPL_API void     ImGui_ImplDX12_NewFrame();
 IMGUI_IMPL_API void     ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandList* graphics_command_list);
+// [ReSkate] How the colours ImGui draws (sRGB) are written to the render target. 0: as they are
+// (an SDR target). 1: scRGB, linear with 1.0 at 80 nits (an FP16 HDR target). 2: HDR10, BT.2020
+// primaries with the ST.2084 (PQ) curve (a 10-bit HDR target). `white_nits`: how bright white
+// is drawn in 1 and 2. Read at each ImGui_ImplDX12_RenderDrawData.
+IMGUI_IMPL_API void     ImGui_ImplDX12_SetOutputTransfer(int mode, float white_nits);
 
 #ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
 // Legacy initialization API Obsoleted in 1.91.5

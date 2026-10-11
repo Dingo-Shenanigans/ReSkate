@@ -3,12 +3,38 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
 #include "Extension/Trainer/trainer_page.h"
+#include "Extension/HallOfMeat/hall_of_meat_overlay.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
+#include <dxgi1_6.h>
+#include <imgui_internal.h>
 
 namespace dingosdk::overlay::detail {
+
+// ImGui draws into the swapchain's back buffer, so its display is the buffer, in the buffer's
+// pixels. The Win32 backend sizes the display by the window's client area and places the mouse in
+// it; the two differ whenever the window is measured in other units than the buffer: a window
+// Windows scales for the display (a 1920x1080 client on a 4K display at 200%, borderless) or a
+// buffer stretched to the window. Every mouse position queued since the last frame comes in client
+// coordinates and is mapped into the buffer once.
+void fit_display_to_buffer(State& s, ID3D12Resource* buffer) {
+    auto& io = ImGui::GetIO();
+    const auto description = buffer->GetDesc();
+    const ImVec2 client = io.DisplaySize;
+    const ImVec2 pixels(static_cast<float>(description.Width), static_cast<float>(description.Height));
+    if (client.x <= 0 || client.y <= 0 || pixels.x <= 0 || pixels.y <= 0) return;
+    io.DisplaySize = pixels;
+    const ImVec2 scale(pixels.x / client.x, pixels.y / client.y);
+    for (auto& event : ImGui::GetCurrentContext()->InputEventsQueue) {
+        if (event.Type != ImGuiInputEventType_MousePos || event.EventId <= s.mapped_mouse_event) continue;
+        s.mapped_mouse_event = event.EventId;
+        if (event.MousePos.PosX == -FLT_MAX) continue; // the mouse left the window
+        event.MousePos.PosX *= scale.x;
+        event.MousePos.PosY *= scale.y;
+    }
+}
 
 bool completed(UINT64 value, DWORD timeout_ms) {
     auto& s = state();
@@ -46,6 +72,8 @@ void destroy_graphics() {
     s.win32_ready = s.dx12_ready = s.ready = false;
     s.ui_was_interactive = false;
     s.frames.clear();
+    s.card_texture.Reset(); s.card_upload.Reset();
+    card_image_lost();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -75,11 +103,48 @@ Binding* find_binding(IUnknown* identity) {
     return found == bindings.end() ? nullptr : &*found;
 }
 
+// A swapchain that presents without the overlay having seen it made (on some Intel systems
+// the game's menus never drew: the chain that was registered at creation is not the one that
+// reaches Present). A D3D12 swapchain gives the queue it was made with, which is all a binding
+// needs. Render thread, with the render lock held.
+Binding* bind_presented(IDXGISwapChain* presented, IUnknown* identity) {
+    auto& s = state();
+    static std::atomic<unsigned> refused{};
+    const auto refuse = [&](const char* why) -> Binding* {
+        if (refused.fetch_add(1) < 3)
+            dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+                "Overlay: a swapchain it did not see created is presenting, and it cannot draw on it (%s).", why);
+        return nullptr;
+    };
+    DXGI_SWAP_CHAIN_DESC description{};
+    if (FAILED(presented->GetDesc(&description)) || !description.OutputWindow) return refuse("no description or window");
+    if (description.BufferCount < 2 || description.BufferCount > 8) return refuse("an unusual buffer count");
+    DWORD process = 0;
+    GetWindowThreadProcessId(description.OutputWindow, &process);
+    if (process != GetCurrentProcessId()) return refuse("another process's window");
+    ComPtr<ID3D12CommandQueue> queue;
+    if (FAILED(presented->GetDevice(IID_PPV_ARGS(&queue))) || !queue) return refuse("it gives no D3D12 queue");
+    if (queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return refuse("its queue is not a direct one");
+    if (s.bindings.size() >= maximum_bindings) {
+        const auto evict = std::find_if(s.bindings.begin(), s.bindings.end(),
+            [&](const Binding& candidate) { return candidate.identity != s.swapchain_identity; });
+        if (evict == s.bindings.end()) return refuse("too many swapchains");
+        s.bindings.erase(evict);
+    }
+    s.bindings.push_back({identity, queue, description.OutputWindow});
+    dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+        "Registered a DX12 swapchain first seen as it presented (%ux%u, %u buffers, format %d).",
+        description.BufferDesc.Width, description.BufferDesc.Height, description.BufferCount,
+        static_cast<int>(description.BufferDesc.Format));
+    return &s.bindings.back();
+}
+
 bool select_presented_swapchain(IDXGISwapChain* presented) {
     auto& s = state();
     const auto identity = object_identity(presented);
     if (!identity) return false;
     Binding* binding = find_binding(identity.Get());
+    if (!binding) binding = bind_presented(presented, identity.Get());
     if (!binding) return false;
 
     const auto now = std::chrono::steady_clock::now();
@@ -194,8 +259,15 @@ bool setup_graphics() {
     // queue-type validation are the portable checks here.
     const auto format = description.BufferDesc.Format;
     if (format != DXGI_FORMAT_R8G8B8A8_UNORM && format != DXGI_FORMAT_B8G8R8A8_UNORM
-        && format != DXGI_FORMAT_R10G10B10A2_UNORM && format != DXGI_FORMAT_R16G16B16A16_FLOAT)
+        && format != DXGI_FORMAT_R10G10B10A2_UNORM && format != DXGI_FORMAT_R16G16B16A16_FLOAT) {
+        // Said once for each: with this the overlay never draws, and nothing else says why.
+        static std::atomic<int> said{-1};
+        if (said.exchange(static_cast<int>(format)) != static_cast<int>(format))
+            dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+                "Overlay: the game presents in a format the overlay does not draw to (DXGI format %d); its menus stay hidden.",
+                static_cast<int>(format));
         return false;
+    }
 
     D3D12_DESCRIPTOR_HEAP_DESC heap{};
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -207,7 +279,7 @@ bool setup_graphics() {
         return false;
     }
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap.NumDescriptors = 1;
+    heap.NumDescriptors = 2; // ImGui's atlas, then the map download card's icon (upload_card_image)
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     graphics_result = s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&s.srvs));
     if (FAILED(graphics_result)) {
@@ -277,6 +349,7 @@ bool setup_graphics() {
     if (!s.fence_event) return false;
     ImGuiContext* previous = ImGui::GetCurrentContext();
     s.context = ImGui::CreateContext();
+    s.mapped_mouse_event = 0; // a new context numbers its events afresh
     ImGui::SetCurrentContext(s.context);
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().LogFilename = nullptr;
@@ -285,10 +358,12 @@ bool setup_graphics() {
     dingosdk::overlay::load_skate_fonts(s.menu);
     // Thumbnails are read from the game's own data at startup; the read is
     // normally long finished by the time the first frame gets here.
-    // Emotes reserve their room before the park previews build the atlas, and fill it after.
+    // Emotes and Hall of Meat's images reserve their room before the park previews build the atlas, and fill it after.
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
+    reserve_hall_of_meat_images(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     fill_chat_emotes(*ImGui::GetIO().Fonts);
+    fill_hall_of_meat_images(*ImGui::GetIO().Fonts);
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -304,6 +379,25 @@ bool setup_graphics() {
     info.LegacySingleSrvCpuDescriptor = s.srvs->GetCPUDescriptorHandleForHeapStart();
     info.LegacySingleSrvGpuDescriptor = s.srvs->GetGPUDescriptorHandleForHeapStart();
     if (s.win32_ready) s.dx12_ready = ImGui_ImplDX12_Init(&info);
+    // ImGui draws sRGB colours. A game in HDR presents another kind of buffer, where those same
+    // numbers are far too bright and washed out: scRGB (FP16, linear) or HDR10 (10 bits, BT.2020
+    // with the PQ curve, while the display is in HDR). The backend's shader converts for those.
+    {
+        bool hdr_display{};
+        ComPtr<IDXGIOutput> output;
+        ComPtr<IDXGIOutput6> output6;
+        DXGI_OUTPUT_DESC1 display{};
+        if (SUCCEEDED(s.swapchain->GetContainingOutput(&output)) && output && SUCCEEDED(output.As(&output6)) &&
+            SUCCEEDED(output6->GetDesc1(&display)))
+            hdr_display = display.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        constexpr float hdr_white_nits = 200.0f; // how bright the overlay's white is on an HDR display
+        const int transfer = format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 1
+                           : format == DXGI_FORMAT_R10G10B10A2_UNORM && hdr_display ? 2 : 0;
+        ImGui_ImplDX12_SetOutputTransfer(transfer, hdr_display ? hdr_white_nits : 80.0f);
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "Overlay output: %s (buffer format %d, display %s).",
+            transfer == 1 ? "scRGB" : transfer == 2 ? "HDR10" : "SDR", static_cast<int>(format), hdr_display ? "in HDR" : "in SDR");
+    }
     // Font upload uses the exact swapchain queue, and this pinned backend waits
     // for its own upload fence before returning from device-object creation.
     const bool objects = s.dx12_ready && ImGui_ImplDX12_CreateDeviceObjects();
@@ -417,11 +511,95 @@ void draw_menu() {
     if (!visible) s.visible.store(false);
 }
 
+// The map download card's icon (map_download_card.cpp), when one is waiting: made into a
+// texture in the SRV heap's second slot. Recorded on the frame's command list ahead of ImGui's
+// draws, so the copy is done before anything samples it. Nothing here is fatal: without the
+// icon the card shows a plain tile.
+void upload_card_image(State& s) {
+    CardPixels pixels;
+    if (!take_card_pixels(pixels) || pixels.rgba.empty() || !s.device || !s.srvs) return;
+    // Frames still on the GPU may sample the icon this one replaces.
+    if (s.card_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+    s.card_texture.Reset();
+    s.card_upload.Reset();
+    D3D12_RESOURCE_DESC texture{};
+    texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture.Width = pixels.width;
+    texture.Height = pixels.height;
+    texture.DepthOrArraySize = 1;
+    texture.MipLevels = 1;
+    texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture.SampleDesc.Count = 1;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+    UINT rows{};
+    UINT64 row_bytes{}, total{};
+    s.device->GetCopyableFootprints(&texture, 0, 1, 0, &layout, &rows, &row_bytes, &total);
+    D3D12_RESOURCE_DESC buffer{};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = total;
+    buffer.Height = 1;
+    buffer.DepthOrArraySize = 1;
+    buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_HEAP_PROPERTIES upload_heap{};
+    upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    ComPtr<ID3D12Resource> made, upload;
+    if (!total || rows != pixels.height || row_bytes < std::uint64_t{pixels.width} * 4 ||
+        FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                 IID_PPV_ARGS(&made))) ||
+        FAILED(s.device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                 IID_PPV_ARGS(&upload))))
+        return;
+    void* mapped{};
+    const D3D12_RANGE none{};
+    if (FAILED(upload->Map(0, &none, &mapped)) || !mapped) return;
+    for (UINT row = 0; row < pixels.height; ++row)
+        std::memcpy(static_cast<unsigned char*>(mapped) + layout.Offset + std::size_t{row} * layout.Footprint.RowPitch,
+                    pixels.rgba.data() + std::size_t{row} * pixels.width * 4, std::size_t{pixels.width} * 4);
+    upload->Unmap(0, nullptr);
+    D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+    to.pResource = made.Get();
+    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    from.pResource = upload.Get();
+    from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    from.PlacedFootprint = layout;
+    s.commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+    D3D12_RESOURCE_BARRIER ready{};
+    ready.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    ready.Transition.pResource = made.Get();
+    ready.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ready.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    ready.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    s.commands->ResourceBarrier(1, &ready);
+    const auto step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto cpu = s.srvs->GetCPUDescriptorHandleForHeapStart();
+    auto gpu = s.srvs->GetGPUDescriptorHandleForHeapStart();
+    cpu.ptr += step;
+    gpu.ptr += step;
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = texture.Format;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture2D.MipLevels = 1;
+    s.device->CreateShaderResourceView(made.Get(), &view, cpu);
+    s.card_texture = std::move(made);
+    s.card_upload = std::move(upload);
+    // Drawable from the next frame on: this frame's draws were made before the copy was recorded.
+    card_image_uploaded(static_cast<ImTextureID>(gpu.ptr), pixels.serial);
+}
+
 void render(IDXGISwapChain* presented, UINT flags) {
     auto& s = state();
     if (flags & DXGI_PRESENT_TEST) return;
     dingosdk::profiler::record_present();
     std::lock_guard lock(s.render_mutex);
+    // Said once: a log without this line is a game whose presentations never reach the overlay.
+    if (static bool said{}; !std::exchange(said, true))
+        dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "The game's first presentation reached the overlay.");
     if (s.stop.load()) {
         if (!s.swapchain || completed(s.next_fence, 0)) {
             restore_input(true);
@@ -453,10 +631,14 @@ void render(IDXGISwapChain* presented, UINT flags) {
     // Input hotkeys/controller state are handled independently of ImGui frames.
     // Refreshes the chat feed every frame, which also decides whether T opens it.
     const bool chat_frame = chat_pending();
+    const bool map_download_frame = map_download_pending();
     const bool game_text_frame = game_text_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
+    const bool meat_frame = hall_of_meat_pending();
+    const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
+    const bool hub_frame = hub_page_pending();
     if (trainer_open_requested()) s.visible.store(true);
     // The style editor was asked for while no model was read: read the model a few times a second until its screen opens.
     if (!(s.visible.load() || s.console_visible.load() || s.editor_visible.load()) && dingosdk::overlay::style_editor_wanted() &&
@@ -480,7 +662,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !skate_hud_frame &&
-            !nametag_frame && !perf_frame) return;
+            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -515,17 +697,22 @@ void render(IDXGISwapChain* presented, UINT flags) {
     }
     const bool interactive = interactive_visible(s);
     sync_menu_cursor();
-    if (!interactive) { ImGui::GetIO().ClearInputKeys(); ImGui::GetIO().ClearInputMouse(); }
+    // (Watching the pointer for the pause menu's browser keeps the mouse state between frames,
+    // or every frame would look like a fresh click.)
+    if (!interactive) { ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
     ImGui::GetIO().MouseDrawCursor = owns_menu_cursor(s);
     ImGui_ImplDX12_NewFrame();
     { OverlayInputAccess access; ImGui_ImplWin32_NewFrame(); }
     update_menu_pointer();
+    fit_display_to_buffer(s, frame.buffer.Get());
     ImGui::NewFrame();
     if (menu_frame) {
         draw_menu();
         draw_console();
         draw_perf_window();
     }
+    draw_hub_page();
+    draw_hall_of_meat();
     draw_nametags();
     draw_game_text();
     draw_skate_hud();
@@ -534,7 +721,9 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_banner();
     draw_cover();
     draw_notices();
+    draw_item_browser();
     draw_chat();
+    draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
     ImGui::Render();
     if (ImGui::GetDrawData()->TotalVtxCount == 0) { ImGui::SetCurrentContext(previous); return; }
@@ -553,6 +742,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     if (FAILED(frame.allocator->Reset()) || FAILED(s.commands->Reset(frame.allocator.Get(), nullptr))) {
         ImGui::SetCurrentContext(previous); s.failed = true; restore_input(true); return;
     }
+    upload_card_image(s);
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = frame.buffer.Get();

@@ -1,10 +1,15 @@
 #include "game_archives.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Core/Platform/path_text.h"
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 namespace dingosdk::vfs {
 namespace fs = std::filesystem;
@@ -39,6 +44,29 @@ std::vector<std::uint32_t> GameArchives::chunks_in(const std::string& directory)
         if (name == directory) chunks.push_back(chunk);
     return chunks;
 }
+
+#ifdef _WIN32
+struct GameArchives::Open {
+    std::mutex mutex;
+    std::map<std::wstring, HANDLE> files;
+    ~Open() {
+        for (const auto& [path, file] : files) CloseHandle(file);
+    }
+};
+void GameArchives::forget(const fs::path& file) const {
+    if (!open_) return;
+    std::lock_guard lock(open_->mutex);
+    if (const auto found = open_->files.find(file.wstring()); found != open_->files.end()) {
+        CloseHandle(found->second);
+        open_->files.erase(found);
+    }
+}
+#else
+struct GameArchives::Open {};
+void GameArchives::forget(const fs::path&) const {}
+#endif
+void GameArchives::keep_open() { if (!open_) open_ = std::make_shared<Open>(); }
+
 
 GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_(std::move(root)) {
     std::map<std::set<std::uint16_t>, std::vector<std::string>> byArchives;
@@ -108,6 +136,38 @@ std::vector<std::byte> GameArchives::read(const fs::path& root, const fb::CasIde
                                           std::uint32_t offset, std::uint32_t size) const {
     const auto path = root / "Win32" / fs::path(directory(location.installChunk)) /
         fs::path(archive_file(location.archive));
+#ifdef _WIN32
+    if (open_) {
+        HANDLE file{};
+        {
+            std::lock_guard lock(open_->mutex);
+            auto& held = open_->files[path.wstring()];
+            if (!held) {
+                // Shared in full: the game, a mod manager or this merge may hold, link or
+                // append to the same file meanwhile.
+                held = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (held == INVALID_HANDLE_VALUE) {
+                    open_->files.erase(path.wstring());
+                    throw std::runtime_error("Cannot open " + path_utf8(path));
+                }
+            }
+            file = held;
+        }
+        std::vector<std::byte> bytes(size);
+        // Read at the offset itself, not at a file position threads would share.
+        for (std::uint32_t done = 0; done < size;) {
+            OVERLAPPED at{};
+            at.Offset = offset + done; // an archive's payloads are addressed in 32 bits
+            if (at.Offset < offset) throw std::runtime_error("Cannot read " + path_utf8(path));
+            DWORD read{};
+            if (!ReadFile(file, bytes.data() + done, size - done, &read, &at) || !read)
+                throw std::runtime_error("Cannot read " + path_utf8(path));
+            done += read;
+        }
+        return bytes;
+    }
+#endif
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     input.seekg(static_cast<std::streamoff>(offset));
@@ -151,8 +211,10 @@ const std::string& GameArchives::directory(std::uint32_t installChunk) const {
 std::optional<std::uint16_t> GameArchives::archive_index(const std::string& stem) {
     const auto digits = stem.find_last_not_of("0123456789");
     if (digits == std::string::npos || digits + 1 >= stem.size()) return {};
-    const auto value = std::stoul(stem.substr(digits + 1));
-    if (value > 0xFFFF) return {};
-    return static_cast<std::uint16_t>(value);
+    std::uint16_t value{};
+    const auto end = stem.data() + stem.size();
+    const auto [last, error] = std::from_chars(stem.data() + digits + 1, end, value); // range error past 65535, never throws
+    if (error != std::errc{} || last != end) return {};
+    return value;
 }
 }

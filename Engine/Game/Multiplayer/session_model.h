@@ -101,12 +101,16 @@ struct MultiplayerChatLine {
     std::string name, text;
     bool local{};               // sent by this player
     // The sender's role, as their nametag shows it: its colour (IM_COL32 layout, 0 = none)
-    // and a tag shown in a box before the name ("Dev", "Staff", "Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or empty).
+    // and a tag shown in a box before the name ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend", "Server" or empty).
     std::uint32_t color{};
     std::string tag;
     // With the chat filter on, `text` is masked and this is the line as sent (same length), so
     // the overlay can keep emote names the filter caught; empty when nothing was masked.
     std::string unmasked;
+    bool server{}; // said by the dedicated server itself: its console, welcome or answers
+    // The colour of the line's own text when it is not the usual one (IM_COL32 layout, 0 = usual):
+    // a dedicated server's lines, in the colour its owner chose.
+    std::uint32_t text_color{};
 };
 // A command typed into chat with a leading "/" (shown as the player types "/").
 struct MultiplayerChatCommand {
@@ -116,12 +120,34 @@ struct MultiplayerChatCommand {
     std::string argument;    // what Tab completes after it: "player", "map", "time" or ""
 };
 // What the chat overlay reads each frame: cheap to copy, unlike the full model.
+// The vote a dedicated server is running or has just finished, for the card above chat.
+struct MultiplayerVote {
+    std::uint32_t id{};          // 0: none
+    std::string label;           // "change the map to ..."
+    unsigned yes{}, no{}, needed{}, seconds{}; // seconds: left of a running one
+    std::uint8_t outcome{};      // 0 running, 1 passed, 2 failed, 3 cancelled
+    std::uint8_t mine{};         // this player's answer: 0 none yet, 1 yes, 2 no; in a poll, 1 + the answer's index
+    bool may_vote{};             // not the player a kick vote is about
+    std::uint32_t yes_bind{}, no_bind{}; // the player's binds for Yes and No (controller_bindings.h), 0: none
+    // A poll: a question (`label`) with answers and a count for each, instead of yes and no.
+    bool poll{};
+    std::vector<std::string> answers;
+    std::vector<unsigned> counts;
+};
+// A dedicated server's announcement, for its card. `id` 0: none showing.
+struct MultiplayerAnnouncement {
+    std::uint32_t id{};
+    std::string text;
+    unsigned seconds{}; // how long it still shows
+};
 struct MultiplayerChat {
     bool available{};           // in a session that can carry chat
     std::uint64_t latest{};     // sequence of the newest line, 0 when empty
     std::vector<MultiplayerChatLine> lines;
     std::vector<MultiplayerChatCommand> commands; // what "/" offers in this session
     std::vector<std::string> players, maps;       // what their arguments complete to
+    MultiplayerVote vote;
+    MultiplayerAnnouncement announcement;
 };
 // A player this PC's lobbies never admit, kept in the local profile.
 struct MultiplayerBan {
@@ -138,6 +164,9 @@ struct MultiplayerModel {
     // Objects each player may have placed in this session (0: no limit), the limit this
     // player is held to (0 for the host and a server's admins), and how many they have placed.
     unsigned object_limit{}, object_limit_own{}, objects_placed{};
+    // This player may resize the objects they place (a dedicated server can turn it off for its
+    // players; its admins always may).
+    bool object_scaling{true};
     // Host setting: whether guests may use noclip / No Bail (the host and server admins always may).
     bool guest_noclip{true}, guest_no_bail{true}, guest_boosts{true};
     // Host setting: guests skate with the host's physics tuning (on a dedicated server: the
@@ -173,9 +202,12 @@ struct MultiplayerModel {
     float chat_bubbles_distance{40.f};
     float chat_bubbles_duration{5.f};
     int chat_bubbles_history{3};
-    // Local: the tag the ReSkate backend gives this player ("Dev", "Staff", "Creator", "Centrix" or "Homie"; empty
+    // Local: the tag the ReSkate backend gives this player ("Dev", "Staff", "Content Creator", "Centrix" or "Homie"; empty
     // for most players) and its role colour, and whether they show it, and the animated items
     // that come with it, to everyone.
+    // The local player is on the ReSkate team's developer, staff or homie list: the player list
+    // gives each player's Steam ID.
+    bool steam_ids_shown{};
     std::string identity_tag;
     std::uint32_t identity_tag_colour{};
     bool identity_tag_shown{true}, identity_items_shown{true};
@@ -221,9 +253,14 @@ struct MultiplayerModel {
     bool party_leader{}, party_open{}, parties{};
     std::vector<MultiplayerPartyInvite> party_invites; // newest last
     bool active{}, hosting{}, connected{}, echo{}, remote_visible{}, local_ready{};
+    // The session is connected but waiting on its map, which this PC does not have and is
+    // being asked about or downloaded: not yet a session the player is in.
+    bool map_fetching{};
     std::uint64_t local_id{}, peer_id{}, sent{}, received{}, dropped{}, pose_updates{}, board_pose_updates{};
     std::size_t skater_bones{}, board_bones{};
     std::string invite, map;
+    // The code of the session this player is in, as host or guest (`invite` is a host's own).
+    std::string join_code;
     std::string status = "Multiplayer is off.";
     std::string native_status;
     std::string cosmetic_status;

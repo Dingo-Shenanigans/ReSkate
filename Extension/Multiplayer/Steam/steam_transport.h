@@ -6,7 +6,7 @@ namespace dingosdk::multiplayer {
 enum class TrafficLane : std::uint16_t { gameplay = 0, control = 1, cosmetics = 2, voice = 3 };
 constexpr TrafficLane traffic_lane(PacketKind kind) {
     return kind == PacketKind::voice ? TrafficLane::voice
-        : kind == PacketKind::pose || kind == PacketKind::audio ? TrafficLane::gameplay
+        : kind == PacketKind::pose || kind == PacketKind::audio || kind == PacketKind::effects ? TrafficLane::gameplay
         : kind == PacketKind::cosmetics ? TrafficLane::cosmetics : TrafficLane::control;
 }
 struct TransportPeer {

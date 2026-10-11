@@ -225,9 +225,9 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             // Merge, and whenever a mod could not be merged cleanly, merge again
             // without it. Removing one mod cannot break another, but a few rounds
             // are allowed in case two damaged mods hid each other's problems.
-            for (int round = 0; round < 4; ++round) {
+            for (int round = 0;; ++round) {
                 merge = merge_mods(result, observe);
-                if (!merge.issue.empty()) break;
+                if (!merge.issue.empty() || round == 4) break; // a fifth merge only rebuilds without round four's removals
                 bool removed = false;
                 for (std::size_t i = result.mods.size(); i-- > 0;) {
                     const auto found = merge.problems.find(result.mods[i].name);
