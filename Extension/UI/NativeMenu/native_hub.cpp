@@ -103,14 +103,6 @@ std::string title_key(const Context &c, Value item) {
 template <std::size_t N> bool listed(const std::array<std::string_view, N> &names, const std::string &name) {
     return std::find(names.begin(), names.end(), name) != names.end();
 }
-void remove_hub_tiles(const Context &c) {
-    for (const auto &root : c.roots({tile_list_schema})) {
-        const auto list = c.field(root.model, tile_items);
-        unsigned count{}, stride{};
-        c.array(list, 32, count, stride);
-        for (unsigned i = 0; i < count; ++i) hide_in_place(c, c.element(list, i));
-    }
-}
 // With every tile of the left list gone, the Hub has nothing to focus when the
 // pause menu opens: its partition (HorizontalPartition_LinearFocus_Widget)
 // always starts on the left side, and an empty side isn't focusable. So the
@@ -125,6 +117,32 @@ bool named_like(Address record, std::string_view prefix) {
     for (std::size_t i = 0; i < prefix.size(); ++i)
         if (read<char>(name + i) != prefix[i]) return false;
     return true;
+}
+void hide_hub_list(const Context &c, const Widget &widget, Address list_type) {
+    if (!widget.blueprint || !widget.data.record || !widget.data.handle) return;
+    if (!named_like(widget.data.record, hub_list_record) || c.type_of(widget.data.handle) != list_type) return;
+    const Value model{widget.data.handle, list_type};
+    const auto list = c.field(model, tile_items);
+    unsigned count{}, stride{};
+    c.array(list, 32, count, stride);
+    for (unsigned i = 0; i < count; ++i) hide_in_place(c, c.element(list, i));
+}
+void remove_hub_tiles(const Context &c) {
+    const auto list_type = c.type({tile_list_schema, 392});
+    for (const auto &root : c.roots({partition_schema})) {
+        hide_hub_list(c, read<Widget>(c.address(c.field(root.model, partition_left))), list_type);
+        hide_hub_list(c, read<Widget>(c.address(c.field(root.model, partition_right))), list_type);
+    }
+}
+void rename_hub_page(const Context &c) {
+    for (const auto &root : c.roots({page.hash})) {
+        try {
+            const auto title = c.path(root.model, {0x3781b603, text_field});
+            if (c.text(title, 32) == "HUB") c.text(title, "RESKATE HUB");
+        } catch (const std::exception &) {
+            // Other native pages can use a different title model.
+        }
+    }
 }
 // The tile count of a Hub tile list shown in a partition side, or nothing.
 std::optional<unsigned> hub_list_tiles(const Context &c, const Widget &widget, Address list_type) {
@@ -174,6 +192,7 @@ void update_hub(const Context &c) {
     if (now < next_update) return;
     try {
         remove_hub_tiles(c);
+        rename_hub_page(c);
         last_error.clear();
     } catch (const std::exception &e) {
         next_update = now + 2000;

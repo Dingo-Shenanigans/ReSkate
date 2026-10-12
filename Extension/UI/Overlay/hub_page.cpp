@@ -1284,12 +1284,60 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (!h.tools.feedback.empty()) say(h, h.tools.feedback);
         h.next_model = {};
     };
-    const auto card = [&](std::uint32_t id, ImVec2 p, ImVec2 q, const char *title, const std::string &detail, bool enabled, auto &&action) {
+    enum class HubArt { map, load, time_back, time_forward, trainer, news, online };
+    const auto card = [&](std::uint32_t id, ImVec2 p, ImVec2 q, const char *title, const std::string &detail,
+                          HubArt art, bool enabled, auto &&action) {
         const Hit hit = enabled ? item(ui, id, p, q) : Hit{};
         const bool lit = hit.focus || hit.hover;
-        skate_theme::rough_rect(ui.draw, p, q, lit ? theme::blue : IM_COL32(20, 20, 20, 242), id & 0xfff, 2 * u);
+        skate_theme::rough_rect(ui.draw, p, q, lit ? IM_COL32(15, 132, 238, 248) : IM_COL32(15, 16, 18, 224), id & 0xfff, 2 * u);
+        const float art_width = std::min((q.x - p.x) * .38f, 420 * u);
+        const ImVec2 art_a(q.x - art_width, p.y), art_z(q.x, q.y);
+        ui.draw->PushClipRect(p, q, true);
+        ui.draw->AddRectFilled(art_a, art_z, lit ? IM_COL32(7, 82, 145, 150) : IM_COL32(255, 255, 255, 14));
+        for (float x = art_a.x - (q.y - p.y); x < q.x; x += 54 * u)
+            ui.draw->AddLine(ImVec2(x, q.y), ImVec2(x + q.y - p.y, p.y), IM_COL32(255, 255, 255, lit ? 22 : 9), 10 * u);
+        const ImVec2 c((art_a.x + art_z.x) * .5f, (art_a.y + art_z.y) * .5f);
+        const ImU32 ink = enabled ? IM_COL32(244, 244, 242, lit ? 245 : 170) : IM_COL32(145, 145, 145, 120);
+        const float r = std::min(76 * u, (q.y - p.y) * .26f), thick = std::max(5.f * u, 2.f);
+        if (art == HubArt::map) {
+            ui.draw->AddCircle(c, r, ink, 32, thick);
+            ui.draw->AddCircleFilled(c, r * .26f, ink, 20);
+            ui.draw->AddTriangleFilled(ImVec2(c.x - r * .48f, c.y + r * .62f), ImVec2(c.x + r * .48f, c.y + r * .62f),
+                                       ImVec2(c.x, c.y + r * 1.35f), ink);
+        } else if (art == HubArt::load) {
+            ui.draw->AddLine(ImVec2(c.x, c.y - r), ImVec2(c.x, c.y + r * .35f), ink, thick * 1.5f);
+            ui.draw->AddTriangleFilled(ImVec2(c.x - r * .65f, c.y), ImVec2(c.x + r * .65f, c.y), ImVec2(c.x, c.y + r * .8f), ink);
+            ui.draw->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y + r), ink, thick);
+        } else if (art == HubArt::time_back || art == HubArt::time_forward) {
+            ui.draw->AddCircle(c, r * .52f, ink, 28, thick);
+            for (int ray = 0; ray < 8; ++ray) {
+                const float angle = static_cast<float>(ray) * 3.14159265f / 4.f;
+                ui.draw->AddLine(ImVec2(c.x + std::cos(angle) * r * .72f, c.y + std::sin(angle) * r * .72f),
+                                 ImVec2(c.x + std::cos(angle) * r, c.y + std::sin(angle) * r), ink, thick * .65f);
+            }
+            const float direction = art == HubArt::time_back ? -1.f : 1.f;
+            ui.draw->AddTriangleFilled(ImVec2(c.x + direction * r * 1.25f, c.y), ImVec2(c.x + direction * r * .8f, c.y - r * .34f),
+                                       ImVec2(c.x + direction * r * .8f, c.y + r * .34f), ink);
+        } else if (art == HubArt::trainer) {
+            ui.draw->AddCircle(c, r * .76f, ink, 24, thick);
+            ui.draw->AddCircle(c, r * .28f, ink, 20, thick);
+            for (int tooth = 0; tooth < 8; ++tooth) {
+                const float angle = static_cast<float>(tooth) * 3.14159265f / 4.f;
+                ui.draw->AddLine(ImVec2(c.x + std::cos(angle) * r * .78f, c.y + std::sin(angle) * r * .78f),
+                                 ImVec2(c.x + std::cos(angle) * r * 1.08f, c.y + std::sin(angle) * r * 1.08f), ink, thick * 1.5f);
+            }
+        } else if (art == HubArt::news) {
+            for (int line = -1; line <= 1; ++line)
+                ui.draw->AddLine(ImVec2(c.x - r, c.y + line * r * .55f), ImVec2(c.x + r, c.y + line * r * .55f), ink, thick);
+        } else {
+            ui.draw->AddCircleFilled(ImVec2(c.x, c.y - r * .42f), r * .34f, ink, 24);
+            ui.draw->AddCircleFilled(ImVec2(c.x - r * .75f, c.y - r * .2f), r * .25f, ink, 20);
+            ui.draw->AddCircleFilled(ImVec2(c.x + r * .75f, c.y - r * .2f), r * .25f, ink, 20);
+            ui.draw->AddRectFilled(ImVec2(c.x - r * .62f, c.y), ImVec2(c.x + r * .62f, c.y + r * .78f), ink, r * .3f);
+        }
+        ui.draw->PopClipRect();
         ui.draw->AddText(ui.bold, 48 * u, ImVec2(p.x + 32 * u, p.y + 28 * u), enabled ? theme::paper : theme::muted, title);
-        label(ui.draw, ui.body, 30 * u, ImVec2(p.x + 32 * u, p.y + 98 * u), q.x - 32 * u,
+        label(ui.draw, ui.body, 30 * u, ImVec2(p.x + 32 * u, p.y + 98 * u), art_a.x - 24 * u,
               enabled ? soft : theme::muted, detail);
         if (hit.press) action();
     };
@@ -1310,14 +1358,23 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const std::string map_name = selected ? native_tools::level_name(*selected) : "Waiting for maps...";
     const std::string map_kind = selected ? std::string(selected->custom ? "CUSTOM  /  " : "OFFICIAL  /  ") + map_name : map_name;
 
-    card(hash("hub-map"), a, ImVec2(a.x + width, a.y + tile), "MAP", map_kind, !levels.empty(), [&] {
+    card(hash("hub-map"), a, ImVec2(a.x + width, a.y + tile), "MAP", map_kind, HubArt::map, !levels.empty(), [&] {
         if (levels.empty()) return;
         const auto at = std::find(levels.begin(), levels.end(), selected);
         const auto *next = at == levels.end() || at + 1 == levels.end() ? levels.front() : *(at + 1);
         h.tools.destination = next->asset;
     });
+    if (!levels.empty()) {
+        const auto at = std::find(levels.begin(), levels.end(), selected);
+        const std::size_t selected_index = at == levels.end() ? 0 : static_cast<std::size_t>(at - levels.begin());
+        const std::size_t visible = std::min<std::size_t>(levels.size(), 8);
+        const float dot_gap = 25 * u, start = a.x + 32 * u;
+        for (std::size_t i = 0; i < visible; ++i)
+            ui.draw->AddCircleFilled(ImVec2(start + static_cast<float>(i) * dot_gap, a.y + tile - 24 * u), 7 * u,
+                                     i == selected_index % visible ? theme::paper : IM_COL32(230, 230, 230, 90), 16);
+    }
     card(hash("hub-load"), ImVec2(a.x, a.y + tile + gap), ImVec2(a.x + width, a.y + tile * 2 + gap),
-         "LOAD MAP", map_name, native_tools::can_load(h.tools, m, cb), [&] { activate("load-level"); });
+         "LOAD MAP", map_name, HubArt::load, native_tools::can_load(h.tools, m, cb), [&] { activate("load-level"); });
 
     const bool time_ready = native_tools::time_of_day_available(m, cb);
     const unsigned current_time = native_tools::time_of_day(m);
@@ -1335,21 +1392,27 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
     };
     const float time_top = a.y + tile * 2 + gap * 2;
     card(hash("hub-time-back"), ImVec2(a.x, time_top), ImVec2(a.x + half, time_top + small_height), "TIME BACK",
-         native_tools::time_of_day_labels[current_time], time_ready, [&] { set_time(-1); });
+         native_tools::time_of_day_labels[current_time], HubArt::time_back, time_ready, [&] { set_time(-1); });
     card(hash("hub-time-forward"), ImVec2(a.x + half + gap, time_top), ImVec2(a.x + width, time_top + small_height), "TIME FORWARD",
-         native_tools::time_of_day_labels[current_time], time_ready, [&] { set_time(1); });
+         native_tools::time_of_day_labels[current_time], HubArt::time_forward, time_ready, [&] { set_time(1); });
 
-    card(hash("hub-trainer"), ImVec2(right, a.y), ImVec2(z.x, a.y + tile), "TRAINER", "OPEN TRAINER", cb.queue_console_command, [&] {
+    card(hash("hub-trainer"), ImVec2(right, a.y), ImVec2(z.x, a.y + tile), "TRAINER", "OPEN TRAINER", HubArt::trainer, cb.queue_console_command, [&] {
         std::array<char, 512> result{};
         if (!cb.queue_console_command(cb.user, "trainer open", result.data(), result.size())) say(h, "Trainer is unavailable right now.");
     });
+    static unsigned news_index{};
+    static constexpr std::array<const char *, 3> news_items{
+        "RESKATE UI 2.0  /  COMMUNITY PROJECT", "10K MEMBERS ON DISCORD!", "WELCOME TO RESKATE"};
     card(hash("hub-news"), ImVec2(right, a.y + tile + gap), ImVec2(z.x, a.y + tile * 2 + gap), "NEWS",
-         "RESKATE UI 2.0  /  COMMUNITY PROJECT", true, [] {});
+         news_items[news_index % news_items.size()], HubArt::news, true, [&] { news_index = (news_index + 1) % news_items.size(); });
+    for (unsigned i = 0; i < news_items.size(); ++i)
+        ui.draw->AddCircleFilled(ImVec2(right + 32 * u + i * 25 * u, a.y + tile * 2 + gap - 24 * u), 7 * u,
+                                 i == news_index ? theme::paper : IM_COL32(230, 230, 230, 90), 16);
 
     int players = m.multiplayer.active ? std::max(1, m.multiplayer.players) : 0;
     for (const auto &lobby : m.multiplayer.lobbies) players += std::max(0, lobby.players);
     const std::string online = std::to_string(players) + " PLAYERS  /  " + std::to_string(m.multiplayer.lobbies.size()) + " LOBBIES";
-    card(hash("hub-online"), ImVec2(right, time_top), ImVec2(z.x, time_top + small_height), "ONLINE", online, false, [] {});
+    card(hash("hub-online"), ImVec2(right, time_top), ImVec2(z.x, time_top + small_height), "ONLINE", online, HubArt::online, false, [] {});
 
     if (!h.notice.empty())
         ui.draw->AddText(ui.body, 28 * u, ImVec2(a.x, z.y - 42 * u), theme::paper, h.notice.c_str(), nullptr, width);
