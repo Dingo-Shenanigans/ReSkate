@@ -6,11 +6,11 @@
 #include <optional>
 
 // The pause menu's Hub page lists live-service tiles in two native TileLists.
-// ReSkate has no store, skate.Pass, bounties, missions or crew bounties, so
-// those tiles go; News and Rip Score (profile) stay. The Hub resolves a press
-// by the tile's position, so a tile with a kept tile after it is hidden in
-// place (an empty gap with no action) rather than removed; trailing ones are
-// removed. The game rebuilds the Hub now and then; this is re-applied then.
+// ReSkate draws its own dashboard over this page while retaining the native
+// skater preview and page lifetime. Every stock tile is therefore hidden and
+// deactivated in place so controller confirmation cannot trigger a second,
+// covered action beneath ReSkate's controls. The game rebuilds the Hub now
+// and then; this is re-applied when it does.
 namespace dingosdk::multiplayer {
 using namespace menu_data;
 using namespace native_menu_detail;
@@ -107,29 +107,8 @@ void remove_hub_tiles(const Context &c) {
     for (const auto &root : c.roots({tile_list_schema})) {
         const auto list = c.field(root.model, tile_items);
         unsigned count{}, stride{};
-        const auto bytes = c.array(list, 32, count, stride);
-        std::vector<bool> unwanted(count);
-        unsigned last_kept = 0; // one past the last tile that stays
-        for (unsigned i = 0; i < count; ++i) {
-            const auto item = c.element(list, i);
-            unwanted[i] = already_hidden(c, item) || listed(removed_navigation, navigation_name(c, item)) ||
-                          listed(removed_titles, title_key(c, item));
-            if (!unwanted[i]) last_kept = i + 1;
-        }
-        // Hide the ones before a kept tile; drop the trailing ones.
-        for (unsigned i = 0; i < last_kept; ++i)
-            if (unwanted[i]) hide_in_place(c, c.element(list, i));
-        // Focus entering the list starts on its first shown tile, not a hidden one.
-        const auto first_kept = static_cast<std::int32_t>(std::find(unwanted.begin(), unwanted.end(), false) - unwanted.begin());
-        const auto entry = c.field(root.model, default_index);
-        const auto current_entry = read<std::int32_t>(c.address(entry));
-        if (first_kept < static_cast<std::int32_t>(last_kept) && current_entry >= 0 &&
-            current_entry < static_cast<std::int32_t>(count) && unwanted[static_cast<unsigned>(current_entry)])
-            c.set(entry, first_kept);
-        if (last_kept < count && std::any_of(unwanted.begin() + last_kept, unwanted.end(), [](bool u) { return u; })) {
-            std::vector<std::byte> kept(bytes.begin(), bytes.begin() + std::size_t{last_kept} * stride);
-            c.array(list, kept, last_kept);
-        }
+        c.array(list, 32, count, stride);
+        for (unsigned i = 0; i < count; ++i) hide_in_place(c, c.element(list, i));
     }
 }
 // With every tile of the left list gone, the Hub has nothing to focus when the
@@ -195,8 +174,6 @@ void update_hub(const Context &c) {
     if (now < next_update) return;
     try {
         remove_hub_tiles(c);
-        move_hub_column(c);
-        align_hub_column(c);
         last_error.clear();
     } catch (const std::exception &e) {
         next_update = now + 2000;

@@ -886,7 +886,7 @@ void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- Mod Options
 
-enum ToolsTab : int { quick_tab, official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
+enum ToolsTab : int { maps_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
 
 // The next (or the one before) of a setting's steps from where it is now; it stops at the ends.
 template<std::size_t N> float stepped(float current, const std::array<float, N> &steps, int direction) {
@@ -991,16 +991,29 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const auto on_off = [](bool on) { return std::string(on ? "On" : "Off"); };
     const float list_width = std::min((z.x - a.x) * .56f, 2300 * u), column_width = std::min(z.x - a.x, 2100 * u);
     // A list of levels: the one pointed at says LOAD, and pressing it travels there.
-    const auto levels = [&](bool custom, const char *title, const char *empty, const char *empty_help) {
-        draw->AddText(ui.heading, 52 * u, a, theme::paper, title);
+    const auto levels = [&] {
+        draw->AddText(ui.heading, 52 * u, a, theme::paper, "MAPS");
         std::vector<const Level *> listed;
         for (const auto &entry : m.levels)
-            if (native_tools::listed(entry) && entry.custom == custom) listed.push_back(&entry);
-        std::sort(listed.begin(), listed.end(), [](const auto *x, const auto *y) { return native_tools::level_name(*x) < native_tools::level_name(*y); });
+            if (native_tools::listed(entry)) listed.push_back(&entry);
+        std::sort(listed.begin(), listed.end(), [](const auto *x, const auto *y) {
+            if (x->custom != y->custom) return x->custom < y->custom;
+            return native_tools::level_name(*x) < native_tools::level_name(*y);
+        });
         const auto *root = native_tools::level(m, native_tools::root_asset);
         const bool travel = root && root->native_registered && root->can_load && m.can_queue_load && !multiplayer_controls_level(mp) && cb.queue_load;
-        Scroller list(ui, hash(title, 30), ImVec2(a.x, a.y + 96 * u), ImVec2(a.x + list_width, z.y));
+        Scroller list(ui, hash("maps-list", 30), ImVec2(a.x, a.y + 96 * u), ImVec2(a.x + list_width, z.y));
+        bool custom_section{};
         for (const auto *entry : listed) {
+            if (entry->custom && !custom_section) {
+                custom_section = true;
+                bool divider_drawn{};
+                const float divider = list.next(72 * u, between, divider_drawn);
+                if (divider_drawn) {
+                    draw->AddLine(ImVec2(a.x, divider + 24 * u), ImVec2(a.x + list_width - 20 * u, divider + 24 * u), IM_COL32(235, 235, 235, 120), 2 * u);
+                    draw->AddText(ui.bold, 26 * u, ImVec2(a.x + 24 * u, divider + 34 * u), theme::muted, "CUSTOM MAPS");
+                }
+            }
             const auto id = hash("level", hash(entry->asset));
             const bool can = travel && entry->can_load && entry != root;
             bool drawn{};
@@ -1026,8 +1039,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         }
         list.end();
         if (listed.empty()) {
-            draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, empty);
-            if (*empty_help) draw->AddText(ui.body, 32 * u, ImVec2(a.x, a.y + 164 * u), theme::muted, empty_help);
+            draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, "Waiting for available levels...");
         }
         const std::string note = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
                                  : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : h.notice;
@@ -1036,48 +1048,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     };
 
     switch (h.tools_tab) {
-    case quick_tab: {
-        Column list(ui, hash("quick"), a, ImVec2(a.x + column_width, z.y));
-        list.heading("RESKATE CENTRAL");
-        list.note("Travel, set the session time or open the Trainer without digging through the full menus.");
-
-        std::vector<const Level*> maps;
-        for (const auto& entry : m.levels)
-            if (native_tools::listed(entry)) maps.push_back(&entry);
-        std::sort(maps.begin(), maps.end(), [](const auto* x, const auto* y) {
-            if (x->custom != y->custom) return x->custom < y->custom;
-            return native_tools::level_name(*x) < native_tools::level_name(*y);
-        });
-        const auto* selected = native_tools::level(m, h.tools.destination);
-        const std::string selected_name = selected ? native_tools::level_name(*selected) : "Choose a map";
-        if (const int way = list.adjust("Map", selected_name, !maps.empty() && !multiplayer_controls_level(mp))) {
-            auto at = maps.begin();
-            if (selected) at = std::find(maps.begin(), maps.end(), selected);
-            if (at == maps.end()) at = way > 0 ? maps.begin() : std::prev(maps.end());
-            else if (way > 0) at = std::next(at) == maps.end() ? maps.begin() : std::next(at);
-            else at = at == maps.begin() ? std::prev(maps.end()) : std::prev(at);
-            h.tools.destination = (*at)->asset;
-        }
-        if (list.setting("Load selected map", {}, native_tools::can_load(h.tools, m, cb))) act("load-level");
-        if (selected) list.note(selected->custom ? "Custom map" : "Official map");
-
-        list.title("TIME OF DAY");
-        const bool time_ready = native_tools::time_of_day_available(m, cb);
-        const unsigned current = native_tools::time_of_day(m);
-        if (const int way = list.adjust("Time", native_tools::time_of_day_labels[current], time_ready)) {
-            const auto count = static_cast<unsigned>(native_tools::time_of_day_labels.size());
-            const auto next = static_cast<unsigned>((current + count + (way > 0 ? 1 : count - 1)) % count);
-            for (const auto& line : native_tools::time_of_day_commands(m, next)) run(line);
-        }
-
-        list.title("TOOLS");
-        if (list.setting("Open Trainer", {}, console)) run("trainer open");
-        list.note(h.notice);
-        list.end();
-        break;
-    }
-    case official_tab: levels(false, "FIND YOUR SPOT", "Waiting for available levels...", ""); break;
-    case custom_tab: levels(true, "CUSTOM MAPS", "No custom maps installed.", "Custom maps from the Mods folder appear here."); break;
+    case maps_tab: levels(); break;
     case world_tab: {
         Column list(ui, hash("world"), a, ImVec2(a.x + column_width, z.y));
         list.heading("THIS WORLD");
@@ -1294,6 +1265,98 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         break;
     }
     }
+}
+
+// The game's real HUB page. Keep these controls on the landing page instead of duplicating
+// them in ReSkate Central: every action uses the same queued native paths as Central.
+void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const auto &m = h.full;
+    const auto &cb = h.callbacks;
+    native_tools::sync(h.tools, m);
+
+    const float u = ui.u, gap = 28 * u;
+    const float width = std::min(1120 * u, (z.x - a.x - 2 * gap) * .34f);
+    const float right = z.x - width;
+    const float tile = 250 * u, small_height = 174 * u;
+    const auto activate = [&](std::string_view command, const std::string &argument = {}) {
+        native_tools::activate(h.tools, m, cb, command, argument);
+        if (!h.tools.feedback.empty()) say(h, h.tools.feedback);
+        h.next_model = {};
+    };
+    const auto card = [&](std::uint32_t id, ImVec2 p, ImVec2 q, const char *title, const std::string &detail, bool enabled, auto &&action) {
+        const Hit hit = enabled ? item(ui, id, p, q) : Hit{};
+        const bool lit = hit.focus || hit.hover;
+        skate_theme::rough_rect(ui.draw, p, q, lit ? theme::blue : IM_COL32(20, 20, 20, 242), id & 0xfff, 2 * u);
+        ui.draw->AddText(ui.bold, 48 * u, ImVec2(p.x + 32 * u, p.y + 28 * u), enabled ? theme::paper : theme::muted, title);
+        label(ui.draw, ui.body, 30 * u, ImVec2(p.x + 32 * u, p.y + 98 * u), q.x - 32 * u,
+              enabled ? soft : theme::muted, detail);
+        if (hit.press) action();
+    };
+
+    const ImVec2 title_a(a.x - 24 * u, a.y - 250 * u), title_z(a.x + 980 * u, a.y - 92 * u);
+    ui.draw->AddRectFilled(title_a, title_z, IM_COL32(13, 13, 14, 235));
+    ui.draw->AddText(ui.heading, 82 * u, ImVec2(a.x, a.y - 238 * u), theme::paper, "RESKATE HUB");
+
+    std::vector<const Level *> levels;
+    for (const auto &entry : m.levels)
+        if (native_tools::listed(entry)) levels.push_back(&entry);
+    std::sort(levels.begin(), levels.end(), [](const auto *x, const auto *y) {
+        if (x->custom != y->custom) return x->custom < y->custom;
+        return native_tools::level_name(*x) < native_tools::level_name(*y);
+    });
+    if (levels.empty()) h.tools.destination.clear();
+    else {
+        const auto *destination = native_tools::level(m, h.tools.destination);
+        if (!destination || !native_tools::listed(*destination)) h.tools.destination = levels.front()->asset;
+    }
+    const auto *selected = native_tools::level(m, h.tools.destination);
+    const std::string map_name = selected ? native_tools::level_name(*selected) : "Waiting for maps...";
+    const std::string map_kind = selected ? std::string(selected->custom ? "CUSTOM  /  " : "OFFICIAL  /  ") + map_name : map_name;
+
+    card(hash("hub-map"), a, ImVec2(a.x + width, a.y + tile), "MAP", map_kind, !levels.empty(), [&] {
+        if (levels.empty()) return;
+        const auto at = std::find(levels.begin(), levels.end(), selected);
+        const auto *next = at == levels.end() || at + 1 == levels.end() ? levels.front() : *(at + 1);
+        h.tools.destination = next->asset;
+    });
+    card(hash("hub-load"), ImVec2(a.x, a.y + tile + gap), ImVec2(a.x + width, a.y + tile * 2 + gap),
+         "LOAD MAP", map_name, native_tools::can_load(h.tools, m, cb), [&] { activate("load-level"); });
+
+    const bool time_ready = native_tools::time_of_day_available(m, cb);
+    const unsigned current_time = native_tools::time_of_day(m);
+    const float half = (width - gap) * .5f;
+    const auto set_time = [&](int direction) {
+        const auto count = static_cast<int>(native_tools::time_of_day_labels.size());
+        const auto next = static_cast<unsigned>((static_cast<int>(current_time) + count + direction) % count);
+        if (!time_ready || !cb.queue_console_command) return;
+        std::array<char, 512> result{};
+        bool accepted = true;
+        for (const auto &line : native_tools::time_of_day_commands(m, next))
+            accepted = cb.queue_console_command(cb.user, line.c_str(), result.data(), result.size()) && accepted;
+        if (!accepted) say(h, "Time of day could not be changed right now.");
+        h.next_model = {};
+    };
+    const float time_top = a.y + tile * 2 + gap * 2;
+    card(hash("hub-time-back"), ImVec2(a.x, time_top), ImVec2(a.x + half, time_top + small_height), "TIME BACK",
+         native_tools::time_of_day_labels[current_time], time_ready, [&] { set_time(-1); });
+    card(hash("hub-time-forward"), ImVec2(a.x + half + gap, time_top), ImVec2(a.x + width, time_top + small_height), "TIME FORWARD",
+         native_tools::time_of_day_labels[current_time], time_ready, [&] { set_time(1); });
+
+    card(hash("hub-trainer"), ImVec2(right, a.y), ImVec2(z.x, a.y + tile), "TRAINER", "OPEN TRAINER", cb.queue_console_command, [&] {
+        std::array<char, 512> result{};
+        if (!cb.queue_console_command(cb.user, "trainer open", result.data(), result.size())) say(h, "Trainer is unavailable right now.");
+    });
+    card(hash("hub-news"), ImVec2(right, a.y + tile + gap), ImVec2(z.x, a.y + tile * 2 + gap), "NEWS",
+         "RESKATE UI 2.0  /  COMMUNITY PROJECT", true, [] {});
+
+    int players = m.multiplayer.active ? std::max(1, m.multiplayer.players) : 0;
+    for (const auto &lobby : m.multiplayer.lobbies) players += std::max(0, lobby.players);
+    const std::string online = std::to_string(players) + " PLAYERS  /  " + std::to_string(m.multiplayer.lobbies.size()) + " LOBBIES";
+    card(hash("hub-online"), ImVec2(right, time_top), ImVec2(z.x, time_top + small_height), "ONLINE", online, false, [] {});
+
+    if (!h.notice.empty())
+        ui.draw->AddText(ui.body, 28 * u, ImVec2(a.x, z.y - 42 * u), theme::paper, h.notice.c_str(), nullptr, width);
 }
 
 // ---------------------------------------------------------------- session settings
@@ -1532,14 +1595,16 @@ void draw_hub_page() {
     // ---- the page's tabs
     const ImVec2 a(page_left, (body_top + lower) * u);
     const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
+    const bool landing = h.page.section == 2;
     const bool tools = h.page.section == 1;
-    {
+    if (!landing) {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
         int multiplayer_tab = static_cast<int>(h.tab);
         int &open = tools ? h.tools_tab : multiplayer_tab;
         if (tools) {
-            tabs = {{quick_tab, "QUICK"}, {official_tab, "OFFICIAL MAPS"}, {custom_tab, "CUSTOM MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
+            h.tools_tab = std::clamp(h.tools_tab, static_cast<int>(maps_tab), static_cast<int>(binds_tab));
+            tabs = {{maps_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
                     {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
@@ -1584,8 +1649,9 @@ void draw_hub_page() {
     // Under the connecting card the page is still drawn, to look at and not to use.
     const bool page_input = ui.input, page_clicked = ui.clicked, page_doubled = ui.doubled;
     const bool failed = !connecting && !h.failed.empty() && !in_session;
-    if ((connecting || failed) && !tools) ui.input = ui.clicked = ui.doubled = false;
-    if (tools) tools_page(ui, a, z);
+    if ((connecting || failed) && !tools && !landing) ui.input = ui.clicked = ui.doubled = false;
+    if (landing) landing_page(ui, a, z);
+    else if (tools) tools_page(ui, a, z);
     else switch (h.tab) {
     case Tab::browser: browser_page(ui, a, z); break;
     case Tab::host: host_page(ui, a, z); break;
@@ -1593,7 +1659,7 @@ void draw_hub_page() {
     case Tab::voice: voice_page(ui, a, z); break;
     case Tab::settings: settings_page(ui, a, z); break;
     }
-    if ((connecting || failed) && !tools) {
+    if ((connecting || failed) && !tools && !landing) {
         ui.input = page_input, ui.clicked = page_clicked, ui.doubled = page_doubled;
         h.items.clear();   // nothing of the page takes the focus: only the card's way out
         if (connecting) connecting_page(ui, a, z);
