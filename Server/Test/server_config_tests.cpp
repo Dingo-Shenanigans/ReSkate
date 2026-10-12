@@ -382,6 +382,7 @@ int run() {
         turned_down([](ServerConfig &c) { c.votes.custom.resize(17, c.votes.custom[0]); }, "More than 16 custom votes accepted");
         turned_down([](ServerConfig &c) { c.commands[0].name = "kick"; }, "A custom command named like a server command accepted");
         turned_down([](ServerConfig &c) { c.commands[0].name = "party"; }, "A custom command named like a chat command accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].name = "scripts"; }, "A custom command named like the scripts command accepted");
         turned_down([](ServerConfig &c) { c.commands[0].name = "teleport"; }, "A custom command named teleport accepted");
         turned_down([](ServerConfig &c) { c.commands[0].name = "Discord"; }, "A custom command name with capitals accepted");
         turned_down([](ServerConfig &c) { c.commands[1].name = "discord"; }, "Two custom commands with one name accepted");

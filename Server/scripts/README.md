@@ -1,0 +1,400 @@
+# Server scripts: the Lua API
+
+A ReSkate dedicated server can run Lua 5.4 scripts that add chat commands. A script can list players, message them, kick, ban or teleport them, and change the map, the time of day and the placed objects. It can also react when players join, leave or chat, and run code on a timer.
+
+The example scripts in this folder are ready to copy:
+
+| File | What it does |
+|---|---|
+| `hello.lua` | `/hello <text>`: the smallest command. |
+| `rules.lua` | `/rules`: the server's rules. |
+| `goto.lua` | `/goto <player>`: teleport next to someone. |
+| `props.lua` | `/props` (admins): who placed the most objects; `/props clear` deletes them. |
+| `welcome.lua` | Greets players as they join, and says when they leave. |
+| `tips.lua` | A tip in chat every 5 minutes. |
+
+- [Quick start](#quick-start)
+- [Where commands run](#where-commands-run)
+- [`server.command`](#servercommand)
+- [Players](#players)
+- [Chat](#chat)
+- [Moderation](#moderation)
+- [World](#world)
+- [Events](#events)
+- [Timers](#timers)
+- [Saved data](#saved-data)
+- [Roles](#roles)
+- [Logging](#logging)
+- [What Lua can do here](#what-lua-can-do-here)
+- [Limits](#limits)
+- [Errors](#errors)
+- [Recipes](#recipes)
+
+## Quick start
+
+1. Make a `scripts` folder next to `ReSkateServer` (or `ReSkateServer.exe`).
+2. Put a `.lua` file in it:
+
+   ```lua
+   -- scripts/hello.lua
+   server.command("hello", function(player, args)
+     return "hi " .. player.name .. ": " .. args
+   end)
+   ```
+
+3. Start the server. Typing `/hello world` in chat answers `hi <your name>: world`.
+
+The server loads scripts when it starts:
+- **Order:** files load in name order. Prefix names with numbers (`10-rules.lua`, `20-goto.lua`) to control the order.
+- **Loading errors:** a file that fails to load is logged and skipped. Commands it registered before the error stay registered.
+- **Changes:** type `scripts reload` in the console (or `/scripts reload` with a role that gives `scripts`) to load the folder again without a restart. Everything starts over: commands, event handlers, timers and globals. `scripts` on its own lists the loaded commands.
+- **Shared state:** all files share one Lua state, so a global set in one file is visible in the others. Globals keep their values between commands until the server restarts or the scripts are reloaded.
+- **Encoding:** files can be saved as UTF-8 with or without a byte-order mark. Only source text is accepted; see [What Lua can do here](#what-lua-can-do-here).
+
+## Where commands run
+
+| Who | Types | Notes |
+|---|---|---|
+| A player | `/hello world` | Normal commands, and the `admin = true` ones their role gives (see below). |
+| The server console | `hello world` | All script commands. The caller is the console's [player table](#the-player-table). |
+
+When a player types `/name`, the server looks in this order and runs the first match:
+
+1. The chat's own commands: `help`, `vote`, `poll`, `party`, `w` and so on.
+2. The owner's commands from the `"commands"` list in `ReSkateServer.json` (see `Server/README.txt`).
+3. For players with a role, the server's console commands it gives: `kick`, `map`, `scripts` and so on.
+4. Script commands.
+
+So a script command that shares its name with any of those never runs from chat, even though it still loads. Give your commands names the server doesn't already use.
+
+`/help` in chat lists the script commands that player may run, and `help` in the console lists them all.
+
+## `server.command`
+
+```lua
+server.command(name, function(player, args) ... end [, options])
+```
+
+Adds the chat command `/name`.
+
+**`name`**
+- 1 to 32 characters: letters, digits, `-` or `_`.
+- Case doesn't matter: names are stored in lowercase, and players' typing is lowercased before matching.
+- Any other name is an error at load time.
+- Registering a name a second time replaces the first function.
+
+**`function(player, args)`** runs each time someone uses the command.
+- `player` is the caller's [player table](#the-player-table).
+- `args` is the rest of the line after the command name, with leading and trailing spaces trimmed. It is `""` when nothing follows.
+- `args` is exactly what the player typed. Treat it as untrusted.
+
+**What the function returns is the reply:**
+- A string is sent to the caller. Each `\n` starts a new chat line. A reply shows at most 12 lines, and each line is cut to 200 bytes.
+- A number is sent as text.
+- `nil` (or no `return`) sends nothing to a player. An admin sees `Done.`
+- If the function errors, the caller sees `The /name command failed.` and the log gets the details. See [Errors](#errors).
+
+**`options`** is an optional table:
+
+| Field | Meaning |
+|---|---|
+| `admin = true` | Only the console and the roles that give it can run it, like a server command: a role with `"*"` in its `commands` in `data/roles.json`, or one that lists the command's name (`"bring"`). To other players it doesn't exist: they get `Unknown command`, and `/help` doesn't list it. |
+| `description = "..."` | What the command does, in players' `/` list (above the chat) and `/help`. One line, at most 80 bytes. |
+
+| `role = "vip"` | Also runs for players with that role in `data/roles.json` (see [Roles](#roles)). Everyone else gets `Unknown command`, unless `admin = true` lets their role in too. |
+
+A server has at most 32 script commands. Players' `/` list, Tab completion and `/help` show them (admin and role ones only to the players who can run them), and follow `scripts reload`.
+
+```lua
+server.command("bring", function(player, args)
+  local target = server.player(args)
+  if not target then return "Who?" end
+  if not player.x then return "You have no position yet." end
+  server.teleport(target, player.x + 2, player.y + 1, player.z)
+end, {admin = true})
+```
+
+## Players
+
+### The player table
+
+Functions that describe a player return a plain table:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `integer` | SteamID64. `0` for the console. |
+| `name` | `string` | The name shown in game. `"Server"` for the console. |
+| `admin` | `boolean` | Whether their role gives every command (`"*"`). Always `true` for the console. |
+| `role` | `string` | Their role's name (`data/roles.json`). Not set when they have none, nor for the console. |
+| `objects` | `integer` | How many objects they have placed. Not set for the console. |
+| `x`, `y`, `z` | `number` | Their position, in metres. Not set until their game has sent one, and never for the console. |
+
+The table is a snapshot taken when you asked. It doesn't update, and changing it changes nothing on the server.
+
+Check for a position before you use it:
+
+```lua
+if not p.x then return p.name .. " has no position yet." end
+```
+
+### Naming a player (`who`)
+
+Wherever a function takes `who`, you can pass any of:
+- a SteamID64, as an integer: `76561198000000000`
+- a player table (only its `id` is used)
+- a string: the start of one connected player's name (case doesn't matter), or a SteamID64 written as text
+
+A name that matches no one, or more than one player, matches nobody. Only connected players count, except for [`server.ban`](#serverbanwho).
+
+### `server.players()`
+
+Returns an array of player tables, one per connected player. The console is not included.
+
+```lua
+for _, p in ipairs(server.players()) do
+  print(p.name, p.objects)
+end
+```
+
+### `server.player(who)`
+
+Returns that player's table, or `nil, "no such player"`.
+
+## Chat
+
+Text sent to players is cleaned before it goes out. Control characters and line breaks are removed, invalid UTF-8 is dropped, and each line is cut to 200 bytes.
+
+### `server.say(text)`
+Sends one chat line, from the server, to everyone. Returns nothing.
+
+### `server.tell(who, text)`
+Sends chat lines to one player. Each `\n` starts a new line, up to 12 lines. Returns `true`, or `false` when `who` matches nobody.
+
+### `server.announce(text [, who])`
+Shows `text` on the announcement card at the top of the screen, like the `announce` console command. Announcements show only on the card, not in chat.
+- `server.announce(text)` shows it to everyone, and returns `true`.
+- `server.announce(text, who)` shows it to that one player only, like `announce-to`. Returns `true`, or `false` when `who` matches nobody.
+
+Only one announcement shows at a time, so a new one replaces the last. Every announcement is logged.
+
+## Moderation
+
+These functions work like the console commands of the same name, with console rights. They return the server's answer as a string (`"Bob was kicked until the server restarts."`), or `nil, "no such player"`. Every use is written to the log as `[script] ...`.
+
+### `server.kick(who)`
+Disconnects the player. They can't rejoin until the server restarts.
+
+### `server.ban(who)`
+Bans the player and disconnects them. `who` can also be the SteamID64 (an integer) of someone who has already left. The ban is saved in `ReSkateServer.json`.
+
+> Scripts act with console rights, so they **can** kick and ban admins. If a command lets players choose who gets kicked or banned, check `target.admin` first.
+
+### `server.teleport(who, x, y, z)`
+Moves the player to that position (metres). Returns `true` if the teleport was sent. Returns `false` if `who` matches nobody or their game hasn't finished loading the map.
+
+`x`, `y` and `z` must be ordinary numbers within 1,000,000 of the origin. `NaN`, infinity or anything further away is an error. To put someone next to another player, offset the position a little (as `goto.lua` does) so they don't land inside them.
+
+## World
+
+### `server.map([name])`
+- `server.map()` returns the current map's name.
+- `server.map(name)` changes the map. It takes the same names as the `map` console command, and returns the server's answer, such as `"Changing map to ..."` or `"No single map is called ..."`.
+
+Only maps the server has can be loaded: the game's own maps, or ones from mods in the `Mods` folder next to the server.
+
+### `server.tod(time)`
+Sets the time of day for everyone: `morning`, `noon`, `afternoon`, `evening`, `night`, `weatherday`, `weathernight`, or `default`. Returns the server's answer. This needs `world-layers.json` next to the server; without it, the answer says so.
+
+### `server.clear_objects()`
+Deletes every object players have placed. Returns the server's answer, such as `"Deleted 12 placed objects."`
+
+### `server.run(line)`
+Runs any server command, as if typed into the console (`server.run("rotation 30")`, `server.run("votes map off")`). Returns the server's answer, and the log records both. Line breaks and control characters are removed from `line` first. Never pass a player's text straight in unless the command is meant for them: the console can do anything, `quit` included.
+
+## Events
+
+### `server.on(event, function)`
+
+Runs `function` each time `event` happens. A script can add several functions for the same event, and they run in the order they were added.
+
+| `event` | When | The function gets |
+|---|---|---|
+| `"join"` | A player has finished joining. | `player`: their [player table](#the-player-table) |
+| `"leave"` | A player has left for any reason: quit, kicked, banned, timed out. | `player`: a table with `id`, `name` and `admin` |
+| `"chat"` | A player sent a chat message (not a `/command`). | `player`, then `text`: what they wrote |
+
+```lua
+server.on("chat", function(player, text)
+  if text:lower():find("discord", 1, true) then
+    server.tell(player, "Our Discord: discord.gg/example")
+  end
+end)
+```
+
+A few things to know:
+- **Events run a moment later.** They're handled once per server pass (a few milliseconds), not in the middle of the server's own work. That's why a handler can safely kick, ban or teleport anyone, including the player the event is about.
+- **A player may already be gone.** By the time a `join` or `chat` handler runs, the player might have left. Their table then has only `id`, `name` and `admin`, and `server.player(player.id)` returns `nil`.
+- **Chat events observe only.** The message has already gone out to everyone; a handler can't block or change it.
+- **What a handler returns is ignored.** If one errors, the log shows `[script] <event> handler failed: ...` and the other handlers still run.
+
+## Timers
+
+### `server.after(seconds, function)`
+Runs `function` once, `seconds` from now (0 to 1,000,000; `0` means the next server pass). Returns the timer's id.
+
+### `server.every(seconds, function)`
+Runs `function` every `seconds` (0.1 to 1,000,000), until it is cancelled. Returns the timer's id. If the server falls behind, a missed run is skipped rather than run twice.
+
+### `server.cancel(id)`
+Stops a timer. Returns `true` if it was still waiting, `false` if it had already run (an `after` timer) or was already cancelled. A timer may cancel itself.
+
+```lua
+-- Count down, then change the map.
+local left = 3
+local countdown
+countdown = server.every(1, function()
+  if left == 0 then
+    server.cancel(countdown)
+    server.map("San Vansterdam")
+  else
+    server.say("Map change in " .. left .. "...")
+    left = left - 1
+  end
+end)
+```
+
+Timer functions take no arguments, and what they return is ignored. A timer that errors is logged as `[script] timer failed: ...`. An `every` timer that errors is cancelled, since it would most likely fail the same way every time.
+
+Timers are kept until the server restarts or the scripts are reloaded. They start counting when the script loads, so `server.every` at the top of a file starts at server start.
+
+## Saved data
+
+### `server.store(key [, value])`
+With only `key`, returns the value saved under it, or `nil`. With a `value`, saves it: a string (UTF-8, at most 4096 bytes), a number or a boolean. `nil` deletes the key. Keys are 1 to 128 bytes, at most 4096 of them.
+
+Saved values outlive `scripts reload` and restarts. They are written to `data\scripts.json` beside the server within a tick of changing. Every script shares one set of keys, so prefix yours (`"homes:" .. player.id`). If the file cannot be read at startup, it is renamed `scripts.json.bad` and the scripts start with nothing saved.
+
+```lua
+server.on("join", function(player)
+  local key = "visits:" .. player.id
+  local visits = (server.store(key) or 0) + 1
+  server.store(key, visits)
+  server.tell(player, "Welcome back! Visit number " .. visits .. ".")
+end)
+```
+
+## Roles
+
+Roles are the server's own, in `data/roles.json` (README-roles.txt): scripts read and give them, and do not make new ones.
+
+### `server.role(who [, name])`
+With only `who`, returns the player's role name, or `nil`. That is the default role (`"player"` on a new server) for anyone who was given none. With a `name`, gives them that role, as the console's `role` command does, and returns the server's answer. `nil` takes their role away. `who` can also be the SteamID64 of a player who is offline.
+
+The change is saved in `data/roles.json`. The player's tag and `/` list follow straight away. A role that does not exist is refused, and the answer says so.
+
+```lua
+server.command("vip", function(player, args)
+  local target = server.player(args)
+  if not target then return "Who?" end
+  return server.role(target, "vip")
+end, {admin = true, description = "Make a player a VIP"})
+
+server.command("fly", function(player)
+  return "Wheee!"
+end, {role = "vip", description = "VIPs only"})
+```
+
+## Logging
+
+### `server.log(...)` and `print(...)`
+These write one line to the server's log and console, starting with `[script]`. The arguments are joined with spaces, the same way `print` joins them. Line breaks become spaces, and the line is cut to 200 bytes.
+
+## What Lua can do here
+
+Scripts get standard Lua 5.4 with these libraries:
+
+| Available | Not available |
+|---|---|
+| The base functions (`pairs`, `ipairs`, `pcall`, `error`, `tostring`, `tonumber`, `type`, `select`, `setmetatable`, `rawget`...) | `load`, `loadfile`, `dofile`, `require`, `collectgarbage` |
+| `string` (all of it except `string.dump`) | `io`, `debug`, `package`, `coroutine` |
+| `table`, `math`, `utf8` | `os.execute`, `os.exit`, `os.getenv`, `os.remove`, `os.rename`, `os.tmpname`, `os.setlocale` |
+| `os.time`, `os.clock`, `os.date` | `__gc` metamethods: `setmetatable` refuses a metatable that has one |
+
+Script files must be source text. A precompiled (`luac`) file is refused, and scripts can't load code at runtime. Whatever players type therefore only ever reaches a script as a string, and never runs as code.
+
+## Limits
+
+These keep a buggy command from freezing or crashing the server. A command that hits a limit stops, and its player is told it failed.
+
+| Limit | Value | Error in the log |
+|---|---|---|
+| Work per command (and per file while it loads) | About 2 million Lua instructions, a few milliseconds | `the script ran too long` |
+| Memory, all scripts together | 32 MB | `not enough memory` |
+| Work per string-pattern call (`find`, `match`, `gsub`, or each step of `gmatch`) | About 2 million matching steps | `pattern too complex` |
+| Each event handler and each timer run | The same as a command | As above |
+| Handlers per event | 64 | `too many <event> handlers` |
+| Timers waiting at once | 256 | `too many timers` |
+| Events waiting for one server pass | 64 | Further ones that pass aren't reported |
+
+A few things to know:
+- **`pcall` can't extend the time limit.** It can catch the error, but from then on every instruction raises it again, so the command still stops.
+- **Big globals cost every later command.** Data kept in globals counts against the 32 MB for as long as the server runs. Keep only what you need.
+- **Patterns are safe with player text.** A pattern a player types, even a deliberately slow one, stops with `pattern too complex` instead of stalling the server. For a plain substring search, `string.find(text, word, 1, true)` is still the faster choice.
+- **Scripts don't trigger scripts.** A script command never runs another script command. If a script action (such as `server.map`) would reach one, it acts as if that command doesn't exist.
+
+## Errors
+
+| When | What happens |
+|---|---|
+| Loading, at startup | The log shows `Script <file>: <file>:<line>: <message>`. The file's remaining code doesn't run. Commands it already registered stay. |
+| A command errors | The player sees `The /<name> command failed.`, and the log shows `[script] /<name> failed: <file>:<line>: <message>`. Players never see the file or the message. |
+| An event handler errors | The log shows `[script] <event> handler failed: <file>:<line>: <message>`. The other handlers still run. |
+| A timer errors | The log shows `[script] timer failed: <file>:<line>: <message>`. An `every` timer is cancelled. |
+| A bad argument to a `server` function | A normal Lua error, such as `bad argument #2 to 'teleport' (not a place in the world)`. Catch it with `pcall` if you want to handle it. |
+
+`server.player`, `server.kick` and `server.ban` don't error when no one matches. They return `nil, "no such player"`. `server.tell` and `server.teleport` return `false`.
+
+## Recipes
+
+**Reply on several lines**
+```lua
+server.command("info", function()
+  return "Map: " .. server.map() .. "\nPlayers: " .. #server.players()
+end)
+```
+
+**Take more than one argument**
+```lua
+server.command("tpto", function(player, args)
+  local x, y, z = args:match("^(%S+)%s+(%S+)%s+(%S+)$")
+  x, y, z = tonumber(x), tonumber(y), tonumber(z)
+  if not (x and y and z) then return "/tpto <x> <y> <z>" end
+  local ok, sent = pcall(server.teleport, player, x, y, z)
+  if not ok then return "That is not a place in the world." end
+  return sent and "Teleported." or "You can't be teleported yet."
+end, {admin = true})
+```
+
+**Remember something between commands**
+```lua
+local seen = {}   -- lives until the server restarts or the scripts reload
+
+server.command("checkin", function(player)
+  seen[player.id] = os.time()
+  return "Checked in."
+end)
+```
+
+**Don't let players act on admins**
+```lua
+server.command("votekick", function(player, args)
+  local target = server.player(args)
+  if not target then return "No single player matches that." end
+  if target.admin then return "You can't target an admin." end
+  -- ...
+end)
+```
+
+**Debug a script**
+
+Use `print(...)` and watch the server console. For details on a failed command, look for the `[script] /<name> failed:` line in the log.

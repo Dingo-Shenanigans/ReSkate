@@ -32,7 +32,7 @@ constexpr std::string_view help_text =
     "park-mod config add <name> | <mod folder> | <map> [| <key>] | park-mod config remove <name>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick | board-check off|warn|kick\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>] | words [reload | global on|off]\n"
-    "reserved [slots <n> | add|remove <SteamID64>] | roles [reload] | role <player or SteamID64> <role>|none | update | quit";
+    "reserved [slots <n> | add|remove <SteamID64>] | roles [reload] | role <player or SteamID64> <role>|none | scripts [reload] | update | quit";
 } // namespace
 
 std::string Host::command(std::string_view line, std::uint64_t admin) {
@@ -43,6 +43,8 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     const std::string name(canonical_command(verb));
     // From a player's game: what their role gives them (roles.h). The console may do anything.
     if (!console && !can(admin, name)) {
+        // A script's command, which says itself who may run it (server_scripts.cpp).
+        if (auto answer = scripts_.run(verb, admin, argument)) return std::move(*answer);
         const auto *role = role_of(admin);
         return staff(role) ? "Your role (" + role->name + ") cannot use " + (name.empty() ? std::string("that") : name) + "."
                            : std::string("You are not an admin on this server.");
@@ -72,7 +74,10 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (!console) log_(text); // the console logs its own replies
         return text;
     };
-    if (name.empty() || name == "help") return std::string(help_text);
+    if (name.empty() || name == "help") {
+        const auto scripted = scripts_.help(0);
+        return std::string(help_text) + (scripted.empty() ? "" : "\nscripts: " + scripted);
+    }
     if (name == "status")
         return config_.name + " | " + map_name() + " | " + std::to_string(players()) + "/" +
                std::to_string(config_.max_players) + " players | " + std::to_string(config_.tps) + " TPS | voice " +
@@ -909,6 +914,21 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(role ? label + " is now " + role->name + "."
                             : label + (config_.roles.default_role.empty() ? " no longer has a role." : " is " + config_.roles.default_role + " again."));
     }
+    if (name == "scripts") {
+        // The scripts folder read again, so an owner can change a script without a restart.
+        if (lower(argument) == "reload") {
+            if (const auto *by = console ? nullptr : find(admin)) log_(guest_name(*by) + " reloaded the scripts.");
+            const auto errors = scripts_.load(scripts_.folder());
+            roster_dirty_ = true; // players' "/" lists follow the new commands
+            const auto loaded = scripts_.help(0);
+            return errors + "Scripts reloaded; commands: " + (loaded.empty() ? "none" : loaded) + ".";
+        }
+        if (!argument.empty()) return "scripts [reload]";
+        const auto loaded = scripts_.help(0);
+        return "Script commands: " + (loaded.empty() ? "none" : loaded) + ". Type scripts reload after changing a script.";
+    }
+    // A script's command (server_scripts.cpp), for the console and the roles that give this name.
+    if (auto answer = scripts_.run(verb, admin, argument)) return std::move(*answer);
     return "Unknown command \"" + std::string(action) + "\". Type help.";
 }
 unsigned Host::teleport_ring(const std::vector<Guest *> &movers, const std::array<float, 3> &at, float radius) {

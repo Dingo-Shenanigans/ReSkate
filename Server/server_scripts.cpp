@@ -1,0 +1,681 @@
+#include "server_scripts.h"
+#include "server_host.h"
+#include "server_text.h"
+// Not lua.hpp: Lua is built as C++ (cmake/Dependencies.cmake), so its functions are not extern "C".
+#include "lauxlib.h"
+#include "lua.h"
+#include "lualib.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <vector>
+
+namespace dingosdk::server {
+namespace {
+constexpr std::size_t memory_limit = 32u << 20; // all scripts together
+constexpr int hook_every = 1000;                // instructions between budget checks
+constexpr unsigned step_limit = 2000;           // ~2M instructions a call (a few ms), or a file's first run
+constexpr float world_limit = 1e6f;             // metres from the origin: anything further is a mistake
+// What the scripts can make the server hold for them outside Lua's memory cap.
+constexpr std::size_t max_handlers = 64; // of each event
+constexpr std::size_t max_timers = 256;
+constexpr std::size_t max_events = 64; // waiting for tick(); a burst beyond it is not reported
+constexpr std::size_t max_store_keys = 4096, max_store_key = 128, max_store_value = 4096; // server.store
+
+std::uint64_t clock_us() {
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+// Each state keeps its Scripts in its extra space (lua.h), which hooks reach too.
+Scripts &self(lua_State *lua) { return **static_cast<Scripts **>(lua_getextraspace(lua)); }
+
+// A binding's body, with C++ exceptions (std::bad_alloc...) turned into Lua errors: one crossing
+// Lua's C++ try/catch would end the pcall with status -1 and no message (ldo.c LUAI_TRY).
+template <class Body> int guarded(lua_State *lua, Body &&body) {
+    std::string why;
+    try {
+        return body();
+    } catch (const std::exception &e) {
+        why = e.what();
+    }
+    return luaL_error(lua, "%s", why.c_str());
+}
+std::string_view text(lua_State *lua, int at) {
+    std::size_t size{};
+    const char *data = luaL_checklstring(lua, at, &size);
+    return {data, size};
+}
+int no_player(lua_State *lua) {
+    lua_pushnil(lua);
+    lua_pushliteral(lua, "no such player");
+    return 2;
+}
+} // namespace
+
+Scripts::~Scripts() {
+    running_ = false;
+    tick_store(); // a store since the last tick
+    if (lua_) lua_close(lua_);
+}
+
+std::string Scripts::load(const std::filesystem::path &folder) {
+    if (running_) return "Scripts cannot be reloaded while one is running.\n";
+    folder_ = folder;
+    if (store_file_.empty()) {
+        // Next to the bans (data\bans.json). A file that does not parse is set aside, never overwritten.
+        store_file_ = folder.parent_path() / "data" / "scripts.json";
+        std::ifstream in(store_file_, std::ios::binary);
+        std::ostringstream saved;
+        saved << in.rdbuf();
+        try {
+            if (in && saved.tellp() > 0) store_ = Json::parse(saved.str());
+            if (!store_.is_object()) throw std::runtime_error("not an object");
+        } catch (const std::exception &e) {
+            std::error_code ignored;
+            std::filesystem::rename(store_file_, std::filesystem::path(store_file_).concat(".bad"), ignored);
+            host_.log_(std::string("[script] data\\scripts.json could not be read (") + e.what() + "); set aside as scripts.json.bad.");
+            store_ = Json::object();
+        }
+    }
+    if (lua_) lua_close(lua_); // loading again starts over
+    lua_ = nullptr;
+    commands_.clear();
+    for (auto &handlers : handlers_) handlers.clear();
+    happened_.clear();
+    timers_.clear();
+    memory_ = 0;
+    // Every allocation counts against memory_limit; a refused one is a Lua "not enough memory" error.
+    lua_ = lua_newstate(
+        [](void *scripts, void *old, std::size_t old_size, std::size_t size) -> void * {
+            auto &memory = static_cast<Scripts *>(scripts)->memory_;
+            const std::size_t before = old ? old_size : 0; // old_size is a type tag when old is null
+            if (!size) {
+                std::free(old);
+                memory -= before;
+                return nullptr;
+            }
+            if (size > before && memory - before + size > memory_limit) return nullptr;
+            void *moved = std::realloc(old, size);
+            if (moved) memory = memory - before + size;
+            return moved;
+        },
+        this);
+    if (!lua_) return "Scripts: Lua did not start.\n";
+    *static_cast<Scripts **>(lua_getextraspace(lua_)) = this;
+    std::string why;
+    lua_pushcfunction(lua_, open);
+    if (!call(0, why)) return "Scripts: " + why + "\n";
+
+    std::vector<std::filesystem::path> files;
+    std::error_code missing; // no scripts folder: no scripts
+    for (std::filesystem::directory_iterator file(folder, missing), end; !missing && file != end; file.increment(missing))
+        if (file->path().extension() == ".lua") files.push_back(file->path());
+    std::sort(files.begin(), files.end());
+    std::string errors;
+    for (const auto &file : files) {
+        // Read here, not by Lua's fopen: a Windows path need not fit the ANSI code page.
+        const auto u8 = file.filename().u8string();
+        const std::string name(u8.begin(), u8.end());
+        std::ifstream in(file, std::ios::binary);
+        std::ostringstream source;
+        source << in.rdbuf();
+        auto text = std::move(source).str();
+        if (text.starts_with("\xEF\xBB\xBF")) text.erase(0, 3); // a UTF-8 mark, as Notepad may save
+        // "t": source text only. Lua does not check bytecode, so a precompiled chunk could do anything.
+        if (!in) {
+            why = "could not be read";
+        } else if (luaL_loadbufferx(lua_, text.data(), text.size(), ("@" + name).c_str(), "t") != LUA_OK) {
+            const char *error = lua_tostring(lua_, -1);
+            why = error ? error : "could not load";
+            lua_pop(lua_, 1);
+        } else if (call(0, why)) {
+            continue;
+        }
+        errors += "Script " + name + ": " + why + "\n";
+    }
+    return errors;
+}
+
+// An admin-only command is a role's like any server command (roles.h): "*" gives it, or the
+// role lists it by name. One made for a role ({role = "vip"}) also runs for that role's players.
+// The console runs all of them.
+bool Scripts::allowed(const Command &command, std::string_view name, std::uint64_t caller) const {
+    if (!caller || (!command.admin && command.role.empty())) return true;
+    if (const auto *role = host_.role_of(caller); role && !command.role.empty() && role->name == command.role) return true;
+    return host_.can(caller, name);
+}
+
+std::string Scripts::help(std::uint64_t caller) const {
+    std::string names;
+    for (const auto &[name, command] : commands_)
+        if (allowed(command, name, caller)) names += (names.empty() ? "" : ", ") + name;
+    return names;
+}
+
+std::vector<multiplayer::ServerCommand> Scripts::listed() const {
+    std::vector<multiplayer::ServerCommand> list;
+    for (const auto &[name, command] : commands_) list.push_back({name, command.description, command.admin, command.role});
+    return list;
+}
+
+std::optional<std::string> Scripts::run(std::string_view verb, std::uint64_t caller, std::string_view args) {
+    const auto found = commands_.find(verb);
+    // running_: a script's own server.kick() and the like never come back into a script.
+    if (!lua_ || running_ || found == commands_.end()) return {};
+    if (!allowed(found->second, found->first, caller)) return {};
+    std::string answer;
+    if (call({found->second.function, 2, caller, {}, args}, answer)) return answer;
+    // The details (with the script's path) are for the owner's log, not the player.
+    host_.log_("[script] /" + std::string(verb) + " failed: " + clean_chat_text(answer));
+    return "The /" + std::string(verb) + " command failed.";
+}
+
+bool Scripts::call(const Request &request, std::string &result) {
+    // The arguments are made inside the pcall: building them can fail at the memory cap.
+    constexpr lua_CFunction invoke = [](lua_State *lua) -> int {
+        const auto &asked = *static_cast<const Request *>(lua_touserdata(lua, 1));
+        lua_rawgeti(lua, LUA_REGISTRYINDEX, asked.function);
+        if (asked.arguments >= 1) self(lua).push_player(lua, asked.id, asked.name);
+        if (asked.arguments >= 2) lua_pushlstring(lua, asked.text.data(), asked.text.size());
+        lua_call(lua, asked.arguments, 1);
+        return 1;
+    };
+    lua_pushcfunction(lua_, invoke);
+    lua_pushlightuserdata(lua_, const_cast<Request *>(&request));
+    return call(1, result);
+}
+
+void Scripts::happened(Event event, std::uint64_t id, std::string name, std::string text) {
+    if (handlers_[static_cast<std::size_t>(event)].empty() || happened_.size() >= max_events) return;
+    happened_.push_back({event, id, std::move(name), std::move(text)});
+}
+
+void Scripts::tick_store() {
+    if (!store_dirty_ || running_) return;
+    store_dirty_ = false;
+    try {
+        write_file(store_file_, store_.dump(2));
+    } catch (const std::exception &e) {
+        host_.log_(std::string("[script] server.store not saved: ") + e.what());
+    }
+}
+
+void Scripts::tick() {
+    tick_store();
+    if (!lua_ || running_) return;
+    static constexpr const char *names[] = {"join", "leave", "chat"};
+    std::string why;
+    for (const auto &event : std::exchange(happened_, {})) {
+        const auto kind = static_cast<std::size_t>(event.event);
+        const auto handlers = handlers_[kind]; // a copy: a handler may add another
+        for (const int function : handlers)
+            if (!call({function, event.event == Event::chat ? 2 : 1, event.id, event.name, event.text}, why))
+                host_.log_("[script] " + std::string(names[kind]) + " handler failed: " + clean_chat_text(why));
+    }
+    const auto now = clock_us();
+    std::vector<std::int64_t> due;
+    for (const auto &[id, timer] : timers_)
+        if (timer.due <= now) due.push_back(id);
+    for (const auto id : due) {
+        const auto found = timers_.find(id);
+        if (found == timers_.end()) continue; // cancelled by one that ran before it
+        const auto timer = found->second;
+        if (!timer.every) timers_.erase(found);
+        // A server that fell behind runs a repeating timer once, not once for every time it missed.
+        else found->second.due = std::max(timer.due + timer.every, now + 1);
+        if (!call({timer.function, 0}, why)) {
+            host_.log_("[script] timer failed: " + clean_chat_text(why));
+            if (timer.every) cancel(id); // it would fail again every time
+        }
+        if (!timer.every) luaL_unref(lua_, LUA_REGISTRYINDEX, timer.function);
+    }
+}
+
+void Scripts::cancel(std::int64_t timer) {
+    const auto found = timers_.find(timer);
+    if (found == timers_.end()) return;
+    luaL_unref(lua_, LUA_REGISTRYINDEX, found->second.function);
+    timers_.erase(found);
+}
+
+bool Scripts::call(int arguments, std::string &result) {
+    steps_ = 0;
+    lua_sethook(
+        lua_,
+        [](lua_State *lua, lua_Debug *) {
+            if (++self(lua).steps_ <= step_limit) return;
+            // From here every instruction errors, so a script's own pcall cannot catch this and go on.
+            lua_sethook(lua, lua_gethook(lua), LUA_MASKCOUNT, 1);
+            luaL_error(lua, "the script ran too long");
+        },
+        LUA_MASKCOUNT, hook_every);
+    running_ = true;
+    const int status = lua_pcall(lua_, arguments, 1, 0);
+    running_ = false;
+    lua_sethook(lua_, nullptr, 0, 0);
+    // Read without converting: lua_tolstring on a number allocates, which can fail out here.
+    result.clear();
+    if (lua_type(lua_, -1) == LUA_TSTRING) {
+        std::size_t size{};
+        const char *data = lua_tolstring(lua_, -1, &size);
+        result.assign(data, size);
+    } else if (lua_isinteger(lua_, -1)) {
+        result = std::to_string(lua_tointeger(lua_, -1));
+    } else if (lua_type(lua_, -1) == LUA_TNUMBER) {
+        char number[64];
+        std::snprintf(number, sizeof number, "%.14g", static_cast<double>(lua_tonumber(lua_, -1)));
+        result = number;
+    } else if (status != LUA_OK) {
+        result = "error object is a " + std::string(luaL_typename(lua_, -1));
+    }
+    lua_pop(lua_, 1);
+    return status == LUA_OK;
+}
+
+std::uint64_t Scripts::target(lua_State *lua, int at) {
+    std::uint64_t id{};
+    if (lua_istable(lua, at)) {
+        lua_getfield(lua, at, "id");
+        id = static_cast<std::uint64_t>(lua_tointeger(lua, -1)); // not an integer: 0, nobody
+        lua_pop(lua, 1);
+    } else if (lua_isinteger(lua, at)) {
+        id = static_cast<std::uint64_t>(lua_tointeger(lua, at));
+    } else if (lua_type(lua, at) == LUA_TSTRING) {
+        const auto *guest = host_.match_player(text(lua, at));
+        return guest ? guest->member.id : 0;
+    } else {
+        luaL_typeerror(lua, at, "player (SteamID64, player table or name)");
+    }
+    const auto *guest = host_.find(id);
+    return guest && guest->handshaken ? id : 0;
+}
+
+void Scripts::push_player(lua_State *lua, std::uint64_t id, std::string_view gone) {
+    const auto *guest = id ? host_.find(id) : nullptr;
+    const std::string name = guest ? host_.guest_name(*guest) : id ? std::string(gone) : "Server";
+    lua_createtable(lua, 0, 8);
+    lua_pushinteger(lua, static_cast<lua_Integer>(id));
+    lua_setfield(lua, -2, "id");
+    lua_pushlstring(lua, name.data(), name.size());
+    lua_setfield(lua, -2, "name");
+    // admin: a role with every command (as the game marks them); role: its name, if any.
+    const auto *role = id ? host_.role_of(id) : nullptr;
+    lua_pushboolean(lua, !id || (role && role->granted_all));
+    lua_setfield(lua, -2, "admin");
+    if (role) {
+        lua_pushlstring(lua, role->name.data(), role->name.size());
+        lua_setfield(lua, -2, "role");
+    }
+    if (!guest) return;
+    lua_pushinteger(lua, static_cast<lua_Integer>(guest->shared.objects().size()));
+    lua_setfield(lua, -2, "objects");
+    if (!guest->latest_root) return;
+    const auto &at = guest->latest_root->position;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        lua_pushnumber(lua, at[axis]);
+        lua_setfield(lua, -2, axis == 0 ? "x" : axis == 1 ? "y" : "z");
+    }
+}
+
+int Scripts::open(lua_State *state) {
+    // The libraries a script needs, and none that reach files, processes, other code or Lua's insides.
+    static constexpr luaL_Reg libraries[] = {{LUA_GNAME, luaopen_base},       {LUA_STRLIBNAME, luaopen_string},
+                                             {LUA_TABLIBNAME, luaopen_table},   {LUA_MATHLIBNAME, luaopen_math},
+                                             {LUA_UTF8LIBNAME, luaopen_utf8},   {LUA_OSLIBNAME, luaopen_os}};
+    for (const auto &library : libraries) {
+        luaL_requiref(state, library.name, library.func, 1);
+        lua_pop(state, 1);
+    }
+    // No code but the scripts' own files: load and loadfile take bytecode, string.dump makes it.
+    for (const char *name : {"dofile", "loadfile", "load", "collectgarbage"}) {
+        lua_pushnil(state);
+        lua_setglobal(state, name);
+    }
+    lua_getglobal(state, LUA_STRLIBNAME);
+    lua_pushnil(state);
+    lua_setfield(state, -2, "dump");
+    lua_pop(state, 1);
+    // No finalizers: Lua runs __gc with hooks off (lgc.c GCTM), out of the instruction budget, and
+    // lua_close runs them too. An object is only finalized if its metatable has __gc when set.
+    lua_getglobal(state, "setmetatable");
+    lua_pushcclosure(
+        state,
+        [](lua_State *lua) -> int {
+            if (lua_istable(lua, 2)) {
+                lua_pushliteral(lua, "__gc");
+                if (lua_rawget(lua, 2) != LUA_TNIL) return luaL_argerror(lua, 2, "scripts cannot use __gc");
+            }
+            lua_settop(lua, 2);
+            lua_pushvalue(lua, lua_upvalueindex(1));
+            lua_insert(lua, 1);
+            lua_call(lua, 2, 1);
+            return 1;
+        },
+        1);
+    lua_setglobal(state, "setmetatable");
+    // os: the clock and calendar only (not execute, exit, getenv, remove, rename, tmpname, setlocale).
+    lua_newtable(state);
+    lua_getglobal(state, LUA_OSLIBNAME);
+    for (const char *name : {"time", "clock", "date"}) {
+        lua_getfield(state, -1, name);
+        lua_setfield(state, -3, name);
+    }
+    lua_pop(state, 1);
+    lua_setglobal(state, LUA_OSLIBNAME);
+
+    // A server command with `argument` from a script, as the console runs it; logged, since the
+    // console logs only what is typed into it. The argument goes through the chat cleaner: no
+    // control characters or line breaks reach the command line or the log.
+    static constexpr auto console = [](lua_State *lua, std::string line) {
+        auto &host = self(lua).host_;
+        const auto answer = host.command(line);
+        host.log_("[script] " + clean_chat_text(line) + ": " + clean_chat_text(answer));
+        lua_pushlstring(lua, answer.data(), answer.size());
+        return 1;
+    };
+    // server.after(seconds, fn) and server.every(seconds, fn): the timer's id, for server.cancel.
+    static constexpr auto timer = [](lua_State *lua, bool repeat) {
+        auto &scripts = self(lua);
+        const auto seconds = luaL_checknumber(lua, 1);
+        luaL_checktype(lua, 2, LUA_TFUNCTION);
+        if (!std::isfinite(seconds) || seconds < (repeat ? 0.1 : 0) || seconds > 1e6)
+            return luaL_argerror(lua, 1, repeat ? "0.1 to 1000000 seconds" : "0 to 1000000 seconds");
+        if (scripts.timers_.size() >= max_timers) return luaL_error(lua, "too many timers (%d)", static_cast<int>(max_timers));
+        const auto every = static_cast<std::uint64_t>(seconds * 1e6);
+        lua_pushvalue(lua, 2);
+        const int function = luaL_ref(lua, LUA_REGISTRYINDEX);
+        const auto id = ++scripts.timer_ids_;
+        scripts.timers_[id] = {clock_us() + every, repeat ? every : 0, function};
+        lua_pushinteger(lua, id);
+        return 1;
+    };
+    static constexpr luaL_Reg api[] = {
+        // server.command(name, function(player, args) ... end [, {admin = true, description = "..."}])
+        {"command",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto name = lower(text(lua, 1));
+                 luaL_checktype(lua, 2, LUA_TFUNCTION);
+                 bool admin{};
+                 std::string description, role;
+                 if (!lua_isnoneornil(lua, 3)) {
+                     luaL_checktype(lua, 3, LUA_TTABLE);
+                     lua_getfield(lua, 3, "admin");
+                     admin = lua_toboolean(lua, -1);
+                     lua_getfield(lua, 3, "description");
+                     if (!lua_isnil(lua, -1)) description = text(lua, -1);
+                     lua_getfield(lua, 3, "role");
+                     if (!lua_isnil(lua, -1)) role = lower(text(lua, -1));
+                     lua_pop(lua, 3);
+                 }
+                 // Players see the name and description in their "/" list and /help.
+                 if (!multiplayer::valid_server_command_name(name))
+                     return luaL_argerror(lua, 1, "a command name is 1 to 32 letters, digits, - or _");
+                 if (!role.empty() && !multiplayer::valid_server_command_name(role))
+                     return luaL_argerror(lua, 3, "a role is 1 to 32 letters, digits, - or _");
+                 if (!multiplayer::valid_server_command({name, description, admin, role}))
+                     return luaL_argerror(lua, 3, "a description is one line of at most 80 bytes");
+                 auto &commands = self(lua).commands_;
+                 const auto old = commands.find(name);
+                 if (old == commands.end() && commands.size() >= multiplayer::server_command_limit)
+                     return luaL_error(lua, "too many commands (%d)", static_cast<int>(multiplayer::server_command_limit));
+                 lua_pushvalue(lua, 2);
+                 const int function = luaL_ref(lua, LUA_REGISTRYINDEX);
+                 if (old != commands.end()) luaL_unref(lua, LUA_REGISTRYINDEX, old->second.function);
+                 commands[name] = {function, admin, std::move(description), std::move(role)};
+                 return 0;
+             });
+         }},
+        // server.on("join" | "leave" | "chat", function(player [, text]) ... end)
+        {"on",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 static constexpr const char *const events[] = {"join", "leave", "chat", nullptr};
+                 const int event = luaL_checkoption(lua, 1, nullptr, events);
+                 luaL_checktype(lua, 2, LUA_TFUNCTION);
+                 auto &handlers = self(lua).handlers_[static_cast<std::size_t>(event)];
+                 if (handlers.size() >= max_handlers)
+                     return luaL_error(lua, "too many %s handlers (%d)", events[event], static_cast<int>(max_handlers));
+                 lua_pushvalue(lua, 2);
+                 handlers.push_back(luaL_ref(lua, LUA_REGISTRYINDEX));
+                 return 0;
+             });
+         }},
+        {"after", [](lua_State *lua) -> int { return guarded(lua, [&] { return timer(lua, false); }); }},
+        {"every", [](lua_State *lua) -> int { return guarded(lua, [&] { return timer(lua, true); }); }},
+        // server.cancel(id): true if that timer was waiting.
+        {"cancel",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const std::int64_t id = luaL_checkinteger(lua, 1);
+                 const bool waiting = scripts.timers_.contains(id);
+                 scripts.cancel(id);
+                 lua_pushboolean(lua, waiting);
+                 return 1;
+             });
+         }},
+        // server.players(): every connected player's table.
+        {"players",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 std::vector<std::uint64_t> ids;
+                 for (const auto &[id, guest] : scripts.host_.guests_)
+                     if (guest->handshaken) ids.push_back(id);
+                 lua_createtable(lua, static_cast<int>(ids.size()), 0);
+                 for (std::size_t i = 0; i < ids.size(); ++i) {
+                     scripts.push_player(lua, ids[i]);
+                     lua_rawseti(lua, -2, static_cast<lua_Integer>(i + 1));
+                 }
+                 return 1;
+             });
+         }},
+        // server.player(who): their table, or nil.
+        {"player",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto id = scripts.target(lua, 1);
+                 if (!id) return no_player(lua);
+                 scripts.push_player(lua, id);
+                 return 1;
+             });
+         }},
+        // server.say(text): a chat line from the server to everyone.
+        {"say",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 self(lua).host_.send_chat(text(lua, 1));
+                 return 0;
+             });
+         }},
+        // server.tell(who, text): chat lines to one player; false when nobody matches.
+        {"tell",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto id = scripts.target(lua, 1);
+                 const auto line = text(lua, 2);
+                 auto *guest = scripts.host_.find(id);
+                 if (guest) scripts.host_.reply(*guest, line);
+                 lua_pushboolean(lua, guest != nullptr);
+                 return 1;
+             });
+         }},
+        // server.announce(text [, who]): the announcement card on everyone's screen, or one player's;
+        // false when `who` matches nobody.
+        {"announce",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto line = text(lua, 1);
+                 if (lua_isnoneornil(lua, 2)) {
+                     scripts.host_.announce(line);
+                     lua_pushboolean(lua, true);
+                     return 1;
+                 }
+                 const auto id = scripts.target(lua, 2);
+                 if (id) scripts.host_.announce(line, id);
+                 lua_pushboolean(lua, id != 0);
+                 return 1;
+             });
+         }},
+        // server.kick(who), server.ban(who or an offline SteamID64): the server's answer.
+        {"kick",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 const auto id = self(lua).target(lua, 1);
+                 return id ? console(lua, "kick " + std::to_string(id)) : no_player(lua);
+             });
+         }},
+        {"ban",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 const auto id = lua_isinteger(lua, 1) ? static_cast<std::uint64_t>(lua_tointeger(lua, 1)) : self(lua).target(lua, 1);
+                 return id ? console(lua, "ban " + std::to_string(id)) : no_player(lua);
+             });
+         }},
+        // server.teleport(who, x, y, z): true when sent.
+        {"teleport",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto id = scripts.target(lua, 1);
+                 std::array<float, 3> to{};
+                 for (int axis = 0; axis < 3; ++axis) {
+                     const auto value = luaL_checknumber(lua, 2 + axis);
+                     if (!std::isfinite(value) || std::abs(value) > world_limit) return luaL_argerror(lua, 2 + axis, "not a place in the world");
+                     to[static_cast<std::size_t>(axis)] = static_cast<float>(value);
+                 }
+                 auto &host = scripts.host_;
+                 auto *guest = host.find(id);
+                 bool sent{};
+                 if (guest && guest->world_ready) {
+                     auto p = host.packet(PacketKind::teleport, host.now_);
+                     p.teleport = to;
+                     sent = host.send_packet(*guest, p, true, false);
+                 }
+                 lua_pushboolean(lua, sent);
+                 return 1;
+             });
+         }},
+        // server.map(): the map's name; server.map(name): changes it, the server's answer.
+        {"map",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 if (lua_isnoneornil(lua, 1)) {
+                     const auto name = self(lua).host_.map_name();
+                     lua_pushlstring(lua, name.data(), name.size());
+                     return 1;
+                 }
+                 return console(lua, "map " + clean_chat_text(text(lua, 1)));
+             });
+         }},
+        // server.tod(time): morning, noon, night... or default; the server's answer.
+        {"tod", [](lua_State *lua) -> int { return guarded(lua, [&] { return console(lua, "tod " + clean_chat_text(text(lua, 1))); }); }},
+        // server.clear_objects(): deletes every placed object; the server's answer.
+        {"clear_objects", [](lua_State *lua) -> int { return guarded(lua, [&] { return console(lua, "clear-objects"); }); }},
+        // server.run(line): any server command, as the console runs it; the server's answer.
+        {"run", [](lua_State *lua) -> int { return guarded(lua, [&] { return console(lua, clean_chat_text(text(lua, 1))); }); }},
+        // server.store(key): the value saved under `key`, or nil. server.store(key, value): saves a
+        // string, number or boolean (nil deletes it); kept across reloads and restarts.
+        {"store",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto key = text(lua, 1);
+                 if (key.empty() || key.size() > max_store_key) return luaL_argerror(lua, 1, "a key is 1 to 128 bytes");
+                 auto &items = scripts.store_.items();
+                 const auto found = items.find(key);
+                 if (lua_gettop(lua) < 2) {
+                     if (found == items.end()) lua_pushnil(lua);
+                     else if (const auto &value = found->second; value.is_string()) lua_pushlstring(lua, value.string().data(), value.string().size());
+                     else if (value.is_boolean()) lua_pushboolean(lua, value.get<bool>());
+                     else if (value.is_number_integer()) lua_pushinteger(lua, value.get<lua_Integer>());
+                     else if (value.is_number()) lua_pushnumber(lua, value.get<lua_Number>());
+                     else lua_pushnil(lua); // something else written into the file by hand
+                     return 1;
+                 }
+                 Json value;
+                 switch (lua_type(lua, 2)) {
+                 case LUA_TNIL:
+                     if (found != items.end()) {
+                         items.erase(found);
+                         scripts.store_dirty_ = true;
+                     }
+                     return 0;
+                 case LUA_TBOOLEAN: value = lua_toboolean(lua, 2) != 0; break;
+                 case LUA_TNUMBER:
+                     if (lua_isinteger(lua, 2)) value = static_cast<std::int64_t>(lua_tointeger(lua, 2));
+                     else if (const auto number = lua_tonumber(lua, 2); std::isfinite(number)) value = number;
+                     else return luaL_argerror(lua, 2, "not a finite number");
+                     break;
+                 case LUA_TSTRING:
+                     if (text(lua, 2).size() > max_store_value) return luaL_argerror(lua, 2, "a string of at most 4096 bytes");
+                     value = text(lua, 2);
+                     break;
+                 default: return luaL_argerror(lua, 2, "a string, number, boolean or nil");
+                 }
+                 // The file is JSON: refuse here what could not be saved (text that is not UTF-8).
+                 try {
+                     (void)Json{Json(key), value}.dump();
+                 } catch (const std::exception &) {
+                     return luaL_error(lua, "server.store keeps UTF-8 text only");
+                 }
+                 if (found == items.end() && items.size() >= max_store_keys)
+                     return luaL_error(lua, "too many stored keys (%d)", static_cast<int>(max_store_keys));
+                 scripts.store_[key] = std::move(value);
+                 scripts.store_dirty_ = true;
+                 return 0;
+             });
+         }},
+        // server.role(who): the player's role (roles.h), or nil. server.role(who, name): gives it (nil
+        // gives none) as the console's "role" command does, so data/roles.json and the players' games
+        // follow; the server's answer. Takes an offline SteamID64 too.
+        {"role",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto id = lua_isinteger(lua, 1) ? static_cast<std::uint64_t>(lua_tointeger(lua, 1)) : scripts.target(lua, 1);
+                 if (!id) return no_player(lua);
+                 if (lua_gettop(lua) < 2) {
+                     if (const auto *role = scripts.host_.role_of(id)) lua_pushlstring(lua, role->name.data(), role->name.size());
+                     else lua_pushnil(lua);
+                     return 1;
+                 }
+                 const auto name = lua_isnil(lua, 2) ? std::string("none") : clean_chat_text(text(lua, 2));
+                 return console(lua, "role " + std::to_string(id) + " " + name);
+             });
+         }},
+        // server.log(...), and print(...): a line in the server's log.
+        {"log",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 std::string line;
+                 for (int i = 1, count = lua_gettop(lua); i <= count; ++i) {
+                     std::size_t size{};
+                     const char *part = luaL_tolstring(lua, i, &size);
+                     if (i > 1) line += ' ';
+                     line.append(part, size);
+                     lua_pop(lua, 1);
+                 }
+                 self(lua).host_.log_("[script] " + clean_chat_text(line));
+                 return 0;
+             });
+         }},
+        {nullptr, nullptr}};
+    luaL_newlib(state, api);
+    lua_getfield(state, -1, "log");
+    lua_setglobal(state, "print");
+    lua_setglobal(state, "server");
+    return 0;
+}
+} // namespace dingosdk::server

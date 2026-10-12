@@ -286,6 +286,8 @@ void apply_roster(Session &s, const Packet &p, std::uint64_t now) {
     s.server_polls = dedicated_host(s) ? p.server_polls : 0;
     if (dedicated_host(s)) s.server_custom_votes = p.server_custom_votes;
     else s.server_custom_votes.clear();
+    if (dedicated_host(s)) s.server_commands = p.server_commands;
+    else s.server_commands.clear();
     publish_chat(s); // the "/" list follows the server's votes, its players and its maps
     if (s.object_clears && *s.object_clears != p.object_clears) s.clear_pending = true;
     s.object_clears = p.object_clears;

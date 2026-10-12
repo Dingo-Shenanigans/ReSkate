@@ -78,6 +78,76 @@ ReSkateServer.json, Mods and its logs. Type "update" to check and install
 straight away (players are told to rejoin). Turn this off with
 "auto_update": false, or start the server with --no-update.
 
+Scripts
+-------
+Lua files (.lua, Lua 5.4) in a scripts folder next to the server add your own
+chat commands. They are loaded in name order when the server starts, and again
+with "scripts reload" (no restart needed); errors are logged and that file is
+skipped. Example, scripts/hello.lua:
+
+  server.command("hello", function(player, args)
+    return "hi " .. player.name .. ": " .. args
+  end)
+
+A player typing /hello world gets "hi <name>: world". More examples to copy
+into scripts are in the source's Server/scripts: rules.lua (/rules), goto.lua
+(/goto <player>), props.lua (/props, for admins: who placed the most
+objects), welcome.lua (greets players who join) and tips.lua (a tip every few
+minutes). The console can run script commands too (as "hello world"), and so
+can admins. Commands the server already has, and the owner's "commands" in
+ReSkateServer.json, always win over a script's of the same name. /help (and
+help in the console) lists the script commands each player may use.
+The full reference, with every function's results and limits, is
+Server/scripts/README.md in the source.
+
+  server.command(name, function(player, args) ... end [, {admin = true, description = "..."}])
+                         A /name command: what the function returns is the reply.
+                         admin = true: only the console and the roles that give
+                         it ("*", or the command's name in their list). Names
+                         are 1-32 letters, digits, - or _; at most 32 commands.
+                         description: one line (80 bytes) for players' "/" list.
+                         role = "vip": also players with that role.
+  server.players()       Every connected player, as tables (below).
+  server.player(who)     One player's table, or nil.
+  server.say(text)       A chat line to everyone.
+  server.tell(who, text) Chat lines to one player; false if nobody matches.
+  server.announce(text [, who])   The announcement card, for everyone or for
+                         one player.
+  server.kick(who)       Like the kick command; returns the server's answer.
+  server.ban(who)        Like ban; also takes the SteamID64 of a player who left.
+  server.teleport(who, x, y, z)   Sends a player there; true if sent.
+  server.map([name])     The map's name, or change it (like the map command).
+  server.tod(time)       Like the tod command.
+  server.clear_objects() Deletes every placed object.
+  server.run(line)       Any server command, as the console runs it; returns
+                         the server's answer.
+  server.store(key [, value])   The value saved under key (nil: none), or saves
+                         a string, number or boolean (nil deletes it). Kept in
+                         data\scripts.json across reloads and restarts.
+  server.role(who [, name])   The player's role (data/roles.json), or gives one
+                         (nil: none) like the role command; the server's answer.
+  server.on(event, function)   Runs on "join" (player), "leave" (player) or
+                         "chat" (player, text). Handlers run just after it happens.
+  server.after(seconds, function), server.every(seconds, function)
+                         A timer, once or repeating (every 0.1 s at most often);
+                         returns its id.
+  server.cancel(id)      Stops a timer.
+  server.log(...), print(...)   A line in the server's log.
+
+A player table has id (SteamID64), name, admin (their role gives every
+command), role (its name, if they have one), objects (how many they have
+placed) and x, y, z once their game has sent a position. "who" is a SteamID64,
+a player table or the start of a player's name. The console's table is
+{id = 0, name = "Server", admin = true}.
+
+Scripts get Lua's string, table, math and utf8 libraries and os.time, os.clock
+and os.date; nothing that reads or writes files, runs programs or loads other
+code (only source files load, never compiled Lua), and no __gc finalizers.
+All scripts share 32 MB, and a command that runs too long (a few milliseconds
+of Lua) is stopped; either way the player is told the command failed and the
+log says why. A string pattern that would take too long to match (one a player
+typed, say) stops with "pattern too complex".
+
 ReSkateServer.json
 ------------------
 The settings are in sections; each setting below is listed under the section it is in,
@@ -641,5 +711,7 @@ or Travel, and voice, distances, placement and kicks from the Multiplayer menu.
                                 fingerprint like the game's own (or list them).
   roles [reload]                The roles and who has them; reload reads data/roles.json again.
   role <player or id> <role>|none   Give a player a role, or take theirs away.
+  scripts [reload]              List the script commands, or load the scripts
+                                folder again (see Scripts).
   update                        Check for a new release and install it now (console only).
   quit, exit or stop            Shut the server down (console only).

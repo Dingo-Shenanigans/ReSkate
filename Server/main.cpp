@@ -476,6 +476,7 @@ int run(int argc, char **argv, bool skip_update) {
         return 1;
     }
     Host host(config, transport, write_log);
+    if (const auto errors = host.load_scripts(here / "scripts"); !errors.empty()) write_log(errors);
     if (!host.start(error)) {
         write_log("Could not open the server: " + error);
         return 1;

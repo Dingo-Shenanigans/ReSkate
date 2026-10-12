@@ -148,6 +148,8 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (polls != ServerPolls::off) text += "/1, /2...: answer the running poll\n";
         if (config_.map_rotation) text += "The map changes every " + std::to_string(config_.map_rotation) + " min.\n";
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
+        if (const auto scripted = scripts_.help(guest.member.id); !scripted.empty())
+            text += "This server's own commands (type /<name>): " + scripted + "\n";
         if (const auto *role = role_of(guest.member.id); staff(role))
             text += role->all_commands
                 ? "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins\n"
@@ -226,6 +228,12 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         const auto id = guest.member.id;
         const auto answer_text = command(line, id);
         if (auto *still = find(id)) reply(*still, answer_text.empty() ? std::string("Done.") : answer_text);
+        return;
+    }
+    // A script's command (server_scripts.cpp), which may have kicked the player who typed it.
+    const auto id = guest.member.id;
+    if (const auto answer = scripts_.run(verb, id, rest)) {
+        if (auto *still = find(id)) reply(*still, *answer);
         return;
     }
     reply(guest, "Unknown command /" + verb + ". Type /help for the list.");

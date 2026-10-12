@@ -759,6 +759,16 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.integer(p.announcement.seconds, 2);
             text(p.announcement.text, 1);
         }
+        if (p.server_commands.size() > server_command_limit ||
+            !std::all_of(p.server_commands.begin(), p.server_commands.end(), [](const auto &c) { return valid_server_command(c); }))
+            throw std::invalid_argument("Invalid server commands");
+        w.integer(p.server_commands.size(), 1);
+        for (const auto &command : p.server_commands) {
+            text(command.name, 1);
+            text(command.description, 1);
+            w.integer(command.admin, 1);
+            text(command.role, 1);
+        }
     }
     if (p.kind == PacketKind::routes) {
         w.integer(p.members.size(), 1);
@@ -1221,6 +1231,19 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 if (!line || !valid_chat_text(*line)) return {};
                 p.announcement.text = std::move(*line);
             }
+            const auto commands = r.integer(1);
+            if (commands > server_command_limit) return {};
+            for (std::uint64_t i = 0; i < commands; ++i) {
+                ServerCommand command;
+                auto name = read_text(r, bytes, 1, server_command_name_bytes);
+                auto description = name ? read_text(r, bytes, 1, server_vote_description_bytes) : std::nullopt;
+                const auto admin = r.integer(1);
+                auto role = description ? read_text(r, bytes, 1, server_command_name_bytes) : std::nullopt;
+                if (!role || admin > 1) return {};
+                command = {std::move(*name), std::move(*description), admin != 0, std::move(*role)};
+                if (!valid_server_command(command)) return {};
+                p.server_commands.push_back(std::move(command));
+            }
             if (!valid_roster(p.members, p.capacity) || !p.distances.valid())
                 return {};
         } else if (p.kind == PacketKind::routes) {
@@ -1311,6 +1334,16 @@ bool valid_server_custom_vote(const ServerCustomVote &vote) noexcept {
         (vote.description.size() > server_vote_description_bytes || !valid_chat_text(vote.description)))
         return false;
     return std::all_of(vote.choices.begin(), vote.choices.end(), [](const std::string &c) { return valid_server_vote_name(c); });
+}
+bool valid_server_command_name(std::string_view name) noexcept {
+    return !name.empty() && name.size() <= server_command_name_bytes &&
+           std::all_of(name.begin(), name.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; });
+}
+bool valid_server_command(const ServerCommand &command) noexcept {
+    if (!valid_server_command_name(command.name) || (!command.role.empty() && !valid_server_command_name(command.role)))
+        return false;
+    return command.description.empty() ||
+           (command.description.size() <= server_vote_description_bytes && valid_chat_text(command.description));
 }
 bool valid_server_vote(const ServerVote &vote) noexcept {
     if (vote.label.size() > max_vote_label || vote.answers.size() > max_vote_answers || vote.answers.size() != vote.counts.size())

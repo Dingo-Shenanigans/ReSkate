@@ -224,16 +224,6 @@ Json bans_json(const ServerConfig &c) {
     }
     return bans;
 }
-void write_file(const std::filesystem::path &file, const std::string &text) {
-    if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
-    const auto temporary = std::filesystem::path(file).concat(".tmp");
-    {
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        out << text << '\n';
-        if (!out) throw std::runtime_error("Cannot write " + path_utf8(temporary));
-    }
-    std::filesystem::rename(temporary, file);
-}
 std::uint64_t steam_id(const Json &value) {
     if (value.is_string()) return std::stoull(value.string());
     return value.get<std::uint64_t>();
@@ -256,6 +246,16 @@ Roles roles_on_disk(const ServerConfig &c, bool &fresh) {
     }
 }
 } // namespace
+void write_file(const std::filesystem::path &file, const std::string &text) {
+    if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
+    const auto temporary = std::filesystem::path(file).concat(".tmp");
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out << text << '\n';
+        if (!out) throw std::runtime_error("Cannot write " + path_utf8(temporary));
+    }
+    std::filesystem::rename(temporary, file);
+}
 ServerConfig load_config(const std::filesystem::path &file, std::vector<std::string> *added) {
     ServerConfig c;
     c.file = file;
@@ -763,7 +763,7 @@ bool custom_command_name_free(std::string_view name) noexcept {
           "object-placement", "object-scaling", "objects", "park", "park-mod", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "teleport",
           "tod", "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
-          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
+          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update", "scripts"})
         if (name == taken) return false;
     // A number is an answer to a poll ("/2").
     return !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; });

@@ -12,6 +12,7 @@
 | bcdec | `80859ed3b7afb1c527a2a99d70c61457bea72d0c` | MIT or Unlicense | [iOrange/bcdec](https://github.com/iOrange/bcdec/tree/80859ed3b7afb1c527a2a99d70c61457bea72d0c) |
 | LZ4 | `1.10.0` | BSD-2-Clause | [lz4/lz4](https://github.com/lz4/lz4/releases/tag/v1.10.0) |
 | Zstandard | `1.5.7` | BSD-3-Clause (dual-licensed with GPLv2; used under BSD) | [facebook/zstd](https://github.com/facebook/zstd/releases/tag/v1.5.7) |
+| Lua | `5.4.9` | MIT | [lua.org](https://www.lua.org/ftp/lua-5.4.9.tar.gz) |
 | Montserrat font | `fonts/Montserrat-*.ttf` | SIL Open Font License 1.1 | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) |
 | Permanent Marker font | `fonts/PermanentMarker-Regular.ttf` | Apache 2.0 | [Google Fonts](https://fonts.google.com/specimen/Permanent+Marker) |
 
@@ -63,6 +64,13 @@ client package carries no Steam DLL; the dedicated server package carries the St
 it signs in with (see `Server/README.txt`). Keep `steam_networking/LICENSE` with distributions.
 
 LZ4 1.10.0 (`lz4/`) supplies the unmodified BSD-2-Clause block codec for bounded, lossless multiplayer packet compression. Source hashes and upstream tag are recorded in `manifest.json`; packages include `licenses/lz4-LICENSE.txt`.
+
+Lua 5.4.9 (`lua/`) runs the dedicated server's scripts (`Server/server_scripts.cpp`). Its `src/` is
+built as C++, without the standalone `lua.c` and `luac.c`. The one local patch, in `lua/src/lstrlib.c`
+(marked "ReSkate"), gives pattern matching a work budget (`MAXMATCHSTEPS`): Lua's instruction hooks
+cannot stop C code, and a pattern a player types could otherwise stall the server. Both server
+packages (`ReSkateServer-<version>.zip` and `ReSkateServer-Linux-<version>.tar.gz`) must ship
+`lua/LICENSE.txt` as `licenses/lua-LICENSE.txt`, beside the other libraries' licenses.
 
 Zstandard 1.5.7 (`zstd/`) is the library's common, compress and decompress sources, built without legacy format
 support or assembly, for multiplayer packet and game archive compression. It is not

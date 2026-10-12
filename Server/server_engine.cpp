@@ -318,6 +318,7 @@ void ServerEngine::run_startup() {
         host_ = std::make_unique<Host>(config_, *transport_, [this](const std::string& msg) {
             log(msg);
         });
+        if (const auto errors = host_->load_scripts(folder_ / "scripts"); !errors.empty()) log(errors, LogLevel::warning);
 
         if (!host_->start(error)) {
             std::string host_err = "Could not open server listener: " + error;

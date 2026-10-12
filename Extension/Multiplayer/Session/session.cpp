@@ -112,6 +112,7 @@ void stop(Session &s, std::string reason) {
     s.server_votes = 0;
     s.server_polls = 0;
     s.server_custom_votes.clear();
+    s.server_commands.clear();
     set_session_tools_allowed(true, true, true);
     s.object_clears.reset();
     s.clear_pending = false;

@@ -497,6 +497,13 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/no", "/no", "Vote no in the running vote"});
         }
         if (!s.server_custom_votes.empty()) list.push_back({"/vote list", "/vote list", "This server's own votes, and what each does"});
+        // The server's scripts' commands (Server/server_scripts.cpp).
+        for (const auto &command : s.server_commands)
+            if ((!command.admin && command.role.empty()) || (!command.role.empty() && command.role == s.role) ||
+                role_allows(s.role_all_commands, s.role_commands, command.name))
+                list.push_back({"/" + command.name, "/" + command.name,
+                                (command.admin ? "Admin: " : command.role.empty() ? "" : command.role + ": ") +
+                                    (command.description.empty() ? std::string("This server's own command") : command.description)});
         const auto polls = static_cast<ServerPolls>(s.server_polls);
         if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && (s.role_permissions & role_polls)))
             list.push_back({"/poll", "/poll <question> | <answer> | <answer>...", "Ask everyone a question, with up to six answers"});
@@ -598,6 +605,12 @@ void publish_chat(Session &s) {
     for (const auto count : s.vote.counts) signature.add(static_cast<std::uint64_t>(count));
     signature.add(static_cast<std::uint64_t>(s.server_polls));
     for (const auto &vote : s.server_custom_votes) signature.add(vote.name);
+    for (const auto &command : s.server_commands) {
+        signature.add(command.name);
+        signature.add(command.description);
+        signature.add(static_cast<std::uint64_t>(command.admin));
+        signature.add(command.role);
+    }
     // The announcement card, and the seconds it still shows.
     const unsigned announcement_seconds = s.announcement.id && s.announcement_ends > now
                                               ? static_cast<unsigned>((s.announcement_ends - now + 999999) / 1000000) : 0;

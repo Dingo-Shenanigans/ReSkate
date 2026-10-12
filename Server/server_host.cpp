@@ -756,6 +756,7 @@ void Host::send_roster() {
     p.server_votes = enabled_votes();
     p.server_polls = static_cast<std::uint8_t>(enabled_polls());
     p.server_custom_votes = custom_votes();
+    p.server_commands = scripts_.listed();
     p.announcement = announcement_;
     if (announcement_.id)
         p.announcement.seconds = static_cast<std::uint16_t>(announcement_until_ > now_ ? (announcement_until_ - now_ + 999999) / 1000000 : 0);
@@ -935,6 +936,7 @@ void Host::drop(std::uint64_t id, const std::string &reason, const std::string &
         roster_dirty_ = true;
         log_(name + " left (" + reason + ")" + (detail.empty() ? std::string{} : " [" + detail + "]"));
         activity_.left(id);
+        scripts_.happened(Scripts::Event::leave, id, name);
     } else {
         // Never admitted: it held a player slot meanwhile, so it shows in the log, and an ID
         // that keeps failing waits longer each time before its connection is taken again.
@@ -1207,6 +1209,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
                  std::to_string(players()) + "/" + std::to_string(config_.max_players) + " players" +
                  (link->connected_at && now_ > link->connected_at
                       ? ", loaded in " + std::to_string((now_ - link->connected_at) / 1000000) + " s" : ""));
+            scripts_.happened(Scripts::Event::join, peer, guest_name(*link));
         }
         return;
     }
@@ -1264,6 +1267,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
         }
         log_("[chat] " + guest_name(*link) + ": " + p.text);
         broadcast(p, true, false, p.source);
+        scripts_.happened(Scripts::Event::chat, peer, guest_name(*link), p.text);
         return;
     }
     // Linked throwdowns (Extension/Throwdowns/throwdown_relay.cpp): opaque to the
@@ -1870,6 +1874,7 @@ void Host::tick(std::uint64_t now) {
     }
     tick_rotation();
     tick_announcements();
+    scripts_.tick(); // here, outside every walk over guests_: a script may drop anyone
     remove_away();
     std::erase_if(vote_cooldowns_, [&](const auto &entry) { return now_ >= entry.second; });
     join_backoff_.prune(now_);
