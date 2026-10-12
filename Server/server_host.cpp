@@ -84,20 +84,47 @@ std::string Host::guest_name(const Guest &g) const {
 // server cannot check against Steam, so it is made safe to show and to type: never blank,
 // never the server's or ReSkate's own, never read as a SteamID64 by kick or ban (which take
 // a number as one), and never the same as another player's.
-std::string Host::player_name(std::string_view wanted, std::uint64_t id) const {
+std::string Host::player_name(std::string_view wanted, std::uint64_t id, bool *spoofed) const {
     const auto fallback = "Player " + std::to_string(id % 10000);
-    std::string name(trim(wanted));
+    const bool exempt = anticheat_exempt(id);
+    std::vector<std::string> tags;
+    for (const auto &role : config_.roles.list)
+        if (!role.tag.empty()) tags.push_back(role.tag);
+    const std::string asked(trim(wanted));
+    std::string name = names::strip_invisible(asked);
+    bool spoof = names::hides(asked);
+    if (!exempt) {
+        auto untagged = names::strip_fake_tags(name, tags);
+        spoof |= untagged != trim(name);
+        name = std::move(untagged);
+    }
+    name = std::string(trim(name));
     cut_text(name, max_member_name);
     // Names show in every player's roster, nametags and party UI.
     if (text::contains_bad_words(name)) name = text::mask_bad_words(name);
-    const auto folded = lower(name);
+    const auto key = [](std::string_view text) {
+        auto folded = names::fold(text);
+        return folded.empty() ? lower(text) : folded;
+    };
+    const auto folded = key(name);
     const auto first = split(name).first;
     const bool digits = !first.empty() && std::all_of(first.begin(), first.end(), [](char c) { return c >= '0' && c <= '9'; });
-    if (name.empty() || folded == "server" || folded == "reskate" || folded == lower(config_.name)) name = fallback;
+    const bool reserved = folded == key("server") || folded == key("reskate") || folded == key(config_.name);
+    const bool staff_title = !exempt && names::staff_name(folded);
+    bool disguised{};
+    const bool impersonates = !exempt && std::any_of(seen_names_.begin(), seen_names_.end(), [&](const auto &entry) {
+        if (entry.first == id || key(entry.second) != folded || !anticheat_exempt(entry.first)) return false;
+        disguised = lower(entry.second) != lower(name);
+        return true;
+    });
+    spoof |= staff_title || disguised;
+    if (spoofed) *spoofed = spoof;
+    if (name.empty() || reserved || staff_title || impersonates) name = fallback;
     else if (digits) name = "Player " + name;
     const auto taken = [&](const std::string &candidate) {
+        const auto wanted_key = key(candidate);
         return std::any_of(guests_.begin(), guests_.end(), [&](const auto &entry) {
-            return entry.first != id && entry.second->handshaken && lower(entry.second->member.name) == lower(candidate);
+            return entry.first != id && entry.second->handshaken && key(entry.second->member.name) == wanted_key;
         });
     };
     auto unique = name;
@@ -383,11 +410,12 @@ Host::Guest::KeptPose *Host::keep_pose(Guest &from, const Packet &packet) {
     if (!kept.empty() && kept.back().sequence == packet.sequence) return &kept.back();
     // What a mod resized on its player's skater reaches the others only as far as the server allows,
     // and a board kept on another player (check_board) not at all.
-    if (config_.bone_scale_limit >= 1.f || config_.bone_reach_limit > 0.f || from.board_hidden) {
+    const auto [scale_limit, reach_limit] = pose_limits(&from);
+    if (scale_limit >= 1.f || reach_limit > 0.f || from.board_hidden) {
         auto pose = packet.pose;
         if (from.board_hidden) pose.board.clear();
-        limit_bone_scale(pose, config_.bone_scale_limit);
-        limit_bone_reach(pose, config_.bone_reach_limit);
+        limit_bone_scale(pose, scale_limit);
+        limit_bone_reach(pose, reach_limit);
         kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(pose)});
     } else {
         kept.push_back({packet.sequence, packet.time_us, now_, 0, pose_codec::quantize(packet.pose)});
@@ -637,8 +665,9 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
             if (packet.kind == PacketKind::pose) {
                 // What a mod resized on its player's skater reaches the others only as far as the server allows.
                 if (source && source->board_hidden) data.packet.pose.board.clear();
-                if (config_.bone_scale_limit >= 1.f) limit_bone_scale(data.packet.pose, config_.bone_scale_limit);
-                limit_bone_reach(data.packet.pose, config_.bone_reach_limit);
+                const auto [scale_limit, reach_limit] = pose_limits(source);
+                if (scale_limit >= 1.f) limit_bone_scale(data.packet.pose, scale_limit);
+                limit_bone_reach(data.packet.pose, reach_limit);
             }
             data.raw = encode(data.packet, true);
             data.wire = encode_wire_bytes(data.raw);
@@ -995,6 +1024,7 @@ bool Host::accept_data(Guest &source, const Packet &p) {
                 active(source);
             }
         }
+        suspect_pose(source, p.pose);
         // Last: a kick by either check frees `source`.
         return check_board(source, p.pose) && check_speed(source, p.time_us);
     }
@@ -1188,13 +1218,16 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
         }
         const bool joined = !link->handshaken;
         link->member.epoch = p.epoch;
+        bool spoofed{};
         if (joined) {
-            link->member.name = player_name(p.text, peer);
+            link->member.name = player_name(p.text, peer, &spoofed);
             if (seen_names_.size() >= 4096) seen_names_.erase(seen_names_.begin());
             seen_names_[peer] = link->member.name;
             join_backoff_.joined(peer);
         }
         link->handshaken = true;
+        if (spoofed)
+            suspect(*link, Suspicion::Signal::name_spoof, 1, "joined as \"" + clean_chat_text(p.text) + "\", shown as \"" + link->member.name + "\"");
         link->world_ready = true;
         link->travel_since = 0;
         link->last_packet = now_;
@@ -1414,20 +1447,70 @@ void Host::remove_away() {
 }
 
 // ---- Objects ---------------------------------------------------------------------------------
+void Host::hold_objects(Guest &guest, const std::string &why, const std::string &told) {
+    guest.objects_held_until = now_ + 60000000;
+    guest.placed_since = guest.objects_held_until;
+    guest.placed = 0;
+    guest.objects_retry = false;
+    const auto deleted = guest.shared.objects().size();
+    for (const auto *state : {&guest.objects, &guest.shared})
+        for (const auto &[object, value] : state->objects()) {
+            (void)value;
+            guest.cleared.insert(object);
+        }
+    if (guest.shared.revision()) guest.shared.replace({});
+    guest.shared_from = guest.objects.revision();
+    log_("[objects] " + guest_name(guest) + " (" + std::to_string(guest.member.id) + ") " + why + ": their " + std::to_string(deleted) +
+         " objects were deleted, and none of theirs are shared for a minute.");
+    reply(guest, told);
+}
+std::vector<ObjectCheck::Position> Host::object_neighbours(std::uint64_t owner) const {
+    std::vector<ObjectCheck::Position> others;
+    const auto party = parties_.party_of(owner);
+    for (const auto &[id, other] : guests_)
+        if (id != owner && other->handshaken && other->world_ready && other->latest_root && other->pose_arrival &&
+            now_ >= other->pose_arrival && now_ - other->pose_arrival <= 2000000 && (!party || parties_.party_of(id) != party))
+            others.push_back(other->latest_root->position);
+    return others;
+}
 void Host::sync_objects() {
     if (now_ < next_object_update_) return;
     next_object_update_ = now_ + 100000;
     // Guests upload their layouts; the server alone decides what everyone else
     // sees, and freezes the layouts of players who may not build right now.
     for (auto &[id, guest] : guests_)
-        if (guest->handshaken && guest->objects.revision() != guest->shared_from && now_ >= guest->objects_held_until &&
+        if (guest->handshaken && (guest->objects.revision() != guest->shared_from || guest->objects_retry) &&
+            now_ >= guest->objects_held_until &&
             (config_.object_placement == ObjectPlacement::everyone ||
              (config_.object_placement == ObjectPlacement::host_only && has(id, multiplayer::role_objects)))) {
+            const bool unlimited = has(id, multiplayer::role_objects);
+            guest->objects_retry = false;
+            if (!unlimited && restricted(id)) continue;
             auto layout = guest->objects.layout();
             std::erase_if(layout, [&](const auto &object) { return guest->cleared.contains(object.id); });
             // No more of a player's objects than the server allows each of them; a role may lift that.
-            const bool unlimited = has(id, multiplayer::role_objects);
             if (!unlimited) layout = limited_layout(std::move(layout), guest->shared.objects(), config_.object_limit);
+            // With scaling off, a player's objects reach everyone else at their own size, whatever
+            // that player's game made of them.
+            if (!config_.object_scaling && !unlimited)
+                for (auto &object : layout) object.scale = 1.f;
+            if (!unlimited) {
+                const auto others = object_neighbours(id);
+                auto checked = guest->object_check.filter(now_, std::move(layout), guest->shared.objects(), others,
+                                                          {config_.object_max_scale, config_.object_clearance});
+                layout = std::move(checked.layout);
+                guest->objects_retry = checked.retry;
+                if (checked.chasing)
+                    suspect(*guest, Suspicion::Signal::object_on_player, std::min(checked.chasing, 5U) * 0.1,
+                            std::to_string(checked.chasing) + " objects kept moving onto other players");
+                if (checked.newly_on_players >= 5)
+                    suspect(*guest, Suspicion::Signal::object_on_player, 1.5,
+                            std::to_string(checked.newly_on_players) + " objects spawned onto other players at once");
+                if (checked.throttled_us)
+                    suspect(*guest, Suspicion::Signal::object_animation, static_cast<double>(checked.throttled_us) / 1000000.0,
+                            "objects moved faster than a person edits them");
+                if (restricted(id)) continue;
+            }
             // Nobody places objects by the hundred, minute after minute: a game that does is
             // spawning and removing them to animate them. Theirs are deleted for everyone, and
             // nothing they place is shared for a minute (or they would be back at once).
@@ -1439,27 +1522,12 @@ void Host::sync_objects() {
                 for (const auto &object : layout) guest->placed += !guest->shared.objects().contains(object.id);
                 const auto burst = 2 * (config_.object_limit ? config_.object_limit : max_owned_objects) + 100;
                 if (guest->placed > burst) {
-                    guest->objects_held_until = now_ + 60000000;
-                    guest->placed_since = guest->objects_held_until;
-                    guest->placed = 0;
-                    const auto deleted = guest->shared.objects().size();
-                    for (const auto *state : {&guest->objects, &guest->shared})
-                        for (const auto &[object, value] : state->objects()) {
-                            (void)value;
-                            guest->cleared.insert(object);
-                        }
-                    if (guest->shared.revision()) guest->shared.replace({});
-                    guest->shared_from = guest->objects.revision();
-                    log_("[objects] " + guest_name(*guest) + " (" + std::to_string(id) + ") placed over " + std::to_string(burst) +
-                         " objects in a minute: their " + std::to_string(deleted) + " objects were deleted, and none of theirs are shared for a minute.");
-                    reply(*guest, "You placed objects faster than the server allows. Yours were deleted for everyone, and none you place are shared for a minute.");
+                    suspect(*guest, Suspicion::Signal::object_flood, 1, "placed over " + std::to_string(burst) + " objects in a minute");
+                    hold_objects(*guest, "placed over " + std::to_string(burst) + " objects in a minute",
+                                 "You placed objects faster than the server allows. Yours were deleted for everyone, and none you place are shared for a minute.");
                     continue;
                 }
             }
-            // With scaling off, a player's objects reach everyone else at their own size, whatever
-            // that player's game made of them.
-            if (!config_.object_scaling && !unlimited)
-                for (auto &object : layout) object.scale = 1.f;
             if (config_.activity_log) activity_.objects(id, guest->shared.layout(), layout);
             guest->shared.replace(layout);
             guest->shared_from = guest->objects.revision();
@@ -1738,6 +1806,12 @@ void Host::tick(std::uint64_t now) {
             continue;
         }
         auto *guest = find(link.id);
+        if (const auto record = suspicion_.find(link.id); !guest && record != suspicion_.end() && record->second.locked(now_)) {
+            const auto reason = "The server's anti-cheat removed you. You can join again in " +
+                                std::to_string((record->second.locked_until() - now_) / 60000000 + 1) + " minutes.";
+            transport_.disconnect(link.id, reason.c_str());
+            continue;
+        }
         if (!guest && join_backoff_.waiting(link.id, now_)) {
             transport_.disconnect(link.id, "Too many failed attempts to join. Wait a little and try again.");
             continue;
@@ -1860,6 +1934,7 @@ void Host::tick(std::uint64_t now) {
     }
     tick_parks();
     sync_objects();
+    flush_anticheat();
     activity_.tick(now_);
     if (std::exchange(vote_recount_, false)) check_vote(false);
     if (vote_ && now_ >= vote_->ends) check_vote(true);

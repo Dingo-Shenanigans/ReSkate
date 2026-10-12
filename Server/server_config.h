@@ -172,6 +172,9 @@ struct ServerConfig {
     // board_check.h): "warn" stops showing their board to the others and tells the admins,
     // "kick" removes them, "off" does not check.
     std::string board_check = "warn";
+    std::string heuristics = "enforce";
+    float object_max_scale = 5;
+    float object_clearance = 2;
     // Players whose mods change how tricks score (Engine/Vfs/mod_scoring.h): "warn" takes them out
     // of throwdowns and coop challenges (the server stops relaying theirs) and tells everyone,
     // "kick" removes them, "off" does not check.

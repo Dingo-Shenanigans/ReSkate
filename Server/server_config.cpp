@@ -134,6 +134,9 @@ Layout layout(const ServerConfig &c) {
     auto &anti_cheat = root.section("anti_cheat");
     anti_cheat.set("speed_hack", c.speed_check);
     anti_cheat.set("pinned_board", c.board_check);
+    anti_cheat.set("heuristics", c.heuristics);
+    anti_cheat.set("object_max_scale", c.object_max_scale);
+    anti_cheat.set("object_clearance", c.object_clearance);
     anti_cheat.set("modified_scoring", c.score_check);
     auto allowed = Json::array();
     for (const auto fingerprint : c.score_allow) allowed.push_back(scoring_text(fingerprint));
@@ -382,6 +385,10 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     if (c.speed_check != "off" && c.speed_check != "warn" && c.speed_check != "kick") c.speed_check = "warn";
     c.board_check = get("anti_cheat", "pinned_board", c.board_check);
     if (c.board_check != "off" && c.board_check != "warn" && c.board_check != "kick") c.board_check = "warn";
+    c.heuristics = get("anti_cheat", "heuristics", c.heuristics);
+    if (c.heuristics != "off" && c.heuristics != "watch" && c.heuristics != "enforce") c.heuristics = "enforce";
+    c.object_max_scale = get("anti_cheat", "object_max_scale", c.object_max_scale);
+    c.object_clearance = get("anti_cheat", "object_clearance", c.object_clearance);
     c.score_check = get("anti_cheat", "modified_scoring", c.score_check, {"score_check"});
     if (c.score_check != "off" && c.score_check != "warn" && c.score_check != "kick") c.score_check = "warn";
     if (const auto *allowed = find("anti_cheat", "allowed_scoring_mods", {"score_allow"}); allowed && allowed->is_array())
@@ -757,7 +764,7 @@ bool custom_command_name_free(std::string_view name) noexcept {
     for (const std::string_view taken :
          {"help", "party", "p", "w", "whisper", "tell", "poll", "vote", "yes", "y", "no", "n", "tp",
           "activity-log", "admin", "admins", "afk-kick", "role", "roles", "announce", "announce-throwdowns", "announce-to", "announcements",
-          "ban", "bans", "board-check", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
+          "ban", "bans", "board-check", "bone-scale", "anticheat", "object-max-scale", "object-clearance", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
           "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
           "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
           "object-placement", "object-scaling", "objects", "park", "park-mod", "parties", "party-size", "password", "placement",
@@ -837,6 +844,10 @@ std::string config_error(const ServerConfig &c) {
         return "bone_scale_limit must be 0 (no limit) or 1 to 8 (1: no resized body parts at all).";
     if (c.bone_reach_limit != 0 && !(c.bone_reach_limit >= .5f && c.bone_reach_limit <= 20.f))
         return "bone_reach_limit must be 0 (no limit) or 0.5 to 20 metres.";
+    if (c.object_max_scale != 0 && !(c.object_max_scale >= 1.f && c.object_max_scale <= 100.f))
+        return "object_max_scale must be 0 (no limit) or 1 to 100.";
+    if (c.object_clearance != 0 && !(c.object_clearance >= .5f && c.object_clearance <= 50.f))
+        return "object_clearance must be 0 (off) or 0.5 to 50 metres.";
     if (c.pack_ms > 50) return "pack_ms must be 0 (off) to 50.";
     if (c.threads > 32) return "threads must be 0 (one for each processor but one) to 32.";
     if (c.finger_distance > 10000) return "finger_distance must be 0 (fingers always sent) to 10000.";

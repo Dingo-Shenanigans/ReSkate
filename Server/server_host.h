@@ -3,6 +3,11 @@
 #include "worker_pool.h"
 #include "server_config.h"
 #include "board_check.h"
+#include "object_check.h"
+#include "suspicion.h"
+#include "pose_check.h"
+#include "name_check.h"
+#include "Extension/Multiplayer/developer_identity.h"
 #include "speed_check.h"
 #include "Engine/Game/Multiplayer/chat_rate.h"
 #include "Extension/Multiplayer/Net/delta_codec.h"
@@ -23,6 +28,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 #include <array>
 
@@ -218,6 +224,9 @@ class Host {
         // Objects they placed in the last minute, and until when none of theirs are shared, for
         // placing more than a person does (sync_objects).
         std::uint64_t placed_since{}, placed{}, objects_held_until{};
+        ObjectCheck object_check;
+        bool objects_retry{};
+        std::uint64_t pose_suspected_at{};
         struct ObjectDelivery {
             std::map<std::uint64_t, std::pair<std::uint64_t, std::uint64_t>> sent;
             std::vector<ObjectChunk> chunks;
@@ -286,6 +295,15 @@ class Host {
     std::uint64_t party_revision_{};
     std::map<std::uint64_t, std::unique_ptr<Guest>> guests_;
     std::set<std::uint64_t> kicked_;
+    std::map<std::uint64_t, Suspicion> suspicion_;
+    std::vector<std::pair<std::uint64_t, std::string>> anticheat_kicks_;
+    std::uint64_t suspicion_pruned_at_{};
+    bool anticheat_exempt(std::uint64_t id) const;
+    void suspect(Guest &, Suspicion::Signal, double amount, const std::string &detail);
+    bool restricted(std::uint64_t id);
+    void flush_anticheat();
+    void suspect_pose(Guest &, const Pose &);
+    std::pair<float, float> pose_limits(const Guest *source);
     // The name each player last joined under, for banning one who has left by their SteamID.
     std::map<std::uint64_t, std::string> seen_names_;
     // Warnings each player has had for words that are not allowed at all ("word_warnings"),
@@ -370,7 +388,7 @@ class Host {
     // the reserved players and admins change while the server runs. Who gets in is may_join's.
     unsigned connection_capacity() const { return static_cast<unsigned>(multiplayer::max_players); }
     std::string guest_name(const Guest &) const;
-    std::string player_name(std::string_view wanted, std::uint64_t id) const;
+    std::string player_name(std::string_view wanted, std::uint64_t id, bool *spoofed = nullptr) const;
     // Roles (roles.h): a player's, whether it gives a command or a permission, whether it gives
     // any command at all, and its rank (-1 with no role: below every role).
     const Role *role_of(std::uint64_t id) const { return config_.roles.of(id); }
@@ -460,6 +478,8 @@ class Host {
     void party_left(std::uint64_t id, const std::string &name); // a player left the server
     bool check_speed(Guest &, std::uint64_t sent); // a pose they sent at `sent` (their clock); false: kicked
     bool check_board(Guest &, const Pose &);       // a pose of theirs; false: kicked
+    void hold_objects(Guest &, const std::string &why, const std::string &told);
+    std::vector<ObjectCheck::Position> object_neighbours(std::uint64_t owner) const;
     void tell_admins(const std::string &text);     // a chat line to every admin in the game
     void check_scoring(Guest &);                   // after their report, or a score_check change
     void tick_parties();

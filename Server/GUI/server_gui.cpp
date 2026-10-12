@@ -831,6 +831,7 @@ void draw_overview_tab(const ServerStatusSnapshot& stats) {
     const auto& engine_cfg = ServerEngine::instance().config();
     stat_row("Speed Anti-Cheat", engine_cfg.speed_check == "kick" ? "ENFORCED (KICK)" : (engine_cfg.speed_check == "warn" ? "ACTIVE (WARN)" : "DISABLED"), engine_cfg.speed_check != "off" ? good : muted);
     stat_row("Scoring Anti-Cheat", engine_cfg.score_check == "kick" ? "ENFORCED (KICK)" : (engine_cfg.score_check == "warn" ? "ACTIVE (WARN)" : "DISABLED"), engine_cfg.score_check != "off" ? good : muted);
+    stat_row("Behaviour Anti-Cheat", engine_cfg.heuristics == "enforce" ? "ENFORCED" : (engine_cfg.heuristics == "watch" ? "WATCHING" : "DISABLED"), engine_cfg.heuristics != "off" ? good : muted);
     char bone_buf[32];
     std::snprintf(bone_buf, sizeof(bone_buf), "%.1fx factor", stats.bone_scale_limit);
     stat_row("Bone Scale Limit", bone_buf, good);

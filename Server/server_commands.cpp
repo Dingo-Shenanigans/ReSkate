@@ -31,6 +31,7 @@ constexpr std::string_view help_text =
     "park-mod list | park-mod add <name> [<name>...] [minutes] | park-mod remove <name> [<name>...] | park-mod clear | park-mod reload <name> [<name>...]\n"
     "park-mod config add <name> | <mod folder> | <map> [| <key>] | park-mod config remove <name>\n"
     "activity-log on|off | announce-throwdowns on|off | parties [on|off] | party-size <2-8> | afk-kick <minutes>|off | speed-check off|warn|kick | board-check off|warn|kick\n"
+    "anticheat [off|watch|enforce|forgive <player>] | object-max-scale <1-100>|off | object-clearance <0.5-50>|off\n"
     "score-check [off|warn|kick] | score-allow [<fingerprint>|remove <fingerprint>] | words [reload | global on|off]\n"
     "reserved [slots <n> | add|remove <SteamID64>] | roles [reload] | role <player or SteamID64> <role>|none | update | quit";
 } // namespace
@@ -359,6 +360,58 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(value == "off" ? "Skateboards kept on other players are no longer checked for."
                        : value == "kick" ? "Players who keep their skateboard on another player are kicked."
                                          : "A skateboard kept on another player is hidden from the others, and the admins are told.");
+    }
+    if (name == "anticheat") {
+        const auto [ac_word, ac_rest] = split(argument);
+        const auto value = lower(ac_word);
+        if (value.empty()) {
+            std::string text = "anticheat " + config_.heuristics + " (off|watch|enforce), restricted at " +
+                               std::to_string(static_cast<int>(Suspicion::restrict_at)) + ", kicked at " +
+                               std::to_string(static_cast<int>(Suspicion::kick_at));
+            for (auto &[id, record] : suspicion_) {
+                const auto score = record.score(now_);
+                if (score < 0.5 && !record.kicks()) continue;
+                const auto *guest = find(id);
+                const auto seen = seen_names_.find(id);
+                text += "\n  " + (guest ? guest_name(*guest) : seen != seen_names_.end() ? seen->second : std::string("(left)")) + " " +
+                        std::to_string(id) + ": " + std::to_string(static_cast<int>(score + .5)) + ", mostly " +
+                        std::string(Suspicion::names[static_cast<std::size_t>(record.strongest(now_))]);
+                if (record.kicks()) text += ", kicked " + std::to_string(record.kicks()) + "x";
+                if (record.locked(now_)) text += ", locked out " + std::to_string((record.locked_until() - now_) / 60000000 + 1) + " min";
+            }
+            return text;
+        }
+        if (value == "forgive") {
+            auto *guest = target(ac_rest);
+            const auto id = guest ? guest->member.id : number(ac_rest).value_or(0);
+            if (!suspicion_.erase(id)) return "Nobody with a score matches \"" + std::string(ac_rest) + "\".";
+            return "Forgiven: " + (guest ? guest_name(*guest) : std::to_string(id)) + "'s score is cleared.";
+        }
+        if (value != "off" && value != "watch" && value != "enforce")
+            return "anticheat [off|watch|enforce | forgive <player or SteamID64>] (now " + config_.heuristics + ")";
+        config_.heuristics = value;
+        return changed(value == "off" ? "The anti-cheat no longer scores players."
+                       : value == "watch" ? "The anti-cheat scores players and tells the admins, but does nothing to them."
+                                          : "The anti-cheat restricts and then kicks players whose behaviour scores too high.");
+    }
+    if (name == "object-max-scale" || name == "object-clearance") {
+        const bool scale = name == "object-max-scale";
+        const float low = scale ? 1.f : .5f, high = scale ? 100.f : 50.f;
+        auto &setting = scale ? config_.object_max_scale : config_.object_clearance;
+        const bool off = argument == "off" || argument == "0";
+        float value{};
+        const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), value);
+        if (!off && (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || !(value >= low && value <= high)))
+            return std::string(name) + (scale ? " <1-100>|off" : " <0.5-50>|off") + " (now " +
+                   (setting > 0.f ? std::to_string(setting).substr(0, 4) : std::string("off")) + ")";
+        setting = off ? 0.f : value;
+        for (auto &[id, guest] : guests_) guest->shared_from = 0;
+        if (scale)
+            return changed(off ? std::string("Players' objects may be any size the game allows.")
+                               : "Players' objects are shared at most " + std::to_string(value).substr(0, 4) + "x their size. Admins are not limited.");
+        return changed(off ? std::string("Objects may be placed and moved right onto other players.")
+                           : "Objects placed or moved within " + std::to_string(value).substr(0, 4) +
+                                 " m of another player (more for larger ones) are held back until they move away. Party members are exempt.");
     }
     if (name == "score-check") {
         const auto value = lower(argument);
@@ -959,6 +1012,7 @@ bool Host::check_speed(Guest &guest, std::uint64_t sent) {
         char text[160];
         std::snprintf(text, sizeof text, "%s's game is running at %.2fx speed (a speed hack?).", name.c_str(), speed);
         log_(std::string("[anticheat] ") + text);
+        suspect(guest, Suspicion::Signal::speed, std::min(speed / SpeedCheck::limit, 2.0), text);
         if (config_.speed_check == "kick") {
             drop(guest.member.id, "Your game is running faster than normal. Turn off speed hacks to play here.");
             return false;
@@ -1019,6 +1073,76 @@ bool Host::check_board(Guest &guest, const Pose &pose) {
     }
     guest.board_hidden = true;
     tell_admins("[anticheat] " + text + " Their board is hidden from everyone else.");
+    suspect(guest, Suspicion::Signal::pinned_board, 1, "skateboard kept on another player");
     return true;
+}
+bool Host::anticheat_exempt(std::uint64_t id) const {
+    return is_staff(id) || multiplayer::identity_listed(id, multiplayer::IdentityList::developer) ||
+           multiplayer::identity_listed(id, multiplayer::IdentityList::staff);
+}
+bool Host::restricted(std::uint64_t id) {
+    if (config_.heuristics != "enforce" || anticheat_exempt(id)) return false;
+    const auto found = suspicion_.find(id);
+    return found != suspicion_.end() && found->second.level(now_) != Suspicion::Level::clean;
+}
+void Host::suspect(Guest &guest, Suspicion::Signal signal, double amount, const std::string &detail) {
+    if (config_.heuristics == "off" || !(amount > 0) || !guest.handshaken || anticheat_exempt(guest.member.id)) return;
+    const auto id = guest.member.id;
+    auto &record = suspicion_[id];
+    const auto before = record.level(now_);
+    if (before == Suspicion::Level::clean) record.restricted_told = false;
+    const auto after = record.add(now_, signal, amount);
+    if (after == before && !(after == Suspicion::Level::restricted && !record.restricted_told)) return;
+    const bool enforce = config_.heuristics == "enforce";
+    const auto score = std::to_string(static_cast<int>(record.score(now_) + .5));
+    const auto text = guest_name(guest) + " (" + std::to_string(id) + ") scored " + score + ", mostly " +
+                      std::string(Suspicion::names[static_cast<std::size_t>(record.strongest(now_))]) + " (last: " + detail + ")";
+    if (after == Suspicion::Level::restricted && !record.restricted_told) {
+        record.restricted_told = true;
+        log_("[anticheat] " + text + (enforce ? ". Restricted." : ". Watch mode: nothing done."));
+        tell_admins("[anticheat] " + text + (enforce ? ". Restricted: changes to their objects are paused until their score drops." : "."));
+        if (enforce) reply(guest, "The server paused sharing changes to your objects for a little while.");
+        return;
+    }
+    if (after != Suspicion::Level::kick) return;
+    if (!enforce) {
+        log_("[anticheat] " + text + ". Watch mode: not kicked.");
+        tell_admins("[anticheat] " + text + ". Watch mode: not kicked.");
+        return;
+    }
+    const auto lockout = record.kicked(now_);
+    record.restricted_told = false;
+    const auto minutes = std::to_string(lockout / 60000000);
+    log_("[anticheat] " + text + ". Kicked" + (lockout ? ", locked out for " + minutes + " min." : "."));
+    tell_admins("[anticheat] " + text + ". Kicked" + (lockout ? ", locked out for " + minutes + " min." : "."));
+    anticheat_kicks_.emplace_back(id, lockout ? "The server's anti-cheat removed you. You can join again in " + minutes + " minutes."
+                                              : std::string("The server's anti-cheat removed you for what your game was doing. Turn off cheats to play here."));
+}
+void Host::flush_anticheat() {
+    for (const auto &[id, reason] : std::exchange(anticheat_kicks_, {}))
+        if (find(id)) drop(id, reason);
+    if (now_ - suspicion_pruned_at_ < 60000000) return;
+    suspicion_pruned_at_ = now_;
+    std::erase_if(suspicion_, [&](auto &entry) { return !find(entry.first) && entry.second.forgettable(now_); });
+    while (suspicion_.size() > 4096) suspicion_.erase(suspicion_.begin());
+}
+void Host::suspect_pose(Guest &guest, const Pose &pose) {
+    if (config_.heuristics == "off" || now_ - guest.pose_suspected_at < 1000000) return;
+    guest.pose_suspected_at = now_;
+    const auto excess = pose_excess(pose);
+    if (excess.reach > suspicious_reach)
+        suspect(guest, Suspicion::Signal::bone_reach, std::min(excess.reach / suspicious_reach, 4.f), "skater or board stretched past what the game does");
+    if (excess.scale > suspicious_scale || excess.board_scale > suspicious_board_scale) {
+        const auto ratio = std::max(excess.scale / suspicious_scale, excess.board_scale / suspicious_board_scale);
+        suspect(guest, Suspicion::Signal::bone_scale, std::min(ratio, 4.f), "skater or board resized past what the game does");
+    }
+}
+std::pair<float, float> Host::pose_limits(const Guest *source) {
+    float scale = config_.bone_scale_limit, reach = config_.bone_reach_limit;
+    if (source && restricted(source->member.id)) {
+        scale = scale >= 1.f ? std::min(scale, stock_bone_scale) : stock_bone_scale;
+        reach = reach > 0.f ? std::min(reach, stock_bone_reach) : stock_bone_reach;
+    }
+    return {scale, reach};
 }
 } // namespace dingosdk::server
