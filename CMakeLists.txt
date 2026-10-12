@@ -95,6 +95,24 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
             dingosdk_lz4 dingosdk_zstd)
     endif()
     add_test(NAME server_config COMMAND dingosdk_server_config_tests)
+    # Park mods spawned by the server's host, over a transport that is not Steam's.
+    add_executable(dingosdk_server_park_tests Server/Test/server_park_tests.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/server_update.cpp Server/server_release.cpp
+        $<$<BOOL:${WIN32}>:Launcher/updater.cpp> Server/global_bans.cpp Server/server_words.cpp Extension/Multiplayer/developer_identity.cpp
+        Extension/Multiplayer/word_lists.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Net/delta_codec.cpp
+        Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
+        Extension/Multiplayer/Session/password.cpp Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp
+        Server/server_parks.cpp Server/server_scripts.cpp Extension/Throwdowns/throwdown_wire.cpp)
+    target_include_directories(dingosdk_server_park_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_server_park_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+    if(WIN32)
+        target_link_libraries(dingosdk_server_park_tests PRIVATE dingosdk_lua dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+            dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+    else()
+        target_link_libraries(dingosdk_server_park_tests PRIVATE dingosdk_lua dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
+    endif()
+    add_test(NAME server_park_mods COMMAND dingosdk_server_park_tests "${PROJECT_SOURCE_DIR}/Server/Test/fixtures/park_mods")
     add_executable(dingosdk_server_release_tests Server/Test/server_release_tests.cpp Server/server_release.cpp)
     target_include_directories(dingosdk_server_release_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_server_release_tests PRIVATE dingosdk_json)
@@ -108,11 +126,11 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_server_scripts_tests Server/Test/server_scripts_tests.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
         Server/server_update.cpp Server/server_release.cpp $<$<BOOL:${WIN32}>:Launcher/updater.cpp>
-        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
+        Server/global_bans.cpp Server/server_words.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_scripts.cpp
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Server/server_scripts.cpp
         Extension/Throwdowns/throwdown_wire.cpp)
     target_include_directories(dingosdk_server_scripts_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_scripts_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
@@ -125,6 +143,10 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
             dingosdk_json dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dl pthread)
     endif()
     add_test(NAME server_scripts COMMAND dingosdk_server_scripts_tests)
+    add_executable(dingosdk_server_words_tests Server/Test/server_words_tests.cpp Server/server_words.cpp)
+    target_include_directories(dingosdk_server_words_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_server_words_tests PRIVATE dingosdk_word_filter)
+    add_test(NAME server_words COMMAND dingosdk_server_words_tests)
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
     target_link_libraries(dingosdk_word_filter_tests PRIVATE dingosdk_word_filter)
     add_test(NAME word_filter COMMAND dingosdk_word_filter_tests)
@@ -157,6 +179,9 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_first_person_stabilize_tests Engine/Game/Skater/Test/first_person_stabilize_tests.cpp)
     target_include_directories(dingosdk_first_person_stabilize_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME first_person_stabilize COMMAND dingosdk_first_person_stabilize_tests)
+    add_executable(dingosdk_first_person_cycle_tests Engine/Game/Skater/Test/first_person_cycle_tests.cpp)
+    target_include_directories(dingosdk_first_person_cycle_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME first_person_cycle COMMAND dingosdk_first_person_cycle_tests)
     add_executable(dingosdk_playstation_report_tests Engine/Game/Input/Test/playstation_report_tests.cpp)
     target_include_directories(dingosdk_playstation_report_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME playstation_report COMMAND dingosdk_playstation_report_tests)
@@ -249,12 +274,11 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_server_load_tests Server/Test/server_load_tests.cpp Server/server_host.cpp Server/server_party.cpp
         Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp
         Server/server_update.cpp Server/server_release.cpp Launcher/updater.cpp
-        Server/global_bans.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
+        Server/global_bans.cpp Server/server_words.cpp Extension/Multiplayer/developer_identity.cpp Extension/Multiplayer/word_lists.cpp
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_scripts.cpp
-        Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Server/server_scripts.cpp Extension/Throwdowns/throwdown_wire.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_lua dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
@@ -309,6 +333,14 @@ if(DINGOSDK_BUILD_ROAD_RASH_TESTS)
     add_executable(dingosdk_road_rash_tests Extension/RoadRash/Test/road_rash_tests.cpp)
     target_include_directories(dingosdk_road_rash_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME road_rash COMMAND dingosdk_road_rash_tests)
+endif()
+option(DINGOSDK_BUILD_BOARD_BREAK_TESTS "Build Board Break regression tests" OFF)
+if(DINGOSDK_BUILD_BOARD_BREAK_TESTS)
+    enable_testing()
+    # What a break leaves of a board, how likely a slam breaks it, and where its parts lie.
+    add_executable(dingosdk_board_break_tests Extension/BoardBreak/Test/board_break_tests.cpp)
+    target_include_directories(dingosdk_board_break_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME board_break COMMAND dingosdk_board_break_tests)
 endif()
 option(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS "Build Hall of Meat regression tests" OFF)
 if(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS)

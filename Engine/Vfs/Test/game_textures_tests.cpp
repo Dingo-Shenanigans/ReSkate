@@ -69,6 +69,21 @@ void the_ui_shapes_read(const char* game_root) {
     for (std::size_t i = 0; i < scratches.rgba.size(); i += 4) brightest = std::max(brightest, scratches.rgba[i]);
     check(scratches.width == 512 && solid(scratches, {}) > 0.99f && brightest > 64, "light scratches on opaque black");
 }
+
+// The pictures the vote for the next map shows for the game's own maps.
+void the_map_pictures_read(const char* game_root) {
+    namespace ui = addr::ui_textures;
+    vfs::GameTextures textures(game_root);
+    for (const auto& picture : ui::map_pictures) {
+        const auto image = textures.read(ui::map_picture_toc, picture.bundle, picture.name, 512);
+        check(image.width == 512 && image.height == 288 && image.rgba.size() == 512 * 288 * 4, "a map's loading screen picture, 16 by 9");
+        // A picture, not a flat fill: its middle row is not one colour.
+        const auto* row = image.rgba.data() + std::size_t{144} * 512 * 4;
+        bool varied{};
+        for (std::size_t x = 1; x < 512 && !varied; ++x) varied = !std::equal(row, row + 3, row + x * 4);
+        check(varied, "a map's loading screen picture has something in it");
+    }
+}
 }
 
 int main(int argc, char** argv) {
@@ -76,6 +91,7 @@ int main(int argc, char** argv) {
         if (argc > 1 && *argv[1]) {
             the_overlays_textures_read(argv[1]);
             the_ui_shapes_read(argv[1]);
+            the_map_pictures_read(argv[1]);
         }
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';

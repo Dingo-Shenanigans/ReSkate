@@ -1,4 +1,5 @@
 #include "no_bail.h"
+#include "Extension/BoardBreak/board_break.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -63,7 +64,7 @@ struct Protection {
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
 struct StateWatch {
-    std::atomic<std::uintptr_t> selector{};
+    std::atomic<std::uintptr_t> selector{}, causes{}; // the watched skater's selector and cause collector
     std::atomic<std::uint64_t> until{}, changes{}, wipeouts{};
     std::atomic<std::uint32_t> state{}, previous{};
     std::atomic<std::int64_t> since{}, previous_ticks{}; // performance-counter ticks
@@ -180,6 +181,7 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
 }
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    if (causes == state_watch().causes.load(std::memory_order_acquire)) board_break::note_cause(reason, magnitude);
     const bool protect = suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
@@ -219,7 +221,11 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
             w.previous.store(before, std::memory_order_relaxed);
             w.previous_ticks.store(now.QuadPart - w.since.exchange(now.QuadPart, std::memory_order_relaxed), std::memory_order_relaxed);
             w.changes.fetch_add(1, std::memory_order_relaxed);
-            if (chosen == wipeout_physics_state) w.wipeouts.fetch_add(1, std::memory_order_relaxed);
+            if (chosen == wipeout_physics_state) {
+                // Before the count: the tick that sees the new wipeout finds its cause there.
+                board_break::note_wipeout(w.causes.load(std::memory_order_acquire));
+                w.wipeouts.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
     return chosen;
@@ -420,6 +426,7 @@ void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept 
     if (!protection().ready.load(std::memory_order_acquire) || !resolve(client, entity, owner)) return;
     if (w.selector.exchange(owner.selector, std::memory_order_acq_rel) != owner.selector)
         w.state.store(0, std::memory_order_release);
+    w.causes.store(owner.causes, std::memory_order_release);
     w.until.store(GetTickCount64() + 500, std::memory_order_release);
 }
 PhysicsStateWatch watched_physics_state() noexcept {

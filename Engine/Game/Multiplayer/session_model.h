@@ -134,6 +134,9 @@ struct MultiplayerVote {
     bool poll{};
     std::vector<std::string> answers;
     std::vector<unsigned> counts;
+    // The poll is the rotation's vote for the next map: its answers are maps (and "Random map",
+    // "Stay here"), and it is shown as the maps to pick from.
+    bool next_map{};
 };
 // A dedicated server's announcement, for its card. `id` 0: none showing.
 struct MultiplayerAnnouncement {

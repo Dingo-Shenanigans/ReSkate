@@ -288,6 +288,9 @@ void draw_chat();
 // The map download card (map_download_card.cpp): whether there is one this frame, and drawing it.
 bool map_download_pending();
 void draw_map_download();
+// The vote for the next map as its popup: the maps to pick from. False when it is not up (it
+// was answered or closed, or the vote is over), and the vote is drawn as the poll it is.
+bool draw_map_vote(const MultiplayerVote& vote);
 // Its icon on the way to the GPU: decoded pixels the render thread takes once, then says where
 // they went; lost when the device is torn down, after which they are handed out again.
 struct CardPixels {

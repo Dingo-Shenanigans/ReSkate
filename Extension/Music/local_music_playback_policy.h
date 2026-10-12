@@ -8,6 +8,12 @@ inline constexpr std::uint32_t native_default_mode = 0;
 inline constexpr std::uint32_t native_sequential_mode = 1;
 inline constexpr std::uint32_t cursor_sync_sentinel = 0x7fffffffu;
 
+constexpr std::uint32_t resolve_playlist_binding_id(std::uint32_t requested_id,
+    std::uint32_t favorites_id, bool favorites_node_ready) noexcept {
+    return requested_id == 0 && favorites_id != 0 && favorites_node_ready
+        ? favorites_id : requested_id;
+}
+
 struct CursorPlan {
     std::uint32_t mode{};
     bool set_mode{};
@@ -28,8 +34,15 @@ constexpr bool find_member_position(const std::uint8_t* members, std::uint32_t m
     return false;
 }
 
-// Plan a native transition without touching the game's data. The current position
-// is in the mode-1 ordered-index vector after rebuilding it as identity order.
+constexpr std::uint32_t ordered_member_index(std::uint32_t position,
+                                            std::uint32_t member_count,
+                                            bool reverse) noexcept {
+    if (position >= member_count) return member_count;
+    return reverse ? member_count - position - 1 : position;
+}
+
+// Plan a native transition without touching the game's data. Static playlist
+// positions use the native mode-1 order vector after it is rebuilt as identity.
 constexpr CursorPlan plan_cursor(bool shuffle, std::uint32_t current_mode,
                                  std::uint32_t current_cursor, bool new_group,
                                  bool explicit_request_pending, bool current_track_found,
@@ -55,6 +68,14 @@ constexpr CursorPlan plan_cursor(bool shuffle, std::uint32_t current_mode,
         // starts at its first authored entry.
         plan.set_cursor = true;
         plan.cursor = 0;
+    } else if (current_cursor >= order_count) {
+        // Native favorite edits set the dynamic playlist cursor to its new member
+        // count. That is outside the order vector and would make the selector
+        // reject every candidate; resume after the current member when possible.
+        plan.set_cursor = true;
+        plan.cursor = current_track_found && order_count
+            ? (current_order_position + 1 == order_count ? 0 : current_order_position + 1)
+            : 0;
     }
     return plan;
 }

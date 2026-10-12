@@ -931,6 +931,24 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             }
             continue;
         }
+        // The maps the server's vote for the next map will offer, for their pictures (map_icons.h).
+        if (p.kind == PacketKind::next_maps) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                std::vector<NextMapWanted> maps;
+                for (const auto &map : p.next_maps) maps.push_back({clean_chat_text(map.name), map.package});
+                set_next_maps(std::move(maps));
+            }
+            continue;
+        }
+        // The server's own filtered chat words: filtered here too while on it (reset_session clears them).
+        if (p.kind == PacketKind::words) {
+            if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
+                text::set_own_words(p.words, {});
+                s.chat_masked.clear();
+                publish_chat(s);
+            }
+            continue;
+        }
         if (p.kind == PacketKind::maps) {
             if (dedicated_host(s) && message.peer == s.host_id && p.source == s.host_id) {
                 s.server_maps = p.maps;

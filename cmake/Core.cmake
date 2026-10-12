@@ -30,13 +30,7 @@ add_library(dingosdk_console_core STATIC
 add_library(dingosdk_json STATIC
     Engine/Core/Json/json.cpp)
 
-# The bad-word filter (Engine/Core/Text/word_filter.h) with its list built in: editing
-# bad_words.txt re-runs the configure step.
-set(bad_words_path "${PROJECT_SOURCE_DIR}/Engine/Core/Text/bad_words.txt")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${bad_words_path}")
-file(READ "${bad_words_path}" bad_words_source)
-configure_file(cmake/templates/bad_words.h.in
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_bad_words.h" @ONLY)
+# The bad-word filter (Engine/Core/Text/word_filter.h); its words come from the backend.
 add_library(dingosdk_word_filter STATIC Engine/Core/Text/word_filter.cpp)
 
 target_include_directories(dingosdk_json SYSTEM PRIVATE External)

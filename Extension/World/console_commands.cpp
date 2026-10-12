@@ -51,6 +51,7 @@ const overlay::Level *find_destination(const Model &model, std::string_view name
     for (const auto &level : model.levels)
         if (offered(level, maps) && equal(level.asset, name))
             return &level;
+    name = world_level_typed_name(name);
     for (const bool exact : {true, false}) {
         const overlay::Level *result = nullptr;
         for (const auto &level : model.levels) {

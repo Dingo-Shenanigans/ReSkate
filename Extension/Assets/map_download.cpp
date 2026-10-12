@@ -55,6 +55,14 @@ std::string read_bytes(const fs::path& path, std::uintmax_t most) {
 }
 
 std::string host_word(bool server) { return server ? "server" : "host"; }
+std::string need_package() {
+    std::lock_guard lock(mutex);
+    return need.package;
+}
+bool need_server() {
+    std::lock_guard lock(mutex);
+    return need.server;
+}
 
 // The session that is waiting on the map is left: there is no map to wait for.
 void leave_session() {
@@ -64,17 +72,27 @@ void leave_session() {
 // Back to idle with the reason said, as the plain "map not installed" notice is.
 void fail(std::string reason) {
     std::string text;
+    bool update{};
     {
         std::lock_guard lock(mutex);
+        update = !need.have.empty();
         text = "The " + host_word(need.server) + (need.moved ? " changed to " : " is on ") + need.map +
-               ", which is not installed on this PC. " + reason;
+               (update ? ", at another version (" + std::string(multiplayer::map_package_version(need.package)) + ") than the one installed on this PC (" + need.have + "). "
+                       : ", which is not installed on this PC. ") + reason;
         last_failed = need.package;
     }
     stage.store(Stage::idle);
     leave_session();
     logging::log(logging::Level::warning, logging::Channel::assets, "Map download: {}", text);
-    overlay::notify(overlay::NoticeLevel::warning, "Map not installed", std::move(text));
+    overlay::notify(overlay::NoticeLevel::warning, update ? "Map version differs" : "Map not installed", std::move(text));
 }
+// The packages of the maps installed here, by level (package_of): forgotten when one is installed.
+struct Known {
+    std::string package;
+    std::uint64_t until{};
+};
+std::mutex known_mutex;
+std::map<std::string, Known, std::less<>> known_packages;
 
 // The mod's row in mods.json when its folder is here: whether it is switched on, and what it
 // says of itself.
@@ -91,13 +109,16 @@ std::optional<bool> installed(const std::string& folder, std::string& about) {
 // Stage::checking: is it here but off, or what does Thunderstore say of it.
 void check() {
     package::Name name;
+    bool update{};
     {
         std::lock_guard lock(mutex);
         name = wanted;
+        update = !need.have.empty();
     }
     try {
         std::string about;
-        if (const auto on = installed(name.folder(), about)) {
+        // (At another version than the host's, it is fetched whether it is on or off.)
+        if (const auto on = update ? std::optional<bool>{} : installed(name.folder(), about)) {
             if (*on) return fail("Its mod is installed, but the map did not load: update or reinstall it from the launcher.");
             {
                 std::lock_guard lock(mutex);
@@ -119,6 +140,9 @@ void check() {
                                                   : "Thunderstore could not be reached to look for it.");
         const auto choice = package::choose(*answer, name, community);
         if (!choice.ok) return fail(choice.reason + " Install its map mod yourself and join again.");
+        // Another version is only worth fetching when it is the host's: any other leaves the two apart still.
+        if (update && choice.version != multiplayer::map_package_version(need_package()))
+            return fail("That version is not on Thunderstore any more. Ask the " + host_word(need_server()) + " to update the map, or install its version yourself.");
         {
             std::lock_guard lock(mutex);
             version = choice.version;
@@ -139,13 +163,14 @@ void check() {
 void fetch() {
     package::Name name;
     std::string get, fallback;
-    bool off{};
+    bool off{}, update{};
     {
         std::lock_guard lock(mutex);
         name = wanted;
         get = version;
         fallback = newest;
         off = installed_off;
+        update = !need.have.empty();
     }
     const auto root = mods_root();
     const auto folder = name.folder();
@@ -161,7 +186,7 @@ void fetch() {
             watch.total.store(0);
             auto result = https::get(package::download_url(name, get), archive, largest_download, download_seconds, agent, &watch);
             // The host's version can be gone from Thunderstore: the newest is the same map.
-            if (!result.ok && result.http_status == 404 && get != fallback && !watch.cancel.load()) {
+            if (!update && !result.ok && result.http_status == 404 && get != fallback && !watch.cancel.load()) {
                 fs::remove(archive, error);
                 logging::log(logging::Level::info, logging::Channel::assets,
                     "Map download: {} {} is not on Thunderstore any more; getting {}.", folder, get, fallback);
@@ -176,12 +201,21 @@ void fetch() {
             }
             stage.store(Stage::installing);
             try {
-                launcher_mods::install(root, archive, false, [](float) {}, stop_install, {folder, name.owner, true});
+                // (In the installed one's place when it is the same map at another version. The
+                // game may hold the old one's files open when it was skated this run: then it
+                // cannot be replaced until the game is closed.)
+                launcher_mods::install(root, archive, update, [](float) {}, stop_install, {folder, name.owner, true});
             } catch (const std::exception& failure) {
                 fs::remove(archive, error);
-                return fail(std::string("It could not be installed: ") + failure.what());
+                return fail(update ? std::string("It could not be replaced while the game runs (") + failure.what() +
+                                         "). Close the game, update it from the launcher and join again."
+                                   : std::string("It could not be installed: ") + failure.what());
             }
             fs::remove(archive, error);
+            {
+                std::lock_guard known(known_mutex);
+                known_packages.clear();
+            }
         } else {
             stage.store(Stage::installing);
         }
@@ -193,7 +227,7 @@ void fetch() {
             }
             return fail("Its package holds more than a map, so it is not installed from here. Install it from the launcher if you trust it.");
         }
-        if (off) {
+        if (off || update) { // (a map at another version may have been switched off: it is wanted now)
             auto list = mods::scan_mods(mods::engine_data_root());
             if (!list.issue.empty()) return fail("mods.json could not be read: " + list.issue);
             for (auto& entry : list.entries)
@@ -301,6 +335,7 @@ View view() {
     out.server = need.server;
     out.moved = need.moved;
     out.installed = installed_off;
+    out.have = need.have;
     out.choice = pick_download.load(std::memory_order_relaxed);
     out.received = watch.received.load();
     out.total = watch.total.load();
@@ -358,12 +393,8 @@ void tick() {
 }
 
 std::string package_of(std::string_view asset) {
-    struct Known {
-        std::string package;
-        std::uint64_t until{};
-    };
-    static std::mutex cache_mutex;
-    static std::map<std::string, Known, std::less<>> cache;
+    auto& cache_mutex = known_mutex;
+    auto& cache = known_packages;
     if (asset.empty()) return {};
     std::string key(asset);
     std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

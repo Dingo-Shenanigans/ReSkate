@@ -208,6 +208,10 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         console(m.road_rash.blood ? "roadrashblood 0" : "roadrashblood 1", m.road_rash.available && m.road_rash.enabled);
     } else if (command == "road-rash-heal") {
         console("roadrash heal", m.road_rash.available && m.road_rash.enabled);
+    } else if (command == "board-break") {
+        console(m.board_break.enabled ? "boardbreak 0" : "boardbreak 1", m.board_break.available);
+    } else if (command == "board-break-deck") {
+        console("boardbreak deck next", m.board_break.available && m.board_break.has_deck);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -308,6 +312,9 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
             m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
         button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
             m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+        toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
+        button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
+            m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",

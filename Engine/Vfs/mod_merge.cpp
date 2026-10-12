@@ -194,6 +194,21 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         if (options.live) record = read_placements(placementsPath);
         std::vector<const Mod*> placedMods = mods;
         for (const auto& mod : catalog.inactive) placedMods.push_back(&mod);
+        // A mod whose files changed since its archives were placed (updated, or removed and
+        // installed again at another version, while the game runs) is forgotten here and so
+        // placed again below, as one installed since launch is; the old archives stay where
+        // the game may still hold them. Its place in the root's order goes too: the root is
+        // written again with it last.
+        if (options.live)
+            for (const auto* mod : placedMods) {
+                const auto found = record.mods.find(mod->name);
+                if (found == record.mods.end() || found->second.fingerprint.empty() ||
+                    found->second.fingerprint == mod_fingerprint(mod->directory))
+                    continue;
+                record.mods.erase(found);
+                std::erase(record.root, mod->name);
+                report.notes.push_back(mod->name + ": its files changed since it was loaded, so it is placed again");
+            }
         for (const auto* mod : placedMods) {
             const bool active = std::find(mods.begin(), mods.end(), mod) != mods.end();
             if (options.live && !active && !record.mods.contains(mod->name)) continue; // installed since launch, still off
@@ -248,6 +263,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                                            std::to_string(spot.offset) + " (added while the game runs)");
                     ++report.archives;
                 }
+                placements[mod].fingerprint = mod_fingerprint(mod->directory);
                 record.mods[mod->name] = placements[mod];
                 continue;
             }
@@ -304,6 +320,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                         (active ? "" : " (disabled, ready to enable)"));
                 ++report.archives;
             }
+            placements[mod].fingerprint = mod_fingerprint(mod->directory);
             record.mods[mod->name] = placements[mod];
         }
 

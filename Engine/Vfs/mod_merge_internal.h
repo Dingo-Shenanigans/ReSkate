@@ -64,6 +64,10 @@ struct ArchivePlacement {
         std::uint64_t offset{};
     };
     std::map<std::pair<std::string, std::uint16_t>, Spot> at;
+    // The mod's files as they were when its archives were placed (mod_fingerprint). A merge
+    // while the game runs places a mod again when they have changed since: one updated, or
+    // removed and installed again at another version, is not read where the old one lay.
+    std::string fingerprint;
 };
 
 // Reverses CasStore::shift: turns a placement in the merged patch back into the

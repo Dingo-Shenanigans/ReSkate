@@ -235,7 +235,7 @@ bool start(std::uintptr_t base) noexcept {
             "Road Rash cannot follow the skater: its bails come through No Bail's hooks, which did not start.");
         return false;
     }
-    s.on.store(profile_runtime::local_preference(enabled_preference).value_or(true), std::memory_order_release);
+    s.on.store(profile_runtime::local_preference(enabled_preference).value_or(false), std::memory_order_release);
     s.blood.store(profile_runtime::local_preference(blood_preference).value_or(true), std::memory_order_release);
     s.covers.store(profile_runtime::local_preference(tattoos_preference).value_or(false), std::memory_order_release);
     s.ready.store(true, std::memory_order_release);

@@ -140,6 +140,18 @@ int main() {
         check(capture.command == "roadrashblood 0", "The blood switches off");
         activate(state, model, cb, "road-rash-heal", "");
         check(capture.command == "roadrash heal", "and the skater heals");
+        // Board Break's switch sits there too, with the deck that is in the game; another deck waits for a deck pack.
+        check(rash_row("board-break").title == "Board Break: Off" && rash_row("board-break").command.empty(), "Board Break waits until it started");
+        model.board_break = {true, true, false, "None"};
+        check(rash_row("board-break").title == "Board Break: On" && rash_row("board-break-deck").command.empty(),
+              "Without a deck pack there is no deck to change");
+        activate(state, model, cb, "board-break", "");
+        check(capture.command == "boardbreak 0", "Board Break turns off");
+        model.board_break = {true, true, true, "Wide"};
+        check(rash_row("board-break-deck").title == "Board Break deck: Wide" && rash_row("board-break-deck").command == "board-break-deck",
+              "The deck in the game shows");
+        activate(state, model, cb, "board-break-deck", "");
+        check(capture.command == "boardbreak deck next", "and steps to the next one");
         model.multiplayer.local_name = "steam_name";
         model.player_card = {true, "Card Name", {}};
         const auto card_page = render(state, model, cb, player_section);

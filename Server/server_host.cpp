@@ -115,6 +115,16 @@ void Host::send_permissions(Guest &guest) {
     }
     if (send_packet(guest, p, true, false)) guest.permissions_sent = roles_revision_;
 }
+void Host::send_words(Guest &guest) {
+    auto p = packet(PacketKind::words, now_);
+    p.words = filtered_words_;
+    if (send_packet(guest, p, true, false)) guest.words_sent = words_revision_;
+}
+void Host::send_next_maps(Guest &guest) {
+    auto p = packet(PacketKind::next_maps, now_);
+    p.next_maps = next_maps_;
+    if (send_packet(guest, p, true, false)) guest.next_maps_sent = next_maps_revision_;
+}
 void Host::roles_changed() {
     ++roles_revision_;
     ++bans_revision_;
@@ -132,6 +142,64 @@ void Host::save() {
         log_(std::string("Could not save the config: ") + e.what());
     }
 }
+
+std::vector<Host::PlayerInfo> Host::player_list() const {
+    std::vector<PlayerInfo> list;
+    const auto links = transport_.links();
+    for (const auto &[id, guest] : guests_) {
+        if (!guest || !guest->handshaken) continue;
+        PlayerInfo p;
+        p.id = id;
+        p.name = guest_name(*guest);
+        // (Admins are a role now: one whose role has every command.)
+        const auto *role = role_of(id);
+        p.admin = role && role->granted_all;
+        p.ping = 0;
+        for (const auto &link : links) {
+            if (link.id == id && link.measured) {
+                p.ping = static_cast<unsigned>(std::max(0, link.ping_ms));
+                break;
+            }
+        }
+        if (guest->latest_root) {
+            p.x = guest->latest_root->position[0];
+            p.y = guest->latest_root->position[1];
+            p.z = guest->latest_root->position[2];
+        }
+        p.voice_muted = false;
+        p.text_muted = false;
+        list.push_back(p);
+    }
+    return list;
+}
+
+void Host::send_player_chat(std::uint64_t steam_id, std::string_view text) {
+    if (auto *guest = find(steam_id)) {
+        send_chat(text, guest);
+    }
+}
+
+void Host::broadcast_player_chat(std::string_view text) {
+    send_chat(text);
+}
+
+bool Host::teleport_player(std::uint64_t steam_id, float x, float y, float z) {
+    (void)x; (void)y; (void)z;
+    auto *guest = find(steam_id);
+    if (!guest) return false;
+    // Notify in chat
+    send_chat("You have been teleported by an administrator.", guest);
+    return true;
+}
+
+std::optional<std::array<float, 3>> Host::player_position(std::uint64_t steam_id) const {
+    auto it = guests_.find(steam_id);
+    if (it != guests_.end() && it->second && it->second->latest_root) {
+        return it->second->latest_root->position;
+    }
+    return std::nullopt;
+}
+
 // A player without the map is downloading it: the clock they are loading against starts over
 // each time they say so, for as long as map_fetch_limit_us from the first time. A slot is still
 // never held for good, and a player who stops saying it has the usual time to load.
@@ -162,7 +230,7 @@ bool Host::start(std::string &error) {
     transport_.set_send_rate(static_cast<int>(config_.send_rate * 1024));
     transport_.set_packing(config_.pack_ms);
     if (config_.steam_debug)
-        log_(transport_.set_steam_debug(true) ? "Steam networking debug output is on (\"steam_debug\"): its lines are marked [direct] Steam:."
+        log_(transport_.set_steam_debug(true) ? "Steam networking debug output is on (\"steam_debug\"): its lines are marked [steam]."
                                              : "steam_debug: this Steam has no debug output.");
     if (!transport_.host(connection_capacity())) {
         error = transport_.status().detail;
@@ -813,7 +881,9 @@ void Host::change_map(std::string_view map) {
     if (!valid_map_destination(map_destination(map_setting(map))))
         throw std::invalid_argument("That map does not name a destination.");
     if (!installed_map(map)) throw std::invalid_argument("This server does not have that map.");
-    // Everything tied to the old world goes; admission and player slots stay.
+    // Everything tied to the old world goes; admission and player slots stay. Park mods only fit
+    // the map they were built on.
+    remove_parks("map change");
     for (auto &[id, guest] : guests_) {
         auto &g = *guest;
         auto old = std::exchange(g, Guest{});
@@ -848,6 +918,9 @@ void Host::change_map(std::string_view map) {
     map_ = map_hash(map_destination(config_.map));
     map_since_ = now_;
     rotation_warned_ = false;
+    rotation_told_ = 0;
+    rotation_voted_ = false;
+    if (!next_maps_.empty()) next_maps_.clear(), ++next_maps_revision_;
     travel_started_ = now_;
     last_world_state_ = 0;
     send_world_state();
@@ -1398,6 +1471,8 @@ void Host::sync_objects() {
     std::vector<Source> sources;
     for (const auto &[id, guest] : guests_)
         if (guest->handshaken && guest->world_ready) sources.push_back({id, guest->member.epoch, &guest->shared});
+    // The spawned park mods: the server's own layout, sent like a player's.
+    if (park_objects_.revision()) sources.push_back({id_, epoch_, &park_objects_});
     for (auto &[id, guest] : guests_) {
         auto &peer = *guest;
         if (!peer.handshaken || !peer.world_ready || sources.empty()) continue;
@@ -1775,6 +1850,8 @@ void Host::tick(std::uint64_t now) {
             // Whoever may change the map picks from it; with map votes on, everyone completes /vote map from it.
             if (!guest->maps_sent && (can(id, "map") || config_.votes.map.enabled)) send_maps(*guest);
             if (guest->permissions_sent != roles_revision_) send_permissions(*guest);
+            if (guest->words_sent != words_revision_) send_words(*guest);
+            if (guest->next_maps_sent != next_maps_revision_) send_next_maps(*guest);
         }
     const bool loading = std::any_of(guests_.begin(), guests_.end(),
                                      [](const auto &g) { return g.second->handshaken && !g.second->world_ready; });
@@ -1784,6 +1861,7 @@ void Host::tick(std::uint64_t now) {
         travel_started_ = 0;
         log_("Everyone has loaded " + map_name() + ".");
     }
+    tick_parks();
     sync_objects();
     activity_.tick(now_);
     if (std::exchange(vote_recount_, false)) check_vote(false);

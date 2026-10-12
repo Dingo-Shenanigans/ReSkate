@@ -423,9 +423,40 @@ void carried_into_another_bundle_with_the_list(bool music_first) {
     expect(own == built, order + ": the music mod's own bundle is as it built it (" + std::to_string(own) + " files, " +
            std::to_string(built) + " built)");
 }
+
+// A mod replaced while the game runs (a map at another version): the merge reads its new files
+// where it puts them now, not where the old ones lay.
+void replaced_while_the_game_runs() {
+    Fixture fixture("live-replaced");
+    fixture.add("music", false, shared_toc, {}, music_assets(), music_resources());
+    auto report = mods::merge_mods(fixture.catalog);
+    expect(report.built && report.issue.empty(), "replaced: the launch's merge\n" + describe(report));
+    const auto noted = [&](std::string_view text) {
+        return std::any_of(report.notes.begin(), report.notes.end(), [&](const std::string& note) { return note.find(text) != std::string::npos; });
+    };
+    // Untouched, it stays where the launch put it.
+    report = mods::merge_mods(fixture.catalog, {}, {.live = true});
+    expect(report.built && report.issue.empty() && !noted("placed again"), "replaced: an unchanged mod was placed again\n" + describe(report));
+    // The same folder with other files in it.
+    const auto before = fixture.merged_files(shared_toc);
+    fs::remove_all(fixture.catalog.mods.back().directory);
+    fixture.catalog.mods.clear();
+    auto more = music_assets();
+    more.push_back({"test/another", 0, ebx_document(guid(77), {})});
+    fixture.add("music", false, shared_toc, {}, more, music_resources());
+    report = mods::merge_mods(fixture.catalog, {}, {.live = true});
+    expect(report.built && report.issue.empty(), "replaced: the merge with the new files\n" + describe(report));
+    expect(noted("placed again") && noted("added while the game runs"), "replaced: a changed mod kept the old one's place\n" + describe(report));
+    expect(fixture.merged_files(shared_toc) == before + 1, "replaced: the new file is not in the merged copy (" +
+           std::to_string(fixture.merged_files(shared_toc)) + ", " + std::to_string(before) + " before)");
+    // And it is not placed a third time.
+    report = mods::merge_mods(fixture.catalog, {}, {.live = true});
+    expect(report.built && report.issue.empty() && !noted("placed again"), "replaced: placed again without a change\n" + describe(report));
+}
 } // namespace
 
 int main() try {
+    replaced_while_the_game_runs();
     const auto baseline = map_only();
     expect(baseline > 0, "map only: the map's copy exists (" + std::to_string(baseline) + ")");
     carried_into_the_maps_copy(true, baseline);

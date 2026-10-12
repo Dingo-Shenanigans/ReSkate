@@ -121,6 +121,11 @@ void ImGui_ImplDX12_SetOutputTransfer(int mode, float white_nits)
     g_ReSkateOutputTransfer[0] = (float)mode;
     g_ReSkateOutputTransfer[1] = white_nits;
 }
+static bool g_ReSkateOutputTransferAvailable = false;
+bool ImGui_ImplDX12_HasOutputTransfer()
+{
+    return g_ReSkateOutputTransferAvailable;
+}
 
 // Functions
 static void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, ID3D12GraphicsCommandList* command_list, ImGui_ImplDX12_RenderBuffers* fr)
@@ -536,7 +541,6 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
     psoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
     ID3DBlob* vertexShaderBlob;
-    ID3DBlob* pixelShaderBlob;
 
     // Create the vertex shader
     {
@@ -582,55 +586,6 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
         psoDesc.InputLayout = { local_layout, 3 };
     }
 
-    // Create the pixel shader
-    {
-        static const char* pixelShader =
-            "struct PS_INPUT\
-            {\
-              float4 pos : SV_POSITION;\
-              float4 col : COLOR0;\
-              float2 uv  : TEXCOORD0;\
-            };\
-            cbuffer vertexBuffer : register(b0) \
-            {\
-              float4x4 ProjectionMatrix; \
-              float4 OutputTransfer; \
-            };\
-            SamplerState sampler0 : register(s0);\
-            Texture2D texture0 : register(t0);\
-            \
-            float3 srgb_to_linear(float3 c)\
-            {\
-              return lerp(c / 12.92, pow(abs((c + 0.055) / 1.055), 2.4), step(0.04045, c)); \
-            }\
-            float4 main(PS_INPUT input) : SV_Target\
-            {\
-              float4 out_col = input.col * texture0.Sample(sampler0, input.uv); \
-              if (OutputTransfer.x > 0.5) \
-              {\
-                float3 lin = srgb_to_linear(saturate(out_col.rgb)); \
-                if (OutputTransfer.x < 1.5) \
-                {\
-                  out_col.rgb = lin * (OutputTransfer.y / 80.0); \
-                }\
-                else \
-                {\
-                  float3 wide = float3(dot(lin, float3(0.6274, 0.3293, 0.0433)), dot(lin, float3(0.0691, 0.9195, 0.0114)), dot(lin, float3(0.0164, 0.0880, 0.8956))); \
-                  float3 y = pow(saturate(wide * (OutputTransfer.y / 10000.0)), 0.1593017578125); \
-                  out_col.rgb = pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375); \
-                }\
-              }\
-              return out_col; \
-            }";
-
-        if (FAILED(D3DCompile(pixelShader, strlen(pixelShader), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &pixelShaderBlob, nullptr)))
-        {
-            vertexShaderBlob->Release();
-            return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
-        }
-        psoDesc.PS = { pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize() };
-    }
-
     // Create the blending setup
     {
         D3D12_BLEND_DESC& desc = psoDesc.BlendState;
@@ -673,10 +628,80 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
         desc.BackFace = desc.FrontFace;
     }
 
-    HRESULT result_pipeline_state = bd->pd3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&bd->pPipelineState));
+    // Create the pixel shader and the pipeline
+    // [ReSkate] The HDR-aware shader first, then ImGui's stock one. Some D3DCompile()s cannot build the HDR one (Wine's
+    // builtin d3dcompiler, as under Apple's Game Porting Toolkit), and an SDR-only window beats no window at all.
+    {
+        static const char* pixelShaders[] =
+        {
+            "struct PS_INPUT\
+            {\
+              float4 pos : SV_POSITION;\
+              float4 col : COLOR0;\
+              float2 uv  : TEXCOORD0;\
+            };\
+            cbuffer vertexBuffer : register(b0) \
+            {\
+              float4x4 ProjectionMatrix; \
+              float4 OutputTransfer; \
+            };\
+            SamplerState sampler0 : register(s0);\
+            Texture2D texture0 : register(t0);\
+            \
+            float3 srgb_to_linear(float3 c)\
+            {\
+              return lerp(c / 12.92, pow(abs((c + 0.055) / 1.055), 2.4), step(0.04045, c)); \
+            }\
+            float4 main(PS_INPUT input) : SV_Target\
+            {\
+              float4 out_col = input.col * texture0.Sample(sampler0, input.uv); \
+              if (OutputTransfer.x > 0.5) \
+              {\
+                float3 lin = srgb_to_linear(saturate(out_col.rgb)); \
+                if (OutputTransfer.x < 1.5) \
+                {\
+                  out_col.rgb = lin * (OutputTransfer.y / 80.0); \
+                }\
+                else \
+                {\
+                  float3 wide = float3(dot(lin, float3(0.6274, 0.3293, 0.0433)), dot(lin, float3(0.0691, 0.9195, 0.0114)), dot(lin, float3(0.0164, 0.0880, 0.8956))); \
+                  float3 y = pow(saturate(wide * (OutputTransfer.y / 10000.0)), 0.1593017578125); \
+                  out_col.rgb = pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375); \
+                }\
+              }\
+              return out_col; \
+            }",
+            "struct PS_INPUT\
+            {\
+              float4 pos : SV_POSITION;\
+              float4 col : COLOR0;\
+              float2 uv  : TEXCOORD0;\
+            };\
+            SamplerState sampler0 : register(s0);\
+            Texture2D texture0 : register(t0);\
+            \
+            float4 main(PS_INPUT input) : SV_Target\
+            {\
+              float4 out_col = input.col * texture0.Sample(sampler0, input.uv); \
+              return out_col; \
+            }",
+        };
+
+        g_ReSkateOutputTransferAvailable = false;
+        for (int i = 0; i < IM_ARRAYSIZE(pixelShaders) && bd->pPipelineState == nullptr; i++)
+        {
+            ID3DBlob* pixelShaderBlob = nullptr;
+            if (FAILED(D3DCompile(pixelShaders[i], strlen(pixelShaders[i]), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &pixelShaderBlob, nullptr)))
+                continue; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+            psoDesc.PS = { pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize() };
+            if (bd->pd3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&bd->pPipelineState)) != S_OK)
+                bd->pPipelineState = nullptr;
+            pixelShaderBlob->Release();
+            g_ReSkateOutputTransferAvailable = bd->pPipelineState != nullptr && i == 0;
+        }
+    }
     vertexShaderBlob->Release();
-    pixelShaderBlob->Release();
-    if (result_pipeline_state != S_OK)
+    if (bd->pPipelineState == nullptr)
         return false;
 
     return ImGui_ImplDX12_CreateFontsTexture();

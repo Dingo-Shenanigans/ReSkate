@@ -18,6 +18,8 @@ struct Settings {
     bool stabilize = true, follow_flips = true;
     // Hand the view back to the game's camera while the skater walks (opt-in).
     bool board_only = false;
+    // Put first person into the game's camera height cycle (first_person_cycle.h, opt-in).
+    bool camera_cycle = false;
     float smoothing = 60, head_pitch = 86, head_roll = 0, bob = 25;
 };
 // Adaptive low-pass ("One Euro") state for one channel: heavy smoothing while the

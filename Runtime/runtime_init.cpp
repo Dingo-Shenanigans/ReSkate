@@ -6,6 +6,10 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/engine_tweaks.h"
 #include "Extension/Settings/replay_guard.h"
+#include "Extension/World/load_error_guard.h"
+#include "Extension/World/mesh_unload_guard.h"
+#include "Extension/World/stack_check_report.h"
+#include "Extension/World/texture_handle_limit.h"
 #include "Extension/Console/commands.h"
 #include "Extension/UI/ui_pointer_skip.h"
 #include "Engine/Game/Build/addresses.h"
@@ -16,6 +20,7 @@
 #include "Extension/Boot/offline_boot.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/RoadRash/road_rash.h"
+#include "Extension/BoardBreak/board_break.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
@@ -214,6 +219,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             card.server = view.server;
             card.moved = view.moved;
             card.installed = view.installed;
+            card.have = view.have;
             card.choice = view.choice;
             card.received = view.received;
             card.total = view.total;
@@ -313,6 +319,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::ui_pointer::install(r.base);
         (void)dingosdk::engine_tweaks::install(r.base);
         (void)dingosdk::replay_guard::install(r.base);
+        (void)dingosdk::mesh_unload_guard::install(r.base);
+        (void)dingosdk::load_error_guard::install(r.base);
+        (void)dingosdk::texture_handle_limit::install(r.base);
+        (void)dingosdk::stack_check_report::install(r.base);
         dingosdk::console::start_memory_trace_from_environment();
         const bool fixed_stop_provider = (global_offline_hook && progression_guard_armed) &&
             dingosdk::prepare_fixed_stop_entitlement_provider(r.base);
@@ -413,6 +423,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         record("{\"event\":\"hall_of_meat_initialized\",\"active\":" + std::string(meat ? "true" : "false") + "}");
         const bool rash = dingosdk::road_rash::start(r.base);
         record("{\"event\":\"road_rash_initialized\",\"active\":" + std::string(rash ? "true" : "false") + "}");
+        const bool board_break = dingosdk::board_break::start(r.base);
+        record("{\"event\":\"board_break_initialized\",\"active\":" + std::string(board_break ? "true" : "false") + "}");
         const bool noclip_velocity = dingosdk::start_client_noclip_velocity(r.base);
         record("{\"event\":\"noclip_velocity_initialized\",\"active\":" + std::string(noclip_velocity ? "true" : "false") + "}");
         const bool loading_screens = dingosdk::loading_screen::start(r.base);

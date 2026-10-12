@@ -544,10 +544,18 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         }
         const bool playback_ready = initialize_music_playback(base,
             local_preference("MusicShuffle").value_or(false));
-        if (playback_ready)
+        if (playback_ready) {
+            std::array<unsigned char, 32> channel_bind_bytes{};
+            if (read(base + addr::local_music::playback_channel_playlist_bind_contract.rva,
+                    channel_bind_bytes) &&
+                channel_bind_bytes == addr::local_music::playback_channel_playlist_bind_contract.bytes)
+                hook(addr::local_music::playback_channel_playlist_bind_contract,
+                    &music_channel_playlist_bind_hook, music_channel_playlist_bind_original());
+            else dingosdk::logging::event(dingosdk::logging::Channel::music,
+                "{\"event\":\"music_channel_playlist_binding_contract_mismatch\"}");
             hook(addr::local_music::playback_select_next_contract,
                 &music_select_next_hook, music_select_next_original());
-        else dingosdk::logging::event(dingosdk::logging::Channel::music,
+        } else dingosdk::logging::event(dingosdk::logging::Channel::music,
             "{\"event\":\"music_playback_order_contract_mismatch\"}");
         hook(buildkit_text_exists_contract, &buildkit_text_exists, buildkit_text_functions().exists);
         hook(buildkit_text_translate_contract, &buildkit_text_translate, buildkit_text_functions().translate);

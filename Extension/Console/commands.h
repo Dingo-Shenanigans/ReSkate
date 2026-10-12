@@ -28,6 +28,7 @@ void register_item_commands(Commands &);
 void register_trainer_commands(Commands &);
 void register_hall_of_meat_commands(Commands &);
 void register_road_rash_commands(Commands &);
+void register_board_break_commands(Commands &);
 // Runtime adapters. Invoked only by the verified game-thread dispatcher.
 void request_debug(overlay::DebugAction, bool enabled = false, float value = 0);
 void request_feature(overlay::OfflineFeatureGroup, bool enabled);

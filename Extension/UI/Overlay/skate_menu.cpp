@@ -435,7 +435,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
             menu.mods_tab = 0;
             ImGui::PushID(menu.mods_tab);
             ImGui::BeginChild("mods-tab", ImVec2(0, page_body_height(menu)));
-            draw_modding_menu(menu, menu.mods_tab);
+            draw_modding_menu(menu, menu.mods_tab, model, callbacks);
             ImGui::EndChild();
             ImGui::PopID();
             break;

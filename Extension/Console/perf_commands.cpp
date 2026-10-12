@@ -3,6 +3,7 @@
 #include "Extension/Settings/engine_tweaks.h"
 #include "Extension/Settings/job_spin.h"
 #include "Extension/UI/ui_pointer_skip.h"
+#include "Extension/World/texture_handle_limit.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include <Windows.h>
 #include <Psapi.h>
@@ -270,6 +271,17 @@ void start_memory_trace_from_environment() noexcept {
 }
 
 void register_perf_commands(Commands& registry) {
+    // How close the game is to its limit of streamed textures (texture_handle_limit).
+    auto textures = action("textures", "Streamed textures in use, and the most the game can hold", Group::console);
+    textures.execution = Execution::local;
+    textures.run = [](const Model&, const Values&, const Output& out) {
+        const auto state = texture_handle_limit::use();
+        if (!state.known) return out("The game's texture streaming is not running yet.");
+        out(std::format("{} of {} streamed textures in use ({}%). A warning shows at 90%; the game freezes at the limit.", state.taken,
+            state.limit, std::uint64_t{state.taken} * 100 / state.limit));
+    };
+    registry.add(std::move(textures));
+
     // The HUD starts off every launch; these turn it on for the session.
     auto toggle = action("perf", "Show or hide the performance HUD", Group::console);
     toggle.execution = Execution::local;

@@ -121,6 +121,9 @@ Players
                        the list in the game's menu.)
   tpall                tpall [player]: everyone to you, or to a player.
   tphere               tphere <player>: one player to you (in the game only).
+  teleport             teleport <players> <player|x y z>: players to a player or
+                       a place. <players> is one player, or SteamID64s joined
+                       by commas.
   role                 role <player or SteamID64> <role>|none: give a player a
                        role or take theirs away, and "roles reload". Only by
                        name: "*" does not include it.
@@ -140,11 +143,15 @@ Messages
 Map and world
   map                  map <name>: change the map. Also lets the player pick
                        the server's level from Levels or Travel in the game.
-  maps                 The maps this server knows.
+  maps                 The maps this server knows. (maps reload, which reads the
+                       Mods folder again, takes the map command.)
   map-pool             map-pool [add|remove <map>|clear]: the maps players vote
                        between and the rotation uses.
   rotation             rotation [<minutes>|off]: change the map on a timer.
   park                 park <lot> <layout>, park random: the park layouts.
+  park-mod             The park mods (see Park mods in README.txt): list, add,
+                       remove, clear and reload spawned parks, and "park-mod
+                       config add|remove" to set one up (saved to the config).
   layer-sync           layer-sync on|off: force the server's world layers on
                        everyone.
   layer                layer <key> default|on|off: one world layer.

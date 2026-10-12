@@ -156,6 +156,9 @@ PlacementRecord read_placements(const fs::path& file) {
                 {spot.at("archive").get<std::uint16_t>(), spot.at("offset").get<std::uint64_t>()};
         }
     }
+    if (root.contains("fingerprints"))
+        for (const auto& [name, files] : root.at("fingerprints").items())
+            if (const auto found = record.mods.find(name); found != record.mods.end() && files.is_string()) found->second.fingerprint = files.string();
     const auto& tocs = root.at("tocs");
     for (std::size_t i = 0; i < tocs.size(); ++i) record.tocs.push_back(tocs.at(i).string());
     if (root.contains("root")) {
@@ -182,6 +185,10 @@ void write_placements(const fs::path& file, const PlacementRecord& record) {
         mods[name] = std::move(spots);
     }
     root["mods"] = std::move(mods);
+    auto fingerprints = Json::object();
+    for (const auto& [name, placement] : record.mods)
+        if (!placement.fingerprint.empty()) fingerprints[name] = placement.fingerprint;
+    root["fingerprints"] = std::move(fingerprints);
     auto tocs = Json::array();
     for (const auto& toc : record.tocs) tocs.push_back(toc);
     root["tocs"] = std::move(tocs);

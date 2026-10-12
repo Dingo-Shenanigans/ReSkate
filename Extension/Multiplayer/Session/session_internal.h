@@ -484,6 +484,16 @@ inline std::string host_map_package(std::string_view destination) {
     }
 }
 inline std::atomic<unsigned> server_poll_answers_flag{};
+// The server's maps for its next-map vote (session.h: next_maps), for the thread that fetches their pictures.
+inline std::mutex next_maps_mutex;
+inline std::vector<NextMapWanted> next_maps_shared;
+inline std::atomic<unsigned> next_maps_serial_value{};
+inline void set_next_maps(std::vector<NextMapWanted> maps) {
+    std::lock_guard lock(next_maps_mutex);
+    if (maps.empty() && next_maps_shared.empty()) return;
+    next_maps_shared = std::move(maps);
+    next_maps_serial_value.fetch_add(1, std::memory_order_relaxed);
+}
 // "/p <message>" in a lobby: one line for the local player's party only, relayed by the host.
 std::string send_party_chat(Session &s, std::string_view typed);
 // The "/" commands this session offers (the chat overlay lists them as the player types "/").

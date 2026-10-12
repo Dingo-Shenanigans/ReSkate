@@ -575,6 +575,7 @@ void draw_announcement(const MultiplayerAnnouncement& announcement, ImFont* head
 
 void draw_vote(const MultiplayerVote& vote, ImFont* heading, ImFont* body, ImVec2 display, float scale, bool clickable) {
     if (!vote.id) return;
+    if (vote.next_map && draw_map_vote(vote)) return;
     if (vote.poll) return draw_poll(vote, heading, body, display, scale, clickable);
     constexpr ImU32 green = skate_theme::good, red = skate_theme::danger;
     const bool running = vote.outcome == 0;
@@ -585,7 +586,7 @@ void draw_vote(const MultiplayerVote& vote, ImFont* heading, ImFont* body, ImVec
     if (running) question += '?';
     const float width = 360.0f * scale, margin = 24.0f * scale, strip = 5.0f * scale;
     const float pad = 14.0f * scale, gap = 8.0f * scale, title_size = 13.0f * scale, size = 18.0f * scale, fine = 13.0f * scale;
-    const float button_height = 34.0f * scale, bar = 4.0f * scale, inner = width - strip - pad * 2.0f;
+    const float button_height = 34.0f * scale, bar = 10.0f * scale, inner = width - strip - pad * 2.0f;
     const auto question_extent = heading->CalcTextSizeA(size, FLT_MAX, inner, question.c_str());
     const bool answers = running && vote.may_vote;
     const float height = pad + title_size + gap + question_extent.y + gap + bar + gap + fine +
@@ -605,10 +606,20 @@ void draw_vote(const MultiplayerVote& vote, ImFont* heading, ImFont* body, ImVec
     y += title_size + gap;
     draw->AddText(heading, size, ImVec2(left, y), theme::paper, question.c_str(), nullptr, inner);
     y += question_extent.y + gap;
-    // How far Yes is towards what it needs, then the tally under it.
-    const float share = vote.needed ? std::clamp(static_cast<float>(vote.yes) / static_cast<float>(vote.needed), 0.0f, 1.0f) : 0.0f;
+    // The votes cast, yes in green from the left and no in red from the right: a vote is
+    // decided by those who vote. The mark is where yes has to reach to pass; nothing is cast
+    // yet, the bar is empty.
+    const unsigned cast = static_cast<unsigned>(vote.yes) + vote.no;
     draw->AddRectFilled(ImVec2(left, y), ImVec2(right, y + bar), skate_theme::tile_light);
-    if (share > 0.0f) draw->AddRectFilled(ImVec2(left, y), ImVec2(left + inner * share, y + bar), green);
+    if (cast) {
+        const float split = std::floor(left + inner * static_cast<float>(vote.yes) / static_cast<float>(cast));
+        if (vote.yes) draw->AddRectFilled(ImVec2(left, y), ImVec2(split, y + bar), green);
+        if (vote.no) draw->AddRectFilled(ImVec2(split, y), ImVec2(right, y + bar), red);
+        if (running && vote.needed && vote.needed <= cast) {
+            const float mark = std::floor(left + inner * static_cast<float>(vote.needed) / static_cast<float>(cast));
+            draw->AddRectFilled(ImVec2(mark - scale, y - 3.0f * scale), ImVec2(mark + scale, y + bar + 3.0f * scale), theme::paper);
+        }
+    }
     y += bar + gap;
     float x = left;
     const auto word = [&](const std::string& text, ImU32 colour) {

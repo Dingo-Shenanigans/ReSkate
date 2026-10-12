@@ -26,7 +26,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 48;
+constexpr std::uint16_t protocol_version = 50;
 // A dedicated server's chat lines unless its owner says otherwise: violet (#8E5CFF) and lavender (#D9C8FF).
 inline constexpr std::uint32_t default_server_chat_badge = 0xffff5c8eU, default_server_chat_text = 0xffffc8d9U;
 constexpr std::size_t max_throwdown_message = 4096;
@@ -43,6 +43,20 @@ constexpr std::uint8_t server_vote_poll = 8, server_vote_custom = 16;
 // count for each instead of yes, no and needed.
 constexpr std::size_t max_vote_label = 120;
 constexpr std::size_t max_vote_answers = 6, max_vote_answer = 48;
+// A poll whose answers are the maps to go to next (a dedicated server's rotation vote): its
+// ServerVote::target is this, which a poll otherwise leaves 0. Games that know it show the
+// maps to pick from; older ones show the poll it is.
+inline constexpr std::uint64_t next_map_vote = 1;
+// Its answers that are not maps: any map of the pool, and (when the server offers it) staying.
+inline constexpr std::string_view next_map_random = "Random map";
+inline constexpr std::string_view next_map_stay = "Stay here";
+// One of them: the name the vote's answer has, and the Thunderstore package the map is from
+// (valid_map_package; empty for the game's own maps and when the server does not know).
+struct NextMap {
+    std::string name, package;
+    bool operator==(const NextMap &) const = default;
+};
+inline constexpr std::size_t max_next_maps = 6;
 constexpr std::uint8_t vote_running = 0, vote_passed = 1, vote_failed = 2, vote_cancelled = 3;
 struct ServerVote {
     std::uint32_t id{};
@@ -122,7 +136,14 @@ enum class PacketKind : std::uint16_t {
     effects = 31,
     // A dedicated server telling one player what their role lets them do (Server/roles.h):
     // its name, the server commands they may use and their permissions beyond commands.
-    permissions = 32
+    permissions = 32,
+    // A dedicated server's own filtered chat words (Server/server_words.h), for the chat filter
+    // of each player on it: sent on joining and whenever its owner changes them.
+    words = 33,
+    // The maps a dedicated server's vote for the next map will offer (Server/server_votes.cpp:
+    // the rotation's vote), sent about a minute before it so games have their pictures ready,
+    // and to whoever joins after. Empty: none are chosen (the map changed).
+    next_maps = 34
 };
 // Packet::party_action. Requests go from a player to whoever hosts, a dedicated server or a
 // lobby's host (party_player = the other player involved, 0 for leave/open/close); invited
@@ -167,6 +188,14 @@ inline constexpr std::uint32_t role_reserved_slot = 1, role_objects = 2, role_mo
 constexpr std::size_t max_admin_text = 320;
 constexpr std::size_t max_ban_rows = 256;
 constexpr std::size_t max_server_maps = 128, max_map_asset = 128;
+// Packet::words: as many of a server's own filtered words as it sends, and how long one may be.
+constexpr std::size_t max_server_words = 256, max_server_word = 32;
+inline bool valid_server_word(std::string_view word) noexcept {
+    if (word.empty() || word.size() > max_server_word) return false;
+    for (const unsigned char c : word)
+        if (c < 32 || c == 127) return false;
+    return true;
+}
 // A level asset as a server's map list carries it: printable ASCII, no '|'.
 bool valid_map_asset(std::string_view asset) noexcept;
 bool valid_map_pool(std::span<const std::uint16_t> pool, std::size_t maps) noexcept; // distinct indices below `maps`
@@ -185,6 +214,24 @@ bool valid_map_package(std::string_view package) noexcept;
 // zip unpacks by hand. The manifest's version comes before the folder's; one that is not three
 // numbers is left off.
 std::string map_package_name(std::string_view folder, std::string_view version);
+// A package's version ("1.2.3" of "Owner-Name-1.2.3"), or nothing when it names none.
+inline std::string_view map_package_version(std::string_view package) noexcept {
+    const auto first = package.find('-');
+    const auto second = first == std::string_view::npos ? first : package.find('-', first + 1);
+    return second == std::string_view::npos ? std::string_view{} : package.substr(second + 1);
+}
+// The version of a map installed here, when the host's package is the same map at another
+// one: players skate the host's version, so that is fetched first. Nothing when the versions
+// agree, either names none, or they are different packages.
+inline std::string_view other_map_version(std::string_view host, std::string_view mine) noexcept {
+    const auto wanted = map_package_version(host), have = map_package_version(mine);
+    if (wanted.empty() || have.empty() || wanted == have) return {};
+    const auto host_name = host.substr(0, host.size() - wanted.size()), my_name = mine.substr(0, mine.size() - have.size());
+    if (host_name.size() != my_name.size()) return {};
+    for (std::size_t i = 0; i < host_name.size(); ++i)
+        if ((host_name[i] | 0x20) != (my_name[i] | 0x20)) return {};
+    return have;
+}
 struct Transform {
     std::array<float, 3> position{};
     std::array<float, 4> rotation{0, 0, 0, 1};
@@ -299,6 +346,8 @@ struct Packet {
     std::string role;
     bool role_all_commands{};
     std::vector<std::string> role_commands;
+    std::vector<std::string> words;           // words: a dedicated server's own filtered chat words
+    std::vector<NextMap> next_maps;           // next_maps: at most max_next_maps
     std::uint32_t role_permissions{};
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)

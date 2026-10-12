@@ -20,6 +20,7 @@ namespace dingosdk::multiplayer::session_detail {
 void load_host_preferences(Session &s) {
     auto &p = s.host_preferences;
     if (p.loaded) return;
+    if (!profile_runtime::local_profile_store_ready()) return;
     p.loaded = true;
     const auto number = [](const char *key) -> std::optional<std::int64_t> {
         const auto value = profile_runtime::local_value(key);
@@ -176,7 +177,7 @@ void publish(Session &s, const NativeFrame *local) {
     // A dedicated server's roster capacity counts the server itself.
     view.capacity = static_cast<int>(dedicated_host(s) ? s.capacity - 1 : s.capacity);
     load_host_preferences(s);
-    view.saved_host = {true, s.host_preferences.public_lobby, s.host_preferences.password_required,
+    view.saved_host = {s.host_preferences.loaded, s.host_preferences.public_lobby, s.host_preferences.password_required,
                        static_cast<int>(s.host_preferences.capacity), s.host_preferences.tps, s.host_preferences.lobby_name};
     view.nametags = s.nametags;
     if (const auto social = steam_social_snapshot())
@@ -511,6 +512,8 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/map", "/map <map>", "Admin: change the server's map", "map"});
             list.push_back({"/tpall", "/tpall [player]", "Admin: teleport everyone to you (or to a player)", "player"});
             list.push_back({"/tphere", "/tphere <player>", "Admin: teleport a player to you", "player"});
+            list.push_back({"/teleport", "/teleport <player|SteamID64,SteamID64,...> <player|x y z>",
+                            "Admin: teleport players to a player or a place (y is up)", "player"});
             list.push_back({"/tod", "/tod <time>", "Admin: set the time of day", "time"});
             list.push_back({"/votes", "/votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>]", "Admin: the server's vote settings"});
             list.push_back({"/announce", "/announce <text>", "Admin: announce something to everyone, on a card on their screen"});
@@ -524,11 +527,23 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/rotation", "/rotation [<minutes>|off]", "Admin: change the map on a timer, through the map pool"});
             list.push_back({"/role", "/role <player> <role>|none", "Admin: give a player a role, or take theirs away", "player"});
             list.push_back({"/roles", "/roles", "Admin: the server's roles and who has them"});
+            // Park mods (Server/server_parks.cpp): their names are the server's own, not in the roster.
+            list.push_back({"/park-mod list", "/park-mod list", "Admin: the server's park mods, and which are spawned"});
+            list.push_back({"/park-mod add", "/park-mod add <name> [<name>...] [minutes]",
+                            "Admin: spawn park mods on this map, for 1-1440 minutes or until removed"});
+            list.push_back({"/park-mod remove", "/park-mod remove <name> [<name>...]", "Admin: remove spawned park mods"});
+            list.push_back({"/park-mod clear", "/park-mod clear", "Admin: remove every spawned park mod"});
+            list.push_back({"/park-mod reload", "/park-mod reload <name> [<name>...]",
+                            "Admin: read a spawned park mod's file again and update it in place"});
+            list.push_back({"/park-mod config add", "/park-mod config add <name> | <mod folder> | <map> [| <key>]",
+                            "Admin: set up a park mod from the server's Mods folder, without a restart"});
+            list.push_back({"/park-mod config remove", "/park-mod config remove <name>", "Admin: remove a park mod from the server's setup"});
             list.erase(std::remove_if(list.begin() + static_cast<std::ptrdiff_t>(before_commands), list.end(), [&](const auto &entry) {
-                // "/poll end" is the polls permission's; the others are named for their command.
+                // "/poll end" is the polls permission's; the others are named for their command, the
+                // first word ("/park-mod add" is park-mod's).
                 const std::string_view shown = entry.name;
                 if (shown == "/poll end") return !(s.role_permissions & role_polls);
-                return !role_allows(s.role_all_commands, s.role_commands, shown.substr(1));
+                return !role_allows(s.role_all_commands, s.role_commands, shown.substr(1, shown.find(' ') - 1));
             }), list.end());
         }
     }
@@ -620,6 +635,7 @@ void publish_chat(Session &s) {
         vote.mine = s.vote_mine;
         vote.may_vote = s.vote.target != s.transport.status().local_id;
         vote.poll = s.vote.kind == server_vote_poll;
+        vote.next_map = vote.poll && s.vote.target == next_map_vote;
         for (const auto &answer : s.vote.answers) vote.answers.push_back(clean_chat_text(answer));
         vote.counts.assign(s.vote.counts.begin(), s.vote.counts.end());
         const auto binds = local_profile_controller_bindings();
