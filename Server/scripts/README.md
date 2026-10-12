@@ -22,6 +22,8 @@ The example scripts in this folder are ready to copy:
 - [World](#world)
 - [Events](#events)
 - [Timers](#timers)
+- [Saved data](#saved-data)
+- [Roles](#roles)
 - [Logging](#logging)
 - [What Lua can do here](#what-lua-can-do-here)
 - [Limits](#limits)
@@ -97,6 +99,11 @@ Adds the chat command `/name`.
 | Field | Meaning |
 |---|---|
 | `admin = true` | Only the console and the roles that give it can run it, like a server command: a role with `"*"` in its `commands` in `data/roles.json`, or one that lists the command's name (`"bring"`). To other players it doesn't exist: they get `Unknown command`, and `/help` doesn't list it. |
+| `description = "..."` | What the command does, in players' `/` list (above the chat) and `/help`. One line, at most 80 bytes. |
+
+| `role = "vip"` | Also runs for players with that role in `data/roles.json` (see [Roles](#roles)). Everyone else gets `Unknown command`, unless `admin = true` lets their role in too. |
+
+A server has at most 32 script commands. Players' `/` list, Tab completion and `/help` show them (admin and role ones only to the players who can run them), and follow `scripts reload`.
 
 ```lua
 server.command("bring", function(player, args)
@@ -201,6 +208,9 @@ Sets the time of day for everyone: `morning`, `noon`, `afternoon`, `evening`, `n
 ### `server.clear_objects()`
 Deletes every object players have placed. Returns the server's answer, such as `"Deleted 12 placed objects."`
 
+### `server.run(line)`
+Runs any server command, as if typed into the console (`server.run("rotation 30")`, `server.run("votes map off")`). Returns the server's answer, and the log records both. Line breaks and control characters are removed from `line` first. Never pass a player's text straight in unless the command is meant for them: the console can do anything, `quit` included.
+
 ## Events
 
 ### `server.on(event, function)`
@@ -256,6 +266,43 @@ end)
 Timer functions take no arguments, and what they return is ignored. A timer that errors is logged as `[script] timer failed: ...`. An `every` timer that errors is cancelled, since it would most likely fail the same way every time.
 
 Timers are kept until the server restarts or the scripts are reloaded. They start counting when the script loads, so `server.every` at the top of a file starts at server start.
+
+## Saved data
+
+### `server.store(key [, value])`
+With only `key`, returns the value saved under it, or `nil`. With a `value`, saves it: a string (UTF-8, at most 4096 bytes), a number or a boolean. `nil` deletes the key. Keys are 1 to 128 bytes, at most 4096 of them.
+
+Saved values outlive `scripts reload` and restarts. They are written to `data\scripts.json` beside the server within a tick of changing. Every script shares one set of keys, so prefix yours (`"homes:" .. player.id`). If the file cannot be read at startup, it is renamed `scripts.json.bad` and the scripts start with nothing saved.
+
+```lua
+server.on("join", function(player)
+  local key = "visits:" .. player.id
+  local visits = (server.store(key) or 0) + 1
+  server.store(key, visits)
+  server.tell(player, "Welcome back! Visit number " .. visits .. ".")
+end)
+```
+
+## Roles
+
+Roles are the server's own, in `data/roles.json` (README-roles.txt): scripts read and give them, and do not make new ones.
+
+### `server.role(who [, name])`
+With only `who`, returns the player's role name, or `nil`. That is the default role (`"player"` on a new server) for anyone who was given none. With a `name`, gives them that role, as the console's `role` command does, and returns the server's answer. `nil` takes their role away. `who` can also be the SteamID64 of a player who is offline.
+
+The change is saved in `data/roles.json`. The player's tag and `/` list follow straight away. A role that does not exist is refused, and the answer says so.
+
+```lua
+server.command("vip", function(player, args)
+  local target = server.player(args)
+  if not target then return "Who?" end
+  return server.role(target, "vip")
+end, {admin = true, description = "Make a player a VIP"})
+
+server.command("fly", function(player)
+  return "Wheee!"
+end, {role = "vip", description = "VIPs only"})
+```
 
 ## Logging
 

@@ -26,7 +26,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 50;
+constexpr std::uint16_t protocol_version = 51;
 // A dedicated server's chat lines unless its owner says otherwise: violet (#8E5CFF) and lavender (#D9C8FF).
 inline constexpr std::uint32_t default_server_chat_badge = 0xffff5c8eU, default_server_chat_text = 0xffffc8d9U;
 constexpr std::size_t max_throwdown_message = 4096;
@@ -79,6 +79,17 @@ struct ServerCustomVote {
     std::string description;          // "Reload the current map"
     std::vector<std::string> choices; // what the player picks from; empty: the vote takes no argument
     bool operator==(const ServerCustomVote &) const = default;
+};
+// A /command a dedicated server's scripts add (Packet::server_commands), for the "/" list and
+// /help. The name is valid_server_command_name; the description is chat text or empty. Admin ones
+// are listed only to the roles that give them, and a role's to that role (the server refuses the rest).
+constexpr std::size_t server_command_limit = 32, server_command_name_bytes = 32;
+struct ServerCommand {
+    std::string name;        // "goto"
+    std::string description; // "Teleport to a saved spot"
+    bool admin{};
+    std::string role;        // "" or valid_server_command_name: also runs for players with this role
+    bool operator==(const ServerCommand &) const = default;
 };
 // A dedicated server's announcement, shown as a card for `seconds` (Packet::announcement).
 // `id` tells one from the next; 0 is none. `text` is one chat line.
@@ -328,6 +339,7 @@ struct Packet {
     std::uint8_t server_votes{};
     std::uint8_t server_polls{};                       // roster: who may start a poll (ServerPolls)
     std::vector<ServerCustomVote> server_custom_votes; // roster: the owner's own votes that are on
+    std::vector<ServerCommand> server_commands;        // roster: the commands the server's scripts add
     ServerAnnouncement announcement;                   // roster
     std::vector<MultiplayerBan> bans;         // bans: newest first
     std::uint32_t ban_total{};                // bans: how many the server has in all
@@ -373,6 +385,9 @@ bool valid_admin_text(std::string_view) noexcept;
 // 1 to server_vote_name_bytes of a-z, 0-9, - and _.
 bool valid_server_vote_name(std::string_view) noexcept;
 bool valid_server_custom_vote(const ServerCustomVote &) noexcept;
+// 1 to server_command_name_bytes of a-z, 0-9, - and _: a script command's name, or a role's.
+bool valid_server_command_name(std::string_view) noexcept;
+bool valid_server_command(const ServerCommand &) noexcept;
 bool valid_server_vote(const ServerVote &) noexcept; // its label and, for a poll, its answers
 // The message a player typed, made valid: control characters and broken UTF-8
 // dropped, surrounding blanks trimmed, cut to the byte limit on a character boundary.

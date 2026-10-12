@@ -907,6 +907,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (lower(argument) == "reload") {
             if (const auto *by = console ? nullptr : find(admin)) log_(guest_name(*by) + " reloaded the scripts.");
             const auto errors = scripts_.load(scripts_.folder());
+            roster_dirty_ = true; // players' "/" lists follow the new commands
             const auto loaded = scripts_.help(0);
             return errors + "Scripts reloaded; commands: " + (loaded.empty() ? "none" : loaded) + ".";
         }

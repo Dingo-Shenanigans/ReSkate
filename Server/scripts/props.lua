@@ -10,4 +10,4 @@ server.command("props", function(player, args)
   end
   table.insert(lines, 1, total .. " objects placed" .. (total > 0 and "; most:" or "."))
   return table.concat(lines, "\n")
-end, {admin = true})
+end, {admin = true, description = "Props placed on the server"})

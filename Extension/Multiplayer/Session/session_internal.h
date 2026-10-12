@@ -196,6 +196,7 @@ struct Session {
     std::uint8_t server_votes{}; // guest of a dedicated server: the votes it runs
     std::uint8_t server_polls{}; // ... who may start a poll there (ServerPolls)
     std::vector<ServerCustomVote> server_custom_votes; // ... and its owner's own votes
+    std::vector<ServerCommand> server_commands;        // ... and its scripts' commands
     // Host: bumped per "delete all guest objects". Guest: the last value seen
     // (unset until the first roster) and whether a local wipe is outstanding.
     std::optional<std::uint32_t> object_clears;

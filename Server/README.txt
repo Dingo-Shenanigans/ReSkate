@@ -100,11 +100,13 @@ help in the console) lists the script commands each player may use.
 The full reference, with every function's results and limits, is
 Server/scripts/README.md in the source.
 
-  server.command(name, function(player, args) ... end [, {admin = true}])
+  server.command(name, function(player, args) ... end [, {admin = true, description = "..."}])
                          A /name command: what the function returns is the reply.
                          admin = true: only the console and the roles that give
                          it ("*", or the command's name in their list). Names
-                         are 1-32 letters, digits, - or _.
+                         are 1-32 letters, digits, - or _; at most 32 commands.
+                         description: one line (80 bytes) for players' "/" list.
+                         role = "vip": also players with that role.
   server.players()       Every connected player, as tables (below).
   server.player(who)     One player's table, or nil.
   server.say(text)       A chat line to everyone.
@@ -117,6 +119,13 @@ Server/scripts/README.md in the source.
   server.map([name])     The map's name, or change it (like the map command).
   server.tod(time)       Like the tod command.
   server.clear_objects() Deletes every placed object.
+  server.run(line)       Any server command, as the console runs it; returns
+                         the server's answer.
+  server.store(key [, value])   The value saved under key (nil: none), or saves
+                         a string, number or boolean (nil deletes it). Kept in
+                         data\scripts.json across reloads and restarts.
+  server.role(who [, name])   The player's role (data/roles.json), or gives one
+                         (nil: none) like the role command; the server's answer.
   server.on(event, function)   Runs on "join" (player), "leave" (player) or
                          "chat" (player, text). Handlers run just after it happens.
   server.after(seconds, function), server.every(seconds, function)

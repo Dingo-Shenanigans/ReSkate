@@ -226,6 +226,8 @@ std::filesystem::path roles_file(const ServerConfig &config);
 // The roles a file's text holds (throws what is wrong with it), and the text for these.
 Roles read_roles(std::string_view text);
 std::string roles_text(const Roles &roles);
+// Writes `text` to a temporary file first, so a crash mid-write never leaves half a file.
+void write_file(const std::filesystem::path &file, const std::string &text);
 // How many players may be on beyond max_players: one for each reserved player and each player
 // whose role has a reserved slot.
 std::size_t extra_slots(const ServerConfig &config) noexcept;

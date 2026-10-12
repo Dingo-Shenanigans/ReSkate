@@ -756,6 +756,7 @@ void Host::send_roster() {
     p.server_votes = enabled_votes();
     p.server_polls = static_cast<std::uint8_t>(enabled_polls());
     p.server_custom_votes = custom_votes();
+    p.server_commands = scripts_.listed();
     p.announcement = announcement_;
     if (announcement_.id)
         p.announcement.seconds = static_cast<std::uint16_t>(announcement_until_ > now_ ? (announcement_until_ - now_ + 999999) / 1000000 : 0);

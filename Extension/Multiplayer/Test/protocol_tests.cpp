@@ -624,9 +624,10 @@ void object_codec() {
     served.server_polls = static_cast<std::uint8_t>(ServerPolls::everyone);
     served.server_custom_votes = {{"restart", "Reload the current map", {}}, {"noclip", "", {"on", "off"}}};
     served.announcement = {4, 12, "Tournament starts in 10 minutes!"};
+    served.server_commands = {{"goto", "Teleport to a saved spot", false, {}}, {"bring", "", true, {}}, {"mute", "", false, "mod"}};
     const auto extras = decode(encode(served));
     check(extras && extras->server_polls == served.server_polls && extras->server_custom_votes == served.server_custom_votes &&
-              extras->announcement == served.announcement,
+              extras->announcement == served.announcement && extras->server_commands == served.server_commands,
           "Polls, custom votes or the announcement failed to round-trip");
     auto bad_extras = served;
     bad_extras.server_custom_votes[0].name = "Restart now";
@@ -634,6 +635,15 @@ void object_codec() {
     bad_extras = served;
     bad_extras.server_custom_votes.resize(server_custom_vote_limit + 1, served.server_custom_votes[0]);
     check(reject(bad_extras), "Too many custom votes were encoded");
+    bad_extras = served;
+    bad_extras.server_commands[0].name = "Go To";
+    check(reject(bad_extras), "A script command name with capitals and a space was encoded");
+    bad_extras = served;
+    bad_extras.server_commands.resize(server_command_limit + 1, served.server_commands[0]);
+    check(reject(bad_extras), "Too many script commands were encoded");
+    bad_extras = served;
+    bad_extras.server_commands[2].role = "Mod Team";
+    check(reject(bad_extras), "A script command role with capitals and a space was encoded");
     bad_extras = served;
     bad_extras.server_polls = 3;
     check(reject(bad_extras), "An unknown poll setting was encoded");

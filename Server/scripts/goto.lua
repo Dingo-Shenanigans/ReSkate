@@ -10,4 +10,4 @@ server.command("goto", function(player, args)
     return "You can't be teleported until your game has loaded the map."
   end
   return "Teleported to " .. target.name .. "."
-end)
+end, {description = "Teleport next to a player"})

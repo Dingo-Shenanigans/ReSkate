@@ -26,6 +26,7 @@ constexpr float world_limit = 1e6f;             // metres from the origin: anyth
 constexpr std::size_t max_handlers = 64; // of each event
 constexpr std::size_t max_timers = 256;
 constexpr std::size_t max_events = 64; // waiting for tick(); a burst beyond it is not reported
+constexpr std::size_t max_store_keys = 4096, max_store_key = 128, max_store_value = 4096; // server.store
 
 std::uint64_t clock_us() {
     using namespace std::chrono;
@@ -59,12 +60,30 @@ int no_player(lua_State *lua) {
 } // namespace
 
 Scripts::~Scripts() {
+    running_ = false;
+    tick_store(); // a store since the last tick
     if (lua_) lua_close(lua_);
 }
 
 std::string Scripts::load(const std::filesystem::path &folder) {
     if (running_) return "Scripts cannot be reloaded while one is running.\n";
     folder_ = folder;
+    if (store_file_.empty()) {
+        // Next to the bans (data\bans.json). A file that does not parse is set aside, never overwritten.
+        store_file_ = folder.parent_path() / "data" / "scripts.json";
+        std::ifstream in(store_file_, std::ios::binary);
+        std::ostringstream saved;
+        saved << in.rdbuf();
+        try {
+            if (in && saved.tellp() > 0) store_ = Json::parse(saved.str());
+            if (!store_.is_object()) throw std::runtime_error("not an object");
+        } catch (const std::exception &e) {
+            std::error_code ignored;
+            std::filesystem::rename(store_file_, std::filesystem::path(store_file_).concat(".bad"), ignored);
+            host_.log_(std::string("[script] data\\scripts.json could not be read (") + e.what() + "); set aside as scripts.json.bad.");
+            store_ = Json::object();
+        }
+    }
     if (lua_) lua_close(lua_); // loading again starts over
     lua_ = nullptr;
     commands_.clear();
@@ -125,9 +144,12 @@ std::string Scripts::load(const std::filesystem::path &folder) {
 }
 
 // An admin-only command is a role's like any server command (roles.h): "*" gives it, or the
-// role lists it by name. The console runs all of them.
+// role lists it by name. One made for a role ({role = "vip"}) also runs for that role's players.
+// The console runs all of them.
 bool Scripts::allowed(const Command &command, std::string_view name, std::uint64_t caller) const {
-    return !command.admin || !caller || host_.can(caller, name);
+    if (!caller || (!command.admin && command.role.empty())) return true;
+    if (const auto *role = host_.role_of(caller); role && !command.role.empty() && role->name == command.role) return true;
+    return host_.can(caller, name);
 }
 
 std::string Scripts::help(std::uint64_t caller) const {
@@ -135,6 +157,12 @@ std::string Scripts::help(std::uint64_t caller) const {
     for (const auto &[name, command] : commands_)
         if (allowed(command, name, caller)) names += (names.empty() ? "" : ", ") + name;
     return names;
+}
+
+std::vector<multiplayer::ServerCommand> Scripts::listed() const {
+    std::vector<multiplayer::ServerCommand> list;
+    for (const auto &[name, command] : commands_) list.push_back({name, command.description, command.admin, command.role});
+    return list;
 }
 
 std::optional<std::string> Scripts::run(std::string_view verb, std::uint64_t caller, std::string_view args) {
@@ -169,7 +197,18 @@ void Scripts::happened(Event event, std::uint64_t id, std::string name, std::str
     happened_.push_back({event, id, std::move(name), std::move(text)});
 }
 
+void Scripts::tick_store() {
+    if (!store_dirty_ || running_) return;
+    store_dirty_ = false;
+    try {
+        write_file(store_file_, store_.dump(2));
+    } catch (const std::exception &e) {
+        host_.log_(std::string("[script] server.store not saved: ") + e.what());
+    }
+}
+
 void Scripts::tick() {
+    tick_store();
     if (!lua_ || running_) return;
     static constexpr const char *names[] = {"join", "leave", "chat"};
     std::string why;
@@ -358,27 +397,39 @@ int Scripts::open(lua_State *state) {
         return 1;
     };
     static constexpr luaL_Reg api[] = {
-        // server.command(name, function(player, args) ... end [, {admin = true}])
+        // server.command(name, function(player, args) ... end [, {admin = true, description = "..."}])
         {"command",
          [](lua_State *lua) -> int {
              return guarded(lua, [&] {
                  auto name = lower(text(lua, 1));
                  luaL_checktype(lua, 2, LUA_TFUNCTION);
                  bool admin{};
+                 std::string description, role;
                  if (!lua_isnoneornil(lua, 3)) {
                      luaL_checktype(lua, 3, LUA_TTABLE);
                      lua_getfield(lua, 3, "admin");
                      admin = lua_toboolean(lua, -1);
+                     lua_getfield(lua, 3, "description");
+                     if (!lua_isnil(lua, -1)) description = text(lua, -1);
+                     lua_getfield(lua, 3, "role");
+                     if (!lua_isnil(lua, -1)) role = lower(text(lua, -1));
+                     lua_pop(lua, 3);
                  }
-                 // What a player can type after the slash.
-                 const auto allowed = [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'; };
-                 if (name.empty() || name.size() > 32 || !std::all_of(name.begin(), name.end(), allowed))
+                 // Players see the name and description in their "/" list and /help.
+                 if (!multiplayer::valid_server_command_name(name))
                      return luaL_argerror(lua, 1, "a command name is 1 to 32 letters, digits, - or _");
+                 if (!role.empty() && !multiplayer::valid_server_command_name(role))
+                     return luaL_argerror(lua, 3, "a role is 1 to 32 letters, digits, - or _");
+                 if (!multiplayer::valid_server_command({name, description, admin, role}))
+                     return luaL_argerror(lua, 3, "a description is one line of at most 80 bytes");
                  auto &commands = self(lua).commands_;
+                 const auto old = commands.find(name);
+                 if (old == commands.end() && commands.size() >= multiplayer::server_command_limit)
+                     return luaL_error(lua, "too many commands (%d)", static_cast<int>(multiplayer::server_command_limit));
                  lua_pushvalue(lua, 2);
                  const int function = luaL_ref(lua, LUA_REGISTRYINDEX);
-                 if (const auto old = commands.find(name); old != commands.end()) luaL_unref(lua, LUA_REGISTRYINDEX, old->second.function);
-                 commands[name] = {function, admin};
+                 if (old != commands.end()) luaL_unref(lua, LUA_REGISTRYINDEX, old->second.function);
+                 commands[name] = {function, admin, std::move(description), std::move(role)};
                  return 0;
              });
          }},
@@ -532,6 +583,78 @@ int Scripts::open(lua_State *state) {
         {"tod", [](lua_State *lua) -> int { return guarded(lua, [&] { return console(lua, "tod " + clean_chat_text(text(lua, 1))); }); }},
         // server.clear_objects(): deletes every placed object; the server's answer.
         {"clear_objects", [](lua_State *lua) -> int { return guarded(lua, [&] { return console(lua, "clear-objects"); }); }},
+        // server.run(line): any server command, as the console runs it; the server's answer.
+        {"run", [](lua_State *lua) -> int { return guarded(lua, [&] { return console(lua, clean_chat_text(text(lua, 1))); }); }},
+        // server.store(key): the value saved under `key`, or nil. server.store(key, value): saves a
+        // string, number or boolean (nil deletes it); kept across reloads and restarts.
+        {"store",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto key = text(lua, 1);
+                 if (key.empty() || key.size() > max_store_key) return luaL_argerror(lua, 1, "a key is 1 to 128 bytes");
+                 auto &items = scripts.store_.items();
+                 const auto found = items.find(key);
+                 if (lua_gettop(lua) < 2) {
+                     if (found == items.end()) lua_pushnil(lua);
+                     else if (const auto &value = found->second; value.is_string()) lua_pushlstring(lua, value.string().data(), value.string().size());
+                     else if (value.is_boolean()) lua_pushboolean(lua, value.get<bool>());
+                     else if (value.is_number_integer()) lua_pushinteger(lua, value.get<lua_Integer>());
+                     else if (value.is_number()) lua_pushnumber(lua, value.get<lua_Number>());
+                     else lua_pushnil(lua); // something else written into the file by hand
+                     return 1;
+                 }
+                 Json value;
+                 switch (lua_type(lua, 2)) {
+                 case LUA_TNIL:
+                     if (found != items.end()) {
+                         items.erase(found);
+                         scripts.store_dirty_ = true;
+                     }
+                     return 0;
+                 case LUA_TBOOLEAN: value = lua_toboolean(lua, 2) != 0; break;
+                 case LUA_TNUMBER:
+                     if (lua_isinteger(lua, 2)) value = static_cast<std::int64_t>(lua_tointeger(lua, 2));
+                     else if (const auto number = lua_tonumber(lua, 2); std::isfinite(number)) value = number;
+                     else return luaL_argerror(lua, 2, "not a finite number");
+                     break;
+                 case LUA_TSTRING:
+                     if (text(lua, 2).size() > max_store_value) return luaL_argerror(lua, 2, "a string of at most 4096 bytes");
+                     value = text(lua, 2);
+                     break;
+                 default: return luaL_argerror(lua, 2, "a string, number, boolean or nil");
+                 }
+                 // The file is JSON: refuse here what could not be saved (text that is not UTF-8).
+                 try {
+                     (void)Json{Json(key), value}.dump();
+                 } catch (const std::exception &) {
+                     return luaL_error(lua, "server.store keeps UTF-8 text only");
+                 }
+                 if (found == items.end() && items.size() >= max_store_keys)
+                     return luaL_error(lua, "too many stored keys (%d)", static_cast<int>(max_store_keys));
+                 scripts.store_[key] = std::move(value);
+                 scripts.store_dirty_ = true;
+                 return 0;
+             });
+         }},
+        // server.role(who): the player's role (roles.h), or nil. server.role(who, name): gives it (nil
+        // gives none) as the console's "role" command does, so data/roles.json and the players' games
+        // follow; the server's answer. Takes an offline SteamID64 too.
+        {"role",
+         [](lua_State *lua) -> int {
+             return guarded(lua, [&] {
+                 auto &scripts = self(lua);
+                 const auto id = lua_isinteger(lua, 1) ? static_cast<std::uint64_t>(lua_tointeger(lua, 1)) : scripts.target(lua, 1);
+                 if (!id) return no_player(lua);
+                 if (lua_gettop(lua) < 2) {
+                     if (const auto *role = scripts.host_.role_of(id)) lua_pushlstring(lua, role->name.data(), role->name.size());
+                     else lua_pushnil(lua);
+                     return 1;
+                 }
+                 const auto name = lua_isnil(lua, 2) ? std::string("none") : clean_chat_text(text(lua, 2));
+                 return console(lua, "role " + std::to_string(id) + " " + name);
+             });
+         }},
         // server.log(...), and print(...): a line in the server's log.
         {"log",
          [](lua_State *lua) -> int {

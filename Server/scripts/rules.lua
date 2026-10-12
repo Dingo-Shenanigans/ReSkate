@@ -7,4 +7,4 @@ local rules = {
 
 server.command("rules", function()
   return table.concat(rules, "\n")
-end)
+end, {description = "This server's rules"})
