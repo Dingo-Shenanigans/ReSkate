@@ -1003,16 +1003,20 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const auto *root = native_tools::level(m, native_tools::root_asset);
         const bool travel = root && root->native_registered && root->can_load && m.can_queue_load && !multiplayer_controls_level(mp) && cb.queue_load;
         Scroller list(ui, hash("maps-list", 30), ImVec2(a.x, a.y + 96 * u), ImVec2(a.x + list_width, z.y));
+        const auto section = [&](const char *name) {
+            bool divider_drawn{};
+            const float divider = list.next(72 * u, between, divider_drawn);
+            if (!divider_drawn) return;
+            draw->AddLine(ImVec2(a.x, divider + 24 * u), ImVec2(a.x + list_width - 20 * u, divider + 24 * u),
+                          IM_COL32(235, 235, 235, 120), 2 * u);
+            draw->AddText(ui.bold, 26 * u, ImVec2(a.x + 24 * u, divider + 34 * u), theme::muted, name);
+        };
+        if (!listed.empty() && !listed.front()->custom) section("OFFICIAL MAPS");
         bool custom_section{};
         for (const auto *entry : listed) {
             if (entry->custom && !custom_section) {
                 custom_section = true;
-                bool divider_drawn{};
-                const float divider = list.next(72 * u, between, divider_drawn);
-                if (divider_drawn) {
-                    draw->AddLine(ImVec2(a.x, divider + 24 * u), ImVec2(a.x + list_width - 20 * u, divider + 24 * u), IM_COL32(235, 235, 235, 120), 2 * u);
-                    draw->AddText(ui.bold, 26 * u, ImVec2(a.x + 24 * u, divider + 34 * u), theme::muted, "CUSTOM MAPS");
-                }
+                section("CUSTOM MAPS");
             }
             const auto id = hash("level", hash(entry->asset));
             const bool can = travel && entry->can_load && entry != root;
