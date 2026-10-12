@@ -1294,10 +1294,6 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (hit.press) action();
     };
 
-    const ImVec2 title_a(a.x - 24 * u, a.y - 250 * u), title_z(a.x + 980 * u, a.y - 92 * u);
-    ui.draw->AddRectFilled(title_a, title_z, IM_COL32(13, 13, 14, 235));
-    ui.draw->AddText(ui.heading, 82 * u, ImVec2(a.x, a.y - 238 * u), theme::paper, "RESKATE HUB");
-
     std::vector<const Level *> levels;
     for (const auto &entry : m.levels)
         if (native_tools::listed(entry)) levels.push_back(&entry);
