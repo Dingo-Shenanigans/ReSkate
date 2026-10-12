@@ -900,6 +900,12 @@ template<std::size_t N> float stepped(float current, const std::array<float, N> 
     return steps.front();
 }
 std::string whole(float value, const char *unit = "") { return std::to_string(static_cast<int>(value + .5f)) + unit; }
+std::string decimal(float value, unsigned places = 2) {
+    auto text = std::to_string(value);
+    const auto point = text.find('.');
+    if (point != std::string::npos && point + places + 1 < text.size()) text.resize(point + places + 1);
+    return text;
+}
 
 // A column of settings that scrolls: each a row with its name and what it is now.
 struct Column {
@@ -1120,9 +1126,51 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         list.title("CAMERA");
         const bool camera = d.available && d.camera_available && debugging, edit = d.available && debugging;
         if (list.setting("First person", on_off(d.first_person), camera)) debug({DebugAction::set_first_person, !d.first_person});
+        {
+            constexpr std::array<float, 9> fovs{40.f, 50.f, 55.f, 60.f, 70.f, 80.f, 90.f, 100.f, 120.f};
+            const float current = d.first_person_fov > 0 ? d.first_person_fov : d.camera_fov;
+            if (const int way = list.adjust("First-person FOV", whole(current, " deg"), edit))
+                debug({DebugAction::set_first_person_fov, false, stepped(current, fovs, way)});
+        }
         if (list.setting("True first person", on_off(d.first_person_arm.stabilize), edit)) debug({DebugAction::set_first_person_stabilize, !d.first_person_arm.stabilize});
+        {
+            constexpr std::array<float, 6> strengths{0.f, 20.f, 40.f, 60.f, 80.f, 100.f};
+            const auto strength = [&](const char *name, float value, DebugAction action) {
+                if (const int way = list.adjust(name, whole(value, "%"), edit)) debug({action, false, stepped(value, strengths, way)});
+            };
+            strength("View smoothing", d.first_person_arm.smoothing, DebugAction::set_first_person_smoothing);
+            strength("Head nod", d.first_person_arm.head_pitch, DebugAction::set_first_person_head_pitch);
+            strength("Head tilt", d.first_person_arm.head_roll, DebugAction::set_first_person_head_roll);
+            strength("Head bob", d.first_person_arm.bob, DebugAction::set_first_person_bob);
+        }
+        if (list.setting("Follow flips and bails", on_off(d.first_person_arm.follow_flips), edit))
+            debug({DebugAction::set_first_person_follow_flips, !d.first_person_arm.follow_flips});
         if (list.setting("Third person on foot", on_off(d.first_person_arm.board_only), edit)) debug({DebugAction::set_first_person_board_only, !d.first_person_arm.board_only});
+        list.title("FIRST-PERSON POSITION");
+        if (list.setting("Spring arm", on_off(d.first_person_arm.enabled), edit))
+            debug({DebugAction::set_first_person_spring, !d.first_person_arm.enabled});
+        {
+            constexpr std::array<float, 13> offsets{-3.f, -2.f, -1.f, -.5f, -.25f, -.1f, 0.f, .1f, .25f, .5f, 1.f, 2.f, 3.f};
+            constexpr std::array<float, 13> angles{-180.f, -90.f, -45.f, -20.f, -10.f, -5.f, 0.f, 5.f, 10.f, 20.f, 45.f, 90.f, 180.f};
+            const auto adjust = [&](const char *name, float value, const auto &steps, DebugAction action, const char *unit) {
+                if (const int way = list.adjust(name, decimal(value) + unit, edit)) debug({action, false, stepped(value, steps, way)});
+            };
+            adjust("Camera right", d.first_person_arm.offset[0], offsets, DebugAction::set_first_person_offset_x, " m");
+            adjust("Camera up", d.first_person_arm.offset[1], offsets, DebugAction::set_first_person_offset_y, " m");
+            adjust("Camera forward", d.first_person_arm.offset[2], offsets, DebugAction::set_first_person_offset_z, " m");
+            adjust("Camera pitch", d.first_person_arm.rotation[0], angles, DebugAction::set_first_person_pitch, " deg");
+            adjust("Camera yaw", d.first_person_arm.rotation[1], angles, DebugAction::set_first_person_yaw, " deg");
+            adjust("Camera roll", d.first_person_arm.rotation[2], angles, DebugAction::set_first_person_roll, " deg");
+        }
+        if (list.setting("Reset first-person camera", {}, edit)) debug({DebugAction::reset_first_person_arm});
+        list.title("FREECAM");
         if (list.setting("Freecam", on_off(d.free_camera), camera)) debug({DebugAction::set_free_camera, !d.free_camera});
+        {
+            constexpr std::array<float, 10> fovs{0.f, 40.f, 50.f, 55.f, 60.f, 70.f, 80.f, 90.f, 100.f, 120.f};
+            const std::string value = d.free_camera_fov > 0 ? whole(d.free_camera_fov, " deg") : "Game default";
+            if (const int way = list.adjust("Freecam FOV", value, edit))
+                debug({DebugAction::set_free_camera_fov, false, stepped(d.free_camera_fov, fovs, way)});
+        }
         {
             constexpr std::array<float, 7> speeds{.6f, 3.f, 5.f, 15.f, 60.f, 300.f, 1500.f};
             const auto text = std::to_string(d.camera_speed);

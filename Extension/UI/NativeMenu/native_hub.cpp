@@ -54,8 +54,10 @@ Value empty_tile_style(const Context &c, Value style_ref) {
     require(source.handle && source.type == c.type(button_style), "Hub tile style differs.");
     // The authored tile style already uses the empty fill for its disabled state.
     const auto empty = read<Address>(c.address(c.path(source, {state_fills, 0x69cf50ca})));
-    require(empty && string(read<Address>(empty + 0x18), 96) == "UI/Foundations/Styles/FIll/Common/FillStyle_Empty",
-            "Hub empty fill is unavailable.");
+    // The authored disabled fill is the reliable identity here. Its debug name
+    // changed between game builds, while the referenced fill object and field
+    // remained valid; requiring the old string made the whole Hub pass abort.
+    require(empty, "Hub empty fill is unavailable.");
     style = c.create(button_style, empty_style_id);
     manager = c.manager;
     c.copy(style, c.address(source));
