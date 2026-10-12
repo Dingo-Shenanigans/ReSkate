@@ -1,6 +1,8 @@
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 using namespace dingosdk;
 using namespace dingosdk::native_tools;
@@ -124,6 +126,55 @@ int main() {
         model.hall_of_meat = {true, true};
         activate(state, model, cb, "hall-of-meat", "");
         check(meat_row().title == "Hall of Meat: On" && capture.command == "hallofmeat 0", "and off again");
+        const auto player_row = [&](std::string_view id) -> std::optional<Row> {
+            const auto page = render(state, model, cb, player_section);
+            const auto found = find(page.main, id);
+            return found == page.main.end() ? std::nullopt : std::optional<Row>(*found);
+        };
+        model.style.enabled = false;
+        check(player_row("style") && player_row("style")->title == "Style: Off", "Style has a switch, and it starts off");
+        activate(state, model, cb, "style", "");
+        check(player_row("style")->command == "style" && capture.command == "style 1", "Style turns on");
+        model.style.enabled = true;
+        model.style.available = false;
+        check(player_row("style")->command.empty(), "Style is greyed out while it is unavailable");
+        model.style.available = true;
+        activate(state, model, cb, "style", "");
+        check(player_row("style")->title == "Style: On" && capture.command == "style 0", "and off again");
+        {
+            const auto queue = std::exchange(cb.queue_console_command, nullptr);
+            check(player_row("style")->command.empty(), "Style is greyed out without the console");
+            cb.queue_console_command = queue;
+        }
+        model.style.enabled = false;
+        {
+            model.style.enabled = false;
+            check(!player_row("style-preset"), "Style starts without its preset row");
+            model.style.enabled = true;
+            model.style.preset = "default";
+            model.style.presets = {"default"};
+            check(player_row("style-preset") && player_row("style-preset")->title == "Style preset: default" &&
+                      player_row("style-preset")->command.empty(),
+                  "The preset row names the preset in use, and is greyed out with no other preset");
+            model.style.presets = {"alpha", "default", "street"};
+            capture.command.clear();
+            activate(state, model, cb, "style-preset", "");
+            check(player_row("style-preset") && player_row("style-preset")->command == "style-preset" &&
+                      capture.command == "style preset load street",
+                  "The preset row loads the next preset");
+            model.style.preset = "street";
+            activate(state, model, cb, "style-preset", "");
+            check(capture.command == "style preset load alpha", "and after the last, the first");
+            model.style.available = false;
+            check(player_row("style-preset") && player_row("style-preset")->command.empty(),
+                  "The preset row is greyed out while style is unavailable");
+            model.style.available = true;
+            const auto queue = std::exchange(cb.queue_console_command, nullptr);
+            check(player_row("style-preset") && player_row("style-preset")->command.empty(), "and without the console");
+            cb.queue_console_command = queue;
+            model.style.preset.clear(), model.style.presets.clear();
+        }
+        model.style.enabled = false;
         // Road Rash's switches sit there too; its blood and its healing wait for it to be on.
         const auto rash_row = [&](std::string_view id) {
             const auto page = render(state, model, cb, player_section);

@@ -14,6 +14,7 @@ Entry variable(std::string name, std::string description, Group group, Argument 
 State boolean_state(bool available, bool value, std::string reason = {}, std::string detail = {});
 void register_movement_commands(Commands &);
 void register_ai_commands(Commands &);
+void register_style_commands(Commands &);
 void register_settings_commands(Commands &);
 void register_world_commands(Commands &);
 void register_graphics_commands(Commands &);

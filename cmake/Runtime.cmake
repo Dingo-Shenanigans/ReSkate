@@ -10,6 +10,7 @@ add_library(dingosdk_runtime SHARED
     Runtime/menu_entry_hook.cpp
     Engine/Game/Abi/native_data.cpp
     Extension/Console/commands.cpp
+    Extension/Console/command_entries.cpp
     Extension/Console/perf_commands.cpp
     Extension/Skater/console_commands.cpp
     Extension/Multiplayer/console_commands.cpp
@@ -135,6 +136,14 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/client_first_person.cpp
     Extension/Skater/client_debug.cpp
     Extension/Skater/ai_skaters.cpp
+    Extension/Style/style.cpp
+    Extension/Style/style_edits.cpp
+    Extension/Style/style_layer.cpp
+    Extension/Style/style_render.cpp
+    Extension/Style/style_commands.cpp
+    Extension/Style/style_file.cpp
+    Extension/Style/style_presets.cpp
+    Extension/Style/style_skeleton.cpp
     Extension/Skater/no_bail.cpp
     Extension/Skater/grind_exit_commands.cpp
     Extension/Skater/grind_exit_control.cpp

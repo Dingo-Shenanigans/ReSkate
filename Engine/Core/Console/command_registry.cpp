@@ -54,7 +54,7 @@ std::string lower(std::string_view text) {
             c = static_cast<char>(c + ('a' - 'A'));
     return result;
 }
-bool equal(std::string_view a, std::string_view b) {
+bool equal(std::string_view a, std::string_view b) noexcept {
     return a.size() == b.size() && ascii_case_insensitive_starts_with(a, b);
 }
 const char *group_name(Group group) noexcept {

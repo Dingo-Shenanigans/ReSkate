@@ -36,6 +36,7 @@
 #include "Extension/Settings/gameplay_settings_override.h"
 #include "Extension/Settings/named_settings.h"
 #include "Extension/Skater/ai_skaters.h"
+#include "Extension/Style/style.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -90,6 +91,7 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     const auto missions = dingosdk::local_profile_missions();
     std::vector<dingosdk::overlay::MissionRow> rows;
     for (const auto& row : missions.rows) rows.push_back({row.id, row.group, row.completed});
+    auto style = dingosdk::style::model();
     std::lock_guard lock(r.mutex);
     r.model.world = std::move(world);
     r.model.world_controls = std::move(controls);
@@ -100,6 +102,7 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     r.model.object_persistence = std::move(object_persistence);
     r.model.editor = std::move(editor);
     r.model.bindings = std::move(bindings);
+    r.model.style = std::move(style);
     r.model.missions_available = missions.available;
     r.model.mission_feedback = missions.feedback;
     r.model.missions = std::move(rows);
@@ -1022,6 +1025,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.world_controls = dingosdk::local_profile_world_controls();
     dingosdk::update_local_graphics_controls();
     model.graphics = dingosdk::local_profile_graphics_controls();
+    model.style = dingosdk::style::model();
     model.object_persistence = dingosdk::local_profile_object_persistence();
     // The park list is a disk walk of the Mods folder: only while the menu or the editor shows it.
     dingosdk::set_park_mod_list_visible(r.debug_model.park_editor ||
@@ -1342,6 +1346,10 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/AI skaters");
             dingosdk::ai_skaters::tick(r.base,client,multiplayer_ready);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/Style");
+            dingosdk::style::on_client_tick(r.base, client, multiplayer_ready);
         }
         {
             DINGO_PROFILE_ZONE("tick/trainer");

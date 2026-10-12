@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 
 using namespace dingosdk::frostbite;
 namespace {
@@ -117,6 +118,41 @@ void a_skeleton_reads() {
     try { (void)read_skeleton(*std::get<std::shared_ptr<ebx::Object>>(backwards.data)); } catch (const std::runtime_error&) { refused = true; }
     check(refused, "a parent after its child");
 }
+
+ebx::Value name_table(std::string_view names) {
+    ebx::Value::Array bytes;
+    for (const char c : names) bytes.push_back({std::int64_t{c}});
+    return {bytes};
+}
+ebx::Value ant_joint(std::uint64_t name, std::int64_t parent) { return object({{"Name", {name}}, {"Parent", {parent}}}); }
+bool ant_refused(const ebx::Value& asset) {
+    try {
+        (void)read_ant_skeleton(*std::get<std::shared_ptr<ebx::Object>>(asset.data));
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+void an_ant_skeleton_reads() {
+    using namespace std::string_view_literals;
+    const auto table = name_table("Reference\0Hips\0"sv);
+    const auto asset = object({{"Joints", {ebx::Value::Array{ant_joint(0, -1), ant_joint(10, 0)}}}, {"NameTable", table}});
+    const auto skeleton = read_ant_skeleton(*std::get<std::shared_ptr<ebx::Object>>(asset.data));
+    check(skeleton.names == std::vector<std::string>{"Reference", "Hips"} && skeleton.parents == std::vector<int>{-1, 0},
+          "an AntSkeletonAsset's names and parents");
+    check(ant_refused(object({{"Joints", {ebx::Value::Array{ant_joint(99, -1)}}}, {"NameTable", table}})),
+          "a name outside the name table");
+    check(ant_refused(object({{"Joints", {ebx::Value::Array{ant_joint(0, -1)}}}, {"NameTable", name_table("Reference"sv)}})),
+          "a name with no end");
+    check(ant_refused(object({{"Joints", {ebx::Value::Array{ant_joint(0, 1), ant_joint(10, -1)}}}, {"NameTable", table}})),
+          "an ant joint's parent after it");
+    check(ant_refused(object({{"Joints", {ebx::Value::Array{}}}, {"NameTable", table}})), "an asset with no joints");
+    ebx::Value::Array wide_bytes;
+    for (const char c : "Reference\0"sv) wide_bytes.push_back({std::int64_t{c}});
+    wide_bytes.front() = {std::int64_t{128}};
+    check(ant_refused(object({{"Joints", {ebx::Value::Array{ant_joint(0, -1)}}}, {"NameTable", ebx::Value{wide_bytes}}})),
+          "a name table entry above 127");
+}
 }
 
 int main() {
@@ -125,6 +161,7 @@ int main() {
         four_influences_are_enough();
         a_bad_mesh_is_refused();
         a_skeleton_reads();
+        an_ant_skeleton_reads();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';
         return 1;

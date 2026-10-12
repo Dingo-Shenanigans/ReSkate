@@ -11,6 +11,7 @@
 #include "Engine/Game/Settings/named_settings.h"
 #include "Engine/Game/Multiplayer/session_model.h"
 #include "Engine/Game/UI/menu_scale.h"
+#include "Extension/Style/style_model.h"
 #include "Engine/Game/Skater/first_person_spring.h"
 
 #include "Engine/Core/Console/console_entry.h"
@@ -271,6 +272,7 @@ struct Model {
     bool steam_offline = false;
     ControllerBindingsModel bindings;
     GraphicsControlsModel graphics;
+    style::StyleModel style;
     MultiplayerModel multiplayer;
     // Host bookkeeping: the revision each part of this copy was taken at (zero:
     // never). A reader that hands its previous copy back to read_model has only

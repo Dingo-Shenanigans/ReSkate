@@ -32,6 +32,24 @@ inline bool peek_bytes(std::uintptr_t address, void* destination, std::size_t si
 }
 template<class T> requires std::is_trivially_copyable_v<T>
 bool peek(std::uintptr_t address, T& value) noexcept { return peek_bytes(address, &value, sizeof(value)); }
+inline bool poke_bytes(std::uintptr_t address, const void* source, std::size_t size) noexcept {
+    if (!source || !size || size > highest_user_address || address < 0x10000 ||
+        address > highest_user_address - size) return false;
+    __try {
+        std::memcpy(reinterpret_cast<void*>(address), source, size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+template<class T> requires std::is_trivially_copyable_v<T>
+bool poke(std::uintptr_t address, const T& value) noexcept { return poke_bytes(address, &value, sizeof(value)); }
+inline std::uintptr_t peek_pointer(std::uintptr_t object, std::uintptr_t offset = 0) noexcept {
+    std::uintptr_t value{};
+    if (object < 0x10000 || offset > highest_user_address || object > highest_user_address - offset ||
+        !peek(object + offset, value) || value < 0x10000 || value > highest_user_address - 0x10000) return 0;
+    return value;
+}
 
 // A NUL-terminated string copied the same way: the length (terminator written at destination[length]),
 // or -1 if it is unreadable or has no terminator within capacity bytes. Reads byte by byte, so it never
