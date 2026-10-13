@@ -69,6 +69,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/console_commands.cpp
     Extension/Settings/job_spin.cpp
     Extension/Settings/engine_tweaks.cpp
+    Extension/Rendering/cull_batch.cpp
+    Extension/Rendering/cull_batch_core.cpp
     Extension/Settings/replay_guard.cpp
     Extension/World/load_error_guard.cpp
     Extension/Music/external_player.cpp

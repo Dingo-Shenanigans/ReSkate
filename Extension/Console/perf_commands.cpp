@@ -2,6 +2,7 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/engine_tweaks.h"
 #include "Extension/Settings/job_spin.h"
+#include "Extension/Rendering/cull_batch.h"
 #include "Extension/Music/spotify_station.h"
 #include "Extension/Music/music_inject.h"
 #include "Extension/Music/spotify_web.h"
@@ -463,6 +464,25 @@ void register_perf_commands(Commands& registry) {
         out(ui_pointer::status());
     };
     registry.add(std::move(pointer));
+
+    auto batch_size = argument("0|1|2|4|8|16|32", Type::unsigned_integer);
+    batch_size.minimum = 0;
+    batch_size.maximum = 32;
+    auto cull = variable("perf cullbatch", "Flat culling work claims per batch (default 8; 0 or 1 uses native one-item claims)",
+        Group::engine, batch_size);
+    cull.execution = Execution::local;
+    cull.inspect = [](const Model&) {
+        return State{cull_batch::available(), std::to_string(cull_batch::size()), {}, cull_batch::status(), cull_batch::size() != 8};
+    };
+    cull.run = [](const Model&, const Values& args, const Output& out) {
+        if (!cull_batch::set_size(static_cast<unsigned>(std::get<std::uint64_t>(args[0]))))
+            return out("error: Use 0, 1, 2, 4, 8, 16 or 32; culling hooks must be available.");
+        out(cull_batch::status());
+    };
+    cull.reset = [](const Model&, const Output& out) {
+        out(cull_batch::set_size(8) ? cull_batch::status() : "error: Culling hooks are unavailable.");
+    };
+    registry.add(std::move(cull));
 
     // Engine tweaks (Extension/Settings/engine_tweaks.h): mainsleep and dirtyskip start on, the
     // others off; nothing is saved. Measure each against stock with `perf sample 8 all`.
