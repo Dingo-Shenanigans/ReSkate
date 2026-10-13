@@ -77,6 +77,11 @@ a public server and hosting a lobby. Steam Deck should work the same way but is 
 custom map and then join a server on another map, the screen can stay black
 ([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
 
+### macOS (NotProton / CrossOver)
+
+Steam for Mac with a Wine-based compatibility tool works too; see [MACOS-SETUP.md](MACOS-SETUP.md)
+for the launch option and the build notes.
+
 ### Controls
 
 | Key | Opens |

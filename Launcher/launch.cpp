@@ -243,7 +243,24 @@ fs::path proton_steam_directory() {
     if (!dos_path) return {};
     fs::path directory(dos_path);
     HeapFree(GetProcessHeap(), 0, dos_path);
+    // macOS: the path is the bundle's Steam.AppBundle/Steam/Contents/MacOS, not the
+    // data root holding config/. Walk up to the directory that has loginusers.vdf.
+    std::error_code ignored;
+    for (auto candidate = directory; candidate.has_parent_path() && candidate != candidate.root_path();
+         candidate = candidate.parent_path())
+        if (fs::exists(candidate / L"config" / L"loginusers.vdf", ignored)) return candidate;
     return directory;
+}
+
+// True when Steam's native client (Linux, or macOS via NotProton) started this
+// process through a compatibility tool. Its real process is outside the Wine
+// prefix, so ActiveProcess\pid is a stand-in at best and says nothing about it.
+bool native_client_via_compat_tool() {
+    if (!GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "wine_get_dos_file_name")) return false;  // real Windows
+    wchar_t value[8]{};
+    return GetEnvironmentVariableW(L"STEAM_COMPAT_CLIENT_INSTALL_PATH", nullptr, 0) ||
+           (GetEnvironmentVariableW(L"SteamClientLaunch", value, 8) == 1 && value[0] == L'1' &&
+            GetEnvironmentVariableW(L"SteamAppId", nullptr, 0));
 }
 
 // The Steam client's directory, where config/loginusers.vdf lists its accounts.
@@ -536,6 +553,8 @@ bool relaunch_without_mangohud(const fs::path& self, const std::vector<std::wstr
 }
 
 std::wstring steam_offline_reason() {
+    if (native_client_via_compat_tool())
+        return active_steam_id() ? std::wstring{} : L"the native Steam client's config/loginusers.vdf lists no account";
     const auto pid = registry_dword(steam_process_key, L"pid");
     if (!pid || !*pid) return L"no Steam client is registered as running (ActiveProcess pid is 0)";
     if (!active_steam_id()) return L"Steam reports no signed-in account (ActiveProcess ActiveUser is 0)";
