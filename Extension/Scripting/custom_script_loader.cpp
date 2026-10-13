@@ -11,10 +11,44 @@
 
 namespace dingosdk {
 namespace {
+// Custom scripts are switched off for now: nothing uses them, and the folder was a way to get
+// code of one's own into the game. Nothing in scripts/Custom is read or run. Everything below
+// is kept as it was for the day they come back; set this to true.
+constexpr bool custom_scripts_enabled = false;
 std::filesystem::path game_root;
 std::atomic<bool> ran{};
+// Custom scripts are Lua and nothing else. Lua's own ways of running native code are taken
+// away before the first one runs: loading a DLL (package.loadlib, and require through the two
+// C searchers and package.cpath) and starting a program (os.execute, io.popen). The game's own
+// scripts use none of them. The last line says whether it held, for the check below.
+constexpr std::string_view lua_only = R"lua(
+local p = package
+if type(p) == "table" then
+    p.loadlib = nil
+    p.cpath = ""
+    for _, name in ipairs({"searchers", "loaders"}) do
+        local list = p[name]
+        if type(list) == "table" then
+            for index = #list, 3, -1 do list[index] = nil end
+        end
+    end
+end
+if type(os) == "table" then os.execute = nil end
+if type(io) == "table" then io.popen = nil end
+if (type(p) == "table" and (p.loadlib ~= nil or p.cpath ~= "")) or (type(os) == "table" and os.execute ~= nil)
+    or (type(io) == "table" and io.popen ~= nil) then
+    error("native code loading could not be switched off")
+end
+)lua";
 bool load_scripts(const lua_startup::Context& context) {
     if (ran.exchange(true)) return false;
+    // Without it no custom script runs at all.
+    if (!context.execute(lua_only)) {
+        logging::write(logging::Level::error, logging::Channel::assets,
+            "Custom scripts were not loaded: Lua's native code loading could not be switched off.");
+        custom_scripts::report("", "Custom scripts were not loaded");
+        return false;
+    }
     std::vector<custom_scripts::Script> scripts;
     try {
         scripts = custom_scripts::discover(game_root);
@@ -60,6 +94,11 @@ bool load_scripts(const lua_startup::Context& context) {
 }
 bool start_custom_script_loader(std::uintptr_t base, std::string& error) {
     error.clear();
+    if (!custom_scripts_enabled) {
+        custom_scripts::report("", "Custom scripts are switched off in this version of ReSkate");
+        logging::write(logging::Level::info, logging::Channel::assets, "Custom scripts are switched off; scripts/Custom is not read.");
+        return true;
+    }
     try {
         std::array<wchar_t, 32768> path{};
         const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));

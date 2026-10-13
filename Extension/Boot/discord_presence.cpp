@@ -64,7 +64,8 @@ void register_launcher() noexcept {
         const auto root = L"Software\\Classes\\" + scheme;
         put(root, nullptr, L"URL:Run ReSkate");
         put(root, L"URL Protocol", L"");
-        put(root + L"\\shell\\open\\command", nullptr, L"\"" + launcher + L"\"");
+        // --no-gui: straight into the game, which is what pressing Join asked for.
+        put(root + L"\\shell\\open\\command", nullptr, L"\"" + launcher + L"\" --no-gui");
     } catch (...) {}
 }
 

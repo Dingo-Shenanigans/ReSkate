@@ -10,7 +10,7 @@
 #include <format>
 #include <vector>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 namespace {
 struct Internet {
     HINTERNET value{};
@@ -54,14 +54,14 @@ bool parse_endpoint(const std::wstring& url, Endpoint& endpoint) {
 bool accepted_response(DWORD status, std::string_view response, std::string& report_id) {
     report_id.clear();
     if (status < 200 || status >= 300) return false;
-    try {
-        const auto json = Json::parse(response, {65536, 8, 256});
-        if (json.value("response", "") != "ok") return false;
-        const auto id = json.value("_rxid", "");
-        if (id.empty() || id.size() > 128 || id.find_first_not_of("0123456789abcdefABCDEF-") != std::string::npos) return false;
-        report_id = id;
-        return true;
-    } catch (...) { return false; }
+    // Sentry's minidump endpoint answers with the event ID as plain text.
+    const auto first = response.find_first_not_of(" \t\r\n"), last = response.find_last_not_of(" \t\r\n");
+    if (first == std::string_view::npos) return false;
+    const auto id = response.substr(first, last - first + 1);
+    if (id.size() > 36 || id.find_first_not_of("0123456789abcdefABCDEF-") != std::string_view::npos ||
+            std::count_if(id.begin(), id.end(), [](char c) { return c != '-'; }) != 32) return false;
+    report_id = id;
+    return true;
 }
 std::filesystem::path queue_directory(const std::filesystem::path& root, const std::wstring& url) {
     // Hash the destination so changing projects cannot send an old queue to a new account.
@@ -155,7 +155,7 @@ std::size_t upload_pending(const std::wstring& url, const std::filesystem::path&
                 status_file(directory, std::format("Upload pending; HTTP {}; Windows error {}. Retrying on next launch.", result.http_status, result.error));
                 break;
             }
-            status_file(directory, "Accepted by Backtrace: " + result.report_id);
+            status_file(directory, "Accepted by Sentry: " + result.report_id);
             remove_report(entry.path());
             if (++uploaded == 4) break; // Bound work for a single launch.
         }

@@ -223,8 +223,12 @@ const Commands &game_commands() {
         register_park_editor_commands(*result);
         register_multiplayer_commands(*result);
         register_perf_commands(*result);
+        register_item_commands(*result);
         register_trainer_commands(*result);
         register_hall_of_meat_commands(*result);
+        register_road_rash_commands(*result);
+        register_board_break_commands(*result);
+        register_grind_exit_commands(*result);
         return result;
     }();
     return *registry;

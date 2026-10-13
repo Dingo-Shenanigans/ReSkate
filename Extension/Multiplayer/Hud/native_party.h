@@ -30,6 +30,10 @@ using PartyRoster = std::array<PartyPlayer, max_players>;
 // already hides that indicator outside a party.
 void update_native_party(std::uintptr_t base, const PartyRoster &roster, unsigned capacity,
                          bool overlay = true) noexcept;
+// The dedicated server this session is on (0: none), and the name to show for it. A server is
+// no player: it is in none of the game's lists, and has a player card only so that what it
+// placed (its parks) can say who placed it. Game thread, before update_native_party.
+void set_native_party_server(std::uint64_t id, std::string_view name) noexcept;
 void update_party_position(const Pose *pose) noexcept;
 // Points the party Spectate camera at a session player's skater from code (the
 // throwdown turn camera). 0 stops a spectate this function started. Game thread.

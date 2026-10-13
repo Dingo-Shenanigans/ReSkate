@@ -105,6 +105,14 @@ void detail::validate_settings(const Snapshot& s) {
         require(values.is_object() && values.size() <= 2048, "Invalid gameplay settings");
         for (const auto& [key, value] : values.items()) {
             require(valid_text(key), "Invalid gameplay setting key");
+            // Music selections are ordered identity lists, not native scalar
+            // option. The existing settings codec can store its JSON array.
+            if (key == "ReSkate.MusicFavoriteSongs" || key == "ReSkate.MusicLikedPlaylists") {
+                require(value.is_array(), "Invalid saved music favorites");
+                for (const auto& song : value)
+                    require(song.is_string() && valid_text(song.string()), "Invalid saved favorite song identity");
+                continue;
+            }
             require((value.is_number_integer() && (!value.is_number_unsigned() ||
                 value.get<std::uint64_t>() <= INT64_MAX)) ||
                 (value.is_number_float() && std::isfinite(value.get<double>())) ||

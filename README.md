@@ -22,12 +22,16 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - The **Park Editor**: place, move and save objects with freecam, snapping and undo.
   - Skater options: first person, movement, boosts, noclip.
   - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
+  - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
+    out to (toe / heel, or left / right), whatever trick and spin you do
+    ([how it works](Extension/Skater/GRIND_EXITS.md)).
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
     screens, cosmetics and scripts.
   - Browse and install mods from the [Thunderstore community](https://thunderstore.io/c/reskate/) in the
-    launcher.
+    launcher. A mod that needs others (a mod pack) brings them with it.
+  - Save sets of mods as profiles, switch between them, and share one as a code or a file.
   - Most mod changes apply in game without a restart.
 - **Launcher.**
   - Checks that you have the supported game build, and can download exactly that build with your Steam
@@ -38,29 +42,32 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 
 1. Download the latest `ReSkate-<version>.zip` from
    [Releases](https://github.com/Dingo-Shenanigans/ReSkate/releases).
-2. Extract `ReSkateLauncher.exe` and `ReSkate.dll` into either folder:
-   - **your skate. folder**, beside `Skate.exe` (Steam → skate. → Manage → Browse local files); or
-   - **an empty folder**, where the launcher installs the game for you (about 14 GB).
+2. Extract `ReSkateLauncher.exe` and `ReSkate.dll` into **a new, empty folder of their own**, for
+   example `C:\Games\ReSkate`. Do **not** put them in Steam's skate. folder: ReSkate keeps its own
+   copy of the game there, so Steam updating skate. cannot break it.
 3. Run `ReSkateLauncher.exe`.
-   - It checks for ReSkate updates, then checks the game files against the supported build.
-   - If the game is missing, or Steam has updated it past the supported build, sign in when asked. You
-     can scan a QR code with the Steam app, or use your username and password with Steam Guard. It then
-     downloads only the files it needs.
+   - It checks for ReSkate updates, then installs the supported build of the game into that folder
+     (about 14 GB of free space).
+   - Sign in to Steam when asked, with the account that owns skate. You can scan a QR code with the
+     Steam app, or use your username and password with Steam Guard.
+   - On later runs it checks the game files and downloads only what is missing.
 4. Press **PLAY**.
 
 ReSkate supports one game build at a time (Steam build `25414733`).
 
 ### Linux (Proton)
 
-1. Install skate. with Steam and put `ReSkateLauncher.exe` and `ReSkate.dll` beside `Skate.exe`
-   (step 2 above, first option).
-2. In Steam → skate. → Properties → Launch Options, enter:
+1. Install skate. with Steam, and put `ReSkateLauncher.exe` and `ReSkate.dll` in a new, empty folder
+   of their own, for example `~/Games/ReSkate` (not Steam's skate. folder: the launcher refuses to
+   run from there).
+2. In Steam → skate. → Properties → Launch Options, enter this with your own folder's path:
 
    ```
-   bash -c 'exec "${@/EAAntiCheat.GameServiceLauncher.exe/ReSkateLauncher.exe}"' -- %command%
+   bash -c 'exec "${@/*EAAntiCheat.GameServiceLauncher.exe//home/you/Games/ReSkate/ReSkateLauncher.exe}"' -- %command%
    ```
 
-3. Press **Play** on skate. in your Steam library.
+3. Press **Play** on skate. in your Steam library. The launcher installs its own copy of the game
+   into that folder the first time.
 
 Steam starts EA's anti-cheat launcher (`EAAntiCheat.GameServiceLauncher.exe`), not `Skate.exe`, and the
 anti-cheat refuses to run under Proton (*E111000B … Wine, Proton, and Steam Deck are not supported*).
@@ -68,8 +75,9 @@ The launch option swaps it for ReSkate's launcher, which starts the game itself.
 own Steam entry, rather than adding the launcher as a non-Steam game, keeps skate.'s app ID and its
 Proton prefix.
 
-Tested with ReSkate 1.1.3 and Proton Experimental on CachyOS: the launcher, the server browser, joining
-a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
+The launcher in a folder of its own is new and has not been tested on Proton yet. With the launcher
+beside `Skate.exe`, as it was set up before, ReSkate 1.1.3 was tested with Proton Experimental on
+CachyOS: the launcher, the server browser, joining a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
 custom map and then join a server on another map, the screen can stay black
 ([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
 
@@ -83,7 +91,7 @@ custom map and then join a server on another map, the screen can stay black
 
 The menu and console keys can be changed in the launcher's Settings.
 
-In **MAP → ROTATING PARKS** and the controller-friendly **CUSTOM STUFF → PARKS** screen,
+In **MAP → ROTATING PARKS** and the controller-friendly **MOD OPTIONS → PARKS** screen,
 **Load Random Parks** chooses and loads one random layout for each of
 San Vansterdam's three slots. Each supported layout has an equal chance; empty lots are excluded and
 a roll can pick a layout already loaded. Choices save with your profile and are shared when you host.
@@ -111,6 +119,10 @@ accepts `park random` from its console or an admin.
 
 - Install mods from the launcher's **MODS** page: browse Thunderstore, or drag a `.zip` or folder onto the
   window.
+- **PROFILES** on that page saves which mods are on, and in what order, under a name. Loading a profile
+  switches to it and downloads any of its mods you do not have; every mod stays installed once. **COPY CODE**
+  and **SAVE FILE** share a profile, and **IMPORT CODE** and **IMPORT FILE** take one in. The codes and
+  `.r2z` files are r2modman's, so the two managers read each other's.
 - In game, the **MODS** tab of the ReSkate menu (**Insert**) turns mods on and off and applies the changes.
 - Mods are checked against the game build they were made for. Outdated mods, or mods that can't be merged
   cleanly, are left out with a message naming them, and the rest still load.
@@ -141,7 +153,8 @@ accepts `park random` from its console or an admin.
   on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
   routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
 
-Only install mods you trust. Mods change game data, and custom scripts can run code.
+Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
+switched off in this version: nothing in that folder is read or run.
 
 ## Dedicated servers
 
@@ -197,7 +210,8 @@ To work in Visual Studio, open `build/vs2022-x64/DingoSDK.sln` after configuring
 
 ### Running your build
 
-Close the game. Copy `ReSkateLauncher.exe` and `ReSkate.dll` beside `Skate.exe`, then run the launcher.
+Close the game. Copy `ReSkateLauncher.exe` and `ReSkate.dll` into your ReSkate folder (the one the
+launcher installed the game into, beside `Skate.exe`), then run the launcher.
 
 Local builds never replace themselves. They only report that an update exists, so a release can't
 overwrite the DLL you are testing.
@@ -206,7 +220,7 @@ Useful launcher flags:
 
 | Flag | Effect |
 |---|---|
-| `--no-gui` | start the game straight away, without the launcher window |
+| `--no-gui` | start the game straight away, without the launcher window; with no other launch flags it uses the launcher's saved settings |
 | `--no-update` | skip the update check |
 | `--offline`, `-offline` | play offline, without Steam running |
 | `--windowed`, `--width=N`, `--height=N` | windowed mode and its size |
@@ -214,6 +228,7 @@ Useful launcher flags:
 | `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
 | `-wconsole` | also show the log live in a console window while the game runs |
 | `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
+| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
 
@@ -224,14 +239,14 @@ Useful launcher flags:
 | `DINGOSDK_VERSION` | `0.0.0` | version stamped into the binaries |
 | `DINGOSDK_LAUNCHER_AUTO_UPDATE` | `OFF` | let the launcher replace itself and `ReSkate.dll`, and the server replace itself (release builds) |
 | `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
-| `DINGOSDK_BACKTRACE_URL` | the project's endpoint | Backtrace minidump submission URL; empty turns crash uploads off |
+| `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
 | `DINGOSDK_TEST_GAME_ROOT` | empty | a Skate folder, for the tests that read real game data |
 
 ### Tests
 
 Each module keeps its regression tests in a `Test/` folder. Turn them on with any of
 `DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`
-and `DINGOSDK_BUILD_BACKTRACE_TESTS`, then run CTest:
+and `DINGOSDK_BUILD_CRASH_REPORT_TESTS`, then run CTest:
 
 ```powershell
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON -DDINGOSDK_BUILD_LAUNCHER_TESTS=ON
@@ -273,10 +288,16 @@ bytes they expect before touching them, so code from the wrong build is refused 
 ## Crash reports and privacy
 
 When the launcher or the game crashes, ReSkate uploads a minidump and that session's log to the
-project's Backtrace account, so crashes can be fixed. The log never contains your Steam password or
+project's self-hosted Sentry server, so crashes can be fixed. The log never contains your Steam password or
 login name.
 
-To turn it off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
+With **Send performance timings** ticked in the launcher's Settings (ADVANCED; off unless you turn it on),
+ReSkate also sends how long a few steps took: the update check, the Steam download, mod
+installs (with the package name), the mod merge, starting the game, each level load, joining a multiplayer
+session and fetching the ReSkate lists. Time spent in a level adds its name, average frame rate and count of
+long frames. Nothing about your account is included. Turning crash reports off turns this off too.
+
+To turn crash reports off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
 environment variable `RESKATE_CRASH_REPORTING=0`.
 
 ReSkate also keeps the game off EA's online services: the game's own crash reports, telemetry and

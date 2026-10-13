@@ -1,6 +1,6 @@
 #include "native_menu_internal.h"
 
-// The pause menu's Multiplayer and Custom Stuff pages. The overlay draws everything in them
+// The pause menu's Multiplayer and Mod Options pages. The overlay draws everything in them
 // (their tabs and what each tab holds: Extension/UI/Overlay/hub_page.cpp), because the game's
 // menu widgets are a button, a text box and a line of text and cannot make a list with
 // columns. What is left here is the page the game needs for each hub tab: one body, empty.

@@ -69,8 +69,8 @@ cmake --build --preset linux-release -j$(nproc)
 ctest --test-dir build/linux --output-on-failure
 ```
 
-Expected: 9 passed (`multiplayer_parties`, `server_activity`, `server_speed_check`,
-`server_config`, `server_global_bans`, `word_filter`, `multiplayer_bandwidth`, `multiplayer_lanes`,
+Expected: 10 passed (`multiplayer_parties`, `server_activity`, `server_speed_check`,
+`server_board_check`, `server_config`, `server_global_bans`, `word_filter`, `multiplayer_bandwidth`, `multiplayer_lanes`,
 `multiplayer_prediction`). Windows-only tests (voice, lobbies, UI) stay `WIN32`-gated.
 
 ## Run
@@ -96,7 +96,8 @@ Expected: 9 passed (`multiplayer_parties`, `server_activity`, `server_speed_chec
 Without `libsteam_api.so` the server exits 1 with:
 `Cannot load .../libsteam_api.so. Put libsteam_api.so (Steamworks SDK) next to the server.`
 
-Full command list: `Server/README.txt` (same on Linux; binary name differs).
+Full command list: `Server/README.txt` (same on Linux; binary name differs). Roles and what each
+permission and command gives: `Server/README-roles.txt`.
 
 ## systemd
 

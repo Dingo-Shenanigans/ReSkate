@@ -2,8 +2,24 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/engine_tweaks.h"
 #include "Extension/Settings/job_spin.h"
+#include "Extension/UI/Overlay/overlay.h"
+#include "Extension/Music/spotify_station.h"
+#include "Extension/Music/music_inject.h"
+#include "Extension/Music/spotify_web.h"
+#include "Extension/Music/spotify_device.h"
+#include "Extension/Music/spotify_dashboard.h"
 #include "Extension/UI/ui_pointer_skip.h"
+#include "Extension/World/texture_handle_limit.h"
+#include "Engine/Core/Hooks/hooks.h"
+#include <Windows.h>
+#include <Psapi.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <format>
+#include <map>
+#include <mutex>
+#include <vector>
 
 // The performance profiler's console commands (Engine/Core/Profiling/profiler.h). Everything but
 // the saved HUD switch runs on the overlay's thread: the profiler is thread-safe.
@@ -64,7 +80,287 @@ void print_report(const Output& out) {
 }
 }
 
+// `perf memory`: what the game's memory is made of, by allocation, and what was added since a
+// mark: for finding what a full server's memory goes on. An allocation is one VirtualAlloc
+// reservation (the engine's arenas and pools are each one or a few); its size here is what of
+// it is committed, which is what counts against the PC's memory.
+struct MemoryMap {
+    std::map<std::uintptr_t, std::uint64_t> allocations; // private memory: base -> committed bytes
+    std::uint64_t committed{}, mapped{}, image{};
+};
+MemoryMap read_memory_map() {
+    MemoryMap map;
+    SYSTEM_INFO system{};
+    GetSystemInfo(&system);
+    auto at = reinterpret_cast<std::uintptr_t>(system.lpMinimumApplicationAddress);
+    const auto end = reinterpret_cast<std::uintptr_t>(system.lpMaximumApplicationAddress);
+    MEMORY_BASIC_INFORMATION info{};
+    while (at < end && VirtualQuery(reinterpret_cast<void*>(at), &info, sizeof(info)) == sizeof(info)) {
+        if (info.State == MEM_COMMIT) {
+            if (info.Type == MEM_PRIVATE) {
+                map.allocations[reinterpret_cast<std::uintptr_t>(info.AllocationBase)] += info.RegionSize;
+                map.committed += info.RegionSize;
+            } else (info.Type == MEM_IMAGE ? map.image : map.mapped) += info.RegionSize;
+        }
+        at = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+    }
+    return map;
+}
+std::string megabytes(std::uint64_t bytes) {
+    return bytes >= (1ull << 30) ? std::format("{:.2f} GB", static_cast<double>(bytes) / (1ull << 30))
+                                 : std::format("{:.1f} MB", static_cast<double>(bytes) / (1ull << 20));
+}
+// How much of [base, base + bytes) is in RAM now: the pages the game has written to and
+// Windows has not moved out. The rest of a committed block is promised and unused.
+std::uint64_t resident_bytes(std::uintptr_t base, std::uint64_t bytes) {
+    constexpr std::size_t batch = 16384;
+    std::vector<PSAPI_WORKING_SET_EX_INFORMATION> pages(batch);
+    std::uint64_t resident{};
+    for (std::uint64_t done = 0; done < bytes;) {
+        const auto count = static_cast<std::size_t>(std::min<std::uint64_t>(batch, (bytes - done + 4095) / 4096));
+        for (std::size_t i = 0; i < count; ++i) pages[i].VirtualAddress = reinterpret_cast<void*>(base + done + i * 4096);
+        if (!QueryWorkingSetEx(GetCurrentProcess(), pages.data(), static_cast<DWORD>(count * sizeof(pages[0])))) break;
+        for (std::size_t i = 0; i < count; ++i) resident += pages[i].VirtualAttributes.Valid ? 4096 : 0;
+        done += count * 4096ull;
+    }
+    return resident;
+}
+// Allocations by size, the sizes that add up to most first: "126 x 32.0 MB = 3.94 GB".
+void print_by_size(const std::vector<std::uint64_t>& sizes, const Output& out, std::size_t most) {
+    std::map<std::uint64_t, std::pair<std::uint64_t, std::uint64_t>> groups; // size rounded to 64 KB -> count, bytes
+    for (const auto size : sizes) {
+        auto& group = groups[(size + 0xffff) & ~0xffffull];
+        ++group.first;
+        group.second += size;
+    }
+    std::vector<std::pair<std::uint64_t, std::pair<std::uint64_t, std::uint64_t>>> order(groups.begin(), groups.end());
+    std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+    for (std::size_t i = 0; i < order.size() && i < most; ++i)
+        out(std::format("  {} x {} = {}", order[i].second.first, megabytes(order[i].first), megabytes(order[i].second.second)));
+}
+
+// `perf memory trace`: who asks Windows for the middle-sized blocks (2 to 64 MB) while it is on,
+// by the code that called for each: where a block of a size `perf memory` showed many of comes
+// from. Every commit of memory in the process passes the hook while it is on, so it is a
+// research aid and off until asked for.
+namespace trace {
+constexpr std::size_t callers = 8192, depth = 14;
+struct Caller {
+    std::uint64_t hash{}, count{}, bytes{}, size{}, largest{}; // size: the smallest such block; largest: the largest
+    std::array<void*, depth> frames{};
+    unsigned frame_count{};
+};
+std::mutex mutex;
+std::vector<Caller> table(callers); // found by hash: a commit of any size can be traced
+std::atomic<bool> on{};
+// The sizes traced: 2 to 64 MB from the console; the largest blocks alone from the start of
+// the game (RESKATE_MEMORY_TRACE), where nearly everything is being allocated.
+std::atomic<std::uint64_t> least{2ull << 20}, most{64ull << 20};
+bool prepared{};
+using Allocate = LONG (NTAPI*)(HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG);
+Allocate original{};
+
+// The newer call for the same (VirtualAlloc2, which graphics drivers and the D3D12 runtime use).
+using AllocateEx = LONG (NTAPI*)(HANDLE, PVOID*, PSIZE_T, ULONG, ULONG, void*, ULONG);
+AllocateEx original_ex{};
+void note(HANDLE process, SIZE_T asked, ULONG type) noexcept;
+
+LONG NTAPI hooked(HANDLE process, PVOID* base, ULONG_PTR zero_bits, PSIZE_T size, ULONG type, ULONG protect) {
+    const auto asked = size ? *size : 0;
+    const auto status = original(process, base, zero_bits, size, type, protect);
+    if (status >= 0) note(process, asked, type);
+    return status;
+}
+LONG NTAPI hooked_ex(HANDLE process, PVOID* base, PSIZE_T size, ULONG type, ULONG protect, void* parameters, ULONG parameter_count) {
+    const auto asked = size ? *size : 0;
+    const auto status = original_ex(process, base, size, type, protect, parameters, parameter_count);
+    if (status >= 0) note(process, asked, type);
+    return status;
+}
+void note(HANDLE process, SIZE_T asked, ULONG type) noexcept {
+    if (!on.load(std::memory_order_relaxed) || !(type & (MEM_COMMIT | MEM_RESERVE)) || process != GetCurrentProcess() ||
+        asked < least.load(std::memory_order_relaxed) || asked > most.load(std::memory_order_relaxed)) return;
+    // (Reservations count too: a block reserved whole and committed a piece at a time is only
+    // this large when it is reserved.)
+    Caller seen;
+    seen.frame_count = CaptureStackBackTrace(2, static_cast<DWORD>(depth), seen.frames.data(), nullptr);
+    // By who asked alone: one caller's blocks of every size add up together.
+    std::uint64_t hash = 1469598103934665603ull;
+    for (unsigned i = 0; i < seen.frame_count; ++i) hash = hash * 1099511628211ull ^ reinterpret_cast<std::uintptr_t>(seen.frames[i]);
+    if (!hash) hash = 1;
+    std::lock_guard lock(mutex);
+    for (std::size_t probe = 0; probe < 128; ++probe) {
+        auto& caller = table[(hash + probe) % callers];
+        if (caller.count && caller.hash != hash) continue;
+        if (!caller.count) { caller = seen; caller.hash = hash; caller.size = asked; }
+        ++caller.count;
+        caller.bytes += asked;
+        caller.size = std::min<std::uint64_t>(caller.size, asked);
+        caller.largest = std::max<std::uint64_t>(caller.largest, asked);
+        break;
+    }
+}
+bool start(std::string& error) {
+    if (!prepared) {
+        const auto target = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemory"));
+        if (!target || hook_prepare(target, reinterpret_cast<void*>(&hooked), reinterpret_cast<void**>(&original)) != HookOk) {
+            error = "the allocation hook could not be prepared";
+            return false;
+        }
+        // (Missing on an older Windows: then only the first is traced.)
+        if (const auto ex = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemoryEx"));
+            ex && hook_prepare(ex, reinterpret_cast<void*>(&hooked_ex), reinterpret_cast<void**>(&original_ex)) != HookOk)
+            original_ex = nullptr;
+        prepared = true;
+    }
+    { std::lock_guard lock(mutex); std::fill(table.begin(), table.end(), Caller{}); }
+    const auto target = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemory"));
+    if (!on.load() && hook_enable(target) != HookOk) { error = "the allocation hook could not be attached"; return false; }
+    if (!on.load() && original_ex) hook_enable(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemoryEx")));
+    on.store(true);
+    return true;
+}
+void stop() {
+    if (!on.exchange(false)) return;
+    hook_disable(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemory")));
+    if (original_ex) hook_disable(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemoryEx")));
+}
+std::string place(void* address) {
+    HMODULE module{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(address), &module) || !module)
+        return std::format("{:#x}", reinterpret_cast<std::uintptr_t>(address));
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(module, path, MAX_PATH);
+    const wchar_t* name = path;
+    for (const wchar_t* c = path; *c; ++c) if (*c == L'\\') name = c + 1;
+    std::string text;
+    for (; *name; ++name) text += static_cast<char>(*name);
+    return std::format("{}+{:#x}", text, reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(module));
+}
+void report(const Output& out) {
+    std::vector<Caller> seen;
+    {
+        std::lock_guard lock(mutex);
+        for (const auto& caller : table) if (caller.count) seen.push_back(caller);
+    }
+    std::sort(seen.begin(), seen.end(), [](const Caller& a, const Caller& b) { return a.bytes > b.bytes; });
+    out(std::format("Memory asked for while tracing (blocks of {} and up), by who asked ({} callers), the most first:",
+        megabytes(least.load()), seen.size()));
+    for (std::size_t i = 0; i < seen.size() && i < 16; ++i) {
+        out(seen[i].size == seen[i].largest
+                ? std::format("  {} x {} bytes = {}", seen[i].count, seen[i].size, megabytes(seen[i].bytes))
+                : std::format("  {} blocks of {} to {} bytes = {}", seen[i].count, seen[i].size, seen[i].largest, megabytes(seen[i].bytes)));
+        std::string line = "     ";
+        for (unsigned frame = 0; frame < seen[i].frame_count; ++frame) line += " < " + place(seen[i].frames[frame]);
+        out(line);
+    }
+}
+} // namespace trace
+
+// RESKATE_MEMORY_TRACE=<megabytes>: from the start of the game, who asks for each block of at
+// least that size (`perf memory` then lists them). A research aid for what a map's load commits.
+void start_memory_trace_from_environment() noexcept {
+    wchar_t value[16]{};
+    const auto length = GetEnvironmentVariableW(L"RESKATE_MEMORY_TRACE", value, 16);
+    if (!length || length >= 16) return;
+    // (In megabytes; "all" for every block, however small.)
+    const bool all = value[0] == L'a';
+    const auto megabytes_least = std::wcstoul(value, nullptr, 10);
+    if (!megabytes_least && !all) return;
+    try {
+        trace::least.store(all ? 1 : static_cast<std::uint64_t>(megabytes_least) << 20);
+        trace::most.store(UINT64_MAX);
+        std::string error;
+        (void)trace::start(error);
+    } catch (...) {}
+}
+
 void register_perf_commands(Commands& registry) {
+    // The music sources in the music screen (Spotify, YouTube Music, the player's files, radio,
+    // another application): what is on, what is playing, and the Spotify account.
+    auto spotify = action("music", "The music sources (Spotify, YouTube Music, local files, radio, external audio): what is on, what is playing, and the Spotify account", Group::console);
+    spotify.execution = Execution::local;
+    spotify.run = [](const Model&, const Values&, const Output& out) {
+        out(spotify_station::status());
+        out(music_inject::status());
+        out(spotify_device::status());
+        const auto account = spotify_web::state();
+        out(std::format("Spotify account: {}{}; {} playlist(s){}{}.", !account.has_client ? "no client id set (music spotify client <id>)" : account.signed_in ? "signed in" : "not signed in (music spotify login)",
+            account.user.empty() ? std::string() : " as " + account.user, account.playlists, account.busy ? "; busy" : "",
+            account.problem.empty() ? std::string() : "; " + account.problem));
+    };
+    registry.add(std::move(spotify));
+    auto setup = action("music setup", "Open the page in your browser that sets the music sources up (Spotify, YouTube Music, local files, radio, external audio, and how it sounds)", Group::console);
+    setup.execution = Execution::local;
+    setup.run = [](const Model&, const Values&, const Output& out) {
+        if (spotify_dashboard::open()) out("Opening " + spotify_dashboard::address() + " in your browser.");
+        else out("The music setup page is not being served.");
+    };
+    registry.add(std::move(setup));
+    auto client = action("music spotify client", "The client id of your Spotify application (its redirect address: http://127.0.0.1:47824/callback)", Group::console,
+        {argument("id")});
+    client.execution = Execution::local;
+    client.run = [](const Model&, const Values& args, const Output& out) {
+        spotify_web::set_client(std::get<std::string>(args[0]));
+        out("Spotify client id set. Sign in with: music spotify login");
+    };
+    registry.add(std::move(client));
+    auto login = action("music spotify login", "Sign in to Spotify in your browser, for your playlists in the music screen", Group::console);
+    login.execution = Execution::local;
+    login.run = [](const Model&, const Values&, const Output& out) {
+        if (!spotify_web::state().has_client) return out("Set your Spotify application's client id first: music spotify client <id>");
+        spotify_web::login();
+        out("Your browser is opening Spotify's sign-in. Your playlists are in the music screen the next time the game starts.");
+    };
+    registry.add(std::move(login));
+    auto logout = action("music spotify logout", "Forget the Spotify sign-in", Group::console);
+    logout.execution = Execution::local;
+    logout.run = [](const Model&, const Values&, const Output& out) {
+        spotify_web::logout();
+        out("The Spotify sign-in is forgotten.");
+    };
+    registry.add(std::move(logout));
+    auto through = variable("music through", "The music sources' sound through the game while one of their tiles is on: 0 off, 1 in place of songs, 2 in place of every stereo sound file",
+        Group::console, argument("0-2", Type::integer));
+    through.execution = Execution::local;
+    through.inspect = [](const Model&) { return State{true, std::to_string(music_inject::mode()), {}, "0 off, 1 songs, 2 every stereo sound file", false}; };
+    through.run = [](const Model&, const Values& args, const Output& out) {
+        music_inject::set_mode(static_cast<int>(std::clamp<std::int64_t>(std::get<std::int64_t>(args[0]), 0, 3)));
+        out(std::format("Music through the game: mode {}.", music_inject::mode()));
+    };
+    registry.add(std::move(through));
+    auto gain = variable("music gain", "How loud the music sources are through the game, in percent (100 as it is, up to 1600)",
+        Group::console, argument("percent", Type::integer));
+    gain.execution = Execution::local;
+    gain.inspect = [](const Model&) { return State{true, std::to_string(static_cast<int>(music_inject::gain() * 100.0f + 0.5f)), {}, "percent", false}; };
+    gain.run = [](const Model&, const Values& args, const Output& out) {
+        music_inject::set_gain(static_cast<float>(std::clamp<std::int64_t>(std::get<std::int64_t>(args[0]), 0, 1600)) / 100.0f);
+        out(std::format("Music through the game: {}% loud.", static_cast<int>(music_inject::gain() * 100.0f + 0.5f)));
+    };
+    registry.add(std::move(gain));
+
+    // The message a kicked or banned player is shown (Extension/UI/Overlay/message_card.cpp), to
+    // look at and to answer with a controller without being kicked for it.
+    auto popup = action("popup test", "Show the message a kicked player sees, to try answering it (A / Enter / click OK)", Group::console);
+    popup.execution = Execution::local;
+    popup.run = [](const Model&, const Values&, const Output& out) {
+        overlay::show_message("YOU WERE KICKED", "You were kicked from this server by a vote for 5 minutes.");
+        out("Close the console to answer it.");
+    };
+    registry.add(std::move(popup));
+
+    // How close the game is to its limit of streamed textures (texture_handle_limit).
+    auto textures = action("textures", "Streamed textures in use, and the most the game can hold", Group::console);
+    textures.execution = Execution::local;
+    textures.run = [](const Model&, const Values&, const Output& out) {
+        const auto state = texture_handle_limit::use();
+        if (!state.known) return out("The game's texture streaming is not running yet.");
+        out(std::format("{} of {} streamed textures in use ({}%). A warning shows at 90%; the game freezes at the limit.", state.taken,
+            state.limit, std::uint64_t{state.taken} * 100 / state.limit));
+    };
+    registry.add(std::move(textures));
+
     // The HUD starts off every launch; these turn it on for the session.
     auto toggle = action("perf", "Show or hide the performance HUD", Group::console);
     toggle.execution = Execution::local;
@@ -233,6 +529,116 @@ void register_perf_commands(Commands& registry) {
             out(engine_tweaks::status(tweak));
     };
     registry.add(std::move(tweaks));
+
+    auto what = argument("mark", Type::text, true);
+    what.complete = [](const Model&, auto) { return std::vector<std::string>{"mark", "trace", "stop", "big"}; };
+    auto memory = action("perf memory", "The game's memory by allocation; `perf memory mark` remembers it and the next `perf memory` says what was added since; "
+        "`perf memory trace` then also says who asked for the middle-sized blocks, until `perf memory stop`; `perf memory big` lists the largest blocks and how much of each is in use",
+        Group::console, {std::move(what)});
+    memory.execution = Execution::local;
+    memory.run = [](const Model&, const Values& args, const Output& out) {
+        static std::mutex mutex;
+        static MemoryMap marked;
+        static bool has_mark{};
+        std::lock_guard lock(mutex);
+        const auto now = read_memory_map();
+        out(std::format("Memory: {} committed in {} allocations, {} of files mapped in, {} of programs.", megabytes(now.committed),
+            now.allocations.size(), megabytes(now.mapped), megabytes(now.image)));
+        if (!args.empty() && equal(std::get<std::string>(args[0]), "big")) {
+            // The largest blocks one by one: where each is, its exact size, and how much of it is used.
+            std::vector<std::pair<std::uint64_t, std::uintptr_t>> order;
+            for (const auto& [base, size] : now.allocations) order.emplace_back(size, base);
+            std::sort(order.rbegin(), order.rend());
+            out("The largest blocks (committed, of which in RAM now):");
+            for (std::size_t i = 0; i < order.size() && i < 24; ++i) {
+                // (The whole reservation is walked: what is not committed in it is not in RAM either.)
+                MEMORY_BASIC_INFORMATION info{};
+                std::uint64_t span = order[i].first;
+                for (auto at = order[i].second; VirtualQuery(reinterpret_cast<void*>(at), &info, sizeof(info)) == sizeof(info) &&
+                     reinterpret_cast<std::uintptr_t>(info.AllocationBase) == order[i].second;
+                     at = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize)
+                    span = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize - order[i].second;
+                out(std::format("  {:#x}: {} bytes ({}), {} in RAM", order[i].second, order[i].first, megabytes(order[i].first),
+                    megabytes(resident_bytes(order[i].second, span))));
+                if (i >= 3) continue;
+                // What kind of memory the three largest are, and a look at what is in them: how
+                // they are protected and held, and the bytes at a few places that are in RAM.
+                VirtualQuery(reinterpret_cast<void*>(order[i].second), &info, sizeof(info));
+                PSAPI_WORKING_SET_EX_INFORMATION page{reinterpret_cast<void*>(order[i].second)};
+                QueryWorkingSetEx(GetCurrentProcess(), &page, sizeof(page));
+                out(std::format("      reserved {:#x} bytes, protection {:#x} (as reserved {:#x}), first region {:#x} bytes; first page: {}{}{}{}",
+                    span, info.Protect, info.AllocationProtect, static_cast<std::uint64_t>(info.RegionSize),
+                    page.VirtualAttributes.Valid ? "in RAM" : "not in RAM", page.VirtualAttributes.Shared ? ", shared" : "",
+                    page.VirtualAttributes.Locked ? ", locked" : "", page.VirtualAttributes.LargePage ? ", large pages" : ""));
+                std::size_t looked{}, zero_pages{};
+                for (std::uint64_t part = 0; part < 64; ++part) {
+                    const auto at = order[i].second + ((span / 64) * part & ~0xfffull);
+                    PSAPI_WORKING_SET_EX_INFORMATION here{reinterpret_cast<void*>(at)};
+                    if (!QueryWorkingSetEx(GetCurrentProcess(), &here, sizeof(here)) || !here.VirtualAttributes.Valid) continue;
+                    std::array<unsigned char, 4096> bytes{};
+                    SIZE_T got{};
+                    if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(at), bytes.data(), bytes.size(), &got) || got != bytes.size()) continue;
+                    ++looked;
+                    const bool zero = std::all_of(bytes.begin(), bytes.end(), [](unsigned char byte) { return byte == 0; });
+                    zero_pages += zero;
+                    if (zero || looked - zero_pages > 4) continue;
+                    std::string hex;
+                    for (std::size_t byte = 0; byte < 48; ++byte) hex += std::format("{:02x}{}", bytes[byte], byte % 8 == 7 ? " " : "");
+                    out(std::format("      +{:#x}: {}", at - order[i].second, hex));
+                }
+                out(std::format("      of {} sampled pages in RAM, {} are all zero", looked, zero_pages));
+            }
+            return;
+        }
+        const bool tracing = !args.empty() && equal(std::get<std::string>(args[0]), "trace");
+        if (!args.empty() && equal(std::get<std::string>(args[0]), "stop")) {
+            trace::stop();
+            out("Tracing stopped.");
+            return;
+        }
+        if (tracing) {
+            std::string error;
+            // Every size: a large block is often set aside whole and filled a page at a time.
+            trace::least.store(1);
+            trace::most.store(UINT64_MAX);
+            if (!trace::start(error)) { out("error: " + error); return; }
+        }
+        if (tracing || (!args.empty() && equal(std::get<std::string>(args[0]), "mark"))) {
+            marked = now;
+            has_mark = true;
+            out(tracing ? "Marked, and tracing who asks for memory. Change what you want to measure, then run `perf memory`; `perf memory stop` ends the tracing."
+                        : "Marked. Change what you want to measure, then run `perf memory`.");
+            return;
+        }
+        if (!has_mark) {
+            std::vector<std::uint64_t> sizes;
+            for (const auto& [base, size] : now.allocations) sizes.push_back(size);
+            out("The allocation sizes that add up to most:");
+            print_by_size(sizes, out, 20);
+            if (trace::on.load()) trace::report(out);
+            return;
+        }
+        std::vector<std::uint64_t> added, grown;
+        std::uint64_t added_bytes{}, grown_bytes{}, freed_bytes{};
+        for (const auto& [base, size] : now.allocations) {
+            const auto before = marked.allocations.find(base);
+            if (before == marked.allocations.end()) added.push_back(size), added_bytes += size;
+            else if (size > before->second) grown.push_back(size - before->second), grown_bytes += size - before->second;
+            else freed_bytes += before->second - size;
+        }
+        for (const auto& [base, size] : marked.allocations)
+            if (!now.allocations.contains(base)) freed_bytes += size;
+        out(std::format("Since the mark: {} to {} ({}{}).", megabytes(marked.committed), megabytes(now.committed),
+            now.committed >= marked.committed ? "+" : "-",
+            megabytes(now.committed >= marked.committed ? now.committed - marked.committed : marked.committed - now.committed)));
+        out(std::format("New allocations: {} in {}. By size:", megabytes(added_bytes), added.size()));
+        print_by_size(added, out, 20);
+        out(std::format("Growth of allocations that were there: {} in {}. By how much each grew:", megabytes(grown_bytes), grown.size()));
+        print_by_size(grown, out, 12);
+        out(std::format("Given back: {}.", megabytes(freed_bytes)));
+        if (trace::on.load()) trace::report(out);
+    };
+    registry.add(std::move(memory));
 
     auto status = action("perf status", "Client update and frame timing, ReSkate's zones, CPU per thread", Group::console);
     status.execution = Execution::local;

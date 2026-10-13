@@ -7,7 +7,8 @@ in the in-game server browser (Multiplayer > Servers), or join with its code.
 Start it
 --------
 Run ReSkateServer.exe. The first run writes ReSkateServer.json next to it; edit
-that file (at least "name" and "admins") and start the server again. Leave this
+that file (at least "name") and start the server again, then make yourself an
+admin by typing role <your SteamID64> admin in its window. Leave this
 folder together: steam_api64.dll, steamclient64.dll, tier0_s64.dll and
 vstdlib_s64.dll are how the server talks to Steam, and world-layers.json lets it
 set world layers (time of day and so on) for everyone.
@@ -19,8 +20,45 @@ with the defaults, as on the first run.
 Custom maps
 -----------
 Copy a custom map's mod folder from the game's Mods folder into a Mods folder
-next to the server (only its reskate-levels.json is read). The map can then be
-chosen by name. Players need the same map mod installed to join.
+next to the server (its reskate-levels.json and manifest.json are read). The
+map can then be chosen by name. Players need the same map mod installed to
+join.
+
+A player without it is offered it when the map is from Thunderstore: the game
+downloads it, applies it and joins the server again. For that the folder has to
+keep the name Thunderstore gives it: Owner-Name as the launcher installs it
+(Sandos-Vancouver_Plaza), or Owner-Name-1.0.0 as its zip unpacks. The server
+tells players that name, and the version from manifest.json when the file is
+there. A map under any other folder name
+works as before: players install it themselves.
+
+Park mods
+---------
+A park built in the game's Park Editor and saved as a mod (a folder with
+manifest.json and parks/<map>.park.json) can be put up by the server for
+everyone. Copy the mod's folder into the Mods folder next to the server, list it
+in maps.park_mods with a name and the map it was built on, and spawn it with
+"park-mod add <name>" while that map runs: from the console, in chat by a player
+whose role has park-mod (/park-mod add street 30; the admin role does, see
+README-roles.txt), or by a player vote (see votes.custom). With minutes
+(1-1440) it goes by itself when the time is up; players are told a minute before
+and when it goes. Without, it stays until removed. Every park goes when the map
+changes, and none come back after a restart.
+
+Nothing needs a restart: a mod copied into Mods can be set up with
+"park-mod config add" (saved to the config like the map pool), and a park whose
+mod was updated is read again with "park-mod reload <name>". Every park-mod
+add reads the park's file afresh. Don't edit ReSkateServer.json by hand while
+the server runs: it writes its settings back whenever an admin changes one.
+
+A spawned park belongs to the server, not to a player: it counts against nobody's
+object limit, nobody can move or delete it, and it stays when players leave.
+Players need no mod for it: its objects are Build Kit items the game has. An
+object players' games would not show (not a Build Kit item, or broken) is left
+out, and the log says which. A park only fits the map it was built on, so the
+server spawns it on that map alone, even where custom maps share a base map's
+parks (most use bam). The log has a [parks] line for each park spawned or
+removed, and for each one that could not be.
 
 Players connect through Steam's relay network, so no ports need opening. If you
 do forward UDP 27015-27016 (port, query_port), the browser also shows the
@@ -69,20 +107,23 @@ steam_token        A Steam game server login token, or empty (default). Without 
                    only servers that have one; the server says so in its log when
                    that hides it. Players can always join with the code.
 auto_update        Install new ReSkate releases when nobody is on (default true).
+autostart          The server window starts the server as soon as it opens,
+                   without waiting for Start (default false). The console
+                   server always starts at once.
 activity_log       Log what players do (default true): throwdown drops placed,
                    joins, starts, turns and results; objects placed or removed;
                    how long players take to load.
 
-"access" - Who runs the server and who always has a place on it.
-admins             SteamID64s (as strings) who may change settings in-game.
+"access" - Who always has a place on the server. (Who runs it is in
+data/roles.json: see Roles below.)
 reserved_players_slots
                    SteamID64s of the players with a reserved slot, e.g.
                    ["76561198000000000"] (default none). They can join when
-                   the server is full, as the admins always can: each of them
-                   adds a slot beyond max_players that only they use. With 32
-                   players and 2 admins and 2 listed, anyone can join until
-                   32 are on, and those four can still join after that, up to
-                   36. The browser then shows 33/32 and so on. Nothing is
+                   the server is full, as players whose role has a reserved
+                   slot always can: each of them adds a slot beyond
+                   max_players that only they use. With 32 players and 2
+                   admins and 2 listed, anyone can join until 32 are on, and
+                   those four can still join after that, up to 36. The browser then shows 33/32 and so on. Nothing is
                    held back from everyone else.
 use_global_bans    Turn away players the ReSkate team has banned from multiplayer
                    (default true). The list is read from api.reskate.dev at startup
@@ -101,9 +142,55 @@ rotation_minutes   Minutes on each map before the server moves to the next
                    one in pool (default 0: off). Players get a minute's
                    warning; the clock waits while nobody is on, and starts
                    over whenever the map changes (by a vote or an admin too).
+rotation_vote      When a map's time is up, players vote for the next one
+                   (default false): three maps of the pool picked at random,
+                   "Random map", and "Stay here". The most votes wins, a tie
+                   is drawn, and with no vote at all it is the pool's next
+                   map. The maps are chosen a minute before, so players'
+                   games have their pictures ready.
+rotation_vote_seconds
+                   How long that vote runs, 10-120 (default 30). It ends
+                   sooner once everyone has voted.
+rotation_extend_minutes
+                   What "Stay here" adds to the map's time, 1-240 (default
+                   15), or 0 to leave that answer out. Players can ask for
+                   the same at any time with "/vote extend" (votes.extend_map),
+                   and "rotation extend [minutes]" adds time at once.
+rotation_announce  Tell players on a card when the map has 10, 5 and 1
+                   minutes left (default true).
+latest_versions    Keep this server's custom maps at Thunderstore's newest
+                   version (default false). A map mod in Mods whose folder is a
+                   Thunderstore package (Owner-Name) is looked up when the
+                   server starts and every latest_check_minutes; when a newer
+                   version is out, that version is written into the folder's
+                   manifest.json and the maps are read again. Nothing is
+                   downloaded: the server only needs to know the version, and
+                   players, who are sent to the server's version of a map,
+                   fetch it as they join. A player who already has a later
+                   version than the server keeps it. The map being played is
+                   left until nobody is on it. A folder that is not a
+                   Thunderstore package is never touched.
+                   The level list is not changed: when a new version adds,
+                   removes or renames levels, copy its reskate-levels.json in.
+latest_check_minutes
+                   How often Thunderstore is asked, 5-1440 (default 60).
 parks              Layout for each park lot, e.g. "skatepark_01", or "empty".
 world_layer_sync   Force the "layers" below on every player.
 layers             World layer key -> "on" / "off".
+park_mods          Parks built in the game's Park Editor and shared as mods,
+                   which the server can spawn for everyone (see Park mods).
+                   A list, e.g.
+                     [{"name": "street", "folder": "popular skate 2 street park",
+                       "map": "San Vansterdam", "key": "bam"}]
+                   name: what park-mod and votes call it, 1-16 of a-z, 0-9, -
+                   and _. folder: the mod's folder in Mods next to the server
+                   (copied from the game's Mods folder; spaces are fine).
+                   map: the map it was built on; it is only spawned while that
+                   map runs. key: which of the mod's parks, by the base map it
+                   is for (the file parks/<key>.park.json: bam, grom, mpr,
+                   ftue, stadium_1, stadium_2); empty when the mod has one.
+park_limits        How much may be spawned at once (default {"parks": 3,
+                   "objects": 512}): parks 1-16, their objects in all 1-1024.
 
 "players" - What players may do.
 allow_noclip, allow_no_bail, allow_boosts
@@ -120,6 +207,14 @@ afk_kick_minutes   Remove a player who has been away this many minutes, 1-1440
                    in chat or changing their objects. They are warned in chat
                    a minute before and can join again at once. Admins are
                    never removed for it. Console: afk-kick <minutes>|off.
+kick_minutes       How long a player kicked by an admin is kept out: 1-1440
+                   minutes (default 0: until the server restarts). They are
+                   told how long when they are kicked and when they try to
+                   join. A kick keeps the time it was given; changing this is
+                   for later kicks. A ban is still for good. One kick can be
+                   given its own time: kick <player> 30. A kick by a vote has
+                   its own time, votes.kick_minutes.
+                   Console: kick-time <minutes>|restart.
 word_warnings      The ReSkate team keeps a list of words that are not allowed
                    in chat at all (read from api.reskate.dev with the global
                    bans). A message with one is never passed on, whatever
@@ -128,6 +223,11 @@ word_warnings      The ReSkate team keeps a list of words that are not allowed
                    they can join again, and are kicked again at the next.
                    Warnings last until the server restarts. 0: nobody is
                    warned or kicked; the message is still not passed on.
+use_global_word_filter
+                   Use the ReSkate team's chat word lists (default true). Set
+                   false to leave them out: then only the words in this
+                   server's own data/words_blocked.txt are refused in chat.
+                   Console: words global on|off. See "Chat words" below.
 allow_voice_chat   Allow voice chat.
 voice_range        How far proximity voice reaches, 50-1000 m.
 object_placement   everyone, admins (only admins can build), or nobody.
@@ -160,6 +260,12 @@ speed_hack         Catch players whose game runs faster than normal (Cheat
                    throwdowns and coop challenges until their speed is normal
                    again and tells them so (the log has it for the admins), "kick" removes them from the
                    server, "off" does not check.
+pinned_board       Catch players whose skateboard stays on another player as
+                   that player moves (a hacked game placing its board there):
+                   "warn" (default) stops showing their board to everyone else
+                   until it has behaved for half a minute and tells the admins
+                   in the game and the log who it is, "kick" removes them from
+                   the server, "off" does not check.
 modified_scoring   Catch players whose mods change how many points tricks
                    score (per-trick points, the scoring multipliers, the
                    throwdown scoring logic) or how the skater handles (core
@@ -260,11 +366,22 @@ votes              Player votes, each off until turned on:
                      "kick": {"enabled": true, "percent": 60}  /vote kick <player>
                      "time_of_day": {"enabled": true, "percent": 50}  /vote tod <time>
                                                    (needs world_layer_sync)
-                   "percent" is the share of connected players whose yes passes
-                   it. "seconds" (default 30) is how long a vote runs and
+                     "extend_map": {"enabled": true, "percent": 50}  /vote extend
+                                                   (on by default; needs
+                                                   maps.rotation_minutes: the
+                                                   map in play gets
+                                                   rotation_extend_minutes more)
+                   "percent" is the share of the votes cast that yes needs to
+                   pass it: players who do not vote count for neither side. A
+                   vote runs its time and is decided then, or sooner once the
+                   players still to vote could not change it. A kick always
+                   needs two yes votes. "seconds" (default 30) is how long a vote runs and
                    "cooldown_seconds" (default 60) how long a player waits before
                    starting another. Players vote with /yes and /no in chat;
                    admins cannot be vote-kicked.
+                   "kick_minutes" (default 5) is how long a player kicked by a
+                   vote is kept out: 1-1440 minutes, or 0 for until the server
+                   restarts. Console: votes kick-minutes <minutes>|restart.
                    Each vote may also have its own "seconds" and
                    "cooldown_seconds" (0: the ones above) and "min_players", the
                    players who must be on before anyone can start it (default 1).
@@ -277,6 +394,11 @@ custom             Votes of your own: a list, each running a server command
                       "command": "map {map}", "percent": 60}
                      {"name": "noclip", "description": "Turn noclip on or off",
                       "command": "noclip {arg}", "choices": ["on", "off"]}
+                     {"name": "park", "description": "Spawn a park for 30 min",
+                      "command": "park-mod add {arg} 30",
+                      "choices": ["street", "plaza"], "percent": 60}
+                     {"name": "unpark", "description": "Remove a park",
+                      "command": "park-mod remove {arg}", "choices": ["street", "plaza"]}
                    Players start them with /vote restart, /vote noclip off; /vote
                    list shows them. A name and each choice is 1-16 of a-z, 0-9,
                    - and _, and not one of the server's own (map, kick, tod,
@@ -330,19 +452,102 @@ join, managed with ban / unban. The ReSkate team's own list is separate: see
 use_global_bans. A config from an older version that still has "bans" in it has
 them moved there the first time the server starts.
 
-Console and admin commands
---------------------------
-Type these in the server window. Admins run the same commands in the game with
-the console command "mp server <command>". Their replies arrive in chat.
-Admins can also type any of them in chat with a / in front (/kick, /map, /votes).
-Admins can also change the server's map by picking a level in Levels or Travel,
-and change voice, distances, placement and kicks from the Multiplayer menu.
+Chat words
+----------
+Two files in data/, beside the bans, hold this server's own chat words. Both are
+made, empty, the first time the server starts. One word to a line; a line
+starting with # is a comment. Edit them and type: words reload
+
+  data/words_filtered.txt  Words this server filters, on top of the team's.
+                           Messages with them are still passed on; the server
+                           sends the list to its players' games, which show
+                           the word as stars to players who have their chat
+                           filter on. The first 256 words of up to 32 letters
+                           are sent.
+  data/words_blocked.txt   Words not allowed in this server's chat at all, on
+                           top of the team's. A message with one is not passed
+                           on and its player is warned (word_warnings).
+
+"use_global_word_filter": false leaves the team's lists out altogether, so only
+words_blocked.txt is refused.
+
+What this does not change: each player's game still stars out the team's
+filtered words for a player who has their chat filter on, and hides a server
+whose name has one of the team's words from the server browser. Those are the
+team's lists in the player's game, whatever a server sets.
+
+Roles
+-----
+Who may do what is in data/roles.json, beside the bans. README-roles.txt has the
+whole of it: every permission and every command a role can be given, with
+examples. In short, the server writes the file the first time it starts, with
+five roles to change or add to (up to 32):
+
+  player      Everybody who was given no role: chat, votes, parties and private
+              messages, and no commands. ("default_role" names it.)
+  vip         A reserved slot and a VIP tag.
+  moderator   kick, ban, unban, messages, tphere and giving out the roles
+              below it; a reserved slot, anti-cheat alerts, polls.
+  admin       Every command and every permission.
+  muted       For a player who is to keep quiet: no chat or private messages.
+
+A role is:
+
+  name         1 to 24 of a-z, 0-9, - and _.
+  tag          The word shown before the player's name in the game, up to 16
+               characters ("" for none). Not one the game uses itself (Server,
+               Host, Friend, Dev, ReSkate Admin...).
+  color        The tag's colour, like "#FF74C6".
+  rank         0 to 1000. Nobody kicks, bans or changes the role of a player
+               whose rank is theirs or higher, or gives out a role whose rank
+               is. Only the server's own window is above every role.
+  commands     The server commands the role may use, by the names below (kick,
+               map, tod, placement...). "*" is every command except role and
+               reserved, which a role has only when it lists them.
+  permissions  What it may do besides commands:
+                 chat               talk in chat
+                 votes              start the votes that are on, and vote
+                 parties            parties and their chat
+                 whisper            private messages (/w)
+                 reserved_slot      join when the server is full
+                 unlimited_objects  no object limit; build and resize when
+                                    players may not
+                 movement           noclip, No Bail and the boosts when
+                                    players may not
+                 no_afk_kick        never removed for being away
+                 vote_kick_immune   cannot be kicked by a vote
+                 anticheat_alerts   told in chat what the anti-cheat finds
+                 polls              start and end polls when players may not
+  inherit      true (the default): the role also has everything the default
+               role has. false: only what it lists itself, as muted does.
+
+"players" in the file is who has which role, by SteamID64. Change it with
+  role <player or SteamID64> <role>     give a player a role
+  role <player or SteamID64> none       take it away (they are the default role again)
+  roles                                 list the roles and who has them
+  roles reload                          read data/roles.json again after editing it
+A file with a mistake in it is not loaded, and the server says what is wrong.
+
+A config from before there were roles lists its admins under "access": they are
+moved into the admin role the first time the server starts.
+
+The game shows a player the controls their role gives them: a moderator sees
+kick and ban in the Multiplayer menu, a role with map can pick the server's
+level, and so on. A setting their role cannot change shows as set by the server.
+
+Console and role commands
+-------------------------
+Type these in the server window. Players whose role has a command run it in the
+game with the console command "mp server <command>", or in chat with a / in
+front (/kick, /map, /votes). Their replies arrive in chat. They can also use
+the game's menus for what their role gives them: the server's map from Levels
+or Travel, and voice, distances, placement and kicks from the Multiplayer menu.
 
   help                          A short list of every command.
   status                        Name, map, players, code.
   players                       Connected players and their SteamID64s.
   reserved                      Who has a reserved slot, and how many extra slots there are.
-  reserved add|remove <player or id>   (console only)
+  reserved add|remove <player or id>   (the console, or a role that lists reserved)
   net [player]                  How the connections are doing right now: traffic,
                                 queues, the server's own loop timing, and the twelve
                                 connections doing worst. With a player, that one's
@@ -355,14 +560,29 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   msg-party <player> <text>     Message everyone in that player's party ("[DM from <you> to party]").
   msg-admins <text>             Message every admin who is online ("[DM from <you> to admins]").
                                 Players can whisper each other with /w <player> <text> in chat.
-  kick <player>                 Until the server restarts. Name start or SteamID64.
-                                Admins cannot kick or ban each other; the console can.
+  kick <player> [minutes]       For that many minutes (1-1440), or "restart" for until
+                                the server restarts; with neither, for as long as
+                                kick-time says. Name start or SteamID64.
+  kick-time <minutes>|restart   How long a player kicked by an admin is kept
+                                out: 1-1440 minutes, or until the server restarts.
+                                Nobody kicks or bans a player of their rank or above; the console can.
   ban <player or id> [name]     For good.   unban <id>   bans
   map <name>                    e.g. map San Vansterdam, map grom, map bbcity
   maps                          The maps this server knows.
+  maps reload                   Read the Mods folder again: a map mod copied in
+                                while the server runs can be switched to at once.
+  maps update                   Ask Thunderstore now for the newest version of
+                                each of this server's maps and take it (see
+                                maps.latest_versions); the log says what it did.
+  maps latest on|off            Turn maps.latest_versions on or off.
+  maps latest every <minutes>   How often Thunderstore is asked.
   map-pool [add|remove <map>|clear]   The maps players vote between and the
                                 rotation uses (see maps.pool).
   rotation [<minutes>|off]      Change the map on a timer (see maps.rotation_minutes).
+  rotation vote on|off          Players vote for the next map when the time is up.
+  rotation stay <minutes>|off   What "Stay here" in that vote adds (off: not offered).
+  rotation announce on|off      Tell players at 10, 5 and 1 minutes left.
+  rotation extend [minutes]     Give the map in play more time now.
   name <text>   password <text|off>   welcome <text|off>   listed on|off
   voice on|off   voice-range <m>
   distances <full> <half> <half-return> <low>
@@ -375,14 +595,36 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   tuning on|off                 Everyone on the game's own physics tuning.
   tpall [player]                Everyone to you (admins in game) or to a player.
   tphere <player>               One player to you (admins in game).
+  teleport <players> <player|x y z>
+                                Players to a player or a place. <players> is one
+                                player, or SteamID64s joined by commas with no
+                                spaces (at most 64); ones not on or not in the
+                                world yet are skipped and named. x y z are world
+                                units as the log prints them, e.g. "placed ... at
+                                (-247, 2172, -259)"; y is up. Several players
+                                stand in a ring round the target. Logged as
+                                "[teleport] <n> player(s) to <target> by <who>".
   park <construction|historic|financial> <layout>
   park random                  Randomize all three park slots (excludes empty lots).
+  park-mod list                 The park mods (maps.park_mods); spawned ones with
+                                their minutes left.
+  park-mod add <name> [<name>...] [minutes]   Spawn parks on the current map:
+                                for 1-1440 minutes, or until removed. All or none.
+  park-mod remove <name> [<name>...]   park-mod clear   Remove spawned parks.
+  park-mod reload <name> [<name>...]   Read a spawned park's file again (its mod
+                                was updated) and swap its objects in place; it keeps
+                                its timer.
+  park-mod config add <name> | <mod folder> | <map> [| <key>]   Set up a park mod
+                                while the server runs, saved to maps.park_mods, e.g.
+                                park-mod config add street | popular skate 2 street park | San Vansterdam | bam
+  park-mod config remove <name>   Take one out of the setup (removing it if spawned).
   layer-sync on|off   layer <key> default|on|off
   layers <key>=<mode> ...       Several world layers at once, each default, on or off.
   tod <default|morning|noon|afternoon|evening|night|weatherday|weathernight>
                                 Time of day on every map (needs layer-sync on).
   votes [map|kick|tod on|off|<percent>]   The vote settings (see votes).
   votes seconds <n>   votes cooldown <n>   vote-cancel
+  votes kick-minutes <n>|restart   How long a vote kick keeps the player out (5).
   votes <vote> seconds|cooldown|min-players <n>   One vote's own limits; <vote>
                                 is map, kick, tod or a custom vote's name, which
                                 also takes on|off|<percent>.
@@ -398,15 +640,22 @@ and change voice, distances, placement and kicks from the Multiplayer menu.
   announcements [list | add <text> | remove <n> | clear | interval <minutes>|off]
                                 The messages posted on a timer.
   activity-log on|off           Log player activity (see activity_log).
+  words [reload | global on|off]
+                                This server's chat words: what is in use, read
+                                the two files again, or use the ReSkate team's
+                                lists or not (see Chat words).
   announce-throwdowns on|off    Chat message when a throwdown is placed.
   parties [on|off]              List the parties, or allow them (off ends them all).
   party-size <2-8>              Most players in one party.
   afk-kick <minutes>|off        Remove players who have been away that long.
   speed-check off|warn|kick     What happens to players whose game runs fast.
+  board-check off|warn|kick     What happens to players who keep their skateboard
+                                on another player.
   score-check [off|warn|kick]   What happens to players whose mods change scoring
                                 or physics; with no argument, every player's result.
   score-allow [<fingerprint>|remove <fingerprint>]   Accept a scoring mod's
                                 fingerprint like the game's own (or list them).
-  admin add|remove <player or id>   admins      (console only)
+  roles [reload]                The roles and who has them; reload reads data/roles.json again.
+  role <player or id> <role>|none   Give a player a role, or take theirs away.
   update                        Check for a new release and install it now (console only).
   quit, exit or stop            Shut the server down (console only).

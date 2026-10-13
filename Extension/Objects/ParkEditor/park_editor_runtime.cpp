@@ -10,6 +10,8 @@
 #include "Extension/Objects/network_object_runtime.h"
 #include "park_document.h"
 #include "park_mods.h"
+#include <chrono>
+#include <future>
 
 namespace dingosdk::profile_runtime {
 namespace park_editor_detail {
@@ -30,16 +32,52 @@ const profile::PlacedObject *find_object(const profile::ObjectLayout &objects, s
     return it == objects.end() ? nullptr : &*it;
 }
 std::atomic<bool> park_mod_list_visible{true};
-void refresh_park_mods() {
-    auto &e = editor_state();
-    e.next_park_scan = GetTickCount64() + 5000;
+// What is in the Mods folder: every mod's manifest is read to find the ones with parks, which
+// with many mods takes ten milliseconds and more.
+struct ParkScan {
+    std::vector<editor::ParkMod> mods;
+    std::vector<std::string> legacy;
+};
+ParkScan scan_parks(const std::filesystem::path &data_root, const std::filesystem::path &directory) {
+    ParkScan found;
     try {
-        e.park_mods = e.data_root.empty() ? std::vector<editor::ParkMod>{} : editor::list_park_mods(e.data_root);
-        e.legacy_parks = e.directory.empty() ? std::vector<std::string>{} : editor::list_parks(e.directory);
+        if (!data_root.empty()) found.mods = editor::list_park_mods(data_root);
+        if (!directory.empty()) found.legacy = editor::list_parks(directory);
     } catch (...) { /* An unreadable Mods folder just lists nothing. */ }
+    return found;
+}
+void use_park_scan(ParkScan found) {
+    auto &e = editor_state();
+    e.park_mods = std::move(found.mods);
+    e.legacy_parks = std::move(found.legacy);
     if (!e.project.empty() && std::none_of(e.park_mods.begin(), e.park_mods.end(),
                                            [&](const auto &mod) { return mod.folder == e.project; }))
         e.project.clear(); // The project was removed or renamed outside the game.
+}
+// The look every few seconds runs on a thread of its own and is taken up when it is done
+// (poll_park_mods): on the game's thread it was a hitch every five seconds. `park_scans` counts
+// the looks asked for, so one that a later look has overtaken is dropped.
+std::future<ParkScan> park_scan;
+std::uint64_t park_scans{}, park_scan_running{};
+// At once: after the player made, renamed or removed a park, when the list has to be right.
+void refresh_park_mods() {
+    auto &e = editor_state();
+    e.next_park_scan = GetTickCount64() + 5000;
+    ++park_scans;
+    use_park_scan(scan_parks(e.data_root, e.directory));
+}
+void poll_park_mods() {
+    auto &e = editor_state();
+    if (park_scan.valid()) {
+        if (park_scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        auto found = park_scan.get();
+        if (park_scan_running == park_scans) use_park_scan(std::move(found));
+        return;
+    }
+    if (GetTickCount64() < e.next_park_scan) return;
+    e.next_park_scan = GetTickCount64() + 5000;
+    park_scan_running = ++park_scans;
+    park_scan = std::async(std::launch::async, [data_root = e.data_root, directory = e.directory] { return scan_parks(data_root, directory); });
 }
 // Multiplayer guests play on the host's objects; only the host swaps layouts.
 bool is_lobby_guest() {
@@ -603,8 +641,7 @@ ParkEditorModel local_park_editor() {
     model.can_undo = idle() && !e.undo.empty();
     model.can_redo = idle() && !e.redo.empty();
     model.assets = e.assets;
-    if (park_mod_list_visible.load(std::memory_order_relaxed) && GetTickCount64() >= e.next_park_scan)
-        refresh_park_mods();
+    if (park_mod_list_visible.load(std::memory_order_relaxed)) poll_park_mods();
     for (const auto &mod : e.park_mods)
         model.park_mods.push_back({mod.folder, mod.details.title, mod.details.author, mod.details.version,
                                    mod.details.description, mod.enabled,

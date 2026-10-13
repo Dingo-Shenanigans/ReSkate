@@ -1,0 +1,5 @@
+#pragma once
+namespace dingosdk::crash_report {
+inline constexpr wchar_t configured_url[] = L"@crash_report_url_escaped@";
+inline constexpr char build_version[] = "@crash_report_version@";
+}

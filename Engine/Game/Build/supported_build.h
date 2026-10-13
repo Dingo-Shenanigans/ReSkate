@@ -23,6 +23,10 @@ inline constexpr std::uint32_t steam_app_id = 3354750;
 inline constexpr std::uint32_t steam_depot_id = 3354751;
 inline constexpr std::string_view steam_manifest_id = "4621099302092747785";
 inline constexpr std::string_view steam_build_id = "25414733";
+// The build number this build's data files carry (Data\layout.toc, "pipelineCodeChangelists"):
+// what mods made for it carry too. Data of another number beside a supported Skate.exe is a
+// game that was updated or copied over in part, and has to be verified.
+inline constexpr std::string_view game_data_changelist = "29544144";
 // The live game's HTTP content cache for this build (catalogue chunks and CDN
 // images), published as a ReSkateCache release and installed by the launcher.
 inline constexpr std::wstring_view content_cache_url =

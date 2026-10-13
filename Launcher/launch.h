@@ -19,9 +19,20 @@ struct Session {
 Session open_session(const std::string& log_level);
 // Skate.exe and steam_api64.dll are present and exactly the supported build.
 bool game_files_supported(const launcher::SiblingPaths& paths);
+// The build number the installed game's data says it is (Data\layout.toc), or empty when
+// there is none or it cannot be read.
+std::string game_data_build(const launcher::SiblingPaths& paths);
+// Whether the game's data is missing or of another build than the supported one, whatever
+// Skate.exe is: Steam updated the game under it, a copy of an updated game was put here, or a
+// download stopped part-way. Such a game has to be verified against the supported build, file
+// by file, not only topped up. False when the data's build cannot be told.
+bool game_data_mismatched(const launcher::SiblingPaths& paths);
 // The config's depot/manifest ships the build this launcher was compiled for.
 bool config_matches_build(const launcher_update::Config& config);
 void relaunch(const std::filesystem::path& self, const std::vector<std::wstring>& arguments);
+// Under Wine/Proton with MangoHud on, restarts the launcher with MangoHud off for
+// its own window and returns true. The game it starts still gets MangoHud.
+bool relaunch_without_mangohud(const std::filesystem::path& self, const std::vector<std::wstring>& arguments);
 // Steam's client process is running and signed in to an account. When it is
 // not, start_game runs the game in offline mode.
 bool steam_signed_in();

@@ -5,7 +5,7 @@
 #include <functional>
 #include <string>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 inline constexpr std::uintmax_t max_dump_bytes = 128ull * 1024 * 1024;
 inline constexpr std::size_t max_pending_reports = 20;
 struct Endpoint { std::wstring host, resource; USHORT port{}; };

@@ -1,5 +1,6 @@
 #pragma once
 #include "world_layer_catalog.h"
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,38 @@
 #include <vector>
 
 namespace dingosdk {
+
+// Layers ReSkate keeps switched off and does not offer: the seasons' content on San Vansterdam
+// (seasons 5 and 6) and the Isle of Grom (season 5). They keep their rows in the catalog, which
+// players and servers share by position, so nothing about a session's layer list changes; the
+// game just treats each as "off" whatever is saved or sent for it (local_world_layers.cpp),
+// and no menu or console command names it.
+inline constexpr std::array<std::string_view, 8> world_layers_kept_off{
+    "bam_dtn_season_05_content", "bam_dtn_season_05_inactive", "bam_dtn_season_05_permacontent",
+    "bam_dev_seasonal_content_season_06", "bam_dtn_season_06_content", "bam_dtn_season_06_inactive",
+    "bam_dtn_season_06_permacontent", "grom_season_05_content"};
+inline bool world_layer_kept_off(std::string_view key) noexcept {
+    for (const auto kept : world_layers_kept_off)
+        if (kept == key) return true;
+    return false;
+}
+// A layer's name as menus show it: its label without the developers' own marks, the words
+// DEV and DTN ("DTN Season 04 Content" is "Season 04 Content").
+inline std::string world_layer_title(std::string_view label) {
+    std::string title;
+    for (std::size_t at = 0; at < label.size();) {
+        const auto end = std::min(label.find(' ', at), label.size());
+        const auto word = label.substr(at, end - at);
+        at = end + 1;
+        const bool mark = word.size() == 3 && (word[0] == 'D' || word[0] == 'd') &&
+            (((word[1] == 'E' || word[1] == 'e') && (word[2] == 'V' || word[2] == 'v')) ||
+             ((word[1] == 'T' || word[1] == 't') && (word[2] == 'N' || word[2] == 'n')));
+        if (mark || word.empty()) continue;
+        if (!title.empty()) title += ' ';
+        title += word;
+    }
+    return title.empty() ? std::string(label) : title;
+}
 
 inline constexpr std::array<std::string_view, 3> world_layer_modes{"default", "on", "off"};
 // One choice per catalog row (world_layers()), in catalog order.

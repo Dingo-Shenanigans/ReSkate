@@ -656,8 +656,12 @@ bool SteamTransport::connect_peer(std::uint64_t id) {
     const auto connection =
         p.connect(p.sockets, &identity, virtual_port, static_cast<int>(options.size()), options.data());
     p.closed.erase(id);
+    // The link's name only labels it in diagnostics: the one already read, if any, and poll
+    // fills it in. Asking Steam here waited on the Steam client for ten milliseconds and more,
+    // a hitch each time a player came into reach.
+    const auto known = p.names.find(id);
     if (connection)
-        p.links.emplace(id, Impl::Link{connection, GetTickCount64(), false, name(id),
+        p.links.emplace(id, Impl::Link{connection, GetTickCount64(), false, known != p.names.end() ? known->second.text : std::string{},
                                       p.lanes.setup(p.sockets, connection)});
     p.publish_links();
     return connection != 0;

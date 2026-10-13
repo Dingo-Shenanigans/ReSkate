@@ -1,11 +1,11 @@
-#include "backtrace.h"
+#include "crash_report.h"
 #include "protocol.h"
-#include "backtrace_config.h"
+#include "crash_report_config.h"
 #include <algorithm>
 #include <format>
 #include <vector>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 namespace {
 std::array<HANDLE, handle_count> handles{};
 HANDLE helper{};
@@ -27,7 +27,7 @@ StartResult start(const std::filesystem::path& log_directory) noexcept {
     try {
         if (report) return StartResult::ready;
         if (environment(L"RESKATE_CRASH_REPORTING") == L"0") return StartResult::disabled;
-        auto url = environment(L"RESKATE_BACKTRACE_URL");
+        auto url = environment(L"RESKATE_CRASH_REPORT_URL");
         if (url.empty()) url = configured_url;
         if (url.empty()) return StartResult::disabled;
         if (!url.starts_with(L"https://") || url.size() >= SharedReport{}.url.size()) return StartResult::failed;

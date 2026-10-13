@@ -64,8 +64,9 @@ inline bool can_load(const State& s, const overlay::Model& m, const overlay::Cal
 }
 // Layers and parks the host controls are locked, except for a dedicated
 // server's admins: their changes go to the server, which applies them to everyone.
-inline bool layers_locked(const overlay::Model& m) { return m.world.controlled_by_host && !m.multiplayer.server_admin; }
-inline bool parks_locked(const overlay::Model& m) { return m.parks.controlled_by_host && !m.multiplayer.server_admin; }
+// (On a dedicated server: unless the player's role has the command that changes them for everyone.)
+inline bool layers_locked(const overlay::Model& m) { return m.world.controlled_by_host && !server_can(m.multiplayer, "layers"); }
+inline bool parks_locked(const overlay::Model& m) { return m.parks.controlled_by_host && !server_can(m.multiplayer, "park"); }
 inline bool can_park(const overlay::Model& m, const overlay::CallbacksV3& cb) {
     return m.world.map == WorldMap::bam && m.parks.available && !parks_locked(m) && cb.queue_console_command;
 }
@@ -113,7 +114,7 @@ inline std::vector<std::string> time_of_day_commands(const overlay::Model& m, un
         if (slot + 1 == next) { commands.push_back(line); pairs.push_back(std::string(key) + "=" + mode); }
         else { commands.insert(commands.begin(), line); pairs.insert(pairs.begin(), std::string(key) + "=" + mode); }
     }
-    if (m.multiplayer.server_admin && m.world.controlled_by_host) {
+    if (server_can(m.multiplayer, "layers") && m.world.controlled_by_host) {
         std::string batch = "mp server layers";
         for (const auto& pair : pairs) batch += " " + pair;
         return {batch};
@@ -201,6 +202,28 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
     } else if (command == "hall-of-meat") {
         console(m.hall_of_meat.enabled ? "hallofmeat 0" : "hallofmeat 1", m.hall_of_meat.available);
+    } else if (command == "road-rash") {
+        console(m.road_rash.enabled ? "roadrash 0" : "roadrash 1", m.road_rash.available);
+    } else if (command == "road-rash-blood") {
+        console(m.road_rash.blood ? "roadrashblood 0" : "roadrashblood 1", m.road_rash.available && m.road_rash.enabled);
+    } else if (command == "road-rash-heal") {
+        console("roadrash heal", m.road_rash.available && m.road_rash.enabled);
+    } else if (command == "board-break") {
+        console(m.board_break.enabled ? "boardbreak 0" : "boardbreak 1", m.board_break.available);
+    } else if (command == "board-break-deck") {
+        console("boardbreak deck next", m.board_break.available && m.board_break.has_deck);
+    } else if (command == "grind-exits") {
+        console(m.grind_exit.enabled ? "grindexit exits off" : "grindexit exits on", m.grind_exit.available);
+    } else if (command == "grind-exit-sides") {
+        console(m.grind_exit.toe_heel ? "grindexit sides travel" : "grindexit sides toeheel", m.grind_exit.available);
+    } else if (command == "grind-exit-stance") {
+        // Not set or regular -> goofy -> regular.
+        console(m.grind_exit.stance == 2 ? "grindexit stance regular" : "grindexit stance goofy", m.grind_exit.available);
+    } else if (command == "grind-exit-strength") {
+        // 100 -> 75 -> 50 -> 25 -> 100 (the ReSkate menu's slider sets any value from 10 to 100).
+        const int strength = m.grind_exit.strength;
+        const int next = strength > 75 ? 75 : strength > 50 ? 50 : strength > 25 ? 25 : 100;
+        console("grindexit strength " + std::to_string(next), m.grind_exit.available);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -257,7 +280,7 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         button(p.side, "time-of-day", std::string("Time of day: ") + time_of_day_labels[time_of_day(m)],
             "time-of-day", time_of_day_available(m, cb));
         if (m.world.controlled_by_host)
-            text(p.side, "time-status", m.multiplayer.server_admin ? "You are an admin: time of day changes for the whole server."
+            text(p.side, "time-status", server_can(m.multiplayer, "tod") ? "Your role sets it: time of day changes for the whole server."
                                                                    : "The lobby host controls world layers, including time of day.");
         load_status("load-status");
     } else if (section == custom_section) {
@@ -296,6 +319,25 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
         toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
+        toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
+        toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
+            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+        button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
+            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+        toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
+        button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
+            m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
+        const auto& grind = m.grind_exit;
+        const bool grind_console = grind.available && cb.queue_console_command;
+        toggle(p.main, "grind-exits", "Grind exit triggers", grind.enabled, grind_console);
+        button(p.main, "grind-exit-sides", std::string("Input Mode: ") + (grind.toe_heel ? "Toe / Heel" : "Left / Right"),
+            "grind-exit-sides", grind_console);
+        if (grind.toe_heel)
+            button(p.main, "grind-exit-stance",
+                std::string("Your stance: ") + (grind.stance == 2 ? "Goofy" : grind.stance == 1 ? "Regular" : "Not set"),
+                "grind-exit-stance", grind_console);
+        button(p.main, "grind-exit-strength", "Pop-out strength: " + std::to_string(grind.strength) + "%", "grind-exit-strength",
+            grind_console);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",

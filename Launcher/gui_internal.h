@@ -1,8 +1,10 @@
 #pragma once
 
 #include "gamepad_input.h"
+#include "game_settings.h"
 #include "launch.h"
 #include "text_encoding.h"
+#include "mod_profiles.h"
 #include "thunderstore.h"
 
 #include "Engine/Vfs/mod_list.h"
@@ -190,6 +192,8 @@ struct Settings {
     bool updates{true};
     // Off: a crash uploads nothing (RESKATE_CRASH_REPORTING=0 for the launcher and the game).
     bool crash_reports{true};
+    // On: launches send how long their steps took (RESKATE_TRACING=1 for the launcher and the game).
+    bool performance_timings{};
     std::string steam_username;   // never the password
     bool steam_remember{true};
     bool steam_prefer_code{};
@@ -300,10 +304,43 @@ private:
     void run_play();
 };
 
+// The CHANGELOGS panel's release, the newest: fetched on a worker the first time the panel
+// opens and kept while the launcher runs. `note` and `text` belong to the UI thread.
+struct Changelog {
+    std::thread worker;
+    std::atomic<bool> loading{};
+    std::mutex mutex;
+    bool arrived{};                                  // worker -> UI, under mutex
+    update::ReleaseNote incoming;
+    std::string incoming_error;
+
+    bool loaded{};
+    std::string error;                               // why the last fetch failed
+    update::ReleaseNote note;
+    thunderstore::Readme text;
+
+    ~Changelog() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
+// Settings > GRAPHICS, AUDIO, CAMERA, CONTROLS, REPLAY: skate.'s own settings, read from its
+// save each time Settings opens (game_settings.h).
+struct GamePages {
+    bool loaded{};
+    launcher_game_settings::Saved saved;
+    launcher_game_settings::Values values;          // as shown; stored once no control is held
+    std::vector<std::pair<int, int>> resolutions;   // this PC's, for the Resolution setting
+    std::string error;          // why they could not be read, or the last change not stored
+};
+
 // Panels the main screen can show; one at a time.
 struct Ui {
     bool settings{};
-    int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED
+    GamePages game;
+    bool changelog{};
+    Changelog notes;
+    int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED, then the game's own pages
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
     bool mods{};
@@ -452,9 +489,30 @@ struct ModsPanel {
     Icons icons;
     Readmes readmes;
 
+    // PROFILES (gui_mods_profiles.cpp).
+    launcher_profiles::Profiles profiles;
+    bool profiles_loaded{};
+    std::array<char, 64> profile_name{};    // typed for a new profile
+    std::array<char, 96> profile_code{};    // typed to import
+    std::array<char, 64> profile_renamed{}; // typed in the rename popup
+    std::string profile_rename;             // the profile being renamed
+    std::string profile_delete;             // the profile awaiting "Delete" confirmation
+    // Loaded while its missing mods download: put in its order again once they are in.
+    std::string profile_settle;
+    // Talking to Thunderstore's profile service, off the UI thread.
+    struct ProfileResult {
+        bool ready{}, error{};
+        std::string message, clipboard;
+        std::optional<launcher_profiles::Profile> imported;
+    };
+    std::thread profile_worker;
+    std::atomic<bool> profile_busy{};
+    ProfileResult profile_result;           // worker -> UI, under mutex
+
     ~ModsPanel() {
         cancel = true;
         if (worker.joinable()) worker.join();
+        if (profile_worker.joinable()) profile_worker.join();
     }
 };
 
@@ -462,6 +520,19 @@ void scan(ModsPanel& panel, const launcher_app::Session& session);
 // Re-reads the Mods folder and the Thunderstore listing.
 void refresh_mods(Launcher& launcher, ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
+// The Windows file (or folder) picker; empty when cancelled. A file picker shows
+// `filter_pattern` ("*.zip") under `filter_name`.
+fs::path pick_path(HWND owner, bool folder, const wchar_t* title, const wchar_t* filter_name, const wchar_t* filter_pattern);
+
+// ---------------------------------------------------------------- Profiles (gui_mods_profiles.cpp)
+
+// The PROFILES page body, under the page header.
+void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float height, bool installing);
+// The rename and delete confirmations; call once a frame with the page's other popups.
+void profile_popups(ModsPanel& panel);
+// A profile loaded while its mods downloaded is put in order once they are in; call once
+// a frame, after collect_install.
+void settle_profile(ModsPanel& panel);
 
 // ---------------------------------------------------------------- Thunderstore (gui_mods_browse.cpp)
 
@@ -492,6 +563,8 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
 // The README section of an overview: the installed mod's own README.md when it has one, else
 // the package's from Thunderstore. Either may be null. False, with nothing drawn, when there is none.
 bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod);
+// A README's lines, wrapped to the window (also a release's notes: the same markdown).
+void draw_readme(const Fonts& fonts, const thunderstore::Readme& readme);
 // An overview's body: the README in a child of `readme` width (the caller's), then
 // begin_overview_details ... end_overview_details around its facts, each an overview_fact.
 struct OverviewColumns { float readme{}, details{}, height{}, gap{}; };
@@ -508,6 +581,8 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
 void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui);
 void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::vector<std::string>& rows);
 void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui);
+// What the newest release changed: its notes on GitHub.
+void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui);
 void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window);
 void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel, HWND window);
 // Shown instead of launching when the merge left mods out.

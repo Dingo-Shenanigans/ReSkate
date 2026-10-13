@@ -1,5 +1,6 @@
 #include "logging_internal.h"
-#include "Engine/Core/Debug/backtrace.h"
+#include "Engine/Core/Debug/crash_report.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Console/console_core.h"
 #include <spdlog/logger.h>
 #include <spdlog/sinks/base_sink.h>
@@ -186,12 +187,14 @@ bool initialize(const Options& options) noexcept {
         }
         s.initialized = true;
         detail::install_crash_report(options.directory);
-        const auto reporter = backtrace::start(options.directory);
-        emit_locked(s, reporter == backtrace::StartResult::failed ? Level::warning : Level::info,
+        const auto reporter = crash_report::start(options.directory);
+        emit_locked(s, reporter == crash_report::StartResult::failed ? Level::warning : Level::info,
             Context::sdk, Channel::runtime,
-            reporter == backtrace::StartResult::ready ? "Backtrace crash reporting enabled."
-            : reporter == backtrace::StartResult::disabled ? "Backtrace crash reporting disabled."
-            : "Backtrace crash reporter could not start; local crash logging remains active.");
+            reporter == crash_report::StartResult::ready ? "Crash reporting enabled."
+            : reporter == crash_report::StartResult::disabled ? "Crash reporting disabled."
+            : "Crash reporter could not start; local crash logging remains active.");
+        if (trace::start())
+            emit_locked(s, Level::info, Context::sdk, Channel::runtime, "Performance timings are sent for this launch.");
         return s.file_output.load();
     } catch (...) {
         OutputDebugStringA("ReSkate logging initialization failed; debugger output remains available.\n");

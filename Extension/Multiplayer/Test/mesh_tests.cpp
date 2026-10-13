@@ -8,6 +8,7 @@
 #include "Extension/Multiplayer/Session/session_party.cpp"
 #include "Engine/Game/World/park_randomization.h"
 #include <iostream>
+#include <map>
 #include <set>
 
 namespace dingosdk {
@@ -28,6 +29,7 @@ void apply_host_park_choices(const ParkChoices& choices) {
 std::optional<NetworkObjectSnapshot> capture_local_network_objects() { return {}; }
 void set_remote_network_objects(std::string_view, std::span<const NetworkObjectOwner>) {}
 void clear_remote_network_objects() {}
+void set_network_object_owner_solid(std::uint64_t, bool) {}
 std::vector<std::pair<std::uint64_t, std::uint64_t>> removed_object_owners;
 void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch) {
     if (owner && epoch) removed_object_owners.emplace_back(owner, epoch);
@@ -73,10 +75,27 @@ std::string status() { return {}; }
 namespace dingosdk::profile_runtime {
 void install_script_error_log(std::uintptr_t) noexcept {}
 void install_board_wear_hold(std::uintptr_t) noexcept {}
-std::optional<bool> local_preference(std::string_view) noexcept { return {}; }
-void set_local_preference(std::string_view, bool) noexcept {}
-std::optional<Json> local_value(std::string_view) noexcept { return {}; }
-void set_local_values(const std::vector<std::pair<std::string, Json>>&) noexcept {}
+bool simulated_profile_store_ready = true;
+std::map<std::string, Json, std::less<>> simulated_profile;
+bool local_profile_store_ready() noexcept { return simulated_profile_store_ready; }
+std::optional<bool> local_preference(std::string_view key) noexcept {
+    const auto value = local_value(key);
+    if (value && value->is_boolean()) return value->get<bool>();
+    return {};
+}
+void set_local_preference(std::string_view key, bool value) noexcept {
+    set_local_values({{std::string(key), value}});
+}
+std::optional<Json> local_value(std::string_view key) noexcept {
+    if (!simulated_profile_store_ready) return {};
+    const auto it = simulated_profile.find("ReSkate." + std::string(key));
+    if (it == simulated_profile.end()) return {};
+    return it->second;
+}
+void set_local_values(const std::vector<std::pair<std::string, Json>>& values) noexcept {
+    if (!simulated_profile_store_ready) return;
+    for (const auto& [key, value] : values) simulated_profile["ReSkate." + key] = value;
+}
 }
 
 namespace dingosdk::multiplayer {
@@ -272,6 +291,7 @@ std::uintptr_t remote_board_entity() noexcept { return 0; }
 std::uint64_t remote_skater_generation() noexcept { return 0; }
 void note_remote_distance(float) noexcept {}
 void update_native_party(std::uintptr_t, const PartyRoster &, unsigned, bool) noexcept {}
+void set_native_party_server(std::uint64_t, std::string_view) noexcept {}
 void set_native_party_changes(bool) noexcept {}
 bool post_native_party_invite(std::uint64_t) noexcept { return false; }
 void set_native_nametags_enabled(bool) noexcept {}
@@ -1150,6 +1170,20 @@ void tick_settings_checks() {
     }
     (void)command("host", "code 8 120 is a lobby name");
     check(configured.tps == 30 && configured.lobby_name == "120 is a lobby name", "Legacy host command changed meaning");
+    profile_runtime::simulated_profile.clear();
+    stop(configured, "Lobby name persistence");
+    (void)command("host-config", "code 8 30 Persisted lobby");
+    check(configured.lobby_name == "Persisted lobby", "Host did not use the requested lobby name");
+    const auto stored = profile_runtime::local_value("Host.LobbyName");
+    check(stored && stored->is_string() && stored->string() == "Persisted lobby",
+          "Host did not save the lobby name to the profile");
+    stop(configured, "Lobby name persistence");
+    configured.host_preferences.loaded = false;
+    (void)command("host-config", "code 8 30");
+    check(configured.lobby_name == "Persisted lobby", "Empty rehost did not reuse the saved lobby name");
+    const auto still_stored = profile_runtime::local_value("Host.LobbyName");
+    check(still_stored && still_stored->is_string() && still_stored->string() == "Persisted lobby",
+          "Empty rehost wiped the saved lobby name");
     // Whose physics guests skate with is the host's to switch, and is remembered for next time.
     check(configured.enforce_tuning, "A new lobby did not start with the host's physics for everyone");
     (void)command("tuning-enforce", "off");
@@ -1881,8 +1915,9 @@ void world_layer_sync_checks() {
     check(decode(bytes) && decode(bytes)->force_world_layers &&
               unpack_world_layers(decode(bytes)->layers) == host.layers, "Roster lost world layer settings");
     // The voice policy (allowed byte, 4-byte revision), voice range (2 bytes) and the guest
-    // noclip / No Bail byte follow the layer modes.
-    const auto layers_end = bytes.size() - 5 - 2 - 1;
+    // noclip / No Bail byte follow the layer modes, then what a dedicated server adds, here
+    // none: polls (1 byte), custom votes (1) and an announcement (4).
+    const auto layers_end = bytes.size() - 5 - 2 - 1 - 6;
     for (std::size_t n = layers_end - world_layers().size() - 1; n < bytes.size(); ++n)
         check(!decode(std::span(bytes).first(n)), "Truncated world layer settings accepted");
     auto malformed = bytes; malformed[layers_end - 1] = 3;
@@ -2235,6 +2270,52 @@ void random_park_sync_checks() {
     simulated_parks = {};
     std::cout << "Random parks: host rolls, current guests, late join and guest spoof rejection passed.\n";
 }
+// Typing dots: the host relays an on notice, an off notice clears it, and a missed off expires.
+void typing_checks() {
+    Simulation sim;
+    for (unsigned i = 0; i < 3; ++i) sim.add();
+    sim.run(60); sim.fresh(3);
+    auto &host = *sim.nodes[0], &first = *sim.nodes[1], &second = *sim.nodes[2];
+    const auto id = [](const Session &s) { return s.transport.status().local_id; };
+    const auto until = [](Session &s, std::uint64_t who) {
+        const auto *peer = find_peer(s, who);
+        return peer ? peer->typing_until : 0;
+    };
+    send_typing(first, true);
+    sim.run(4);
+    check(until(host, id(first)) > sim.now && until(second, id(first)) > sim.now && first.local_typing_until != 0,
+          "A guest's typing notice did not reach the host and the other guest");
+    check(until(first, id(host)) == 0 && second.local_typing_until == 0, "A typing notice was applied to the wrong player");
+    check(std::none_of(host.chat.begin(), host.chat.end(), [](const auto &line) { return line.text == "." || line.text == "..."; }) &&
+              std::none_of(second.chat.begin(), second.chat.end(), [](const auto &line) { return line.text == "." || line.text == "..."; }),
+          "A typing notice was written into chat");
+    send_typing(first, false);
+    sim.run(4);
+    check(until(host, id(first)) == 0 && until(second, id(first)) == 0 && first.local_typing_until == 0,
+          "Stopping typing left the dots up");
+    // A stop with no dots up is not passed on: the other guest would lose this marker if it were.
+    find_peer(second, id(first))->typing_until = sim.now + typing_hold_us;
+    send_typing(first, false);
+    sim.run(4);
+    check(until(second, id(first)) != 0, "A stop notice with no dots up was relayed");
+    find_peer(second, id(first))->typing_until = 0;
+    send_typing(host, true);
+    sim.run(4);
+    check(until(first, id(host)) > sim.now && until(second, id(host)) > sim.now && host.local_typing_until != 0,
+          "The host's typing notice did not reach both guests");
+    send_typing(host, false);
+    sim.run(2);
+    check(until(first, id(host)) == 0 && until(second, id(host)) == 0 && host.local_typing_until == 0,
+          "The host stopping left the dots up");
+    send_typing(first, true);
+    sim.run(4);
+    const auto held = until(second, id(first));
+    check(held > sim.now, "Typing did not start again");
+    sim.run(static_cast<unsigned>(typing_hold_us / network_tick_us) + 8);
+    check(until(second, id(first)) < sim.now && until(host, id(first)) < sim.now && until(second, id(first)) != 0,
+          "A missed stop notice left the dots up, or cleared the deadline");
+    std::cout << "Typing notices: relay, stop and expiry passed.\n";
+}
 } // namespace
 } // namespace dingosdk::multiplayer
 int main(int argc, char **argv) {
@@ -2285,6 +2366,7 @@ int main(int argc, char **argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--travel-only") return 0;
         dingosdk::multiplayer::mesh_checks();
         dingosdk::multiplayer::throwdown_routing_checks();
+        dingosdk::multiplayer::typing_checks();
         dingosdk::multiplayer::party_checks();
         dingosdk::multiplayer::role_checks();
         dingosdk::multiplayer::global_ban_checks();

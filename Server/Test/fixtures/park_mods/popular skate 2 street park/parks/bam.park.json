@@ -1,0 +1,129 @@
+{
+  "format": "reskate-park",
+  "schema_version": 1,
+  "revision": 0,
+  "maps": {
+    "bam": [
+      {
+        "id": 86,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -583.0,
+          1948.35,
+          1651.0
+        ],
+        "rotation": [
+          0.0,
+          0.3827,
+          0.0,
+          0.9239
+        ]
+      },
+      {
+        "id": 87,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -579.0,
+          1948.35,
+          1648.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "id": 88,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -575.0,
+          1948.35,
+          1645.0
+        ],
+        "rotation": [
+          0.0,
+          0.3827,
+          0.0,
+          0.9239
+        ]
+      },
+      {
+        "id": 89,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -571.0,
+          1948.35,
+          1642.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "id": 90,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -567.0,
+          1948.35,
+          1639.0
+        ],
+        "rotation": [
+          0.0,
+          0.3827,
+          0.0,
+          0.9239
+        ]
+      },
+      {
+        "id": 91,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -563.0,
+          1948.35,
+          1636.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {
+        "id": 92,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -559.0,
+          1948.35,
+          1633.0
+        ],
+        "rotation": [
+          0.0,
+          0.3827,
+          0.0,
+          0.9239
+        ]
+      },
+      {
+        "id": 93,
+        "item": "own_bkpads_generic_padlow_00001",
+        "position": [
+          -555.0,
+          1948.35,
+          1630.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    ]
+  }
+}

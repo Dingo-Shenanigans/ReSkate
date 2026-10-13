@@ -11,7 +11,7 @@ enum class Sort { name, players, map };
 // The busiest servers first, until the player picks another order.
 struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; };
 
-// Owned pages: Multiplayer and Custom Stuff (needs the overlay's tool callbacks).
+// Owned pages: Multiplayer and Mod Options (needs the overlay's tool callbacks).
 inline constexpr unsigned page_count = 2, tools_page = 1;
 // Return missing owned slots in canonical order. Existing native stack indices
 // remain untouched, including their active focus bindings. Offline mode has

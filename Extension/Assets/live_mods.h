@@ -47,6 +47,12 @@ inline const char* apply_label(ApplyEffect effect) {
 void set_current_level(std::string level);
 // True while a live merge runs.
 bool busy() noexcept;
+// How far it is: steps done of all, and the step in hand ("Merging items from 12 mods").
+struct Progress {
+    std::size_t done{}, total{};
+    std::string step;
+};
+Progress progress();
 // The last live apply's outcome for the overlay, or empty before the first.
 std::string status();
 // Folder names of the mods in effect now: the launch's, or the last live apply's.
@@ -54,6 +60,9 @@ std::vector<std::string> applied_mods();
 // True when the launch's merge placed this mod's archives (enabled or not),
 // so it can be enabled without a restart.
 bool placed_at_launch(const std::string& name);
+// Whether a mod folder holds maps and nothing else: level bundles and the two files maps
+// register themselves in (its layout and globals). Reads the folder; not cached.
+bool only_maps(const std::filesystem::path& directory);
 // reskate-levels.json of every mod a live apply left enabled, highest
 // priority first; handed out once per successful apply.
 std::optional<std::vector<std::filesystem::path>> take_level_manifests();

@@ -199,7 +199,23 @@ VehicleSampleResult VehicleSampler::sample(const VehicleSampleFrame& frame) {
             emit();
             continue;
         }
-        const auto speed = distance / std::min(seconds, config_.max_interval);
+        auto speed = distance / std::min(seconds, config_.max_interval);
+        if (!std::isfinite(speed) || speed > config_.max_speed) {
+            // A late observation followed by an on-time published pose can
+            // exceed the speed bound over the callback pair alone. Test the
+            // same finite window used below before declaring a new lifetime.
+            // Cold motion and actual windowed jumps still fail this bound.
+            const auto minimum_span = std::max(config_.velocity_window, config_.min_interval);
+            for (std::size_t i = history.pose_count; i > 0; --i) {
+                const auto& previous = history.poses[i-1];
+                const auto span = frame.now-previous.now;
+                if (span+1e-9 < minimum_span || span > config_.max_interval) continue;
+                speed = std::hypot(static_cast<double>(observation.position.x)-previous.position.x,
+                    static_cast<double>(observation.position.y)-previous.position.y,
+                    static_cast<double>(observation.position.z)-previous.position.z)/span;
+                break;
+            }
+        }
         if (!std::isfinite(speed) || speed > config_.max_speed) {
             if (!baseline(observation)) return interrupt(VehicleSampleStatus::invalid);
             continue;

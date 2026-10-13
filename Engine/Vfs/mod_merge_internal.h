@@ -64,6 +64,10 @@ struct ArchivePlacement {
         std::uint64_t offset{};
     };
     std::map<std::pair<std::string, std::uint16_t>, Spot> at;
+    // The mod's files as they were when its archives were placed (mod_fingerprint). A merge
+    // while the game runs places a mod again when they have changed since: one updated, or
+    // removed and installed again at another version, is not read where the old one lay.
+    std::string fingerprint;
 };
 
 // Reverses CasStore::shift: turns a placement in the merged patch back into the
@@ -265,11 +269,15 @@ struct AssetOverrides {
 
 // The changes and additions asset mods (mods that add no levels) make to the
 // game's own EBX and Lua scripts, the highest-priority mod's version winning. Never throws: an
-// unreadable mod is noted and simply changes nothing elsewhere.
+// unreadable mod is noted and simply changes nothing elsewhere. The mods' files are read on up
+// to `threads` threads beside this one (`background`: at a priority under the game's, for a
+// merge while it runs); what they mean together is then settled in priority order, so the
+// result is the same whatever the count.
 AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                                        const std::map<const Mod*, RelativeFiles>& modFiles,
                                        const CasStore& store, const fs::path& baseRoot,
-                                       const fs::path& gameRoot, MergeReport& report);
+                                       const fs::path& gameRoot, MergeReport& report,
+                                       std::size_t threads = 0, bool background = false);
 
 // A bundle's chunk metadata is a list with one record for each of its chunks: the
 // hash of the name of the resource the chunk belongs to ("h64") and what the

@@ -20,11 +20,12 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-// ReSkate's two pages of the game's own pause menu, Multiplayer and Custom Stuff, drawn by
+// ReSkate's two pages of the game's own pause menu, Multiplayer and Mod Options, drawn by
 // ReSkate: the game's menu widgets are a button, a text box and a line of text, which cannot
 // make a list with columns, so the game keeps the frame around a page (its top bar, title and
 // Back prompt) and this draws everything in it: the page's tabs and whichever is open (the
@@ -86,7 +87,7 @@ constexpr std::uint32_t hash(std::string_view text, std::uint64_t salt = 0) {
 struct Row {
     const MultiplayerLobby *lobby{};
     std::string map;
-    bool joinable{}, here{}, full{}, own{};
+    bool joinable{}, here{}, full{}, own{}, favorite{};
 };
 struct Item {
     std::uint32_t id{};
@@ -101,7 +102,7 @@ struct Hub {
     MultiplayerModel model; // its multiplayer part
     CallbacksV3 callbacks;
     bool shown{}, dismissed{}, was_active{}, searched{};
-    // Custom Stuff: the same rows and actions the page has always had (native_tools_view.h).
+    // Mod Options: the same rows and actions the page has always had (native_tools_view.h).
     native_tools::State tools;
     int tools_tab{};
     // Recording a bind (the BINDS tab): which action (0: none), what has been pressed so far,
@@ -118,6 +119,9 @@ struct Hub {
     std::string search, password, code, code_password;
     Kind kind{Kind::all};
     bool friends_only{}, hide_full{}, same_map{}, code_mode{};
+    // Dedicated servers the player marked, by Steam ID: first in the list, saved with the profile.
+    std::set<std::uint64_t> favorites;
+    bool favorites_loaded{}, favorites_only{};
     view::Sort sort{view::Sort::players};
     std::uint64_t selected{};
     // Hosting.
@@ -146,6 +150,12 @@ struct Hub {
     std::array<bool, 8> keys_before{};
     ULONGLONG repeat_at{};
     std::string notice;
+    std::string joining_name; // the session a join was asked for from this page, for its card
+    // A join followed to its end, so one that did not get in can say why (failed_page).
+    // join_asked: when one was asked for here and has not shown in the model yet (GetTickCount64).
+    bool join_seen{}, join_fetching{}, join_cancelled{};
+    ULONGLONG join_asked{};
+    std::string failed, failed_name; // why the last join did not get in, and where to; empty: nothing to say
     ULONGLONG notice_until{};
 };
 Hub &hub() {
@@ -187,6 +197,12 @@ bool send(Hub &h, const char *action, const std::string &argument = {}, const st
     say(h, "Couldn't do that just now. Try again.");
     return false;
 }
+// A join was asked for from this page.
+void asked_join(Hub &h) {
+    h.join_asked = GetTickCount64();
+    h.join_cancelled = false;
+    h.failed.clear();
+}
 void wipe(std::string &secret) {
     SecureZeroMemory(secret.data(), secret.size());
     secret.clear();
@@ -212,10 +228,13 @@ Hit item(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const Item *clip = nullpt
     h.items.push_back({id, a, b, clip ? clip->id : 0});
     if (clip && h.focus == id) h.list_focus[clip->id] = id;
     Hit hit;
-    hit.hover = ui.input && inside(ui.mouse, a, b) && (!clip || inside(ui.mouse, clip->a, clip->b));
-    if (hit.hover && ui.moved && !h.typing) h.focus = id, h.ring = false;
+    const bool over = ui.input && inside(ui.mouse, a, b) && (!clip || inside(ui.mouse, clip->a, clip->b));
+    if (over && ui.moved && !h.typing) h.focus = id, h.ring = false;
+    // Lit by the pointer only while the pointer is in charge: once the D-pad or the keys have
+    // the focus, what the mouse was left resting on is not lit beside it. A click there still counts.
+    hit.hover = over && !h.ring;
     hit.focus = h.focus == id && (h.ring || hit.hover);
-    hit.press = ui.input && ((hit.hover && ui.clicked) || h.fire == id);
+    hit.press = ui.input && ((over && ui.clicked) || h.fire == id);
     if (hit.press) h.focus = id, h.sound = sound_select;
     return hit;
 }
@@ -323,7 +342,49 @@ struct Scroller {
 
 // ---------------------------------------------------------------- the server browser
 
+// Favourite servers. A dedicated server signed in with a login token keeps its Steam ID, so that
+// is what is kept: "ServerFavorites" in the profile, the IDs with commas between. A player's
+// lobby has a new ID each time and cannot be one.
+constexpr std::size_t most_favorites = 256;
+void load_favorites(Hub &h) {
+    if (h.favorites_loaded) return;
+    h.favorites_loaded = true;
+    const auto saved = dingosdk::profile_runtime::local_value("ServerFavorites");
+    if (!saved || !saved->is_string()) return;
+    std::uint64_t id{};
+    for (const char c : saved->string() + ",") {
+        if (c >= '0' && c <= '9') id = id * 10 + static_cast<std::uint64_t>(c - '0');
+        else {
+            if (id && h.favorites.size() < most_favorites) h.favorites.insert(id);
+            id = 0;
+        }
+    }
+}
+void toggle_favorite(Hub &h, const MultiplayerLobby &lobby) {
+    if (!lobby.dedicated) return;
+    if (!h.favorites.erase(lobby.id)) {
+        if (h.favorites.size() >= most_favorites) return say(h, "That is as many favorites as there is room for.");
+        h.favorites.insert(lobby.id);
+    }
+    std::string text;
+    for (const auto id : h.favorites) text += (text.empty() ? "" : ",") + std::to_string(id);
+    dingosdk::profile_runtime::set_local_values({{"ServerFavorites", dingosdk::Json(text)}});
+    h.rows_stale = true;
+}
+// A five-pointed star, for a favorite's row.
+void star(ImDrawList *draw, ImVec2 centre, float radius, ImU32 colour) {
+    ImVec2 points[10];
+    for (int i = 0; i < 10; ++i) {
+        const float angle = -1.5707963f + static_cast<float>(i) * .62831853f, r = i % 2 ? radius * .42f : radius;
+        points[i] = ImVec2(centre.x + std::cos(angle) * r, centre.y + std::sin(angle) * r);
+    }
+    for (int i = 0; i < 10; i += 2) draw->AddTriangleFilled(points[i], points[(i + 1) % 10], points[(i + 9) % 10], colour);
+    const ImVec2 inner[5]{points[1], points[3], points[5], points[7], points[9]};
+    draw->AddConvexPolyFilled(inner, 5, colour);
+}
+
 void rebuild(Hub &h) {
+    load_favorites(h);
     h.rows_stale = false;
     h.rows.clear();
     const auto &mp = h.model;
@@ -337,9 +398,13 @@ void rebuild(Hub &h) {
         if ((h.kind == Kind::servers && !lobby->dedicated) || (h.kind == Kind::lobbies && lobby->dedicated) ||
             (h.friends_only && lobby->friends.empty()) || (h.hide_full && full))
             continue;
+        const bool favorite = lobby->dedicated && h.favorites.contains(lobby->id);
+        if (h.favorites_only && !favorite) continue;
         h.rows.push_back({lobby, view::caption(view::map_name(lobby->map, levels), 40), view::can_join(mp, *lobby),
-                          mp.active && lobby->id == mp.public_lobby, full, lobby->owner == mp.local_id});
+                          mp.active && lobby->id == mp.public_lobby, full, lobby->owner == mp.local_id, favorite});
     }
+    // Favorites come first, in the order the rest are in.
+    std::stable_partition(h.rows.begin(), h.rows.end(), [](const Row &row) { return row.favorite; });
     if (std::none_of(h.rows.begin(), h.rows.end(), [&](const Row &row) { return row.lobby->id == h.selected; }))
         h.selected = h.rows.empty() ? 0 : h.rows.front().lobby->id;
 }
@@ -355,7 +420,9 @@ void join(Hub &h, const Row &row) {
         return say(h, "Enter the password, then join.");
     }
     if (send(h, "join-lobby", std::to_string(row.lobby->id), row.lobby->password_required ? h.password : std::string())) {
-        say(h, "Joining " + view::caption(row.lobby->name, 40) + "...");
+        h.joining_name = view::caption(row.lobby->name, 40);
+        asked_join(h);
+        say(h, "Joining " + h.joining_name + "...");
         wipe(h.password);
     }
 }
@@ -365,7 +432,9 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const auto &mp = ui.mp;
     const float u = ui.u, gap = 28 * u, bar = 96 * u, list_width = (z.x - a.x) * .62f;
     auto *draw = ui.draw;
-    if (!h.searched && !mp.lobby_searching) h.searched = true, queue_multiplayer_action("browse", "");
+    // Refreshing waits out the game-wide limit (multiplayer_browse_interval_us); the button counts it down.
+    const int wait = browse_wait(mp);
+    if (!h.searched && !wait) h.searched = true, queue_multiplayer_action("browse", "");
     bool changed{};
     // ---- the bar: search, filters, refresh
     {
@@ -388,15 +457,19 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (chip("SERVERS", h.kind == Kind::servers)) h.kind = Kind::servers, changed = true;
         if (chip("LOBBIES", h.kind == Kind::lobbies)) h.kind = Kind::lobbies, changed = true;
         x += 16 * u;
+        if (chip("FAVORITES", h.favorites_only)) h.favorites_only = !h.favorites_only, changed = true;
         if (chip("FRIENDS", h.friends_only)) h.friends_only = !h.friends_only, changed = true;
         if (chip("HIDE FULL", h.hide_full)) h.hide_full = !h.hide_full, changed = true;
         if (chip("MY MAP", h.same_map)) h.same_map = !h.same_map, changed = true;
-        if (button(ui, hash("refresh"), ImVec2(z.x - 420 * u, a.y), ImVec2(z.x, a.y + bar), mp.lobby_searching ? "SEARCHING..." : "REFRESH",
-                   Look::sticky, !mp.lobby_searching))
+        const auto refresh = wait ? "REFRESH IN " + std::to_string(wait) : std::string(mp.lobby_searching ? "SEARCHING..." : "REFRESH");
+        if (button(ui, hash("refresh"), ImVec2(z.x - 420 * u, a.y), ImVec2(z.x, a.y + bar), refresh.c_str(), Look::sticky, !wait))
             queue_multiplayer_action("browse", "");
     }
-    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x4000) && !mp.lobby_searching) queue_multiplayer_action("browse", ""); // X / Square
+    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x4000) && !wait) queue_multiplayer_action("browse", ""); // X / Square
     if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x8000)) h.sort = static_cast<view::Sort>((static_cast<int>(h.sort) + 1) % 3), changed = true; // Y / Triangle
+    // F marks the chosen server as a favorite, or takes the mark away.
+    if (ui.input && !h.typing && !h.code_mode && ImGui::IsKeyPressed(ImGuiKey_F, false))
+        if (const auto *row = selected_row(h); row && row->lobby->dedicated) toggle_favorite(h, *row->lobby), changed = true;
 
     // ---- the list
     const ImVec2 la(a.x, a.y + bar + gap), lz(a.x + list_width, z.y - 60 * u);
@@ -452,6 +525,10 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
                                 lit ? IM_COL32(0, 0, 0, 90) : lobby.official ? skate_theme::official : skate_theme::tile_light, 4 * u);
             draw->AddText(ui.bold, 24 * u, ImVec2(x + 10 * u, plate_top + 7 * u), lit || lobby.official ? theme::paper : theme::muted, plate);
             x += plate_width + 18 * u;
+            if (row.favorite) {
+                star(draw, ImVec2(x + 18 * u, top + row_height * .5f), 20 * u, lit ? theme::paper : skate_theme::warning);
+                x += 48 * u;
+            }
             const bool friends = !lobby.friends.empty();
             label(draw, ui.bold, name_size, ImVec2(x, top + (friends ? 14 * u : (row_height - name_size) * .5f)), map_x - 24 * u, ink, view::caption(lobby.name, 64));
             if (friends) label(draw, ui.body, 28 * u, ImVec2(x, top + 62 * u), map_x - 24 * u, lit ? theme::paper : skate_theme::friends_text, "with " + lobby_friends_text(lobby));
@@ -495,6 +572,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         };
         hint(0x1000, "Enter", "Join");
         if (ui.pad.available) hint(0x4000, "", "Refresh"), hint(0x8000, "", "Sort");
+        else hint(0, "F", "Favorite");
     }
 
     // ---- beside the list: the chosen session, or joining with a code
@@ -519,7 +597,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const bool idle = !mp.active && !mp.lobby_joining;
         go |= button(ui, hash("join-code"), ImVec2(left, y), ImVec2(edge, y + tall), mp.lobby_joining ? "JOINING..." : idle ? "JOIN" : "LEAVE YOUR SESSION FIRST",
                      Look::sticky, idle && !h.code.empty());
-        if (go && idle && !h.code.empty() && send(h, "join", h.code, h.code_password)) say(h, "Joining..."), wipe(h.code_password);
+        if (go && idle && !h.code.empty() && send(h, "join", h.code, h.code_password)) h.joining_name.clear(), asked_join(h), say(h, "Joining..."), wipe(h.code_password);
         y += tall + 20 * u;
         label(draw, ui.body, 30 * u, ImVec2(left, y), edge, theme::muted, view::caption(!h.notice.empty() ? h.notice : mp.status, 96));
         if (button(ui, hash("code-back"), foot, ImVec2(edge, foot.y + 84 * u), "BACK TO THE LIST", Look::plain)) h.code_mode = false, h.focus_next = hash("code-open");
@@ -560,6 +638,13 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const auto &status = !h.notice.empty() ? h.notice : mp.active && !mp.hosting && !mp.echo && row->joinable
                                  ? std::string("Joining leaves the session you are in.") : mp.browser_status;
         label(draw, ui.body, 30 * u, ImVec2(left, y), edge, theme::muted, view::caption(status, 96));
+        // A server can be kept as a favorite: it is listed first from then on.
+        if (lobby.dedicated &&
+            button(ui, hash("favorite"), ImVec2(left, foot.y - 100 * u), ImVec2(edge, foot.y - 16 * u),
+                   row->favorite ? "REMOVE FROM FAVORITES" : "ADD TO FAVORITES", Look::plain)) {
+            toggle_favorite(h, lobby);
+            rebuild(h); // `row` is gone from here on
+        }
     } else {
         draw->AddText(ui.body, 36 * u, ImVec2(left, da.y + inset), theme::muted, "Pick a session to see it here.");
         label(draw, ui.body, 30 * u, ImVec2(left, da.y + inset + 60 * u), edge, theme::muted, view::caption(!h.notice.empty() ? h.notice : mp.browser_status, 96));
@@ -807,7 +892,66 @@ void voice_page(Ui &ui, ImVec2 a, ImVec2 z) {
           !h.notice.empty() ? h.notice : mp.voice.transmitting ? std::string("MICROPHONE TRANSMITTING") : mp.voice.status);
 }
 
-// ---------------------------------------------------------------- Custom Stuff
+// A join under way, as a card over the middle of the page (which is dimmed behind it): where
+// to, what is happening, and the way out.
+void connecting_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const auto &mp = ui.mp;
+    const float u = ui.u, width = 1500 * u, inset = 48 * u, tall = 100 * u;
+    const float height = inset + 28 * u + 30 * u + 64 * u + 30 * u + 34 * u + 40 * u + 14 * u + 44 * u + tall + inset;
+    const ImVec2 p(a.x + (z.x - a.x - width) * .5f, a.y + std::max(0.f, (z.y - a.y - height) * .4f)), q(p.x + width, p.y + height);
+    auto *draw = ui.draw;
+    draw->AddRectFilled(ImVec2(0, 0), ImGui::GetIO().DisplaySize, IM_COL32(0, 0, 0, 150));
+    skate_theme::rough_rect(draw, p, q, IM_COL32(26, 26, 26, 252), 0x4c0, u * 2);
+    const float left = p.x + inset, edge = q.x - inset;
+    float y = p.y + inset;
+    draw->AddText(ui.bold, 28 * u, ImVec2(left, y), theme::blue, "CONNECTING");
+    y += 28 * u + 30 * u;
+    const auto name = !h.joining_name.empty() ? h.joining_name : !mp.lobby_name.empty() ? view::caption(mp.lobby_name, 40) : std::string("Joining the session");
+    label(draw, ui.heading, 64 * u, ImVec2(left, y), edge, theme::paper, name);
+    y += 64 * u + 30 * u;
+    label(draw, ui.body, 34 * u, ImVec2(left, y), edge, theme::muted, view::caption(mp.status.empty() ? std::string("Connecting...") : mp.status, 100));
+    y += 34 * u + 40 * u;
+    // Not a measure of anything: a block going back and forth while it is under way.
+    draw->AddRectFilled(ImVec2(left, y), ImVec2(edge, y + 14 * u), skate_theme::tile_light, 4 * u);
+    const float at = static_cast<float>(std::fmod(ImGui::GetTime(), 2.0)), span = edge - left;
+    const float where = (at < 1.f ? at : 2.f - at) * span * .75f;
+    draw->AddRectFilled(ImVec2(left + where, y), ImVec2(left + where + span * .25f, y + 14 * u), theme::blue, 4 * u);
+    y += 14 * u + 44 * u;
+    const auto cancel = hash("join-cancel");
+    if (button(ui, cancel, ImVec2(left, y), ImVec2(edge, y + tall), "CANCEL", Look::plain) && send(h, "stop")) h.join_cancelled = true, say(h, "Cancelled.");
+    if (!h.focus) h.focus_next = cancel;
+}
+
+// A join that did not get in, in the connecting card's place: where to, why, and a button that
+// puts it away.
+void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const float u = ui.u, width = 1500 * u, inset = 48 * u, tall = 100 * u, size = 34 * u;
+    const float column = width - inset * 2;
+    const auto reason = view::caption(h.failed, 400);
+    const float lines = std::min(ui.body->CalcTextSizeA(size, FLT_MAX, column, reason.c_str()).y, size * 6.2f);
+    const float height = inset + 28 * u + 30 * u + 64 * u + 30 * u + lines + 44 * u + tall + inset;
+    const ImVec2 p(a.x + (z.x - a.x - width) * .5f, a.y + std::max(0.f, (z.y - a.y - height) * .4f)), q(p.x + width, p.y + height);
+    auto *draw = ui.draw;
+    draw->AddRectFilled(ImVec2(0, 0), ImGui::GetIO().DisplaySize, IM_COL32(0, 0, 0, 150));
+    skate_theme::rough_rect(draw, p, q, IM_COL32(26, 26, 26, 252), 0x4c0, u * 2);
+    const float left = p.x + inset, edge = q.x - inset;
+    float y = p.y + inset;
+    draw->AddText(ui.bold, 28 * u, ImVec2(left, y), skate_theme::danger, "COULDN'T CONNECT");
+    y += 28 * u + 30 * u;
+    label(draw, ui.heading, 64 * u, ImVec2(left, y), edge, theme::paper, h.failed_name.empty() ? std::string("The session") : h.failed_name);
+    y += 64 * u + 30 * u;
+    draw->PushClipRect(ImVec2(left, y), ImVec2(edge, y + lines), true);
+    draw->AddText(ui.body, size, ImVec2(left, y), theme::muted, reason.c_str(), nullptr, column);
+    draw->PopClipRect();
+    y += lines + 44 * u;
+    const auto ok = hash("join-failed-ok");
+    if (button(ui, ok, ImVec2(left, y), ImVec2(edge, y + tall), "OK", Look::plain)) h.failed.clear();
+    if (!h.focus) h.focus_next = ok;
+}
+
+// ---------------------------------------------------------------- Mod Options
 
 enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
 
@@ -969,7 +1113,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
         if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
         if (m.world.controlled_by_host)
-            list.note(mp.server_admin ? "You are an admin: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
+            list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
         list.note(h.notice);
         list.end();
         break;
@@ -1008,7 +1152,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (all.setting("Randomize on launch", on_off(m.parks.randomize_on_launch), m.parks.available && console)) act("park-random-on-launch");
         all.note(m.world.map != WorldMap::bam ? std::string("Load San Vansterdam to change parks.")
                  : native_tools::parks_locked(m) ? std::string("The lobby host controls park layouts.")
-                 : m.parks.controlled_by_host ? std::string("You are an admin: layouts you load change for the whole server.") : h.notice);
+                 : m.parks.controlled_by_host ? std::string("Your role sets them: layouts you load change for the whole server.") : h.notice);
         all.end();
         break;
     }
@@ -1019,6 +1163,19 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
         if (list.setting("Hall of Meat", on_off(m.hall_of_meat.enabled), m.hall_of_meat.available && console)) act("hall-of-meat");
+        if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
+        if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
+        if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
+        if (list.setting("Board Break", on_off(m.board_break.enabled), m.board_break.available && console)) act("board-break");
+        if (list.setting("Board Break deck", m.board_break.deck, m.board_break.available && m.board_break.has_deck && console))
+            act("board-break-deck");
+        const auto &grind = m.grind_exit;
+        if (list.setting("Grind exit triggers", on_off(grind.enabled), grind.available && console)) act("grind-exits");
+        if (list.setting("Input Mode", grind.toe_heel ? "Toe / Heel" : "Left / Right", grind.available && console)) act("grind-exit-sides");
+        if (grind.toe_heel &&
+            list.setting("Your stance", grind.stance == 2 ? "Goofy" : grind.stance == 1 ? "Regular" : "Not set", grind.available && console))
+            act("grind-exit-stance");
+        if (list.setting("Pop-out strength", std::to_string(grind.strength) + "%", grind.available && console)) act("grind-exit-strength");
         const auto &wear = m.offline.board_wear;
         if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
         if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");
@@ -1269,6 +1426,11 @@ bool hub_page_pending() {
             set_typing(h, 0);
             wipe(h.password), wipe(h.code_password), wipe(h.host_password);
             h.notice.clear();
+        } else {
+            // What is held as the page comes up is not a press on it: the Back that closed the
+            // game's side menu over it would dismiss the page as well.
+            h.keys_before.fill(true);
+            h.pad_before = ~0U;
         }
     }
     // With the overlay's own menu or console open the page stays where it is, behind them, and
@@ -1305,7 +1467,9 @@ void draw_hub_page() {
     const float lower = (down - layout_height) * .05f; // how far a taller window moves the page down
     const bool others = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
     Ui ui{h, ImGui::GetBackgroundDrawList(), s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, u, io.MousePos,
-          !others && game_window_foreground(s.window.load()), false, false, false, 0, h.model, {}};
+          // (A card that asks something over the page has the input while it asks.)
+          !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()),
+          false, false, false, 0, h.model, {}};
     ui.heading = s.menu.heading ? s.menu.heading : ui.bold;
     ui.clicked = ui.input && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     ui.doubled = ui.input && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
@@ -1315,14 +1479,43 @@ void draw_hub_page() {
     if (h.rows_stale) rebuild(h);
     if (h.notice_until && GetTickCount64() >= h.notice_until) h.notice.clear(), h.notice_until = 0;
     // Going into a session shows it; leaving one goes back to the browser.
-    if (mp.active != h.was_active) {
-        h.was_active = mp.active;
-        h.tab = mp.active ? Tab::session : Tab::browser;
+    // In a session, as far as the tabs go: not one that is still waiting on a map being fetched,
+    // which the player may yet turn down.
+    const bool in_session = mp.active && !mp.lobby_joining && !mp.map_fetching;
+    // A join under way (connecting, the host's map loading): a card over the page says so until
+    // the player is in, or calls it off. A map that has to be fetched first has a card of its
+    // own (map_download_card.cpp), which takes this one's place.
+    const bool connecting = !mp.hosting && !mp.echo && mp.lobby_joining && !mp.map_fetching;
+    // A join is followed to its end. One that ends with the player not in, and not by their own
+    // choice (the card's CANCEL, or a map they were asked about: its card says its own piece),
+    // says why. One asked for here that never shows in the model was turned down at once.
+    if (!mp.hosting && !mp.echo && (mp.lobby_joining || mp.map_fetching)) {
+        if (!h.join_seen) h.failed.clear();
+        h.join_seen = true;
+        h.join_fetching = mp.map_fetching;
+        h.join_asked = 0;
+    } else if (mp.active) {
+        h.join_seen = h.join_cancelled = false;
+        h.join_asked = 0;
+    } else if (h.join_seen || (h.join_asked && GetTickCount64() - h.join_asked > 2000)) {
+        if (!h.join_cancelled && !(h.join_seen && h.join_fetching)) {
+            const bool said = !mp.status.empty() && mp.status != MultiplayerModel{}.status;
+            h.failed = said ? mp.status : std::string("The session did not answer. It may be full, closed or on another version of ReSkate.");
+            h.failed_name = !h.joining_name.empty() ? h.joining_name : view::caption(mp.lobby_name, 40);
+            h.notice.clear(), h.notice_until = 0;
+            h.focus = 0;
+        }
+        h.join_seen = h.join_cancelled = false;
+        h.join_asked = 0;
+    }
+    if (in_session != h.was_active) {
+        h.was_active = in_session;
+        h.tab = in_session ? Tab::session : Tab::browser;
         h.selected_player.clear();
     }
-    if ((h.tab == Tab::session || h.tab == Tab::voice) && !mp.active) h.tab = Tab::browser;
-    const bool runs_session = mp.active && (mp.hosting || mp.server_admin);
-    if (h.tab == Tab::settings && !runs_session) h.tab = mp.active ? Tab::session : Tab::browser;
+    if ((h.tab == Tab::session || h.tab == Tab::voice) && !in_session) h.tab = Tab::browser;
+    const bool runs_session = in_session && (mp.hosting || mp.server_admin);
+    if (h.tab == Tab::settings && !runs_session) h.tab = in_session ? Tab::session : Tab::browser;
 
     // ---- the controller and the keys, watched while the game has them
     if (ui.input) DingoSDKOverlayReadControllerInput(&ui.pad, true);
@@ -1388,7 +1581,7 @@ void draw_hub_page() {
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
             // The session and its voice chat are only there in one.
-            if (mp.active) tabs.emplace_back(static_cast<int>(Tab::session), "CURRENT SESSION"), tabs.emplace_back(static_cast<int>(Tab::voice), "VOICE CHAT");
+            if (in_session) tabs.emplace_back(static_cast<int>(Tab::session), "CURRENT SESSION"), tabs.emplace_back(static_cast<int>(Tab::voice), "VOICE CHAT");
             // And its settings only for whoever runs it.
             if (runs_session) tabs.emplace_back(static_cast<int>(Tab::settings), "SESSION SETTINGS");
         }
@@ -1425,6 +1618,10 @@ void draw_hub_page() {
         if (!tools) h.tab = static_cast<Tab>(multiplayer_tab);
     }
 
+    // Under the connecting card the page is still drawn, to look at and not to use.
+    const bool page_input = ui.input, page_clicked = ui.clicked, page_doubled = ui.doubled;
+    const bool failed = !connecting && !h.failed.empty() && !in_session;
+    if ((connecting || failed) && !tools) ui.input = ui.clicked = ui.doubled = false;
     if (tools) tools_page(ui, a, z);
     else switch (h.tab) {
     case Tab::browser: browser_page(ui, a, z); break;
@@ -1432,6 +1629,12 @@ void draw_hub_page() {
     case Tab::session: session_page(ui, a, z); break;
     case Tab::voice: voice_page(ui, a, z); break;
     case Tab::settings: settings_page(ui, a, z); break;
+    }
+    if ((connecting || failed) && !tools) {
+        ui.input = page_input, ui.clicked = page_clicked, ui.doubled = page_doubled;
+        h.items.clear();   // nothing of the page takes the focus: only the card's way out
+        if (connecting) connecting_page(ui, a, z);
+        else failed_page(ui, a, z);
     }
     if (ui.input) h.pad_before = ui.pad.buttons;
     // A press that found nothing to land on is forgotten; the focus stays on a control that is

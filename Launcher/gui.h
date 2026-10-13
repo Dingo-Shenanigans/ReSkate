@@ -16,6 +16,10 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
 // The Settings page's "Install ReSkate updates" choice; scripted (--no-gui) launches honour it too.
 bool updates_enabled(const launcher_app::Session& session);
 
+// What pressing Play would start the game with: the Settings page's saved choices. A scripted
+// launch that names none of its own (a bare --no-gui, as Discord runs for a join) uses these.
+launcher::LaunchOptions saved_launch_options(const launcher_app::Session& session);
+
 // The Settings page's "Send crash reports" choice, for this launcher and the game it starts.
 // Call before open_session, which starts crash reporting with the log.
 void apply_crash_report_setting() noexcept;

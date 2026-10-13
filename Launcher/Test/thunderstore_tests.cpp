@@ -173,6 +173,41 @@ int main() {
         check(wide.lines.size() == 1 && wide.lines[0].text == std::string(1999, 'a'), "An overlong line is cut between characters");
     }
 
+    // ------------------------------------------------ dependencies and mod packs
+    {
+        const auto version = [](const char* owner, const char* name, const char* number, const char* needs) {
+            return std::string(R"({"name":")") + name + R"(","full_name":")" + owner + "-" + name + R"(","owner":")" + owner +
+                   R"(","versions":[{"version_number":")" + number + R"(","download_url":"https://thunderstore.io/d/)" + name +
+                   R"(/","dependencies":[)" + needs + R"(]},{"version_number":"0.9.0","download_url":"https://thunderstore.io/d/old/)" +
+                   name + R"(/"}]})";
+        };
+        const auto shop = thunderstore::parse_listing("[" +
+            version("Zee", "Pack", "1.0.0", R"("Zee-Map-1.2.0","Kit-Rails-2.0.0","Gone-Mod-1.0.0")") + "," +
+            version("Zee", "Map", "1.2.0", R"("Kit-Rails-1.0.0","Kit-Core-1.0.0")") + "," +
+            version("Kit", "Rails", "2.0.0", R"("Kit-Core-1.0.0","Zee-Map-1.0.0")") + "," +
+            version("Kit", "Core", "1.0.0", "") + "]");
+        check(shop.size() == 4 && shop[0].latest().dependencies.size() == 3, "A version's dependencies are read");
+        check(thunderstore::split_dependency("Zee-Desert_Springs-1.10.0") == std::pair<std::string, std::string>{"Zee-Desert_Springs", "1.10.0"} &&
+              thunderstore::split_dependency("Zee-Map") == std::pair<std::string, std::string>{"Zee-Map", ""},
+              "A dependency splits into its package and version");
+        const auto names = [](const std::vector<thunderstore::Package>& packages) {
+            std::string text;
+            for (const auto& package : packages) text += package.full_name + " ";
+            return text;
+        };
+        std::vector<std::string> unknown;
+        check(names(thunderstore::with_dependencies(shop[0], shop, {}, &unknown)) == "Kit-Core Kit-Rails Zee-Map Zee-Pack ",
+              "A pack's mods are gathered once each, needed ones first, through a cycle");
+        check(unknown == std::vector<std::string>{"Gone-Mod"}, "A dependency the listing lacks is reported");
+        check(names(thunderstore::with_dependencies(shop[0], shop, {{"Kit-Core", "1.0.0"}, {"Kit-Rails", "1.5.0"}, {"Zee-Map", "1.2.0"}})) ==
+              "Kit-Rails Zee-Pack ", "Dependencies installed at a new enough version are left out, and an old one is updated");
+        check(names(thunderstore::with_dependencies(shop[3], shop, {})) == "Kit-Core ", "A package that needs nothing comes alone");
+        check(shop[1].at_version("0.9.0").latest().number == "0.9.0" && shop[1].at_version("7.7.7").latest().number == "1.2.0" &&
+              shop[1].at_version("0.9.0").versions.size() == 2, "A package is taken at an older version when it has it");
+        check(thunderstore::find_package(shop, "Kit-Rails") == &shop[2] && !thunderstore::find_package(shop, "kit-rails-2.0.0"),
+              "A package is found by its full name");
+    }
+
     // ------------------------------------------------ community
     check(thunderstore::listing_index_url("reskate") == L"https://thunderstore.io/c/reskate/api/v1/package-listing-index/",
           "The listing index URL");

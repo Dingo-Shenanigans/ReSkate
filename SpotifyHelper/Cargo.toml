@@ -1,0 +1,31 @@
+[package]
+name = "reskate-spotify"
+version = "0.1.0"
+edition = "2021"
+description = "ReSkate's Spotify Connect device, linked into ReSkate.dll: receives what Spotify plays and hands it to the game"
+license = "MIT"
+
+[lib]
+name = "reskate_spotify"
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+librespot-core = "0.8.0"
+librespot-playback = { version = "0.8.0", default-features = false }
+librespot-connect = "0.8.0"
+librespot-discovery = "0.8.0"
+librespot-metadata = "0.8.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-util = "0.3"
+log = "0.4"
+sha1 = "0.10"
+hex = "0.4"
+# (For sound that is not Spotify's: a program's output, decoded. The version librespot uses.)
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
+# (For an internet radio station: what is at an address, as it comes. The one already in the tree.)
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls"] }
+
+[profile.release]
+opt-level = 2
+strip = true

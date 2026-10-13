@@ -3,6 +3,7 @@
 // the Steam client files (steamclient64.dll, tier0_s64.dll, vstdlib_s64.dll).
 // On Linux the Steam files are libsteam_api.so and steamclient.so.
 #include "global_bans.h"
+#include "server_map_update.h"
 #include "server_config.h"
 #include "server_host.h"
 #include "server_update.h"
@@ -103,17 +104,27 @@ Console &console() {
 }
 void write_log(const std::string &text) {
     std::lock_guard lock(log_mutex);
-    const auto now = std::time(nullptr);
-    std::tm local{};
+    char stamp[64]{};
+    char file_stamp[64]{};
 #ifdef _WIN32
-    localtime_s(&local, &now);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    if (GetTimeFormatA(LOCALE_USER_DEFAULT, 0, &st, nullptr, stamp, sizeof(stamp)) == 0) {
+        const bool pm = st.wHour >= 12;
+        const int hour12 = (st.wHour % 12 == 0) ? 12 : (st.wHour % 12);
+        std::snprintf(stamp, sizeof(stamp), "%d:%02d:%02d %s", hour12, st.wMinute, st.wSecond, pm ? "PM" : "AM");
+    }
+    std::snprintf(file_stamp, sizeof(file_stamp), "%04d-%02d-%02d %s", st.wYear, st.wMonth, st.wDay, stamp);
 #else
-    localtime_r(&now, &local);
+    const auto now_tp = std::chrono::system_clock::now();
+    const auto now_t = std::chrono::system_clock::to_time_t(now_tp);
+    std::tm local{};
+    localtime_r(&now_t, &local);
+    std::strftime(stamp, sizeof(stamp), "%X", &local);
+    std::strftime(file_stamp, sizeof(file_stamp), "%Y-%m-%d %H:%M:%S", &local);
 #endif
-    char stamp[32]{};
-    std::strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", &local);
-    if (log_file) log_file << '[' << stamp << "] " << text << std::endl;
-    console().write(std::string("[") + (stamp + 11) + "] " + text + "\n");
+    if (log_file) log_file << '[' << file_stamp << "] " << text << std::endl;
+    console().write(std::string("[") + stamp + "] " + text + "\n");
 }
 std::atomic<bool> finished{};
 #ifdef _WIN32
@@ -249,6 +260,14 @@ int run(int argc, wchar_t **argv, bool skip_update) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+    }
     SetConsoleCtrlHandler(on_console, TRUE);
     const auto here = folder();
     // Release builds: ReSkateServer --export-world-layers "<Skate folder>" "<file>" writes the
@@ -329,6 +348,12 @@ int run(int argc, char **argv, bool skip_update) {
             map = level->name;
             renamed = true;
         }
+    for (auto &park : config.park_mods) // and so are the maps the park mods belong to
+        if (const auto *level = find_level(park.map); level && level->name != park.map) {
+            park.map = level->name;
+            renamed = true;
+        }
+    config.mods = here / "Mods";
     if (renamed) try { save_config(config); } catch (...) {}
     if (const auto error = config_error(config); !error.empty()) {
         write_log("Config problem: " + error);
@@ -464,8 +489,14 @@ int run(int argc, char **argv, bool skip_update) {
         write_log("No steam_token: the server browser can be set to show only servers that have one, and then "
                   "this server is not in it (players can still join with the code). It takes a minute to make "
                   "one: see steam_token in README.");
-    write_log(config.admins.empty() ? "No admins yet: type \"admin add <SteamID64>\" to add one."
-                              : std::to_string(config.admins.size()) + " admin(s). Type help for commands.");
+    {
+        std::size_t admins{};
+        for (const auto &[id, name] : config.roles.players)
+            if (const auto *role = config.roles.find(name); role && role->granted_all) ++admins;
+        write_log(!admins ? "No admins yet: type \"role <SteamID64> admin\" to add one. Roles are in data/roles.json."
+                          : std::to_string(admins) + " admin(s), " + std::to_string(config.roles.players.size()) +
+                            " player(s) with a role. Type help for commands.");
+    }
 
     auto &input = console_input();
 #ifdef _WIN32
@@ -478,12 +509,13 @@ int run(int argc, char **argv, bool skip_update) {
     std::future<UpdateCheck> update_check;
     bool update_now{}, update_waiting{}, restart{};
     // The backend's ban list (global_bans.h): read now and every ten minutes, a minute after a
-    // failure. "global_bans": false lets those players in; the answer is still read, for the
-    // chat word lists that come in it.
+    // failure. "global_bans": false leaves it unread and lets those players in.
     std::future<BanListCheck> ban_check;
     auto next_ban_check = next_advertise;
     bool bans_unread{};
+    MapUpdater map_updater; // "maps.latest_versions" and "maps update" (server_map_update.h)
     if (!config.global_bans) write_log("Global bans are off (\"use_global_bans\": false): only this server's own bans apply.");
+    write_log(host.command("words")); // reads this server's own chat words
     // Signed in to Steam, as last logged, and when it is looked at again. Players already on stay
     // connected through a lost sign-in, but nobody new can join: Steam carries the first messages
     // of a connection, and theirs time out ("negotiate rendezvous").
@@ -553,6 +585,12 @@ int run(int argc, char **argv, bool skip_update) {
             }
             update_now = false;
         }
+        if (const auto maps = map_updater.tick(config.latest_versions, config.latest_check_minutes, config.mods, host.map_folder_in_play(),
+                                               host.take_map_update_request());
+            !maps.lines.empty() || maps.changed) {
+            for (const auto &line : maps.lines) write_log(line);
+            if (maps.changed) write_log(host.reload_maps());
+        }
         // (The chat word lists come in the same answer, and hold on every server: it is read
         // for them whether or not the bans are used.)
         if (!ban_check.valid() && now_time >= next_ban_check)
@@ -566,7 +604,7 @@ int run(int argc, char **argv, bool skip_update) {
             if (check.ok && check.words_changed)
                 write_log("Word lists: " + std::to_string(check.filtered_words) + " filtered and " + std::to_string(check.forbidden_words) +
                           " not allowed at all, from the ReSkate team's lists." +
-                          (config.word_warnings ? "" : " (\"word_warnings\" is 0: a message with one is not passed on, and nobody is warned or kicked.)"));
+                          (config.word_warnings ? "" : " (\"word_warnings\" is 0: a message with one is not passed on, and nobody is kicked)."));
             else if (!check.ok && !bans_unread)
                 write_log("The ReSkate team's lists (global bans and chat words) could not be read (" + check.problem +
                           "). Trying again every minute; until then the ones already read hold.");
@@ -648,19 +686,64 @@ int serve(int argc, auto **argv) {
 } // namespace
 
 #ifdef _WIN32
-int wmain(int argc, wchar_t **argv) {
-    const int code = serve(argc, argv);
-    finished = true;
-    // Keep a failure on screen until the host has read it, instead of the window
-    // vanishing with it. Closing the window or Ctrl+C still ends it at once.
-    if (code != 0 && !stopping && own_window()) {
-        auto &input = console_input();
-        input.take();
-        console().write("Press Enter to close.\n");
-        while (!stopping && input.take().empty()) Sleep(50);
+#include "GUI/server_gui.h"
+#include <shellapi.h>
+
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int cmd_show) {
+    int argc = 0;
+    LPWSTR *argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool headless = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!argvW[i]) continue;
+        std::wstring arg = argvW[i];
+        // The release build's world layer export (serve) is a console job too: the window would
+        // open instead and nothing would be written.
+        if (arg == L"--headless" || arg == L"--cli" || arg == L"--no-gui" || arg == L"-nogui" || arg == L"-headless" || arg == L"-cli" ||
+            arg == L"--export-world-layers") {
+            headless = true;
+            break;
+        }
     }
-    console().flush(std::chrono::seconds(2));
-    return code;
+
+    if (headless) {
+        // A server started with its output piped or in a file (by a manager or a service) keeps
+        // what it was given: reopening CONOUT$ closes it, and then nothing the server writes, or
+        // is sent, gets through. Started by hand, it takes its parent's console or one of its own.
+        const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+        const DWORD out_type = out && out != INVALID_HANDLE_VALUE ? GetFileType(out) : FILE_TYPE_UNKNOWN;
+        const bool redirected = out_type == FILE_TYPE_PIPE || out_type == FILE_TYPE_DISK;
+        if (!redirected && (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())) {
+            FILE *fp = nullptr;
+            freopen_s(&fp, "CONOUT$", "w", stdout);
+            freopen_s(&fp, "CONOUT$", "w", stderr);
+            freopen_s(&fp, "CONIN$", "r", stdin);
+            std::ios::sync_with_stdio(true);
+        }
+        const int code = serve(argc, argvW);
+        LocalFree(argvW);
+        finished = true;
+        if (code != 0 && !stopping && own_window()) {
+            auto &input = console_input();
+            input.take();
+            console().write("Press Enter to close.\n");
+            while (!stopping && input.take().empty()) Sleep(50);
+        }
+        console().flush(std::chrono::seconds(2));
+        return code;
+    }
+
+    LocalFree(argvW);
+    try {
+        return dingosdk::server_gui::run_gui(instance, cmd_show);
+    } catch (const std::exception &e) {
+        std::ofstream f("gui_exception.txt");
+        f << "EXCEPTION: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::ofstream f("gui_exception.txt");
+        f << "UNKNOWN EXCEPTION\n";
+        return 1;
+    }
 }
 #else
 int main(int argc, char **argv) {

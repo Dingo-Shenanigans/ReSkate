@@ -4,6 +4,7 @@
 #include "Extension/Throwdowns/throwdown_lab.h"
 #include "Extension/Throwdowns/throwdown_wire.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/Throwdowns/grouped_number.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Settings/named_settings.h"
 #include <Windows.h>
@@ -780,12 +781,33 @@ void level_change_flow() {
 }
 } // namespace
 
+// A score read from text: what atoi reads, and digit groups read whole.
+void grouped_number_checks() {
+    using dingosdk::throwdowns_text::parse_grouped_int;
+    const auto same = [](const char *text, int value, bool grouped) {
+        const auto parsed = parse_grouped_int(text);
+        return parsed.value == value && parsed.grouped == grouped;
+    };
+    if (!(same("5432", 5432, false) && same("0", 0, false) && same("  -17", -17, false) && same("+9", 9, false) &&
+          same("", 0, false) && same("abc", 0, false) && same("12abc", 12, false) && same(nullptr, 0, false)))
+        throw std::runtime_error("A plain number was not read as atoi reads it");
+    if (!(same("5,432", 5432, true) && same("1,250", 1250, true) && same("12,345,678", 12345678, true) &&
+          same("5.432", 5432, true) && same("5 432", 5432, true) && same("5'432", 5432, true) &&
+          same("5\xC2\xA0" "432", 5432, true) && same("5\xE2\x80\xAF" "432", 5432, true) && same("-1,000 pts", -1000, true)))
+        throw std::runtime_error("A grouped score was cut short");
+    if (!(same("12.5", 12, false) && same("5,43", 5, false) && same("5,4321", 5, false) && same("1234,567", 1234, false) &&
+          same("5, 432", 5, false) && same("5,,432", 5, false) && same("1,234.5", 1234, true)))
+        throw std::runtime_error("Text that is not a grouped number was read as one");
+    if (!(same("99999999999", INT_MAX, false) && same("-99999999999", INT_MIN, false) && same("999,999,999,999", INT_MAX, true)))
+        throw std::runtime_error("A number out of range did not saturate");
+}
 int main() {
     try {
         guest_flow();
         leader_flow();
         removal_flow();
         spot_battle_flow();
+        grouped_number_checks();
         skate_flow();
         alone_flow();
         challenge_flow();

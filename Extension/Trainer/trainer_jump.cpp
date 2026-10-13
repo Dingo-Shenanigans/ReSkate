@@ -30,6 +30,7 @@ struct Hooked {
     std::atomic<SetTrajectory> original{};
     std::uintptr_t base{};
     std::atomic<float> no_comply{1}, boneless{1};
+    std::atomic<TrajectoryModifier> modifier{};
     // The last few launches, for the trainer's log line: written by the physics thread, read
     // by the client tick.
     std::array<std::atomic<std::uint64_t>, 8> seen{};
@@ -43,6 +44,15 @@ Hooked &hooked() {
 void set_trajectory_hook(std::uintptr_t trajectory, float *parameters) {
     auto &h = hooked();
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress()) - h.base;
+    if (const auto modifier = h.modifier.load(std::memory_order_acquire); modifier && parameters) {
+        float velocity[3]{parameters[velocity_y - 1], parameters[velocity_y], parameters[velocity_y + 1]};
+        modifier(caller - 5, trajectory, velocity);
+        if (std::isfinite(velocity[0]) && std::isfinite(velocity[1]) && std::isfinite(velocity[2])) {
+            parameters[velocity_y - 1] = velocity[0];
+            parameters[velocity_y] = velocity[1];
+            parameters[velocity_y + 1] = velocity[2];
+        }
+    }
     if (parameters && (caller == no_comply_call + 5 || caller == boneless_call + 5)) {
         const auto watch = watched_physics_state(); // the local skater's
         Trick trick{};
@@ -118,5 +128,8 @@ bool take_trick_launch(TrickLaunch &out) noexcept {
     std::memcpy(&out.up_speed, &bits[0], 4);
     std::memcpy(&out.factor, &bits[1], 4);
     return true;
+}
+void set_trajectory_modifier(TrajectoryModifier modifier) noexcept {
+    hooked().modifier.store(modifier, std::memory_order_release);
 }
 } // namespace dingosdk::trainer

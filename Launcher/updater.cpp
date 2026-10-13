@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "launcher_update_config.h"
 #include "text_encoding.h"
@@ -11,6 +12,8 @@
 #include <miniz.h>
 
 #include <array>
+#include <cctype>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -247,6 +250,52 @@ void http_stream(const std::wstring& url, std::uint64_t limit, int timeout_ms,
     http_get(url, limit, timeout_ms, sink);
 }
 
+std::string http_post(const std::wstring& url, const wchar_t* content_type, std::string_view body,
+                      std::uint64_t limit, int timeout_ms) {
+    const auto win32 = [](std::string_view action) {
+        fail(std::format("{} failed (Windows error {})", action, GetLastError()));
+    };
+    URL_COMPONENTS parts{}; parts.dwStructSize = sizeof(parts);
+    parts.dwHostNameLength = parts.dwUrlPathLength = parts.dwExtraInfoLength =
+        parts.dwUserNameLength = parts.dwPasswordLength = static_cast<DWORD>(-1);
+    if (url.size() >= 4096 || !WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &parts) ||
+        parts.nScheme != INTERNET_SCHEME_HTTPS || !parts.dwHostNameLength || parts.dwUserNameLength || parts.dwPasswordLength)
+        fail("Upload URL must be HTTPS: " + utf8(url));
+    if (body.size() > 16 * 1024 * 1024) fail("Upload is larger than expected");
+    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+    std::wstring resource = parts.dwUrlPathLength ? std::wstring(parts.lpszUrlPath, parts.dwUrlPathLength) : L"/";
+    if (parts.dwExtraInfoLength) resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+    Internet session{WinHttpOpen(L"ReSkate-Launcher/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
+    if (!session.value) win32("WinHttpOpen");
+    if (!WinHttpSetTimeouts(session.value, timeout_ms, timeout_ms, timeout_ms, timeout_ms)) win32("WinHttpSetTimeouts");
+    Internet connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
+    if (!connection.value) win32("WinHttpConnect");
+    Internet request{WinHttpOpenRequest(connection.value, L"POST", resource.c_str(), nullptr, nullptr,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)};
+    if (!request.value) win32("WinHttpOpenRequest");
+    DWORD redirects = WINHTTP_DISABLE_REDIRECTS;
+    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &redirects, sizeof(redirects))) win32("WinHttpSetOption");
+    const auto headers = std::wstring(L"Content-Type: ") + content_type + L"\r\n";
+    if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(-1L), const_cast<char*>(body.data()),
+            static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0) ||
+        !WinHttpReceiveResponse(request.value, nullptr)) win32("HTTPS upload");
+    DWORD status{}, size = sizeof(status);
+    if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            nullptr, &status, &size, nullptr)) win32("WinHttpQueryHeaders");
+    if (status == 429) fail("Thunderstore is limiting requests from this network; try again in a little while");
+    if (status != 200 && status != 201) fail(std::format("{} returned HTTP {}", utf8(url), status));
+    std::string answer;
+    std::array<char, 16384> buffer{};
+    for (;;) {
+        DWORD read{};
+        if (!WinHttpReadData(request.value, buffer.data(), static_cast<DWORD>(buffer.size()), &read)) win32("WinHttpReadData");
+        if (!read) break;
+        if (answer.size() + read > limit) fail("The answer is larger than expected: " + utf8(url));
+        answer.append(buffer.data(), read);
+    }
+    return answer;
+}
+
 bool binary_updates_enabled() noexcept { return launcher_binary_updates; }
 
 Config parse_config(std::string_view text) {
@@ -296,6 +345,7 @@ std::optional<Config> fetch_config() {
     try {
         // Public releases: the newest release carries launcher.json and the files it pins. Only
         // this lookup uses GitHub's rate-limited API; the files come from the release's download links.
+        trace::Scope timing("launcher.update_check", "http.client");
         const auto latest = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo + L"/releases/latest";
         logging::write(logging::Level::info, logging::Channel::launcher, L"Checking GitHub releases: " + std::wstring(launcher_release_repo));
         std::string text;
@@ -328,6 +378,136 @@ std::optional<Config> fetch_config() {
         return std::nullopt;
     }
 }
+
+namespace {
+// &lt; &amp; &#39; &#x27; ... as the characters they stand for; anything else is left as it is.
+std::string unescape(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t at = 0; at < text.size();) {
+        const auto end = text[at] == '&' ? text.find(';', at) : std::string_view::npos;
+        if (end == std::string_view::npos || end - at > 9) { out.push_back(text[at++]); continue; }
+        const auto name = text.substr(at + 1, end - at - 1);
+        unsigned long code{};
+        if (name == "lt") code = '<';
+        else if (name == "gt") code = '>';
+        else if (name == "amp") code = '&';
+        else if (name == "quot") code = '"';
+        else if (name == "apos") code = '\'';
+        else if (name == "nbsp") code = ' ';
+        else if (name.size() > 1 && name[0] == '#') {
+            const bool hex = name[1] == 'x' || name[1] == 'X';
+            const std::string digits(name.substr(hex ? 2 : 1));
+            char* stop{};
+            code = digits.empty() ? 0 : std::strtoul(digits.c_str(), &stop, hex ? 16 : 10);
+            if (!stop || *stop || code > 0x10ffff) code = 0;
+        }
+        if (!code) { out.push_back(text[at++]); continue; }
+        if (code < 0x80) out.push_back(static_cast<char>(code));
+        else if (code < 0x800) out += {static_cast<char>(0xc0 | code >> 6), static_cast<char>(0x80 | (code & 0x3f))};
+        else if (code < 0x10000)
+            out += {static_cast<char>(0xe0 | code >> 12), static_cast<char>(0x80 | (code >> 6 & 0x3f)),
+                    static_cast<char>(0x80 | (code & 0x3f))};
+        else
+            out += {static_cast<char>(0xf0 | code >> 18), static_cast<char>(0x80 | (code >> 12 & 0x3f)),
+                    static_cast<char>(0x80 | (code >> 6 & 0x3f)), static_cast<char>(0x80 | (code & 0x3f))};
+        at = end + 1;
+    }
+    return out;
+}
+
+// The HTML GitHub renders a release's notes to, back as the plain markdown the launcher
+// draws: paragraphs, headings and list items keep their lines, every other tag is dropped.
+std::string html_to_markdown(std::string_view html) {
+    std::string out;
+    const auto line = [&](int blank) {
+        while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+        int have{};
+        for (auto it = out.rbegin(); it != out.rend() && *it == '\n'; ++it) ++have;
+        for (; !out.empty() && have < blank; ++have) out.push_back('\n');
+    };
+    for (std::size_t at = 0; at < html.size();) {
+        if (html[at] != '<') {
+            out.push_back(html[at++]);
+            continue;
+        }
+        const auto end = html.find('>', at);
+        if (end == std::string_view::npos) break;
+        auto tag = html.substr(at + 1, end - at - 1);
+        at = end + 1;
+        const bool closing = tag.starts_with('/');
+        if (closing) tag.remove_prefix(1);
+        std::string name(tag.substr(0, tag.find_first_of(" \t\r\n/")));
+        for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const bool heading = name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
+        if (name == "br") line(1);
+        else if (name == "li" && !closing) line(1), out += "- ";
+        else if (heading && !closing) line(2), out += "## ";
+        else if (name == "p" || name == "div" || name == "pre" || name == "ul" || name == "ol" || name == "blockquote" || heading)
+            line(2);
+        else if (name == "li" || name == "tr") line(1);
+    }
+    return unescape(out);
+}
+
+std::string_view between(std::string_view text, std::string_view open, std::string_view close) {
+    const auto start = text.find(open);
+    if (start == std::string_view::npos) return {};
+    const auto from = start + open.size();
+    const auto end = text.find(close, from);
+    return end == std::string_view::npos ? std::string_view{} : text.substr(from, end - from);
+}
+} // namespace
+
+std::vector<ReleaseNote> parse_release_feed(std::string_view feed) {
+    std::vector<ReleaseNote> notes;
+    for (std::size_t at = 0; notes.size() < 50;) {
+        const auto start = feed.find("<entry>", at);
+        const auto end = start == std::string_view::npos ? start : feed.find("</entry>", start);
+        if (end == std::string_view::npos) break;
+        const auto entry = feed.substr(start, end - start);
+        at = end;
+        ReleaseNote note;
+        note.title = unescape(between(entry, "<title>", "</title>"));
+        note.tag = unescape(between(entry, "/releases/tag/", "\""));
+        if (note.tag.empty()) note.tag = note.title;
+        note.date = std::string(between(entry, "<updated>", "</updated>").substr(0, 10));
+        // <content type="html">: the notes as HTML, escaped once more to sit in the feed.
+        if (const auto content = entry.find("<content"); content != std::string_view::npos)
+            note.notes = html_to_markdown(unescape(between(entry.substr(content), ">", "</content>")));
+        if (!note.tag.empty()) notes.push_back(std::move(note));
+    }
+    return notes;
+}
+
+ReleaseNote fetch_release_note() {
+    // The description as it was written, markdown, from GitHub's API.
+    try {
+        const auto url = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo + L"/releases/latest";
+        std::string text;
+        http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+        const auto release = Json::parse(text);
+        // (A release made without a title or a description has null there.)
+        const auto field = [&](std::string_view key) {
+            return release.contains(key) && release.at(key).is_string() ? release.at(key).string() : std::string();
+        };
+        ReleaseNote note{field("tag_name"), field("name"), field("published_at").substr(0, 10), field("body")};
+        if (!note.tag.empty() && note.notes.find_first_not_of(" \t\r\n") != std::string::npos) return note;
+    } catch (const std::exception& exception) {
+        logging::log(logging::Level::info, logging::Channel::launcher,
+            "Latest release's notes not available from GitHub's API ({}); reading the releases feed.", exception.what());
+    }
+    // Else what the releases page shows, from its feed: a release published without a
+    // description shows its commit's message there, and the feed has no hourly limit.
+    const auto url = std::wstring(L"https://github.com/") + launcher_release_repo + L"/releases.atom";
+    std::string text;
+    http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+    auto notes = parse_release_feed(text);
+    if (notes.empty()) fail("The repository has no releases");
+    return std::move(notes.front());
+}
+
+std::string releases_page() { return "https://github.com/" + utf8(launcher_release_repo) + "/releases"; }
 
 bool file_matches(const fs::path& path, const RemoteFile& file) {
     std::error_code error;
@@ -372,28 +552,48 @@ void replace_file(const fs::path& target, const RemoteFile& file, const Progress
     }
 }
 
+namespace {
+
+constexpr int previous_launcher_names = 8;
+
+// ReSkateLauncher.exe.old, then .old1, .old2, ...
+fs::path previous_launcher(const fs::path& self, int index) {
+    return self.wstring() + L".old" + (index ? std::to_wstring(index) : std::wstring{});
+}
+
+} // namespace
+
 void replace_running_launcher(const fs::path& self, const RemoteFile& file, const Progress& progress) {
     const auto verified = download_verified(self, file, progress);
-    const fs::path previous = self.wstring() + L".old";
-    DeleteFileW(previous.c_str());
-    // Windows allows renaming, but not overwriting, a running executable.
-    if (!MoveFileExW(self.c_str(), previous.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        const auto error = GetLastError();
+    // Windows allows renaming, but not overwriting, a running executable. A .old that is still
+    // there belongs to a launcher that has not exited (or is held by antivirus) and cannot be
+    // deleted, so the next free name is used instead.
+    fs::path previous;
+    DWORD error = ERROR_ALREADY_EXISTS;
+    for (int index = 0; index < previous_launcher_names && error == ERROR_ALREADY_EXISTS; ++index) {
+        previous = previous_launcher(self, index);
+        DeleteFileW(previous.c_str());
+        error = MoveFileExW(self.c_str(), previous.c_str(), MOVEFILE_WRITE_THROUGH) ? ERROR_SUCCESS : GetLastError();
+    }
+    if (error != ERROR_SUCCESS) {
         DeleteFileW(verified.c_str());
         fail(std::format("Cannot move the running launcher aside (Windows error {})", error));
     }
     if (!MoveFileExW(verified.c_str(), self.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        const auto error = GetLastError();
+        error = GetLastError();
         MoveFileExW(previous.c_str(), self.c_str(), MOVEFILE_WRITE_THROUGH);
         fail(std::format("Cannot install the launcher update (Windows error {})", error));
     }
 }
 
 void remove_previous_launcher(const fs::path& self) noexcept {
-    const std::wstring previous = self.wstring() + L".old";
     // The previous process may still be exiting; a later launch retries.
     for (int attempt = 0; attempt < 20; ++attempt) {
-        if (DeleteFileW(previous.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND) return;
+        bool remaining = false;
+        for (int index = 0; index < previous_launcher_names; ++index)
+            if (!DeleteFileW(previous_launcher(self, index).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+                remaining = true;
+        if (!remaining) return;
         Sleep(100);
     }
 }

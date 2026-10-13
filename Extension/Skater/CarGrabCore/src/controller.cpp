@@ -352,6 +352,14 @@ Result Controller::step(const Frame& frame) noexcept {
         auto reason = mode_ == TowMode::measured_surface &&
             (!target->grip.valid || target->grip.surface_id != surface_id_) ? DetachReason::identity_changed :
             evaluate(*target, frame, config_, anchor, true, true, mode_);
+        if (mode_ == TowMode::measured_surface && !config_.require_grip && have_local_stance_ &&
+            !current_reach(frame.skater.grip_reach, frame, config_)) {
+            // Losing optional rig feedback cannot replace the reached stance
+            // with a zero shoulder offset/default standoff in one tick. Keep
+            // only the car-local tow policy; fresh pose proof must guide the
+            // usual bounded transition before contact mode can resume.
+            reason = DetachReason::ineligible;
+        }
         if (reason != DetachReason::none && mode_ == TowMode::measured_surface && !config_.require_grip) {
             // Optional surface evidence owns contact, not this independently
             // verified traffic incarnation. Retain the reached car-local stance

@@ -202,14 +202,19 @@ std::string symbol_name(const Module& module, std::uintptr_t address) {
     info->MaxNameLen = 511;
     DWORD64 displacement{};
     if (symbols_ready && SymFromAddr(symbol_session, address, &displacement, info) && info->Name[0]) {
-        // A release ReSkate.dll ships without its symbols, so all this finds in it is the nearest
-        // export, megabytes away: every function of ours then reads as one of three exports and
-        // a report cannot say which was slow. Unless the address is inside a symbol with a size
-        // (the real ones have one), give our own module's address instead: the release's symbols
-        // (build/release/ReSkate-<version>-symbols) name it afterwards.
+        // A release ReSkate.dll ships without its symbols (and a ReSkate.pdb left beside it from
+        // another build is not taken), so all this finds in it is the nearest export, megabytes
+        // away: every function of ours then reads as one of three exports and a report cannot
+        // say which was slow. An export is given a size too, up to the next one, so the size
+        // tells nothing: ask what the names came from. Without the module's own symbols, give
+        // its address instead: the release's symbols (build/release/ReSkate-<version>-symbols)
+        // name it afterwards.
         const auto here = reinterpret_cast<std::uintptr_t>(&waiting_marker);
         const bool own = module.base <= here && here < module.end;
-        if (!own || (info->Size && displacement < info->Size)) return module.name + "!" + info->Name;
+        IMAGEHLP_MODULEW64 loaded{};
+        loaded.SizeOfStruct = sizeof(loaded);
+        const bool named = !own || (SymGetModuleInfoW64(symbol_session, module.base, &loaded) && loaded.SymType == SymPdb);
+        if (named) return module.name + "!" + info->Name;
     }
     return std::format("{}+0x{:x}", module.name, address - module.base);
 }
@@ -247,7 +252,7 @@ std::string sanitize(std::string text) {
 
 struct Sampled { HANDLE handle{}; std::uint32_t id{}; std::string label; };
 // One sample: where its frames start in the pool, how many, and which thread it came from.
-struct Record { std::uint32_t offset{}; std::uint16_t thread{}; std::uint8_t depth{}; };
+struct Record { std::uint32_t offset{}; std::uint16_t thread{}; std::uint8_t depth{}; std::uint32_t at_us{}; };
 // The pool holds at most this many frames (64 MiB); a sample that no longer fits ends the run.
 constexpr std::size_t pool_limit = 8u << 20;
 
@@ -305,7 +310,8 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             if (GetThreadContext(threads[t].handle, &context)) depth = walk(modules, context, pool.data() + used);
             ResumeThread(threads[t].handle);
             if (!depth) continue;
-            records.push_back({static_cast<std::uint32_t>(used), static_cast<std::uint16_t>(t), static_cast<std::uint8_t>(depth)});
+            records.push_back({static_cast<std::uint32_t>(used), static_cast<std::uint16_t>(t), static_cast<std::uint8_t>(depth),
+                static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - start).count())});
             used += depth;
         }
         if (!any && !full) { report.error = "The thread has ended."; break; }
@@ -404,6 +410,83 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             return a.self != b.self ? a.self > b.self : a.total > b.total;
         });
 
+        // ---- the slowest client frames: what a hitch is made of ----
+        // An average hides a hitch: one 60 ms frame in thirty seconds is a fifth of a percent of
+        // the samples. A client frame is a run of samples with the client frame job on the
+        // stack; the longest few are listed with what they spent their time in, below that job.
+        std::string hitches;
+        if (request.target == Target::client && !records.empty()) {
+            const auto period_us = static_cast<std::uint32_t>(1'000'000 / request.rate);
+            const auto stack_of = [&](const Record& record, std::vector<std::uintptr_t>& out) {
+                out.clear();
+                const auto* sample = pool.data() + record.offset;
+                for (std::uint32_t f = 0; f < record.depth; ++f) {
+                    const Module* module{};
+                    out.push_back(function_start(modules, f ? sample[f] - 1 : sample[f], &module));
+                    owners[out.back()] = module;
+                }
+            };
+            // Where in a stack the client frame job is (counting from the leaf), or none.
+            const auto job_at = [&](const std::vector<std::uintptr_t>& frames) -> std::ptrdiff_t {
+                for (std::size_t f = 0; f < frames.size(); ++f)
+                    if (name_of(frames[f], owners[frames[f]]).find("Client frame job") != std::string::npos)
+                        return static_cast<std::ptrdiff_t>(f);
+                return -1;
+            };
+            struct Frame { std::size_t first{}, last{}; std::uint32_t us{}; };
+            std::vector<Frame> frames;
+            std::vector<std::uintptr_t> walked;
+            bool inside{};
+            for (std::size_t i = 0; i < records.size(); ++i) {
+                stack_of(records[i], walked);
+                const bool in_frame = job_at(walked) >= 0;
+                // (A gap in the samples ends a frame too: the sampler itself was held up.)
+                const bool continues = inside && in_frame && records[i].at_us - records[frames.back().last].at_us < period_us * 4;
+                if (continues) frames.back().last = i;
+                else if (in_frame) frames.push_back({i, i, 0});
+                inside = in_frame;
+            }
+            for (auto& frame : frames) frame.us = records[frame.last].at_us - records[frame.first].at_us + period_us;
+            if (frames.size() >= 8) {
+                std::vector<std::uint32_t> lengths;
+                for (const auto& frame : frames) lengths.push_back(frame.us);
+                std::ranges::sort(lengths);
+                const auto median = lengths[lengths.size() / 2];
+                std::ranges::sort(frames, [](const Frame& a, const Frame& b) { return a.us > b.us; });
+                hitches = std::format("Slowest client frames, of {} (the usual one takes {:.1f} ms of this thread). Under each: what it spent\n"
+                                      "its time in, as shares of that frame.\n", frames.size(), median / 1000.0);
+                for (std::size_t n = 0; n < frames.size() && n < 6; ++n) {
+                    const auto& frame = frames[n];
+                    if (frame.us < median * 2 && n) break;
+                    std::unordered_map<std::uintptr_t, Counts> inner;
+                    std::uint32_t samples{};
+                    for (std::size_t i = frame.first; i <= frame.last; ++i) {
+                        stack_of(records[i], walked);
+                        const auto job = job_at(walked);
+                        if (job < 0) continue;
+                        ++samples;
+                        for (std::ptrdiff_t f = 0; f < job; ++f) {
+                            auto& counts = inner[walked[static_cast<std::size_t>(f)]];
+                            counts.module = owners[walked[static_cast<std::size_t>(f)]];
+                            if (!f) ++counts.self;
+                            const auto here = walked.begin() + f;
+                            if (std::find(walked.begin(), here, walked[static_cast<std::size_t>(f)]) == here) ++counts.total;
+                        }
+                    }
+                    hitches += std::format("\n  {:.1f} ms, {:.2f} s into the sample ({} samples)\n", frame.us / 1000.0,
+                        records[frame.first].at_us / 1e6, samples);
+                    std::vector<std::pair<std::uintptr_t, Counts>> order(inner.begin(), inner.end());
+                    // The work, not the way down to it: what nearly the whole frame passes through is left out.
+                    std::erase_if(order, [&](const auto& entry) { return entry.second.total * 100 >= samples * 97; });
+                    std::ranges::sort(order, [](const auto& a, const auto& b) { return a.second.total > b.second.total; });
+                    for (std::size_t i = 0; i < order.size() && i < 14; ++i)
+                        hitches += std::format("    {:5.1f}%  (self {:4.1f}%)  {}\n", 100.0 * order[i].second.total / samples,
+                            100.0 * order[i].second.self / samples, name_of(order[i].first, order[i].second.module));
+                }
+                hitches += "\n";
+            }
+        }
+
         // ---- files next to ReSkate.log ----
         const auto directory = logging::status().directory;
         SYSTEMTIME now{};
@@ -432,6 +515,7 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
             out << "Skate.exe functions are Ghidra addresses (image base 0x140000000). Name them in\n"
                    "ReSkate.labels.tsv next to Skate.exe (\"<address> <name>\" per line) for the next report.\n"
                    "Flame graph: open the .folded file at https://www.speedscope.app\n\n";
+            out << hitches;
             out << "  Self  Total  Function\n";
             for (const auto& f : report.functions) {
                 if (f.total * 1000.0 < per) continue; // under 0.1%

@@ -455,6 +455,34 @@ int main() {
         check(scroll > 100, "The left stick scrolls the panel under the mouse");
     }
 
+    {
+        // A stick that rests well off the middle (a worn pad, or a wheel's pedal on that axis)
+        // never steers the pointer: not at first, and not after the launcher was in the
+        // background, where the pad reads as not there.
+        fresh();
+        PadFeed feed;
+        ImGui::GetIO().AddMousePosEvent(400, 300);
+        const auto off = pad(0, 12000, 0);   // about 0.37: past the rest limit and the dead zone
+        for (int i = 0; i < 60; ++i) frame(feed, off);
+        check(!feed.pointing(), "A stick resting off the middle does not take the pointer");
+        for (int i = 0; i < 60; ++i) frame(feed, PadState{});   // in the background for a second
+        for (int i = 0; i < 60; ++i) frame(feed, off);
+        check(!feed.pointing() && !ImGui::GetIO().MouseDrawCursor,
+              "A stick resting off the middle does not take the pointer after the launcher was in the background");
+        check(ImGui::GetIO().MousePos.x == 400 && ImGui::GetIO().MousePos.y == 300, "The mouse stays where it was");
+    }
+    {
+        // A pad that goes away while it has the pointer gives it back to the mouse.
+        fresh();
+        PadFeed feed;
+        ImGui::GetIO().AddMousePosEvent(400, 300);
+        for (int i = 0; i < 30; ++i) frame(feed, pad());
+        for (int i = 0; i < 5; ++i) frame(feed, pad(0, 30000, 0));
+        check(feed.pointing(), "The right stick takes the pointer");
+        frame(feed, PadState{});
+        check(!feed.pointing(), "A pad that goes away gives the pointer back");
+    }
+
     // ------------------------------------------------ the Steam Deck's trackpad
     {
         fresh();

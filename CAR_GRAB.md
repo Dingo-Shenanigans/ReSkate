@@ -10,8 +10,14 @@ reported missing hand contact, unexpected releases, and sideways motion on turns
 The latest corrections still need in-game validation; hand posing requires a
 verified reachable collision contact and can be absent while towing remains active.
 
-Targets Steam build **25414733**. Integrated against ReSkate `main` at
-`6a02550c7edfd2099a3bd5f2054992c34cb5ef6b` (2026-10-10).
+Targets Steam build **25414733** and ReSkate **2.0.8** (`2e40aeb`, 2026-10-14).
+Install the matching launcher/runtime in a separate game folder as upstream requires.
+The independent PlayStation timing fix is also submitted separately in #228.
+
+The latest pass preserves contact through uneven pose sampling, prevents timing
+jitter from treating the same car as a replacement, and keeps the reached towing
+stance when optional rig feedback drops out. Headless regressions cover these
+changes; the complete mechanic still needs an in-game test.
 
 ## Files
 
@@ -39,5 +45,5 @@ cmake --build --preset release --target dingosdk_runtime --parallel 4
 Native access stays in validated callbacks; physics and pose updates recheck
 vehicle lifetime and freshness. Preserve those checks when tuning handling.
 No new libraries or game assets are required. This is an independent implementation;
-no skate3clone code or assets were copied. Changes dated 2026-10-10 are distributed
+no skate3clone code or assets were copied. Changes dated 2026-10-14 are distributed
 under ReSkate's existing GPL-3.0 license; see `LICENSE`.

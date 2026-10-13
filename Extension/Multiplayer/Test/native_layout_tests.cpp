@@ -618,6 +618,23 @@ void cosmetic_layout_regression() {
     check(modded.items[0].asset.empty() && !reject(m, modded), "A missing peer item without a default must become empty");
     modded = one;
     check(fake.substitute_missing(res, modded, fallbacks).empty() && modded == one, "Installed peer items must stay");
+    // A peer whose mods add slots (or who lacks this game's): items go to this game's slots by slot hash.
+    const auto own = [](std::uint32_t, std::size_t size) { return std::vector<std::uint32_t>(size, 7); };
+    modded = one;
+    check(fake.fit_slots(res, modded, own) == std::pair<std::size_t, std::size_t>{} && modded == one,
+          "A recipe with this game's slots must not be touched");
+    modded.items = {{99, "Own_Sticker", {1, 2}}, one.items[0]};
+    check(fake.fit_slots(res, modded, own) == std::pair<std::size_t, std::size_t>{0, 1} && modded == one && !reject(m, modded),
+          "An item in a slot this game lacks must be left out, and the rest kept");
+    modded.items = {{99, "Own_Sticker", {1, 2}}};
+    check(fake.fit_slots(res, modded, own) == std::pair<std::size_t, std::size_t>{1, 1} && modded.items.size() == 1 &&
+              modded.items[0] == CosmeticSlot{11, "", {7}} && !reject(m, modded),
+          "A slot the peer lacks must stay empty with this player's parameters");
+    modded = one;
+    modded.items[0].parameters = {1, 2, 3};
+    check(fake.fit_slots(res, modded, own) == std::pair<std::size_t, std::size_t>{} &&
+              modded.items[0] == CosmeticSlot{11, "Own_Shirt", {7}} && !reject(m, modded),
+          "An item whose slot takes other parameters here must keep its place");
     auto bad = m;
     bad.put(categories, category + 0x100);
     bad.put(category + 0x138, std::uint32_t{88});

@@ -35,6 +35,10 @@ struct ChatState {
     std::deque<std::pair<std::uint64_t, Clock::time_point>> arrivals;
     std::uint64_t feed_version{}; // counts polls of `feed`; the caches below are rebuilt after one
     std::array<char, multiplayer_chat_max_bytes + 1> input{};
+    // Typing dots: the input as last seen while the box was open, and when it last changed.
+    bool typing_watch{}, typing_on{}, typing_changed_valid{};
+    std::string typing_seen;
+    Clock::time_point typing_changed{}, typing_sent{};
     bool scroll_to_bottom{};
     std::vector<std::string> completions; // "/" commands the typed text can still become
     std::uint64_t completions_version{};  // the Suggestions::version `completions` was copied from
@@ -269,6 +273,44 @@ bool is_emote_text(std::string_view text, std::string_view before, std::string_v
            text.substr(before.size() + 1, name.size()) == name && text.back() == ':';
 }
 
+// The session relays this. Dots mean the input changed in the last three seconds, not that
+// the box is merely open. A failed queue is tried again next frame. A "/" line is a command,
+// a private message or party chat: not everyone's business, so it shows no dots.
+void note_typing(ChatState& c, bool open) {
+    const auto now = Clock::now();
+    if (!open) {
+        if (c.typing_on && queue_multiplayer_action("typing", "0")) c.typing_on = false;
+        c.typing_watch = false;
+        c.typing_changed_valid = false;
+        return;
+    }
+    const std::string_view text(c.input.data());
+    if (const auto first = text.find_first_not_of(' '); first != std::string_view::npos && text[first] == '/') {
+        if (c.typing_on && queue_multiplayer_action("typing", "0")) c.typing_on = false;
+        c.typing_seen.assign(text);
+        c.typing_watch = true;
+        c.typing_changed_valid = false;
+        return;
+    }
+    if (!c.typing_watch) {
+        c.typing_seen.assign(text);
+        c.typing_watch = true;
+    } else if (text != c.typing_seen) {
+        c.typing_seen.assign(text);
+        c.typing_changed = now;
+        c.typing_changed_valid = true;
+    }
+    const bool active = c.typing_changed_valid && now - c.typing_changed < 3s;
+    if (active) {
+        if ((!c.typing_on || now - c.typing_sent >= 500ms) && queue_multiplayer_action("typing", "1")) {
+            c.typing_on = true;
+            c.typing_sent = now;
+        }
+    } else if (c.typing_on && queue_multiplayer_action("typing", "0")) {
+        c.typing_on = false;
+    }
+}
+
 ImU32 with_alpha(ImU32 colour, float alpha) {
     const auto base = static_cast<float>((colour >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
     return (colour & ~IM_COL32_A_MASK) |
@@ -303,6 +345,7 @@ bool chat_pending() {
         c.seen = std::max(c.seen, c.feed.latest);
         while (c.arrivals.size() > multiplayer_chat_history) c.arrivals.pop_front();
     }
+    note_typing(c, s.chat_visible.load() && c.feed.available);
     if (s.chat_visible.load()) return true;
     if (!c.feed.available) return false;
     if (c.feed.vote.id || c.feed.announcement.id) return true; // the vote and announcement cards
@@ -575,6 +618,7 @@ void draw_announcement(const MultiplayerAnnouncement& announcement, ImFont* head
 
 void draw_vote(const MultiplayerVote& vote, ImFont* heading, ImFont* body, ImVec2 display, float scale, bool clickable) {
     if (!vote.id) return;
+    if (vote.next_map && draw_map_vote(vote)) return;
     if (vote.poll) return draw_poll(vote, heading, body, display, scale, clickable);
     constexpr ImU32 green = skate_theme::good, red = skate_theme::danger;
     const bool running = vote.outcome == 0;
@@ -585,7 +629,7 @@ void draw_vote(const MultiplayerVote& vote, ImFont* heading, ImFont* body, ImVec
     if (running) question += '?';
     const float width = 360.0f * scale, margin = 24.0f * scale, strip = 5.0f * scale;
     const float pad = 14.0f * scale, gap = 8.0f * scale, title_size = 13.0f * scale, size = 18.0f * scale, fine = 13.0f * scale;
-    const float button_height = 34.0f * scale, bar = 4.0f * scale, inner = width - strip - pad * 2.0f;
+    const float button_height = 34.0f * scale, bar = 10.0f * scale, inner = width - strip - pad * 2.0f;
     const auto question_extent = heading->CalcTextSizeA(size, FLT_MAX, inner, question.c_str());
     const bool answers = running && vote.may_vote;
     const float height = pad + title_size + gap + question_extent.y + gap + bar + gap + fine +
@@ -605,10 +649,27 @@ void draw_vote(const MultiplayerVote& vote, ImFont* heading, ImFont* body, ImVec
     y += title_size + gap;
     draw->AddText(heading, size, ImVec2(left, y), theme::paper, question.c_str(), nullptr, inner);
     y += question_extent.y + gap;
-    // How far Yes is towards what it needs, then the tally under it.
-    const float share = vote.needed ? std::clamp(static_cast<float>(vote.yes) / static_cast<float>(vote.needed), 0.0f, 1.0f) : 0.0f;
+    // The votes cast, yes in green from the left and no in red from the right: a vote is
+    // decided by those who vote. The mark is in the middle whatever share the vote needs, and
+    // green reaches it when the vote would pass: up to the yes votes needed it grows over the
+    // left half, and past them over the right half. Nothing cast yet, the bar is empty.
+    const unsigned cast = static_cast<unsigned>(vote.yes) + vote.no;
     draw->AddRectFilled(ImVec2(left, y), ImVec2(right, y + bar), skate_theme::tile_light);
-    if (share > 0.0f) draw->AddRectFilled(ImVec2(left, y), ImVec2(left + inner * share, y + bar), green);
+    if (cast) {
+        float share = static_cast<float>(vote.yes) / static_cast<float>(cast);
+        if (const unsigned needed = vote.needed) {
+            const unsigned yes = vote.yes;
+            share = yes <= needed ? 0.5f * static_cast<float>(yes) / static_cast<float>(needed)
+                                  : 0.5f + 0.5f * static_cast<float>(yes - needed) / static_cast<float>(cast - needed);
+        }
+        const float split = std::floor(left + inner * std::clamp(share, 0.0f, 1.0f));
+        if (vote.yes) draw->AddRectFilled(ImVec2(left, y), ImVec2(split, y + bar), green);
+        if (vote.no) draw->AddRectFilled(ImVec2(split, y), ImVec2(right, y + bar), red);
+        if (running && vote.needed) {
+            const float mark = std::floor(left + inner * 0.5f);
+            draw->AddRectFilled(ImVec2(mark - scale, y - 3.0f * scale), ImVec2(mark + scale, y + bar + 3.0f * scale), theme::paper);
+        }
+    }
     y += bar + gap;
     float x = left;
     const auto word = [&](const std::string& text, ImU32 colour) {

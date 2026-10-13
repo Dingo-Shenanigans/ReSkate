@@ -20,7 +20,7 @@ struct Internet {
 }
 
 Download get(std::wstring_view url, const std::filesystem::path& destination,
-    std::uint64_t max_bytes, std::uint32_t timeout_seconds, const wchar_t* agent) {
+    std::uint64_t max_bytes, std::uint32_t timeout_seconds, const wchar_t* agent, Watch* watch) {
     Download result;
     const auto fail = [&](DWORD error) { result.error = error; return result; };
     if (url.empty() || url.size() >= 4096 || url.find_first_of(L"\r\n\t #") != std::wstring_view::npos)
@@ -57,18 +57,21 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
     DWORD length{}; size = sizeof(length);
     if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
                            nullptr, &length, &size, nullptr) && length > max_bytes) return fail(ERROR_FILE_TOO_LARGE);
+    if (watch) watch->total.store(length), watch->received.store(0);
     Handle output{CreateFileW(destination.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
     if (output.value == INVALID_HANDLE_VALUE) return fail(GetLastError());
     std::array<char, 65536> buffer{};
     std::uint64_t total{};
     for (;;) {
         if (GetTickCount64() - started >= std::uint64_t{timeout_seconds} * 1000) return fail(ERROR_TIMEOUT);
+        if (watch && watch->cancel.load()) return fail(ERROR_CANCELLED);
         DWORD read{}, written{};
         if (!WinHttpReadData(request.value, buffer.data(), static_cast<DWORD>(buffer.size()), &read)) return fail(GetLastError());
         if (!read) break;
         if (total + read > max_bytes) return fail(ERROR_FILE_TOO_LARGE);
         if (!WriteFile(output.value, buffer.data(), read, &written, nullptr) || written != read) return fail(ERROR_WRITE_FAULT);
         total += read;
+        if (watch) watch->received.store(total);
     }
     if (!total) return fail(ERROR_BAD_LENGTH);
     if (!FlushFileBuffers(output.value)) return fail(GetLastError());

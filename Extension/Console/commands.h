@@ -22,8 +22,14 @@ void register_object_commands(Commands &);
 void register_park_editor_commands(Commands &);
 void register_multiplayer_commands(Commands &);
 void register_perf_commands(Commands &);
+// perf_commands.cpp: starts `perf memory`'s trace with the game when RESKATE_MEMORY_TRACE asks for it.
+void start_memory_trace_from_environment() noexcept;
+void register_item_commands(Commands &);
 void register_trainer_commands(Commands &);
 void register_hall_of_meat_commands(Commands &);
+void register_road_rash_commands(Commands &);
+void register_board_break_commands(Commands &);
+void register_grind_exit_commands(Commands &);
 // Runtime adapters. Invoked only by the verified game-thread dispatcher.
 void request_debug(overlay::DebugAction, bool enabled = false, float value = 0);
 void request_feature(overlay::OfflineFeatureGroup, bool enabled);

@@ -73,10 +73,70 @@ void rules() {
     check(copies({"asset 3 mod_ap"}, {"asset 1 coat_dmpreset"}).empty(), "a mod's own look on a store item's shape is the mod's");
     check(copies({}, {"asset 1 coat_dmpreset"}).empty(), "the shape of a store item that has a look is not that item");
     check(copies({}, {"asset 1 costume_dmpreset"}) == "Own_Store_Costume", "a store costume that is only a shape is told by it");
-    check(copies({"asset 3 mod_ap"}, {"asset 1 costume_dmpreset"}).empty(), "unless the mod gives it a look of its own");
+    check(copies({"asset 3 mod_ap"}, {"asset 1 costume_dmpreset"}) == "Own_Store_Costume", "and a look of the mod's own over it is still that costume");
     check(copies({}, {"asset 1 hoodie_dmpreset"}).empty(), "a shape free items use is free");
+    {
+        // A whole costume the store sells with looks of its own (colourways): its shape is still it.
+        auto suit = made_of("Own_Store_Suit", {"asset 20 store_suit_ap"}, {"asset 1 suit_dmpreset"}, "s");
+        suit.costume = true;
+        game.add(suit, true);
+        check(copies({"asset 20 mod_ap"}, {"asset 1 suit_dmpreset"}) == "Own_Store_Suit", "a mod's look on a store costume's mesh is that costume");
+        check(copies({"asset 20 mod_ap", "asset 21 mod_two_ap"}, {"asset 1 suit_dmpreset"}) == "Own_Store_Suit", "however many looks it brings");
+        auto free_suit = made_of("Own_Free_Suit", {"asset 20 free_suit_ap"}, {"asset 1 free_suit_dmpreset"}, "t");
+        free_suit.costume = true;
+        game.add(free_suit, false);
+        check(copies({"asset 20 mod_ap"}, {"asset 1 free_suit_dmpreset"}).empty(), "on a free costume's it is the mod's");
+    }
     check(copies({}, {}, "e") == "Own_Store_Voice", "a store item's data, field for field, is that store item");
     check(copies({}, {}, "f").empty(), "data a free item has as well is free");
+
+    // Costumes by their geometry. A mesh is rows of points here: `count` of them from `first`.
+    const auto points = [](float first, std::size_t count) {
+        std::vector<std::array<float, 3>> positions;
+        for (std::size_t i = 0; i < count; ++i) positions.push_back({first + static_cast<float>(i) * 0.01f, 1.0f, -0.25f});
+        return mesh_points(positions);
+    };
+    // A mesh of the mod's own making: nowhere near any of the game's.
+    const auto own = [](std::size_t count) {
+        std::vector<std::array<float, 3>> positions;
+        for (std::size_t i = 0; i < count; ++i) positions.push_back({static_cast<float>(i) * 0.01f, 7.0f, 3.5f});
+        return mesh_points(positions);
+    };
+    const auto joined = [](std::vector<std::uint64_t> a, const std::vector<std::uint64_t>& b) {
+        a.insert(a.end(), b.begin(), b.end());
+        std::sort(a.begin(), a.end());
+        a.erase(std::unique(a.begin(), a.end()), a.end());
+        return a;
+    };
+    check(mesh_point({1.0f, 2.0f, 3.0f}) == mesh_point({1.0001f, 2.0001f, 2.9999f}) &&
+          mesh_point({1.0f, 2.0f, 3.0f}) != mesh_point({1.001f, 2.0f, 3.0f}), "a vertex is told to half a millimetre");
+    check(mesh_points({{1, 2, 3}, {1, 2, 3}, {0, 0, 0}}).size() == 2, "a place is counted once");
+    StoreMeshes meshes;
+    // Three store costumes and a free one; the first two share a body (2000 points) under them.
+    const auto body = points(0, 2000), astronaut = points(100, 10000), reaper = points(300, 8000);
+    meshes.add("Own_Store_Astronaut", true, joined(astronaut, body));
+    meshes.add("Own_Store_Reaper", true, joined(reaper, body));
+    meshes.add("Own_Store_Astronaut", true, points(100, 4000));  // a coarser level of detail: the same costume
+    meshes.add("Own_Free_Suit", false, points(-200, 9000));
+    meshes.add("Own_Store_Robe", true, joined(points(-400, 6000), points(-200, 3000)));  // half of it a free costume's
+    check(meshes.original(joined(astronaut, body)) == "Own_Store_Astronaut", "a store costume's mesh is that costume");
+    check(meshes.original(astronaut) == "Own_Store_Astronaut", "under any name, and without the body");
+    check(meshes.original(points(100, 1200)) == "Own_Store_Astronaut", "a part of it is that costume too");
+    check(meshes.original(joined(points(100, 1200), own(30000))) == "Own_Store_Astronaut",
+          "and stays it inside a much larger mesh of the mod's own");
+    check(meshes.original(joined(points(100, 700), own(1000))) == "Own_Store_Astronaut",
+          "a small part is, when it is much of the mod's mesh");
+    check(meshes.original(points(100, 1200)) == "Own_Store_Astronaut" && meshes.original(joined(points(100, 1300), own(30000))) == "Own_Store_Astronaut",
+          "a tenth of the costume's finest level is enough, whatever its coarser levels add");
+    check(meshes.original(joined(points(100, 700), own(30000))).empty(), "a small part of a costume in a large mesh is not");
+    check(meshes.original(points(100, 200)).empty() && meshes.original(points(100, 299)).empty(), "nor are a few vertices");
+    check(meshes.original(body).empty(), "the body two costumes share is nobody's");
+    check(meshes.original(joined(body, own(5000))).empty(), "so a mod's own costume on it is the mod's");
+    check(meshes.original(points(-200, 9000)).empty() && meshes.original(points(-200, 3000)).empty(), "a free costume's mesh is free");
+    check(meshes.original(points(-400, 6000)) == "Own_Store_Robe", "what only the store costume has of it is still its own");
+    check(meshes.original(own(20000)).empty(), "a mesh of the mod's own is the mod's");
+    check(meshes.original(joined(points(100, 1500), points(300, 3000))) == "Own_Store_Reaper", "of two it takes from, the one it takes most of");
+    check(StoreMeshes{}.original(astronaut).empty(), "nothing is taken when no costume was read");
     check(copies({}, {}, "").empty(), "data with nothing in it says nothing");
     check(copies({}, {}).empty(), "an item of the mod's own is no copy");
 }
@@ -327,10 +387,16 @@ void installed_mods(const fs::path& game, const fs::path& folder, const StoreIte
     const auto found = check_store_copies(catalog, sold, &notes);
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     std::cout << folder.string() << ": " << catalog.mods.size() << " mod(s) checked in " << ms << " ms against "
-              << found.game_items << " of the game's items, " << found.items.size() << " copy(ies) of store items in "
+              << found.game_items << " of the game's items, " << found.mod_meshes << " mesh level(s) against "
+              << found.game_costumes << " of the game's costumes, " << found.items.size() << " copy(ies) of store items in "
               << found.mods.size() << " of them\n";
     for (const auto& source : found.mods)
-        std::cout << "  " << source.mod << ": " << source.count << ", e.g. " << source.example << " is " << source.original << '\n';
+        std::cout << "  " << source.mod << ": " << source.count << ", e.g. " << source.example << " is " << source.original
+                  << (source.by_mesh ? " (by its mesh)" : " (by what its item is fitted on)") << '\n';
+    for (const auto& mesh : found.meshes_seen)
+        std::cout << "  mesh " << mesh.mod << ": " << mesh.mesh << ", " << mesh.points << " points, " << mesh.closest.shared
+                  << " of them only in " << (mesh.closest.key.empty() ? std::string("no store costume") : mesh.closest.key + " (" +
+                         std::to_string(mesh.closest.costume_points) + " points)") << '\n';
     for (const auto& note : notes) std::cout << "  note: " << note << '\n';
 }
 } // namespace

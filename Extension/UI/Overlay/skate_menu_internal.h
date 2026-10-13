@@ -29,15 +29,19 @@ void field(SkateMenu& menu, const char* label, const char* tooltip = nullptr);
 void info(SkateMenu& menu, const char* label, const std::string& value);
 void note(const char* text);
 void warn(const char* text);
-// width 0 fills the rest of the row.
+// width 0 fills the rest of the row. tooltips, when given, are shown on hovering the option at the
+// same position (one per option; nullptr for none).
 bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_list<const char*> options,
-            bool enabled = true, float width = 0.0f);
+            bool enabled = true, float width = 0.0f, std::initializer_list<const char*> tooltips = {});
 void tag(SkateMenu& menu, const char* text, ImU32 colour);
 bool primary_button(SkateMenu& menu, const char* label, bool enabled = true);
 // Height left for a tab's body, keeping room for the feedback line below it.
 float page_body_height(const SkateMenu& menu);
 // Runs a console command and shows its reply as feedback.
 void send_console(SkateMenu& menu, const CallbacksV3& callbacks, const std::string& command);
+// Board Break's decks, a button for each (modding_menu.cpp): on the Mods page and under the
+// feature's switch on the Skater page. Draws nothing while no deck is installed.
+void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks);
 void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest request);
 // HOST shows the host form until a session exists, then that session (SESSION).
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3;
@@ -56,6 +60,8 @@ void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
 void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
+// Extension/Music/music_page.cpp
+void music_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp
 void trainer_page(SkateMenu&, const Model&, const CallbacksV3&);
 bool trainer_page_wanted();

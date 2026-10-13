@@ -200,6 +200,46 @@ template <class Read> struct CosmeticMemory {
         }
         return swaps;
     }
+    // A mod can add slots to the skater or the board (stickers, say), and then two players'
+    // templates hold different slots. Puts a peer's items in this game's slots by slot hash:
+    // a slot the peer does not have stays empty, and an item in a slot this game does not
+    // have is left out. `own(slot, count)` gives the parameters for a slot the peer sent none
+    // for (or a different number of). Returns {slots left empty, items left out}; a recipe
+    // that already has this game's slots in order is not touched.
+    template <class Parameters>
+    std::pair<std::size_t, std::size_t> fit_slots(std::uintptr_t res, CosmeticRecipe &r, const Parameters &own) const {
+        const auto slots = ptr(res, 0x28);
+        const auto wanted = count(slots, 24, max_cosmetic_slots);
+        std::vector<std::uint32_t> ids(wanted);
+        std::vector<std::size_t> sizes(wanted);
+        bool same = r.items.size() == wanted;
+        for (std::size_t i = 0; i < wanted; ++i) {
+            const auto slot = ptr(slots, i * 24 + 8) & ~std::uintptr_t{4};
+            ids[i] = get<std::uint32_t>(slot, 0x4c);
+            sizes[i] = count(ptr(slot, 0x18), 4, max_cosmetic_parameters);
+            same = same && r.items[i].slot == ids[i] && r.items[i].parameters.size() == sizes[i];
+        }
+        if (same) return {};
+        std::vector<bool> used(r.items.size());
+        std::vector<CosmeticSlot> fitted;
+        fitted.reserve(wanted);
+        std::size_t empty{};
+        for (std::size_t i = 0; i < wanted; ++i) {
+            std::size_t from = 0;
+            while (from < r.items.size() && (used[from] || r.items[from].slot != ids[i])) ++from;
+            if (from == r.items.size()) {
+                ++empty;
+                fitted.push_back({ids[i], {}, own(ids[i], sizes[i])});
+                continue;
+            }
+            used[from] = true;
+            fitted.push_back(std::move(r.items[from]));
+            if (fitted.back().parameters.size() != sizes[i]) fitted.back().parameters = own(ids[i], sizes[i]);
+        }
+        const auto left_out = static_cast<std::size_t>(std::count(used.begin(), used.end(), false));
+        r.items = std::move(fitted);
+        return {empty, left_out};
+    }
     void validate(std::uintptr_t res, const CosmeticRecipe &r) const {
         check(r.key == get<std::uint32_t>(res, 0x38) && r.version == get<std::uint32_t>(res, 0x3c),
               "Peer cosmetic template differs from this game.");

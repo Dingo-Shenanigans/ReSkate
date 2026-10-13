@@ -213,6 +213,16 @@ void coarse_checks() {
               plain.skater[5].scale == std::array<float, 3>{1, 1, 1} && plain.skater[6].scale == std::array<float, 3>{1, 1, 1} &&
               free.skater[5].scale == std::array<float, 3>{4, 4, 4},
           "A bone's scale was not held to the limit");
+    big.pose.board.resize(3);
+    big.pose.board[0].scale = {3, 3, 3};
+    big.pose.board[2].scale = {.2f, 1, 1};
+    auto board_held = big.pose, board_free = big.pose;
+    limit_bone_scale(board_held, 2.f);
+    limit_bone_scale(board_free, 0.f);
+    check(board_held.board[0].scale == std::array<float, 3>{board_scale_limit, board_scale_limit, board_scale_limit} &&
+              std::abs(board_held.board[2].scale[0] - 1.f / board_scale_limit) < 1e-5f && board_held.skater[5].scale == std::array<float, 3>{2, 2, 2} &&
+              board_free.board[0].scale == std::array<float, 3>{3, 3, 3},
+          "A skateboard's scale was not held to its own limit");
     std::cout << "Coarse rotations: valid poses, within a step, small turns unchanged.\n";
 }
 void rate_checks() {

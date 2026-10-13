@@ -105,6 +105,10 @@ GroupStatus group_status(const PartyRoster &roster, unsigned capacity, const Par
     g.join = player.party_open ? 2 : 1;
     return g;
 }
+// The dedicated server's card is no player's: its player id is none the roster gives (those
+// count up from 0x7e000000), and not 0, which the game takes for the local player's without
+// its own service (a placed object's menu then offered Edit on what the server placed).
+constexpr std::uint32_t server_player_id = 0x7effffff;
 Handle player_record(Address manager, const PartyPlayer &player, std::uint32_t player_id,
                      bool party = true, bool friend_record = false, bool online = true, std::int32_t colour = -1,
                      const GroupStatus &group = {}) {
@@ -313,6 +317,15 @@ void party_profile(Address manager, Handle info, const GroupStatus &group) {
     publish_value(manager, field(manager, info, 18, 0x11cca848, 257), base + engine::bool_type, group.members > 1);
 }
 } // namespace
+void set_native_party_server(std::uint64_t id, std::string_view name) noexcept {
+    try {
+        auto &s = state();
+        if (s.server_id == id && s.server_name == name) return;
+        s.server_id = id;
+        s.server_name = name;
+        s.server_changed = true;
+    } catch (...) {}
+}
 void update_native_party(std::uintptr_t base, const PartyRoster &roster, unsigned capacity,
                          bool overlay) noexcept {
     auto &s = state();
@@ -326,6 +339,7 @@ void update_native_party(std::uintptr_t base, const PartyRoster &roster, unsigne
         auto previous = s.published.load(std::memory_order_acquire);
         bool changed = !previous || previous->social_revision != steam->revision ||
                        previous->capacity != capacity || previous->overlay != overlay;
+        changed |= std::exchange(s.server_changed, false);
         bool refreshed{}, talking{};
         if (previous) for (std::size_t i = 0; i < roster.size(); ++i) {
             const auto &old = previous->records[i].player;
@@ -424,6 +438,16 @@ void update_native_party(std::uintptr_t base, const PartyRoster &roster, unsigne
                 record.handle = player_record(manager, record.player, 0, false, true, friend_info.online, -1, away);
                 next->friends.push_back(std::move(record));
             }
+        }
+        if (s.server_id) {
+            auto &server = next->server;
+            server.player.id = s.server_id;
+            server.player.name = s.server_name;
+            const auto &old = previous ? previous->server : Record{};
+            server.handle = previous && previous->manager == manager && old.handle && old.player.id == s.server_id &&
+                                    old.player.name == s.server_name && game::native_data().models.value(manager, old.handle, 0, 0)
+                                ? old.handle
+                                : player_record(manager, server.player, server_player_id, false, false, true);
         }
         // Make the identity lookup available before publishing arrays that can
         // immediately invoke native UI observers.

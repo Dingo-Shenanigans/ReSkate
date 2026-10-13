@@ -1,6 +1,9 @@
 #include "Extension/Music/local_music_shelf.h"
 #include "Extension/Music/local_music_shelf_lifetime.h"
 #include "Extension/Music/local_music_assets.h"
+#include "Extension/Music/spotify_station.h"
+#include "Extension/Music/external_audio.h"
+#include "Extension/Music/youtube_music.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
@@ -9,6 +12,7 @@
 #include "Extension/Profile/runtime_internal.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <exception>
 #include <initializer_list>
@@ -26,11 +30,27 @@ std::string music_diag_hex(std::uint64_t value, int width) {
     return out;
 }
 namespace md = dingosdk::multiplayer::menu_data;
+// A row of our own above the game's: the tiles of Featured whose playlists are its.
+struct ShelfRow {
+    const char* title;
+    bool (*mine)(std::string_view id);
+    std::uint64_t tag; // the low bits of its models' ids
+    md::Value anchor{}, tiles{};
+    std::vector<std::byte> published_rows;
+};
+bool mods_row(std::string_view id) { return id.starts_with("mod:"); }
+bool spotify_row(std::string_view id) { return spotify_station::is_station(id); }
+bool youtube_row(std::string_view id) { return id.starts_with(youtube_music::playlist_prefix); }
+bool files_row(std::string_view id) { return id.starts_with(youtube_music::files_prefix); }
+bool radio_row(std::string_view id) { return id.starts_with(youtube_music::radio_prefix); }
+bool external_row(std::string_view id) { return id.starts_with(external_audio::playlist_prefix); }
 struct ModsShelf {
     std::uintptr_t manager{};
-    md::Value anchor{}, tiles{}, featured_anchor{}, list{};
+    md::Value featured_anchor{}, list{};
     ULONGLONG next_poll{};
-    std::vector<std::byte> published_rows;
+    // In the order they are shown.
+    std::array<ShelfRow, 6> rows{{{"Spotify", &spotify_row, 0x5d}, {"YouTube Music", &youtube_row, 0x7d}, {"Local Files", &files_row, 0x8d}, {"Online Radio", &radio_row, 0x9d},
+        {"External Audio", &external_row, 0x6d}, {"Mods", &mods_row, 0x4d}}};
 };
 ModsShelf mods_shelf;
 md::MenuLifetime music_shelf_lifetime;
@@ -62,13 +82,16 @@ void music_release_shelf(std::uintptr_t base) {
             md::require(stride == sizeof(md::Ref), "Music shelf cleanup list differs.");
             std::vector<md::Ref> refs(count);
             if (!bytes.empty()) std::memcpy(refs.data(), bytes.data(), bytes.size());
-            const auto retained = music_shelf_detached(std::span<const md::Ref>{refs}, mods_shelf.anchor.handle);
+            auto retained = refs;
+            for (const auto& row : mods_shelf.rows)
+                if (row.anchor.handle) retained = music_shelf_detached(std::span<const md::Ref>{retained}, row.anchor.handle);
             if (retained.size() != refs.size()) context.array(items, retained);
         }
         // Unbind the child before reverse-creation-order destruction. Both roots
         // must release their widget references while the outgoing assets live.
-        if (mods_shelf.anchor.handle && context.type_of(mods_shelf.anchor.handle) == mods_shelf.anchor.type)
-            context.set(context.path(mods_shelf.anchor, {0x214d4984U, 0x25e4d6c8U}), md::Ref{});
+        for (const auto& row : mods_shelf.rows)
+            if (row.anchor.handle && context.type_of(row.anchor.handle) == row.anchor.type)
+                context.set(context.path(row.anchor, {0x214d4984U, 0x25e4d6c8U}), md::Ref{});
     }, [&](md::Value value) { context.destroy(value); });
     mods_shelf = {};
 }
@@ -87,20 +110,20 @@ md::Ref music_tile_ref(const md::Context& context, md::Value anchor) {
         {0x214d4984U, 0x25e4d6c8U}));
 }
 void music_sync_mods(const md::Context& context) {
-    if (mods_shelf.manager != context.manager || !mods_shelf.tiles.handle) return;
+    if (mods_shelf.manager != context.manager) return;
+    if (std::none_of(mods_shelf.rows.begin(), mods_shelf.rows.end(), [](const ShelfRow& row) { return row.tiles.handle != 0; })) return;
     const auto ref = music_tile_ref(context, mods_shelf.featured_anchor);
     const auto handle = ref.handle & ~std::uint64_t{1};
     if (!handle) return;
     const md::Value featured{handle, context.type_of(handle)};
-    md::require(featured.type == mods_shelf.tiles.type, "Featured tile schema differs.");
     const auto source_items = context.field(featured, 0x67223da7U);
     unsigned count{}, stride{};
     const auto source = context.array(source_items, 1024, count, stride);
     const auto row_type = md::read<std::uintptr_t>(md::read<std::uintptr_t>(source_items.type) + 0x30);
     md::require(stride == 1200 && md::read<std::uint32_t>(md::read<std::uintptr_t>(row_type)) == 0xdeb20e0fU,
         "Music tile row schema differs.");
-    std::vector<std::byte> filtered;
-    unsigned mods{};
+    // The playlist each of Featured's tiles is of.
+    std::vector<std::string> ids(count);
     for (unsigned i = 0; i < count; ++i) {
         const auto at = reinterpret_cast<std::uintptr_t>(source.data() + std::size_t{i} * stride);
         const auto tile = md::read<md::Ref>(music_inline_path(context, at, row_type,
@@ -112,21 +135,29 @@ void music_sync_mods(const md::Context& context) {
             context.address(tile_model), tile_model.type, {0xeb4f9b4cU})) & ~std::uint64_t{1};
         if (!playlist_handle) continue;
         const md::Value playlist{playlist_handle, context.type_of(playlist_handle)};
-        const auto id = context.text(context.field(playlist, 0xa5b84b8aU), 2048);
-        if (!id.starts_with("mod:")) continue;
-        filtered.insert(filtered.end(), source.begin() + std::size_t{i} * stride,
-            source.begin() + std::size_t{i + 1} * stride);
-        ++mods;
+        ids[i] = context.text(context.field(playlist, 0xa5b84b8aU), 2048);
     }
-    const auto destination = context.field(mods_shelf.tiles, 0x67223da7U);
-    unsigned previous{}, previous_stride{};
-    context.array(destination, 1024, previous, previous_stride);
-    md::require(previous_stride == stride, "Mods tile row schema differs.");
-    if (previous == mods && mods_shelf.published_rows == filtered) return;
-    context.array(destination, filtered, mods);
-    mods_shelf.published_rows = std::move(filtered);
-    dingosdk::logging::event(dingosdk::logging::Channel::music,
-        dingosdk::Json{{"event", "music_mods_shelf_fill"}, {"count", mods}, {"featured", count}}.dump().c_str());
+    for (auto& row : mods_shelf.rows) {
+        if (!row.tiles.handle) continue;
+        md::require(featured.type == row.tiles.type, "Featured tile schema differs.");
+        std::vector<std::byte> filtered;
+        unsigned mine{};
+        for (unsigned i = 0; i < count; ++i) {
+            if (ids[i].empty() || !row.mine(ids[i])) continue;
+            filtered.insert(filtered.end(), source.begin() + std::size_t{i} * stride,
+                source.begin() + std::size_t{i + 1} * stride);
+            ++mine;
+        }
+        const auto destination = context.field(row.tiles, 0x67223da7U);
+        unsigned previous{}, previous_stride{};
+        context.array(destination, 1024, previous, previous_stride);
+        md::require(previous_stride == stride, "Mods tile row schema differs.");
+        if (previous == mine && row.published_rows == filtered) continue;
+        context.array(destination, filtered, mine);
+        row.published_rows = std::move(filtered);
+        dingosdk::logging::event(dingosdk::logging::Channel::music,
+            dingosdk::Json{{"event", "music_mods_shelf_fill"}, {"row", row.title}, {"count", mine}, {"featured", count}}.dump().c_str());
+    }
 }
 void music_poll_mods(std::uintptr_t base) {
     if (music_shelf_lifetime.blocked() || music_shelf_cleaning ||
@@ -148,7 +179,7 @@ void music_poll_mods(std::uintptr_t base) {
     }
 }
 // Publish the independent Mods shelf before native widgets bind.
-std::string music_shelf_append_one(std::uintptr_t base, std::uintptr_t model, std::uint64_t exact_list = 0) {
+std::string music_shelf_append_one(std::uintptr_t base, std::uintptr_t model, std::uint64_t exact_list, const std::array<bool, 6>& wanted) {
     namespace md = dingosdk::multiplayer::menu_data;
     game::ModelWriteLock lock(model);
     md::Context shelf{base, model};
@@ -173,7 +204,7 @@ std::string music_shelf_append_one(std::uintptr_t base, std::uintptr_t model, st
             ++candidates;
             if (target_schema != 0x0e3be640U) continue;
             report += " list=0x" + music_diag_hex(root.model.handle, 16) + " count=" + std::to_string(count);
-            if (count >= 4) { report += " already"; break; }
+            if (count >= 4) { report += " already"; break; } // (the game's own are three)
             if (count < 2) { report += " too_few"; break; }
             std::uint64_t record_ref = 0, source_vm = 0;
             std::memcpy(&record_ref, bytes.data() + stride, 8);
@@ -184,46 +215,51 @@ std::string music_shelf_append_one(std::uintptr_t base, std::uintptr_t model, st
             music_release_shelf(base);
             mods_shelf.manager = model;
             mods_shelf.list = root.model;
-            auto new_vm = shelf.create(md::Schema{0x0e3be640U, 192}, (GetTickCount64() << 12) | 0x4dU);
-            mods_shelf.anchor = new_vm;
-            music_shelf_models.track(new_vm);
-            md::Value new_tiles{};
+            auto merged = bytes;
+            unsigned added{};
             try {
-                const md::Value source_anchor{source_vm, source_type};
-                shelf.copy(new_vm, shelf.address(source_anchor));
-                const auto tile_ref = music_tile_ref(shelf, source_anchor);
-                auto tile_handle = tile_ref.handle & ~std::uint64_t{1};
-                const auto tile_type = shelf.type(md::Schema{0x74b1ea1dU, 392});
-                std::uintptr_t tile_data{};
-                if (tile_handle && shelf.type_of(tile_handle) == tile_type)
-                    tile_data = shelf.address(md::Value{tile_handle, tile_type});
-                else if (tile_ref.record && md::read<std::uintptr_t>(tile_ref.record + 0x18) == tile_type)
-                    tile_data = md::read<std::uintptr_t>(tile_ref.record + 0x20);
-                md::require(tile_data != 0, "Music tile template is not available.");
-                new_tiles = shelf.create(md::Schema{0x74b1ea1dU, 392}, (GetTickCount64() << 12) | 0x4eU);
-                mods_shelf.tiles = new_tiles;
-                music_shelf_models.track(new_tiles);
-                shelf.copy(new_tiles, tile_data);
-                shelf.text(shelf.path(new_tiles, {0xfaec2d05U, 0xcb79482dU, 0x4d8e01b9U}), "Mods");
-                // An independent list retains each native row's actions and artwork on publication.
-                shelf.array(shelf.field(new_tiles, 0x67223da7U), std::span<const std::byte>{}, 0);
-                shelf.set(shelf.path(new_vm, {0x214d4984U, 0x25e4d6c8U}), md::Ref{0, new_tiles.handle});
+                // The last of them first: each is put ahead of what is there.
+                for (std::size_t index = mods_shelf.rows.size(); index-- > 0;) {
+                    if (!wanted[index]) continue;
+                    auto& row = mods_shelf.rows[index];
+                    auto new_vm = shelf.create(md::Schema{0x0e3be640U, 192}, (GetTickCount64() << 12) | row.tag);
+                    row.anchor = new_vm;
+                    music_shelf_models.track(new_vm);
+                    const md::Value source_anchor{source_vm, source_type};
+                    shelf.copy(new_vm, shelf.address(source_anchor));
+                    const auto tile_ref = music_tile_ref(shelf, source_anchor);
+                    auto tile_handle = tile_ref.handle & ~std::uint64_t{1};
+                    const auto tile_type = shelf.type(md::Schema{0x74b1ea1dU, 392});
+                    std::uintptr_t tile_data{};
+                    if (tile_handle && shelf.type_of(tile_handle) == tile_type)
+                        tile_data = shelf.address(md::Value{tile_handle, tile_type});
+                    else if (tile_ref.record && md::read<std::uintptr_t>(tile_ref.record + 0x18) == tile_type)
+                        tile_data = md::read<std::uintptr_t>(tile_ref.record + 0x20);
+                    md::require(tile_data != 0, "Music tile template is not available.");
+                    auto new_tiles = shelf.create(md::Schema{0x74b1ea1dU, 392}, (GetTickCount64() << 12) | (row.tag + 1));
+                    row.tiles = new_tiles;
+                    music_shelf_models.track(new_tiles);
+                    shelf.copy(new_tiles, tile_data);
+                    shelf.text(shelf.path(new_tiles, {0xfaec2d05U, 0xcb79482dU, 0x4d8e01b9U}), row.title);
+                    // An independent list retains each native row's actions and artwork on publication.
+                    shelf.array(shelf.field(new_tiles, 0x67223da7U), std::span<const std::byte>{}, 0);
+                    shelf.set(shelf.path(new_vm, {0x214d4984U, 0x25e4d6c8U}), md::Ref{0, new_tiles.handle});
+                    std::vector<std::byte> element(stride);
+                    std::memcpy(element.data(), &record_ref, 8);
+                    std::memcpy(element.data() + 8, &new_vm.handle, 8);
+                    merged.insert(merged.begin(), element.begin(), element.end());
+                    ++added;
+                }
             } catch (...) {
                 music_release_shelf(base);
                 throw;
             }
-            std::vector<std::byte> element(stride);
-            std::memcpy(element.data(), &record_ref, 8);
-            std::memcpy(element.data() + 8, &new_vm.handle, 8);
-            auto merged = bytes;
-            merged.insert(merged.begin(), element.begin(), element.end());
-            shelf.array(items, merged, count + 1);
+            shelf.array(items, merged, count + added);
             mods_shelf.featured_anchor = md::Value{target, shelf.type_of(target)};
             try { music_sync_mods(shelf); } catch (const std::exception&) {}
             unsigned after = 0, after_stride = 0;
             shelf.array(items, 64, after, after_stride);
-            report += " new=0x" + music_diag_hex(new_vm.handle, 16) + " appended=" + std::to_string(count + 1) +
-                      " after=" + std::to_string(after);
+            report += " appended=" + std::to_string(count + added) + " after=" + std::to_string(after);
             break;
         } catch (const std::exception& error) { report += " error=" + std::string(error.what()); continue; }
     }
@@ -268,17 +304,13 @@ std::uint64_t music_model_construct_hook(std::uintptr_t manager, std::uint8_t mo
             }
         }
         if (!is_music_shelf) return handle;
-        // Only add our shelf when an enabled mod actually declares a playlist with songs. Otherwise
-        // leave the native three shelves untouched instead of publishing an empty Mods shelf.
+        // The Mods row only when an enabled mod actually declares a playlist with songs, rather
+        // than an empty one; the Spotify row always (it has the Spotify playlist at the least).
         bool has_mod_playlists = false;
         for (const auto& playlist : mod_music_playlists())
             if (!playlist.songs.empty()) { has_mod_playlists = true; break; }
-        if (!has_mod_playlists) {
-            music_release_shelf(local_runtime().base);
-            dingosdk::logging::event(dingosdk::logging::Channel::music, "{\"event\":\"music_mods_shelf_skipped\"}");
-            return handle;
-        }
-        const auto report = music_shelf_append_one(local_runtime().base, manager, handle);
+        const auto report = music_shelf_append_one(local_runtime().base, manager, handle, {spotify_station::spotify_used(), youtube_music::has(youtube_music::Kind::youtube), youtube_music::has(youtube_music::Kind::files), youtube_music::has(youtube_music::Kind::radio),
+            !external_audio::app().empty(), has_mod_playlists});
         dingosdk::logging::event(dingosdk::logging::Channel::music,
             dingosdk::Json{{"event", "music_shelf_append"}, {"report", report}}.dump().c_str());
     } catch (...) {} // A shelf failure must not interrupt the native constructor.

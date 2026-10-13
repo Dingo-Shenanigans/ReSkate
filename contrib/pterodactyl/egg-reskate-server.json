@@ -13,16 +13,16 @@
         "Debian 13": "ghcr.io/parkervcp/yolks:debian"
     },
     "file_denylist": [],
-    "startup": "./ReSkateServer",
+    "startup": "sed -i -E 's/\"listed\": *[^,]*,/\"listed\": '{{LISTED}}',/' ReSkateServer.json && exec ./ReSkateServer",
     "config": {
-        "files": "{\n    \"ReSkateServer.json\": {\n        \"parser\": \"json\",\n        \"find\": {\n            \"port\": \"{{server.build.default.port}}\",\n            \"query_port\": \"{{server.build.env.QUERY_PORT}}\",\n            \"steam_token\": \"{{server.build.env.STEAM_TOKEN}}\"\n        }\n    }\n}",
+        "files": "{\n    \"ReSkateServer.json\": {\n        \"parser\": \"json\",\n        \"find\": {\n            \"server.port\": \"{{server.build.default.port}}\",\n            \"server.query_port\": \"{{server.build.env.QUERY_PORT}}\",\n            \"server.steam_token\": \"{{server.build.env.STEAM_TOKEN}}\"\n        }\n    }\n}",
         "startup": "{\n    \"done\": \"is up on \"\n}",
         "logs": "{}",
         "stop": "quit"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# ReSkate dedicated server (Linux) for Pterodactyl: the tarball the release's launcher.json\n# names (\"server_linux\"), checked against its SHA-256 and unpacked into the server's folder.\n# ReSkateServer.json, Mods and the logs are not in the tarball, so a reinstall keeps them.\nset -euo pipefail\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl jq tar\n\nrepo=\"https://github.com/Dingo-Shenanigans/ReSkate\"\nif [ -z \"${RELEASE:-}\" ] || [ \"${RELEASE}\" = \"latest\" ]; then\n    base=\"${repo}/releases/latest/download\"\nelse\n    base=\"${repo}/releases/download/${RELEASE}\"\nfi\nserver=\"${SERVER_DIR:-/mnt/server}\"\nmkdir -p \"${server}\"\nwork=\"$(mktemp -d)\"\ntrap 'rm -rf \"${work}\"' EXIT\n\necho \"Reading ${base}/launcher.json\"\ncurl -fsSL --retry 3 -o \"${work}/launcher.json\" \"${base}/launcher.json\"\nurl=\"$(jq -r '.server_linux.url // empty' \"${work}/launcher.json\")\"\nsha=\"$(jq -r '.server_linux.sha256 // empty' \"${work}/launcher.json\")\"\nversion=\"$(jq -r '.server_linux.version // empty' \"${work}/launcher.json\")\"\nif [ -z \"${url}\" ] || [ -z \"${sha}\" ]; then\n    echo \"This release has no Linux server (no \\\"server_linux\\\" in launcher.json). Use 1.1.4 or newer.\"\n    exit 1\nfi\ncase \"${url}\" in\n    asset:*) url=\"${base}/${url#asset:}\" ;;\n    https://*) ;;\n    *) echo \"launcher.json names no usable download: ${url}\"; exit 1 ;;\nesac\n\necho \"Downloading the ReSkate Linux server ${version}\"\ncurl -fSL --retry 3 -o \"${work}/server.tar.gz\" \"${url}\"\necho \"${sha}  ${work}/server.tar.gz\" | sha256sum -c -\ntar -xzf \"${work}/server.tar.gz\" -C \"${server}\" --strip-components=1\nchmod +x \"${server}/ReSkateServer\"\n\n# Steam looks for steamclient.so in ~/.steam/sdk64 too (HOME is the server's folder in the\n# container); a link keeps pointing at the copy the self-update replaces.\nmkdir -p \"${server}/.steam/sdk64\"\nln -sf ../../steamclient.so \"${server}/.steam/sdk64/steamclient.so\"\n\n# First install: the panel's ports. The server adds every other setting with its default on\n# its first start; the panel writes the ports (and steam_token) again before each start.\nif [ ! -f \"${server}/ReSkateServer.json\" ]; then\n    printf '{\\n  \"port\": %s,\\n  \"query_port\": %s\\n}\\n' \"${SERVER_PORT:-27015}\" \"${QUERY_PORT:-27016}\" > \"${server}/ReSkateServer.json\"\nfi\necho \"Installed the ReSkate Linux server ${version}.\"\n",
+            "script": "#!/bin/bash\n# ReSkate dedicated server (Linux) for Pterodactyl: the tarball the release's launcher.json\n# names (\"server_linux\"), checked against its SHA-256 and unpacked into the server's folder.\n# ReSkateServer.json, Mods and the logs are not in the tarball, so a reinstall keeps them.\nset -euo pipefail\napt-get update\napt-get install -y --no-install-recommends ca-certificates curl jq tar\n\nrepo=\"https://github.com/Dingo-Shenanigans/ReSkate\"\nif [ -z \"${RELEASE:-}\" ] || [ \"${RELEASE}\" = \"latest\" ]; then\n    base=\"${repo}/releases/latest/download\"\nelse\n    base=\"${repo}/releases/download/${RELEASE}\"\nfi\nserver=\"${SERVER_DIR:-/mnt/server}\"\nmkdir -p \"${server}\"\nwork=\"$(mktemp -d)\"\ntrap 'rm -rf \"${work}\"' EXIT\n\necho \"Reading ${base}/launcher.json\"\ncurl -fsSL --retry 3 -o \"${work}/launcher.json\" \"${base}/launcher.json\"\nurl=\"$(jq -r '.server_linux.url // empty' \"${work}/launcher.json\")\"\nsha=\"$(jq -r '.server_linux.sha256 // empty' \"${work}/launcher.json\")\"\nversion=\"$(jq -r '.server_linux.version // empty' \"${work}/launcher.json\")\"\nif [ -z \"${url}\" ] || [ -z \"${sha}\" ]; then\n    echo \"This release has no Linux server (no \\\"server_linux\\\" in launcher.json). Use 1.1.4 or newer.\"\n    exit 1\nfi\ncase \"${url}\" in\n    asset:*) url=\"${base}/${url#asset:}\" ;;\n    https://*) ;;\n    *) echo \"launcher.json names no usable download: ${url}\"; exit 1 ;;\nesac\n\necho \"Downloading the ReSkate Linux server ${version}\"\ncurl -fSL --retry 3 -o \"${work}/server.tar.gz\" \"${url}\"\necho \"${sha}  ${work}/server.tar.gz\" | sha256sum -c -\ntar -xzf \"${work}/server.tar.gz\" -C \"${server}\" --strip-components=1\nchmod +x \"${server}/ReSkateServer\"\n\n# Steam looks for steamclient.so in ~/.steam/sdk64 too (HOME is the server's folder in the\n# container); a link keeps pointing at the copy the self-update replaces.\nmkdir -p \"${server}/.steam/sdk64\"\nln -sf ../../steamclient.so \"${server}/.steam/sdk64/steamclient.so\"\n\n# First install: the panel's ports. The server adds every other setting with its default on\n# its first start; the panel writes the ports (and steam_token) again before each start.\nif [ ! -f \"${server}/ReSkateServer.json\" ]; then\n    printf '{\\n  \"server\": {\\n    \"listed\": %s,\\n    \"port\": %s,\\n    \"query_port\": %s\\n  }\\n}\\n' \"${LISTED:-true}\" \"${SERVER_PORT:-27015}\" \"${QUERY_PORT:-27016}\" > \"${server}/ReSkateServer.json\"\nfi\necho \"Installed the ReSkate Linux server ${version}.\"\n",
             "container": "ghcr.io/parkervcp/installers:debian",
             "entrypoint": "bash"
         }
@@ -55,7 +55,17 @@
             "default_value": "latest",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string|regex:/^(latest|v[0-9][0-9A-Za-z.\\-]*)$/|max:32",
+            "rules": "required|string|max:32|regex:/^(latest$)?(v[0-9][0-9A-Za-z.\\-]*)?$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Listed",
+            "description": "Show the server in the in-game browser. false hides it (and your IP from Steam); players join with the code.",
+            "env_variable": "LISTED",
+            "default_value": "true",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:true,false",
             "field_type": "text"
         }
     ]

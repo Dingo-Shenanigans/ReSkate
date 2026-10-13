@@ -4,7 +4,7 @@
 #include <format>
 #include <limits>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 namespace {
 bool stream_file(HANDLE file, DWORD bytes, const std::function<bool(const void*, DWORD)>& sink) {
     std::array<char, 65536> buffer{};
@@ -60,9 +60,14 @@ MultipartReport::MultipartReport(const std::filesystem::path& dump, const Json& 
                 !value.is_string() || value.string().size() > 4096 || value.string().find(boundary) != std::string::npos) {
             error_ = ERROR_INVALID_DATA; return;
         }
-        prefix_ += std::format("--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n{}\r\n", boundary, key, value.string());
-        if (prefix_.size() > 65536) { error_ = ERROR_INVALID_DATA; return; }
     }
+    // Sentry reads event attributes from the "sentry" field; attributes become searchable tags.
+    Json event = Json::object();
+    event["tags"] = attributes;
+    if (const auto version = attributes.value("version", ""); !version.empty()) event["release"] = "reskate@" + version;
+    const auto fields = event.dump();
+    if (fields.size() > 65536 || fields.find(boundary) != std::string::npos) { error_ = ERROR_INVALID_DATA; return; }
+    prefix_ = std::format("--{}\r\nContent-Disposition: form-data; name=\"sentry\"\r\n\r\n{}\r\n", boundary, fields);
     prefix_ += std::format("--{}\r\nContent-Disposition: form-data; name=\"upload_file_minidump\"; filename=\"crash.dmp\"\r\nContent-Type: application/octet-stream\r\n\r\n", boundary);
     const auto metadata = attributes.dump();
     if (metadata.size() > 65536) { error_ = ERROR_INVALID_DATA; return; }

@@ -1,13 +1,14 @@
 #include "word_filter.h"
 
-#include "embedded_bad_words.h"
-
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
 #include <unordered_set>
 #include <vector>
 
@@ -47,13 +48,38 @@ constexpr std::string_view whole_word_only[]{
     "rapist", "rapists", "rautenberg", "schaffer", "screw", "screwing", "semen", "shiz", "smut", "teets",
     "teez", "tits", "titt", "turd", "woose"};
 
-// Ordinary words with a bad word inside; a match that one of these covers does not count.
+// Ordinary words with a bad word inside; a match that one of these covers does not count. One
+// that is a listed entry with its spaces taken out ("the rapist") does not count either.
 constexpr std::string_view allowed_words[]{
     "scunthorpe", "dickens",   "dickinson", "dickson",   "dickies",   "cocktail",  "cockpit",   "peacock",
     "cockroach",  "cockatoo",  "cockatiel", "cockney",   "cockle",    "cockerel",  "cockburn",  "cocky",
     "hancock",    "hitchcock", "woodcock",  "babcock",   "shuttlecock", "ashkenazi", "shiitake", "shitake",
     "matsushita", "yamashita", "kinoshita", "morishita", "takeshita", "swank",     "swanky",    "woodpecker",
-    "clitheroe",  "snigger",   "pussycat",  "pissarro",  "retardant"};
+    "clitheroe",  "snigger",   "pussycat",  "pissarro",  "retardant", "cocker",    "spike",     "spiky",
+    "spiking",    "snicker",   "snickers",  "knicker",   "knickers",  "triggers",  "diggers",   "riggers",
+    "therapist", "specialist", "cumin",    "christmas", "christian",
+    "christopher", "christina", "christine"};
+
+// A listed word this long is not found inside an ordinary word by accident ("nigger",
+// "faggot"; allowed_words has the few exceptions), so it counts anywhere in a longer one. A
+// shorter one ("fuck", "shit", but also a fragment like "spik" or "coon") is inside too many
+// ordinary words: it counts only when the rest of the word is what people put around a swear
+// word, so "motherfuckers", "shithead" and "bullshit" do, and "spike", "raccoon", "script" and
+// "bigger" do not.
+constexpr std::size_t counts_anywhere = 6;
+// What may come before a short listed word, and after it.
+constexpr std::string_view before_words[]{
+    "a",    "an",    "the",   "my",     "ur",   "your", "you",  "u",     "i",     "im",    "yo",      "no",
+    "big",  "lil",   "little", "fat",   "dumb", "old",  "hot",  "mega",  "super", "ultra", "hella",   "total",
+    "anti", "un",    "non",   "pro",    "ex",   "mc",   "mr",   "sir",   "king",  "lord",  "god",     "mother",
+    "mutha", "motha", "bull", "horse",  "dog",  "ape",  "bat",  "dip",   "jack",  "chicken", "cluster", "mind",
+    "brain", "butt", "pig",   "skull",  "stupid", "ugly", "dirty", "lazy", "crazy"};
+constexpr std::string_view after_words[]{
+    "s",    "es",   "z",    "ed",   "er",   "ers",  "erz",  "ing",  "ings", "in",   "y",    "ie",
+    "ies",  "ier",  "ish",  "a",    "ah",   "as",   "az",   "o",    "os",   "ism",  "ist",  "ists",
+    "head", "heads", "face", "faces", "hole", "holes", "wad", "tard", "bag", "boy",  "boi",  "girl",
+    "man",  "stick", "wit", "wits", "lord", "king", "nut",  "less", "ness", "ery",  "fest", "show",
+    "storm", "load", "stain", "off", "up",  "it",   "me",   "you",  "u",    "ya"};
 
 struct Hash {
     using is_transparent = void;
@@ -67,10 +93,15 @@ struct Lists {
     std::size_t shortest_inside{~std::size_t{}}, longest_inside{};
 };
 
-void add(Lists& l, std::string_view line) {
+std::string folded(std::string_view line) {
     std::string word;
     for (const char c : line)
         if (const char letter = fold(c)) word += letter;
+    return word;
+}
+
+void add(Lists& l, std::string_view line) {
+    auto word = folded(line);
     if (word.empty()) return;
     l.whole.insert(word);
     if (word.size() > 3 && std::ranges::find(whole_word_only, word) == std::ranges::end(whole_word_only)) {
@@ -84,23 +115,37 @@ void add(Lists& l, std::string_view line) {
 struct Rules {
     Lists filtered, forbidden;
 };
-std::shared_ptr<const Rules> built_in() {
-    static const auto rules = [] {
-        auto r = std::make_shared<Rules>();
-        std::string_view text = embedded::bad_words_list;
-        while (!text.empty()) {
-            const auto end = text.find('\n');
-            add(r->filtered, text.substr(0, end));
-            text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
-        }
-        return std::shared_ptr<const Rules>(std::move(r));
-    }();
+// Until a list is given there are no words: nothing is filtered.
+std::shared_ptr<const Rules> no_words() {
+    static const std::shared_ptr<const Rules> rules = std::make_shared<Rules>();
     return rules;
 }
-std::atomic<std::shared_ptr<const Rules>> given;
+
+// What the rules in use are made from: the backend's lists once they arrive, and a server's own
+// words. Changed under the mutex; readers take the rules made from them.
+struct Sources {
+    std::optional<std::pair<std::vector<std::string>, std::vector<std::string>>> given;
+    std::vector<std::string> own_filtered, own_forbidden;
+    bool use_given = true;
+};
+std::mutex sources_mutex;
+Sources sources;
+std::atomic<std::shared_ptr<const Rules>> made;
 std::shared_ptr<const Rules> rules() {
-    auto current = given.load();
-    return current ? current : built_in();
+    auto current = made.load();
+    return current ? current : no_words();
+}
+void remake() {
+    const bool backend = sources.given && sources.use_given;
+    if (!backend && sources.own_filtered.empty() && sources.own_forbidden.empty()) return made.store({});
+    auto r = std::make_shared<Rules>();
+    if (backend) {
+        for (const auto& word : sources.given->first) add(r->filtered, word);
+        for (const auto& word : sources.given->second) add(r->filtered, word), add(r->forbidden, word);
+    }
+    for (const auto& word : sources.own_filtered) add(r->filtered, word);
+    for (const auto& word : sources.own_forbidden) add(r->filtered, word), add(r->forbidden, word);
+    made.store(std::shared_ptr<const Rules>(std::move(r)));
 }
 
 // A word as folded letters, with where each letter sits in the text.
@@ -112,16 +157,24 @@ struct Word {
 std::vector<Word> words(std::string_view text) {
     std::vector<Word> out;
     Word current;
+    // A run of digits alone is a number, not a word written with look-alikes: a time such as
+    // "2:55.0" is not "ss" (seen 2026-10-12, a race's finishing time masked in the chat).
+    bool number = true;
+    const auto take = [&] {
+        if (!current.letters.empty() && !number) out.push_back(std::move(current));
+        current = {};
+        number = true;
+    };
     for (std::size_t i = 0; i < text.size(); ++i) {
         if (const char letter = fold(text[i])) {
             current.letters += letter;
             current.at.push_back(i);
-        } else if (!current.letters.empty()) {
-            out.push_back(std::move(current));
-            current = {};
+            if (text[i] < '0' || text[i] > '9') number = false;
+        } else {
+            take();
         }
     }
-    if (!current.letters.empty()) out.push_back(std::move(current));
+    take();
     // Three or more letters spelled out one at a time ("f u c k", "s.o.b.") also read as a word.
     std::vector<Word> spelled;
     for (std::size_t i = 0; i < out.size();) {
@@ -148,10 +201,28 @@ bool covered(std::string_view letters, std::size_t start, std::size_t length) {
     return false;
 }
 
+// Letters added only to get a word past the filter: "xx", "zz".
+bool padding(std::string_view letters) {
+    return std::ranges::all_of(letters, [](char c) { return c == 'x' || c == 'z'; });
+}
+// Whether a short listed word at letters[start, start + length) is the word being said, going by
+// what is around it: nothing, another listed word, or one of the usual beginnings and endings.
+// A last letter said again counts as part of it ("shitty", "fuckkk").
+bool said(const Lists& l, std::string_view letters, std::size_t start, std::size_t length) {
+    const auto before = letters.substr(0, start);
+    auto after = letters.substr(start + length);
+    while (!after.empty() && after.front() == letters[start + length - 1]) after.remove_prefix(1);
+    const auto fits = [&](std::string_view part, std::span<const std::string_view> usual) {
+        return part.empty() || padding(part) || l.whole.contains(part) || std::ranges::find(usual, part) != usual.end();
+    };
+    return fits(before, before_words) && fits(after, after_words);
+}
+
 // Whether `word` has a bad word in it; with `marked`, flags each letter that belongs to one.
 bool match(const Lists& l, const Word& word, std::vector<bool>* marked) {
     const std::string_view letters = word.letters;
     if (l.whole.contains(letters)) {
+        if (std::ranges::find(allowed_words, letters) != std::ranges::end(allowed_words)) return false;
         if (marked) marked->assign(letters.size(), true);
         return true;
     }
@@ -160,6 +231,7 @@ bool match(const Lists& l, const Word& word, std::vector<bool>* marked) {
     for (std::size_t start = 0; start + l.shortest_inside <= letters.size(); ++start)
         for (auto length = l.shortest_inside; length <= l.longest_inside && start + length <= letters.size(); ++length) {
             if (!l.inside.contains(letters.substr(start, length)) || covered(letters, start, length)) continue;
+            if (length < counts_anywhere && !said(l, letters, start, length)) continue;
             if (!marked) return true;
             found = true;
             std::fill(marked->begin() + static_cast<std::ptrdiff_t>(start),
@@ -185,13 +257,25 @@ bool contains_forbidden_words(std::string_view text) {
 }
 
 void set_word_lists(std::span<const std::string> filtered, std::span<const std::string> forbidden) {
-    auto r = std::make_shared<Rules>();
-    for (const auto& word : filtered) add(r->filtered, word);
-    for (const auto& word : forbidden) add(r->filtered, word), add(r->forbidden, word);
-    given.store(std::shared_ptr<const Rules>(std::move(r)));
+    std::lock_guard lock(sources_mutex);
+    sources.given.emplace(std::vector<std::string>(filtered.begin(), filtered.end()),
+                          std::vector<std::string>(forbidden.begin(), forbidden.end()));
+    remake();
 }
 
-void reset_word_lists() { given.store({}); }
+void reset_word_lists() {
+    std::lock_guard lock(sources_mutex);
+    sources.given.reset();
+    remake();
+}
+
+void set_own_words(std::span<const std::string> filtered, std::span<const std::string> forbidden, bool use_given) {
+    std::lock_guard lock(sources_mutex);
+    sources.own_filtered.assign(filtered.begin(), filtered.end());
+    sources.own_forbidden.assign(forbidden.begin(), forbidden.end());
+    sources.use_given = use_given;
+    remake();
+}
 
 std::string mask_bad_words(std::string_view text) {
     const auto r = rules();

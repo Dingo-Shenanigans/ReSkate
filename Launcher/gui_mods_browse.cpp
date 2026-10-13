@@ -5,6 +5,7 @@
 #include "updater.h"
 
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 
 #include <cstdio>
 #include <format>
@@ -157,6 +158,9 @@ std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Pa
         ~Cleanup() { std::error_code ignored; fs::remove(archive, ignored); fs::remove(folder, ignored); }
     } cleanup{folder, archive};
 
+    trace::Scope timing("launcher.mod_install", "task");
+    timing.tag("package", package.full_name);
+    timing.tag("version", version.number);
     set_activity(panel, "Downloading " + package.title() + " v" + version.number +
         (version.file_size ? "  (" + size_text(version.file_size) + ")" : std::string()));
     panel.progress = 0;
@@ -196,13 +200,21 @@ std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Pa
 }
 
 // Search, category and the sort order, pinned packages first like the site.
+// Not safe for work: Thunderstore's own mark on the package, or a category of that name.
+bool nsfw(const ts::Package& package) {
+    return package.nsfw || std::any_of(package.categories.begin(), package.categories.end(),
+                                       [](const std::string& category) { return lower(category) == "nsfw"; });
+}
+
 std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed) {
     const auto query = lower(store.search.data());
     std::vector<const ts::Package*> result;
     for (const auto& package : store.packages) {
         const bool have = installed.contains(ts::folder_for(package.full_name));
-        // Deprecated and NSFW packages only show once installed.
-        if ((package.deprecated || package.nsfw) && !have) continue;
+        // NSFW packages are never listed here, installed or not: by Thunderstore's own mark,
+        // or a category of that name. A deprecated one only shows once installed.
+        if (nsfw(package)) continue;
+        if (package.deprecated && !have) continue;
         if (!store.category.empty() && !package.in_category(store.category)) continue;
         if (!query.empty() && lower(package.title()).find(query) == std::string::npos &&
             lower(package.owner).find(query) == std::string::npos &&
@@ -315,6 +327,17 @@ std::vector<const thunderstore::Package*> updates(const Store& store, const thun
 
 void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages) {
     if (panel.installing || packages.empty()) return;
+    {
+        // A package brings what it needs with it (a mod pack is nothing else), needed mods first.
+        const auto have = installed_versions(panel.list);
+        std::vector<thunderstore::Package> expanded;
+        for (const auto& package : packages)
+            for (auto& needed : thunderstore::with_dependencies(package, panel.store.packages, have))
+                if (std::none_of(expanded.begin(), expanded.end(),
+                        [&](const auto& queued) { return queued.full_name == needed.full_name; }))
+                    expanded.push_back(std::move(needed));
+        packages = std::move(expanded);
+    }
     if (panel.worker.joinable()) panel.worker.join();
     panel.installing = true;
     panel.cancel = false;
@@ -337,7 +360,7 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
                 log(logging::Level::info, std::format("Mod {} from Thunderstore: {} v{} into Mods\\{}",
                     update ? "updated" : "installed", package.full_name, package.latest().number, name));
                 note = packages.size() > 1
-                    ? std::format("Updated {} mods. Changes apply the next time Skate starts.", done)
+                    ? std::format("Installed or updated {} mods. Changes apply the next time Skate starts.", done)
                     : std::format("{} {} v{}. It loads the next time Skate starts.", update ? "Updated" : "Installed",
                                   package.title(), package.latest().number);
             } catch (const std::exception& failure) {
@@ -440,9 +463,11 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     ImGui::InputTextWithHint("##search", "Search mods", store.search.data(), store.search.size());
     ImGui::SameLine();
     std::vector<std::string> categories;
-    for (const auto& package : store.packages)
+    for (const auto& package : store.packages) {
+        if (nsfw(package)) continue;   // (and no category that only they have)
         for (const auto& category : package.categories)
             if (std::find(categories.begin(), categories.end(), category) == categories.end()) categories.push_back(category);
+    }
     std::sort(categories.begin(), categories.end());
     ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##category", store.category.empty() ? "All categories" : store.category.c_str())) {
@@ -467,8 +492,15 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     if (!store.picked.empty()) {
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(store.picked.size() == 1
-            ? "1 mod selected" : std::format("{} mods selected", store.picked.size()).c_str());
+        // What installing them all downloads: each one's newest version.
+        std::uint64_t bytes{};
+        for (const auto& name : store.picked)
+            for (const auto& package : store.packages)
+                if (package.full_name == name) bytes += package.latest().file_size;
+        auto chosen_text = store.picked.size() == 1 ? std::string("1 mod selected")
+                                                    : std::format("{} mods selected", store.picked.size());
+        if (bytes) chosen_text += "  /  " + size_text(bytes) + " to download";
+        ImGui::TextUnformatted(chosen_text.c_str());
         ImGui::SameLine();
         const float action = S(190);
         ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - action - S(90) - S(8));
@@ -714,23 +746,13 @@ void overview_fact(const Fonts& fonts, const char* name, const std::string& valu
     ImGui::Dummy(ImVec2(0, S(6)));
 }
 
-bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod) {
-    const auto* entry = readme_for(panel, package, mod);
-    if (!entry || (!entry->loading && !entry->failed && entry->readme.lines.empty())) return false;
-    if (entry->loading) {
-        ImGui::TextDisabled("Loading the README...");
-        return true;
-    }
-    if (entry->failed) {
-        ImGui::TextDisabled("Could not load the README. It is on the mod's Thunderstore page.");
-        return true;
-    }
+void draw_readme(const Fonts& fonts, const thunderstore::Readme& readme) {
     using Kind = ts::ReadmeLine::Kind;
     ImGui::PushTextWrapPos(0);
-    for (const auto& line : entry->readme.lines) {
+    for (const auto& line : readme.lines) {
         switch (line.kind) {
         case Kind::heading:
-            if (&line != &entry->readme.lines.front()) ImGui::Dummy(ImVec2(0, S(8)));
+            if (&line != &readme.lines.front()) ImGui::Dummy(ImVec2(0, S(8)));
             ImGui::PushFont(fonts.bold);
             ImGui::TextUnformatted(line.text.c_str());
             ImGui::PopFont();
@@ -749,8 +771,22 @@ bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Pack
         case Kind::text: ImGui::TextUnformatted(line.text.c_str()); break;
         }
     }
-    if (entry->readme.cut) ImGui::TextDisabled("The rest is on the mod's Thunderstore page.");
     ImGui::PopTextWrapPos();
+}
+
+bool readme_field(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod* mod) {
+    const auto* entry = readme_for(panel, package, mod);
+    if (!entry || (!entry->loading && !entry->failed && entry->readme.lines.empty())) return false;
+    if (entry->loading) {
+        ImGui::TextDisabled("Loading the README...");
+        return true;
+    }
+    if (entry->failed) {
+        ImGui::TextDisabled("Could not load the README. It is on the mod's Thunderstore page.");
+        return true;
+    }
+    draw_readme(fonts, entry->readme);
+    if (entry->readme.cut) ImGui::TextDisabled("The rest is on the mod's Thunderstore page.");
     return true;
 }
 

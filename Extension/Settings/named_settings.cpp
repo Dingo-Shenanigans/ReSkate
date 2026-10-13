@@ -445,7 +445,17 @@ class Lister {
         }
         return {};
     }
-    void fields(std::uintptr_t type, const std::string &prefix, std::vector<std::string> &out, unsigned depth = 0) const {
+    // Field arrays are in the game image for built-in classes and on the heap for classes the
+    // engine builds at startup (WorldRenderSettings). Reads are guarded either way, so the check is
+    // a sane user-mode range plus the first and last byte being readable.
+    bool field_array_readable(std::uintptr_t array, std::uint16_t count) const {
+        constexpr std::uintptr_t user_limit = 0x7fffffff0000;
+        const auto bytes = std::size_t{ count } *contract::field_size;
+        std::uint8_t first{}, last{};
+        return count && array >= 0x10000 && array < user_limit - bytes && memory::peek(array, first) &&
+            memory::peek(array + bytes - 1, last);
+    }
+    void fields(std::uintptr_t type, const std::string& prefix, std::vector<std::string>& out, unsigned depth = 0) const {
         std::uintptr_t descriptor{};
         std::uint16_t flags{}, count{};
         if (depth > 12 || out.size() > 16384 || !in_image(type, 8) || !memory::peek(type, descriptor) ||
@@ -460,14 +470,16 @@ class Lister {
                 super != base_ + contract::system_settings_type)
                 fields(super, prefix, out, depth + 1);
             memory::peek(descriptor + contract::class_fields, array);
-        } else if (kind == 2) {
+        }
+        else if (kind == 2) {
             memory::peek(descriptor + contract::value_fields, array);
-        } else {
+        }
+        else {
             return;
         }
-        if (!array || !in_image(array, std::size_t{count} * contract::field_size)) return;
+        if (!field_array_readable(array, count)) return;
         for (std::uint16_t i = 0; i < count; ++i) {
-            const auto field = array + std::size_t{i} * contract::field_size;
+            const auto field = array + std::size_t{ i } *contract::field_size;
             const auto name = name_of(field);
             std::uintptr_t field_type{}, field_descriptor{};
             std::uint16_t field_flags{};

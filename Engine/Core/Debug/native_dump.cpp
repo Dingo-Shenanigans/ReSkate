@@ -5,7 +5,7 @@
 #include <cstring>
 #include <span>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 namespace {
 template<class T> bool read(std::span<const std::byte> bytes, std::size_t offset, T& value) {
     if (offset > bytes.size() || sizeof(T) > bytes.size() - offset) return false;
