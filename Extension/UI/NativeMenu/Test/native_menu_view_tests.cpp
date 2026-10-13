@@ -46,16 +46,16 @@ void map_names() {
 int main() {
     try {
         map_names();
-        check(missing_tabs({1, 2, 3, 4}, 8, true) == std::vector<unsigned>{0, 1},
+        check(missing_tabs({1, 2, 3, 4}, 8, true) == std::vector<unsigned>({0, 1, 2, 3, 4}),
             "All pages insert in canonical order together");
-        check(missing_tabs({1, 2, 3, 4, 8, 264}, 8, true).empty(),
+        check(missing_tabs({1, 2, 3, 4, 8, 264, 520, 776, 1032}, 8, true).empty(),
             "Existing tabs are never reordered or reinserted");
-        check(missing_tabs({1, 2, 3, 4, 8}, 8, true) == std::vector<unsigned>{1},
-            "A missing tools page appends without moving existing indices");
-        check(missing_tabs({1, 2, 3, 4}, 8, true, false) == std::vector<unsigned>{1},
+        check(missing_tabs({1, 2, 3, 4, 8}, 8, true) == std::vector<unsigned>({1, 2, 3, 4}),
+            "Missing feature pages append without moving existing indices");
+        check(missing_tabs({1, 2, 3, 4}, 8, true, false) == std::vector<unsigned>({1, 2, 3, 4}),
               "offline mode leaves the Multiplayer tab out");
         check(missing_tabs({1, 2, 3, 4}, 8, false) == std::vector<unsigned>{0},
-            "The Multiplayer page does not wait for the overlay's tool callbacks");
+            "Only Multiplayer registers before overlay callbacks are ready");
         MultiplayerModel model;
         const BrowserOptions by_name{{}, false, Sort::name};
         model.local_id = 77; model.map = "Levels/San_Vansterdam";

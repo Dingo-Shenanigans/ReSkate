@@ -11,8 +11,10 @@ enum class Sort { name, players, map };
 // The busiest servers first, until the player picks another order.
 struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; };
 
-// Owned pages: Multiplayer and Mod Options (needs the overlay's tool callbacks).
-inline constexpr unsigned page_count = 2, tools_page = 1;
+// Owned pages: Multiplayer, ReSkate Central, Trainer, Jukebox and ReSkate.Create.
+// Everything after Multiplayer needs the overlay callbacks used by the page renderer.
+inline constexpr unsigned page_count = 5, tools_page = 1, trainer_page = 2,
+                          jukebox_page = 3, create_page = 4;
 // Return missing owned slots in canonical order. Existing native stack indices
 // remain untouched, including their active focus bindings. Offline mode has
 // no Multiplayer tab.
@@ -21,7 +23,7 @@ inline std::vector<unsigned> missing_tabs(const std::vector<std::uint32_t>& keys
                                           bool has_multiplayer = true) {
     std::vector<unsigned> result;
     for (unsigned slot = 0; slot < page_count; ++slot)
-        if ((has_tools || slot != tools_page) && (has_multiplayer || slot != 0) &&
+        if ((has_tools || slot == 0) && (has_multiplayer || slot != 0) &&
             std::find(keys.begin(), keys.end(), multiplayer_key + slot * 0x100) == keys.end()) result.push_back(slot);
     return result;
 }

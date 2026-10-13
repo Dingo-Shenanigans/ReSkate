@@ -307,7 +307,7 @@ void set_map_download_icon(const std::string& png) noexcept;
 using ChatFeed = MultiplayerChat (*)();
 void set_chat_feed(ChatFeed) noexcept;
 // The game's pause menu, as far as ReSkate's own pages in it go: whether one of them is the
-// page on screen, and which (`section` 0: Multiplayer, 1: ReSkate Central, 2: native HUB).
+// page on screen, and which (owned native-menu slot, or page_count for native HUB).
 // The overlay draws
 // everything in such a page itself, its tabs too (hub_page.cpp). Read every presented frame
 // (thread-safe, cheap).

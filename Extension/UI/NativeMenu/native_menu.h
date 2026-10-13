@@ -17,6 +17,9 @@ void native_menu_before_level_transition(std::uintptr_t base, unsigned next) noe
 // Uses the same validated runtime queues as the overlay. The reader must be a
 // snapshot reader; it must not consume the overlay's console log cursor.
 void set_native_menu_callbacks(const overlay::CallbacksV3& callbacks);
+// Ask the client thread to select one of ReSkate's owned pause-menu tabs.
+// Safe from the overlay/render thread; ignored until that tab is present.
+void request_native_menu_page(unsigned slot) noexcept;
 // Whether one of ReSkate's pages (Multiplayer, Mod Options) is the pause menu's page on
 // screen right now, and which. Any thread: the overlay draws the page from it
 // (overlay::HubPageFeed).

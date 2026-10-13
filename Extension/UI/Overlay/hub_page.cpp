@@ -3,10 +3,13 @@
 #include "cursor.h"
 #include "input_capture.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include "Extension/Boot/discord_presence.h"
 #include "Extension/Music/local_music_playback.h"
+#include "Extension/Music/local_music_assets.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Trainer/trainer.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/Input/voice_input.h"
 #include "Engine/Game/Multiplayer/object_placement.h"
@@ -17,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <format>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -105,6 +109,11 @@ struct Hub {
     // Mod Options: the same rows and actions the page has always had (native_tools_view.h).
     native_tools::State tools;
     int tools_tab{};
+    int trainer_tab{};
+    int trainer_mode{1};
+    profile_runtime::MusicCatalog music;
+    Clock::time_point next_music{};
+    bool music_ready{};
     // Recording a bind (the BINDS tab): which action (0: none), what has been pressed so far,
     // and when it gives up (GetTickCount64).
     int recording_bind{};
@@ -1487,9 +1496,8 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
     card(hash("hub-time-forward"), ImVec2(a.x + half + gap, time_top), ImVec2(a.x + width, time_top + small_height), "TIME FORWARD",
          native_tools::time_of_day_labels[next_time], HubArt::time_forward, time_ready, [&] { set_time(1); });
 
-    card(hash("hub-trainer"), ImVec2(right, a.y), ImVec2(z.x, a.y + tile), "TRAINER", "OPEN TRAINER", HubArt::trainer, cb.queue_console_command, [&] {
-        std::array<char, 512> result{};
-        if (!cb.queue_console_command(cb.user, "trainer open", result.data(), result.size())) say(h, "Trainer is unavailable right now.");
+    card(hash("hub-trainer"), ImVec2(right, a.y), ImVec2(z.x, a.y + tile), "TRAINER", "OPEN TRAINER", HubArt::trainer, true, [&] {
+        multiplayer::request_native_menu_page(multiplayer::menu_view::trainer_page);
     });
     static unsigned news_index{};
     static constexpr std::array<const char *, 3> news_items{
@@ -1514,6 +1522,193 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
     if (!h.notice.empty())
         ui.draw->AddText(ui.body, 28 * u, ImVec2(a.x, z.y - 42 * u), theme::paper, h.notice.c_str(), nullptr, width);
+}
+
+// ---------------------------------------------------------------- dedicated feature pages
+
+void trainer_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const auto snapshot = trainer::view();
+    const bool console = h.callbacks.queue_console_command != nullptr;
+    const auto run = [&](const std::string &line) {
+        std::array<char, 512> result{};
+        if (!console || !h.callbacks.queue_console_command(h.callbacks.user, line.c_str(), result.data(), result.size()))
+            say(h, "Trainer is unavailable until a skater and map are fully loaded.");
+        h.next_model = {};
+    };
+    Column list(ui, hash("trainer-page"), a, ImVec2(a.x + std::min(z.x - a.x, 2300 * ui.u), z.y));
+    list.heading("TRAINER");
+    if (!snapshot->ready) {
+        list.note(snapshot->status.empty() ? "Waiting for the current map's physics tuning." : snapshot->status,
+                  skate_theme::warning);
+        list.end();
+        return;
+    }
+    list.title("SECTION");
+    if (list.setting("Tune", h.trainer_tab == 0 ? "OPEN" : "", true)) h.trainer_tab = 0;
+    if (list.setting("Practice", h.trainer_tab == 1 ? "OPEN" : "", true)) h.trainer_tab = 1;
+    if (list.setting("Map & HUD", h.trainer_tab == 2 ? "OPEN" : "", true)) h.trainer_tab = 2;
+    if (list.setting("Reset everything", {}, console, Look::sticky)) run("trainer reset everything");
+    if (h.trainer_tab == 1) {
+        const auto slot = static_cast<std::size_t>(std::clamp(snapshot->slot, 0, static_cast<int>(trainer::marker_slots) - 1));
+        list.title("SESSION MARKER");
+        if (const int way = list.adjust("Marker slot", std::to_string(slot + 1), console))
+            run("trainer slot " + std::to_string(std::clamp<int>(static_cast<int>(slot) + way + 1, 1, trainer::marker_slots)));
+        if (list.setting("Save marker here", {}, console, Look::sticky)) run("trainer marker save");
+        if (list.setting("Go to marker", snapshot->markers[slot].set ? "READY" : "NOT SET", console && snapshot->markers[slot].set))
+            run("trainer marker go");
+        if (list.setting("Clear marker", {}, console && snapshot->markers[slot].set)) run("trainer marker clear");
+        if (list.setting("Auto return after bails", snapshot->auto_return ? "ON" : "OFF", console))
+            run(std::string("trainer option auto_return ") + (snapshot->auto_return ? "0" : "1"));
+        if (const int way = list.adjust("Return delay", decimal(snapshot->return_delay, 1) + " s", console))
+            run(std::format("trainer option return_delay {:.1f}", std::clamp(snapshot->return_delay + way * .5f, .5f, 10.f)));
+        if (list.setting("Controller shortcuts", snapshot->pad_shortcuts ? "ON" : "OFF", console))
+            run(std::string("trainer option pad ") + (snapshot->pad_shortcuts ? "0" : "1"));
+        if (snapshot->waypoint_set && list.setting("Go to map waypoint", "READY", console)) run("trainer waypoint");
+        list.note(!h.notice.empty() ? h.notice : snapshot->last);
+        list.end();
+        return;
+    }
+    if (h.trainer_tab == 2) {
+        list.title("TRAINER HUD");
+        if (list.setting("Speed and airtime HUD", snapshot->hud ? "ON" : "OFF", console))
+            run(std::string("trainer option hud ") + (snapshot->hud ? "0" : "1"));
+        if (list.setting("Jump report HUD", snapshot->hud_jump ? "ON" : "OFF", console))
+            run(std::string("trainer option hud_jump ") + (snapshot->hud_jump ? "0" : "1"));
+        if (list.setting("Telemetry logging", snapshot->logging ? "ON" : "OFF", console))
+            run(std::string("trainer option log ") + (snapshot->logging ? "0" : "1"));
+        list.title("THIS MAP");
+        if (!snapshot->map_preset.empty() && list.setting("Apply map author's preset", snapshot->map_preset, console))
+            run("trainer preset apply map");
+        for (std::size_t i = 0; i < snapshot->spots.size(); ++i)
+            if (list.setting(snapshot->spots[i].name, "GO", console)) run("trainer spot " + std::to_string(i + 1));
+        list.note(snapshot->map_note.empty() ? "This map does not publish additional Trainer notes." : snapshot->map_note);
+        list.end();
+        return;
+    }
+    list.title("TUNING VIEW");
+    if (list.setting("Realistic", h.trainer_mode == 0 ? "OPEN" : "", true)) h.trainer_mode = 0;
+    if (list.setting("Fun", h.trainer_mode == 1 ? "OPEN" : "", true)) h.trainer_mode = 1;
+    if (list.setting("Everything", h.trainer_mode == 2 ? "OPEN" : "", true)) h.trainer_mode = 2;
+    const std::uint8_t mode = h.trainer_mode == 0 ? trainer::mode_realistic :
+                              h.trainer_mode == 1 ? trainer::mode_fun : std::uint8_t{0xff};
+    list.title(h.trainer_mode == 0 ? "FEEL: TONE IT DOWN" : h.trainer_mode == 1 ? "FEEL: TURN IT UP" : "FEEL");
+    for (const auto &preset : snapshot->presets) {
+        if (!preset.builtin || preset.name == "Stock" ||
+            (h.trainer_mode != 2 && !(preset.modes & mode))) continue;
+        const std::string name = preset.title.empty() ? preset.name : preset.title;
+        if (preset.dial) {
+            if (const int way = list.adjust(name, "x " + decimal(static_cast<float>(preset.factor), 2),
+                                            console && snapshot->editable)) {
+                const double step = std::max(0.05, std::abs(preset.factor) * 0.1);
+                run(std::format("trainer dial {:.4f} {}", std::max(0.05, preset.factor + step * way), preset.name));
+            }
+        } else if (list.setting(name, preset.active ? "ON" : "OFF", console && snapshot->editable)) {
+            run(std::string("trainer preset ") + (preset.active ? "remove " : "apply ") + preset.name);
+        }
+    }
+    list.title("TRICKS");
+    const auto trick = [&](const char *label, const char *option, float value, float step, float low, float high) {
+        if (const int way = list.adjust(label, "x " + decimal(value, 2), console && snapshot->editable))
+            run(std::format("trainer option {} {:.3f}", option, std::clamp(value + step * way, low, high)));
+    };
+    trick("Flip trick speed", "flip_speed", snapshot->flip_speed, .05f, .1f, 3.f);
+    trick("No comply height", "nocomply_height", snapshot->nocomply_height, .1f, .1f, 50.f);
+    trick("Boneless height", "boneless_height", snapshot->boneless_height, .1f, .1f, 50.f);
+    trick("Hippy jump height", "hippy_height", snapshot->hippy_height, .1f, .1f, 50.f);
+    trick("Off-board jump height", "offboard_height", snapshot->offboard_height, .1f, .1f, 50.f);
+    if (list.setting("Reset trick adjustments", {}, console && snapshot->editable)) run("trainer reset tricks");
+    list.title(h.trainer_mode == 2 ? "EVERY TUNING VALUE" : "FINE TUNING");
+    if (h.trainer_mode == 2) trainer::note_class_list_shown();
+    for (const auto &row : snapshot->rows) {
+        if (row.detail) continue;
+        if (h.trainer_mode != 2 && !(row.modes & mode)) continue;
+        if (h.trainer_mode != 2 && !row.rank) continue;
+        const std::string name = row.friendly.empty() ? row.label : row.friendly;
+        if (row.kind == trainer::Kind::flag) {
+            if (list.setting(name, row.value != 0 ? "ON" : "OFF", console && snapshot->editable))
+                run(std::format("trainer set {} {}", row.id, row.value == 0 ? 1 : 0));
+        } else if (const int way = list.adjust(name, decimal(static_cast<float>(row.value)), console && snapshot->editable)) {
+            const double step = row.kind == trainer::Kind::integer ? 1.0 : std::max(0.01, std::abs(row.stock) * 0.05);
+            run(std::format("trainer set {} {:.4f}", row.id, row.value + step * way));
+        }
+    }
+    list.note(!h.notice.empty() ? h.notice : snapshot->last);
+    list.end();
+}
+
+std::vector<std::string> enabled_music_playlists() {
+    std::vector<std::string> result;
+    const auto saved = profile_runtime::local_value("MusicLikedPlaylists");
+    if (!saved || !saved->is_array()) return result;
+    for (const auto &entry : *saved)
+        if (entry.is_string()) result.push_back(entry.get<std::string>());
+    return result;
+}
+
+void jukebox_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const auto now = Clock::now();
+    if (now >= h.next_music) {
+        h.next_music = now + 2s;
+        profile_runtime::MusicCatalog catalog;
+        if (profile_runtime::read_music_catalog(catalog)) h.music = std::move(catalog), h.music_ready = true;
+    }
+    Column list(ui, hash("jukebox-page"), a, ImVec2(a.x + std::min(z.x - a.x, 2300 * ui.u), z.y));
+    list.heading("JUKEBOX");
+    const bool shuffle = profile_runtime::music_shuffle_enabled();
+    if (list.setting("Shuffle", shuffle ? "ON" : "OFF", profile_runtime::music_playback_available())) {
+        profile_runtime::set_music_shuffle_enabled(!shuffle);
+        profile_runtime::set_local_preference("MusicShuffle", !shuffle);
+    }
+    if (!h.music_ready) {
+        list.note("The music catalog will appear after the map finishes loading.", skate_theme::warning);
+        list.end();
+        return;
+    }
+    auto enabled = enabled_music_playlists();
+    const bool first_choice = !profile_runtime::local_value("MusicLikedPlaylists").has_value();
+    list.title("PLAYLISTS");
+    for (const auto &playlist : h.music.playlists) {
+        const bool on = first_choice || std::find(enabled.begin(), enabled.end(), playlist.id) != enabled.end();
+        const std::string name = playlist.name.empty() ? playlist.id : playlist.name;
+        if (!list.setting(name, on ? "ENABLED" : "MUTED", true)) continue;
+        if (first_choice) {
+            enabled.clear();
+            for (const auto &row : h.music.playlists) enabled.push_back(row.id);
+        }
+        const auto found = std::find(enabled.begin(), enabled.end(), playlist.id);
+        if (found == enabled.end()) enabled.push_back(playlist.id); else enabled.erase(found);
+        profile_runtime::set_local_values({{"MusicLikedPlaylists", Json(enabled)}});
+        say(h, "Playlist choices are saved and applied by ReSkate's music provider.");
+    }
+    list.note(std::to_string(h.music.songs.size()) + " tracks across " +
+              std::to_string(h.music.playlists.size()) + " playlists. " + h.notice);
+    list.end();
+}
+
+void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    const float u = ui.u;
+    const ImVec2 card(a.x, a.y + 60 * u), edge(std::min(z.x, a.x + 2300 * u), std::min(z.y, a.y + 850 * u));
+    skate_theme::rough_rect(ui.draw, card, edge, IM_COL32(18, 18, 18, 245), 0xC8EA, 3 * u);
+    ui.draw->AddText(ui.heading, 76 * u, ImVec2(card.x + 70 * u, card.y + 70 * u), theme::paper, "RESKATE.CREATE");
+    ui.draw->AddText(ui.body, 36 * u, ImVec2(card.x + 70 * u, card.y + 180 * u), theme::muted,
+                     "Custom stickers, board graphics and clothing tools are being built here.");
+    const float band_top = card.y + 330 * u, band_bottom = band_top + 190 * u;
+    ui.draw->AddRectFilled(ImVec2(card.x, band_top), ImVec2(edge.x, band_bottom), IM_COL32(246, 198, 36, 255));
+    for (float x = card.x - 180 * u; x < edge.x; x += 180 * u)
+        ui.draw->AddQuadFilled(ImVec2(x, band_top), ImVec2(x + 90 * u, band_top),
+                              ImVec2(x + 260 * u, band_bottom), ImVec2(x + 170 * u, band_bottom),
+                              IM_COL32(18, 18, 18, 255));
+    const char *locked = "UNDER CONSTRUCTION";
+    const float width = width_of(ui.heading, 66 * u, locked);
+    ui.draw->AddRectFilled(ImVec2((card.x + edge.x - width) * .5f - 30 * u, band_top + 48 * u),
+                           ImVec2((card.x + edge.x + width) * .5f + 30 * u, band_bottom - 48 * u),
+                           IM_COL32(246, 198, 36, 255));
+    ui.draw->AddText(ui.heading, 66 * u, ImVec2((card.x + edge.x - width) * .5f, band_top + 62 * u),
+                     skate_theme::black, locked);
+    ui.draw->AddText(ui.body, 32 * u, ImVec2(card.x + 70 * u, band_bottom + 70 * u), theme::paper,
+                     "This page is intentionally locked while the asset import and safe reload pipeline is completed.");
 }
 
 // ---------------------------------------------------------------- session settings
@@ -1757,9 +1952,13 @@ void draw_hub_page() {
     // ---- the page's tabs
     const ImVec2 a(page_left, (body_top + lower) * u);
     const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
-    const bool landing = h.page.section == 2;
-    const bool tools = h.page.section == 1;
-    if (!landing) {
+    const bool landing = h.page.section == static_cast<int>(view::page_count);
+    const bool tools = h.page.section == static_cast<int>(view::tools_page);
+    const bool trainer_page = h.page.section == static_cast<int>(view::trainer_page);
+    const bool jukebox_page = h.page.section == static_cast<int>(view::jukebox_page);
+    const bool create_page = h.page.section == static_cast<int>(view::create_page);
+    const bool feature_page = trainer_page || jukebox_page || create_page;
+    if (!landing && !feature_page) {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
         int multiplayer_tab = static_cast<int>(h.tab);
@@ -1813,6 +2012,9 @@ void draw_hub_page() {
     const bool failed = !connecting && !h.failed.empty() && !in_session;
     if ((connecting || failed) && !tools && !landing) ui.input = ui.clicked = ui.doubled = false;
     if (landing) landing_page(ui, a, z);
+    else if (trainer_page) trainer_hub_page(ui, a, z);
+    else if (jukebox_page) jukebox_hub_page(ui, a, z);
+    else if (create_page) create_hub_page(ui, a, z);
     else if (tools) tools_page(ui, a, z);
     else switch (h.tab) {
     case Tab::browser: browser_page(ui, a, z); break;

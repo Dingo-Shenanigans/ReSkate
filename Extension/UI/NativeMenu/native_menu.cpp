@@ -23,7 +23,7 @@ using menu_view::page_count, menu_view::tools_page;
 // back before our models are released. Native tabs are found by their label, not index.
 constexpr std::string_view store_tab_label = "ID_MENU_STORE", social_tab_label = "ID_MENU_SOCIAL";
 constexpr unsigned social_tab_index = 4; // Before the Store is removed.
-constexpr std::array<unsigned, page_count> page_slots{0, 1};
+constexpr std::array<unsigned, page_count> page_slots{0, 1, 2, 3, 4};
 // The Store item taken out of the pause menu, its index there, and that menu.
 struct RemovedStore { std::vector<std::byte> item; unsigned index{}; Address core{}; };
 RemovedStore removed_store;
@@ -74,7 +74,10 @@ Address action(const Context& context, std::string command, std::string argument
     const bool unused = *slot == count;
     if (unused) {
         static const std::array functions{callbacks<0>(std::make_index_sequence<max_actions>{}),
-            callbacks<1>(std::make_index_sequence<max_actions>{})};
+            callbacks<1>(std::make_index_sequence<max_actions>{}),
+            callbacks<2>(std::make_index_sequence<max_actions>{}),
+            callbacks<3>(std::make_index_sequence<max_actions>{}),
+            callbacks<4>(std::make_index_sequence<max_actions>{})};
         // Native void-action descriptor used by this build. Only the invokers are
         // replaced; it is never added to the game's global function registry.
         const auto prototype = context.base + addr::native_menu::action_prototype;
@@ -180,8 +183,33 @@ namespace {
 // Which of ReSkate's pages is on screen, for the overlay (native_menu_page): when one was last
 // seen selected with the pause menu up (GetTickCount64; 0: not now), and which.
 std::atomic<std::uint64_t> page_seen{};
-std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options
+std::atomic<int> page_shown{}; // Owned slot, or page_count for the native Hub.
 std::atomic<bool> game_in_menu{};
+std::atomic<int> requested_page{-1};
+
+// Applies an overlay request only while the requested owned tab is in this exact menu
+// generation. Keeping the request pending lets a HUB press made during tab reconstruction
+// land as soon as all five tabs have been inserted.
+void select_requested_page(const Context& context, Value menu) {
+    const int slot = requested_page.load(std::memory_order_acquire);
+    if (slot < 0 || slot >= static_cast<int>(page_count)) return;
+    const auto list = context.path(menu, {content, items});
+    unsigned count{}, stride{};
+    const auto values = context.array(list, 16, count, stride);
+    if (stride != stack_item.size) return;
+    const auto wanted = our_key + static_cast<std::uint32_t>(slot) * 0x100;
+    for (unsigned i = 0; i < count; ++i) {
+        std::uint32_t key{};
+        std::memcpy(&key, values.data() + i * stride + 0x568, sizeof(key));
+        if (key != wanted) continue;
+        context.set(context.path(menu, {content, 0x18f8355b}), static_cast<int>(i));
+        context.set(context.path(menu, {content, 0x55511280}), static_cast<int>(i));
+        requested_page.store(-1, std::memory_order_release);
+        logging::printf(logging::Level::info, logging::Channel::ui,
+                        "Pause menu selected requested ReSkate tab %u.", slot);
+        return;
+    }
+}
 // Returns the key of the tab the pause menu has selected (0: none of ours can be told).
 std::uint32_t restore_last_tab(const Context& context, Value menu) {
     static std::uint32_t remembered{};
@@ -433,8 +461,9 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     context.set(context.field(backdrop_stack, 0x3b14d43c), false);
     context.set(context.field(backdrop_stack, 0x2a98baa3), false);
     build_back_action(context, s);
-    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "RESKATE CENTRAL"},
-        tab_names{"Multiplayer", "ReSkate"};
+    static constexpr std::array<const char*, page_count> titles{
+        "MULTIPLAYER", "RESKATE CENTRAL", "TRAINER", "JUKEBOX", "RESKATE.CREATE"},
+        tab_names{"Multiplayer", "ReSkate", "Trainer", "Jukebox", "Create"};
     context.text(context.path(s.page, {0x3781b603, text_field}), titles[s.slot]);
     context.set(context.field(s.page, 0xe1d821a3), true);
     context.set(context.field(s.page, 0x616cb924), false);
@@ -491,9 +520,17 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
         context.copy(context.field(target_tab, hash), context.address(context.field(source_tab, hash)));
     // Prefer the exact requested glyph, resolving it from the locked native
     // image registry rather than searching neighboring widget allocations.
-    static constexpr std::array<const char*, page_count> idle_icons{"UI/Textures/Icons/HUB/img_Icon_SocialDefault_512",
+    static constexpr std::array<const char*, page_count> idle_icons{
+        "UI/Textures/Icons/HUB/img_Icon_SocialDefault_512",
+        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Idle_1024",
+        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Idle_1024",
+        "UI/Textures/Icons/HUB/img_Icon_SocialDefault_512",
         "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Idle_1024"};
-    static constexpr std::array<const char*, page_count> focused_icons{"UI/Textures/Icons/HUB/img_Icon_SocialFocused_512",
+    static constexpr std::array<const char*, page_count> focused_icons{
+        "UI/Textures/Icons/HUB/img_Icon_SocialFocused_512",
+        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Focused_1024",
+        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Focused_1024",
+        "UI/Textures/Icons/HUB/img_Icon_SocialFocused_512",
         "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Focused_1024"};
     const auto* idle = idle_icons[s.slot];
     const auto* focused = focused_icons[s.slot];
@@ -559,6 +596,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
         if (!active.model.handle) return;
         trim_store(context, active.model);
         if (!s.slot) {
+            select_requested_page(context, active.model);
             const auto shown_tab = restore_last_tab(context, active.model);
             hide_top_bar_currency(context, active.model);
             update_hub(context);
@@ -566,9 +604,11 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             // screen. Hub is the second authored tab; keeping it native preserves its skater
             // preview, navigation and lifetime while the overlay supplies the new dashboard.
             const auto selected = read<int>(context.address(context.path(active.model, {content, 0x18f8355b})));
-            const bool ours = shown_tab == our_key || shown_tab == our_key + tools_page * 0x100;
+            const bool ours = shown_tab >= our_key && shown_tab < our_key + page_count * 0x100 &&
+                              (shown_tab - our_key) % 0x100 == 0;
             const bool native_hub = !ours && selected == 1;
-            const auto& shown_page = page_state(shown_tab == our_key ? 0 : tools_page);
+            const unsigned shown_slot = ours ? (shown_tab - our_key) / 0x100 : 0;
+            const auto& shown_page = page_state(shown_slot);
             bool on_screen = (ours || native_hub) && game_in_menu.load(std::memory_order_relaxed);
             if (ours)
                 on_screen = on_screen && shown_page.page.handle && context.type_of(shown_page.page.handle) == shown_page.page.type;
@@ -587,7 +627,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
                 } catch (...) {}
             }
             // (Said at once when another page takes its place, not left to go stale.)
-            page_shown.store(native_hub ? 2 : shown_tab == our_key ? 0 : 1, std::memory_order_relaxed);
+            page_shown.store(native_hub ? static_cast<int>(page_count) : static_cast<int>(shown_slot), std::memory_order_relaxed);
             page_seen.store(on_screen ? now : 0, std::memory_order_relaxed);
         }
         bool pending{};
@@ -629,6 +669,9 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
         s.tools.feedback = local_profile_player_card().feedback;
     } catch (...) { s.tools.feedback = "Couldn't save the card name. Try again."; }
     s.next_render = 0;
+}
+void request_native_menu_page(unsigned slot) noexcept {
+    if (slot < page_count) requested_page.store(static_cast<int>(slot), std::memory_order_release);
 }
 bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
     if (std::all_of(page_slots.begin(), page_slots.end(), [](unsigned slot) { return page_state(slot).owned_models.empty(); }))
