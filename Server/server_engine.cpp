@@ -1,3 +1,4 @@
+#include "Engine/Game/Build/supported_build.h"
 #include "server_engine.h"
 #include "global_bans.h"
 #include "server_map_update.h"
@@ -198,7 +199,12 @@ bool ServerEngine::load_environment(const std::filesystem::path& folder, const s
 
     if (const auto catalog = folder_ / "world-layers.json"; std::filesystem::exists(catalog)) {
         try {
-            install_world_layer_catalog(world_layer_scan::read(catalog));
+            auto layers = world_layer_scan::read(catalog);
+            // (Players would turn down every message that carries the layers, and could not join.)
+            if (layers.layers.size() != supported_build::world_layer_count)
+                throw std::runtime_error("it has " + std::to_string(layers.layers.size()) + " layers and players' games have " +
+                                         std::to_string(supported_build::world_layer_count) + ": it is of another version of skate. Take the one from this server's release; world layer sync is off");
+            install_world_layer_catalog(std::move(layers));
             log("World layers: " + std::to_string(world_layers().size()) + " from world-layers.json.");
         } catch (const std::exception &e) {
             log(std::string("world-layers.json error: ") + e.what(), LogLevel::warning);

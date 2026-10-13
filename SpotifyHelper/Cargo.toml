@@ -11,11 +11,15 @@ path = "src/lib.rs"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-librespot-core = "0.8.0"
-librespot-playback = { version = "0.8.0", default-features = false }
-librespot-connect = "0.8.0"
-librespot-discovery = "0.8.0"
-librespot-metadata = "0.8.0"
+# Secure connections are made by code of their own (rustls, with the certificate authorities
+# built in), not by Windows': under Wine and Proton, Windows' is Wine's own and the device signed
+# in but was never taken up by Spotify as one to play on (seen 2026-10-14). It is the same code
+# on Windows and there.
+librespot-core = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-playback = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-connect = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-discovery = { version = "0.8.0", default-features = false, features = ["with-libmdns", "rustls-tls-webpki-roots"] }
+librespot-metadata = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-util = "0.3"
 log = "0.4"
@@ -24,7 +28,7 @@ hex = "0.4"
 # (For sound that is not Spotify's: a program's output, decoded. The version librespot uses.)
 symphonia = { version = "0.5.5", default-features = false, features = ["aac", "isomp4", "mp3", "ogg", "vorbis", "flac", "wav", "pcm"] }
 # (For an internet radio station: what is at an address, as it comes. The one already in the tree.)
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-webpki-roots"] }
 
 [profile.release]
 opt-level = 2

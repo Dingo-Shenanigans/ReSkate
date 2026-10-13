@@ -248,6 +248,11 @@ bool install(std::uintptr_t base) noexcept {
     return true;
 }
 
+bool known(const std::string& artist, const std::string& title) {
+    std::lock_guard lock(mutex);
+    return rows.contains(artist + " - " + title);
+}
+
 std::string ensure(std::uintptr_t base, std::uintptr_t manager, const std::string& artist, const std::string& title) {
     if (!base || !manager || artist.empty() || title.empty()) return {};
     if (!matches(base, lm::song_register_contract) || !matches(base, lm::song_lookup_contract)) {

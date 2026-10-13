@@ -1,8 +1,10 @@
 #include "session_internal.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
+#include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include <algorithm>
+#include <format>
 #include <iterator>
 #include <stdexcept>
 #include <utility>
@@ -593,6 +595,20 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             continue;
         if (!decoded || decoded->session != s.secret ||
             ((s.mode == Mode::host || direct_link) && decoded->source != message.peer)) {
+            // Which of the three it was, and what the message looked like: the status line
+            // says only that one of them failed (2026-10-13: joins to updated servers ended
+            // here with nothing to tell them apart).
+            try {
+                std::string start;
+                for (std::size_t i = 0; i < message.bytes.size() && i < 16; ++i) start += std::format("{:02x}", static_cast<unsigned>(message.bytes[i]));
+                dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::runtime,
+                    "Multiplayer: a message from {} was turned down: {}. {} byte(s), starting {}; {} link{}{}.", message.peer,
+                    !decoded ? std::string("it could not be read")
+                    : decoded->session != s.secret ? std::format("it is of another session (kind {})", static_cast<int>(decoded->kind))
+                    : std::format("it names another sender, {} (kind {})", decoded->source, static_cast<int>(decoded->kind)),
+                    message.bytes.size(), start, direct_link ? "a direct" : "the host's", batch.empty() ? "" : ", one of a batch",
+                    s.mode == Mode::join && dedicated_host(s) ? ", a dedicated server" : "");
+            } catch (...) {}
             disconnect(s, message.peer, "Join code, sender identity, or multiplayer protocol did not match.");
             if (s.mode == Mode::off)
                 return;

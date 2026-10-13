@@ -1181,13 +1181,18 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             if (forced > 1) return {};
             p.force_world_layers = forced != 0;
             const auto layer_count = r.integer(2);
-            if (layer_count != world_layers().size() && (layer_count || p.force_world_layers)) return {};
-            p.layers.resize(world_layers().size());
+            // A list that is not one choice for each of this game's layers is of another catalog
+            // (a server whose world-layers.json is of another version of the game): which layer
+            // each choice is for cannot be told, so none is taken and every layer stays as the
+            // player has it. Turning the message down put the player out of the session as they
+            // joined, with nothing to say why (2.0.8's servers, 2026-10-13).
+            const bool same_catalog = layer_count == world_layers().size();
+            if (!same_catalog) p.force_world_layers = false;
+            p.layers.assign(world_layers().size(), 0);
             for (std::uint64_t i = 0; i < layer_count; ++i) {
-                auto &choice = p.layers[static_cast<std::size_t>(i)];
                 const auto mode = r.integer(1);
                 if (mode >= world_layer_modes.size()) return {};
-                choice = static_cast<std::uint8_t>(mode);
+                if (same_catalog) p.layers[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(mode);
             }
             const auto voice_allowed = r.integer(1);
             p.voice_policy.revision = static_cast<std::uint32_t>(r.integer(4));

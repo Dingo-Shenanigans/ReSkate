@@ -788,10 +788,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 // holds one asset per name, so the lower-priority mod's is gone,
                 // and whatever of that mod's still names it by guid finds nothing
                 // (an item list entry is dropped for that further down).
-                const bool shaderTable = entry.asset.kind == fb::AssetKind::resource &&
-                    (entry.asset.resourceType == fb::shader::programLookupType ||
-                     entry.asset.resourceType == fb::shader::textureLookupType);
-                if (entry.asset.kind != fb::AssetKind::chunk && !shaderTable && !rewritten && previous.mod &&
+                if (entry.asset.kind != fb::AssetKind::chunk && !rewritten && previous.mod &&
                     previous.mod != owner && previous.asset.sha1 != entry.asset.sha1 &&
                     !state.baseSha.contains(at->first)) {
                     auto& [count, example] = replaced[*previous.mod];
@@ -849,11 +846,6 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 const Contribution* baseCopy{};
                 for (const auto& contribution : found->second)
                     if (contribution.base) { baseCopy = &contribution; break; }
-                // Custom cosmetic bundles also carry the global shader tables,
-                // although the game's copy of that bundle does not. Use the
-                // highest-priority contributor as the starting table there.
-                const bool addedShaderTable = !baseCopy && shaderTable;
-                if (addedShaderTable) baseCopy = &found->second.back();
                 if (!baseCopy) continue;
                 // Both mods rebuild the whole bundle, so only the assets whose
                 // content actually moved away from the base are contested.
@@ -864,8 +856,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 // An item list is looked at even when one mod alone changed it:
                 // what its entries name has to be in the bundle either way.
                 const auto named = entry.asset.kind == fb::AssetKind::ebx && item_list_name(entry.asset.name);
-                if (edits.size() < 2 && !(named && edits.size() == 1) &&
-                    !(addedShaderTable && !edits.empty())) continue;
+                if (edits.size() < 2 && !(named && edits.size() == 1)) continue;
                 try {
                     const auto baseBytes = decode(*baseCopy);
                     std::vector<std::vector<std::byte>> editBytes;
@@ -898,8 +889,9 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                                 std::to_string(clash.first) + " preset(s) share a short name with another mod's, e.g. " +
                                 clash.second + "; they are registered by their full path only");
                     } else if (shaderTable) {
-                        // Keep each private program and its backing arrays, then
-                        // remap material rows into the combined program table.
+                        // Each mod aliases new material keys onto shader programs
+                        // and texture sets the base already ships, so the union of
+                        // the rows they added is exactly right.
                         std::vector<fb::shader::Table> tables;
                         for (std::size_t index = 0; index < editBytes.size(); ++index)
                             tables.push_back({editBytes[index], edits[index]->resourceMeta});
