@@ -35,7 +35,8 @@ if(DINGOSDK_BUILD_GRAPHICS_CREATOR_TESTS AND WIN32)
         Extension/GraphicsCreator/Test/graphic_document_tests.cpp)
     target_link_libraries(dingosdk_graphics_creator_tests PRIVATE dingosdk_graphics_creator)
     add_test(NAME graphics_creator_document COMMAND dingosdk_graphics_creator_tests
-        "${CMAKE_CURRENT_BINARY_DIR}/graphics-creator-fixtures")
+        "${CMAKE_CURRENT_BINARY_DIR}/graphics-creator-fixtures"
+        "${PROJECT_SOURCE_DIR}/assets/ui/backgrounds/background-01.png")
 endif()
 if(DINGOSDK_BUILD_PARK_EDITOR_TESTS)
     enable_testing()

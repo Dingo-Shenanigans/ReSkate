@@ -34,8 +34,9 @@ target_link_libraries(dingosdk_local_profile PUBLIC dingosdk_fast_travel_unlock 
 
 add_library(dingosdk_graphics_creator STATIC
     Extension/GraphicsCreator/graphic_document.cpp
-    Extension/GraphicsCreator/graphic_store.cpp)
-target_link_libraries(dingosdk_graphics_creator PUBLIC dingosdk_json)
+    Extension/GraphicsCreator/graphic_store.cpp
+    Extension/GraphicsCreator/graphic_assets.cpp)
+target_link_libraries(dingosdk_graphics_creator PUBLIC dingosdk_json PRIVATE windowscodecs ole32)
 
 include(cmake/ProfileData.cmake)
 

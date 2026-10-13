@@ -4,7 +4,7 @@ This note records what the repository currently proves, what the original Skate.
 
 ## Product target
 
-ReSkate.Create is a native, local-first graphics editor inspired by Skate 2 and Skate 3's Graphic Creator. Its source documents remain editable and separate from generated previews or game assets. The initial editor targets layered shapes, transforms, visibility, opacity, ordering, undo/redo, deterministic saves, and local thumbnails. Imported images, equipment application, and sharing follow only after their boundaries are validated.
+ReSkate.Create is a native, local-first graphics editor inspired by Skate 2 and Skate 3's Graphic Creator. Its source documents remain editable and separate from generated previews or game assets. The initial editor targets layered shapes and imported images, transforms, visibility, opacity, ordering, undo/redo, deterministic saves, and local previews. Equipment application and sharing follow only after their boundaries are validated.
 
 The historical references establish that Graphic Creator output appeared on shirts, skateboards, Skate 3 billboards, stickers, and team branding. The original browser service was retired in 2013. ReSkate.Create therefore reproduces the creative workflow, not the retired service or its network assumptions:
 
@@ -23,22 +23,24 @@ The historical references establish that Graphic Creator output appeared on shir
 
 ## Implemented foundation
 
-`Extension/GraphicsCreator` now owns schema version 1:
+`Extension/GraphicsCreator` now owns schema version 2 and migrates version 1 saves when they are opened:
 
 - bounded 64-4096 pixel canvas;
-- ordered rectangle and ellipse layers;
+- ordered rectangle, ellipse, triangle, diamond, star, and local-image layers;
+- sticker, board, beanie, hoodie, and shirt design targets with neutral placement templates;
 - stable IDs, display names, visibility, opacity, transforms, dimensions, and RGBA fill;
 - strict finite/range validation and duplicate-ID rejection;
-- deterministic JSON serialization;
+- deterministic JSON serialization and local-only asset references;
 - atomic saves, previous-version backups, corrupt-primary recovery, and bounded listing.
+
+PNG and JPEG imports are capped at 16 MB and 4096 pixels per side, decoded through WIC, copied into `Create/Assets` under a content-derived name, and rendered as a bounded editor preview. Re-importing the same bytes reuses the same local asset. The UI also includes two reusable ReSkate-branded vector marks and duplicate/reorder controls.
 
 The model has no engine pointers, network identity, remote URLs, scripts, or equipment mutations. This keeps documents testable and prevents editor data from crossing gameplay ownership boundaries.
 
 ## Inferred next integrations
 
-1. Rasterize a document into a bounded RGBA preview and cache by source hash. Rendering must not mutate the source document.
-4. Add imported image layers only after image decoding, dimensions, file-size caps, alpha handling, and local-copy ownership are tested.
-5. Introduce `EquipmentGraphicAdapter` as an optional boundary. Board, shirt, billboard, and sticker targets must each report unavailable until a supported game-build binding is validated.
+1. Replace the bounded CPU editor preview with an off-screen GPU raster target cached by document content hash. Rendering must not mutate the source document.
+2. Introduce `EquipmentGraphicAdapter` as an optional boundary. Board, shirt, hoodie, beanie, and sticker targets must each report unavailable until a supported game-build binding is validated.
 
 ## Unknown and intentionally blocked
 
@@ -52,8 +54,8 @@ No UI control should claim that a graphic is equipped until those questions have
 ## Pull request sequence
 
 1. Document model, validation, deterministic codec, atomic store, and recovery tests. Implemented.
-2. Native editor state, canvas, layer controls, undo/redo, and local gallery. Implemented for rectangle and ellipse layers.
-3. Off-screen thumbnail rendering and cache invalidation.
-4. Bounded local image import and compositing.
+2. Native editor state, canvas, layer controls, undo/redo, targets, and local gallery. Implemented.
+3. Bounded local PNG/JPEG import and preview compositing. Implemented.
+4. Off-screen full-resolution thumbnail rendering and cache invalidation.
 5. One build-validated equipment adapter, starting with board bottom art; expand targets independently.
 6. Controller navigation, color-theme integration, polish, and optional sharing design.

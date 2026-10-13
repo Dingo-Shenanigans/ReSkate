@@ -9,9 +9,11 @@
 #include "Extension/Boot/discord_presence.h"
 #include "Extension/Boot/user_data_redirect.h"
 #include "Extension/GraphicsCreator/graphic_document.h"
+#include "Extension/GraphicsCreator/graphic_assets.h"
 #include "Extension/GraphicsCreator/graphic_store.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Music/local_music_assets.h"
+#include "Extension/Music/youtube_music.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Trainer/trainer.h"
 #include "Engine/Game/Input/controller_bindings.h"
@@ -20,11 +22,13 @@
 #include "Engine/Game/Multiplayer/session_limits.h"
 #include "Engine/Game/Multiplayer/tick_settings.h"
 #include <algorithm>
+#include <commdlg.h>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <format>
+#include <filesystem>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -122,6 +126,7 @@ struct Hub {
     graphics_creator::GraphicDocument create_document;
     std::vector<graphics_creator::GraphicDocument> create_undo, create_redo;
     std::vector<std::string> create_files;
+    std::map<std::string, graphics_creator::ImagePreview> create_previews;
     std::string create_file = "Untitled Graphic";
     std::size_t create_layer{};
     bool create_ready{};
@@ -1744,6 +1749,17 @@ std::vector<std::string> enabled_music_playlists() {
     return result;
 }
 
+std::optional<std::filesystem::path> choose_create_image() {
+    std::array<wchar_t, 32768> file{};
+    OPENFILENAMEW dialog{sizeof(dialog)};
+    dialog.hwndOwner = state().window.load();
+    dialog.lpstrFilter = L"Images (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0PNG (*.png)\0*.png\0JPEG (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0";
+    dialog.lpstrFile = file.data();
+    dialog.nMaxFile = static_cast<DWORD>(file.size());
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    return GetOpenFileNameW(&dialog) ? std::optional<std::filesystem::path>(file.data()) : std::nullopt;
+}
+
 void jukebox_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     auto &h = ui.h;
     const auto now = Clock::now();
@@ -1754,6 +1770,21 @@ void jukebox_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     }
     Column list(ui, hash("jukebox-page"), a, ImVec2(a.x + std::min(z.x - a.x, 2300 * ui.u), z.y));
     list.heading("JUKEBOX");
+    const auto playback = youtube_music::now();
+    const auto streams = youtube_music::state();
+    list.title("NOW PLAYING");
+    if (playback.available && !playback.title.empty()) {
+        list.setting(playback.title, playback.artist, false, Look::plain);
+        if (list.setting("PREVIOUS TRACK", {}, playback.can_previous, Look::plain))
+            youtube_music::send(external_player::Command::previous);
+        if (list.setting(playback.playing ? "PAUSE" : "PLAY", {},
+                         playback.playing ? playback.can_pause : playback.can_play, Look::sticky))
+            youtube_music::send(playback.playing ? external_player::Command::pause : external_player::Command::play);
+        if (list.setting("NEXT TRACK", {}, playback.can_next, Look::plain))
+            youtube_music::send(external_player::Command::next);
+    } else {
+        list.note("Nothing is playing. Start a stock playlist or a ReSkate music source, then control it here.");
+    }
     const bool shuffle = profile_runtime::music_shuffle_enabled();
     if (list.setting("Shuffle", shuffle ? "ON" : "OFF", profile_runtime::music_playback_available())) {
         profile_runtime::set_music_shuffle_enabled(!shuffle);
@@ -1780,6 +1811,20 @@ void jukebox_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         profile_runtime::set_local_values({{"MusicLikedPlaylists", Json(enabled)}});
         say(h, "Playlist choices are saved and applied by ReSkate's music provider.");
     }
+    if (streams.playing && streams.playing_list < streams.playlists.size()) {
+        const auto &active = streams.playlists[streams.playing_list];
+        const auto tracks_title = "TRACKS  /  " + active.name;
+        list.title(tracks_title.c_str());
+        for (std::size_t index = 0; index < active.songs.size(); ++index) {
+            const auto &song = active.songs[index];
+            const bool current = index == streams.playing_song;
+            const std::string label = song.title.empty() ? song.id : song.title;
+            if (list.setting(label, current ? "PLAYING" : song.artist, !streams.loading, current ? Look::sticky : Look::plain)) {
+                youtube_music::play_at(streams.playing_list, index);
+                say(h, "Playing " + label + ".");
+            }
+        }
+    }
     list.note(std::to_string(h.music.songs.size()) + " tracks across " +
               std::to_string(h.music.playlists.size()) + " playlists. " + h.notice);
     list.end();
@@ -1790,6 +1835,7 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     auto &h = ui.h;
     const float u = ui.u, gap = 24 * u, bar = 86 * u;
     const auto directory = [] { return redirected_local_app_data().parent_path() / L"Create" / L"Graphics"; };
+    const auto asset_directory = [] { return redirected_local_app_data().parent_path() / L"Create" / L"Assets"; };
     const auto fresh = [] {
         return GraphicDocument{current_schema_version, "untitled", "Untitled Graphic", {1024, 1024},
             {{"background", "Background", true, 1, {512, 512, 0, 1, 1},
@@ -1843,7 +1889,19 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
     Column gallery(ui, hash("create-gallery"), ga, gz);
     gallery.heading("RESKATE.CREATE");
-    gallery.note("Layered graphics stay local and editable. Equipment application unlocks per target after its game binding is verified.");
+    gallery.note("Build stickers and clothing graphics in-game. Designs and imported images stay local; equipment application unlocks per target after its binding is verified.");
+    const auto target_name = [](DesignTarget target) {
+        switch (target) {
+        case DesignTarget::sticker: return "STICKER";
+        case DesignTarget::board: return "BOARD";
+        case DesignTarget::beanie: return "BEANIE";
+        case DesignTarget::hoodie: return "HOODIE";
+        case DesignTarget::shirt: return "SHIRT";
+        }
+        return "STICKER";
+    };
+    if (gallery.setting("DESIGN TARGET", target_name(h.create_document.target), true, Look::sticky))
+        change([&] { h.create_document.target = static_cast<DesignTarget>((static_cast<int>(h.create_document.target) + 1) % 5); });
     field(ui, hash("create-file"), ImVec2(ga.x, gallery.list.y), ImVec2(gallery.right, gallery.list.y + bar),
           h.create_file, "Graphic name", false, 64);
     gallery.list.y += bar + gallery.between;
@@ -1900,6 +1958,36 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 ui.draw->AddRectFilled(ImVec2(canvas_a.x + x * checker, canvas_a.y + y * checker),
                     ImVec2(std::min(canvas_z.x, canvas_a.x + (x + 1) * checker),
                            std::min(canvas_z.y, canvas_a.y + (y + 1) * checker)), IM_COL32(208, 208, 208, 255));
+    // The four equipment templates are neutral test dummies, not claimed game items. They make
+    // placement and scale meaningful before a reviewed material adapter is available.
+    const auto template_colour = IM_COL32(54, 56, 62, 205);
+    const auto template_line = IM_COL32(245, 245, 245, 150);
+    const ImVec2 tc((canvas_a.x + canvas_z.x) * .5f, (canvas_a.y + canvas_z.y) * .5f);
+    const float tw = canvas_size.x, th = canvas_size.y;
+    if (h.create_document.target == DesignTarget::board) {
+        const ImVec2 p(tc.x - tw * .16f, canvas_a.y + th * .06f), q(tc.x + tw * .16f, canvas_z.y - th * .06f);
+        ui.draw->AddRectFilled(p, q, template_colour, tw * .15f);
+        ui.draw->AddRect(p, q, template_line, tw * .15f, 0, 3 * u);
+    } else if (h.create_document.target == DesignTarget::beanie) {
+        ui.draw->AddCircleFilled(ImVec2(tc.x, tc.y + th * .04f), tw * .29f, template_colour, 48);
+        ui.draw->AddRectFilled(ImVec2(tc.x - tw * .31f, tc.y + th * .04f), ImVec2(tc.x + tw * .31f, tc.y + th * .25f), template_colour, 18 * u);
+        ui.draw->AddRect(ImVec2(tc.x - tw * .31f, tc.y + th * .04f), ImVec2(tc.x + tw * .31f, tc.y + th * .25f), template_line, 18 * u, 0, 3 * u);
+    } else if (h.create_document.target == DesignTarget::shirt || h.create_document.target == DesignTarget::hoodie) {
+        const float hood = h.create_document.target == DesignTarget::hoodie ? .13f : 0.f;
+        std::array<ImVec2, 10> shirt{{
+            {tc.x - tw * .18f, canvas_a.y + th * (.20f + hood)}, {tc.x - tw * .40f, canvas_a.y + th * .34f},
+            {tc.x - tw * .31f, canvas_a.y + th * .52f}, {tc.x - tw * .23f, canvas_a.y + th * .47f},
+            {tc.x - tw * .20f, canvas_z.y - th * .12f}, {tc.x + tw * .20f, canvas_z.y - th * .12f},
+            {tc.x + tw * .23f, canvas_a.y + th * .47f}, {tc.x + tw * .31f, canvas_a.y + th * .52f},
+            {tc.x + tw * .40f, canvas_a.y + th * .34f}, {tc.x + tw * .18f, canvas_a.y + th * (.20f + hood)}}};
+        ui.draw->AddConvexPolyFilled(shirt.data(), static_cast<int>(shirt.size()), template_colour);
+        ui.draw->AddPolyline(shirt.data(), static_cast<int>(shirt.size()), template_line, ImDrawFlags_Closed, 3 * u);
+        if (h.create_document.target == DesignTarget::hoodie) {
+            ui.draw->AddCircleFilled(ImVec2(tc.x, canvas_a.y + th * .22f), tw * .18f, template_colour, 32);
+            ui.draw->AddCircle(ImVec2(tc.x, canvas_a.y + th * .22f), tw * .18f, template_line, 32, 3 * u);
+            ui.draw->AddRect(ImVec2(tc.x - tw * .13f, canvas_a.y + th * .62f), ImVec2(tc.x + tw * .13f, canvas_a.y + th * .76f), template_line, 18 * u, 0, 3 * u);
+        }
+    }
     ui.draw->PushClipRect(canvas_a, canvas_z, true);
     for (std::size_t index = 0; index < h.create_document.layers.size(); ++index) {
         const auto &layer = h.create_document.layers[index];
@@ -1912,15 +2000,52 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const auto point = [&](float x, float y) { return ImVec2(centre.x + x * cs - y * sn, centre.y + x * sn + y * cs); };
         const ImU32 color = IM_COL32(shape.fill.red, shape.fill.green, shape.fill.blue,
                                      static_cast<unsigned>(shape.fill.alpha * layer.opacity));
-        if (shape.kind == ShapeKind::rectangle) {
-            const ImVec2 points[]{point(-half_x, -half_y), point(half_x, -half_y), point(half_x, half_y), point(-half_x, half_y)};
-            ui.draw->AddConvexPolyFilled(points, 4, color);
-            if (index == h.create_layer) ui.draw->AddPolyline(points, 4, theme::blue, ImDrawFlags_Closed, 5 * u);
+        if (shape.kind == ShapeKind::image) {
+            auto found = h.create_previews.find(shape.source);
+            if (found == h.create_previews.end()) {
+                try { found = h.create_previews.emplace(shape.source, load_preview(asset_directory(), shape.source)).first; }
+                catch (...) { found = h.create_previews.emplace(shape.source, ImagePreview{}).first; }
+            }
+            const auto &preview = found->second;
+            if (preview.width && preview.height) {
+                const float pixel_w = shape.width * layer.transform.scale_x * scale / preview.width;
+                const float pixel_h = shape.height * layer.transform.scale_y * scale / preview.height;
+                for (std::uint32_t py = 0; py < preview.height; ++py)
+                    for (std::uint32_t px = 0; px < preview.width; ++px) {
+                        const auto at = (static_cast<std::size_t>(py) * preview.width + px) * 4;
+                        if (!preview.rgba[at + 3]) continue;
+                        const float x0 = -half_x + px * pixel_w, y0 = -half_y + py * pixel_h;
+                        const ImVec2 quad[]{point(x0, y0), point(x0 + pixel_w, y0), point(x0 + pixel_w, y0 + pixel_h), point(x0, y0 + pixel_h)};
+                        const ImU32 pixel = IM_COL32(preview.rgba[at] * shape.fill.red / 255,
+                            preview.rgba[at + 1] * shape.fill.green / 255,
+                            preview.rgba[at + 2] * shape.fill.blue / 255,
+                            static_cast<unsigned>(preview.rgba[at + 3] * layer.opacity));
+                        ui.draw->AddConvexPolyFilled(quad, 4, pixel);
+                    }
+            }
+            if (index == h.create_layer) {
+                const ImVec2 outline[]{point(-half_x, -half_y), point(half_x, -half_y), point(half_x, half_y), point(-half_x, half_y)};
+                ui.draw->AddPolyline(outline, 4, theme::blue, ImDrawFlags_Closed, 5 * u);
+            }
         } else {
-            std::array<ImVec2, 48> points;
-            for (std::size_t i = 0; i < points.size(); ++i) {
-                const float angle = static_cast<float>(i) * 6.283185307f / static_cast<float>(points.size());
-                points[i] = point(std::cos(angle) * half_x, std::sin(angle) * half_y);
+            std::vector<ImVec2> points;
+            if (shape.kind == ShapeKind::rectangle)
+                points = {point(-half_x, -half_y), point(half_x, -half_y), point(half_x, half_y), point(-half_x, half_y)};
+            else if (shape.kind == ShapeKind::triangle)
+                points = {point(0, -half_y), point(half_x, half_y), point(-half_x, half_y)};
+            else if (shape.kind == ShapeKind::diamond)
+                points = {point(0, -half_y), point(half_x, 0), point(0, half_y), point(-half_x, 0)};
+            else if (shape.kind == ShapeKind::star) {
+                for (int i = 0; i < 10; ++i) {
+                    const float angle = -1.570796327f + static_cast<float>(i) * .628318531f;
+                    const float radius = i & 1 ? .42f : 1.f;
+                    points.push_back(point(std::cos(angle) * half_x * radius, std::sin(angle) * half_y * radius));
+                }
+            } else {
+                for (int i = 0; i < 48; ++i) {
+                    const float angle = static_cast<float>(i) * 6.283185307f / 48.f;
+                    points.push_back(point(std::cos(angle) * half_x, std::sin(angle) * half_y));
+                }
             }
             ui.draw->AddConvexPolyFilled(points.data(), static_cast<int>(points.size()), color);
             if (index == h.create_layer) ui.draw->AddPolyline(points.data(), static_cast<int>(points.size()), theme::blue, ImDrawFlags_Closed, 5 * u);
@@ -1940,6 +2065,51 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, "Ellipse", true, 1,
             {512, 512, 0, 1, 1}, {ShapeKind::ellipse, 240, 240, {246, 198, 36, 255}}});
             h.create_layer = h.create_document.layers.size() - 1; });
+    }
+    const auto add_shape = [&](const char *button_name, const char *layer_name, ShapeKind kind, Color color) {
+        if (!inspector.setting(button_name, {}, h.create_document.layers.size() < maximum_layers, Look::plain)) return;
+        change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, layer_name, true, 1,
+            {512, 512, 0, 1, 1}, {kind, 260, 260, color}});
+            h.create_layer = h.create_document.layers.size() - 1; });
+    };
+    add_shape("ADD TRIANGLE", "Triangle", ShapeKind::triangle, {248, 85, 73, 255});
+    add_shape("ADD DIAMOND", "Diamond", ShapeKind::diamond, {255, 255, 255, 255});
+    add_shape("ADD STAR", "Star", ShapeKind::star, {246, 198, 36, 255});
+    if (inspector.setting("IMPORT PNG / JPEG", {}, h.create_document.layers.size() < maximum_layers, Look::sticky)) {
+        if (const auto picked = choose_create_image()) {
+            try {
+                const auto imported = import_image(asset_directory(), *picked);
+                const float fit = 560.f / static_cast<float>(std::max(imported.width, imported.height));
+                change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, picked->stem().string(), true, 1,
+                    {512, 512, 0, 1, 1}, {ShapeKind::image, imported.width * fit, imported.height * fit,
+                    {255, 255, 255, 255}, imported.asset_name}});
+                    h.create_layer = h.create_document.layers.size() - 1; });
+                h.create_previews.erase(imported.asset_name);
+                say(h, "Image copied into ReSkate.Create and added as a layer.");
+            } catch (const std::exception &error) { say(h, error.what()); }
+        }
+    }
+    if (inspector.setting("ADD RESKATE MARK", {}, h.create_document.layers.size() + 3 <= maximum_layers, Look::plain)) {
+        change([&] {
+            const auto add = [&](std::string name, Transform transform, Shape shape) {
+                h.create_document.layers.push_back({unique_id(), std::move(name), true, 1, transform, std::move(shape)});
+            };
+            add("ReSkate Backplate", {512, 512, -8, 1, 1}, {ShapeKind::rectangle, 520, 220, {18, 19, 22, 255}});
+            add("ReSkate Blue Slash", {430, 512, -18, 1, 1}, {ShapeKind::rectangle, 92, 250, {1, 131, 255, 255}});
+            add("ReSkate White Slash", {560, 512, -18, 1, 1}, {ShapeKind::rectangle, 92, 250, {245, 245, 245, 255}});
+            h.create_layer = h.create_document.layers.size() - 1;
+        });
+    }
+    if (inspector.setting("ADD CREATOR BADGE", {}, h.create_document.layers.size() + 3 <= maximum_layers, Look::plain)) {
+        change([&] {
+            h.create_document.layers.push_back({unique_id(), "Creator Badge", true, 1, {512, 512, 0, 1, 1},
+                {ShapeKind::ellipse, 330, 330, {18, 19, 22, 255}}});
+            h.create_document.layers.push_back({unique_id(), "Creator Ring", true, 1, {512, 512, 0, 1, 1},
+                {ShapeKind::ellipse, 270, 270, {1, 131, 255, 255}}});
+            h.create_document.layers.push_back({unique_id(), "Creator Star", true, 1, {512, 512, 0, 1, 1},
+                {ShapeKind::star, 190, 190, {245, 245, 245, 255}}});
+            h.create_layer = h.create_document.layers.size() - 1;
+        });
     }
     for (std::size_t i = h.create_document.layers.size(); i-- > 0;) {
         auto &layer = h.create_document.layers[i];
@@ -1972,6 +2142,10 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
             change([&] { layer.shape.fill.green = color_step(layer.shape.fill.green, way); });
         if (const int way = inspector.adjust("Blue", std::to_string(layer.shape.fill.blue), true))
             change([&] { layer.shape.fill.blue = color_step(layer.shape.fill.blue, way); });
+        if (inspector.setting("DUPLICATE LAYER", {}, h.create_document.layers.size() < maximum_layers))
+            change([&] { auto copy = layer; copy.id = unique_id(); copy.name += " Copy";
+                copy.transform.x += 24; copy.transform.y += 24; h.create_document.layers.push_back(std::move(copy));
+                h.create_layer = h.create_document.layers.size() - 1; });
         if (inspector.setting("MOVE LAYER UP", {}, h.create_layer + 1 < h.create_document.layers.size()))
             change([&] { std::swap(h.create_document.layers[h.create_layer], h.create_document.layers[h.create_layer + 1]); ++h.create_layer; });
         if (inspector.setting("MOVE LAYER DOWN", {}, h.create_layer > 0))
