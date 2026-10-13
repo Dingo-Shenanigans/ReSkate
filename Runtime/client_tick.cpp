@@ -81,6 +81,7 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     auto object_persistence = dingosdk::local_profile_object_persistence();
     auto editor = dingosdk::local_park_editor();
     auto bindings = dingosdk::local_profile_controller_bindings();
+    auto camera_mods = dingosdk::local_camera_mod_controls();
     const auto missions = dingosdk::local_profile_missions();
     std::vector<dingosdk::overlay::MissionRow> rows;
     for (const auto& row : missions.rows) rows.push_back({row.id, row.group, row.completed});
@@ -94,6 +95,7 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
     r.model.object_persistence = std::move(object_persistence);
     r.model.editor = std::move(editor);
     r.model.bindings = std::move(bindings);
+    r.model.camera_mods = camera_mods;
     r.model.missions_available = missions.available;
     r.model.mission_feedback = missions.feedback;
     r.model.missions = std::move(rows);
@@ -933,6 +935,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
     model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood()};
     model.bindings = dingosdk::local_profile_controller_bindings();
+    model.camera_mods = dingosdk::local_camera_mod_controls();
     model.parks = dingosdk::local_profile_parks();
     model.world = dingosdk::local_profile_world_layers();
     model.missions_available = missions_model.available;

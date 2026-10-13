@@ -1163,6 +1163,42 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             adjust("Camera roll", d.first_person_arm.rotation[2], angles, DebugAction::set_first_person_roll, " deg");
         }
         if (list.setting("Reset first-person camera", {}, edit)) debug({DebugAction::reset_first_person_arm});
+        list.title("LOW CAM MOD");
+        const auto& mods = m.camera_mods;
+        const auto mod = [&](std::string_view key, float value) {
+            run("camera mod " + std::string(key) + " " + decimal(value));
+        };
+        if (list.setting("Low Cam variant", mods.low_variant ? "B" : "A", mods.available))
+            mod("low-variant", mods.low_variant ? 0.f : 1.f);
+        {
+            constexpr std::array<float, 13> horizontal{-3.f, -2.5f, -2.f, -1.5f, -1.25f, -1.f, -.75f, -.5f, -.25f, 0.f, .5f, 1.f, 2.f};
+            constexpr std::array<float, 12> vertical{-2.f, -1.5f, -1.f, -.75f, -.5f, -.4f, -.25f, 0.f, .25f, .5f, 1.f, 2.f};
+            constexpr std::array<float, 12> distance{0.f, .5f, .75f, 1.f, 1.2f, 1.5f, 1.75f, 2.f, 2.25f, 2.5f, 3.f, 4.f};
+            if (const int way = list.adjust("Low Cam X", decimal(mods.low_x) + " m", mods.available))
+                mod("low-x", stepped(mods.low_x, horizontal, way));
+            if (const int way = list.adjust("Low Cam Y", decimal(mods.low_y) + " m", mods.available))
+                mod("low-y", stepped(mods.low_y, vertical, way));
+            if (const int way = list.adjust("Low Cam Z", decimal(mods.low_z) + " m", mods.available))
+                mod("low-z", stepped(mods.low_z, distance, way));
+        }
+        list.title("CAMERA LIGHT MOD");
+        if (list.setting("Camera light", on_off(mods.light_enabled), mods.available))
+            mod("light-enabled", mods.light_enabled ? 0.f : 1.f);
+        {
+            constexpr std::array<float, 5> colour{0.f, .25f, .5f, .75f, 1.f};
+            constexpr std::array<float, 11> power{0.f, 250.f, 500.f, 1000.f, 2000.f, 3000.f, 3982.f, 5000.f, 6500.f, 8000.f, 10000.f};
+            constexpr std::array<float, 11> radius{0.f, 1.f, 2.f, 3.f, 5.f, 7.f, 10.f, 12.f, 15.f, 20.f, 25.f};
+            if (const int way = list.adjust("Light red", whole(mods.light_red * 100.f, "%"), mods.available))
+                mod("light-red", stepped(mods.light_red, colour, way));
+            if (const int way = list.adjust("Light green", whole(mods.light_green * 100.f, "%"), mods.available))
+                mod("light-green", stepped(mods.light_green, colour, way));
+            if (const int way = list.adjust("Light blue", whole(mods.light_blue * 100.f, "%"), mods.available))
+                mod("light-blue", stepped(mods.light_blue, colour, way));
+            if (const int way = list.adjust("Light brightness", whole(mods.light_power), mods.available))
+                mod("light-power", stepped(mods.light_power, power, way));
+            if (const int way = list.adjust("Light radius", decimal(mods.light_radius) + " m", mods.available))
+                mod("light-radius", stepped(mods.light_radius, radius, way));
+        }
         list.title("FREECAM");
         if (list.setting("Freecam", on_off(d.free_camera), camera)) debug({DebugAction::set_free_camera, !d.free_camera});
         {
@@ -1521,6 +1557,11 @@ void move_focus(Hub &h, int dx, int dy) {
     float best_score = FLT_MAX;
     for (const auto &entry : h.last) {
         if (entry.id == from->id) continue;
+        // Up/down belongs to the current scrolling column. At either end of a
+        // long settings list, keep focus on the boundary row instead of
+        // escaping to the page's navigation tabs. Horizontal input is still
+        // free to leave the list, and shoulder buttons continue to change tabs.
+        if (dy && from->list && entry.list != from->list) continue;
         // Measured from the nearest point of the other control, so a wide row is as close as it looks.
         const ImVec2 closest(std::clamp(centre.x, entry.a.x, entry.b.x), std::clamp(centre.y, entry.a.y, entry.b.y));
         const float along = dx ? (closest.x - centre.x) * static_cast<float>(dx) : (closest.y - centre.y) * static_cast<float>(dy);

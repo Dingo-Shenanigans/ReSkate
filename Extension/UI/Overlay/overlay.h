@@ -9,6 +9,7 @@
 #include "Engine/Game/Profile/progression.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/Settings/named_settings.h"
+#include "Engine/Game/Settings/camera_mod_controls.h"
 #include "Engine/Game/Multiplayer/session_model.h"
 #include "Engine/Game/UI/menu_scale.h"
 #include "Engine/Game/Skater/first_person_spring.h"
@@ -235,6 +236,7 @@ struct Model {
     PlayerCardModel player_card;
     HallOfMeatModel hall_of_meat;
     RoadRashModel road_rash;
+    CameraModControls camera_mods;
     ObjectPersistenceModel object_persistence;
     ParkEditorModel editor;
     float menu_scale = default_menu_scale;

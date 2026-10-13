@@ -120,20 +120,26 @@ bool named_like(Address record, std::string_view prefix) {
         if (read<char>(name + i) != prefix[i]) return false;
     return true;
 }
-void hide_hub_list(const Context &c, const Widget &widget, Address list_type) {
-    if (!widget.blueprint || !widget.data.record || !widget.data.handle) return;
+void hide_hub_list(const Context &c, Value target, Address list_type) {
+    const auto widget = read<Widget>(c.address(target));
+    if (!widget.data.record || !widget.data.handle) return;
     if (!named_like(widget.data.record, hub_list_record) || c.type_of(widget.data.handle) != list_type) return;
     const Value model{widget.data.handle, list_type};
     const auto list = c.field(model, tile_items);
     unsigned count{}, stride{};
     c.array(list, 32, count, stride);
     for (unsigned i = 0; i < count; ++i) hide_in_place(c, c.element(list, i));
+    // Emptying a tile's fill still leaves the TileList's authored black panel
+    // and layout frame on screen. Keep its data model alive for the Hub's
+    // focus/lifetime code, but remove the list widget blueprint so the stock
+    // panel cannot render underneath ReSkate's dashboard.
+    if (widget.blueprint) c.set(target, Widget{0, widget.data});
 }
 void remove_hub_tiles(const Context &c) {
     const auto list_type = c.type({tile_list_schema, 392});
     for (const auto &root : c.roots({partition_schema})) {
-        hide_hub_list(c, read<Widget>(c.address(c.field(root.model, partition_left))), list_type);
-        hide_hub_list(c, read<Widget>(c.address(c.field(root.model, partition_right))), list_type);
+        hide_hub_list(c, c.field(root.model, partition_left), list_type);
+        hide_hub_list(c, c.field(root.model, partition_right), list_type);
     }
 }
 void rename_hub_page(const Context &c) {

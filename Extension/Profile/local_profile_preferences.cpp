@@ -136,6 +136,63 @@ bool set_local_up_velocity_binding(std::uint32_t combo) {
     } catch (...) { binding_feedback = "Could not save the binding. See the console log."; return false; }
 }
 
+CameraModControls local_camera_mod_controls() noexcept {
+    CameraModControls result;
+    try {
+        auto& s = local_runtime();
+        if (!s.active || !s.store) return result;
+        const auto number = [&](const char* key, float fallback) {
+            const auto value = s.store->native_profile_option(2, key);
+            return value && value->is_number() ? static_cast<float>(value->get<double>()) : fallback;
+        };
+        const auto boolean = [&](const char* key, bool fallback) {
+            const auto value = s.store->native_profile_option(2, key);
+            return value && value->is_boolean() ? value->get<bool>() : fallback;
+        };
+        result.low_variant = boolean("UseHighCam", result.low_variant);
+        result.low_x = number("sk84_camera_position_r8_x", result.low_x);
+        result.low_y = number("sk84_camera_position_r8_y", result.low_y);
+        result.low_z = number("sk84_camera_position_r8_z", result.low_z);
+        result.light_enabled = boolean("sk84_camera_light_enabled", result.light_enabled);
+        result.light_red = number("sk84_camera_light_red", result.light_red);
+        result.light_green = number("sk84_camera_light_green", result.light_green);
+        result.light_blue = number("sk84_camera_light_blue", result.light_blue);
+        result.light_power = number("sk84_camera_light_power", result.light_power);
+        result.light_radius = number("sk84_camera_light_radius", result.light_radius);
+        result.available = true;
+    } catch (...) { result.available = false; }
+    return result;
+}
+
+bool set_local_camera_mod_control(std::string_view key, float value) noexcept {
+    struct Control { std::string_view name, native; float minimum, maximum; bool boolean; };
+    static constexpr Control controls[]{
+        {"low-variant", "UseHighCam", 0, 1, true},
+        {"low-x", "sk84_camera_position_r8_x", -3, 3, false},
+        {"low-y", "sk84_camera_position_r8_y", -3, 3, false},
+        {"low-z", "sk84_camera_position_r8_z", 0, 4, false},
+        {"light-enabled", "sk84_camera_light_enabled", 0, 1, true},
+        {"light-red", "sk84_camera_light_red", 0, 1, false},
+        {"light-green", "sk84_camera_light_green", 0, 1, false},
+        {"light-blue", "sk84_camera_light_blue", 0, 1, false},
+        {"light-power", "sk84_camera_light_power", 0, 10000, false},
+        {"light-radius", "sk84_camera_light_radius", 0, 25, false},
+    };
+    const auto control = std::find_if(std::begin(controls), std::end(controls),
+        [&](const auto& candidate) { return candidate.name == key; });
+    if (control == std::end(controls) || !std::isfinite(value) || value < control->minimum || value > control->maximum)
+        return false;
+    try {
+        auto& s = local_runtime();
+        if (!s.active || !s.store) return false;
+        s.store->set_native_profile_option(2, control->native,
+            control->boolean ? Json(value != 0) : Json(static_cast<double>(value)));
+        dingosdk::logging::event(dingosdk::logging::Channel::profile,
+            Json{{"event", "camera_mod_setting_saved"}, {"key", std::string(control->native)}, {"value", value}}.dump().c_str());
+        return true;
+    } catch (...) { return false; }
+}
+
 namespace profile_runtime {
 std::optional<bool> local_preference(std::string_view key) noexcept {
     try {

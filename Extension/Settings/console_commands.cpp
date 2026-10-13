@@ -16,6 +16,21 @@ const NamedSettingModel *named_model(const Model &model, std::size_t index, std:
 }
 }
 void register_settings_commands(Commands &registry) {
+    {
+        auto key = argument("control");
+        key.choices = {"low-variant", "low-x", "low-y", "low-z", "light-enabled", "light-red",
+                       "light-green", "light-blue", "light-power", "light-radius"};
+        auto value = argument("value", Type::number);
+        auto entry = action("camera mod", "Adjust an installed Low Cam or Camera Light setting", Group::gameplay,
+                            {std::move(key), std::move(value)});
+        entry.run = [](const Model&, const Values& args, const Output& out) {
+            const auto& key = std::get<std::string>(args[0]);
+            const auto value = static_cast<float>(std::get<double>(args[1]));
+            out(set_local_camera_mod_control(key, value) ? "Camera mod setting saved." :
+                "error: Camera mod setting or value was rejected.");
+        };
+        registry.add(std::move(entry));
+    }
     using GroupModel = overlay::OfflineFeatureGroupModel;
     struct Setting {
         const char *name;

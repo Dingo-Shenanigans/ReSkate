@@ -15,6 +15,7 @@
 #include "Engine/Game/World/park_editor.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/UI/menu_scale.h"
+#include "Engine/Game/Settings/camera_mod_controls.h"
 #include "Engine/Core/Json/json.h"
 #include <utility>
 namespace dingosdk {
@@ -73,6 +74,8 @@ bool set_local_noclip_binding(std::uint32_t);
 bool set_local_forward_velocity_binding(std::uint32_t);
 bool set_local_up_velocity_binding(std::uint32_t);
 bool set_local_offboard_up_velocity_binding(std::uint32_t);
+CameraModControls local_camera_mod_controls() noexcept;
+bool set_local_camera_mod_control(std::string_view key, float value) noexcept;
 bool set_local_object_persistence(bool enabled);
 bool clear_local_persisted_objects(std::string_view map);
 bool delete_local_placed_object(std::string_view map, std::uint64_t token);
