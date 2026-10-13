@@ -5,6 +5,7 @@
 #include "Extension/Trainer/trainer_page.h"
 #include "Extension/HallOfMeat/hall_of_meat_overlay.h"
 #include "park_previews.h"
+#include "ui_backgrounds.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
@@ -55,6 +56,7 @@ bool completed(UINT64 value, DWORD timeout_ms) {
 void destroy_graphics() {
     auto& s = state();
     clear_park_previews();
+    clear_ui_backgrounds();
     restore_input(false);
     {
         std::lock_guard lock(s.input_mutex);
@@ -358,12 +360,17 @@ bool setup_graphics() {
     dingosdk::overlay::load_skate_fonts(s.menu);
     // Thumbnails are read from the game's own data at startup; the read is
     // normally long finished by the time the first frame gets here.
+    const auto background_count = reserve_ui_backgrounds(*ImGui::GetIO().Fonts);
     // Emotes and Hall of Meat's images reserve their room before the park previews build the atlas, and fill it after.
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     reserve_hall_of_meat_images(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     fill_chat_emotes(*ImGui::GetIO().Fonts);
     fill_hall_of_meat_images(*ImGui::GetIO().Fonts);
+    fill_ui_backgrounds(*ImGui::GetIO().Fonts);
+    if (background_count)
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "HUB artwork: %zu local images ready.", background_count);
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);

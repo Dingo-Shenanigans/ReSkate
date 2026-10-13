@@ -288,6 +288,20 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc"
     "FONT_BRUSH RCDATA \"${dingosdk_menu_fonts}/PermanentMarker-Regular.ttf\"\n")
 target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc")
 
+# Local HUB artwork. Compact PNG resources keep the visuals self-contained in
+# ReSkate.dll while the renderer reuses ImGui's existing atlas texture.
+set(dingosdk_hub_backgrounds "${PROJECT_SOURCE_DIR}/assets/ui/backgrounds")
+if(EXISTS "${dingosdk_hub_backgrounds}/background-01.png")
+    file(TO_NATIVE_PATH "${dingosdk_hub_backgrounds}" dingosdk_hub_backgrounds_native)
+    string(REPLACE "\\" "\\\\" dingosdk_hub_backgrounds_native "${dingosdk_hub_backgrounds_native}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/hub_backgrounds.rc"
+        "HUB_BG_1 RCDATA \"${dingosdk_hub_backgrounds_native}\\\\background-01.png\"\n"
+        "HUB_BG_2 RCDATA \"${dingosdk_hub_backgrounds_native}\\\\background-02.png\"\n"
+        "HUB_BG_3 RCDATA \"${dingosdk_hub_backgrounds_native}\\\\background-03.png\"\n"
+        "HUB_BG_4 RCDATA \"${dingosdk_hub_backgrounds_native}\\\\background-04.png\"\n")
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/hub_backgrounds.rc")
+endif()
+
 # The startup window's picture (PNG or JPEG), built into ReSkate.dll when the
 # repository has one. ReSkate.Splash.png/.jpg beside the DLL still takes
 # precedence at run time.

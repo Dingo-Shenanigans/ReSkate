@@ -2,10 +2,14 @@
 #include "skate_style.h"
 #include "cursor.h"
 #include "input_capture.h"
+#include "ui_backgrounds.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include "Extension/Boot/discord_presence.h"
+#include "Extension/Boot/user_data_redirect.h"
+#include "Extension/GraphicsCreator/graphic_document.h"
+#include "Extension/GraphicsCreator/graphic_store.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Music/local_music_assets.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -115,6 +119,12 @@ struct Hub {
     profile_runtime::MusicCatalog music;
     Clock::time_point next_music{};
     bool music_ready{};
+    graphics_creator::GraphicDocument create_document;
+    std::vector<graphics_creator::GraphicDocument> create_undo, create_redo;
+    std::vector<std::string> create_files;
+    std::string create_file = "Untitled Graphic";
+    std::size_t create_layer{};
+    bool create_ready{};
     // Recording a bind (the BINDS tab): which action (0: none), what has been pressed so far,
     // and when it gives up (GetTickCount64).
     int recording_bind{};
@@ -1464,6 +1474,17 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const Hit hit = enabled ? item(ui, id, p, q) : Hit{};
         const bool lit = hit.focus || hit.hover;
         skate_theme::rough_rect(ui.draw, p, q, lit ? IM_COL32(15, 132, 238, 248) : IM_COL32(15, 16, 18, 224), id & 0xfff, 2 * u);
+        const unsigned image_index = art == HubArt::map || art == HubArt::load ? 2u
+                                   : art == HubArt::trainer ? 4u
+                                   : art == HubArt::online ? 3u : 1u;
+        UiBackgroundImage artwork{};
+        if (ui_background_image(image_index, artwork)) {
+            ui.draw->PushClipRect(p, q, true);
+            ui.draw->AddImage(artwork.texture, p, q, artwork.uv0, artwork.uv1,
+                IM_COL32(255, 255, 255, lit ? 220 : 175));
+            ui.draw->AddRectFilled(p, q, lit ? IM_COL32(0, 65, 120, 105) : IM_COL32(4, 6, 9, 145));
+            ui.draw->PopClipRect();
+        }
         const float art_width = std::min((q.x - p.x) * .38f, 420 * u);
         const ImVec2 art_a(q.x - art_width, p.y), art_z(q.x, q.y);
         ui.draw->PushClipRect(p, q, true);
@@ -1765,27 +1786,201 @@ void jukebox_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
 }
 
 void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
-    const float u = ui.u;
-    const ImVec2 card(a.x, a.y + 60 * u), edge(std::min(z.x, a.x + 2300 * u), std::min(z.y, a.y + 850 * u));
-    skate_theme::rough_rect(ui.draw, card, edge, IM_COL32(18, 18, 18, 245), 0xC8EA, 3 * u);
-    ui.draw->AddText(ui.heading, 76 * u, ImVec2(card.x + 70 * u, card.y + 70 * u), theme::paper, "RESKATE.CREATE");
-    ui.draw->AddText(ui.body, 36 * u, ImVec2(card.x + 70 * u, card.y + 180 * u), theme::muted,
-                     "Custom stickers, board graphics and clothing tools are being built here.");
-    const float band_top = card.y + 330 * u, band_bottom = band_top + 190 * u;
-    ui.draw->AddRectFilled(ImVec2(card.x, band_top), ImVec2(edge.x, band_bottom), IM_COL32(246, 198, 36, 255));
-    for (float x = card.x - 180 * u; x < edge.x; x += 180 * u)
-        ui.draw->AddQuadFilled(ImVec2(x, band_top), ImVec2(x + 90 * u, band_top),
-                              ImVec2(x + 260 * u, band_bottom), ImVec2(x + 170 * u, band_bottom),
-                              IM_COL32(18, 18, 18, 255));
-    const char *locked = "UNDER CONSTRUCTION";
-    const float width = width_of(ui.heading, 66 * u, locked);
-    ui.draw->AddRectFilled(ImVec2((card.x + edge.x - width) * .5f - 30 * u, band_top + 48 * u),
-                           ImVec2((card.x + edge.x + width) * .5f + 30 * u, band_bottom - 48 * u),
-                           IM_COL32(246, 198, 36, 255));
-    ui.draw->AddText(ui.heading, 66 * u, ImVec2((card.x + edge.x - width) * .5f, band_top + 62 * u),
-                     skate_theme::black, locked);
-    ui.draw->AddText(ui.body, 32 * u, ImVec2(card.x + 70 * u, band_bottom + 70 * u), theme::paper,
-                     "This page is intentionally locked while the asset import and safe reload pipeline is completed.");
+    using namespace graphics_creator;
+    auto &h = ui.h;
+    const float u = ui.u, gap = 24 * u, bar = 86 * u;
+    const auto directory = [] { return redirected_local_app_data().parent_path() / L"Create" / L"Graphics"; };
+    const auto fresh = [] {
+        return GraphicDocument{current_schema_version, "untitled", "Untitled Graphic", {1024, 1024},
+            {{"background", "Background", true, 1, {512, 512, 0, 1, 1},
+              {ShapeKind::rectangle, 1024, 1024, {24, 25, 28, 255}}}}};
+    };
+    const auto refresh = [&] {
+        try { h.create_files = graphics_creator::list(directory()); }
+        catch (...) { h.create_files.clear(); }
+    };
+    if (!h.create_ready) {
+        h.create_document = fresh();
+        h.create_layer = 0;
+        h.create_ready = true;
+        refresh();
+    }
+    const auto change = [&](auto &&action) {
+        h.create_undo.push_back(h.create_document);
+        if (h.create_undo.size() > 64) h.create_undo.erase(h.create_undo.begin());
+        h.create_redo.clear();
+        action();
+    };
+    const auto undo = [&] {
+        if (h.create_undo.empty()) return;
+        h.create_redo.push_back(h.create_document);
+        h.create_document = std::move(h.create_undo.back());
+        h.create_undo.pop_back();
+        h.create_layer = std::min(h.create_layer, h.create_document.layers.empty() ? std::size_t{} : h.create_document.layers.size() - 1);
+    };
+    const auto redo = [&] {
+        if (h.create_redo.empty()) return;
+        h.create_undo.push_back(h.create_document);
+        h.create_document = std::move(h.create_redo.back());
+        h.create_redo.pop_back();
+        h.create_layer = std::min(h.create_layer, h.create_document.layers.empty() ? std::size_t{} : h.create_document.layers.size() - 1);
+    };
+    const auto unique_id = [&] {
+        for (unsigned number = 1; number < 10000; ++number) {
+            const auto id = "layer-" + std::to_string(number);
+            if (std::none_of(h.create_document.layers.begin(), h.create_document.layers.end(),
+                             [&](const auto &layer) { return layer.id == id; })) return id;
+        }
+        return std::string("layer-overflow");
+    };
+
+    const float total = z.x - a.x;
+    const float gallery_width = std::min(820 * u, total * .23f);
+    const float inspector_width = std::min(1050 * u, total * .30f);
+    const ImVec2 ga = a, gz(a.x + gallery_width, z.y);
+    const ImVec2 ia(z.x - inspector_width, a.y), iz = z;
+    const ImVec2 ca(gz.x + gap, a.y), cz(ia.x - gap, z.y);
+
+    Column gallery(ui, hash("create-gallery"), ga, gz);
+    gallery.heading("RESKATE.CREATE");
+    gallery.note("Layered graphics stay local and editable. Equipment application unlocks per target after its game binding is verified.");
+    field(ui, hash("create-file"), ImVec2(ga.x, gallery.list.y), ImVec2(gallery.right, gallery.list.y + bar),
+          h.create_file, "Graphic name", false, 64);
+    gallery.list.y += bar + gallery.between;
+    if (gallery.setting("NEW GRAPHIC", {}, true, Look::plain)) {
+        h.create_document = fresh(); h.create_file = "Untitled Graphic"; h.create_layer = 0;
+        h.create_undo.clear(); h.create_redo.clear(); say(h, "New graphic ready.");
+    }
+    if (gallery.setting("SAVE GRAPHIC", {}, valid_file_name(h.create_file), Look::sticky)) {
+        try {
+            h.create_document.name = h.create_file;
+            h.create_document.id.clear();
+            for (const auto c : h.create_file)
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+                    h.create_document.id += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+                else if (!h.create_document.id.empty() && h.create_document.id.back() != '-') h.create_document.id += '-';
+            while (!h.create_document.id.empty() && h.create_document.id.back() == '-') h.create_document.id.pop_back();
+            if (!valid_identifier(h.create_document.id)) h.create_document.id = "untitled";
+            graphics_creator::save(directory(), h.create_file, h.create_document);
+            refresh(); say(h, "Graphic saved locally.");
+        } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    gallery.title("HISTORY");
+    if (gallery.setting("UNDO", {}, !h.create_undo.empty())) undo();
+    if (gallery.setting("REDO", {}, !h.create_redo.empty())) redo();
+    gallery.title("LOCAL GALLERY");
+    for (const auto &name : h.create_files) {
+        if (!gallery.setting(name, {}, true)) continue;
+        try {
+            const auto loaded = graphics_creator::load(directory(), name);
+            h.create_document = loaded.document; h.create_file = name; h.create_layer = 0;
+            h.create_undo.clear(); h.create_redo.clear();
+            say(h, loaded.recovered_from_backup ? "Recovered the previous valid graphic save." : "Graphic loaded.");
+        } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    gallery.note(h.notice);
+    gallery.end();
+
+    // Canvas: source coordinates are pixels; the viewport only scales their presentation.
+    const float header = 88 * u;
+    ui.draw->AddText(ui.heading, 52 * u, ca, theme::paper, h.create_document.name.c_str());
+    const ImVec2 canvas_region(ca.x, ca.y + header);
+    const float available_width = cz.x - ca.x, available_height = cz.y - canvas_region.y;
+    const float scale = std::min(available_width / static_cast<float>(h.create_document.canvas.width),
+                                 available_height / static_cast<float>(h.create_document.canvas.height));
+    const ImVec2 canvas_size(h.create_document.canvas.width * scale, h.create_document.canvas.height * scale);
+    const ImVec2 canvas_a(canvas_region.x + (available_width - canvas_size.x) * .5f,
+                          canvas_region.y + (available_height - canvas_size.y) * .5f);
+    const ImVec2 canvas_z(canvas_a.x + canvas_size.x, canvas_a.y + canvas_size.y);
+    ui.draw->AddRectFilled(canvas_a, canvas_z, IM_COL32(238, 238, 238, 255));
+    const float checker = std::max(14 * u, canvas_size.x / 24);
+    for (unsigned y = 0; canvas_a.y + y * checker < canvas_z.y; ++y)
+        for (unsigned x = 0; canvas_a.x + x * checker < canvas_z.x; ++x)
+            if ((x + y) & 1)
+                ui.draw->AddRectFilled(ImVec2(canvas_a.x + x * checker, canvas_a.y + y * checker),
+                    ImVec2(std::min(canvas_z.x, canvas_a.x + (x + 1) * checker),
+                           std::min(canvas_z.y, canvas_a.y + (y + 1) * checker)), IM_COL32(208, 208, 208, 255));
+    ui.draw->PushClipRect(canvas_a, canvas_z, true);
+    for (std::size_t index = 0; index < h.create_document.layers.size(); ++index) {
+        const auto &layer = h.create_document.layers[index];
+        if (!layer.visible || layer.opacity <= 0) continue;
+        const auto &shape = layer.shape;
+        const ImVec2 centre(canvas_a.x + layer.transform.x * scale, canvas_a.y + layer.transform.y * scale);
+        const float half_x = shape.width * layer.transform.scale_x * scale * .5f;
+        const float half_y = shape.height * layer.transform.scale_y * scale * .5f;
+        const float radians = layer.transform.rotation_degrees * .0174532925f, sn = std::sin(radians), cs = std::cos(radians);
+        const auto point = [&](float x, float y) { return ImVec2(centre.x + x * cs - y * sn, centre.y + x * sn + y * cs); };
+        const ImU32 color = IM_COL32(shape.fill.red, shape.fill.green, shape.fill.blue,
+                                     static_cast<unsigned>(shape.fill.alpha * layer.opacity));
+        if (shape.kind == ShapeKind::rectangle) {
+            const ImVec2 points[]{point(-half_x, -half_y), point(half_x, -half_y), point(half_x, half_y), point(-half_x, half_y)};
+            ui.draw->AddConvexPolyFilled(points, 4, color);
+            if (index == h.create_layer) ui.draw->AddPolyline(points, 4, theme::blue, ImDrawFlags_Closed, 5 * u);
+        } else {
+            std::array<ImVec2, 48> points;
+            for (std::size_t i = 0; i < points.size(); ++i) {
+                const float angle = static_cast<float>(i) * 6.283185307f / static_cast<float>(points.size());
+                points[i] = point(std::cos(angle) * half_x, std::sin(angle) * half_y);
+            }
+            ui.draw->AddConvexPolyFilled(points.data(), static_cast<int>(points.size()), color);
+            if (index == h.create_layer) ui.draw->AddPolyline(points.data(), static_cast<int>(points.size()), theme::blue, ImDrawFlags_Closed, 5 * u);
+        }
+    }
+    ui.draw->PopClipRect();
+    ui.draw->AddRect(canvas_a, canvas_z, theme::paper, 0, 0, 4 * u);
+
+    Column inspector(ui, hash("create-inspector"), ia, iz);
+    inspector.heading("LAYERS");
+    if (inspector.setting("ADD RECTANGLE", {}, h.create_document.layers.size() < maximum_layers, Look::plain)) {
+        change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, "Rectangle", true, 1,
+            {512, 512, 0, 1, 1}, {ShapeKind::rectangle, 300, 180, {1, 131, 255, 255}}});
+            h.create_layer = h.create_document.layers.size() - 1; });
+    }
+    if (inspector.setting("ADD ELLIPSE", {}, h.create_document.layers.size() < maximum_layers, Look::plain)) {
+        change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, "Ellipse", true, 1,
+            {512, 512, 0, 1, 1}, {ShapeKind::ellipse, 240, 240, {246, 198, 36, 255}}});
+            h.create_layer = h.create_document.layers.size() - 1; });
+    }
+    for (std::size_t i = h.create_document.layers.size(); i-- > 0;) {
+        auto &layer = h.create_document.layers[i];
+        if (inspector.setting(layer.name, layer.visible ? (i == h.create_layer ? "SELECTED" : "ON") : "HIDDEN", true))
+            h.create_layer = i;
+    }
+    if (!h.create_document.layers.empty()) {
+        auto &layer = h.create_document.layers[h.create_layer];
+        inspector.title("SELECTED LAYER");
+        if (inspector.setting("Visibility", layer.visible ? "On" : "Off", true))
+            change([&] { layer.visible = !layer.visible; });
+        if (const int way = inspector.adjust("Position X", whole(layer.transform.x, " px"), true))
+            change([&] { layer.transform.x = std::clamp(layer.transform.x + way * 8, -16384.f, 16384.f); });
+        if (const int way = inspector.adjust("Position Y", whole(layer.transform.y, " px"), true))
+            change([&] { layer.transform.y = std::clamp(layer.transform.y + way * 8, -16384.f, 16384.f); });
+        if (const int way = inspector.adjust("Rotation", whole(layer.transform.rotation_degrees, " deg"), true))
+            change([&] { layer.transform.rotation_degrees += way * 5; });
+        if (const int way = inspector.adjust("Scale X", decimal(layer.transform.scale_x), true))
+            change([&] { layer.transform.scale_x = std::clamp(layer.transform.scale_x + way * .05f, .01f, 100.f); });
+        if (const int way = inspector.adjust("Scale Y", decimal(layer.transform.scale_y), true))
+            change([&] { layer.transform.scale_y = std::clamp(layer.transform.scale_y + way * .05f, .01f, 100.f); });
+        if (const int way = inspector.adjust("Opacity", whole(layer.opacity * 100, "%"), true))
+            change([&] { layer.opacity = std::clamp(layer.opacity + way * .05f, 0.f, 1.f); });
+        const auto color_step = [&](std::uint8_t value, int way) {
+            return static_cast<std::uint8_t>(std::clamp(static_cast<int>(value) + way * 8, 0, 255));
+        };
+        if (const int way = inspector.adjust("Red", std::to_string(layer.shape.fill.red), true))
+            change([&] { layer.shape.fill.red = color_step(layer.shape.fill.red, way); });
+        if (const int way = inspector.adjust("Green", std::to_string(layer.shape.fill.green), true))
+            change([&] { layer.shape.fill.green = color_step(layer.shape.fill.green, way); });
+        if (const int way = inspector.adjust("Blue", std::to_string(layer.shape.fill.blue), true))
+            change([&] { layer.shape.fill.blue = color_step(layer.shape.fill.blue, way); });
+        if (inspector.setting("MOVE LAYER UP", {}, h.create_layer + 1 < h.create_document.layers.size()))
+            change([&] { std::swap(h.create_document.layers[h.create_layer], h.create_document.layers[h.create_layer + 1]); ++h.create_layer; });
+        if (inspector.setting("MOVE LAYER DOWN", {}, h.create_layer > 0))
+            change([&] { std::swap(h.create_document.layers[h.create_layer], h.create_document.layers[h.create_layer - 1]); --h.create_layer; });
+        if (inspector.setting("DELETE LAYER", {}, true))
+            change([&] { h.create_document.layers.erase(h.create_document.layers.begin() + static_cast<std::ptrdiff_t>(h.create_layer));
+                h.create_layer = std::min(h.create_layer, h.create_document.layers.empty() ? std::size_t{} : h.create_document.layers.size() - 1); });
+    }
+    inspector.end();
 }
 
 // ---------------------------------------------------------------- session settings

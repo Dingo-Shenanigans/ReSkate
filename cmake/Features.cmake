@@ -32,5 +32,10 @@ add_library(dingosdk_local_profile STATIC
 )
 target_link_libraries(dingosdk_local_profile PUBLIC dingosdk_fast_travel_unlock dingosdk_content_cache dingosdk_json dingosdk_storage dingosdk_mod_list)
 
+add_library(dingosdk_graphics_creator STATIC
+    Extension/GraphicsCreator/graphic_document.cpp
+    Extension/GraphicsCreator/graphic_store.cpp)
+target_link_libraries(dingosdk_graphics_creator PUBLIC dingosdk_json)
+
 include(cmake/ProfileData.cmake)
 
