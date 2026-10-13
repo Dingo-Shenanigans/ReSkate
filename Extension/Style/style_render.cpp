@@ -1,4 +1,4 @@
-// What the render thread runs: the local skater's style.
+// What the render thread runs: the local skater's style, and the editor's recording and menu room.
 #include "style_live.h"
 #include "style_layer.h"
 #include "Engine/Core/Platform/memory.h"
@@ -23,6 +23,9 @@ using namespace addr::style;
 using style::Family;
 using style::Quat;
 constexpr float blend_seconds = 0.08f; // smooths sudden changes, such as the catch or a slam
+constexpr std::uint64_t rig_kind_keep_ms = 2000;
+// While the menu room is watched: a new rig can have no pose yet.
+constexpr std::uint64_t rig_kind_retry_ms = 250;
 
 std::optional<Family> family_of(std::uint32_t state) noexcept {
     if (state >= riding_states_begin && state < riding_states_end) return Family::riding;
@@ -76,6 +79,35 @@ void apply(std::uintptr_t holder) {
     const auto &written = l.pose.blender.step(l.pose.merged, style::ease_amount(elapsed, blend_seconds));
     (void)write_pose(l.pose.tracker, holder, written);
 }
+style::RigKind other_kind(std::uintptr_t holder) noexcept {
+    auto &l = live();
+    const auto now = GetTickCount64();
+    auto &slot = l.kinds.seen[static_cast<std::size_t>((static_cast<std::uint64_t>(holder) >> 4) * 0x9e3779b97f4a7c15ull >> 56)];
+    {
+        std::lock_guard lock(l.kinds.mutex);
+        if (slot.holder == holder && now <= slot.until) return slot.kind;
+    }
+    style::RigKind kind{};
+    if (const auto pose = pose_of(holder)) kind = style::rig_kind(pose->count);
+    std::uint64_t keep_ms = rig_kind_keep_ms;
+    if (kind == style::RigKind::other && now < l.room.watch_until.load(std::memory_order_relaxed)) keep_ms = rig_kind_retry_ms;
+    std::lock_guard lock(l.kinds.mutex);
+    slot = {holder, now + keep_ms, kind};
+    return kind;
+}
+// Most rigs need nothing: a kind is looked up only for the editor's recording or its menu room.
+bool others_wanted(const Live &l) noexcept { return recording_now(l) || watching_room(l); }
+void preview_other(std::uintptr_t holder) noexcept {
+    auto &l = live();
+    if (holder == l.room.ignored.load(std::memory_order_acquire) || holder == l.room.ignored_board.load(std::memory_order_acquire))
+        return;
+    if (!others_wanted(l)) return;
+    const auto kind = other_kind(holder);
+    // A recording of the local skater keeps the boards too: one of them is the skater's.
+    if (kind == style::RigKind::board && recording_now(l)) record(holder);
+    // Only the editor needs the menu room, so other rigs are not read for it at other times.
+    if (kind != style::RigKind::other && watching_room(l)) clear_from_room(holder, kind == style::RigKind::skater, clearing_room(l));
+}
 } // namespace
 
 Live &live() { static auto *value = new Live; return *value; }
@@ -118,7 +150,12 @@ void on_render(std::uintptr_t animation_interface) noexcept {
     struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
     auto &l = live();
     const auto holder = l.followed.holder.load(std::memory_order_acquire);
-    if (!holder || animation_interface - addr::style::holder_animation_interface != holder) return;
+    if (animation_interface <= addr::style::holder_animation_interface) return;
+    const auto rendered = animation_interface - addr::style::holder_animation_interface;
+    // Also with no local skater followed (style off, a load), so that the menu room's rigs are put back.
+    if (rendered != holder) return preview_other(rendered);
+    // A recording keeps the game's own animation, so the style waits until it ends.
+    if (recording_now(l)) return record(holder);
     try {
         apply(holder);
     } catch (...) {}

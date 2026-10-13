@@ -2,7 +2,11 @@
 #include "Engine/Game/Settings/named_settings.h"
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 namespace dingosdk {
 // Initialize before installing the client update hook. All other functions
 // are owned by that verified game thread; Present receives copied models.
@@ -24,4 +28,27 @@ std::string restore_named_settings();
 // Every engine setting name known so far: listed from the engine's settings
 // registry this session or remembered from earlier ones. Any thread.
 std::vector<std::string> named_setting_names();
+// True while `current` is the number `held` in any form, such as "60" and "60.0".
+[[nodiscard]] bool still_held(std::string_view current, std::string_view held) noexcept;
+// Named settings that a feature sets for a while. Each is put back only while it still holds the value the feature set.
+class HeldSettings {
+public:
+    using Reader = std::optional<std::string> (*)(std::string_view name);
+    // The answer starts with "error" when the setting was not set.
+    using Writer = std::string (*)(std::string_view name, std::string_view value);
+    HeldSettings(Reader read, Writer write) noexcept;
+    // False at the first setting that fails, with `error` as a lowercase fragment.
+    bool hold(std::span<const std::pair<std::string_view, std::string_view>> settings, std::string &error);
+    // Returns and logs the settings it could not read or put back.
+    std::vector<std::string> release() noexcept;
+
+private:
+    struct Held {
+        std::string name, before, value;
+    };
+    [[nodiscard]] bool put_back(const Held &setting) const noexcept;
+    Reader read_;
+    Writer write_;
+    std::vector<Held> held_;
+};
 } // namespace dingosdk

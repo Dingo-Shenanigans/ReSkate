@@ -1163,6 +1163,8 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Style", on_off(m.style.enabled), m.style.available && console)) act("style");
         if (m.style.enabled && list.setting("Style preset", m.style.preset, m.style.available && m.style.presets.size() > 1 && console))
             act("style-preset");
+        if (m.style.enabled && list.setting("Style editor", {}, style_editor_openable(m) && console)) act("style-editor");
+        if (m.style.enabled) list.note(style_editor_blocked_reason(m));
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
         if (list.setting("Hall of Meat", on_off(m.hall_of_meat.enabled), m.hall_of_meat.available && console)) act("hall-of-meat");

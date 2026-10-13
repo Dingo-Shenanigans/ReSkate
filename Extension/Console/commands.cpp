@@ -192,6 +192,7 @@ const Commands &game_commands() {
         register_movement_commands(*result);
         register_ai_commands(*result);
         register_style_commands(*result);
+        register_style_editor_commands(*result);
         register_settings_commands(*result);
         register_world_commands(*result);
         register_graphics_commands(*result);

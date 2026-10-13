@@ -940,6 +940,40 @@ int main() {
                     remote.status.find("not installed") != std::string::npos,
                 "An uninstalled peer asset reached native creation or lost its status");
         reset_network_object_world();
+        using network_objects_detail::Key, network_objects_detail::stage_owner;
+        const profile::PlacedObject floor{7, "own_bk_ramp", {0, -200, 0}, {0, 0, 0, 1}};
+        const auto stage_creates = fixture::creates;
+        require(set_stage_objects(r.map, std::span(&floor, 1)), "The stage was refused on the map being placed on");
+        tick_remote();
+        tick_remote();
+        const auto placed = stage_object(floor.id);
+        require(fixture::creates == stage_creates + 1 && placed && placed->position == floor.position,
+                "The stage's floor was not made where it was asked for");
+        require(remote.live.at(Key{stage_owner, 1, floor.id}).ghost_refresh == 0, "The stage's floor was made a ghost");
+        require(network_object_extra_budget() == 1, "The stage's floor did not reserve native capacity");
+        const auto stage_moves = fixture::moves;
+        require(set_stage_objects(r.map, std::span(&floor, 1)), "The same stage was refused");
+        tick_remote();
+        require(fixture::moves == stage_moves + 1, "The same stage set did not move its floor again");
+        tick_remote();
+        require(fixture::moves == stage_moves + 1, "The floor moved again with no new set");
+        require(!set_stage_objects("other-map", std::span(&floor, 1)), "A stage on a map not being placed on was accepted");
+        const auto floor_entity = remote.live.at(Key{1, 1, floor.id}).entity;
+        require(set_stage_objects(r.map, std::span<const profile::PlacedObject>{}), "An empty stage was refused");
+        tick_remote();
+        tick_remote();
+        require(!fixture::world.contains(floor_entity) && !stage_object(floor.id) && network_object_extra_budget() == 0,
+                "An empty stage left its floor");
+        require(set_stage_objects(r.map, std::span(&floor, 1)), "The stage was refused after it was emptied");
+        tick_remote();
+        tick_remote();
+        const auto before_reset = stage_map();
+        require(stage_object(floor.id) && before_reset && before_reset->map == r.map, "The stage's floor did not come back");
+        reset_network_object_world();
+        const auto after_reset = stage_map();
+        require(after_reset && after_reset->world != before_reset->world && !stage_object(floor.id) && remote.stage.empty() &&
+                    remote.desired.empty(),
+                "A world reset kept the stage's floor or did not mark a new world");
 
         // Joining an already loaded map must hide personal saves, preserve the
         // host's copies, and discard guest edits on every leave/rejoin cycle.

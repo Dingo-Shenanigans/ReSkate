@@ -15,6 +15,7 @@ State boolean_state(bool available, bool value, std::string reason = {}, std::st
 void register_movement_commands(Commands &);
 void register_ai_commands(Commands &);
 void register_style_commands(Commands &);
+void register_style_editor_commands(Commands &);
 void register_settings_commands(Commands &);
 void register_world_commands(Commands &);
 void register_graphics_commands(Commands &);
@@ -31,8 +32,8 @@ void register_hall_of_meat_commands(Commands &);
 void register_road_rash_commands(Commands &);
 void register_board_break_commands(Commands &);
 void register_grind_exit_commands(Commands &);
-// Runtime adapters. Invoked only by the verified game-thread dispatcher.
-void request_debug(overlay::DebugAction, bool enabled = false, float value = 0);
+// Runtime adapters. Invoked only by the verified game-thread dispatcher. request_debug returns whether it was queued.
+bool request_debug(overlay::DebugAction, bool enabled = false, float value = 0);
 void request_feature(overlay::OfflineFeatureGroup, bool enabled);
 void request_engine_variable(std::string_view name, bool restore, bool value);
 std::string request_named_setting(std::string_view name, std::string_view value, bool restore);

@@ -132,6 +132,9 @@ bool available() noexcept { return stubbed.available; }
 bool sharing() noexcept { return stubbed.share; }
 std::string status() { return "status line"; }
 } // namespace dingosdk::style_layer
+// The editor's part of `style status`: empty unless a check sets it. style_editor_tests checks its text.
+static std::string editor_part;
+std::string dingosdk::console::style_editor_status() { return editor_part; }
 
 namespace layer = dingosdk::style_layer;
 static_assert(layer::grounded(100) && layer::grounded(101) && !layer::grounded(200) && layer::on_foot(504));
@@ -161,6 +164,10 @@ int main() {
         const std::vector<std::string> next{"style", ""};
         check(registry.complete(next, model).size() >= 7, "style lists its sub-commands and values");
         for (const auto &row : cases) check(pass(row), row.command);
+        // The editor's part of `style status` follows the layer's.
+        editor_part = " Editor open.";
+        check(pass({"style status", "", "status line Editor open."}), "style status adds the editor's part");
+        editor_part.clear();
         calls.clear();
         if (const auto *share = registry.find("style share"); share && share->reset) share->reset(model, out);
         check(calls == std::vector<std::string>{"share 1"} && stubbed.share, "a reset of style share turns it on, its default");

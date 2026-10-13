@@ -90,6 +90,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/replay_drafts.cpp
     Extension/UI/ui_pointer_skip.cpp
     Extension/Settings/named_settings.cpp
+    Extension/Settings/held_settings.cpp
     Extension/World/console_commands.cpp
     Extension/Rendering/console_commands.cpp
     Extension/Progression/console_commands.cpp
@@ -135,6 +136,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/client_noclip.cpp
     Extension/Skater/client_first_person.cpp
     Extension/Skater/client_debug.cpp
+    Extension/Skater/editor_screen.cpp
     Extension/Skater/ai_skaters.cpp
     Extension/Style/style.cpp
     Extension/Style/style_edits.cpp
@@ -144,6 +146,19 @@ add_library(dingosdk_runtime SHARED
     Extension/Style/style_file.cpp
     Extension/Style/style_presets.cpp
     Extension/Style/style_skeleton.cpp
+    Extension/Style/style_editor_entry.cpp
+    Extension/Style/style_layer_editor.cpp
+    Extension/Style/style_render_editor.cpp
+    Extension/Style/style_editor_commands.cpp
+    Extension/Style/style_recording.cpp
+    Extension/Style/style_editor.cpp
+    Extension/Style/style_capture.cpp
+    Extension/Style/menu_room.cpp
+    Extension/Style/trick_pad.cpp
+    Extension/Style/trick_gestures.cpp
+    Extension/Style/trick_stage.cpp
+    Extension/Style/trick_recorder.cpp
+    Extension/Style/style_clips.cpp
     Extension/Skater/no_bail.cpp
     Extension/Skater/grind_exit_commands.cpp
     Extension/Skater/grind_exit_control.cpp

@@ -60,6 +60,7 @@ struct Settings {
     bool auto_save{true}, saved_auto_save{true};
     bool unsaved{}; // without auto save: the style differs from the file
     style::Style on_disk;
+    style::Pace editor_pace{style::even_pace};
     style::History history;
     std::uint64_t save_at{};
     std::string file_issue;
@@ -87,6 +88,9 @@ std::shared_ptr<const Snapshot> build(const Settings &s) {
         return static_cast<std::uint16_t>(found - names.begin());
     };
     for (std::size_t i = 0; i < style::editable_joints.size(); ++i) result->skeleton_joint[i] = skeleton_index(style::editable_joints[i]);
+    auto parents = std::make_shared<std::vector<std::int32_t>>(s.skeleton->parents);
+    const auto joint = [&](std::string_view name) { return skeleton_index(name).value_or(0); };
+    result->rig = {{joint("AITrajectory"), joint("Deck"), joint("LeftFoot"), joint("RightFoot"), *parents}, std::move(parents)};
     for (const auto trick : style::flip_trick_ids()) result->tricks[trick] = style::trick_keys(s.style, trick);
     for (const auto &[key, degrees] : s.style.rotations)
         if (const auto joint_index = style::editable_joint(key.joint); !key.target.trick && joint_index)
@@ -206,7 +210,7 @@ void request_clear(std::optional<style::Target> target) {
 int request_key_add(std::uint8_t trick, float time, std::string &error) {
     int added = -1;
     (void)edit("add keyframe", &error, [&](Settings &s) {
-        added = style::edits::add_key(s.style, trick, time, style::even_pace, error);
+        added = style::edits::add_key(s.style, trick, time, s.editor_pace, error);
         return added >= 0;
     });
     return added;
@@ -377,6 +381,11 @@ style::StyleModel model() {
 }
 bool enabled() noexcept { return settings().enabled_now.load(std::memory_order_acquire); }
 bool available() noexcept { return no_bail_available() && !settings().refused.load(std::memory_order_acquire); }
+void note_editor_pace(const style::Pace &pace) {
+    auto &s = settings();
+    std::lock_guard lock(s.mutex);
+    s.editor_pace = pace;
+}
 bool sharing() noexcept { return live().followed.share.load(std::memory_order_acquire); }
 std::string status() {
     auto &s = settings();
@@ -504,6 +513,7 @@ void follow(Live &l, std::uintptr_t base, const LocalSkater &skater) {
 void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
     auto &l = live();
     try {
+        hand_over_recording(l);
         if (!prepare(settings(), l, base, ready)) return;
         if (const auto skater = local_skater(base, client)) return follow(l, base, *skater);
         l.followed.component.store(0, std::memory_order_release);

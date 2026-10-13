@@ -26,6 +26,7 @@ the launcher, the runtime that loads into the game, and the dedicated server.
     out to (toe / heel, or left / right), whatever trick and spin you do
     ([how it works](Extension/Skater/GRIND_EXITS.md)).
   - **Style** (off by default): your own body movement on the game's tricks.
+    Flip tricks have a keyframe editor.
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading

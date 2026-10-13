@@ -159,10 +159,11 @@ void add_history_commands(Commands &registry) {
 
 void add_status_command(Commands &registry) {
     auto status = action("style status",
-                         "Show whether the style is on, off or unavailable and why, the preset in use",
+                         "Show whether the style is on, off or unavailable and why, the preset in use, and whether the editor is open",
                          Group::gameplay);
     status.run = [](const Model &, const Values &, const Output &out) {
         auto reply = style_layer::status();
+        reply += style_editor_status();
         out(reply);
     };
     registry.add(std::move(status));

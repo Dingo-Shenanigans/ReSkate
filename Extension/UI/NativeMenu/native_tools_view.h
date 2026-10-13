@@ -179,6 +179,8 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         auto next = m.style.preset;
         cycle(next, m.style.presets);
         console("style preset load " + next, m.style.available && next != m.style.preset);
+    } else if (command == "style-editor") {
+        console("style editor open", overlay::style_editor_openable(m));
     } else if (command == "load-random-parks") {
         // Use the shared command path: hosts load locally, server admins request
         // one server roll, and guests cannot replace the host's layouts.
@@ -325,6 +327,8 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         if (m.style.enabled)
             button(p.main, "style-preset", "Style preset: " + m.style.preset, "style-preset",
                 m.style.available && m.style.presets.size() > 1 && cb.queue_console_command);
+        if (m.style.enabled)
+            button(p.main, "style-editor", "Style editor", "style-editor", overlay::style_editor_openable(m) && cb.queue_console_command);
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);

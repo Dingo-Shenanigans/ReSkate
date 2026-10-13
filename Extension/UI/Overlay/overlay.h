@@ -78,6 +78,7 @@ enum class DebugAction {
     set_first_person_camera_cycle,
     reset_first_person_arm,
     set_free_camera_fov,  // 0 = the game's own FOV
+    set_style_editor,
     // Keep the last action in sync with the bound in request_scheduler.h.
 };
 
@@ -115,6 +116,7 @@ struct DebugModel {
     float free_camera_fov = 0;  // 0 = the game's own FOV
     first_person::Settings first_person_arm;
     bool park_editor = false;
+    bool style_editor = false;
     bool camera_transform_valid = false;
     std::array<float, 16> camera_transform{};
     float camera_fov = 55;
@@ -281,6 +283,18 @@ struct Model {
         std::uint64_t model{}, debug{}, offline{}, engine_settings{};
     } revisions;
 };
+
+// Why the style editor cannot open now, as a sentence; empty when it can.
+[[nodiscard]] inline std::string style_editor_blocked_reason(const Model &m) {
+    if (!m.style.enabled) return "Turn on Style to use the editor.";
+    if (!m.style.available)
+        return m.style.unavailable_reason.empty() ? "Style is not available for this game build." : style::sentence(m.style.unavailable_reason);
+    if (m.style.recording_tricks) return "Your tricks are being recorded.";
+    if (m.style.server_too_full) return style::sentence(style::full_server_text);
+    if (!m.debug.available) return "The editor opens once your skater is in the game.";
+    return {};
+}
+[[nodiscard]] inline bool style_editor_openable(const Model &m) { return style_editor_blocked_reason(m).empty(); }
 
 // Callbacks run on the presentation thread. They must be bounded and thread
 // safe; queue callbacks must enqueue requests, never call engine code here.
@@ -507,6 +521,14 @@ bool keyboard_shortcuts_allowed() noexcept;
 // draws. They take no input and never open the menu.
 enum class NoticeLevel { info, warning, error };
 void notify(NoticeLevel level, std::string title, std::string text = {}) noexcept;
+// Closes the menu, console and chat before the game gets key presses. Any thread.
+void close_menus() noexcept;
+// Covers the game view with one line of text for `milliseconds` (0 removes it); it fades and takes no input. Any thread.
+void cover(std::string text, unsigned milliseconds) noexcept;
+// Fading counts as covered. Any thread.
+[[nodiscard]] bool covered() noexcept;
+// A strip of text at the top of the game view for `milliseconds` (0 removes it); the game gets no input meanwhile. Any thread.
+void banner(std::string text, unsigned milliseconds) noexcept;
 }
 
 // Call outside DllMain, before the game's first DXGI factory is created. No

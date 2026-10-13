@@ -100,6 +100,8 @@ struct InteractiveDebug {
     bool camera_owned{}, camera_ambiguous{}, ui_owned{};
     bool park_editor{}, editor_transition{}, editor_previous_camera{}, editor_previous_ui{}, editor_previous_noclip{};
     bool editor_previous_first_person{};
+    // The style editor: the same takeover as the park editor, with the camera on the stand-in.
+    bool style_editor{};
     // Shares Freecam's owned mode-1 camera; each tick publishes the head pose
     // instead of a flight step.
     bool first_person{}, first_person_waiting{};
@@ -116,6 +118,8 @@ struct InteractiveDebug {
     // Freecam FOV (0 = the game's own) and the camera's own value, put back
     // when Freecam ends or the setting returns to the default.
     float free_camera_fov{}, free_camera_saved_fov{};
+    bool editor_fov_tried{};
+    float editor_saved_fov{}; // 0: none
     first_person::Settings first_person_settings;
     SourceCameraIdentity camera_identity;
     std::uintptr_t ui_object{};

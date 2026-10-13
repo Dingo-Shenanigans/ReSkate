@@ -1,5 +1,6 @@
 #pragma once
 #include "Extension/Style/style_model.h"
+#include "Engine/Game/Abi/linear_transform.h"
 #include "Engine/Game/Skater/first_person_spring.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/style.h"
@@ -418,6 +419,62 @@ private:
     std::vector<std::uint16_t> live_;
     std::uint32_t pass_{};
 };
-// No rig is read past 512 joints.
-inline constexpr std::size_t max_rig_joints = 512;
+enum class RigKind : std::uint8_t { other, skater, board };
+// A board's rig has 2 to 32 joints. No rig is read past 512 joints.
+inline constexpr std::size_t max_board_joints = 32, max_rig_joints = 512;
+[[nodiscard]] constexpr RigKind rig_kind(std::size_t joints) noexcept {
+    if (joints == addr::style::skeleton_joints) return RigKind::skater;
+    if (joints >= 2 && joints <= max_board_joints) return RigKind::board;
+    return RigKind::other;
+}
+
+// The editor's helpers: distances, the skater's and the board's joints, and the keyframe lookups of its timeline.
+using Vec3 = game::Vec3;
+[[nodiscard]] inline float distance(const Vec3 &a, const Vec3 &b) noexcept { return game::length({a[0] - b[0], a[1] - b[1], a[2] - b[2]}); }
+// x and z only; y is up.
+[[nodiscard]] inline float ground_distance(const Vec3 &a, const Vec3 &b) noexcept { return std::hypot(a[0] - b[0], a[2] - b[2]); }
+// The skater joint with the world position (AITrajectory).
+inline constexpr std::size_t skater_world = 1;
+// A board pose: the board entity at 0, then its rig joints; the anchor is pose index 2. In the game board rig, the deck is joint 1.
+inline constexpr std::size_t board_entity = 0, board_anchor = 2, rig_deck = 1;
+// Last in time, not by number.
+[[nodiscard]] inline bool last_key(std::span<const float> times, std::size_t key) noexcept {
+    return std::ranges::none_of(times, [&](float time) { return time > times[key]; });
+}
+[[nodiscard]] inline float next_key_time(std::span<const float> times, float at) noexcept {
+    float next = trick_end;
+    for (const auto time : times)
+        if (time > at && time < next) next = time;
+    return next;
+}
+[[nodiscard]] inline float previous_key_time(std::span<const float> times, float at) noexcept {
+    float previous = 0;
+    for (const auto time : times)
+        if (time < at && time > previous) previous = time;
+    return previous;
+}
+[[nodiscard]] inline std::optional<std::size_t> key_at_time(std::span<const float> times, float at) noexcept {
+    for (std::size_t i = 0; i < times.size(); ++i)
+        if (std::abs(times[i] - at) < 0.001f) return i;
+    return std::nullopt;
+}
+// The ID to select after keyframe `key` is deleted: the keyframe before it in time, else the earliest one left.
+[[nodiscard]] inline std::optional<std::size_t> selection_after_delete(std::span<const float> times, std::size_t key) noexcept {
+    if (times.size() < 2) return std::nullopt;
+    const auto place = key_place(times, key);
+    const auto wanted = place ? place - 1 : 1;
+    for (std::size_t i = 0; i < times.size(); ++i)
+        if (key_place(times, i) == wanted) return i > key ? i - 1 : i;
+    return std::nullopt;
+}
+// The inverse of paced.
+inline float timeline_at(float ms, const Pace &pace) noexcept {
+    float time{};
+    for (std::size_t part = 0; part < pace.size(); ++part) {
+        const float length = std::max(pace[part], 1e-3f);
+        time += std::clamp(ms / length, 0.0f, 1.0f);
+        ms -= length;
+    }
+    return time;
+}
 } // namespace dingosdk::style

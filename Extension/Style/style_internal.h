@@ -1,6 +1,8 @@
 #pragma once
+#include "Extension/Style/style_clips.h"
 #include "Extension/Style/style_pose.h"
 #include "Engine/Core/Log/logging.h"
+#include "Extension/UI/Overlay/overlay.h"
 #include <atomic>
 #include <cstdint>
 #include <exception>
@@ -44,3 +46,38 @@ private:
     std::atomic<std::shared_ptr<const T>> value_;
 };
 } // namespace dingosdk::style
+
+// The editor's shared parts: its notices, its guarded tick, the pace of its clip and the joints it reads.
+namespace dingosdk::style {
+inline constexpr std::string_view notice_title = "Style editor";
+inline void notify_player(overlay::NoticeLevel level, std::string_view reason) noexcept {
+    const auto logged = level == overlay::NoticeLevel::info      ? logging::Level::info
+                        : level == overlay::NoticeLevel::warning ? logging::Level::warning
+                                                                 : logging::Level::error;
+    logging::log(logged, logging::Channel::skater, "Style editor: {}.", reason);
+    try {
+        overlay::notify(level, std::string(notice_title), sentence(reason));
+    } catch (...) {}
+}
+// On a throw, `stop` ends the machine and returns true if it was running; only then is the error logged.
+template <class Tick, class Stop>
+void guarded_tick(logging::Channel channel, std::string_view what, Tick &&tick, Stop &&stop) noexcept {
+    try {
+        tick();
+    } catch (...) {
+        bool stopped{};
+        try {
+            stopped = stop();
+        } catch (...) {}
+        if (stopped) logging::log(logging::Level::warning, channel, "{} stopped after an error.", what);
+    }
+}
+} // namespace dingosdk::style
+namespace dingosdk::style_layer {
+// The pace of the clip on the stand-in. A new keyframe starts as the pose shown at that pace.
+void note_editor_pace(const style::Pace &pace);
+struct Rig {
+    style::RigJoints joints; // its parents are `parents`
+    std::shared_ptr<const std::vector<std::int32_t>> parents;
+};
+} // namespace dingosdk::style_layer

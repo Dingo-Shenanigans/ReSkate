@@ -888,6 +888,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
     s.gameplay_ready = ready;
     s.available_map = map_name;
     set_multiplayer_session_active(s.mode == Mode::host || s.mode == Mode::join);
+    set_multiplayer_slots_in_use(s.used_slots);
     struct PartyPublication {
         Session &value;
         ~PartyPublication() { try { publish_party(value); } catch (...) {} }

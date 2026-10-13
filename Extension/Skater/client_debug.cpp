@@ -11,6 +11,8 @@
 #include "Engine/Game/Skater/velocity_boost.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
+#include "Extension/Skater/editor_screen.h"
+#include "Engine/Game/Build/addresses.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include <atomic>
 #include <cmath>
@@ -99,6 +101,17 @@ std::array<float, 16> debug_skater(std::uintptr_t base, std::uintptr_t client, o
 namespace {
 bool debug_has_lease(const InteractiveDebug& debug) {
     return debug.no_bail || debug.noclip || debug.camera_owned || debug.camera_ambiguous || debug.ui_owned;
+}
+// The camera's FOV in degrees, or 0 when it cannot be read.
+float read_camera_fov(std::uintptr_t camera) noexcept {
+    float fov{};
+    return first_person_read(camera + camera_fov_offset, &fov, 4) && std::isfinite(fov) && fov > 1.0f && fov < 175.0f ? fov : 0.0f;
+}
+void restore_editor_fov(InteractiveDebug& debug) noexcept {
+    if (debug.editor_saved_fov > 0 && debug.camera_owned && debug.camera_identity.camera)
+        (void)first_person_write_fov(debug.camera_identity.camera, debug.editor_saved_fov);
+    debug.editor_saved_fov = 0;
+    debug.editor_fov_tried = false;
 }
 void debug_restore_ui(SourceTrial& trial) {
     auto& debug = trial.debug;
@@ -219,6 +232,10 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
                 ? "First person on. True first person keeps the view level and steady."
                 : "First person on. The camera follows the skater's head.";
         }
+    } else if (debug.style_editor && editor_screen::camera_pose(next)) {
+        // camera_pose wrote `next`.
+    } else if (editor_screen::held_camera_pose(next)) {
+        // held_camera_pose wrote `next`.
     } else {
         next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
     }
@@ -230,14 +247,18 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     debug.flight_matrix = next;
     debug.flight_ready = true;
     // Written every tick: the camera may refresh its FOV from its own settings.
-    if (debug.first_person && debug.first_person_fov > 0)
+    if (debug.style_editor) {
+        if (const auto fov = editor_screen::camera_fov(); fov > 0) {
+            if (!debug.editor_fov_tried) {
+                debug.editor_fov_tried = true;
+                debug.editor_saved_fov = read_camera_fov(camera.identity.camera);
+            }
+            (void)first_person_write_fov(camera.identity.camera, fov);
+        }
+    } else if (debug.first_person && debug.first_person_fov > 0)
         (void)first_person_write_fov(camera.identity.camera, debug.first_person_fov);
     else if (!debug.first_person && debug.free_camera_fov > 0) {
-        if (!debug.free_camera_saved_fov) {
-            float current{};
-            debug.free_camera_saved_fov = first_person_read(camera.identity.camera + camera_fov_offset, &current, 4) &&
-                std::isfinite(current) && current > 1.0f && current < 175.0f ? current : 0.0f;
-        }
+        if (!debug.free_camera_saved_fov) debug.free_camera_saved_fov = read_camera_fov(camera.identity.camera);
         (void)first_person_write_fov(camera.identity.camera, debug.free_camera_fov);
     }
 }
@@ -358,6 +379,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         source_require(!request.enabled || lobby_object_placement_allowed(),
             "The host has disabled object placement for you in this session.");
         if (request.enabled == debug.park_editor) return;
+        source_require(!debug.style_editor, "Close the style editor first.");
         source_require(can_control && phase, "Wait for the local camera before changing editor mode.");
         debug.editor_transition = true;
         struct EndTransition { bool& flag; ~EndTransition(){flag=false;} } transition{debug.editor_transition};
@@ -396,7 +418,57 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         }
         return;
     }
-    source_require(!debug.park_editor || debug.editor_transition || request.action == overlay::DebugAction::restore_debug ||
+    if (request.action == overlay::DebugAction::set_style_editor) {
+        if (request.enabled == debug.style_editor) return;
+        // The open went into the menu first, so a refused open leaves it.
+        if (request.enabled && (debug.park_editor || !can_control || !phase)) editor_screen::closed();
+        if (request.enabled) {
+            source_require(!debug.park_editor, "Close the park editor first.");
+            source_require(can_control && phase, "Wait for the local camera before opening the style editor.");
+        }
+        debug.editor_transition = true;
+        struct EndTransition { bool& flag; ~EndTransition(){flag=false;} } transition{debug.editor_transition};
+        const auto apply = [&](overlay::DebugAction action, bool enabled) {
+            debug_action(trial, client, can_control, phase, {action, enabled}, error);
+        };
+        const auto restore = [&] {
+            debug.style_editor = false;
+            editor_screen::closed();
+            restore_editor_fov(debug);
+            bool restored = true;
+            const auto attempt = [&](overlay::DebugAction action, bool enabled) {
+                try { apply(action, enabled); } catch (...) { restored = false; }
+            };
+            attempt(overlay::DebugAction::set_game_ui_hidden, debug.editor_previous_ui);
+            if (!debug.editor_previous_camera) attempt(overlay::DebugAction::set_free_camera, false);
+            if (debug.editor_previous_noclip && session_noclip_allowed()) attempt(overlay::DebugAction::set_noclip, true);
+            if (debug.editor_previous_first_person) attempt(overlay::DebugAction::set_first_person, true);
+            return restored;
+        };
+        if (request.enabled) {
+            const auto camera = source_camera_snapshot(trial, client);
+            debug.editor_previous_camera = camera.mode == 1;
+            debug.editor_previous_ui = debug_ui(trial.base).draw == 0;
+            debug.editor_previous_noclip = debug.noclip;
+            debug.editor_previous_first_person = debug.first_person;
+            debug.style_editor = true;
+            try {
+                apply(overlay::DebugAction::set_free_camera, true);
+                apply(overlay::DebugAction::set_game_ui_hidden, true);
+            } catch (...) {
+                (void)restore();
+                throw;
+            }
+            editor_screen::opened();
+            debug.status = "Style editor open.";
+        } else {
+            debug.status = restore() ? "Style editor closed. Previous camera and UI settings restored."
+                                     : "Style editor closed. Some camera or UI settings were not restored.";
+        }
+        return;
+    }
+    source_require((!debug.park_editor && !debug.style_editor) || debug.editor_transition ||
+        request.action == overlay::DebugAction::restore_debug ||
         request.action == overlay::DebugAction::set_camera_speed || request.action == overlay::DebugAction::set_forward_velocity_speed ||
         request.action == overlay::DebugAction::set_up_velocity_speed ||
         request.action == overlay::DebugAction::set_offboard_up_velocity_speed ||
@@ -404,7 +476,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         request.action == overlay::DebugAction::set_free_camera_fov ||
         (request.action >= overlay::DebugAction::set_first_person_spring && request.action <= overlay::DebugAction::reset_first_person_arm) ||
         request.action == overlay::DebugAction::set_no_bail,
-        "Close Park Editor before changing camera or HUD modes.");
+        debug.style_editor ? "Close the style editor before changing camera or HUD modes."
+                           : "Close Park Editor before changing camera or HUD modes.");
     if (request.action >= overlay::DebugAction::set_first_person_spring &&
         request.action <= overlay::DebugAction::reset_first_person_arm) {
         auto settings = debug.first_person_settings;
@@ -491,6 +564,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         first_person_arm().settings = {};
         first_person_disarm();
         debug.park_editor = false;
+        restore_editor_fov(debug);
+        if (std::exchange(debug.style_editor, false)) editor_screen::closed();
         debug.flight_speed = 15.0f;
         debug.forward_velocity_speed = 20.0f;
         debug.forward_velocity.valid = false;
@@ -686,11 +761,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
             camera.active == camera.identity.camera, "First person could not take the camera.");
         debug.first_person = true;
         debug.first_person_waiting = false;
-        {
-            float saved{};
-            debug.first_person_saved_fov = first_person_read(camera.identity.camera + camera_fov_offset, &saved, 4) &&
-                std::isfinite(saved) && saved > 1.0f && saved < 175.0f ? saved : 0.0f;
-        }
+        debug.first_person_saved_fov = read_camera_fov(camera.identity.camera);
         if (debug.first_person_fov > 0) (void)first_person_write_fov(camera.identity.camera, debug.first_person_fov);
         auto& arm = first_person_arm();
         arm.settings = debug.first_person_settings;
@@ -904,6 +975,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     catch (...) { debug_stop_noclip(debug); debug.status = "Flight stopped after a native error. Disable Freecam if its view is still active."; }
     model.available = can_control || debug_has_lease(debug);
     model.park_editor = debug.park_editor;
+    model.style_editor = debug.style_editor;
     model.settings_owned = debug_has_lease(debug);
     model.status = debug.status;
     model.first_person_arm = debug.first_person_settings;

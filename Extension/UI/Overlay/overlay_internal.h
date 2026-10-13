@@ -280,6 +280,10 @@ void draw_console();
 // Corner notices (overlay_notices.cpp).
 bool notices_pending();
 void draw_notices();
+void draw_cover();
+void draw_banner();
+bool cover_pending();
+bool banner_pending();
 
 // Multiplayer text chat in the bottom-right corner (chat_overlay.cpp).
 // chat_pending also refreshes the feed, so it runs every presented frame.

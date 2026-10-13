@@ -644,7 +644,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // camera), can have replaced the native camera: validate it again.
         if (debug_request || debug.free_camera != r.debug_model.free_camera ||
             debug.first_person != r.debug_model.first_person || debug.noclip != r.debug_model.noclip ||
-            debug.park_editor != r.debug_model.park_editor)
+            debug.park_editor != r.debug_model.park_editor || debug.style_editor != r.debug_model.style_editor)
             frame.camera_issue.reset();
         if (debug_ready && phase_issue && !debug.camera_available) {
             debug.camera_unavailable = phase_issue;

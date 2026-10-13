@@ -5,8 +5,20 @@
 
 namespace dingosdk::overlay::menu {
 // The menu chrome is laid out in pixels; px() applies the user's menu scale to
-// one of those measurements. Only valid while the menu is drawing.
+// one of those measurements. Valid while a MenuLook is alive.
 float px(float value);
+// Pushes the menu's scale, font, sizes and colours while alive. `window_padding` is in menu pixels: the scale applies to it.
+class MenuLook {
+public:
+    MenuLook(SkateMenu& menu, float scale, ImVec2 window_padding);
+    ~MenuLook();
+    MenuLook(const MenuLook&) = delete;
+    MenuLook& operator=(const MenuLook&) = delete;
+
+private:
+    float font_scale_;
+    int colours_{};
+};
 void section(SkateMenu& menu, const char* text);
 void feedback(SkateMenu& menu, const char* text);
 bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& value,

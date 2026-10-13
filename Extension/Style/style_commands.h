@@ -7,7 +7,7 @@
 #include <utility>
 #include <variant>
 
-// The style console commands' argument helpers.
+// The style console commands' argument helpers, shared by the layer's and the editor's commands.
 namespace dingosdk::console {
 inline Argument trick_argument(bool optional = false) {
     auto trick = argument("trick", Type::text, optional);
@@ -25,4 +25,6 @@ inline float number_at(const Values &args, std::size_t i) { return static_cast<f
 inline std::uint8_t trick_at(const Values &args, std::size_t i) {
     return i < args.size() ? style::parse_flip_trick(std::get<std::string>(args[i])).value_or(0) : std::uint8_t{};
 }
+// The style editor's part of the `style status` reply: whether it is open (style_editor_commands.cpp).
+[[nodiscard]] std::string style_editor_status();
 } // namespace dingosdk::console
