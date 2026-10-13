@@ -1,4 +1,5 @@
 #include "runtime_internal.h"
+#include "Extension/Rendering/cull_batch.h"
 #include "Extension/Customization/item_browser.h"
 #include "bootstrap.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -325,6 +326,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         start_frame_timing();
         (void)dingosdk::ui_pointer::install(r.base);
         (void)dingosdk::engine_tweaks::install(r.base);
+        (void)dingosdk::cull_batch::install(r.base);
         (void)dingosdk::replay_guard::install(r.base);
         (void)dingosdk::mesh_unload_guard::install(r.base);
         (void)dingosdk::load_error_guard::install(r.base);
