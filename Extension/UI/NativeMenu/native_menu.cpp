@@ -718,6 +718,9 @@ overlay::HubPage native_menu_page() noexcept {
     if (!seen || GetTickCount64() - seen > 200) return {};
     return {true, page_shown.load(std::memory_order_relaxed)};
 }
+bool native_menu_open() noexcept {
+    return game_in_menu.load(std::memory_order_relaxed);
+}
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     run_pending_ui_dump(base);
     // The menu sounds the overlay's pages asked for (ui_sound.h).

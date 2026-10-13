@@ -1466,6 +1466,9 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
     const bool time_ready = native_tools::time_of_day_available(m, cb);
     const unsigned current_time = native_tools::time_of_day(m);
+    const auto time_count = static_cast<unsigned>(native_tools::time_of_day_labels.size());
+    const unsigned previous_time = (current_time + time_count - 1) % time_count;
+    const unsigned next_time = (current_time + 1) % time_count;
     const float half = (width - gap) * .5f;
     const auto set_time = [&](int direction) {
         const auto count = static_cast<int>(native_tools::time_of_day_labels.size());
@@ -1480,9 +1483,9 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
     };
     const float time_top = a.y + tile * 2 + gap * 2;
     card(hash("hub-time-back"), ImVec2(a.x, time_top), ImVec2(a.x + half, time_top + small_height), "TIME BACK",
-         native_tools::time_of_day_labels[current_time], HubArt::time_back, time_ready, [&] { set_time(-1); });
+         native_tools::time_of_day_labels[previous_time], HubArt::time_back, time_ready, [&] { set_time(-1); });
     card(hash("hub-time-forward"), ImVec2(a.x + half + gap, time_top), ImVec2(a.x + width, time_top + small_height), "TIME FORWARD",
-         native_tools::time_of_day_labels[current_time], HubArt::time_forward, time_ready, [&] { set_time(1); });
+         native_tools::time_of_day_labels[next_time], HubArt::time_forward, time_ready, [&] { set_time(1); });
 
     card(hash("hub-trainer"), ImVec2(right, a.y), ImVec2(z.x, a.y + tile), "TRAINER", "OPEN TRAINER", HubArt::trainer, cb.queue_console_command, [&] {
         std::array<char, 512> result{};
@@ -1490,9 +1493,16 @@ void landing_page(Ui &ui, ImVec2 a, ImVec2 z) {
     });
     static unsigned news_index{};
     static constexpr std::array<const char *, 3> news_items{
-        "RESKATE UI 2.0  /  COMMUNITY PROJECT", "10K MEMBERS ON DISCORD!", "WELCOME TO RESKATE"};
+        "RESKATE UI 2.0  /  COMMUNITY PROJECT", "75K MEMBERS ON DISCORD!", "WELCOME TO RESKATE"};
+    static constexpr std::array<const char *, 3> news_stories{
+        "ReSkate UI 2.0 is rebuilding the Hub, camera tools and classic scoring HUDs with community feedback.",
+        "The ReSkate Discord community has passed 75,000 members. Thanks for skating with us.",
+        "Welcome to ReSkate. Browse maps, tune your session and keep up with community news from the Hub."};
     card(hash("hub-news"), ImVec2(right, a.y + tile + gap), ImVec2(z.x, a.y + tile * 2 + gap), "NEWS",
-         news_items[news_index % news_items.size()], HubArt::news, true, [&] { news_index = (news_index + 1) % news_items.size(); });
+         news_items[news_index % news_items.size()], HubArt::news, true, [&] {
+             say(h, news_stories[news_index % news_stories.size()]);
+             news_index = (news_index + 1) % news_items.size();
+         });
     for (unsigned i = 0; i < news_items.size(); ++i)
         ui.draw->AddCircleFilled(ImVec2(right + 32 * u + i * 25 * u, a.y + tile * 2 + gap - 24 * u), 7 * u,
                                  i == news_index ? theme::paper : IM_COL32(230, 230, 230, 90), 16);

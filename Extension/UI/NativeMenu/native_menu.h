@@ -21,4 +21,8 @@ void set_native_menu_callbacks(const overlay::CallbacksV3& callbacks);
 // screen right now, and which. Any thread: the overlay draws the page from it
 // (overlay::HubPageFeed).
 overlay::HubPage native_menu_page() noexcept;
+// True while any native pause/front-end menu is active. This is intentionally
+// broader than native_menu_page(): gameplay-only overlays must disappear even
+// when the player is on an EA-owned page.
+bool native_menu_open() noexcept;
 } // namespace dingosdk::multiplayer

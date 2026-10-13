@@ -146,7 +146,9 @@ void rename_hub_page(const Context &c) {
     for (const auto &root : c.roots({page.hash})) {
         try {
             const auto title = c.path(root.model, {0x3781b603, text_field});
-            if (c.text(title, 32) == "HUB") c.text(title, "RESKATE HUB");
+            const auto current = c.text(title, 64);
+            if (current == "HUB" || current == "Hub" || current == "ID_MENU_HUB")
+                c.text(title, "RESKATE HUB");
         } catch (const std::exception &) {
             // Other native pages can use a different title model.
         }

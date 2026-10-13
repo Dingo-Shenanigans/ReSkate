@@ -7,6 +7,7 @@
 #include "Extension/HallOfMeat/hall_of_meat_hud.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 
 #include <atomic>
 #include <charconv>
@@ -95,6 +96,14 @@ void on_client_tick() noexcept {
     const auto selected = s.style.load(std::memory_order_acquire);
     const bool custom = selected != Style::game;
     hall_of_meat::hook_score_hud(custom);
+    if (multiplayer::native_menu_open()) {
+        std::lock_guard guard(s.mutex);
+        s.view = {};
+        s.view.style = static_cast<overlay::ScoringHudStyle>(selected);
+        s.visible_until = {};
+        hall_of_meat::replace_score_hud(false);
+        return;
+    }
     try {
         const auto ui = data::read<data::Address>(s.base + addr::engine::ui_manager);
         const auto manager = ui ? data::read<data::Address>(ui + 0x140) : 0;

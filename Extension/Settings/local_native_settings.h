@@ -44,6 +44,12 @@ template<class T> bool restore_native_scalar(std::uintptr_t group, const char* k
 bool restore_native_setting(std::uintptr_t group, const char* key, std::uintptr_t type,
     const dingosdk::Json& saved);
 
+// Apply a persisted cloud-profile option to the live settings group now. The
+// normal get hook remains the fallback for settings changed before game state
+// is ready.
+bool apply_native_profile_option(unsigned location, std::string_view key,
+    const dingosdk::Json& value) noexcept;
+
 const NativeSettingValue* native_setting_get(std::uintptr_t group, const char* key);
 
 bool native_setting_set(std::uintptr_t group, const char* key, std::uintptr_t type, const NativeSettingValue* value);

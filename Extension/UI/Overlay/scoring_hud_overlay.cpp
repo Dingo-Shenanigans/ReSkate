@@ -124,32 +124,32 @@ void draw_skate2(ImDrawList* draw, float scale, ImVec2 origin, ImFont* heading, 
 }
 
 void draw_skate3(ImDrawList* draw, float scale, ImVec2 origin, ImFont* heading, ImFont* body) {
-    const float width = 338 * scale;
+    const float width = 404 * scale;
     const float rows = static_cast<float>(std::min<std::size_t>(frame.tricks.size(), 6));
     const float list_h = std::max(34 * scale, rows * 25 * scale + 12 * scale);
-    const ImVec2 plate_min(origin.x + 57 * scale, origin.y - 7 * scale);
+    const ImVec2 plate_min(origin.x + 82 * scale, origin.y - 7 * scale);
     const ImVec2 plate_max(origin.x + width + 24 * scale, origin.y + list_h);
     draw->AddRectFilled(plate_min, plate_max, IM_COL32(6, 13, 20, 150), 5 * scale);
     draw->AddRectFilled(ImVec2(plate_min.x, plate_max.y - 3 * scale), plate_max, IM_COL32(56, 173, 245, 185), 3 * scale);
     draw->AddRect(plate_min, plate_max, IM_COL32(178, 220, 246, 50), 5 * scale, 0, scale);
-    trick_rows(draw, body, scale, ImVec2(origin.x + 70 * scale, origin.y), width - 62 * scale, IM_COL32(247, 249, 250, 255), IM_COL32(190, 218, 236, 255), 20, 25);
+    trick_rows(draw, body, scale, ImVec2(origin.x + 96 * scale, origin.y), width - 82 * scale, IM_COL32(247, 249, 250, 255), IM_COL32(190, 218, 236, 255), 22, 27);
 
     const float score_y = origin.y + list_h + 8 * scale;
-    const ImVec2 center(origin.x + 30 * scale, score_y + 29 * scale);
+    const ImVec2 center(origin.x + 40 * scale, score_y + 38 * scale);
     const int mult = multiplier_value(frame.multiplier);
-    glow_circle(draw, center, 27 * scale, IM_COL32(25, 139, 232, 255));
-    draw->AddCircleFilled(center, 30 * scale, IM_COL32(9, 20, 32, 220), 64);
-    draw->AddCircle(center, 27 * scale, IM_COL32(94, 184, 244, 255), 64, 4 * scale);
-    draw->AddCircle(center, 21 * scale, IM_COL32(11, 42, 70, 255), 64, 2 * scale);
-    draw->PathArcTo(center, 24 * scale, -1.45f, 3.75f, 42);
-    draw->PathStroke(IM_COL32(163, 227, 255, 245), 0, 3 * scale);
-    centered_text(draw, heading, 22 * scale, center, IM_COL32_WHITE, "x" + std::to_string(mult));
-    const ImVec2 score_min(origin.x + 65 * scale, score_y + 3 * scale);
-    const ImVec2 score_max(origin.x + width + 24 * scale, score_y + 56 * scale);
+    glow_circle(draw, center, 36 * scale, IM_COL32(25, 139, 232, 255));
+    draw->AddCircleFilled(center, 40 * scale, IM_COL32(9, 20, 32, 226), 64);
+    draw->AddCircle(center, 36 * scale, IM_COL32(94, 184, 244, 255), 64, 5 * scale);
+    draw->AddCircle(center, 29 * scale, IM_COL32(11, 42, 70, 255), 64, 2 * scale);
+    draw->PathArcTo(center, 33 * scale, -1.45f, 3.75f, 42);
+    draw->PathStroke(IM_COL32(163, 227, 255, 245), 0, 4 * scale);
+    centered_text(draw, heading, 27 * scale, center, IM_COL32_WHITE, "x" + std::to_string(mult));
+    const ImVec2 score_min(origin.x + 91 * scale, score_y + 3 * scale);
+    const ImVec2 score_max(origin.x + width + 24 * scale, score_y + 72 * scale);
     draw->AddRectFilled(score_min, score_max, IM_COL32(5, 13, 21, 178), 5 * scale);
     draw->AddRectFilled(ImVec2(score_min.x, score_max.y - 4 * scale), score_max, IM_COL32(33, 137, 218, 230), 4 * scale);
     const auto score = frame.line_score.empty() ? "0" : frame.line_score;
-    shadow_text(draw, heading, 37 * scale, ImVec2(score_min.x + 13 * scale, score_min.y + 4 * scale), IM_COL32_WHITE, score);
+    shadow_text(draw, heading, 45 * scale, ImVec2(score_min.x + 16 * scale, score_min.y + 7 * scale), IM_COL32_WHITE, score);
 }
 }
 

@@ -1,5 +1,6 @@
 #include "Engine/Core/Log/logging.h"
 #include "runtime_internal.h"
+#include "Extension/Settings/local_native_settings.h"
 
 namespace dingosdk {
 using namespace profile_runtime;
@@ -185,11 +186,13 @@ bool set_local_camera_mod_control(std::string_view key, float value) noexcept {
     try {
         auto& s = local_runtime();
         if (!s.active || !s.store) return false;
-        s.store->set_native_profile_option(2, control->native,
-            control->boolean ? Json(value != 0) : Json(static_cast<double>(value)));
+        const Json wanted = control->boolean ? Json(value != 0) : Json(static_cast<double>(value));
+        s.store->set_native_profile_option(2, control->native, wanted);
+        const bool applied = apply_native_profile_option(2, control->native, wanted);
         dingosdk::logging::event(dingosdk::logging::Channel::profile,
-            Json{{"event", "camera_mod_setting_saved"}, {"key", std::string(control->native)}, {"value", value}}.dump().c_str());
-        return true;
+            Json{{"event", "camera_mod_setting_saved"}, {"key", std::string(control->native)},
+                 {"value", value}, {"live_applied", applied}}.dump().c_str());
+        return applied;
     } catch (...) { return false; }
 }
 

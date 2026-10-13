@@ -156,6 +156,27 @@ bool restore_native_setting(std::uintptr_t group, const char* key, std::uintptr_
     return false;
 }
 
+bool apply_native_profile_option(unsigned location, std::string_view key,
+    const dingosdk::Json& value) noexcept {
+    try {
+        auto& runtime = local_runtime();
+        if (!runtime.active.load(std::memory_order_acquire) || !runtime.base ||
+            location > 2 || key.empty() || !native_settings().get || !native_settings().set) return false;
+        std::uintptr_t manager{}, begin{}, end{}, group{};
+        if (!memory::peek(runtime.base + addr::local_native_settings::profile_settings_manager, manager) || !manager ||
+            !memory::peek(manager, begin) || !memory::peek(manager + 8, end) || !begin ||
+            end < begin || end - begin != 3 * sizeof(std::uintptr_t) ||
+            !memory::peek(begin + location * sizeof(std::uintptr_t), group) || !group) return false;
+        const std::string name(key);
+        const auto* current = native_settings().get(group, name.c_str());
+        NativeSettingValue native{};
+        if (!current || !memory::peek(reinterpret_cast<std::uintptr_t>(current), native)) return false;
+        return restore_native_setting(group, name.c_str(), native.type, value);
+    } catch (...) {
+        return false;
+    }
+}
+
 const NativeSettingValue* native_setting_get(std::uintptr_t group, const char* key) {
     auto* result = native_settings().get(group, key);
     PreserveError preserve;
