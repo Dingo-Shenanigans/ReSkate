@@ -10,6 +10,7 @@
 #include "Engine/Game/Build/supported_build.h"
 
 #include <Windows.h>
+#include <bcrypt.h>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -45,12 +46,31 @@ struct LastBinding {
     std::uint32_t member_count{};
 };
 std::array<LastBinding, 256> last_binding_by_channel{}; // Protected by the binding-cache lock.
+// Each music channel gets one opening selection per launch. Keep this separate
+// from binding identity so playlist switches and map loads do not roll again.
+std::array<bool, 256> startup_selection_seen{}; // Protected by the binding-cache lock.
 SRWLOCK binding_cache_lock = SRWLOCK_INIT;
 std::atomic<std::uint32_t> logged_policy_events{};
 
 void log_policy_event_once(std::uint32_t bit, const char* json) noexcept {
     if (!(logged_policy_events.fetch_or(bit, std::memory_order_relaxed) & bit))
         dingosdk::logging::event(dingosdk::logging::Channel::music, json);
+}
+
+std::uint32_t random_start_position(std::uint32_t count) noexcept {
+    if (count < 2) return 0;
+    // Reject the incomplete modulo bucket to give every member equal odds.
+    const auto threshold = (std::uint32_t{0} - count) % count;
+    std::uint32_t sample{};
+    do {
+        if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&sample),
+                static_cast<ULONG>(sizeof(sample)), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+            log_policy_event_once(1u << 14,
+                "{\"event\":\"music_startup_random_unavailable\"}");
+            return 0;
+        }
+    } while (sample < threshold);
+    return sample % count;
 }
 
 bool read_at(std::uintptr_t address, auto& value) noexcept {
@@ -368,8 +388,24 @@ void apply_policy(std::uintptr_t queue, std::uintptr_t playlist_asset) noexcept 
     }
 
     const auto shuffle = shuffle_enabled.load(std::memory_order_acquire);
+    std::uint32_t opening_position{};
+    if (!startup_selection_seen[channel] && new_group && !shuffle && !pending && !has_current_guid) {
+        // External stations use synthetic rows plus one native carrier song.
+        // Keep that carrier first, as the native binding hook does.
+        bool external_station{};
+        if (member_total <= 128 && spotify_station::has_stations()) {
+            std::array<unsigned char, 128 * 16> station_members{};
+            std::array<unsigned char, 16> carrier{};
+            bool add{};
+            external_station = !dingosdk::memory::peek_bytes(members, station_members.data(),
+                std::size_t{member_total} * 16) ||
+                spotify_station::station_of(station_members.data(), member_total, carrier.data(), add) >= 0;
+        }
+        if (!external_station) opening_position = random_start_position(member_total);
+    }
     auto plan = music_playback::plan_cursor(shuffle,
-        current_mode, current_cursor, new_group, pending, current_found, current_position, member_total);
+        current_mode, current_cursor, new_group, pending, current_found, current_position, member_total,
+        opening_position);
     if (dynamic_favorites && !shuffle && !plan.set_cursor && current_mode == music_playback::native_sequential_mode &&
         added_favorites && current_cursor != music_playback::cursor_sync_sentinel && current_cursor > 0 &&
         current_cursor < member_total) {
@@ -403,6 +439,7 @@ void apply_policy(std::uintptr_t queue, std::uintptr_t playlist_asset) noexcept 
         }
     }
     if (plan.set_cursor) *reinterpret_cast<volatile std::uint32_t*>(node + 0x30) = plan.cursor;
+    startup_selection_seen[channel] = true;
     last_binding_by_channel[channel] = {manager, queue, node, channel_playlist, member_total};
 }
 }
@@ -419,6 +456,7 @@ bool initialize_music_playback(std::uintptr_t base, bool shuffle) noexcept {
     set_playback_mode = reinterpret_cast<SetPlaybackMode>(base + local_music::playback_mode_setter_contract.rva);
     shuffle_enabled.store(shuffle, std::memory_order_release);
     last_binding_by_channel = {};
+    startup_selection_seen = {};
     for (auto& binding : last_logged_channel_bindings)
         binding.store(std::numeric_limits<std::uint64_t>::max(), std::memory_order_relaxed);
     for (auto& known : music_channels) known.store(false, std::memory_order_relaxed);

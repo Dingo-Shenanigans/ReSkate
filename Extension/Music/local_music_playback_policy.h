@@ -47,7 +47,8 @@ constexpr CursorPlan plan_cursor(bool shuffle, std::uint32_t current_mode,
                                  std::uint32_t current_cursor, bool new_group,
                                  bool explicit_request_pending, bool current_track_found,
                                  std::uint32_t current_order_position,
-                                 std::uint32_t order_count) noexcept {
+                                 std::uint32_t order_count,
+                                 std::uint32_t new_group_position = 0) noexcept {
     const auto desired_mode = shuffle ? native_default_mode : native_sequential_mode;
     CursorPlan plan{desired_mode, current_mode != desired_mode, false, current_cursor};
     if (shuffle) return plan;
@@ -57,7 +58,7 @@ constexpr CursorPlan plan_cursor(bool shuffle, std::uint32_t current_mode,
         plan.cursor = cursor_sync_sentinel;
     } else if (new_group) {
         plan.set_cursor = true;
-        plan.cursor = 0;
+        plan.cursor = new_group_position < order_count ? new_group_position : 0;
     } else if (plan.set_mode) {
         plan.set_cursor = true;
         plan.cursor = current_track_found && order_count

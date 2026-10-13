@@ -43,6 +43,38 @@ int main() {
           "sequential is selected when shuffle is off");
     check(plan.set_cursor && plan.cursor == 0, "a new sequential playlist starts at authored entry zero");
 
+    for (std::uint32_t opening = 0; opening < 6; ++opening) {
+        plan = policy::plan_cursor(false, policy::native_default_mode,
+            policy::cursor_sync_sentinel, true, false, false, 0, 6, opening);
+        check(plan.set_mode && plan.set_cursor && plan.cursor == opening,
+              "every member of the selected playlist can be the opening track");
+    }
+
+    plan = policy::plan_cursor(false, policy::native_sequential_mode, 4,
+        false, false, true, 3, 6, 1);
+    check(!plan.set_cursor && plan.cursor == 4,
+          "the opening position does not reseed ongoing sequential playback");
+
+    plan = policy::plan_cursor(false, policy::native_default_mode,
+        policy::cursor_sync_sentinel, true, true, false, 0, 6, 4);
+    check(plan.cursor == policy::cursor_sync_sentinel,
+          "a manual opening song request wins over the random starting position");
+
+    plan = policy::plan_cursor(true, policy::native_sequential_mode, 0,
+        true, false, false, 0, 6, 4);
+    check(plan.mode == policy::native_default_mode && !plan.set_cursor,
+          "shuffle keeps native random selection instead of applying an opening cursor");
+
+    plan = policy::plan_cursor(false, policy::native_default_mode, 0,
+        true, false, false, 0, 1, 0);
+    check(plan.set_cursor && plan.cursor == 0, "a one-song playlist starts safely");
+    plan = policy::plan_cursor(false, policy::native_default_mode, 0,
+        true, false, false, 0, 0, 4);
+    check(plan.cursor == 0, "an empty playlist cannot receive an out-of-range opening cursor");
+    plan = policy::plan_cursor(false, policy::native_default_mode, 0,
+        true, false, false, 0, 6, 6);
+    check(plan.cursor == 0, "an invalid opening position falls back to the first member");
+
     plan = policy::plan_cursor(true, policy::native_sequential_mode, 4,
         false, false, true, 3, 6);
     check(plan.mode == policy::native_default_mode && plan.set_mode && !plan.set_cursor,
