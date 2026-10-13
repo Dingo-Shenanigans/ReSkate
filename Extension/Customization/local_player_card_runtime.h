@@ -45,6 +45,11 @@ bool player_card_owned(const profile::CosmeticLoadout& value);
 void apply_player_card(std::uintptr_t manager, const profile::CosmeticLoadout& value);
 
 std::uint64_t local_player_info_hook();
+// Whose info the local-player lookup gives instead, for a graph that asks for "the local
+// player" and means someone else (the placed-object prompt: Extension/Objects/object_prompt.h).
+// 0 from it is the local player as usual. Set once by the multiplayer HUD; it is called on
+// every lookup, so it must answer 0 at once when no such graph is running.
+inline std::atomic<std::uint64_t (*)() noexcept> player_info_override{};
 
 bool publish_player_card(const profile::CosmeticLoadout& value);
 

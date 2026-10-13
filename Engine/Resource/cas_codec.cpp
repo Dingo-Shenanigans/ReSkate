@@ -63,7 +63,10 @@ HMODULE oodle(const std::filesystem::path& gameRoot) {
         if (error || !entry.is_regular_file(error)) { error.clear(); continue; }
         auto name = entry.path().filename().wstring();
         std::ranges::transform(name, name.begin(), ::towlower);
-        if (name.starts_with(L"oo2core_") && name.ends_with(L"_win64.dll")) matches.push_back(entry.path());
+        // Under Proton, a Unix filename containing '\\' can leave extra directories
+        // in MSVC's iterator path. Keep the candidate anchored to the original root.
+        if (name.starts_with(L"oo2core_") && name.ends_with(L"_win64.dll"))
+            matches.push_back(gameRoot / entry.path().filename());
     }
     if (matches.empty()) throw std::runtime_error("The game's Oodle codec was not found");
     std::ranges::sort(matches);

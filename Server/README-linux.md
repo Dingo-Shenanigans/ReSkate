@@ -96,7 +96,8 @@ Expected: 10 passed (`multiplayer_parties`, `server_activity`, `server_speed_che
 Without `libsteam_api.so` the server exits 1 with:
 `Cannot load .../libsteam_api.so. Put libsteam_api.so (Steamworks SDK) next to the server.`
 
-Full command list: `Server/README.txt` (same on Linux; binary name differs).
+Full command list: `Server/README.txt` (same on Linux; binary name differs). Roles and what each
+permission and command gives: `Server/README-roles.txt`.
 
 ## systemd
 

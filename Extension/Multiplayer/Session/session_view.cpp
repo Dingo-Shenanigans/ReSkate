@@ -20,6 +20,7 @@ namespace dingosdk::multiplayer::session_detail {
 void load_host_preferences(Session &s) {
     auto &p = s.host_preferences;
     if (p.loaded) return;
+    if (!profile_runtime::local_profile_store_ready()) return;
     p.loaded = true;
     const auto number = [](const char *key) -> std::optional<std::int64_t> {
         const auto value = profile_runtime::local_value(key);
@@ -151,8 +152,8 @@ void publish(Session &s, const NativeFrame *local) {
     view.distances = s.distances;
     view.object_placement = s.object_placement;
     view.object_limit = s.object_limit;
-    view.object_scaling = s.object_scaling || s.server_admin || s.mode != Mode::join;
-    view.object_limit_own = s.mode == Mode::host || s.server_admin ? 0 : s.object_limit; // as apply_object_limit gives this game
+    view.object_scaling = s.object_scaling || (s.role_permissions & role_objects) || s.mode != Mode::join;
+    view.object_limit_own = s.mode == Mode::host || (s.role_permissions & role_objects) ? 0 : s.object_limit; // as apply_object_limit gives this game
     view.objects_placed = s.mode == Mode::off ? 0 : static_cast<unsigned>(s.local_objects.objects().size());
     view.guest_noclip = s.guest_noclip;
     view.guest_no_bail = s.guest_no_bail;
@@ -176,7 +177,7 @@ void publish(Session &s, const NativeFrame *local) {
     // A dedicated server's roster capacity counts the server itself.
     view.capacity = static_cast<int>(dedicated_host(s) ? s.capacity - 1 : s.capacity);
     load_host_preferences(s);
-    view.saved_host = {true, s.host_preferences.public_lobby, s.host_preferences.password_required,
+    view.saved_host = {s.host_preferences.loaded, s.host_preferences.public_lobby, s.host_preferences.password_required,
                        static_cast<int>(s.host_preferences.capacity), s.host_preferences.tps, s.host_preferences.lobby_name};
     view.nametags = s.nametags;
     if (const auto social = steam_social_snapshot())
@@ -216,6 +217,13 @@ void publish(Session &s, const NativeFrame *local) {
                      : dedicated_host(s) ? s.roster_voice_range : s.host_preferences.voice_range;
     view.dedicated = dedicated_host(s);
     view.server_admin = view.dedicated && s.server_admin;
+    if (view.dedicated) {
+        view.server_role = s.role;
+        view.server_role_tag = s.own_tag;
+        view.server_all_commands = s.role_all_commands;
+        view.server_commands = s.role_commands;
+        view.server_permissions = s.role_permissions;
+    }
     view.party = s.local_party;
     view.party_leader = s.local_party_leader;
     view.party_open = s.local_party_open;
@@ -225,10 +233,12 @@ void publish(Session &s, const NativeFrame *local) {
         view.party_invites.push_back({invite.from, from && !from->member.name.empty() ? from->member.name
                                                                                      : s.transport.name(invite.from)});
     }
-    if (view.server_admin) {
+    if (server_can(view, "ban") || server_can(view, "unban") || server_can(view, "bans")) {
         view.bans = s.server_bans;
         view.server_bans = true;
         view.server_ban_total = s.server_ban_total;
+    }
+    if (server_can(view, "map")) {
         view.server_maps = s.server_maps;
         view.server_map_pool = s.server_map_pool;
         view.server_map_rotation = s.server_map_rotation;
@@ -280,6 +290,7 @@ void publish(Session &s, const NativeFrame *local) {
     view.lobby_searched = lobby.searched;
     view.lobby_status = lobby.hosting;
     view.browser_status = lobby.browser;
+    view.browse_ready_us = s.browsed ? s.browsed + multiplayer_browse_interval_us : 0;
     // Dedicated servers first: they are always up and never a stranger's own session.
     view.lobbies = s.servers.rows();
     // Looked up as the list is shown: the team's list can arrive, or change, after a server was found.
@@ -328,6 +339,7 @@ void publish(Session &s, const NativeFrame *local) {
         view.roster.back().party = p.member.party;
         view.roster.back().party_leader = p.member.party_leader;
         view.roster.back().party_member = party_member(s, p.member.id);
+        view.roster.back().objects_solid = objects_solid(s, p.member.id);
         if (!p.rate_at) {
             p.rate_at = now;
             p.native_rate_count = native_count;
@@ -488,9 +500,11 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
         }
         if (!s.server_custom_votes.empty()) list.push_back({"/vote list", "/vote list", "This server's own votes, and what each does"});
         const auto polls = static_cast<ServerPolls>(s.server_polls);
-        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && s.server_admin))
+        if (polls == ServerPolls::everyone || (polls == ServerPolls::admins && (s.role_permissions & role_polls)))
             list.push_back({"/poll", "/poll <question> | <answer> | <answer>...", "Ask everyone a question, with up to six answers"});
         if (polls != ServerPolls::off) list.push_back({"/1", "/1, /2...", "Answer the running poll"});
+        // The server commands their role gives them (the rest it would refuse).
+        const auto before_commands = list.size();
         if (s.server_admin) {
             list.push_back({"/msg", "/msg <player> <message>", "Admin: message a player privately", "player"});
             list.push_back({"/msg-party", "/msg-party <player> <message>", "Admin: message everyone in a player's party", "player"});
@@ -500,6 +514,8 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/map", "/map <map>", "Admin: change the server's map", "map"});
             list.push_back({"/tpall", "/tpall [player]", "Admin: teleport everyone to you (or to a player)", "player"});
             list.push_back({"/tphere", "/tphere <player>", "Admin: teleport a player to you", "player"});
+            list.push_back({"/teleport", "/teleport <player|SteamID64,SteamID64,...> <player|x y z>",
+                            "Admin: teleport players to a player or a place (y is up)", "player"});
             list.push_back({"/tod", "/tod <time>", "Admin: set the time of day", "time"});
             list.push_back({"/votes", "/votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>]", "Admin: the server's vote settings"});
             list.push_back({"/announce", "/announce <text>", "Admin: announce something to everyone, on a card on their screen"});
@@ -511,6 +527,26 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             list.push_back({"/vote-cancel", "/vote-cancel", "Admin: stop the running vote"});
             list.push_back({"/map-pool", "/map-pool [add|remove <map>|clear]", "Admin: the maps players vote between and the rotation uses"});
             list.push_back({"/rotation", "/rotation [<minutes>|off]", "Admin: change the map on a timer, through the map pool"});
+            list.push_back({"/role", "/role <player> <role>|none", "Admin: give a player a role, or take theirs away", "player"});
+            list.push_back({"/roles", "/roles", "Admin: the server's roles and who has them"});
+            // Park mods (Server/server_parks.cpp): their names are the server's own, not in the roster.
+            list.push_back({"/park-mod list", "/park-mod list", "Admin: the server's park mods, and which are spawned"});
+            list.push_back({"/park-mod add", "/park-mod add <name> [<name>...] [minutes]",
+                            "Admin: spawn park mods on this map, for 1-1440 minutes or until removed"});
+            list.push_back({"/park-mod remove", "/park-mod remove <name> [<name>...]", "Admin: remove spawned park mods"});
+            list.push_back({"/park-mod clear", "/park-mod clear", "Admin: remove every spawned park mod"});
+            list.push_back({"/park-mod reload", "/park-mod reload <name> [<name>...]",
+                            "Admin: read a spawned park mod's file again and update it in place"});
+            list.push_back({"/park-mod config add", "/park-mod config add <name> | <mod folder> | <map> [| <key>]",
+                            "Admin: set up a park mod from the server's Mods folder, without a restart"});
+            list.push_back({"/park-mod config remove", "/park-mod config remove <name>", "Admin: remove a park mod from the server's setup"});
+            list.erase(std::remove_if(list.begin() + static_cast<std::ptrdiff_t>(before_commands), list.end(), [&](const auto &entry) {
+                // "/poll end" is the polls permission's; the others are named for their command, the
+                // first word ("/park-mod add" is park-mod's).
+                const std::string_view shown = entry.name;
+                if (shown == "/poll end") return !(s.role_permissions & role_polls);
+                return !role_allows(s.role_all_commands, s.role_commands, shown.substr(1, shown.find(' ') - 1));
+            }), list.end());
         }
     }
     return list;
@@ -545,6 +581,9 @@ void publish_chat(Session &s) {
     signature.add(static_cast<std::uint64_t>(dedicated));
     signature.add(static_cast<std::uint64_t>(s.server_votes));
     signature.add(static_cast<std::uint64_t>(s.server_admin));
+    signature.add(static_cast<std::uint64_t>(s.role_all_commands) | static_cast<std::uint64_t>(s.role_permissions) << 1);
+    for (const auto &command : s.role_commands) signature.add(std::hash<std::string>{}(command));
+    signature.add(std::hash<std::string>{}(s.role + '|' + s.own_tag));
     signature.add(static_cast<std::uint64_t>(s.chat_visible));
     signature.add(static_cast<std::uint64_t>(s.chat_filter));
     signature.add(static_cast<std::uint64_t>(s.game_menu));
@@ -598,6 +637,7 @@ void publish_chat(Session &s) {
         vote.mine = s.vote_mine;
         vote.may_vote = s.vote.target != s.transport.status().local_id;
         vote.poll = s.vote.kind == server_vote_poll;
+        vote.next_map = vote.poll && s.vote.target == next_map_vote;
         for (const auto &answer : s.vote.answers) vote.answers.push_back(clean_chat_text(answer));
         vote.counts.assign(s.vote.counts.begin(), s.vote.counts.end());
         const auto binds = local_profile_controller_bindings();
@@ -628,7 +668,7 @@ std::pair<std::uint32_t, std::string> mark_role(IdentityList list) {
     case IdentityList::developer: return {nametag_developer, "Dev"};
     case IdentityList::content_creator: return {nametag_creator, "Content Creator"};
     case IdentityList::centrix: return {nametag_centrix, "Centrix"};
-    case IdentityList::staff: return {nametag_staff, "Staff"};
+    case IdentityList::staff: return {nametag_staff, "ReSkate Admin"};
     default: return {nametag_homie, "Homie"};
     }
 }
@@ -650,7 +690,11 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     // have turned their tag off (the Special page), which their appearance tells everyone.
     if (marks && vouched && (local ? own_tag_shown() : shows_tag(*peer)))
         if (const auto mark = identity_mark(sender)) return mark_role(*mark);
-    if (dedicated && (local ? s.server_admin : peer && peer->member.admin)) return {nametag_admin, "Admin"};
+    // On a dedicated server: the tag the player's role there gives them, in its colour.
+    if (dedicated) {
+        const auto &worn = local ? s.own_tag : peer ? peer->member.tag : std::string{};
+        if (!worn.empty()) return {(local ? s.own_tag_color : peer->member.tag_color) | 0xff000000U, worn};
+    }
     if (!dedicated && (local ? s.mode == Mode::host : sender == s.host_id)) return {nametag_host, "Host"};
     if (!local && vouched) {
         refresh_friends(s);

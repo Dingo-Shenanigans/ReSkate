@@ -452,6 +452,12 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       "When the launcher or Skate crashes, upload a crash dump and that session's log so the ReSkate "
                       "developers can fix it. The launcher picks a change up when it next starts.",
                       settings.crash_reports);
+        setting_check("Send performance timings",
+                      "Send how long downloads, mod installs, the mod merge, level loads and joining a "
+                      "session took, and each level's average frame rate, so slow spots can be found and fixed. Nothing "
+                      "about your account is included. Needs crash reports on; the launcher picks a change up when it "
+                      "next starts.",
+                      settings.performance_timings);
         break;
     }
     ImGui::EndChild();

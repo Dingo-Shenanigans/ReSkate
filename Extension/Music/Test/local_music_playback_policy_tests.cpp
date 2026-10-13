@@ -12,6 +12,20 @@ int main() {
     check(policy::cursor_sync_sentinel == 0x7fffffffu,
           "native cursor synchronization sentinel is INT_MAX, distinct from queue -1");
 
+    check(policy::resolve_playlist_binding_id(0, 1, true) == 1,
+          "a zero-ID dynamic Favorites binding resolves to its live native node");
+    check(policy::resolve_playlist_binding_id(0, 1, false) == 0,
+          "a zero-ID binding stays untouched when the Favorites node is unavailable");
+    check(policy::resolve_playlist_binding_id(18, 1, true) == 18,
+          "ordinary playlist bindings are not redirected to Favorites");
+
+    check(policy::ordered_member_index(0, 4, true) == 3 &&
+          policy::ordered_member_index(3, 4, true) == 0,
+          "Favorites sequential order follows the visible top-to-bottom rows");
+    check(policy::ordered_member_index(0, 4, false) == 0 &&
+          policy::ordered_member_index(4, 4, true) == 4,
+          "native static order stays forward and invalid positions are rejected");
+
     // The queue's global candidate asset pool can contain hundreds of songs while
     // the selected native playlist contains only its authored subset.
     std::array<std::uint8_t, 32> two_track_members{};
@@ -66,6 +80,21 @@ int main() {
     plan = policy::plan_cursor(false, policy::native_default_mode,
         policy::cursor_sync_sentinel, false, false, false, 0, 6);
     check(plan.cursor == 0, "an unresolvable current track safely restarts at the first entry");
+
+    plan = policy::plan_cursor(false, policy::native_default_mode,
+        policy::cursor_sync_sentinel, true, false, false, 0, 3);
+    check(plan.set_mode && plan.set_cursor && plan.cursor == 0,
+          "a dynamic Favorites playlist can start sequentially without a static asset GUID");
+
+    plan = policy::plan_cursor(false, policy::native_sequential_mode, 3,
+        false, false, false, 0, 3);
+    check(plan.set_cursor && plan.cursor == 0,
+          "a favorite removal that leaves the cursor at member count restarts on a valid member");
+
+    plan = policy::plan_cursor(false, policy::native_sequential_mode, 3,
+        false, false, true, 1, 3);
+    check(plan.set_cursor && plan.cursor == 2,
+          "a stale dynamic cursor resumes after the active member when its GUID is available");
 
     plan = policy::plan_cursor(false, policy::native_sequential_mode,
         policy::cursor_sync_sentinel, false, false, false, 0, 6);

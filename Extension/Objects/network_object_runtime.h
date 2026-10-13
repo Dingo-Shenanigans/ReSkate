@@ -16,6 +16,10 @@ bool clear_lobby_guest_objects();
 void set_remote_network_objects(std::string_view map, std::span<const NetworkObjectOwner> owners);
 void clear_remote_network_objects();
 void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch);
+// Other players' objects are ghosts for the local player (the game's own ghosting: the skater
+// passes through them) unless their owner is made solid here. It holds for every object
+// that player has or places, in this world and the next, until it is changed.
+void set_network_object_owner_solid(std::uint64_t owner, bool solid);
 std::string network_object_status();
 // Client update thread, every frame: queues the next of other players' objects
 // while some are still to be created (a no-op otherwise).
@@ -42,4 +46,8 @@ bool network_object_observe(std::uint64_t entity, const profile::PlacedObject &o
 bool network_object_native_ready();
 std::uint32_t network_object_extra_budget() noexcept;
 void move_network_object(std::uint64_t entity, const profile::PlacedObject &object);
+// The player (SteamID64) who placed the object a client entity is part of: 0 when it is one
+// of the local player's own, or no placed object. For the client's scripts (the thread they
+// run on); it never waits.
+std::uint64_t network_object_owner_of(std::uint64_t client_entity) noexcept;
 } // namespace dingosdk::profile_runtime

@@ -6,6 +6,11 @@
 #include "local_music_safety.h"
 #include "local_music_ui.h"
 #include "local_music_favorites.h"
+#include "spotify_cover.h"
+#include <atomic>
+#include "Extension/UI/NativeMenu/native_menu_data.h"
+#include "external_player.h"
+#include "spotify_station.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -412,5 +417,113 @@ void update_music_catalog() {
         ui.functions.complete(&pending->delegate);
         dingosdk::logging::event(dingosdk::logging::Channel::music, dingosdk::Json{{"event", "native_music_ui_complete"}, {"playlists", playlist_count}, {"songs", song_count}, {"source", "runtime_music_assets"}}.dump().c_str());
     } catch (...) { retry = false; dingosdk::logging::event(dingosdk::logging::Channel::music, "{\"event\":\"native_music_ui_publish_failed\"}"); }
+}
+
+namespace {
+std::atomic<bool> catalog_refresh_wanted{};
+std::atomic<std::uint64_t> catalog_refresh_at{};
+}
+void request_music_catalog_refresh() noexcept {
+    catalog_refresh_at.store(GetTickCount64(), std::memory_order_relaxed);
+    catalog_refresh_wanted.store(true, std::memory_order_relaxed);
+}
+void update_music_catalog_refresh() {
+    auto& s = local_runtime(); auto& ui = music_ui_runtime();
+    if (!catalog_refresh_wanted.load(std::memory_order_relaxed) || !s.active.load(std::memory_order_acquire) || ui.updating ||
+        cosmetic_runtime().update_thread != GetCurrentThreadId())
+        return;
+    // (A moment after it was asked: what was added is still being finished, its picture for one.)
+    if (GetTickCount64() - catalog_refresh_at.load(std::memory_order_relaxed) < 1500) return;
+    PreserveError preserve; std::lock_guard lock(s.native_mutex);
+    catalog_refresh_wanted.store(false, std::memory_order_relaxed);
+    // A screen that is still to be filled for the first time is filled as things are now
+    // (update_music_catalog): there is nothing to give it again.
+    if (ui.pending) return;
+    if (!ui.initialized || ui.initialized->thread != GetCurrentThreadId() || !music_ui_current(*ui.initialized)) return; // (the next screen is built with it)
+    const char* outcome = "done";
+    std::size_t playlist_total{}, song_total{};
+    ui.updating = true;
+    struct Scope { bool& flag; ~Scope() { flag = false; } } scope{ui.updating};
+    try {
+        const auto manager = ui.initialized->manager;
+        MusicCatalog catalog;
+        std::string favorite_id;
+        std::uintptr_t arena{}, vtable{};
+        if (!read_music_catalog(catalog) || catalog.playlists.empty()) outcome = "the game's songs could not be read";
+        else if (!identifier(reinterpret_cast<const void*>(manager + 8), favorite_id) || !music_ui_catalog_valid(catalog, favorite_id)) outcome = "the list was not one the music screen takes";
+        else if (!read(s.base + addr::engine::default_arena, arena) || !arena || !read(arena, vtable) || vtable < s.base || vtable >= s.base + supported_build::game_image_size) outcome = "the game's memory was not ready";
+        else {
+            ui.functions.allocator[1] = arena;
+            MusicUiMessages playlists, songs;
+            playlists.items.reserve(catalog.playlists.size()); songs.items.reserve(catalog.songs.size());
+            for (const auto& playlist : catalog.playlists) playlists.items.push_back(music_ui_message(music_ui_wire(playlist.id, {}, {}, &playlist.songs, playlist.name, playlist.artwork), true));
+            for (const auto& song : catalog.songs) songs.items.push_back(music_ui_message(music_ui_wire(song.id, song.artist, song.title, nullptr, {}, song.artwork), false));
+            if (music_ui_current(*ui.initialized)) {
+                // (Songs first: a playlist's songs are looked up among them.)
+                songs.publish(manager, ui.functions.songs);
+                if (music_ui_current(*ui.initialized)) playlists.publish(manager, ui.functions.playlists);
+                playlist_total = catalog.playlists.size();
+                song_total = catalog.songs.size();
+            }
+        }
+    } catch (...) {
+        outcome = "it failed";
+    }
+    dingosdk::logging::log(dingosdk::logging::Level::debug, dingosdk::logging::Channel::music, "Music screen: its playlists and songs were given again ({}): {} playlist(s), {} song(s).", outcome,
+        playlist_total, song_total);
+}
+
+void update_spotify_cover() {
+    auto& s = local_runtime(); auto& ui = music_ui_runtime();
+    // The song and cover last written, so each is written once.
+    static std::string shown;
+    static std::uint64_t generation{}, looked{};
+    // (Why it did nothing, into the log once for each reason, while this is being worked out.)
+    static int said_why{};
+    const auto why = [](int reason, const char* text) {
+        if (said_why == reason) return;
+        said_why = reason;
+        dingosdk::logging::log(dingosdk::logging::Level::debug, dingosdk::logging::Channel::music, "Spotify station cover: {}.", text);
+    };
+    if (!s.active.load(std::memory_order_acquire) || ui.updating || cosmetic_runtime().update_thread != GetCurrentThreadId() || !spotify_station::active()) return;
+    const auto now = GetTickCount64();
+    if (now - looked < 250) return;
+    looked = now;
+    PreserveError preserve; std::lock_guard lock(s.native_mutex);
+    if (!ui.initialized || ui.initialized->thread != GetCurrentThreadId() || !music_ui_current(*ui.initialized)) {
+        return why(1, "the music screen's data is not there to write to");
+    }
+    if (generation != ui.initialized->generation) { // a music screen built anew
+        generation = ui.initialized->generation;
+        shown.clear();
+    }
+    const auto cover = spotify_cover::url();
+    const auto track = external_player::now();
+    if (cover.empty() || !track.available || track.artist.empty() || track.title.empty()) return why(2, "no cover of Spotify's is ready yet");
+    // The game shows as now playing the song whose artist and title its player reads, which
+    // the station has made Spotify's (spotify_station.h): the music screen is given a song of
+    // that name, as the game itself would make one, and the cover is written to it.
+    const auto id = track.artist + " - " + track.title;
+    if (id + "|" + cover == shown) return;
+    std::array<unsigned char, 32> bytes{};
+    if (!read(s.base + addr::local_music::song_context_contract.rva, bytes) || bytes != addr::local_music::song_context_contract.bytes)
+        return why(3, "the game's routine for a song of the music screen is not the one this was written for");
+    auto& models = game::native_data().models;
+    const auto manager = ui.initialized->manager, model = ui.initialized->model;
+    struct Text {
+        std::uintptr_t value{};
+        explicit Text(const std::string& text) { game::native_data().values.assign(&value, text.c_str(), static_cast<std::uint32_t>(text.size())); }
+        ~Text() { local_runtime().destroy_string(&value); }
+    };
+    Text name(id), address(cover);
+    const auto context = reinterpret_cast<std::uint64_t (*)(std::uintptr_t, std::uintptr_t*)>(s.base + addr::local_music::song_context_contract.rva)(manager, &name.value);
+    const auto field = context ? models.field(model, context, 1, 0xffffffffU, false) : 0;
+    if (!field) return why(4, "the music screen gave no song to write the cover to");
+    models.publish(model, field, s.base + addr::engine::string_type, &address.value);
+    shown = id + "|" + cover;
+    said_why = 0;
+    // The game looks a song's cover up when the song starts, and this one has started.
+    spotify_station::refresh_now_playing();
+    dingosdk::logging::log(dingosdk::logging::Level::debug, dingosdk::logging::Channel::music, "Spotify station cover: \"{}\" has {}.", id, cover);
 }
 }

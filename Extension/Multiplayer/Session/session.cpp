@@ -1,4 +1,5 @@
 #include "session_internal.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
@@ -70,6 +71,10 @@ void reset_peer(Session &s, std::size_t slot) {
     s.peers[slot] = {};
 }
 void stop(Session &s, std::string reason) {
+    s.local_typing_until = 0;
+    // A join that ends before the host's map was ready never got in.
+    if (s.mode == Mode::join && s.awaiting_map && !s.travelling && s.join_started)
+        trace::record("multiplayer.join", "app.join", std::chrono::milliseconds((now_us() - s.join_started) / 1000), false);
     s.voice.reset();
     s.voice_policy = {};
     s.tps = multiplayer_default_tps;
@@ -79,9 +84,17 @@ void stop(Session &s, std::string reason) {
     s.sync_effects = true;
     set_lobby_object_limit(0);
     s.server_admin = false;
+    s.role.clear();
+    s.own_tag.clear();
+    s.own_tag_color = 0;
+    s.role_all_commands = false;
+    s.role_commands.clear();
+    s.role_permissions = 0;
     s.server_bans.clear();
     s.server_ban_total = 0;
     s.server_maps.clear();
+    text::set_own_words({}, {}); // the server's own filtered words go with it
+    s.chat_masked.clear();
     s.server_map_pool.clear();
     s.server_map_rotation = 0;
     set_lobby_object_placement_allowed(true);
@@ -173,6 +186,7 @@ void stop(Session &s, std::string reason) {
     s.announcement_ends = 0;
     server_vote_open_flag.store(false, std::memory_order_relaxed);
     server_poll_answers_flag.store(0, std::memory_order_relaxed);
+    set_next_maps({});
     s.pose_streams.clear();
     s.pose_ack = {};
     s.pose_ack_due = false;
@@ -329,6 +343,8 @@ void publish_party(Session &s) {
     // Nobody is in one just for being in the same lobby or on the same server.
     set_native_party_changes(session);
     const bool shown = session ? s.local_party != 0 : s.mode != Mode::off;
+    // What a dedicated server placed (its parks) says "Server", as its chat lines do.
+    set_native_party_server(dedicated_host(s) ? s.host_id : 0, "Server");
     update_native_party(s.base, roster, capacity, shown);
 }
 // Links the players' own throwdowns (Extension/Throwdowns/throwdown_relay.cpp). Runs
@@ -474,6 +490,17 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         std::reverse(result.begin(), result.end()); // oldest first
         return result;
     };
+    // Grey discs while they typed recently. The step is local, about three a second.
+    // ".", "..", "..." is one, two, then three discs; the overlay draws them.
+    const auto typing_bubble = [&](std::uint64_t until) {
+        NametagBubble line;
+        if (!until || now >= until) return line;
+        static constexpr const char *steps[] = {".", "..", "..."};
+        line.text = steps[(now / 333000) % 3];
+        line.hint = true;
+        line.appear = line.fade = 1.f;
+        return line;
+    };
     // Who is talking, as last published for the UI (10 Hz), without copying the voice model.
     const auto &voices = s.view.voice.players;
     const auto label = [&](const Peer &p) {
@@ -487,6 +514,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         tag.nameless = s.nametags_friends && !std::binary_search(s.friend_ids.begin(), s.friend_ids.end(), p.member.id);
         tag.talking = std::any_of(voices.begin(), voices.end(), [&](const auto &v) { return v.id == p.member.id && v.speaking; });
         tag.bubbles = recent_bubbles(p.member.id);
+        if (bubbles)
+            if (auto hint = typing_bubble(p.typing_until); !hint.text.empty()) tag.bubbles.push_back(std::move(hint));
         nametags.push_back(std::move(tag));
     };
     // Creating a player's actor (skater, skateboard and both recipes) or re-applying a
@@ -669,9 +698,12 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             }
         }
     });
-    // The local player's own lines, above their own skater, when asked for.
-    if (labels && bubbles && s.chat_bubbles_own && local.ready) {
-        auto own = recent_bubbles(s.transport.status().local_id);
+    // The local player's own lines, above their own skater, when asked for. The typing
+    // preview uses the same three-second window other players see, and shows even when
+    // own chat lines are hidden.
+    if (labels && bubbles && local.ready) {
+        auto own = s.chat_bubbles_own ? recent_bubbles(s.transport.status().local_id) : std::vector<NametagBubble>{};
+        if (auto hint = typing_bubble(s.local_typing_until); !hint.text.empty()) own.push_back(std::move(hint));
         if (!own.empty()) {
             NametagPlayer tag;
             tag.head = local.pose.root.position;
@@ -697,6 +729,7 @@ std::string take_leave_notice() { return std::exchange(session().leave_notice, {
 std::optional<MapNeed> take_map_need() { return std::exchange(session().map_need, std::nullopt); }
 void set_map_package_lookup(MapPackageLookup lookup) noexcept { map_package_lookup.store(lookup, std::memory_order_relaxed); }
 bool fetching_map() noexcept { return fetching_map_flag.load(std::memory_order_relaxed); }
+void hold_map_load(bool hold) noexcept { map_load_held.store(hold, std::memory_order_relaxed); }
 MultiplayerChat chat() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
@@ -777,6 +810,8 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
             s.status = "Host map loaded. Waiting for your skater...";
             return false;
         }
+        if (!s.travelling && s.join_started)
+            trace::record("multiplayer.join", "app.join", std::chrono::milliseconds((now - s.join_started) / 1000));
         s.awaiting_map = false;
         s.fetching_since = 0;
         fetching_map_flag.store(false, std::memory_order_relaxed);
@@ -791,7 +826,13 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
     if (!s.last_map_load_check || now - s.last_map_load_check >= 500000) {
         s.last_map_load_check = now;
         std::string detail;
-        const auto result = loader(s.join_destination, s.map_load_submitted, detail);
+        // The host's map, installed here at another version: it is not loaded as it is. It is
+        // fetched at the host's version as a missing one is (the downloader puts it in the
+        // installed one's place), and loads when the two agree.
+        const auto have = std::string(other_map_version(s.map_package, host_map_package(s.join_destination)));
+        // (Nor while its files are being put in place and applied: hold_map_load.)
+        const bool held = map_load_held.load(std::memory_order_relaxed);
+        const auto result = have.empty() && !held ? loader(s.join_destination, s.map_load_submitted, detail) : MapLoadResult::missing;
         if (result == MapLoadResult::missing) {
             const auto name = s.map_label.empty() ? world_level_name(world_destination_asset(s.join_destination)) : s.map_label;
             const char *who = dedicated_host(s) ? "server" : "host";
@@ -804,7 +845,7 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
                 if (!s.fetching_since) {
                     s.fetching_since = now;
                     fetching_map_flag.store(true, std::memory_order_relaxed);
-                    s.map_need = MapNeed{s.map_package, name, dedicated_host(s), s.travelling};
+                    s.map_need = MapNeed{s.map_package, name, dedicated_host(s), s.travelling, have};
                     s.rejoin = Session::Rejoin{{s.host_id, s.secret}, s.password};
                     s.last_map_request = s.last_world_ready = 0;   // say so at once
                 }

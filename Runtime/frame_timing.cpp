@@ -1,4 +1,5 @@
 #include "runtime_internal.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "Engine/Game/Build/addresses.h"
@@ -13,6 +14,7 @@ using ClientFrameJob = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::u
 ClientFrameJob original_client_frame_job{};
 std::uintptr_t client_frame_job(std::uintptr_t job, std::uintptr_t timing, std::uintptr_t dependencies, std::uintptr_t extra) {
     const auto start = dingosdk::profiler::now_ns();
+    dingosdk::trace::frame(start); // frame pacing for a level session's timing; a few atomic adds
     const auto result = original_client_frame_job(job, timing, dependencies, extra);
     dingosdk::profiler::record_client_frame(dingosdk::profiler::now_ns() - start);
     return result;

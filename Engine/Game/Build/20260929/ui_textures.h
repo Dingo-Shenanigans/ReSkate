@@ -68,4 +68,27 @@ inline constexpr Texture brush_bar{bam_toc, bam_bundle, "ui/textures/common/bann
 // A long brush streak, thick on the left and tapering right (1024 x 152): pixels 8 to 1013 across, 30 to 115 down.
 inline constexpr Texture streak{root_toc, root_bundle, "ui/textures/common/brushs/img_brush_splashstreak_1024_1024_152",
     {}, {8.0f / 1024, 30.0f / 152, 1014.0f / 1024, 116.0f / 152}};
+
+// The picture on the loading screen of each of the game's own maps, by the map's name as a
+// server's vote for the next map gives it (world_level_name). Each is in its loading screen's
+// own widget bundle, in the globals superbundle, at two sizes: this is the smaller, 1280 by
+// 720 (the name without a size is not a texture). Found by following each LoadScreen_*_Widget's
+// "Map_Texture" and read from the game's files on 2026-10-11. The tutorial island has no
+// loading screen of its own.
+struct MapPicture {
+    std::string_view map, bundle, name;
+};
+inline constexpr std::string_view map_picture_toc = "Win32/globals.toc";
+inline constexpr MapPicture map_pictures[]{
+    {"San Vansterdam", "win32/ui/foundations/loading/loadscreen/loadscreen_bam_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_sanvan_1440_1280_720"},
+    {"Isle of Grom", "win32/ui/foundations/loading/loadscreen/loadscreen_isleofgrom_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_gromday_1440_1280_720"},
+    {"Super Ultra Mega Resort", "win32/ui/foundations/loading/loadscreen/loadscreen_megapark_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_summercamp_default_1440_1280_720"},
+    {"Stadium 1", "win32/ui/foundations/loading/loadscreen/loadscreen_stadium_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_stadium_default_1440_1280_720"},
+    {"Stadium 2", "win32/ui/foundations/loading/loadscreen/loadscreen_stadium_nanaimo_widget_bundle",
+     "ui/textures/screens/loadscreen/img_loadscreen_stadium_nanaimo_1440_1280_720"},
+};
 }

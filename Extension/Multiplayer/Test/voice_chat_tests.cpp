@@ -130,17 +130,19 @@ int main() try {
         const auto decoded = decode(encoded);
         check(decoded && decoded->voice_policy == packet.voice_policy, "Host voice policy lost in roster");
         check(decoded && decoded->voice_range == packet.voice_range, "Host voice range lost in roster");
-        // The roster ends: voice allowed (1), policy revision (4), voice range (2), guest noclip / No Bail (1).
-        for (std::size_t i = encoded.size() - 8; i < encoded.size(); ++i)
+        // The roster ends: voice allowed (1), policy revision (4), voice range (2), guest noclip / No Bail (1),
+        // then what a dedicated server adds, here none: polls (1), custom votes (1), announcement (4).
+        const auto end = encoded.size() - 6;
+        for (std::size_t i = end - 8; i < encoded.size(); ++i)
             check(!decode(std::span(encoded).first(i)), "Truncated voice policy accepted");
-        auto invalid = encoded; invalid[invalid.size() - 8] = 2;
+        auto invalid = encoded; invalid[end - 8] = 2;
         check(!decode(invalid), "Invalid host voice toggle accepted");
-        invalid = encoded; invalid[invalid.size() - 1] = 128;
+        invalid = encoded; invalid[end - 1] = 128;
         check(!decode(invalid), "Invalid guest noclip / No Bail byte accepted");
         invalid = encoded;
-        for (std::size_t i = invalid.size() - 7; i < invalid.size() - 3; ++i) invalid[i] = 0;
+        for (std::size_t i = end - 7; i < end - 3; ++i) invalid[i] = 0;
         check(!decode(invalid), "Zero host voice revision accepted");
-        invalid = encoded; invalid[invalid.size() - 2] = 10; invalid[invalid.size() - 1] = 0;
+        invalid = encoded; invalid[end - 3] = 10; invalid[end - 2] = 0;
         check(!decode(invalid), "Voice range below the minimum accepted");
     }
     const std::array<float, 3> origin{};

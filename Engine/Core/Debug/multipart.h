@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <functional>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 inline constexpr DWORD max_log_bytes = 8 * 1024 * 1024;
 enum class LogSnapshot { unavailable, complete, tail };
 std::filesystem::path log_attachment_path(const std::filesystem::path& dump);

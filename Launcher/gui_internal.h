@@ -4,6 +4,7 @@
 #include "game_settings.h"
 #include "launch.h"
 #include "text_encoding.h"
+#include "mod_profiles.h"
 #include "thunderstore.h"
 
 #include "Engine/Vfs/mod_list.h"
@@ -191,6 +192,8 @@ struct Settings {
     bool updates{true};
     // Off: a crash uploads nothing (RESKATE_CRASH_REPORTING=0 for the launcher and the game).
     bool crash_reports{true};
+    // On: launches send how long their steps took (RESKATE_TRACING=1 for the launcher and the game).
+    bool performance_timings{};
     std::string steam_username;   // never the password
     bool steam_remember{true};
     bool steam_prefer_code{};
@@ -486,9 +489,30 @@ struct ModsPanel {
     Icons icons;
     Readmes readmes;
 
+    // PROFILES (gui_mods_profiles.cpp).
+    launcher_profiles::Profiles profiles;
+    bool profiles_loaded{};
+    std::array<char, 64> profile_name{};    // typed for a new profile
+    std::array<char, 96> profile_code{};    // typed to import
+    std::array<char, 64> profile_renamed{}; // typed in the rename popup
+    std::string profile_rename;             // the profile being renamed
+    std::string profile_delete;             // the profile awaiting "Delete" confirmation
+    // Loaded while its missing mods download: put in its order again once they are in.
+    std::string profile_settle;
+    // Talking to Thunderstore's profile service, off the UI thread.
+    struct ProfileResult {
+        bool ready{}, error{};
+        std::string message, clipboard;
+        std::optional<launcher_profiles::Profile> imported;
+    };
+    std::thread profile_worker;
+    std::atomic<bool> profile_busy{};
+    ProfileResult profile_result;           // worker -> UI, under mutex
+
     ~ModsPanel() {
         cancel = true;
         if (worker.joinable()) worker.join();
+        if (profile_worker.joinable()) profile_worker.join();
     }
 };
 
@@ -496,6 +520,19 @@ void scan(ModsPanel& panel, const launcher_app::Session& session);
 // Re-reads the Mods folder and the Thunderstore listing.
 void refresh_mods(Launcher& launcher, ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
+// The Windows file (or folder) picker; empty when cancelled. A file picker shows
+// `filter_pattern` ("*.zip") under `filter_name`.
+fs::path pick_path(HWND owner, bool folder, const wchar_t* title, const wchar_t* filter_name, const wchar_t* filter_pattern);
+
+// ---------------------------------------------------------------- Profiles (gui_mods_profiles.cpp)
+
+// The PROFILES page body, under the page header.
+void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float height, bool installing);
+// The rename and delete confirmations; call once a frame with the page's other popups.
+void profile_popups(ModsPanel& panel);
+// A profile loaded while its mods downloaded is put in order once they are in; call once
+// a frame, after collect_install.
+void settle_profile(ModsPanel& panel);
 
 // ---------------------------------------------------------------- Thunderstore (gui_mods_browse.cpp)
 

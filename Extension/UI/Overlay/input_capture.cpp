@@ -266,6 +266,27 @@ std::string xinput_entry_owners() {
     return text.empty() ? "none" : text;
 }
 
+std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
+    static std::atomic<dingosdk::overlay::GamepadFilter> value{};
+    return value;
+}
+// The game's own read only: not ReSkate's (overlay_input_access) and not an inner layer of a
+// read already being answered (Steam's hook going on to XInput runs inside OverlayInputAccess).
+void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
+    if (!outer || !output) return;
+    const auto filter = gamepad_filter().load(std::memory_order_acquire);
+    if (!filter) return;
+    auto& g = output->Gamepad;
+    dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
+    filter(static_cast<unsigned>(user), pad);
+    g.wButtons = pad.buttons;
+    g.bLeftTrigger = pad.left_trigger;
+    g.bRightTrigger = pad.right_trigger;
+    g.sThumbLX = pad.left_x;
+    g.sThumbLY = pad.left_y;
+    g.sThumbRX = pad.right_x;
+    g.sThumbRY = pad.right_y;
+}
 // Another program's hook on XInput that was put in front of the capture's own after it was
 // installed (Steam's overlay does, for Steam Input, and answers the game with its own pad
 // without going on to XInput): the capture then never sees the game's reads, and a menu that
@@ -274,6 +295,7 @@ std::string xinput_entry_owners() {
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const bool capture = block_polled_input();
+    const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
     { // It may go on to XInput's own entry point, which is hooked as well.
@@ -283,6 +305,8 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         output->dwPacketNumber ^= 0x80000000u;
+    } else if (result == ERROR_SUCCESS) {
+        filter_pad(outer, user, output);
     }
     return result;
 }
@@ -573,6 +597,7 @@ template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
     const bool capture = block_polled_input();
+    const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
@@ -584,6 +609,8 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         // The game must notice a neutral state even if the physical packet did
         // not change between opening the menu and its next controller poll.
         output->dwPacketNumber ^= 0x80000000u;
+    } else if (result == ERROR_SUCCESS) {
+        filter_pad(outer, user, output);
     }
     return result;
 }
@@ -875,4 +902,8 @@ bool install_input_capture() {
     return true;
 }
 
+}
+
+extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
+    dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
 }

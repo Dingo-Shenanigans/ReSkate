@@ -70,6 +70,22 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/job_spin.cpp
     Extension/Settings/engine_tweaks.cpp
     Extension/Settings/replay_guard.cpp
+    Extension/World/load_error_guard.cpp
+    Extension/Music/external_player.cpp
+    Extension/Music/spotify_station.cpp
+    Extension/Music/spotify_cover.cpp
+    Extension/Music/spotify_web.cpp
+    Extension/Music/spotify_device.cpp
+    Extension/Music/spotify_dashboard.cpp
+    Extension/Music/external_audio.cpp
+    Extension/Music/youtube_music.cpp
+    Extension/Music/audio_dsp.cpp
+    Extension/Music/spotify_rows.cpp
+    Extension/Music/app_audio_capture.cpp
+    Extension/Music/music_inject.cpp
+    Extension/World/mesh_unload_guard.cpp
+    Extension/World/stack_check_report.cpp
+    Extension/World/texture_handle_limit.cpp
     Extension/Settings/replay_drafts.cpp
     Extension/UI/ui_pointer_skip.cpp
     Extension/Settings/named_settings.cpp
@@ -90,10 +106,12 @@ add_library(dingosdk_runtime SHARED
     Extension/Assets/mod_layers.cpp
     Extension/Assets/live_mods.cpp
     Extension/Assets/map_download.cpp
+    Extension/Assets/map_icons.cpp
     Engine/Vfs/thunderstore_package.cpp
     Launcher/mod_manager.cpp
     Extension/Assets/loose_files.cpp
     Extension/Scripting/lua_startup.cpp
+    Extension/Scripting/lua_native_block.cpp
     Extension/Scripting/custom_script_loader.cpp
     Extension/Assets/morph_memory_pool.cpp
     Extension/Assets/native_render_resource_pool.cpp
@@ -118,6 +136,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/client_debug.cpp
     Extension/Skater/ai_skaters.cpp
     Extension/Skater/no_bail.cpp
+    Extension/Skater/grind_exit_commands.cpp
+    Extension/Skater/grind_exit_control.cpp
     Extension/Skater/physics_tuning.cpp
     Extension/Multiplayer/Remote/remote_collision.cpp
     Extension/Skater/physics_tuning_model.cpp
@@ -133,6 +153,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Scoring/scoring_hud.cpp
     Extension/RoadRash/road_rash.cpp
     Extension/RoadRash/road_rash_commands.cpp
+    Extension/BoardBreak/board_break.cpp
+    Extension/BoardBreak/board_break_commands.cpp
     Extension/Trainer/trainer.cpp
     Extension/Trainer/trainer_presets.cpp
     Extension/Trainer/trainer_jump.cpp
@@ -220,6 +242,40 @@ target_link_libraries(dingosdk_custom_level_manifest PUBLIC dingosdk_json)
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_custom_level_manifest)
 
 set_target_properties(dingosdk_runtime PROPERTIES OUTPUT_NAME "ReSkate" PREFIX "")
+
+# The game as a Spotify Connect device (Extension/Music/spotify_device.h): SpotifyHelper/, a
+# Rust library on librespot, built by cargo and linked into ReSkate.dll. Without cargo the DLL
+# is built without it, and Spotify is played through its own app. (Not in Debug builds: the
+# library is built with the release C runtime.)
+find_program(DINGOSDK_CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin")
+set(dingosdk_spotify_dir "${PROJECT_SOURCE_DIR}/SpotifyHelper")
+if(WIN32 AND DINGOSDK_CARGO AND EXISTS "${dingosdk_spotify_dir}/Cargo.toml")
+    set(dingosdk_spotify_lib "${dingosdk_spotify_dir}/target/release/reskate_spotify.lib")
+    add_custom_command(OUTPUT "${dingosdk_spotify_lib}"
+        COMMAND "${DINGOSDK_CARGO}" build --release --lib
+        WORKING_DIRECTORY "${dingosdk_spotify_dir}"
+        DEPENDS "${dingosdk_spotify_dir}/src/lib.rs" "${dingosdk_spotify_dir}/Cargo.toml" "${dingosdk_spotify_dir}/Cargo.lock"
+        COMMENT "Building the Spotify device (cargo)"
+        VERBATIM)
+    add_custom_target(dingosdk_spotify_device DEPENDS "${dingosdk_spotify_lib}")
+    add_dependencies(dingosdk_runtime dingosdk_spotify_device)
+    # (An import library of the Windows API that the Rust code is linked against, which cargo
+    # has fetched beside the code that uses it.)
+    if(DEFINED ENV{CARGO_HOME})
+        set(dingosdk_cargo_home "$ENV{CARGO_HOME}")
+    else()
+        set(dingosdk_cargo_home "$ENV{USERPROFILE}/.cargo")
+    endif()
+    file(GLOB dingosdk_windows_import "${dingosdk_cargo_home}/registry/src/*/windows_x86_64_msvc-0.52.*/lib/windows.0.52.0.lib")
+    list(GET dingosdk_windows_import 0 dingosdk_windows_import)
+    set(dingosdk_spotify_release "$<NOT:$<CONFIG:Debug>>")
+    target_compile_definitions(dingosdk_runtime PRIVATE "DINGOSDK_SPOTIFY_DEVICE=${dingosdk_spotify_release}")
+    target_link_libraries(dingosdk_runtime PRIVATE
+        "$<${dingosdk_spotify_release}:${dingosdk_spotify_lib}>" "$<${dingosdk_spotify_release}:${dingosdk_windows_import}>"
+        ntdll advapi32 credui secur32 userenv dbghelp legacy_stdio_definitions)
+else()
+    target_compile_definitions(dingosdk_runtime PRIVATE DINGOSDK_SPOTIFY_DEVICE=0)
+endif()
 dingosdk_version_info(dingosdk_runtime "ReSkate mod runtime" "ReSkate.dll" VFT_DLL)
 target_include_directories(dingosdk_runtime SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_lz4 dingosdk_zstd)
@@ -256,6 +312,27 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
         "EMOTES_JSON RCDATA \"${dingosdk_emotes_native}\\\\emotes.json\"\n"
         "EMOTES_PNG RCDATA \"${dingosdk_emotes_native}\\\\emotes.png\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/emotes.rc")
+endif()
+# The music sources' setup page (Extension/Music/spotify_dashboard.h).
+file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/Extension/Music/setup_page.html" dingosdk_music_page_native)
+string(REPLACE "\\" "\\\\" dingosdk_music_page_native "${dingosdk_music_page_native}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/music_setup_page.rc"
+    "MUSIC_SETUP_HTML RCDATA \"${dingosdk_music_page_native}\"\n")
+target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/music_setup_page.rc")
+set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/music_setup_page.rc" APPEND PROPERTY OBJECT_DEPENDS "${PROJECT_SOURCE_DIR}/Extension/Music/setup_page.html")
+# The Spotify station's picture in the music screen (Extension/Music/spotify_cover.h).
+if(EXISTS "${PROJECT_SOURCE_DIR}/assets/spotify.png")
+    file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/assets/spotify.png" dingosdk_spotify_art_native)
+    string(REPLACE "\\" "\\\\" dingosdk_spotify_art_native "${dingosdk_spotify_art_native}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/spotify_art.rc"
+        "SPOTIFY_PNG RCDATA \"${dingosdk_spotify_art_native}\"\n")
+    if(EXISTS "${PROJECT_SOURCE_DIR}/assets/liked.png")
+        file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/assets/liked.png" dingosdk_liked_art_native)
+        string(REPLACE "\\" "\\\\" dingosdk_liked_art_native "${dingosdk_liked_art_native}")
+        file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/generated/spotify_art.rc"
+            "LIKED_PNG RCDATA \"${dingosdk_liked_art_native}\"\n")
+    endif()
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/spotify_art.rc")
 endif()
 if(EXISTS "${dingosdk_startup_art}")
     file(TO_NATIVE_PATH "${dingosdk_startup_art}" dingosdk_startup_art_native)

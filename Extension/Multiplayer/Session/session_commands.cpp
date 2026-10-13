@@ -29,12 +29,12 @@ void apply_distances(Session &s, const MultiplayerDistances &distances) {
 }
 void apply_object_limit(Session &s, unsigned limit) {
     s.object_limit = limit;
-    set_lobby_object_limit(s.mode == Mode::host || s.server_admin ? 0 : limit);
+    set_lobby_object_limit(s.mode == Mode::host || (s.role_permissions & role_objects) ? 0 : limit);
 }
 void apply_object_placement(Session &s, ObjectPlacement policy) {
     s.object_placement = policy;
-    // On a dedicated server "host only" means its admins.
-    set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || s.server_admin));
+    // On a dedicated server "host only" means the roles that may always build.
+    set_lobby_object_placement_allowed(object_placement_allowed(policy, s.mode == Mode::host || (s.role_permissions & role_objects)));
 }
 void apply_nametags(const Session &s) {
     // The feed also runs when only chat bubbles are on: the overlay draws whichever of the
@@ -49,11 +49,17 @@ void apply_guest_tools(Session &s, bool noclip, bool no_bail, bool boosts) {
     s.guest_noclip = noclip;
     s.guest_no_bail = no_bail;
     s.guest_boosts = boosts;
-    const bool exempt = s.mode == Mode::host || s.server_admin;
+    const bool exempt = s.mode == Mode::host || (s.role_permissions & role_movement);
     set_session_tools_allowed(noclip || exempt, no_bail || exempt, boosts || exempt);
 }
 } // namespace session_detail
 namespace {
+// Whether the lists may be searched now; saying yes starts the wait for the next search.
+bool take_browse(Session &s, std::uint64_t now) {
+    if (s.browsed && now - s.browsed < multiplayer_browse_interval_us) return false;
+    s.browsed = now;
+    return true;
+}
 std::string edit_distances(Session &s, std::string_view argument) {
     if (s.mode != Mode::host) return "Only the lobby host can change TPS distances.";
     MultiplayerDistances value;
@@ -623,8 +629,8 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
          !own_mark_command(action) &&
-         action != "voice" && action != "voice-mute" &&
-         action != "voice-volume" && action != "voice-allow" && action != "voice-range" && action != "chat" && action != "ban" && action != "unban" &&
+         action != "voice" && action != "voice-mute" && action != "objects-solid" &&
+         action != "voice-volume" && action != "voice-allow" && action != "voice-range" && action != "chat" && action != "typing" && action != "ban" && action != "unban" &&
          action != "world-layer-sync" && action != "noclip-allow" && action != "nobail-allow" && action != "boosts-allow" &&
          action != "tuning-enforce" && action != "tp" &&
          action != "tpall" && action != "tphere" && action != "browse" &&
@@ -647,6 +653,11 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
 }
 bool server_vote_open() noexcept { return session_detail::server_vote_open_flag.load(std::memory_order_relaxed); }
 unsigned server_poll_answers() noexcept { return session_detail::server_poll_answers_flag.load(std::memory_order_relaxed); }
+std::vector<NextMapWanted> next_maps() {
+    std::lock_guard lock(session_detail::next_maps_mutex);
+    return session_detail::next_maps_shared;
+}
+unsigned next_maps_serial() noexcept { return session_detail::next_maps_serial_value.load(std::memory_order_relaxed); }
 std::string command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action))
         return "Multiplayer is unavailable in offline mode. Start Steam and relaunch ReSkate.";
@@ -659,7 +670,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
         // A dedicated server's admin changes the server's settings instead of
         // their own: the same menu actions, sent to the server. "server" sends
         // any server console command.
-        if (dedicated_host(s) && (action == "server" || (s.server_admin &&
+        if (dedicated_host(s) && (action == "server" || (role_allows(s.role_all_commands, s.role_commands, action) &&
             (action == "distances" || action == "object-placement" || action == "object-limit" || action == "voice-allow" || action == "voice-range" ||
              action == "clear-objects" || action == "kick" || action == "ban" || action == "unban" ||
              action == "world-layer-sync" || action == "noclip-allow" || action == "nobail-allow" ||
@@ -705,6 +716,11 @@ std::string command(std::string_view action, std::string_view argument, std::str
             }
             if (!result.empty() && (s.mode == Mode::host || s.mode == Mode::join)) add_chat(s, 0, "ReSkate", result);
             return result.empty() ? "Command sent." : result;
+        }
+        if (action == "typing") {
+            if (argument != "0" && argument != "1") return "Invalid typing notice.";
+            send_typing(s, argument == "1");
+            return {};
         }
         if (action == "chat") {
             // The overlay queues chat and never sees this result, so a refusal
@@ -813,6 +829,24 @@ std::string command(std::string_view action, std::string_view argument, std::str
             publish(s);
             return enabled == "on" ? "Player voice muted." : "Player voice unmuted.";
         }
+        if (action == "objects-solid") {
+            const auto split = argument.find(' ');
+            if (split == std::string_view::npos) return "Choose a player whose objects to make solid.";
+            std::uint64_t id{};
+            const auto result = std::from_chars(argument.data(), argument.data() + split, id);
+            const auto enabled = argument.substr(split + 1);
+            // "server": the dedicated server's own objects (its parks), which no player row stands for.
+            if (argument.substr(0, split) == "server" && dedicated_host(s)) id = s.host_id;
+            else if (result.ec != std::errc{} || result.ptr != argument.data() + split) id = 0;
+            if (!id || !find_peer(s, id) || (enabled != "on" && enabled != "off"))
+                return "objects-solid <SteamID64 of a connected player, or server> on|off";
+            const bool solid = enabled == "on";
+            s.objects_solid[id] = solid;
+            set_network_object_owner_solid(id, solid);
+            profile_runtime::set_local_preference("SolidObjects." + std::to_string(id), solid);
+            publish(s);
+            return solid ? "That player's objects are solid for you." : "That player's objects are ghosts for you.";
+        }
         // Host-only settings check the mode themselves; guests get a refusal.
         using Setting = std::string (*)(Session &, std::string_view);
         static constexpr std::pair<std::string_view, Setting> settings[] = {
@@ -862,9 +896,12 @@ std::string command(std::string_view action, std::string_view argument, std::str
         if (action == "browse") {
             if (!s.transport.open())
                 s.status = s.transport.status().detail;
-            else {
-                s.lobbies.refresh(now_us());
-                s.servers.refresh(now_us());
+            else if (const auto now = now_us(); take_browse(s, now)) {
+                s.lobbies.refresh(now);
+                s.servers.refresh(now);
+            } else {
+                const auto left = multiplayer_browse_interval_us - (now - s.browsed);
+                return "The server list can be refreshed again in " + std::to_string((left + 999999) / 1000000) + " s.";
             }
             publish(s);
             return s.lobbies.status().browser;
@@ -902,7 +939,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             }
             // A friend on a server this game has not listed yet: only the list has its code.
             if (game_server_steam_id(id)) {
-                s.servers.refresh(now_us());
+                if (const auto now = now_us(); take_browse(s, now)) s.servers.refresh(now);
                 s.status = "That server is not in your server list yet. Open the server browser and join it there.";
                 publish(s);
                 return s.status;
@@ -1013,21 +1050,26 @@ std::string command(std::string_view action, std::string_view argument, std::str
             }
             s.mode = Mode::host;
             s.host_id = s.transport.status().local_id;
-            // Falling back to the Steam name: that one is not the player's to retype, so mask it.
-            s.lobby_name = lobby_name.empty() ? text::mask_bad_words(s.transport.name(s.host_id))
-                                              : std::string(lobby_name);
+            load_host_preferences(s);
+            auto &remembered = s.host_preferences;
+            if (!lobby_name.empty())
+                s.lobby_name = std::string(lobby_name);
+            else if (!remembered.lobby_name.empty())
+                s.lobby_name = remembered.lobby_name;
+            else {
+                // Falling back to the Steam name: that one is not the player's to retype, so mask it.
+                s.lobby_name = text::mask_bad_words(s.transport.name(s.host_id));
+            }
             if (s.lobby_name.empty()) s.lobby_name = "ReSkate session";
             s.invite = format_invite({s.host_id, s.secret});
             s.public_host = visibility == "public";
             if (s.public_host)
                 s.lobbies.host(s.invite, capacity, s.password.has_value(), s.lobby_name);
             // Remember this setup, and bring back the host options chosen last time.
-            load_host_preferences(s);
-            auto &remembered = s.host_preferences;
             remembered.public_lobby = s.public_host;
             remembered.capacity = capacity;
             remembered.tps = tps;
-            remembered.lobby_name = std::string(lobby_name);
+            if (!lobby_name.empty()) remembered.lobby_name = std::string(lobby_name);
             remembered.password_required = s.password.has_value();
             apply_distances(s, remembered.distances);
             s.voice_range = remembered.voice_range;

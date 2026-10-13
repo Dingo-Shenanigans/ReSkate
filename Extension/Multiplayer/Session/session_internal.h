@@ -126,6 +126,9 @@ struct Peer {
     // as their poses are shown, so the sparks are where their skater is.
     std::deque<std::pair<std::uint64_t, Impact>> impacts;
     ChatRate chat_rate;
+    // Dots above this player until this time (0: they stopped). typing_notice is the last
+    // accepted "still typing", so a flood is not relayed.
+    std::uint64_t typing_until{}, typing_notice{};
     // Chat proofs (session_receive.cpp): the copies of their lines this player sent us over
     // their own Steam connection, and the lines the host passed on as theirs that wait for one.
     struct ChatProof {
@@ -223,9 +226,19 @@ struct Session {
     SteamTransport transport;
     SteamLobbies lobbies{make_steam_lobby_api(), [](std::uint64_t host) { return banned_host(host) || reskate_banned(host); }};
     SteamServerBrowser servers;
+    // When the lobby and server lists were last searched. Every search in the game, asked for
+    // or automatic, waits multiplayer_browse_interval_us after it (take_browse).
+    std::uint64_t browsed{};
     // Guest of a dedicated server: whether the roster lists us as an admin,
     // and the server's voice range from it.
+    // On a dedicated server: what the player's role gives them (its permissions packet), and the
+    // tag it wears (the roster's). server_admin: it has at least one of the server's commands.
     bool server_admin{};
+    std::string role, own_tag;
+    std::uint32_t own_tag_color{};
+    bool role_all_commands{};
+    std::vector<std::string> role_commands;
+    std::uint32_t role_permissions{};
     float roster_voice_range = default_voice_range;
     // The colours of the dedicated server's own chat lines, as its roster gives them.
     std::uint32_t server_chat_badge = default_server_chat_badge, server_chat_text = default_server_chat_text;
@@ -297,6 +310,9 @@ struct Session {
     bool chat_filter = true;     // bad words in chat show as **** (Engine/Core/Text/word_filter.h)
     // Chat bubbles above each skater's head (Hud/custom_nametags.h, nametag_overlay.cpp).
     bool chat_bubbles = true, chat_bubbles_own{};
+    // Grey dots above this skater until this time. The overlay sets it while the chat
+    // input is changing, and clears it after three seconds idle or when the box closes.
+    std::uint64_t local_typing_until{};
     float chat_bubbles_distance = 40.f, chat_bubbles_duration = 5.f;
     int chat_bubbles_history = 3;
     bool game_menu{};            // a game menu is up or the game's UI is hidden: no chat on screen
@@ -322,6 +338,8 @@ struct Session {
     std::uint64_t secret{}, epoch{}, map{}, host_id{}, next_send{}, last_hello{}, last_roster{},
         last_cosmetic_capture{}, last_routes{}, last_network_log{}, network_now{};
     std::uint32_t sequence{}, roster_sequence{};
+    // Whose placed objects are solid for this player (the rest are ghosts): see objects_solid().
+    std::map<std::uint64_t, bool> objects_solid;
     std::uint64_t local_pose_count{}, logged_local_pose_count{};
     std::size_t last_skater_bones{}, last_board_bones{};
     std::optional<Appearance> sent_appearance;
@@ -439,7 +457,7 @@ bool identity_link(Session &s, std::uint64_t other);
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local = false, bool marks = true);
 // The colour and badge of one of the backend's categories.
 std::pair<std::uint32_t, std::string> mark_role(IdentityList list);
-// A player's role colour and badge ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or none), shown in chat
+// A player's role colour and badge ("Dev", "ReSkate Admin", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or none), shown in chat
 // and on their nametag. `local`: the local player.
 std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t id, bool local, bool marks = true);
 // Sends one line from this player; returns why not when it cannot.
@@ -455,6 +473,7 @@ std::string answer_server_poll(Session &s, std::size_t answer);
 inline std::atomic<bool> server_vote_open_flag{};
 inline std::atomic<MapPackageLookup> map_package_lookup{};
 inline std::atomic<bool> fetching_map_flag{};
+inline std::atomic<bool> map_load_held{};
 // A guest without the map is downloading it: the clock they are loading against starts over
 // each time they say so, for as long as map_fetch_limit_us from the first time.
 inline void guest_fetching(Peer &peer, std::uint64_t now) {
@@ -477,12 +496,29 @@ inline std::string host_map_package(std::string_view destination) {
     }
 }
 inline std::atomic<unsigned> server_poll_answers_flag{};
+// The server's maps for its next-map vote (session.h: next_maps), for the thread that fetches their pictures.
+inline std::mutex next_maps_mutex;
+inline std::vector<NextMapWanted> next_maps_shared;
+inline std::atomic<unsigned> next_maps_serial_value{};
+inline void set_next_maps(std::vector<NextMapWanted> maps) {
+    std::lock_guard lock(next_maps_mutex);
+    if (maps.empty() && next_maps_shared.empty()) return;
+    next_maps_shared = std::move(maps);
+    next_maps_serial_value.fetch_add(1, std::memory_order_relaxed);
+}
 // "/p <message>" in a lobby: one line for the local player's party only, relayed by the host.
 std::string send_party_chat(Session &s, std::string_view typed);
 // The "/" commands this session offers (the chat overlay lists them as the player types "/").
 std::vector<MultiplayerChatCommand> chat_commands(const Session &s);
 // One encoded throwdown message from this player to everyone else (through the host).
 void send_throwdown(Session &s, std::vector<std::uint8_t> message);
+// Tell the session this player is typing (`on`) or has stopped. Relayed like chat.
+void send_typing(Session &s, bool on);
+// Whether `id`'s placed objects are solid for this player. The saved choice for them when
+// there is one; else a player's are ghosts, and a dedicated server's own (its parks, which
+// everyone is there to skate) are solid. Read when they are first seen and handed to the
+// objects (network_object_runtime.h).
+bool objects_solid(Session &s, std::uint64_t id);
 // session_send.cpp
 Packet packet(Session &s, PacketKind kind, std::uint64_t now);
 void reset_direct(Session &s, Peer &p, std::uint64_t now);

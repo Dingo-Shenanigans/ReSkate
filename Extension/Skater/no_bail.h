@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace dingosdk {
@@ -39,4 +40,10 @@ bool no_bail_skater(NoBailSkater& skater) noexcept;
 // One observer, nullptr for none; it runs on the physics thread.
 using NoBailStepObserver = void (*)(const NoBailSkater& skater, float seconds, bool wipeout) noexcept;
 void set_no_bail_step_observer(NoBailStepObserver observer) noexcept;
+// Further listeners on the same steps (the grind exit control, grind_exit_control.h),
+// independent of the observer above so none displaces Hall of Meat's. Same thread and timing. Adding one already there, or removing one that is not, does nothing;
+// false when all slots are taken.
+inline constexpr std::size_t no_bail_step_listener_slots = 4;
+bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept;
+void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 }

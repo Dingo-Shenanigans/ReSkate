@@ -20,8 +20,11 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
+#include <vector>
+#include <array>
 
 namespace dingosdk::server {
 using namespace multiplayer;
@@ -43,12 +46,40 @@ class Host {
 
     std::string invite() const;
     std::string map_name() const;
+    // "maps reload": reads Mods again and says what changed. Also after a map was updated.
+    std::string reload_maps();
+    // The mod folder of the map in play while anyone is on (an update leaves it alone), or
+    // nothing; and whether "maps update" was typed since this was last asked.
+    std::string map_folder_in_play() const;
+    bool take_map_update_request() { return std::exchange(map_update_requested_, false); }
     unsigned players() const;
     std::uint64_t secret() const { return secret_; }
     // The UDP port players may connect straight to, or 0 (config connection).
     std::uint16_t direct_port() const { return direct_port_; }
 
-    enum class VoteKind { map, kick, time, custom, poll };
+    const ServerConfig &config() const { return config_; }
+    bool voice_allowed() const { return voice_policy_.allowed; }
+    bool has_password() const { return password_.has_value(); }
+
+    struct PlayerInfo {
+        std::uint64_t id{};
+        std::string name;
+        unsigned ping{};
+        bool admin{};
+        bool voice_muted{};
+        bool text_muted{};
+        float x{}, y{}, z{};
+    };
+
+    std::vector<PlayerInfo> player_list() const;
+    void send_player_chat(std::uint64_t steam_id, std::string_view text);
+    void broadcast_player_chat(std::string_view text);
+    bool teleport_player(std::uint64_t steam_id, float x, float y, float z);
+    std::optional<std::array<float, 3>> player_position(std::uint64_t steam_id) const;
+    void drop(std::uint64_t id, const std::string &reason, const std::string &detail = {});
+    void change_map(std::string_view map); // a level name, level path or destination
+
+    enum class VoteKind { map, kick, time, custom, poll, extend };
 
   private:
     struct ChatBudget {
@@ -157,6 +188,8 @@ class Host {
         std::vector<Packet> relay_poses;
         unsigned effects_pass{};
         ChatRate chat_rate;
+        std::uint64_t typing_notice{}; // last accepted "still typing", so a flood is not relayed
+        bool typing{};                 // an "on" was passed along and no "off" since
         ChatBudget admin_budget, throwdown_budget, party_budget;
         SpeedCheck speed;           // how fast their game runs, from their pose timestamps
         bool speeding{};            // flagged: out of linked activities (config speed_check)
@@ -177,6 +210,9 @@ class Host {
         std::set<std::uint64_t> unmet;
         std::uint64_t next_introduction{};
         bool maps_sent{};          // this player has the server's map list (send_maps)
+        std::uint64_t permissions_sent{}; // the roles revision their permissions were sent at
+        std::uint64_t words_sent{};       // the words revision the server's filtered words were sent at
+        std::uint64_t next_maps_sent{};   // the revision the next vote's maps were sent at
         // The owner's own upload, and what the server shares of it.
         ObjectState objects, shared;
         std::uint64_t shared_from{};
@@ -196,6 +232,7 @@ class Host {
     ServerConfig &config_;
     SteamTransport &transport_;
     Log log_;
+    bool map_update_requested_{};
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
     // The running player vote (server_votes.cpp), and when each player may start another.
     // A poll is one too: it has answers instead of yes and no, and runs nothing (but the console's poll-run).
@@ -209,6 +246,7 @@ class Host {
         std::vector<std::string> answers;            // poll
         std::map<std::uint64_t, std::size_t> chosen; // poll: each voter's answer
         std::string run;                             // poll-run: the console command for the winner ("{answer}")
+        bool next_map{};                             // poll: the rotation's vote for the next map (start_next_map_vote)
         std::uint64_t ends{};
     };
     std::optional<Vote> vote_;
@@ -234,11 +272,27 @@ class Host {
     std::map<std::uint64_t, std::uint64_t> vote_cooldowns_;
     std::uint64_t map_since_{}; // rotation clock start: the last map change, or while nobody is on
     bool rotation_warned_{};    // players were told the next map is a minute away
+    unsigned rotation_told_{};  // the minutes-left marks already announced: bit 0 ten, 1 five, 2 one
+    bool rotation_voted_{};     // this map's vote for the next one was held
+    // The maps that vote offers, drawn a minute before it so games can have their pictures
+    // ready, and their revision (0: never drawn, nothing to send).
+    std::vector<multiplayer::NextMap> next_maps_;
+    std::uint64_t next_maps_revision_{};
+    void draw_next_maps();
+    std::mt19937 random_{std::random_device{}()};
+    bool start_next_map_vote();                 // false when the pool has nothing to choose between
+    void finish_next_map_vote(const Vote &done, const std::vector<unsigned> &count);
+    void extend_map(unsigned minutes);          // the rotation's clock, that much longer from now
     // Parties (server_party.cpp): the server owns them; each roster carries them to everyone.
     PartyBook parties_;
     std::uint64_t party_revision_{};
     std::map<std::uint64_t, std::unique_ptr<Guest>> guests_;
-    std::set<std::uint64_t> kicked_;
+    // Kicked players and when each may join again (0: not before the server restarts).
+    std::map<std::uint64_t, std::uint64_t> kicked_;
+    // Keeps a player out for `minutes` (0: until the server restarts), or for as long as
+    // kick_minutes says when none is given, and says how long for their notice and the log:
+    // " for 10 minutes", or " until the server restarts".
+    std::string keep_out(std::uint64_t id, std::optional<unsigned> minutes = std::nullopt);
     // The name each player last joined under, for banning one who has left by their SteamID.
     std::map<std::uint64_t, std::string> seen_names_;
     // Warnings each player has had for words that are not allowed at all ("word_warnings"),
@@ -254,7 +308,13 @@ class Host {
     std::uint32_t object_clears_{};
     WorldLayerChoices layers_;
     bool roster_dirty_ = true, running_{};
-    std::uint64_t bans_revision_ = 1; // bumped whenever the ban list or the admins change
+    std::uint64_t bans_revision_ = 1; // bumped whenever the ban list or the roles change
+    std::uint64_t roles_revision_ = 1; // bumped whenever the roles or who has them change
+    // The server's own filtered words as its players have them, and their revision: 0 until
+    // there are any, so a server without the file sends nothing.
+    std::vector<std::string> filtered_words_;
+    std::uint64_t words_revision_{};
+    bool role_tags_checked_{};
     std::uint64_t now_{}, last_roster_{}, last_world_state_{}, next_object_update_{}, travel_started_{};
     std::string relay_status_; // Steam's relay network as last logged
     std::uint16_t direct_port_{};
@@ -318,12 +378,33 @@ class Host {
     unsigned connection_capacity() const { return static_cast<unsigned>(multiplayer::max_players); }
     std::string guest_name(const Guest &) const;
     std::string player_name(std::string_view wanted, std::uint64_t id) const;
-    bool is_admin(std::uint64_t id) const;
+    // Roles (roles.h): a player's, whether it gives a command or a permission, whether it gives
+    // any command at all, and its rank (-1 with no role: below every role).
+    const Role *role_of(std::uint64_t id) const { return config_.roles.of(id); }
+    bool can(std::uint64_t id, std::string_view command) const { return allows(role_of(id), command); }
+    bool has(std::uint64_t id, std::uint32_t permission) const {
+        const auto *role = role_of(id);
+        return role && (role->granted & permission);
+    }
+    // What every player does unless their role says otherwise (chat, votes, parties, private messages).
+    bool may(std::uint64_t id, std::uint32_t permission) const { return server::may(role_of(id), permission); }
+    std::string role_refusal(std::uint64_t id, std::string_view what) const {
+        const auto *role = role_of(id);
+        return "Your role" + (role ? " (" + role->name + ")" : std::string{}) + " cannot " + std::string(what) + " on this server.";
+    }
+    bool is_staff(std::uint64_t id) const { return staff(role_of(id)); }
+    int rank(std::uint64_t id) const {
+        const auto *role = role_of(id);
+        return role ? role->rank : -1;
+    }
+    void send_permissions(Guest &);    // what their role lets them do
+    void send_words(Guest &);          // the server's own filtered chat words (server_words.h)
+    void send_next_maps(Guest &);      // the maps the vote for the next one will offer
+    void roles_changed();              // after any change to the roles or who has them
     bool is_banned(std::uint64_t id) const;
     void save();
 
     // `detail` is for the log alone: the player is told `reason`.
-    void drop(std::uint64_t id, const std::string &reason, const std::string &detail = {});
     bool send_packet(Guest &, const Packet &, bool reliable, bool fresh, std::span<const std::uint8_t> raw = {},
                      std::span<const std::uint8_t> wire = {});
     void send_required(Guest &, const std::vector<std::uint8_t> &bytes);
@@ -333,7 +414,6 @@ class Host {
     void send_chat(std::string_view text, Guest *only = nullptr);
     void send_bans(Guest &admin);
     void send_maps(Guest &admin);
-    void change_map(std::string_view map); // a level name, level path or destination
     std::string wire_map_label() const;
     void fetching(Guest &guest);
     bool same_map(std::string_view asset) const { return map_hash(map_destination(asset)) == map_; }
@@ -359,9 +439,11 @@ class Host {
     const VoteSetting &vote_setting(VoteKind, std::size_t custom = 0) const;
     std::uint8_t enabled_votes() const;
     multiplayer::ServerPolls enabled_polls() const;
-    std::vector<multiplayer::ServerCustomVote> custom_votes() const; // the owner's votes that are on, for the roster
+    // The owner's votes that are on, for the roster; and "extend" with them while it can run.
+    std::vector<multiplayer::ServerCustomVote> custom_votes() const;
+    bool extend_vote_on() const; // "/vote extend": on, and the map is on a timer that staying adds to
     std::set<std::uint64_t> vote_voters(const Vote &) const;         // who may vote in it
-    unsigned votes_needed(const Vote &, unsigned voters) const;
+    unsigned votes_needed(const Vote &, unsigned cast) const;
     std::vector<unsigned> poll_count(const Vote &) const;
     std::string running_vote_text() const; // what is running, and how to answer it
     // The "votes" and "announcements" commands (server_votes.cpp); the bool: a setting changed.
@@ -372,6 +454,8 @@ class Host {
     void tick_announcements(); // the owner's messages in turn, on their timer
     void reply(Guest &, std::string_view text, unsigned max_lines = 12);
     Guest *match_player(std::string_view text);
+    // Sends each mover to a ring of `radius` around `at`, 1 m up, so nobody lands inside anyone; how many were sent.
+    unsigned teleport_ring(const std::vector<Guest *> &movers, const std::array<float, 3> &at, float radius = 2.5f);
     void tick_rotation();
     std::string pool_text() const;     // the map pool, one map a line
     std::string rotation_text() const; // the rotation's interval and next map
@@ -389,5 +473,22 @@ class Host {
     void send_party(Guest &to, PartyAction, std::uint64_t player);
     void party_notice(std::uint32_t party, std::string_view text, std::uint64_t except = 0);
     std::string party_status(std::uint64_t id) const;
+    // Park mods (server_parks.cpp): parks from config_.park_mods, spawned for everyone as the
+    // layout of the server's own SteamID and epoch, which no player can have.
+    struct SpawnedPark {
+        std::string name;
+        std::vector<NetworkObject> objects; // with the server's own IDs
+        unsigned minutes{};                 // 0: until removed
+        std::uint64_t expires{};
+        bool warned{}; // told a minute before
+    };
+    std::vector<SpawnedPark> parks_spawned_;
+    ObjectState park_objects_; // never reset: its revisions only grow, so no game holds a newer one
+    std::uint64_t park_object_ids_{};
+    bool by_vote_{}; // a passed custom vote's command is running (as the console)
+    std::string park_mod_command(std::string_view argument, std::uint64_t admin);
+    void publish_parks();
+    void remove_parks(std::string_view reason); // all of them, with the reason for the log
+    void tick_parks();                          // expiry, and the minute's warning
 };
 } // namespace dingosdk::server

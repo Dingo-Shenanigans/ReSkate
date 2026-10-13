@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "crash_reporter.h"
 #include "gui.h"
 #include "launch.h"
@@ -99,7 +100,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 1;
     }
     if (argc > 1 && std::wstring_view(argv[1]) == L"--reskate-crash-helper") {
-        const auto result = dingosdk::backtrace::run_reporter(argc, argv);
+        const auto result = dingosdk::crash_report::run_reporter(argc, argv);
         LocalFree(argv);
         return result;
     }
@@ -118,6 +119,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         const auto session = app::open_session(log_level);
         logs = session.paths.logs;
         if (headless) run_headless(session, arguments, original);
+        else if (app::relaunch_without_mangohud(session.self, original)) dingosdk::logging::flush();
         else result = dingosdk::launcher_gui::run(session, arguments);
     } catch (const std::exception& exception) {
         const auto message = widen(exception.what());
@@ -128,6 +130,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         MessageBoxW(nullptr, dialog.c_str(), L"ReSkate Launcher", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         result = 1;
     }
+    dingosdk::trace::flush(std::chrono::seconds(3));
     dingosdk::logging::shutdown();
     return result;
 }

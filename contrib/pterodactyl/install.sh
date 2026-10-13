@@ -46,6 +46,6 @@ ln -sf ../../steamclient.so "${server}/.steam/sdk64/steamclient.so"
 # First install: the panel's ports. The server adds every other setting with its default on
 # its first start; the panel writes the ports (and steam_token) again before each start.
 if [ ! -f "${server}/ReSkateServer.json" ]; then
-    printf '{\n  "port": %s,\n  "query_port": %s\n}\n' "${SERVER_PORT:-27015}" "${QUERY_PORT:-27016}" > "${server}/ReSkateServer.json"
+    printf '{\n  "server": {\n    "listed": %s,\n    "port": %s,\n    "query_port": %s\n  }\n}\n' "${LISTED:-true}" "${SERVER_PORT:-27015}" "${QUERY_PORT:-27016}" > "${server}/ReSkateServer.json"
 fi
 echo "Installed the ReSkate Linux server ${version}."

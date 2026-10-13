@@ -22,12 +22,16 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - The **Park Editor**: place, move and save objects with freecam, snapping and undo.
   - Skater options: first person, movement, boosts, noclip.
   - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
+  - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
+    out to (toe / heel, or left / right), whatever trick and spin you do
+    ([how it works](Extension/Skater/GRIND_EXITS.md)).
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
     screens, cosmetics and scripts.
   - Browse and install mods from the [Thunderstore community](https://thunderstore.io/c/reskate/) in the
-    launcher.
+    launcher. A mod that needs others (a mod pack) brings them with it.
+  - Save sets of mods as profiles, switch between them, and share one as a code or a file.
   - Most mod changes apply in game without a restart.
 - **Launcher.**
   - Checks that you have the supported game build, and can download exactly that build with your Steam
@@ -111,6 +115,10 @@ accepts `park random` from its console or an admin.
 
 - Install mods from the launcher's **MODS** page: browse Thunderstore, or drag a `.zip` or folder onto the
   window.
+- **PROFILES** on that page saves which mods are on, and in what order, under a name. Loading a profile
+  switches to it and downloads any of its mods you do not have; every mod stays installed once. **COPY CODE**
+  and **SAVE FILE** share a profile, and **IMPORT CODE** and **IMPORT FILE** take one in. The codes and
+  `.r2z` files are r2modman's, so the two managers read each other's.
 - In game, the **MODS** tab of the ReSkate menu (**Insert**) turns mods on and off and applies the changes.
 - Mods are checked against the game build they were made for. Outdated mods, or mods that can't be merged
   cleanly, are left out with a message naming them, and the rest still load.
@@ -226,14 +234,14 @@ Useful launcher flags:
 | `DINGOSDK_VERSION` | `0.0.0` | version stamped into the binaries |
 | `DINGOSDK_LAUNCHER_AUTO_UPDATE` | `OFF` | let the launcher replace itself and `ReSkate.dll`, and the server replace itself (release builds) |
 | `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
-| `DINGOSDK_BACKTRACE_URL` | the project's endpoint | Backtrace minidump submission URL; empty turns crash uploads off |
+| `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
 | `DINGOSDK_TEST_GAME_ROOT` | empty | a Skate folder, for the tests that read real game data |
 
 ### Tests
 
 Each module keeps its regression tests in a `Test/` folder. Turn them on with any of
 `DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`
-and `DINGOSDK_BUILD_BACKTRACE_TESTS`, then run CTest:
+and `DINGOSDK_BUILD_CRASH_REPORT_TESTS`, then run CTest:
 
 ```powershell
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON -DDINGOSDK_BUILD_LAUNCHER_TESTS=ON
@@ -275,10 +283,16 @@ bytes they expect before touching them, so code from the wrong build is refused 
 ## Crash reports and privacy
 
 When the launcher or the game crashes, ReSkate uploads a minidump and that session's log to the
-project's Backtrace account, so crashes can be fixed. The log never contains your Steam password or
+project's self-hosted Sentry server, so crashes can be fixed. The log never contains your Steam password or
 login name.
 
-To turn it off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
+With **Send performance timings** ticked in the launcher's Settings (ADVANCED; off unless you turn it on),
+ReSkate also sends how long a few steps took: the update check, the Steam download, mod
+installs (with the package name), the mod merge, starting the game, each level load, joining a multiplayer
+session and fetching the ReSkate lists. Time spent in a level adds its name, average frame rate and count of
+long frames. Nothing about your account is included. Turning crash reports off turns this off too.
+
+To turn crash reports off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
 environment variable `RESKATE_CRASH_REPORTING=0`.
 
 ReSkate also keeps the game off EA's online services: the game's own crash reports, telemetry and

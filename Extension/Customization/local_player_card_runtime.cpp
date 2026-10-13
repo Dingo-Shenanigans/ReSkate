@@ -115,6 +115,8 @@ void apply_player_card(std::uintptr_t manager, const profile::CosmeticLoadout& v
 }
 
 std::uint64_t local_player_info_hook() {
+    if (const auto other = player_info_override.load(std::memory_order_relaxed))
+        if (const auto info = other()) return info;
     auto& s = local_runtime(); auto& p = player_card_runtime();
     const auto original = p.functions.get_local_info();
     if (!s.active.load(std::memory_order_acquire) || original) return original;

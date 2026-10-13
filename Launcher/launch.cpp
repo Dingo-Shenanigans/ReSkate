@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/content_cache_install.h"
@@ -507,6 +508,33 @@ void relaunch(const fs::path& self, const std::vector<std::wstring>& arguments) 
     CloseHandle(process.hProcess);
 }
 
+bool under_wine() {
+    const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+    return (ntdll && GetProcAddress(ntdll, "wine_get_version")) ||
+           (kernel32 && GetProcAddress(kernel32, "wine_get_dos_file_name"));
+}
+
+// MangoHud's Vulkan layer draws into every swapchain of a process it is on for,
+// and the launcher's window crashes with it. The layer reads its switches from
+// the Linux environment, which Wine fixes when the process starts, so turning it
+// off takes a restart. start_game hands MangoHud back to the game.
+bool relaunch_without_mangohud(const fs::path& self, const std::vector<std::wstring>& arguments) {
+    if (!under_wine()) return false;
+    if (GetEnvironmentVariableW(L"RESKATE_MANGOHUD_HELD", nullptr, 0)) {
+        logging::write(logging::Level::info, logging::Channel::launcher,
+            "MangoHud is off for the launcher window; the game still gets it.");
+        return false;
+    }
+    wchar_t enabled[8]{};
+    const auto length = GetEnvironmentVariableW(L"MANGOHUD", enabled, 8);
+    if (length != 1 || enabled[0] != L'1' || GetEnvironmentVariableW(L"DISABLE_MANGOHUD", nullptr, 0)) return false;
+    set_environment(L"DISABLE_MANGOHUD", L"1");
+    set_environment(L"RESKATE_MANGOHUD_HELD", L"1");
+    relaunch(self, arguments);
+    return true;
+}
+
 std::wstring steam_offline_reason() {
     const auto pid = registry_dword(steam_process_key, L"pid");
     if (!pid || !*pid) return L"no Steam client is registered as running (ActiveProcess pid is 0)";
@@ -584,10 +612,7 @@ void ensure_minidump_apiset_shim(const fs::path& game_directory) noexcept {
         // Windows resolves this API set itself. Only Wine/Proton needs a file
         // beside Skate.exe; copying a system DLL under an API-set name on
         // Windows creates an unnecessary executable that looks suspicious.
-        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
-        const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
-        if (!(ntdll && GetProcAddress(ntdll, "wine_get_version")) &&
-            !(kernel32 && GetProcAddress(kernel32, "wine_get_dos_file_name"))) return;
+        if (!under_wine()) return;
         const auto shim = game_directory / L"api-ms-win-core-debug-minidump-l1-1-0.dll";
         std::error_code ec;
         if (fs::exists(shim, ec)) return;
@@ -608,6 +633,7 @@ void ensure_minidump_apiset_shim(const fs::path& game_directory) noexcept {
 
 DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
                  const std::function<void(DWORD)>& created) {
+    trace::Scope timing("launcher.start_game", "app.start");
     const auto& self = session.self;
     auto paths = session.paths;
     paths.game = canonical_file(paths.game, L"Skate.exe");
@@ -745,6 +771,11 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     command += mod_arguments;
     if (!mod_arguments.empty()) logging::write(logging::Level::info, logging::Channel::launcher, L"ModData folder detected; loading ModData/Default");
     logging::write(logging::Level::info, logging::Channel::launcher, L"Child command: " + command);
+    if (GetEnvironmentVariableW(L"RESKATE_MANGOHUD_HELD", nullptr, 0)) {
+        // Held off for the launcher's own window only (relaunch_without_mangohud).
+        set_environment(L"DISABLE_MANGOHUD", nullptr);
+        set_environment(L"RESKATE_MANGOHUD_HELD", nullptr);
+    }
     std::vector<wchar_t> command_buffer(command.begin(), command.end());
     command_buffer.push_back(L'\0');
     STARTUPINFOW startup{sizeof(startup)};

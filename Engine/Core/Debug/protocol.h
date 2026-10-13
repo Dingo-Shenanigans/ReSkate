@@ -3,7 +3,7 @@
 #include <array>
 #include <string>
 
-namespace dingosdk::backtrace {
+namespace dingosdk::crash_report {
 inline constexpr DWORD protocol_version = 2;
 inline constexpr DWORD capture_timeout_ms = 15000;
 struct SharedReport {

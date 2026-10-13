@@ -183,10 +183,8 @@ const MultiplayerLobby *SteamServerBrowser::find(std::uint64_t id) const {
 }
 void SteamServerBrowser::refresh(std::uint64_t now) {
     if (!api().open()) return;
-    // Steam stops answering a game that asks often (an empty list, for minutes): one search at a
-    // time, a quarter of a minute apart, and three quarters after one that came back empty.
-    // Opening or refreshing the browser sooner shows what the last search found.
-    if (started_ && (!searches_.empty() || now - started_ < (internet_listed_ ? 15000000 : 45000000))) return;
+    // How often this may run is the session's to say (multiplayer_browse_interval_us). A search
+    // still waiting on pings that never answer is dropped for the new one.
     servers_ = api().servers();
     if (!servers_) return;
     release();

@@ -3,6 +3,11 @@
 #include "Extension/Customization/developer_board.h"
 #include "Extension/Assets/live_mods.h"
 #include "Extension/Assets/map_download.h"
+#include "Extension/Assets/map_icons.h"
+#include "Extension/Music/spotify_station.h"
+#include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/Music/music_inject.h"
+#include "Extension/World/texture_handle_limit.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/job_spin.h"
@@ -11,6 +16,8 @@
 #include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/Scoring/scoring_hud.h"
 #include "Extension/RoadRash/road_rash.h"
+#include "Extension/BoardBreak/board_break.h"
+#include "Extension/Skater/grind_exit_control.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
@@ -107,6 +114,9 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
 // - EA's error reporting (EadpErrorsData) only builds reports for EA's servers, which
 //   ea_service_block keeps unreachable. Set here because the same values given on the game's
 //   command line do not take;
+// - the in-game advertising (billboards served by EA's ad service, with a render pass that
+//   measures how long each was on screen) has nothing to show offline and still costs frame
+//   time: its three switches, the renderer's, the service's and the game's own;
 // - the world-transform update, which grows with every remote player's entities, is split
 //   over more jobs than Game.cfg's 2.
 void apply_performance_settings() {
@@ -118,7 +128,7 @@ void apply_performance_settings() {
     next_attempt = now + 500;
     try {
         const auto jobs = std::to_string(std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u));
-        const std::array<std::pair<const char*, std::string>, 10> settings{{
+        const std::array<std::pair<const char*, std::string>, 13> settings{{
             {"DingoTelemetry.Enable", "0"},
             {"DingoTelemetry.EnablePlayerTickEvents", "0"},
             {"DingoTelemetry.EnablePerformanceEvents", "0"},
@@ -128,6 +138,9 @@ void apply_performance_settings() {
             {"EadpErrorsData.AutoSendEventFromPersistence", "0"},
             {"PerformanceTracker.Enabled", "0"},
             {"PerformanceTracker.JuiceLogPerformance", "0"},
+            {"AdTech.AdTechEnable", "0"},
+            {"AdTechService.AdTechEnable", "0"},
+            {"DingoAdTech.EnableAdTech", "0"},
             {"EcsWorldTransform.ParallelWorldTransformUpdateJobCount", jobs},
         }};
         bool pending = false;
@@ -402,12 +415,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // The map download's card (map_download.h) is answered with the same two binds, and by a
     // controller, whose buttons are kept from the game while it asks.
     const bool map_prompt = dingosdk::map_download::asking();
+    // The vote for the next map comes up the same way (overlay.h: map_vote_asking), when no map is being asked about.
+    const bool map_vote = !map_prompt && dingosdk::overlay::map_vote_asking();
     // The hold on the game's input outlasts the card's question until everything pressed is let
     // go (or a moment has passed): the button that answered must not also be a press in the
     // game, or in the pause menu behind the card.
     static bool prompt_held{};
     static ULONGLONG prompt_release_by{};
-    if (map_prompt) {
+    if (map_prompt || map_vote) {
         prompt_held = true;
         prompt_release_by = 0;
     } else if (prompt_held) {
@@ -418,7 +433,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
                              std::ranges::any_of(held.keys, [](std::uint64_t word) { return word != 0; });
         if (!pressed || GetTickCount64() >= prompt_release_by) prompt_held = false;
     }
-    DingoSDKOverlaySetPromptInputCapture(map_prompt || prompt_held);
+    DingoSDKOverlaySetPromptInputCapture(map_prompt || map_vote || prompt_held);
     const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
     bool freecam_controller = dingosdk::local_freecam_controller();
     {
@@ -446,10 +461,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
     DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
-        vote_yes_combo || vote_no_combo || poll_answers || map_prompt ||
+        vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote ||
         std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
         // (The card that asks has the pointer, as a menu does: it is still read for.)
-        DingoSDKOverlayReadControllerInput(&controller, map_prompt);
+        DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
         if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
             std::array<char, 256> result{};
@@ -475,7 +490,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
         static bool prompt_before{};
         static std::uint32_t buttons_before{};
         // The keyboard's arrows, Enter and Esc do the same, above the pad's bits.
-        const std::uint32_t buttons = !map_prompt ? 0
+        const bool prompt = map_prompt || map_vote;
+        const std::uint32_t buttons = !prompt ? 0
             : (controller.available ? controller.buttons : 0) | (DingoSDKOverlayReadPromptKeys() << 20);
         if (map_prompt && prompt_before) {
             const auto pressed = buttons & ~buttons_before;
@@ -484,6 +500,16 @@ void update_model(std::uintptr_t client, TickState& frame) {
             if (pressed & (0x1000 | 1u << 22)) dingosdk::map_download::answer(dingosdk::map_download::picked());
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::map_download::answer(false);
         }
+        // The vote's popup: left and right move the pick, A votes for it, B closes it.
+        static bool vote_before{};
+        if (map_vote && vote_before) {
+            const auto pressed = buttons & ~buttons_before;
+            if (pressed & (0x0004 | 1u << 20)) dingosdk::overlay::map_vote_move(-1);
+            if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::map_vote_move(1);
+            if (pressed & (0x1000 | 1u << 22)) dingosdk::overlay::map_vote_take();
+            else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::map_vote_dismiss();
+        }
+        vote_before = map_vote;
         prompt_before = map_prompt;
         buttons_before = buttons;
     }
@@ -795,6 +821,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::scoring_hud::on_client_tick();
     dingosdk::hall_of_meat::on_client_tick();
     dingosdk::road_rash::on_client_tick(client);
+    dingosdk::board_break::on_client_tick(client);
+    dingosdk::grind_exit_control::on_client_tick(client);
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;
     DINGO_PROFILE_ZONE("tick/update_model/world model (500 ms)");
@@ -934,6 +962,11 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.player_card = dingosdk::local_profile_player_card();
     model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
     model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood()};
+    const auto breakable_deck = dingosdk::board_break::deck();
+    model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),
+                         dingosdk::board_break::deck_label(breakable_deck)};
+    model.grind_exit = {dingosdk::grind_exit_control::available(), dingosdk::grind_exit_control::enabled(),
+                        dingosdk::grind_exit_control::toe_heel(), dingosdk::grind_exit_control::stance()};
     model.bindings = dingosdk::local_profile_controller_bindings();
     model.camera_mods = dingosdk::local_camera_mod_controls();
     model.parks = dingosdk::local_profile_parks();
@@ -1193,6 +1226,23 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             // fetch it (map_download.h), which then applies it and joins the session again.
             if (const auto need = dingosdk::multiplayer::take_map_need()) dingosdk::map_download::offer(*need);
             dingosdk::map_download::tick();
+            dingosdk::map_icons::tick();
+    dingosdk::texture_handle_limit::tick();
+    // (Whether a menu of the game's is up, the music screen among them: a playlist changed then
+    // is the player's own choice, and one changed in play is a speaker's music being grabbed.)
+    {
+        const bool menu = dingosdk::multiplayer::sample_game_ui_state(r.base).in_menu;
+        static bool was{};
+        if (menu != was) {
+            was = menu;
+            try {
+                dingosdk::logging::log(dingosdk::logging::Level::debug, dingosdk::logging::Channel::music, "Trace: a menu of the game's is {}.", menu ? "up" : "no longer up");
+            } catch (...) {}
+        }
+        dingosdk::spotify_station::set_music_screen(menu);
+    }
+    dingosdk::spotify_station::tick();
+    dingosdk::music_inject::tick();
         }
         dingosdk::multiplayer::refresh_identity_lists();
         // How much memory the game holds, beside what a session adds to it: said when it has

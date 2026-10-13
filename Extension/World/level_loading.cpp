@@ -3,6 +3,7 @@
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/World/client_state.h"
@@ -98,6 +99,42 @@ bool snapshot(std::uintptr_t client, Sample& s) {
     return read(client + 0xc4, after) && after == s.state && read(client, vt) &&
         vt == o.base + addr::engine::client_vtable;
 }
+std::chrono::milliseconds since_process_start() noexcept {
+    FILETIME created{}, exited{}, kernel{}, user{}, now{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return {};
+    GetSystemTimeAsFileTime(&now);
+    const auto ticks = [](const FILETIME& time) { return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime; };
+    return std::chrono::milliseconds(ticks(now) > ticks(created) ? (ticks(now) - ticks(created)) / 10000 : 0);
+}
+// Timings for Sentry (Engine/Core/Debug/trace.h), from the same observations as the log:
+// each load, the launch up to the first playable level, and the frame pacing of the time
+// spent in a level. Called with the observer's lock held.
+void trace_progress(const level_logging::Progress& progress, bool was_running, std::uint64_t started, std::uint64_t at) {
+    static std::uint64_t session_started{};
+    static std::string session_destination;
+    if (!was_running && progress.running && session_started) {
+        // A new load ends the level before it. Short stays say nothing about its frame rate.
+        const auto pacing = trace::take_frame_pacing();
+        const auto lasted = at >= session_started ? at - session_started : 0;
+        if (lasted >= 10000 && pacing.frames && pacing.total_ns)
+            trace::record("game.level_session", "app.session", std::chrono::milliseconds(lasted), true,
+                {{"destination", session_destination}},
+                {{"fps_avg", static_cast<double>(pacing.frames) * 1e9 / static_cast<double>(pacing.total_ns)},
+                 {"hitches", static_cast<double>(pacing.hitches)},
+                 {"worst_frame", static_cast<double>(pacing.worst_ns) / 1e6, "millisecond"}});
+        session_started = 0;
+    }
+    // A load that just reached a terminal state; "first" is the one behind the splash screen.
+    if (!was_running || progress.running || progress.started != started || at < started) return;
+    const bool active = progress.state == 13 || progress.state == 21;
+    trace::record("game.level_load", "app.load", std::chrono::milliseconds(at - started), active,
+        {{"destination", progress.destination}, {"first", progress.sequence == 1 ? "true" : "false"}});
+    if (!active) return;
+    if (progress.sequence == 1) trace::record("game.boot", "app.start", since_process_start());
+    (void)trace::take_frame_pacing();
+    session_started = at;
+    session_destination = progress.destination;
+}
 bool observe(std::uintptr_t client, unsigned next, unsigned previous, std::uint64_t at, bool exact) noexcept {
     auto& o = observer();
     try {
@@ -108,7 +145,10 @@ bool observe(std::uintptr_t client, unsigned next, unsigned previous, std::uint6
         sample.at = at;
         sample.previous = previous;
         if (!snapshot(client, sample) || (exact && (next > 26 || previous > 26 || sample.state != next))) return false;
+        const auto was_running = o.progress.running;
+        const auto started = o.progress.started;
         o.progress.observe(sample, exact, &emit);
+        trace_progress(o.progress, was_running, started, sample.at);
         if (o.dropped.load() && !o.drops_reported) {
             o.drops_reported = true;
             emit(Level::warning, "Some level observations were skipped; recorded stage timings may be incomplete.");

@@ -1,11 +1,12 @@
 #include <Windows.h>
 #include <DbgHelp.h>
-#include "Engine/Core/Debug/backtrace.h"
+#include "Engine/Core/Debug/crash_report.h"
 #include "Engine/Core/Debug/native_dump.h"
 #include "Engine/Core/Debug/upload.h"
 #include "Engine/Core/Debug/multipart.h"
 #include "Engine/Core/Debug/protocol.h"
-#include "backtrace_config.h"
+#include "Engine/Core/Debug/trace.h"
+#include "crash_report_config.h"
 #include "Engine/Core/Log/logging.h"
 #include <fstream>
 #include <format>
@@ -13,7 +14,7 @@
 #include <thread>
 
 using namespace dingosdk;
-using namespace dingosdk::backtrace;
+using namespace dingosdk::crash_report;
 namespace {
 constexpr DWORD test_exception = 0xe0424242;
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -35,19 +36,53 @@ std::string read(const std::filesystem::path& path) {
 }
 void endpoint_checks() {
     Endpoint endpoint;
-    check(parse_endpoint(L"https://submit.backtrace.io/team/token/minidump", endpoint), "Hosted endpoint rejected");
-    check(endpoint.host == L"submit.backtrace.io" && endpoint.port == 443 && endpoint.resource == L"/team/token/minidump", "Hosted URL components incorrect");
-    check(parse_endpoint(L"https://team.sp.backtrace.io:6098/post?format=minidump&token=test", endpoint), "Listener endpoint rejected");
-    check(endpoint.port == 6098 && endpoint.resource == L"/post?format=minidump&token=test", "Listener query lost");
+    check(parse_endpoint(L"https://sentry.example.com/api/2/minidump/?sentry_key=0123abcd", endpoint), "Hosted endpoint rejected");
+    check(endpoint.host == L"sentry.example.com" && endpoint.port == 443 && endpoint.resource == L"/api/2/minidump/?sentry_key=0123abcd", "Hosted URL components incorrect");
+    check(parse_endpoint(L"https://sentry.example.com:9000/api/2/minidump/?sentry_key=0123abcd", endpoint), "Endpoint with a port rejected");
+    check(endpoint.port == 9000 && endpoint.resource == L"/api/2/minidump/?sentry_key=0123abcd", "Endpoint port or key lost");
     for (const auto* value : {L"", L"http://example.com/post", L"https://user:password@example.com/post",
             L"https://example.com/post#fragment", L"https://example.com/post\r\nheader", L"https:///post", L"https://example.com"})
         check(!parse_endpoint(value, endpoint), "Unsafe endpoint accepted");
     std::string id;
-    check(accepted_response(200, R"({"response":"ok","_rxid":"1234-abcd"})", id) && id == "1234-abcd", "Valid receipt rejected");
-    for (const auto* response : {R"({"response":"error","_rxid":"1234"})", R"({"response":"ok"})", "<html>OK</html>", R"({"response":"ok","_rxid":"bad\nvalue"})"})
+    const std::string receipt = "c350c4ee-5e2b-4b77-9b2e-5e4a2b0e1b9d";
+    check(accepted_response(200, receipt + "\n", id) && id == receipt, "Valid receipt rejected");
+    check(accepted_response(200, "c350c4ee5e2b4b779b2e5e4a2b0e1b9d", id), "Unhyphenated receipt rejected");
+    for (const auto* response : {"", "\n", "<html>OK</html>", R"({"detail":"ok"})", "c350c4ee-5e2b-4b77-9b2e", "c350c4ee-5e2b-4b77-9b2e-5e4a2b0e1b9d-00"})
         check(!accepted_response(200, response, id), "Unconfirmed submission accepted");
-    check(!accepted_response(429, R"({"response":"ok","_rxid":"1234"})", id), "Rate limited submission accepted");
-    check(!accepted_response(500, R"({"response":"ok","_rxid":"1234"})", id), "Failed submission accepted");
+    check(!accepted_response(429, receipt, id), "Rate limited submission accepted");
+    check(!accepted_response(500, receipt, id), "Failed submission accepted");
+}
+void trace_checks() {
+    check(trace::envelope_url(L"https://sentry.example.com/api/2/minidump/?sentry_key=0123abcd") ==
+        L"https://sentry.example.com/api/2/envelope/?sentry_key=0123abcd", "Envelope endpoint not derived from the minidump endpoint");
+    check(trace::envelope_url(L"https://example.com/post").empty(), "Timings would be sent to an endpoint that is not Sentry's");
+    trace::Transaction transaction;
+    transaction.name = "game.level_load"; transaction.operation = "app.load";
+    transaction.trace_id = "0123456789abcdef0123456789abcdef"; transaction.release = "reskate@fixture-build";
+    transaction.process = "Skate.exe"; transaction.ok = false;
+    transaction.finished = trace::Clock::now(); transaction.started = transaction.finished - std::chrono::milliseconds(1500);
+    transaction.tags = {{"destination", std::string(300, 'x')}};
+    transaction.measurements = {{"fps_avg", 59.5}, {"worst_frame", 120.0, "millisecond"}};
+    const auto wire = trace::envelope(transaction);
+    const auto first = wire.find('\n'), second = wire.find('\n', first + 1);
+    check(first != std::string::npos && second != std::string::npos && wire.back() == '\n', "Envelope is not three lines");
+    const auto header = Json::parse(wire.substr(0, first)), item = Json::parse(wire.substr(first + 1, second - first - 1));
+    const auto payload = wire.substr(second + 1, wire.size() - second - 2);
+    const auto event = Json::parse(payload);
+    check(item.at("type").string() == "transaction" && item.at("length").get<std::size_t>() == payload.size(), "Envelope item header wrong");
+    check(header.at("event_id").string() == event.at("event_id").string() && event.at("event_id").string().size() == 32, "Event ID missing");
+    const auto& context = event.at("contexts").at("trace");
+    check(context.at("trace_id").string() == transaction.trace_id && context.at("span_id").string().size() == 16 &&
+        context.at("op").string() == "app.load" && context.at("status").string() == "internal_error", "Trace context wrong");
+    check(event.at("transaction").string() == "game.level_load" && event.at("release").string() == "reskate@fixture-build" &&
+        event.at("tags").at("process").string() == "Skate.exe" && event.at("tags").at("destination").string().size() == 200, "Transaction fields wrong");
+    check(event.at("measurements").at("fps_avg").at("value").get<double>() == 59.5 &&
+        event.at("measurements").at("worst_frame").at("unit").string() == "millisecond", "Measurements wrong");
+    check(event.at("start_timestamp").string() < event.at("timestamp").string() && event.at("timestamp").string().back() == 'Z', "Timestamps wrong");
+    SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"0");
+    check(!trace::start(), "Timings sent with crash reporting off");
+    trace::frame(1000000000);
+    check(trace::take_frame_pacing().frames == 0, "Frame pacing counted while timings are off");
 }
 void attachment_checks(const std::filesystem::path& root) {
     const auto directory = root / L"attachments";
@@ -87,7 +122,9 @@ void attachment_checks(const std::filesystem::path& root) {
                 std::make_pair(header, wire.substr(end + 4, next - end - 4))).second, "Duplicate MIME field");
             cursor = next + 2;
         }
-        check(parts.size() == 5 && parts.at("version").second == "fixture-build", "Attributes lost during multipart upload");
+        const auto event = Json::parse(parts.at("sentry").second);
+        check(parts.size() == 4 && event.at("tags").at("version").string() == "fixture-build" &&
+            event.at("release").string() == "reskate@fixture-build", "Attributes lost during multipart upload");
         check(parts.at("upload_file_minidump").second == dump_bytes, "Dump bytes corrupted");
         check(parts.at("attachment_ReSkate.log").second == original_log &&
             parts.at("attachment_ReSkate.log").first.find("filename=\"ReSkate.log\"") != std::string::npos, "Log is not a named file attachment");
@@ -121,7 +158,7 @@ void queue_checks(const std::filesystem::path& root) {
     const Sender success = [](const auto&, const auto& queued_dump, const Json& attributes) {
         check(attributes.at("version").string() == "original-build", "Queued report lost original build attributes");
         check(read(log_attachment_path(queued_dump)) == "original-session-log", "Retry lost original session log");
-        return UploadResult{true, 200, 0, "1234-abcd"};
+        return UploadResult{true, 200, 0, "c350c4ee5e2b4b779b2e5e4a2b0e1b9d"};
     };
     Handle lock(CreateFileW((queue / L"queue.lock").c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
     check(upload_pending(L"test", queue, success) == 0 && std::filesystem::exists(dump), "Queue lock failed");
@@ -172,7 +209,7 @@ void crash_check(const std::filesystem::path& root, bool native) {
     DWORD code{}; GetExitCodeProcess(child.value, &code);
     check(code == 42, "Previous exception handler was not preserved");
     const auto log = read(root / L"ReSkate.log");
-    check(log.find("Backtrace crash reporting enabled") != std::string::npos, "Helper did not start");
+    check(log.find("Crash reporting enabled") != std::string::npos, "Helper did not start");
     check((log.find("ReSkate unhandled exception") != std::string::npos) != native, "Fixture did not exercise the expected exception handler");
     const auto queue = queue_directory(root / L"crashes", L"https://127.0.0.1:1/test/minidump");
     std::filesystem::path dump;
@@ -219,6 +256,15 @@ int wmain(int argc, wchar_t** argv) {
                 << dump->exception_code << "; address 0x" << dump->exception_address << '\n';
             return 0;
         }
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--submit-trace") {
+            SetEnvironmentVariableW(L"RESKATE_TRACING", L"1");
+            check(trace::start(), "Timings are not configured for this build");
+            trace::record("integration.test", "test", std::chrono::milliseconds(1234), true, {{"integration.test", "true"}},
+                {{"fps_avg", 60.0}});
+            trace::flush(std::chrono::seconds(15));
+            std::cout << "Sent one synthetic transaction named integration.test; look for it in Sentry.\n";
+            return 0;
+        }
         if (argc == 3 && std::wstring_view(argv[1]) == L"--submit-fixture") {
             const std::filesystem::path dump(argv[2]);
             auto bytes = read(dump);
@@ -230,12 +276,12 @@ int wmain(int argc, wchar_t** argv) {
                 "Only synthetic regression-test crashes may be submitted by this command");
             auto attributes = Json::parse(read(dump.wstring() + L".json"));
             attributes["integration.test"] = "true";
-            attributes["error.message"] = "Synthetic ReSkate Backtrace integration test; no game crash";
-            auto url = environment(L"RESKATE_BACKTRACE_URL");
+            attributes["error.message"] = "Synthetic ReSkate crash report integration test; no game crash";
+            auto url = environment(L"RESKATE_CRASH_REPORT_URL");
             if (url.empty()) url = configured_url;
             const auto result = upload_report(url, dump, attributes);
             std::cout << "HTTP " << result.http_status << "; Windows error " << result.error << "; report " << result.report_id << '\n';
-            check(result.accepted, "Backtrace did not confirm test report");
+            check(result.accepted, "Sentry did not confirm test report");
             return 0;
         }
         if (argc == 3 && (std::wstring_view(argv[1]) == L"--crash" || std::wstring_view(argv[1]) == L"--native-crash")) {
@@ -247,7 +293,7 @@ int wmain(int argc, wchar_t** argv) {
                 std::filesystem::create_directories(native_fixture_directory);
             }
             SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"1");
-            SetEnvironmentVariableW(L"RESKATE_BACKTRACE_URL", L"https://127.0.0.1:1/test/minidump");
+            SetEnvironmentVariableW(L"RESKATE_CRASH_REPORT_URL", L"https://127.0.0.1:1/test/minidump");
             SetUnhandledExceptionFilter(finish_child);
             logging::Options options; options.directory = argv[2]; options.truncate_file = true;
             check(logging::initialize(options), "Fixture logging failed");
@@ -256,18 +302,19 @@ int wmain(int argc, wchar_t** argv) {
             return 3;
         }
         check(argc == 2, "Pass a fixture root");
+        trace_checks();
         const auto root = std::filesystem::path(argv[1]) / std::format(L"run-{}-{}", GetCurrentProcessId(), GetTickCount64());
         std::filesystem::create_directories(root);
         SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"0");
         check(start(root) == StartResult::disabled, "Explicit opt-out ignored");
         SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"1");
-        SetEnvironmentVariableW(L"RESKATE_BACKTRACE_URL", L"http://invalid/post");
+        SetEnvironmentVariableW(L"RESKATE_CRASH_REPORT_URL", L"http://invalid/post");
         check(start(root) == StartResult::failed, "Invalid endpoint enabled reporter");
         endpoint_checks();
         attachment_checks(root);
         queue_checks(root);
         crash_check(root / L"direct", false);
         crash_check(root / L"native", true);
-        std::cout << "Backtrace endpoint, receipts, multipart attachments, log snapshots, retries, retention, opt-out, exception chaining, direct capture and native-handler fallback checks passed.\n";
+        std::cout << "Timing envelopes, endpoint, receipts, multipart attachments, log snapshots, retries, retention, opt-out, exception chaining, direct capture and native-handler fallback checks passed.\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

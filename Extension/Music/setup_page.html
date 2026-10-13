@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ReSkate Music</title>
+<style>
+@font-face{font-family:"RS Heading";src:url("/font/heading.ttf") format("truetype");font-display:swap}
+@font-face{font-family:"RS Body";src:url("/font/body.ttf") format("truetype");font-display:swap}
+@font-face{font-family:"RS Brush";src:url("/font/brush.ttf") format("truetype");font-display:swap}
+:root{
+  --bg-top:#090b0f;--bg-bottom:#11141b;--tile:#1a1a1a;--tile-2:#2d2d2f;--tile-3:#3d3e42;--line:rgba(255,255,255,.12);
+  --blue:#0183ff;--blue-hover:#2898ff;--blue-active:#006ed7;--good:#2eb85c;--warn:#ffb10b;--danger:#ff5c5c;
+  --text:#f5f5f5;--muted:#96989e;--ink:#000;
+  --heading:"RS Heading","Montserrat","Segoe UI",system-ui,sans-serif;
+  --body:"RS Body","Montserrat","Segoe UI",system-ui,sans-serif;
+  --brush:"RS Brush","Permanent Marker","Segoe Print",cursive;
+}
+*{box-sizing:border-box}
+html{background:var(--bg-top)}
+body{margin:0;min-height:100vh;color:var(--text);font:15px/1.55 var(--body);
+  background:linear-gradient(180deg,var(--bg-top),var(--bg-bottom)) fixed}
+.shell{max-width:892px;margin:0 auto;padding:0 16px}
+body{padding-right:380px}
+main{min-width:0;padding:32px 0 140px}
+a{color:var(--blue-hover)}
+header.top{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+.brand{font:400 46px/1 var(--brush);letter-spacing:.01em;transform:rotate(-2deg);transform-origin:left bottom;margin:0}
+.brand span{color:var(--blue)}
+.lede{color:var(--muted);margin:10px 0 0;max-width:46ch}
+.live{display:inline-flex;align-items:center;gap:8px;font:12px/1 var(--heading);letter-spacing:.08em;text-transform:uppercase;
+  background:var(--tile);border:1px solid var(--line);padding:9px 12px}
+.live i{width:9px;height:9px;border-radius:50%;background:var(--danger)}
+.live.on i{background:var(--good)}
+
+/* a source */
+.card{background:var(--tile);border-left:4px solid var(--tile-3);margin:0 0 16px;position:relative}
+.card.ready{border-left-color:var(--good)}
+.card.todo{border-left-color:var(--blue)}
+.card.problem{border-left-color:var(--warn)}
+.card > summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:14px;padding:16px 18px}
+.card > summary::-webkit-details-marker{display:none}
+.card h2{font:20px/1.1 var(--heading);text-transform:uppercase;letter-spacing:.03em;margin:0}
+.card .what{color:var(--muted);font-size:13.5px;margin-top:3px}
+.grow{flex:1;min-width:0}
+.pill{font:11px/1 var(--heading);letter-spacing:.09em;text-transform:uppercase;padding:7px 10px;background:var(--tile-3);color:var(--text);white-space:nowrap}
+.ready .pill{background:var(--good);color:var(--ink)}
+.todo .pill{background:var(--blue);color:var(--ink)}
+.problem .pill{background:var(--warn);color:var(--ink)}
+.chev{width:10px;height:10px;border-right:3px solid var(--muted);border-bottom:3px solid var(--muted);transform:rotate(45deg);transition:transform .15s;margin:0 4px 4px 0}
+details[open] > summary .chev{transform:rotate(-135deg);margin:4px 4px 0 0}
+.body{padding:2px 18px 20px}
+
+/* steps */
+ol.steps{list-style:none;margin:0;padding:0;counter-reset:step}
+ol.steps > li{counter-increment:step;position:relative;padding:12px 0 12px 46px;border-top:1px solid var(--line)}
+ol.steps > li::before{content:counter(step);position:absolute;left:0;top:11px;width:30px;height:30px;display:grid;place-items:center;
+  font:14px/1 var(--heading);background:var(--tile-3);color:var(--text)}
+ol.steps > li.now::before{background:var(--blue);color:var(--ink)}
+ol.steps > li.now > .title{color:#fff}
+ol.steps > li.done::before{content:"\2713";background:var(--good);color:var(--ink)}
+ol.steps > li.done > .title{color:var(--muted)}
+.title{font:15px/1.35 var(--heading);letter-spacing:.01em}
+.help{color:var(--muted);font-size:13.5px;margin:4px 0 0}
+.opt{font:10.5px/1 var(--heading);letter-spacing:.09em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);padding:3px 6px;margin-left:8px;vertical-align:middle}
+
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+button,.btn{font:13px/1 var(--heading);letter-spacing:.06em;text-transform:uppercase;border:0;padding:12px 16px;cursor:pointer;
+  background:var(--tile-3);color:var(--text);text-decoration:none;display:inline-block}
+button:hover,.btn:hover{background:#4a4b50}
+button.primary,.btn.primary{background:var(--blue);color:var(--ink)}
+button.primary:hover,.btn.primary:hover{background:var(--blue-hover)}
+button.primary:active{background:var(--blue-active)}
+button:disabled{opacity:.5;cursor:default}
+button.quiet{background:transparent;border:1px solid var(--line);color:var(--muted)}
+button.quiet:hover{color:var(--text);background:rgba(255,255,255,.06)}
+:focus-visible{outline:2px solid var(--blue-hover);outline-offset:2px}
+input[type=text],select{width:100%;background:#0d0e11;color:var(--text);border:1px solid var(--tile-3);padding:11px 12px;font:14px var(--body)}
+input[type=text]:focus,select:focus{border-color:var(--blue);outline:0}
+.copy{display:flex;align-items:stretch;margin-top:8px;max-width:520px}
+.copy code{flex:1;background:#0d0e11;border:1px solid var(--tile-3);border-right:0;padding:11px 12px;font:13px ui-monospace,Consolas,monospace;overflow:auto;white-space:nowrap}
+.note{margin-top:10px;padding:10px 12px;background:rgba(255,177,11,.1);border-left:3px solid var(--warn);color:#ffd98a;font-size:13.5px}
+.note.bad{background:rgba(255,92,92,.1);border-left-color:var(--danger);color:#ffb3b3}
+.note.ok{background:rgba(46,184,92,.1);border-left-color:var(--good);color:#a9e6bf}
+.note:empty{display:none}
+ul.list{list-style:none;margin:10px 0 0;padding:0}
+ul.list li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px;background:var(--tile-2);margin-top:4px}
+ul.list li span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ul.list small{color:var(--muted);white-space:nowrap}
+.bar{height:8px;background:var(--tile-3);margin-top:10px;max-width:420px}
+.bar i{display:block;height:100%;background:var(--blue);width:0;transition:width .2s}
+.options{margin-top:10px}
+.option{background:var(--tile-2);border-left:3px solid var(--tile-3);padding:12px 14px}
+.option.inuse{border-left-color:var(--good)}
+.option .tag{display:flex;align-items:center;gap:8px;margin-bottom:6px;font:11px/1 var(--heading);letter-spacing:.09em;text-transform:uppercase}
+.option .tag b{background:var(--tile-3);padding:5px 8px}
+.option .tag .rec{color:var(--blue-hover)}
+.option .tag .using{display:none;background:var(--good);color:var(--ink);padding:5px 8px}
+.option.inuse .tag .using{display:inline}
+.hl{color:var(--ink);background:var(--blue);padding:1px 6px;font-family:var(--heading);font-weight:400;white-space:nowrap}
+.or{font:12px/1 var(--heading);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);text-align:center;padding:10px 0}
+details.more{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+details.more > summary{cursor:pointer;font:13px/1.3 var(--heading);letter-spacing:.04em;text-transform:uppercase;color:var(--blue-hover)}
+.slider{display:flex;align-items:center;gap:14px;margin-top:8px}
+.slider input{flex:1;accent-color:var(--blue)}
+.slider b{font:15px var(--heading);min-width:52px;text-align:right}
+.eq{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;max-width:460px;margin-top:10px;background:var(--tile-2);padding:14px 8px 12px}
+.eq .band{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}
+.eq .band b{font:14px/1 var(--heading)}
+.eq .band span{font:11px/1.2 var(--heading);letter-spacing:.06em;text-transform:uppercase}
+.eq .band small{color:var(--muted);font-size:12px}
+.eq input[type=range]{writing-mode:vertical-lr;direction:rtl;height:132px;width:28px;accent-color:var(--blue)}
+.presets button{padding:9px 12px;font-size:12px}
+.found li small{display:block;white-space:normal}
+.two{display:flex;flex-direction:column;min-width:0}
+/* what is lined up, beside the rest as a music player has it */
+.side{position:fixed;top:0;right:0;bottom:81px;width:380px;display:flex;flex-direction:column;background:var(--tile);border-left:1px solid var(--line);min-width:0;z-index:1}
+.np{position:relative;flex:none;background:var(--tile-2)}
+.np img{display:block;width:100%;height:min(34vh,348px);object-fit:cover}
+.np img:not([src]){visibility:hidden}
+.np .over{position:absolute;left:0;right:0;bottom:0;padding:36px 16px 12px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.88))}
+.np .lab{font:11px/1 var(--heading);letter-spacing:.1em;text-transform:uppercase;color:var(--blue-hover);margin-bottom:6px}
+.np .t{font:18px/1.2 var(--heading);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.np .a{color:#d0d1d4;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px 4px;flex:none}
+.qhead h2{font:16px/1.1 var(--heading);text-transform:uppercase;letter-spacing:.05em;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side .help{padding:0 16px 16px}
+#qBody{flex:1;min-height:0;display:flex;flex-direction:column}
+#qBody .find{padding:8px 16px 10px;flex:none}
+ol.queue{list-style:none;margin:0;padding:0 8px 10px;flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--tile-3) transparent}
+ol.queue button{width:100%;display:flex;align-items:center;gap:12px;text-align:left;text-transform:none;letter-spacing:0;background:transparent;padding:6px 8px;font:14px/1.3 var(--body)}
+ol.queue button:hover{background:var(--tile-2)}
+ol.queue .art{position:relative;width:46px;height:46px;flex:none;background:var(--tile-3);display:grid;place-items:center;color:var(--muted);font:18px/1 var(--heading)}
+ol.queue .art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+ol.queue .words{min-width:0;flex:1}
+ol.queue b{display:block;font:14px/1.3 var(--heading);font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ol.queue span.by{display:block;color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ol.queue i{flex:none;font:11px/1 var(--heading);font-style:normal;color:var(--muted);min-width:22px;text-align:right}
+ol.queue li.cur button{background:var(--tile-2);box-shadow:inset 3px 0 0 var(--blue)}
+ol.queue li.cur b{color:var(--blue-hover)}
+ol.queue li.cur i{color:var(--blue-hover)}
+ol.queue.wait button{cursor:progress}
+ol.queue.wait li:not(.cur){opacity:.5}
+.loading{color:var(--warn)!important}
+@keyframes pulse{50%{opacity:.45}}
+.loading,ol.queue.wait li.cur{animation:pulse 1.1s ease-in-out infinite}
+@media (max-width:1000px){body{padding-right:300px}.side{width:300px}}
+@media (max-width:720px){body{padding-right:0}main{padding-bottom:0}.side{position:static;width:auto;margin:0 0 140px;border-left:0;border-top:4px solid var(--blue)}ol.queue{max-height:520px}.np img{height:260px}}
+label.check{display:flex;gap:10px;align-items:flex-start;margin-top:14px;cursor:pointer}
+label.check input{width:18px;height:18px;margin-top:2px;accent-color:var(--blue)}
+
+/* what is playing, kept in view */
+.player{position:fixed;left:0;right:0;bottom:0;height:81px;z-index:2;background:rgba(13,14,17,.96);border-top:1px solid var(--line);backdrop-filter:blur(6px)}
+.player .in{padding:12px 20px;display:flex;align-items:center;gap:14px}
+.player img{width:56px;height:56px;object-fit:cover;background:var(--tile-2);flex:none}
+.player img:not([src]){visibility:hidden}
+.player .t{font:15px/1.25 var(--heading);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.player .a{color:var(--muted);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.player .ctl{display:flex;gap:6px;flex:none}
+.player .ctl button{padding:11px 13px}
+@media (max-width:560px){.brand{font-size:36px}.player .ctl button{padding:10px}.card > summary{flex-wrap:wrap}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="shell">
+<main>
+<header class="top">
+  <div>
+    <h1 class="brand">Re<span>Skate</span> Music</h1>
+    <p class="lede">Play Spotify, YouTube Music, your own files, internet radio or any app on your PC through the in-game music player. Set up what you want below; skip the rest.</p>
+  </div>
+  <div class="live" id="live"><i></i><span id="liveText">Connecting to the game</span></div>
+</header>
+
+<!-- SPOTIFY -->
+<details class="card" id="spotify" open>
+  <summary><div class="grow"><h2>Spotify</h2><div class="what">Needs Spotify Premium. Sound comes straight from Spotify into the game.</div></div><span class="pill" id="spPill">…</span><span class="chev"></span></summary>
+  <div class="body">
+    <ol class="steps">
+      <li id="spStep1"><div class="title">Pick “ReSkate” in Spotify</div>
+        <p class="help">Open Spotify on your phone or this PC (same Wi-Fi or network as this PC), open its <b>device list</b>, and choose <b>ReSkate</b>. You only do this once.</p>
+        <div class="note" id="spDeviceNote"></div>
+      </li>
+      <li id="spStep2"><div class="title">Play it in the game</div>
+        <p class="help">In the game’s music screen, open the <b>Spotify</b> row and pick the <b>Spotify</b> tile. If the row is not there yet, restart the game once.</p>
+      </li>
+      <li id="spStep3"><div class="title">Show your own playlists<span class="opt">Optional</span></div>
+        <p class="help">Adds your playlists and Liked Songs as tiles, with their tracks listed. Spotify asks for a free “developer app” for this. It takes about two minutes.</p>
+        <div id="spSignedOut">
+          <ol class="steps" style="margin-top:10px">
+            <li id="spA"><div class="title">Create the app</div>
+              <p class="help">Sign in, press <b>Create app</b>, and give it any name and description.</p>
+              <div class="row"><a class="btn" href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Open Spotify’s developer page</a></div>
+            </li>
+            <li id="spB"><div class="title">Paste this as its “Redirect URI”</div>
+              <div class="copy"><code id="redirect">http://127.0.0.1:47824/callback</code><button id="copyRedirect">Copy</button></div>
+              <p class="help">Tick <b>Web API</b> if it asks which API you use, then save the app.</p>
+            </li>
+            <li id="spC"><div class="title">Paste the app’s Client ID here</div>
+              <p class="help">It is on the app’s page, under <b>Basic information</b>.</p>
+              <div class="row"><div class="grow"><input type="text" id="client" placeholder="Client ID (32 letters and numbers)" autocomplete="off" spellcheck="false"></div><button id="saveClient" class="primary">Save</button></div>
+            </li>
+            <li id="spD"><div class="title">Sign in</div>
+              <p class="help">A Spotify tab opens. Press <b>Agree</b>, then come back here.</p>
+              <div class="row"><button id="login" class="primary">Sign in with Spotify</button></div>
+            </li>
+          </ol>
+        </div>
+        <div id="spSignedIn">
+          <div class="note ok" id="spWho"></div>
+          <ul class="list" id="playlists"></ul>
+          <div class="row"><button id="refresh">Refresh playlists</button><button id="logout" class="quiet">Sign out</button></div>
+        </div>
+        <div class="note bad" id="spProblem"></div>
+      </li>
+    </ol>
+  </div>
+</details>
+
+<!-- YOUTUBE -->
+<details class="card" id="youtube">
+  <summary><div class="grow"><h2>YouTube Music</h2><div class="what">Paste links to videos or playlists. Nothing to install by hand.</div></div><span class="pill" id="ytPill">…</span><span class="chev"></span></summary>
+  <div class="body">
+    <div class="note" id="ytNone"></div>
+    <ol class="steps" id="ytSteps">
+      <li id="ytStep1"><div class="title">Get the YouTube tool</div>
+        <p class="help">Downloads <b>yt-dlp</b> (about 18 MB) from its official GitHub page into your ReSkate folder. Playing YouTube this way is against YouTube’s terms of service; whether to use it is up to you.</p>
+        <div class="row"><button id="ytTools" class="primary">Download and set up</button><span class="help" id="ytProgressText"></span></div>
+        <div class="bar" id="ytBar"><i></i></div>
+      </li>
+      <li id="ytStep2"><div class="title">Add a video or playlist</div>
+        <p class="help">Copy a link from YouTube or YouTube Music and paste it here. Up to 100 songs each.</p>
+        <div class="row"><div class="grow"><input type="text" id="ytLink" placeholder="https://music.youtube.com/playlist?list=…" autocomplete="off" spellcheck="false"></div><button id="ytAdd" class="primary">Add</button></div>
+        <ul class="list" id="ytLists"></ul>
+      </li>
+      <li id="ytStep3"><div class="title">Play it in the game</div>
+        <p class="help">In the game’s music screen, open the <b>YouTube Music</b> row and press a song. Each song takes a few seconds to start. If the row is not there yet, restart the game once.</p>
+      </li>
+    </ol>
+    <div class="note bad" id="ytProblem"></div>
+    <details class="more" id="ytMore">
+      <summary>Songs being skipped?</summary>
+      <p class="help">Private and age-restricted songs only play when YouTube can see you are signed in. There are two ways to do that. <b>Pick one</b>; you do not need both.</p>
+      <div class="options">
+        <div class="option" id="ytCk">
+          <div class="tag"><b>Option A</b><span class="rec">Recommended</span><span class="using">In use</span></div>
+          <div class="title">Give it a cookies.txt file</div>
+          <p class="help">Works with every browser. In your browser, signed in to YouTube, install the browser extension <b class="hl">Get cookies.txt LOCALLY</b>, open youtube.com, press its <b>Export</b> button, then choose the file here. It stays on this PC. Treat it like a password.</p>
+          <div class="row"><input type="file" id="ytCookies" accept=".txt,text/plain"><button id="ytCookiesRemove" class="quiet">Remove it</button></div>
+          <div class="note" id="ytCookiesText"></div>
+        </div>
+        <div class="or">or</div>
+        <div class="option" id="ytBr">
+          <div class="tag"><b>Option B</b><span class="using">In use</span></div>
+          <div class="title">Firefox only: read the sign-in straight from the browser</div>
+          <p class="help"><b>Only use this if Firefox is the browser you are signed in to YouTube with.</b> There is no file to export. Chrome, Edge, Opera and Brave block this, so for those use Option A.</p>
+          <div class="row" style="max-width:320px"><select id="ytBrowser" aria-label="Browser to read the YouTube sign-in from"><option value="">Do not use a browser</option><option value="firefox">Firefox</option><option value="edge">Edge (usually blocked)</option><option value="chrome">Chrome (usually blocked)</option><option value="brave">Brave (usually blocked)</option><option value="opera">Opera (usually blocked)</option><option value="vivaldi">Vivaldi (usually blocked)</option></select></div>
+        </div>
+      </div>
+      <p class="help">With a sign-in set, songs take a little longer to start.</p>
+      <div class="note" id="ytRuntime"></div>
+    </details>
+  </div>
+</details>
+
+<!-- LOCAL FILES -->
+<details class="card" id="local">
+  <summary><div class="grow"><h2>Local files</h2><div class="what">Music saved on this PC: MP3, M4A, FLAC, Ogg and WAV.</div></div><span class="pill" id="lcPill">…</span><span class="chev"></span></summary>
+  <div class="body">
+    <div class="note" id="lcNone"></div>
+    <ol class="steps" id="lcSteps">
+      <li id="lcStep1"><div class="title">Add a folder of music</div>
+        <p class="help">Open the folder in File Explorer, click the address bar at the top, copy what it shows and paste it here. Folders inside it are included. Each folder becomes a tile with up to 200 songs; names and covers come from the files’ tags.</p>
+        <div class="row"><div class="grow"><input type="text" id="lcPath" placeholder="C:\Users\you\Music\Skate mix" autocomplete="off" spellcheck="false"></div><button id="lcAdd" class="primary">Add</button></div>
+        <div class="row"><button id="lcMusic">Or use my Music folder</button></div>
+        <ul class="list" id="lcList"></ul>
+      </li>
+      <li id="lcStep2"><div class="title">Play it in the game</div>
+        <p class="help">In the game’s music screen, open the <b>Local Files</b> row and press a song. Put new files in a folder? Press <b>Rescan</b> next to it. If the row is not there yet, restart the game once.</p>
+      </li>
+    </ol>
+    <div class="note bad" id="lcProblem"></div>
+  </div>
+</details>
+
+<!-- RADIO -->
+<details class="card" id="radio">
+  <summary><div class="grow"><h2>Online radio</h2><div class="what">Live internet radio stations. Each one you add becomes a tile.</div></div><span class="pill" id="rdPill">…</span><span class="chev"></span></summary>
+  <div class="body">
+    <div class="note" id="rdNone"></div>
+    <ol class="steps" id="rdSteps">
+      <li id="rdStep1"><div class="title">Find a station</div>
+        <p class="help">Type part of a station’s name. This searches radio-browser.info, a free public directory of stations.</p>
+        <div class="row"><div class="grow"><input type="text" id="rdQuery" placeholder="SomaFM, BBC, lofi, drum and bass…" autocomplete="off"></div><button id="rdSearch" class="primary">Search</button></div>
+        <ul class="list found" id="rdFound"></ul>
+        <details class="more">
+          <summary>Have a stream’s address instead?</summary>
+          <p class="help">Paste the address of an MP3 or AAC stream, or of a .pls or .m3u file. Addresses ending in .m3u8 (HLS) are not supported.</p>
+          <div class="row"><div class="grow"><input type="text" id="rdName" placeholder="Name to show (optional)" autocomplete="off"></div></div>
+          <div class="row"><div class="grow"><input type="text" id="rdAddress" placeholder="https://…" autocomplete="off" spellcheck="false"></div><button id="rdAdd" class="primary">Add</button></div>
+        </details>
+      </li>
+      <li id="rdStep2"><div class="title">Your stations</div>
+        <p class="help" id="rdNoneYet">None yet. Press <b>Add</b> next to a station above.</p>
+        <ul class="list" id="rdList"></ul>
+      </li>
+      <li id="rdStep3"><div class="title">Play it in the game</div>
+        <p class="help">In the game’s music screen, open the <b>Online Radio</b> row and pick a station. It is live: pausing leaves the station, and playing tunes back in. If the row is not there yet, restart the game once.</p>
+      </li>
+    </ol>
+    <div class="note bad" id="rdProblem"></div>
+  </div>
+</details>
+
+<!-- EXTERNAL -->
+<details class="card" id="external">
+  <summary><div class="grow"><h2>External audio</h2><div class="what">Any app on this PC: a browser, a media player, another music service.</div></div><span class="pill" id="exPill">…</span><span class="chev"></span></summary>
+  <div class="body">
+    <ol class="steps">
+      <li id="exStep1"><div class="title">Start the app playing something</div>
+        <p class="help">Only apps that are making sound right now show up in the list.</p>
+      </li>
+      <li id="exStep2"><div class="title">Choose the app</div>
+        <div class="row"><div class="grow"><select id="app"></select></div><button id="saveApp" class="primary">Use this app</button><button id="clearApp" class="quiet">Stop using it</button></div>
+        <div class="note" id="appText"></div>
+      </li>
+      <li id="exStep3"><div class="title">Play it in the game</div>
+        <p class="help">In the game’s music screen, open the <b>External Audio</b> row and pick its tile. The app’s own sound is turned down while it plays through the game, and put back when you leave. If the row is not there yet, restart the game once.</p>
+      </li>
+    </ol>
+  </div>
+</details>
+
+<!-- SOUND -->
+<details class="card" id="sound">
+  <summary><div class="grow"><h2>Sound</h2><div class="what">Loudness, equaliser, and where it plays.</div></div><span class="chev"></span></summary>
+  <div class="body">
+    <div class="title" style="margin-top:6px">Loudness</div>
+    <div class="slider"><input type="range" id="gain" min="0" max="400" step="5" aria-label="Loudness"><b id="gainText">100%</b></div>
+    <label class="check"><input type="checkbox" id="levelling"><span><span class="title">Keep every song at the same loudness</span><br><span class="help">Turns quiet songs up and loud ones down, so you are not reaching for the volume between songs.</span></span></label>
+    <div class="title" style="margin-top:18px">Equaliser</div>
+    <p class="help">Drag a slider up for more of that part of the sound, down for less. It only changes the music you play through ReSkate, not the game’s own.</p>
+    <div class="eq" id="eq"></div>
+    <div class="row presets"><button data-eq="0,0,0,0,0">Flat</button><button data-eq="6,3,0,0,0">Bass boost</button><button data-eq="5,2,-1,2,4">Loud</button><button data-eq="-2,0,3,3,0">Vocal</button><button data-eq="0,0,0,3,5">Bright</button></div>
+    <label class="check"><input type="checkbox" id="speakers"><span><span class="title">Speakers in the world play it too</span><br><span class="help">Speakers around the map play what you are playing, and grabbing music from one keeps you on your own music.</span></span></label>
+  </div>
+</details>
+</main>
+
+<!-- QUEUE -->
+<aside class="side" id="queue" aria-label="Now playing and queue">
+  <div class="np"><img id="npCover" alt=""><div class="over"><div class="lab">Now playing</div><div class="t" id="npTitle">Nothing playing</div><div class="a" id="npArtist"></div></div></div>
+  <div class="qhead"><h2 id="qName">Queue</h2><span class="pill" id="qPill">…</span></div>
+  <p class="help" id="qEmpty">Nothing is lined up yet. Start a tile in the game’s music screen and its songs show here.</p>
+  <div id="qBody">
+    <div class="find"><input type="text" id="qFilter" placeholder="Find a song or artist" autocomplete="off"></div>
+    <ol class="queue" id="qList"></ol>
+  </div>
+</aside>
+</div>
+
+<div class="player"><div class="in">
+  <img id="cover" alt="">
+  <div class="grow"><div class="t" id="title">Nothing playing</div><div class="a" id="artist">Pick a tile in the game’s music screen</div></div>
+  <div class="ctl"><button data-cmd="previous" aria-label="Previous">Prev</button><button data-cmd="toggle" id="toggle" class="primary">Play</button><button data-cmd="next" aria-label="Next">Next</button></div>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let pressed = 0, loading = false, gainHeld = 0, noteHeld = 0, eqHeld = 0, opened = false;
+
+// (Opened as a file, with no game behind it: a made-up state, to look at the page by.)
+const demo = location.protocol === 'file:' || location.search === '?demo' ? {
+  now:{artist:'Carter Cook',title:'Movin\'',playing:true,cover:''},station:true,
+  device:{connected:true,in_use:true,text:'Spotify device: a Spotify account is on it (zee).'},
+  account:{has_client:true,signed_in:true,busy:false,user:'zee',problem:'',client:'',playlists:[{name:'Liked Songs',tracks:49},{name:'Sad Drum and Bass',tracks:50}]},
+  youtube:{available:true,tools:true,busy:false,percent:0,problem:'',browser:'',cookies:false,runtime:'node',playlists:[{index:0,name:'Album - GNX',songs:12}]},
+  local:{available:true,busy:false,problem:'',folders:[{index:1,name:'Skate mix',songs:3,path:'C:\\Users\\zee\\Music\\Skate mix'}]},
+  radio:{available:true,busy:false,problem:'',searched:'soma',stations:[{index:2,name:'SomaFM Groove Salad',songs:1,address:'https://ice5.somafm.com/groovesalad-128-mp3'}],
+    found:[{name:'SomaFM Groove Salad (128k MP3)',address:'https://ice5.somafm.com/groovesalad-128-mp3',icon:'',about:'The United States Of America, MP3 128 kbps'},{name:'SomaFM Drone Zone',address:'https://ice5.somafm.com/dronezone-128-mp3',icon:'',about:'The United States Of America, MP3 128 kbps'}]},
+  queue:{playlist:1,name:'Skate mix',kind:'local',at:1,songs:[{artist:'Carter Cook',title:'Movin\'',cover:''},{artist:'Cody Bolan',title:'Why',cover:''},{artist:'Behemoth',title:'Say What You Want',cover:''},...Array.from({length:30},(_, i) => ({artist:'Artist ' + (i + 1),title:'Another song ' + (i + 1),cover:''}))]},
+  external:{app:'',on:false,capture:'',apps:['chrome.exe','vlc.exe']},settings:{gain:100,speakers:true,levelling:true,equaliser:[4,2,0,1,3]}} : null;
+
+async function post(path, body) {
+  try { await fetch(path, {method:'POST', headers:{'Content-Type':'application/json','X-ReSkate':'1'}, body:JSON.stringify(body || {})}); } catch (e) {}
+  load();
+}
+const step = (id, state) => { $(id).className = state; };            // 'done', 'now' or ''
+const card = (id, state, pill) => { const c = $(id); c.classList.remove('ready','todo','problem'); if (state) c.classList.add(state); const p = c.querySelector('.pill'); if (p) p.textContent = pill; };
+const show = (id, on) => { $(id).style.display = on ? '' : 'none'; };
+// Fills a list: each item's name, the small text beside it, and its buttons ([label, what it does]).
+// It is only built again when what it shows has changed, so a button is not lost under a press.
+function fill(id, items, name, small, buttons) {
+  const ul = $(id), sig = JSON.stringify(items);
+  if (ul.dataset.sig === sig) return;
+  ul.dataset.sig = sig; ul.innerHTML = '';
+  for (const item of items) {
+    const li = document.createElement('li'), two = document.createElement('div'), n = document.createElement('span'), r = document.createElement('div');
+    two.className = 'two'; n.textContent = name(item); two.append(n);
+    if (small(item)) { const c = document.createElement('small'); c.textContent = small(item); two.append(c); }
+    r.style.cssText = 'display:flex;gap:8px;align-items:center;flex:none';
+    for (const [label, act, primary] of buttons) { const b = document.createElement('button'); b.textContent = label; b.className = primary ? 'primary' : 'quiet'; b.onclick = () => act(item); r.append(b); }
+    li.append(two, r); ul.append(li);
+  }
+}
+
+document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = () => post('/api/command', {command:b.dataset.cmd}));
+$('copyRedirect').onclick = async () => { try { await navigator.clipboard.writeText($('redirect').textContent); $('copyRedirect').textContent = 'Copied'; } catch (e) { $('copyRedirect').textContent = 'Select and copy it'; } setTimeout(() => $('copyRedirect').textContent = 'Copy', 2000); };
+$('saveClient').onclick = () => post('/api/client', {id:$('client').value.trim()});
+$('login').onclick = () => post('/api/login');
+$('logout').onclick = () => post('/api/logout');
+$('refresh').onclick = () => post('/api/refresh');
+$('ytTools').onclick = () => post('/api/youtube/tools');
+$('ytAdd').onclick = () => { const link = $('ytLink').value.trim(); if (link) { $('ytLink').value = ''; post('/api/youtube/add', {link}); } };
+$('ytLink').onkeydown = e => { if (e.key === 'Enter') $('ytAdd').click(); };
+$('ytBrowser').onchange = () => post('/api/youtube/browser', {browser:$('ytBrowser').value});
+$('ytCookiesRemove').onclick = () => post('/api/youtube/cookies', {text:''});
+$('ytCookies').onchange = async () => {
+  const file = $('ytCookies').files[0]; if (!file) return;
+  const text = await file.text(); $('ytCookies').value = '';
+  let ok = false;
+  try { ok = (await fetch('/api/youtube/cookies', {method:'POST', headers:{'Content-Type':'application/json','X-ReSkate':'1'}, body:JSON.stringify({text})})).ok; } catch (e) {}
+  noteHeld = Date.now();
+  $('ytCookiesText').className = 'note ' + (ok ? 'ok' : 'bad');
+  $('ytCookiesText').textContent = ok ? 'Saved. Songs that were skipped should play now.' : 'That file is not a cookies.txt with YouTube cookies in it. Export it again while on youtube.com.';
+  load();
+};
+$('lcAdd').onclick = () => { const path = $('lcPath').value.trim(); if (path) { $('lcPath').value = ''; post('/api/local/add', {path}); } };
+$('lcPath').onkeydown = e => { if (e.key === 'Enter') $('lcAdd').click(); };
+$('lcMusic').onclick = () => post('/api/local/add', {path:''});
+$('rdSearch').onclick = () => { const query = $('rdQuery').value.trim(); if (query) post('/api/radio/search', {query}); };
+$('rdQuery').onkeydown = e => { if (e.key === 'Enter') $('rdSearch').click(); };
+$('rdAdd').onclick = () => { const address = $('rdAddress').value.trim(); if (address) { post('/api/radio/add', {name:$('rdName').value.trim(), address, icon:''}); $('rdAddress').value = ''; $('rdName').value = ''; } };
+$('rdAddress').onkeydown = e => { if (e.key === 'Enter') $('rdAdd').click(); };
+$('qFilter').oninput = () => { if (last) queue(last); };
+const eqNames = ['Bass','Low mid','Mid','High mid','Treble'], eqAt = ['60 Hz','250 Hz','1 kHz','4 kHz','12 kHz'];
+const eqText = v => (v > 0 ? '+' : '') + v + ' dB';
+const eqValues = () => eqNames.map((_, i) => +$('eq' + i).value);
+const eqShow = values => values.forEach((v, i) => { $('eq' + i).value = v; $('eqV' + i).textContent = eqText(v); });
+eqNames.forEach((name, i) => {
+  const band = document.createElement('div'), value = document.createElement('b'), input = document.createElement('input'), label = document.createElement('span'), at = document.createElement('small');
+  band.className = 'band'; value.id = 'eqV' + i; value.textContent = '0 dB';
+  input.type = 'range'; input.id = 'eq' + i; input.min = -12; input.max = 12; input.step = 1; input.value = 0; input.setAttribute('orient', 'vertical'); input.setAttribute('aria-label', name + ', ' + eqAt[i]);
+  input.oninput = () => { eqHeld = Date.now(); value.textContent = eqText(+input.value); };
+  input.onchange = () => post('/api/settings', {equaliser:eqValues()});
+  label.textContent = name; at.textContent = eqAt[i];
+  band.append(value, input, label, at); $('eq').append(band);
+});
+document.querySelectorAll('[data-eq]').forEach(b => b.onclick = () => { const values = b.dataset.eq.split(',').map(Number); eqHeld = Date.now(); eqShow(values); post('/api/settings', {equaliser:values}); });
+$('levelling').onchange = () => post('/api/settings', {levelling:$('levelling').checked});
+$('saveApp').onclick = () => post('/api/external', {app:$('app').value});
+$('clearApp').onclick = () => post('/api/external', {app:''});
+$('gain').oninput = () => { gainHeld = Date.now(); $('gainText').textContent = $('gain').value + '%'; };
+$('gain').onchange = () => post('/api/settings', {gain:+$('gain').value});
+$('speakers').onchange = () => post('/api/settings', {speakers:$('speakers').checked});
+
+// What is lined up: the songs of the playlist that is playing, each with its picture, the one
+// playing marked. The list is built once for a playlist (its pictures are not fetched again
+// as the song changes); which is playing, and which are found, is set on what is there.
+let last = null;
+function queue(s) {
+  const q = s.queue, find = $('qFilter').value.trim().toLowerCase();
+  show('qEmpty', !q); $('qBody').style.display = q ? '' : 'none';
+  const spotifyOn = s.station && !q && s.now.title && !s.account.signed_in && (s.device.connected || s.device.in_use);
+  $('qEmpty').textContent = spotifyOn ? 'To see Spotify’s queue here, finish “Show your own playlists” in the Spotify section (step 3).' : 'Nothing is lined up yet. Start a tile in the game’s music screen and its songs show here.';
+  $('qPill').textContent = q ? (q.kind === 'radio' ? 'Live' : q.kind === 'spotify' ? 'Up next' : (q.at + 1) + ' / ' + q.songs.length) : 'Empty';
+  $('qName').textContent = q ? q.name : 'Queue';
+  const list = $('qList'), sig = q ? JSON.stringify([q.playlist, q.name, q.songs]) : '';
+  if (list.dataset.sig !== sig) {
+    list.dataset.sig = sig; list.dataset.at = ''; list.innerHTML = '';
+    (q ? q.songs : []).forEach((song, i) => {
+      const li = document.createElement('li'), b = document.createElement('button'), art = document.createElement('div'), words = document.createElement('div'), t = document.createElement('b'), a = document.createElement('span'), n = document.createElement('i');
+      art.className = 'art'; art.textContent = '♪';
+      if (song.cover) { const img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.onerror = () => img.remove(); img.src = song.cover; art.append(img); }
+      words.className = 'words'; a.className = 'by'; t.textContent = song.title; a.textContent = song.artist; words.append(t, a); n.textContent = i + 1;
+      b.append(art, words, n); b.onclick = () => { if ((last && last.now.loading) || Date.now() - pressed < 1500) return; pressed = Date.now(); list.classList.add('wait'); post('/api/queue/play', {playlist:q.playlist, song:i, spotify:q.kind === 'spotify'}); };
+      li.append(b); list.append(li);
+    });
+  }
+  if (!q) return;
+  [...list.children].forEach((li, i) => {
+    const song = q.songs[i];
+    li.style.display = find && !(song.title + ' ' + song.artist).toLowerCase().includes(find) ? 'none' : '';
+    li.className = i === q.at ? 'cur' : '';
+    const b = li.firstElementChild; if (i === q.at) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
+  });
+  // (The song that is playing is brought into view when it changes, not while the list is being read.)
+  if (list.dataset.at !== String(q.at) && !find) { list.dataset.at = String(q.at); const cur = list.children[q.at]; if (cur) list.scrollTop = Math.max(0, cur.offsetTop - list.offsetTop - 60); }
+}
+
+function render(s) {
+  last = s;
+  $('live').className = 'live on'; $('liveText').textContent = 'Connected to the game';
+
+  // What is playing.
+  $('title').textContent = s.now.title || 'Nothing playing';
+  $('artist').textContent = s.now.loading ? 'Loading… ' + (s.now.artist || '') : s.now.title ? (s.now.artist || '') : (s.station ? 'Waiting for the first song' : 'Pick a tile in the game’s music screen');
+  $('artist').classList.toggle('loading', !!s.now.loading);
+  $('toggle').textContent = s.now.playing ? 'Pause' : 'Play';
+  if (s.now.cover) { if ($('cover').dataset.src !== s.now.cover) { $('cover').dataset.src = s.now.cover; $('cover').src = s.now.cover; } }
+  else { $('cover').removeAttribute('src'); $('cover').dataset.src = ''; }
+  $('npTitle').textContent = s.now.title || 'Nothing playing'; $('npArtist').textContent = s.now.loading ? 'Loading… ' + (s.now.artist || '') : s.now.title ? (s.now.artist || '') : '';
+  $('npArtist').classList.toggle('loading', !!s.now.loading); $('qList').classList.toggle('wait', !!s.now.loading || Date.now() - pressed < 1500);
+  if (s.now.cover) { if ($('npCover').dataset.src !== s.now.cover) { $('npCover').dataset.src = s.now.cover; $('npCover').src = s.now.cover; } }
+  else { $('npCover').removeAttribute('src'); $('npCover').dataset.src = ''; }
+
+  // Spotify.
+  const d = s.device, a = s.account, off = /^Spotify device: off/.test(d.text), premium = /not Premium/.test(d.text);
+  const linked = d.connected || d.in_use;
+  step('spStep1', linked ? 'done' : 'now');
+  step('spStep2', linked ? (s.station ? 'done' : 'now') : '');
+  step('spStep3', a.signed_in ? 'done' : '');
+  $('spDeviceNote').className = 'note' + (premium ? ' bad' : linked ? ' ok' : '');
+  $('spDeviceNote').textContent = premium ? 'That Spotify account is not Premium. Spotify only lets Premium accounts play to a device, so it was removed. Sign in to Spotify with a Premium account and pick ReSkate again.'
+    : off ? 'The Spotify device stopped for this session. Restart the game to bring it back.'
+    : d.connected ? 'Connected' + ((d.text.match(/\(([^)]+)\)/) || [])[1] ? ' as ' + d.text.match(/\(([^)]+)\)/)[1] : '') + '.'
+    : d.in_use ? 'Remembered from last time. It connects by itself.'
+    : /starting/.test(d.text) ? 'Starting up…'
+    : /not running|not built/.test(d.text) ? 'The Spotify device is not available in this build of ReSkate.'
+    : 'Waiting for you to pick ReSkate in Spotify. If it is not in the list, check both are on the same network and that Windows Firewall allowed the game.';
+  show('spSignedOut', !a.signed_in); show('spSignedIn', a.signed_in);
+  step('spA', a.has_client ? 'done' : 'now'); step('spB', a.has_client ? 'done' : ''); step('spC', a.has_client ? 'done' : '');
+  step('spD', a.has_client ? 'now' : '');
+  $('login').disabled = !a.has_client || a.busy; $('login').textContent = a.busy ? 'Waiting for Spotify…' : 'Sign in with Spotify';
+  if (document.activeElement !== $('client') && !$('client').value) $('client').value = a.client || '';
+  $('spWho').textContent = 'Signed in' + (a.user ? ' as ' + a.user : '') + '. ' + a.playlists.length + ' playlists, shown as tiles in the game.';
+  $('spProblem').textContent = a.problem || '';
+  const pl = $('playlists'); pl.innerHTML = '';
+  for (const p of a.playlists) { const li = document.createElement('li'), n = document.createElement('span'), c = document.createElement('small'); n.textContent = p.name; c.textContent = p.tracks + ' tracks'; li.append(n, c); pl.append(li); }
+  card('spotify', premium || off ? 'problem' : linked ? 'ready' : 'todo', premium ? 'Needs Premium' : off ? 'Stopped' : linked ? 'Ready' : 'Set up');
+
+  // YouTube Music.
+  const y = s.youtube;
+  show('ytSteps', y.available); show('ytMore', y.available && y.tools);
+  $('ytNone').textContent = y.available ? '' : 'This build of ReSkate was made without YouTube Music.';
+  step('ytStep1', y.tools ? 'done' : 'now'); step('ytStep2', y.tools ? (y.playlists.length ? 'done' : 'now') : ''); step('ytStep3', y.tools && y.playlists.length ? 'now' : '');
+  show('ytTools', !y.tools); $('ytTools').disabled = y.busy; $('ytTools').textContent = y.busy ? 'Downloading…' : 'Download and set up';
+  show('ytBar', !y.tools && y.busy); $('ytBar').firstElementChild.style.width = (y.percent || 0) + '%';
+  $('ytProgressText').textContent = !y.tools && y.busy ? (y.percent ? y.percent + '%' : 'Starting') : y.tools ? 'Installed.' : '';
+  $('ytAdd').disabled = !y.tools || y.busy; $('ytAdd').textContent = y.tools && y.busy ? 'Adding…' : 'Add'; $('ytLink').disabled = !y.tools;
+  $('ytProblem').textContent = y.problem || '';
+  fill('ytLists', y.playlists, p => p.name, p => p.songs + ' songs', [['Remove', p => post('/api/library/remove', {index:p.index})]]);
+  if (document.activeElement !== $('ytBrowser')) $('ytBrowser').value = y.browser || '';
+  show('ytCookiesRemove', y.cookies);
+  $('ytCk').classList.toggle('inuse', !!y.cookies); $('ytBr').classList.toggle('inuse', !!y.browser && !y.cookies);
+  if (Date.now() - noteHeld > 5000) { $('ytCookiesText').className = 'note' + (y.cookies ? ' ok' : ''); $('ytCookiesText').textContent = y.cookies ? 'A cookies.txt is in use.' : ''; }
+  $('ytRuntime').textContent = (y.cookies || y.browser) && !y.runtime ? 'Getting one more small tool the sign-in needs… songs will not play until it is here. If this message stays, check your connection.' : '';
+  if (y.problem && !$('ytMore').open && /sign-in|cookies/.test(y.problem)) $('ytMore').open = true;
+  card('youtube', !y.available ? '' : y.problem ? 'problem' : y.tools && y.playlists.length ? 'ready' : 'todo', !y.available ? 'Not available' : y.problem ? 'Check' : y.tools && y.playlists.length ? 'Ready' : y.tools ? 'Add a link' : 'Set up');
+
+  // Local files.
+  const l = s.local;
+  show('lcSteps', l.available); $('lcNone').textContent = l.available ? '' : 'This build of ReSkate was made without local files.';
+  step('lcStep1', l.folders.length ? 'done' : 'now'); step('lcStep2', l.folders.length ? 'now' : '');
+  $('lcAdd').disabled = $('lcMusic').disabled = l.busy; $('lcAdd').textContent = l.busy ? 'Working…' : 'Add';
+  $('lcProblem').textContent = l.problem || '';
+  fill('lcList', l.folders, f => f.name, f => f.songs + ' songs · ' + f.path, [['Rescan', f => post('/api/local/add', {path:f.path})], ['Remove', f => post('/api/library/remove', {index:f.index})]]);
+  card('local', !l.available ? '' : l.problem ? 'problem' : l.folders.length ? 'ready' : 'todo', !l.available ? 'Not available' : l.problem ? 'Check' : l.folders.length ? 'Ready' : 'Set up');
+
+  // Online radio.
+  const r = s.radio, have = new Set(r.stations.map(t => t.address));
+  show('rdSteps', r.available); $('rdNone').textContent = r.available ? '' : 'This build of ReSkate was made without online radio.';
+  step('rdStep1', r.stations.length ? 'done' : 'now'); step('rdStep2', r.stations.length ? 'done' : ''); step('rdStep3', r.stations.length ? 'now' : '');
+  $('rdSearch').disabled = $('rdAdd').disabled = r.busy; $('rdSearch').textContent = r.busy ? 'Working…' : 'Search';
+  $('rdProblem').textContent = r.problem || '';
+  fill('rdFound', r.found.map(f => ({...f, added:have.has(f.address)})), f => f.name, f => f.about, [['Add', f => { if (!have.has(f.address)) post('/api/radio/add', {name:f.name, address:f.address, icon:f.icon}); }, true]]);
+  $('rdFound').querySelectorAll('li').forEach((li, i) => { if (have.has(r.found[i].address)) { const b = li.querySelector('button'); b.textContent = 'Added'; b.disabled = true; b.className = 'quiet'; } });
+  show('rdNoneYet', !r.stations.length);
+  fill('rdList', r.stations, t => t.name, t => t.address, [['Remove', t => post('/api/library/remove', {index:t.index})]]);
+  card('radio', !r.available ? '' : r.problem ? 'problem' : r.stations.length ? 'ready' : 'todo', !r.available ? 'Not available' : r.problem ? 'Check' : r.stations.length ? 'Ready' : 'Set up');
+
+  queue(s);
+
+  // External audio.
+  const e = s.external;
+  if (document.activeElement !== $('app')) {
+    const names = e.apps.includes(e.app) || !e.app ? e.apps : [e.app, ...e.apps];
+    $('app').innerHTML = '';
+    if (!names.length) { const o = document.createElement('option'); o.value = ''; o.textContent = 'No app is making sound right now'; $('app').append(o); }
+    for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n + (e.apps.includes(n) ? '' : ' (not making sound now)'); $('app').append(o); }
+    if (e.app) $('app').value = e.app;
+  }
+  $('saveApp').disabled = !$('app').value; show('clearApp', !!e.app);
+  step('exStep1', e.apps.length || e.app ? 'done' : 'now'); step('exStep2', e.app ? 'done' : e.apps.length ? 'now' : ''); step('exStep3', e.app ? (e.on ? 'done' : 'now') : '');
+  const silent = e.on && /^Not capturing|silent/.test(e.capture || '');
+  $('appText').className = 'note' + (silent ? ' bad' : e.app ? ' ok' : '');
+  $('appText').textContent = e.app ? ('Using ' + e.app + '.' + (e.on ? ' ' + e.capture + '.' : '')) : '';
+  card('external', silent ? 'problem' : e.app ? 'ready' : 'todo', silent ? 'No sound' : e.app ? 'Ready' : 'Set up');
+
+  // Sound.
+  if (Date.now() - gainHeld > 1500) { $('gain').value = s.settings.gain; $('gainText').textContent = s.settings.gain + '%'; }
+  $('speakers').checked = s.settings.speakers;
+  $('levelling').checked = !!s.settings.levelling;
+  if (Date.now() - eqHeld > 1500 && s.settings.equaliser) eqShow(s.settings.equaliser);
+
+  // (The first time: what still needs doing is opened, what is ready is closed.)
+  if (!opened) { opened = true; for (const id of ['spotify','youtube','external']) $(id).open = !$(id).classList.contains('ready'); if (!document.querySelector('.card[open]')) $('spotify').open = true; }
+}
+
+async function load() {
+  if (loading) return; loading = true;
+  try { render(demo || await (await fetch('/api/state')).json()); }
+  catch (e) { $('live').className = 'live'; $('liveText').textContent = 'The game is not running'; }
+  loading = false;
+}
+load(); setInterval(load, 2000);
+</script>
+</body>
+</html>

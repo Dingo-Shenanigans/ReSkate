@@ -277,13 +277,15 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
     // Coming into view (the menu opening, or switching to this tab) fetches the
     // latest lobbies, so the list is never one left over from earlier.
     const int frame = ImGui::GetFrameCount();
-    if (menu.multiplayer_lobbies_frame != frame - 1 && !mp.lobby_searching) send_console(menu, callbacks, "mp browse");
+    // Refreshing waits out the game-wide limit (multiplayer_browse_interval_us); the button counts it down.
+    const int wait = browse_wait(mp);
+    if (menu.multiplayer_lobbies_frame != frame - 1 && !wait) send_console(menu, callbacks, "mp browse");
     menu.multiplayer_lobbies_frame = frame;
     // Toolbar: search, sort, same-map filter and refresh on one row.
     const auto &style = ImGui::GetStyle();
     constexpr std::array<const char *, 4> sorts{"Best match", "Most players", "Name", "Map"};
     menu.multiplayer_lobby_sort = std::clamp(menu.multiplayer_lobby_sort, 0, static_cast<int>(sorts.size()) - 1);
-    const char *refresh_label = mp.lobby_searching ? "Refreshing..." : "Refresh";
+    const auto refresh_label = (wait ? "Refresh in " + std::to_string(wait) : std::string(mp.lobby_searching ? "Refreshing..." : "Refresh")) + "###refresh";
     const float refresh_width = ImGui::CalcTextSize("Refreshing...").x + style.FramePadding.x * 2;
     const float sort_width = ImGui::CalcTextSize("Most players").x + style.FramePadding.x * 2 + ImGui::GetFrameHeight();
     const float same_map_width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Same map only").x;
@@ -302,8 +304,8 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Dedicated servers are always up and are not someone's own game.");
     ImGui::SameLine();
-    ImGui::BeginDisabled(mp.lobby_searching || mp.lobby_joining);
-    if (ImGui::Button(refresh_label, ImVec2(refresh_width, 0)))
+    ImGui::BeginDisabled(wait || mp.lobby_joining);
+    if (ImGui::Button(refresh_label.c_str(), ImVec2(refresh_width, 0)))
         send_console(menu, callbacks, "mp browse");
     ImGui::EndDisabled();
 

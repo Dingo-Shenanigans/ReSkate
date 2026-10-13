@@ -202,14 +202,19 @@ std::string symbol_name(const Module& module, std::uintptr_t address) {
     info->MaxNameLen = 511;
     DWORD64 displacement{};
     if (symbols_ready && SymFromAddr(symbol_session, address, &displacement, info) && info->Name[0]) {
-        // A release ReSkate.dll ships without its symbols, so all this finds in it is the nearest
-        // export, megabytes away: every function of ours then reads as one of three exports and
-        // a report cannot say which was slow. Unless the address is inside a symbol with a size
-        // (the real ones have one), give our own module's address instead: the release's symbols
-        // (build/release/ReSkate-<version>-symbols) name it afterwards.
+        // A release ReSkate.dll ships without its symbols (and a ReSkate.pdb left beside it from
+        // another build is not taken), so all this finds in it is the nearest export, megabytes
+        // away: every function of ours then reads as one of three exports and a report cannot
+        // say which was slow. An export is given a size too, up to the next one, so the size
+        // tells nothing: ask what the names came from. Without the module's own symbols, give
+        // its address instead: the release's symbols (build/release/ReSkate-<version>-symbols)
+        // name it afterwards.
         const auto here = reinterpret_cast<std::uintptr_t>(&waiting_marker);
         const bool own = module.base <= here && here < module.end;
-        if (!own || (info->Size && displacement < info->Size)) return module.name + "!" + info->Name;
+        IMAGEHLP_MODULEW64 loaded{};
+        loaded.SizeOfStruct = sizeof(loaded);
+        const bool named = !own || (SymGetModuleInfoW64(symbol_session, module.base, &loaded) && loaded.SymType == SymPdb);
+        if (named) return module.name + "!" + info->Name;
     }
     return std::format("{}+0x{:x}", module.name, address - module.base);
 }

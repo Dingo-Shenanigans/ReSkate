@@ -1,4 +1,12 @@
 #include "Extension/Customization/local_customization_runtime.h"
+#include "Extension/Music/spotify_station.h"
+#include "Extension/Music/spotify_cover.h"
+#include "Extension/Music/spotify_web.h"
+#include "Extension/Music/spotify_rows.h"
+#include "Extension/Music/external_audio.h"
+#include "Extension/Music/youtube_music.h"
+#include <cstring>
+#include "Extension/Music/local_music_ui.h"
 #include "local_music_assets.h"
 #include "music_artwork.h"
 #include "Engine/Core/Log/logging.h"
@@ -62,8 +70,44 @@ bool read_music_catalog(MusicCatalog& result) {
     auto& native = music_asset_functions();
     std::uintptr_t manager{};
     if (!native.lock || !native.unlock || !read(base + addr::local_music::asset_manager, manager) || !manager) return false;
-    // Native registration/unregistration uses this same lock.
-    // Copy data while held; never retain a borrowed asset pointer in the UI.
+    // (The Spotify station's song reads as itself here, not as what Spotify is playing.)
+    spotify_station::restore_presentation();
+    // The rows of the Spotify playlists (spotify_rows.h): one each, that says what picking the
+    // playlist does. Registered before the songs are read, so they are among them.
+    // Spotify's own (the plain station, then the player's playlists) only when the player uses
+    // Spotify here: there is no tile of it, and no row, for one who does not.
+    std::vector<spotify_web::Playlist> spotify_playlists;
+    if (spotify_station::spotify_used()) {
+        spotify_playlists.push_back({spotify_station::plain_station, spotify_station::playlist_name, {}, {}});
+        for (auto& theirs : spotify_web::playlists()) spotify_playlists.push_back(std::move(theirs));
+    }
+    // (And the External Audio station, external_audio.h, when an application is picked for it:
+    // it is in a row of its own in the music screen.)
+    if (!external_audio::app().empty()) spotify_playlists.push_back({external_audio::station, external_audio::station_name, {}, {}});
+    // (And YouTube Music's playlists, the player's folders of music and their radio stations,
+    // youtube_music.h, each with its songs as its rows.)
+    {
+        std::size_t number{};
+        for (const auto& theirs : youtube_music::playlists()) {
+            spotify_web::Playlist playlist{youtube_music::station_prefix + std::to_string(number++), theirs.name, theirs.artwork, {}};
+            if (!theirs.usable) continue;
+            for (const auto& song : theirs.songs) playlist.tracks.push_back({song.artist, song.title, youtube_music::track_prefix + song.id});
+            spotify_playlists.push_back(std::move(playlist));
+        }
+    }
+    // For each station, its rows' ids and the Spotify track each is (none for a row that only
+    // says what picking the playlist does).
+    std::vector<std::vector<std::pair<std::string, std::string>>> spotify_row_ids;
+    for (const auto& theirs : spotify_playlists) {
+        auto& rows = spotify_row_ids.emplace_back();
+        for (const auto& track : theirs.tracks)
+            if (music_ui_text(track.artist, 200) && music_ui_text(track.title, 200))
+                if (auto id = spotify_rows::ensure(base, manager, track.artist, track.title); !id.empty() &&
+                    std::none_of(rows.begin(), rows.end(), [&](const auto& row) { return row.first == id; }))
+                    rows.emplace_back(std::move(id), track.uri);
+        if (theirs.id == spotify_station::plain_station) rows.emplace_back(spotify_rows::ensure(base, manager, "Spotify", "Start Radio"), std::string());
+        else if (rows.empty() && music_ui_text(theirs.name, 200)) rows.emplace_back(theirs.id == external_audio::station ? spotify_rows::ensure(base, manager, external_audio::station_name, "Start") : spotify_rows::ensure(base, manager, "Spotify", "Play " + theirs.name), std::string());
+    }
     native.lock(manager + 0x20);
     struct Unlock {
         game::NativeModelFunctions::Lock function;
@@ -80,6 +124,12 @@ bool read_music_catalog(MusicCatalog& result) {
 
     MusicCatalog snapshot;
     snapshot.songs.reserve(count);
+    // Each song's identity as playlists hold it (the 16 bytes before its asset, when it has one).
+    std::map<std::string, std::array<unsigned char, 16>, std::less<>> identities;
+    std::map<std::string, std::uintptr_t, std::less<>> metadata_of;
+    // Songs the game ships the sound of (those its own offline playlists hold), which a
+    // Spotify station's song has to be: one whose sound is not there is never started.
+    std::set<std::string, std::less<>> shipped;
     std::map<std::string, std::vector<std::string>, std::less<>> playlists;
     std::set<std::uintptr_t> visited;
     std::set<std::string, std::less<>> song_ids;
@@ -127,6 +177,12 @@ bool read_music_catalog(MusicCatalog& result) {
                     playlists[playlist].push_back(song.id);
                 }
             }
+            if (std::uint32_t flags{}; graph >= 16 && read(graph + 0x14, flags) && (flags & 0x100)) {
+                std::array<unsigned char, 16> identity{};
+                if (dingosdk::memory::peek_bytes(graph - 16, identity.data(), identity.size()) && identities.emplace(song.id, identity).second)
+                    metadata_of[song.id] = metadata;
+            }
+            if (!song.playlists.empty()) shipped.insert(song.id);
             snapshot.songs.push_back(std::move(song));
             if (!read(node + 0x10, node)) return false;
         }
@@ -183,6 +239,65 @@ bool read_music_catalog(MusicCatalog& result) {
                 snapshot.songs[found->second].artwork = artwork;
                 ++song_artwork;
             }
+    }
+    // The Spotify stations (spotify_station.h): a playlist has to hold a registered song to be
+    // one, so each is given one of them, a different one each: the first is whatever Spotify
+    // is playing, the rest the player's own Spotify playlists. What plays while one is selected
+    // is Spotify, not that song. Each is known again, when the game binds it, by that song
+    // being its only member.
+    {
+        std::vector<spotify_station::Station> stations;
+        const auto& own = spotify_playlists;
+        std::size_t next{};
+        std::string said;
+        for (const auto& [song, identity] : identities) {
+            if (next >= own.size()) break;
+            if (!shipped.empty() && !shipped.contains(song)) continue;
+            const auto metadata = metadata_of.find(song);
+            if (metadata == metadata_of.end()) continue;
+            std::string id = spotify_station::playlist_id, name = spotify_station::playlist_name, artwork = spotify_cover::station_url(), playlist;
+            const auto entry = next++;
+            if (own[entry].id != spotify_station::plain_station) {
+                const auto& theirs = own[entry];
+                if (!music_ui_text(theirs.name)) continue; // (a name the music screen cannot show)
+                // (The music screen shows playlists in the order of their ids: Liked Songs' is
+                // made to come first of these.)
+                const bool liked = theirs.id == spotify_web::liked_songs;
+                const bool tube = theirs.id.starts_with(youtube_music::station_prefix);
+                id = theirs.id == external_audio::station ? std::string(external_audio::playlist_id)
+                    : tube ? youtube_music::tile_id(std::strtoul(theirs.id.c_str() + std::strlen(youtube_music::station_prefix), nullptr, 10))
+                    : spotify_station::playlist_prefix + (liked ? "!" + theirs.id : theirs.id);
+                name = theirs.name;
+                // (Spotify's own picture is for Spotify's playlists that have none.)
+                artwork = liked && !spotify_cover::liked_url().empty() ? spotify_cover::liked_url()
+                    : theirs.artwork.empty() && !tube && theirs.id != external_audio::station ? spotify_cover::station_url() : theirs.artwork;
+                playlist = theirs.id;
+            }
+            // Its rows are the songs registered for it, and the game's song is added as it is
+            // bound (local_music_playback.cpp); without any the game's song is its row.
+            spotify_station::Station station{{}, {}, identity, metadata->second, playlist, id};
+            std::vector<std::string> members;
+            for (const auto& [row, track] : spotify_row_ids[entry])
+                if (const auto found = row.empty() ? identities.end() : identities.find(row); found != identities.end() && index.contains(row)) {
+                    station.rows.push_back(found->second);
+                    station.tracks.push_back(track);
+                    members.push_back(row);
+                }
+            if (members.empty()) {
+                station.rows.push_back(identity);
+                station.tracks.emplace_back();
+                members.push_back(song);
+            }
+            merge(id, name, artwork, members);
+            said += (said.empty() ? "" : "; ") + name + ": " + std::to_string(members.size()) + " row(s) over " + song;
+            stations.push_back(std::move(station));
+        }
+        spotify_station::set_stations(std::move(stations), base + addr::local_music::metadata_vtable);
+        static std::string last;
+        if (said != last) {
+            last = said;
+            dingosdk::logging::log(dingosdk::logging::Level::debug, dingosdk::logging::Channel::music, "Spotify stations and the songs they were given: {}.", said.empty() ? "none" : said);
+        }
     }
     for (auto it = playlists.begin(); it != playlists.end();)
         it = it->second.empty() ? playlists.erase(it) : std::next(it);

@@ -60,25 +60,10 @@ void collect_install(ModsPanel& panel, const launcher_app::Session& session) {
     logging::write(logging::Level::info, logging::Channel::launcher, "Mod installed: " + panel.finished_name);
 }
 
-// The Windows file (or folder) picker; empty when cancelled.
+// The picker for a mod to install: a .zip, or a folder.
 fs::path pick(HWND owner, bool folder) {
-    ComPtr<IFileOpenDialog> dialog;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return {};
-    FILEOPENDIALOGOPTIONS options{};
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
-    if (!folder) {
-        const COMDLG_FILTERSPEC filter[]{{L"Mod archive (*.zip)", L"*.zip"}};
-        dialog->SetFileTypes(1, filter);
-    }
-    dialog->SetTitle(folder ? L"Choose a mod folder to install" : L"Choose a mod .zip to install");
-    if (FAILED(dialog->Show(owner))) return {};
-    ComPtr<IShellItem> item;
-    PWSTR path{};
-    if (FAILED(dialog->GetResult(&item)) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) return {};
-    fs::path result(path);
-    CoTaskMemFree(path);
-    return result;
+    return folder ? pick_path(owner, true, L"Choose a mod folder to install", nullptr, nullptr)
+                  : pick_path(owner, false, L"Choose a mod .zip to install", L"Mod archive (*.zip)", L"*.zip");
 }
 
 // Everything in the mod's folder, as Explorer would count it. The game's merged
@@ -178,6 +163,10 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
             store.loaded ? std::string() : std::string("Loading the Thunderstore listing")))
         panel.tab = 1;
     if (panel.tab == 1) default_focus();
+    if (nav_tile(fonts, width, "PROFILES", panel.tab == 2,
+            panel.profiles_loaded ? std::to_string(panel.profiles.list.size()) : std::string(), false, std::string()))
+        panel.tab = 2;
+    if (panel.tab == 2) default_focus();
 
     ImGui::Dummy(ImVec2(0, S(8)));
     if (!pending.empty()) {
@@ -854,6 +843,26 @@ void install_modal(const Fonts& fonts, ModsPanel& panel, ImVec2 size) {
 
 } // namespace
 
+fs::path pick_path(HWND owner, bool folder, const wchar_t* title, const wchar_t* filter_name, const wchar_t* filter_pattern) {
+    ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) return {};
+    FILEOPENDIALOGOPTIONS options{};
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
+    if (!folder && filter_name && filter_pattern) {
+        const COMDLG_FILTERSPEC filter[]{{filter_name, filter_pattern}};
+        dialog->SetFileTypes(1, filter);
+    }
+    dialog->SetTitle(title);
+    if (FAILED(dialog->Show(owner))) return {};
+    ComPtr<IShellItem> item;
+    PWSTR path{};
+    if (FAILED(dialog->GetResult(&item)) || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) return {};
+    fs::path result(path);
+    CoTaskMemFree(path);
+    return result;
+}
+
 void refresh_mods(Launcher& launcher, ModsPanel& panel) {
     scan(panel, launcher.session());
     refresh_listing(panel, ImGui::GetTime(), true);
@@ -1062,6 +1071,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     const auto& session = launcher.session();
     if (!panel.scanned) scan(panel, session);
     collect_install(panel, session);
+    settle_profile(panel);
     refresh_listing(panel, ImGui::GetTime());
     // A page, not a panel: the mod list and the Thunderstore browser both want
     // the whole window. It sits at (0, 0), so window and screen space agree.
@@ -1103,6 +1113,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     const float status = panel.message.empty() ? S(4) : ImGui::GetTextLineHeight() * 2 + S(12);
     const float body = ImGui::GetWindowHeight() - status;
     if (panel.tab == 1) browse_page(launcher, fonts, panel, body, installing);
+    else if (panel.tab == 2) profiles_page(fonts, panel, window, body, installing);
     else installed_page(launcher, fonts, panel, installed, body, installing);
     if (!panel.message.empty()) {
         ImGui::SetCursorPosY(ImGui::GetWindowHeight() - status + S(8));
@@ -1116,7 +1127,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     // Read before the overviews: one closing on Escape must not also leave the page.
     const bool popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     if (panel.tab == 1) package_overview(fonts, panel, frame, installing);
-    else mod_overview(fonts, panel, installed, frame, installing);
+    else if (panel.tab == 0) mod_overview(fonts, panel, installed, frame, installing);
     if (leave) close();
     if (!installing && !popup_open && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive() &&
         ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
@@ -1218,6 +1229,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
         pop_primary_button();
         ImGui::EndPopup();
     }
+    profile_popups(panel);
     g_drag_allowed = !ImGui::IsAnyItemHovered() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     ImGui::End();
     if (installing) install_modal(fonts, panel, frame);

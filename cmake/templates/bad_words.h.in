@@ -1,5 +1,0 @@
-#pragma once
-// Generated from Engine/Core/Text/bad_words.txt (one word per line); see word_filter.h.
-namespace dingosdk::text::embedded {
-inline constexpr char bad_words_list[] = R"bad_words(@bad_words_source@)bad_words";
-}

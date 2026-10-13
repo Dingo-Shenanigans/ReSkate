@@ -16,6 +16,7 @@ namespace dingosdk::multiplayer {
 struct NametagBubble {
     std::string text, raw;
     float appear{1}, fade{1};
+    bool hint{}; // grey typing discs, not a chat line. text is ".", "..", or "..." for 1, 2, or 3 discs
 };
 struct NametagPlayer {
     std::array<float, 3> head{}; // world position above the skater
@@ -36,7 +37,7 @@ inline constexpr std::uint32_t nametag_white = 0xffffffffU, nametag_developer = 
                                nametag_creator = 0xff6464ffU,                            // red
                                nametag_homie = 0xff7ae2ffU,                              // gold
                                nametag_centrix = 0xffff7b1fU,                            // blue (#1F7BFF)
-                               nametag_staff = 0xff71cc2eU,                              // green (#2ECC71)
+                               nametag_staff = 0xfffff9b2U,                              // pale cyan (#B2F9FF)
                                nametag_admin = 0xffc674ffU,                              // pink
                                nametag_host = 0xffffc85eU,                               // blue
                                nametag_friend = 0xff8ae07bU,                             // green
@@ -48,7 +49,7 @@ inline constexpr std::uint32_t nametag_developer_start = 0xffff206eU, // #6E20FF
                                nametag_creator_start = 0xff2e10c8U,   // #C8102E
                                nametag_homie_start = 0xff008ae0U,     // #E08A00
                                nametag_centrix_start = 0xffffffffU,   // white
-                               nametag_staff_start = 0xff3a6b0bU;     // #0B6B3A
+                               nametag_staff_start = 0xffff0025U;     // #2500FF
 
 // Client thread, once per rendered frame: everyone to label and the local skater's position
 // (for distances). Also reads whether the game is hiding its own nametags right now.

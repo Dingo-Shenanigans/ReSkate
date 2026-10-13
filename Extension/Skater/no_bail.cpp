@@ -1,4 +1,5 @@
 #include "no_bail.h"
+#include "Extension/BoardBreak/board_break.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -6,6 +7,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include <array>
 #include <atomic>
 #include <intrin.h>
 
@@ -60,10 +62,11 @@ struct Protection {
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
     std::atomic<NoBailStepObserver> step_observer{};
+    std::array<std::atomic<NoBailStepObserver>, no_bail_step_listener_slots> listeners{};
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
 struct StateWatch {
-    std::atomic<std::uintptr_t> selector{};
+    std::atomic<std::uintptr_t> selector{}, causes{}; // the watched skater's selector and cause collector
     std::atomic<std::uint64_t> until{}, changes{}, wipeouts{};
     std::atomic<std::uint32_t> state{}, previous{};
     std::atomic<std::int64_t> since{}, previous_ticks{}; // performance-counter ticks
@@ -180,6 +183,7 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
 }
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    if (causes == state_watch().causes.load(std::memory_order_acquire)) board_break::note_cause(reason, magnitude);
     const bool protect = suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
@@ -219,7 +223,11 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
             w.previous.store(before, std::memory_order_relaxed);
             w.previous_ticks.store(now.QuadPart - w.since.exchange(now.QuadPart, std::memory_order_relaxed), std::memory_order_relaxed);
             w.changes.fetch_add(1, std::memory_order_relaxed);
-            if (chosen == wipeout_physics_state) w.wipeouts.fetch_add(1, std::memory_order_relaxed);
+            if (chosen == wipeout_physics_state) {
+                // Before the count: the tick that sees the new wipeout finds its cause there.
+                board_break::note_wipeout(w.causes.load(std::memory_order_acquire));
+                w.wipeouts.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
     return chosen;
@@ -228,10 +236,21 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
-    if (const auto observer = protection().step_observer.load(std::memory_order_acquire)) {
+    const auto observer = protection().step_observer.load(std::memory_order_acquire);
+    std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
+    bool any = observer != nullptr;
+    for (std::size_t i = 0; i < listeners.size(); ++i) {
+        listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
+        any = any || listeners[i];
+    }
+    if (any) {
         LastError error;
         NoBailSkater skater;
-        if (published_skater(rig, skater)) observer(skater, seconds, wipeout);
+        if (published_skater(rig, skater)) {
+            if (observer) observer(skater, seconds, wipeout);
+            for (const auto listener : listeners)
+                if (listener) listener(skater, seconds, wipeout);
+        }
     }
     protection().skeleton_original(rig, seconds, wipeout);
 }
@@ -414,12 +433,31 @@ bool no_bail_skater(NoBailSkater& skater) noexcept { return published_skater(0, 
 void set_no_bail_step_observer(NoBailStepObserver observer) noexcept {
     protection().step_observer.store(observer, std::memory_order_release);
 }
+bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept {
+    if (!listener) return false;
+    auto& slots = protection().listeners;
+    for (auto& slot : slots)
+        if (slot.load(std::memory_order_acquire) == listener) return true;
+    for (auto& slot : slots) {
+        NoBailStepObserver empty{};
+        if (slot.compare_exchange_strong(empty, listener, std::memory_order_acq_rel)) return true;
+    }
+    return false;
+}
+void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept {
+    if (!listener) return;
+    for (auto& slot : protection().listeners) {
+        auto expected = listener;
+        slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+    }
+}
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();
     Owner owner;
     if (!protection().ready.load(std::memory_order_acquire) || !resolve(client, entity, owner)) return;
     if (w.selector.exchange(owner.selector, std::memory_order_acq_rel) != owner.selector)
         w.state.store(0, std::memory_order_release);
+    w.causes.store(owner.causes, std::memory_order_release);
     w.until.store(GetTickCount64() + 500, std::memory_order_release);
 }
 PhysicsStateWatch watched_physics_state() noexcept {

@@ -28,6 +28,11 @@ bool bind_button(const std::string& label, const char* trailing) {
 // Who may change the session's settings: its host, or an admin of the dedicated
 // server it runs on (their changes are sent to the server).
 bool controls_session(const MultiplayerModel &mp) { return mp.hosting || mp.server_admin; }
+// The same for one setting: the host, or a role with the server command that changes it.
+bool controls(const MultiplayerModel &mp, std::string_view command) { return mp.hosting || server_can(mp, command); }
+const char *set_by(const MultiplayerModel &mp, std::string_view command) {
+    return controls(mp, command) ? nullptr : mp.dedicated ? "Set by the server" : "Set by the host";
+}
 const char *set_by(const MultiplayerModel &mp) {
     return controls_session(mp) ? nullptr : mp.dedicated ? "Set by the server" : "Set by the host";
 }
@@ -40,9 +45,9 @@ void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
         menu.multiplayer_distance_initialized = true;
     }
     auto &draft = menu.multiplayer_distance_draft;
-    begin_card(menu, "distances", "NETWORK DISTANCES", set_by(mp));
+    begin_card(menu, "distances", "NETWORK DISTANCES", set_by(mp, "distances"));
     note("Skaters further away update less often, which keeps big lobbies smooth.");
-    ImGui::BeginDisabled(!controls_session(mp));
+    ImGui::BeginDisabled(!controls(mp, "distances"));
     field(menu, "Drop to 10 TPS after");
     ImGui::DragInt("##half-start", &draft.half_rate_start, 1.f, 1, 9999, "%d m", ImGuiSliderFlags_AlwaysClamp);
     field(menu, "Drop to 5 TPS after");
@@ -50,7 +55,7 @@ void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
     ImGui::EndDisabled();
     if (ImGui::TreeNode("Return distances")) {
         note("Slightly shorter than the drop distances, so a skater on the boundary does not flip between rates.");
-        ImGui::BeginDisabled(!controls_session(mp));
+        ImGui::BeginDisabled(!controls(mp, "distances"));
         field(menu, "Back to full rate within");
         ImGui::DragInt("##full-return", &draft.full_rate_return, 1.f, 0, 9998, "%d m", ImGuiSliderFlags_AlwaysClamp);
         field(menu, "Back to 10 TPS within");
@@ -61,7 +66,7 @@ void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
     const bool valid = draft.valid();
     if (!valid)
         warn("Keep the distances in order: back to full rate < drop to 10 <= back to 10 < drop to 5.");
-    ImGui::BeginDisabled(!controls_session(mp));
+    ImGui::BeginDisabled(!controls(mp, "distances"));
     ImGui::BeginDisabled(!valid || draft == mp.distances);
     if (half_button("Apply to lobby", true)) {
         std::array<char, 65> unused{};
@@ -79,7 +84,7 @@ void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
 }
 void map_pool_settings(SkateMenu &menu, const Model &model) { // the server's own maps, not this PC's
     const auto &mp = model.multiplayer;
-    if (!mp.server_admin || mp.server_maps.empty()) return;
+    if (!(server_can(mp, "map-pool") || server_can(mp, "rotation")) || mp.server_maps.empty()) return;
     std::array<char, 65> unused{};
     const auto server = [&](const std::string &command) { return send_private(menu, "server", command, unused, false); };
     const auto &pool = mp.server_map_pool;
@@ -154,7 +159,7 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
     bool changed{};
 
     // The lobby's rules, for the host only, apart from everyone's own settings below.
-    if (controls_session(mp)) {
+    if (controls(mp, "voice") || controls(mp, "voice-range")) {
         begin_card(menu, mp.dedicated ? "SERVER VOICE" : "LOBBY VOICE", mp.dedicated ? "SERVER VOICE" : "LOBBY VOICE",
                    mp.dedicated ? "Server settings for everyone" : "Host settings for everyone");
         bool allowed = mp.voice.allowed;
@@ -448,9 +453,12 @@ void session_page(SkateMenu &menu, const Model &model) {
     if (mp.dedicated) {
         ImGui::SameLine(0, px(6));
         tag(menu, "DEDICATED SERVER", skate_theme::blue);
-        if (mp.server_admin) {
+        if (!mp.server_role_tag.empty() || mp.server_admin) {
+            // Their role on the server, as its tag reads (or its name, for a role without one).
+            std::string role = mp.server_role_tag.empty() ? mp.server_role : mp.server_role_tag;
+            for (auto &c : role) c = c >= 'a' && c <= 'z' ? static_cast<char>(c - 32) : c;
             ImGui::SameLine(0, px(6));
-            tag(menu, "ADMIN", skate_theme::warning);
+            tag(menu, role.c_str(), skate_theme::warning);
         }
     }
     if (mp.hosting) {
@@ -499,7 +507,7 @@ void session_page(SkateMenu &menu, const Model &model) {
         const float middle = top.y + (height - ImGui::GetFrameHeight()) * .5f;
         float right = top.x + width - pad;
         // Right: the host's actions, then the status tag leading into them.
-        if (peer && controls_session(mp) && peer->id != mp.local_id && peer->id != mp.host_id) {
+        if (peer && (controls(mp, "kick") || controls(mp, "ban")) && peer->id != mp.local_id && peer->id != mp.host_id) {
             const float button = px(76), spacing = ImGui::GetStyle().ItemSpacing.x;
             right -= button * 2 + spacing;
             ImGui::SetCursorScreenPos(ImVec2(right, middle));
@@ -522,6 +530,23 @@ void session_page(SkateMenu &menu, const Model &model) {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", mp.dedicated ? "Remove them and keep them off this server for good."
                                                      : "Remove them and keep them out of every lobby you host.");
+            right -= px(14);
+        }
+        // Their placed objects: ghosts for you (skated and walked through) until made solid.
+        if (peer && peer->id != mp.local_id) {
+            const float button = px(124);
+            right -= button;
+            ImGui::SetCursorScreenPos(ImVec2(right, middle));
+            if (peer->objects_solid) skate_theme::push_primary_button();
+            if (ImGui::Button(peer->objects_solid ? "Objects: solid" : "Objects: ghost", ImVec2(button, 0))) {
+                std::array<char, 65> unused{};
+                send_private(menu, "objects-solid", std::to_string(peer->id) + (peer->objects_solid ? " off" : " on"), unused, false);
+            }
+            if (peer->objects_solid) skate_theme::pop_primary_button();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", peer->objects_solid
+                    ? "Everything this player places is solid for you. Press to pass through their objects instead."
+                    : "You pass through everything this player places. Press to make their objects solid, to skate them.");
             right -= px(14);
         }
         const float status_width = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, status).x + px(14);
@@ -584,13 +609,15 @@ void session_page(SkateMenu &menu, const Model &model) {
     ImGui::Dummy(ImVec2(0, px(2)));
     if (!mp.object_status.empty()) note(("Objects: " + mp.object_status).c_str());
     if (mp.hosting) note("Travel from Map > Travel to take everyone with you.");
-    else if (mp.server_admin) note("Pick a level in Levels or Map > Travel to move the whole server there.");
+    else if (server_can(mp, "map")) note("Pick a level in Levels or Map > Travel to move the whole server there.");
     end_card();
 
     if (mp.server_admin) {
-        begin_card(menu, "server-command", "SERVER COMMAND", "Admins only");
-        note("Any server console command: status, map grom, name <text>, tps 60, park historic megapark_02, "
-             "layer-sync on... Type help for the list. Replies appear in chat.");
+        begin_card(menu, "server-command", "SERVER COMMAND", mp.server_all_commands ? "Admins only" : "Your role's commands");
+        note(mp.server_all_commands
+                 ? "Any server console command: status, map grom, name <text>, tps 60, park historic megapark_02, "
+                   "layer-sync on... Type help for the list. Replies appear in chat."
+                 : "The server commands your role has: type help for what there is. Replies appear in chat.");
         const float send = ImGui::CalcTextSize("Send").x + ImGui::GetStyle().FramePadding.x * 2;
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - send - ImGui::GetStyle().ItemSpacing.x);
         const bool enter = ImGui::InputTextWithHint("##server-command", "help", menu.server_command.data(),
@@ -605,13 +632,13 @@ void session_page(SkateMenu &menu, const Model &model) {
     }
     map_pool_settings(menu, model);
 
-    begin_card(menu, "host-options", mp.dedicated ? "SERVER OPTIONS" : "HOST OPTIONS", set_by(mp));
+    begin_card(menu, "host-options", mp.dedicated ? "SERVER OPTIONS" : "HOST OPTIONS", mp.dedicated && mp.server_admin ? nullptr : set_by(mp));
     std::array<char, 65> unused{};
     field(menu, "Who can build");
     int placement = mp.object_placement == ObjectPlacement::everyone ? 0 : mp.object_placement == ObjectPlacement::host_only ? 1 : 2;
     // On a dedicated server "host only" is its admins.
     if (choice(menu, "placement", placement, {"Everyone", mp.dedicated ? "Admins only" : "Host only", "Nobody"},
-               controls_session(mp)))
+               controls(mp, "placement")))
         send_private(menu, "object-placement", placement == 0 ? "everyone" : placement == 1 ? "host" : "nobody", unused, false);
     note(mp.object_placement == ObjectPlacement::everyone ? "Everyone can place, move and delete objects."
          : mp.object_placement == ObjectPlacement::host_only
@@ -630,7 +657,7 @@ void session_page(SkateMenu &menu, const Model &model) {
         std::array<const char *, 8> labels{"No limit", "10", "25", "50", "100", "250", "500", custom.c_str()};
         int picked = static_cast<int>(found - limits.begin());
         field(menu, "Objects per player");
-        ImGui::BeginDisabled(!controls_session(mp));
+        ImGui::BeginDisabled(!controls(mp, "objects"));
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::Combo("##object-limit", &picked, labels.data(), found == limits.end() ? 8 : 7) && picked < 7)
             send_private(menu, "object-limit", picked ? std::to_string(limits[static_cast<std::size_t>(picked)]) : std::string("off"), unused, false);
@@ -643,7 +670,7 @@ void session_page(SkateMenu &menu, const Model &model) {
         else note((std::string("Each player can have ") + std::to_string(mp.object_limit) + " objects placed. " + exempt +
                    (mp.dedicated ? " are not limited." : " is not limited.")).c_str());
     }
-    if (controls_session(mp)) {
+    if (controls(mp, "clear-objects")) {
         note(mp.dedicated ? "Enforced by the server, so modified clients cannot get around it."
                           : "Enforced by the host, so modified clients cannot get around it.");
         if (ImGui::Button(mp.dedicated ? "Delete all placed objects" : "Delete all guest objects", ImVec2(-FLT_MIN, 0)))
@@ -656,27 +683,27 @@ void session_page(SkateMenu &menu, const Model &model) {
     const char *exempt = mp.dedicated ? " Admins always can." : " You always can.";
     bool noclip = mp.guest_noclip;
     if (toggle_row(menu, "Allow noclip", (std::string(who) + " may fly with noclip and teleport." + exempt).c_str(), noclip,
-                   controls_session(mp), noclip ? "ALLOWED" : "OFF"))
+                   controls(mp, "noclip"), noclip ? "ALLOWED" : "OFF"))
         send_private(menu, "noclip-allow", noclip ? "on" : "off", unused, false);
     bool no_bail = mp.guest_no_bail;
     if (toggle_row(menu, "Allow No Bail", (std::string(who) + " may turn on No Bail." + exempt).c_str(), no_bail,
-                   controls_session(mp), no_bail ? "ALLOWED" : "OFF"))
+                   controls(mp, "nobail"), no_bail ? "ALLOWED" : "OFF"))
         send_private(menu, "nobail-allow", no_bail ? "on" : "off", unused, false);
     bool boosts = mp.guest_boosts;
     if (toggle_row(menu, "Allow boosts", (std::string(who) + " may use the forward and up boosts." + exempt).c_str(), boosts,
-                   controls_session(mp), boosts ? "ALLOWED" : "OFF"))
+                   controls(mp, "boosts"), boosts ? "ALLOWED" : "OFF"))
         send_private(menu, "boosts-allow", boosts ? "on" : "off", unused, false);
     bool tuning = mp.enforce_tuning;
     if (toggle_row(menu, "Enforce physics tuning",
                    mp.dedicated ? "Players skate with the game's own Gameplay/SkatePhysicsTuning, not their edited copies."
                                 : "Guests skate with your Gameplay/SkatePhysicsTuning (truck positions and the rest), not their own.",
-                   tuning, controls_session(mp), tuning ? "ON" : "OFF"))
+                   tuning, controls(mp, "tuning"), tuning ? "ON" : "OFF"))
         send_private(menu, "tuning-enforce", tuning ? "on" : "off", unused, false);
     if (!mp.tuning_status.empty()) note(mp.tuning_status.c_str());
     ImGui::Dummy(ImVec2(0, px(2)));
     bool force_layers = mp.force_world_layers;
     if (toggle_row(menu, "Sync world layers", "Guests follow your World > Layers choices and cannot change their own.",
-                   force_layers, controls_session(mp), force_layers ? "ON" : "OFF"))
+                   force_layers, controls(mp, "layer-sync"), force_layers ? "ON" : "OFF"))
         send_private(menu, "world-layer-sync", force_layers ? "on" : "off", unused, false);
     if (mp.dedicated)
         note("The server's layers are set with server commands: layer <key> on|off (keys are listed in World > Layers).");

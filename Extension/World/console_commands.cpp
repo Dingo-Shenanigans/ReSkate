@@ -20,7 +20,7 @@ const overlay::Level *base_level(const Model &model) {
 using ServerMaps = std::optional<std::vector<std::string>>;
 ServerMaps admin_server_maps() {
     auto session = multiplayer::model();
-    if (!session.server_admin || session.server_maps.empty())
+    if (!server_can(session, "map") || session.server_maps.empty())
         return std::nullopt;
     return std::move(session.server_maps);
 }
@@ -51,6 +51,7 @@ const overlay::Level *find_destination(const Model &model, std::string_view name
     for (const auto &level : model.levels)
         if (offered(level, maps) && equal(level.asset, name))
             return &level;
+    name = world_level_typed_name(name);
     for (const bool exact : {true, false}) {
         const overlay::Level *result = nullptr;
         for (const auto &level : model.levels) {
@@ -129,8 +130,8 @@ void register_world_commands(Commands &registry) {
                      : "error: Destination is missing or ambiguous; use levels or Tab.");
             return;
         }
-        // A dedicated server's admin moves the whole server; everyone loads it together.
-        if (multiplayer::model().server_admin) {
+        // A player whose role may change a dedicated server's map moves the whole server; everyone loads it together.
+        if (server_can(multiplayer::model(), "map")) {
             const bool sent = multiplayer::queue_command("server", "map " + root->asset + "|" + level->asset, "");
             out(sent ? "Asked the server to change map." : "error: The request queue is busy; try again.");
             return;
@@ -173,7 +174,7 @@ void register_world_commands(Commands &registry) {
         };
         entry.run = [i](const Model &, const Values &args, const Output &out) {
             // While a dedicated server syncs layers, its admins change them for everyone.
-            if (multiplayer::model().server_admin && local_profile_world_layers().controlled_by_host) {
+            if (server_can(multiplayer::model(), "layer") && local_profile_world_layers().controlled_by_host) {
                 const bool sent = multiplayer::queue_command(
                     "server", "layer " + world_layers()[i].key + " " + std::get<std::string>(args[0]), "");
                 out(sent ? "Sent to the server." : "error: The request queue is busy; try again.");
@@ -238,7 +239,7 @@ void register_world_commands(Commands &registry) {
         if (found == times.end()) { out("error: Choose default, morning, noon, afternoon, evening, night, weatherday or weathernight."); return; }
         const auto slot = static_cast<std::size_t>(found - times.begin());
         // While a dedicated server syncs layers, its admins set the time for everyone.
-        if (multiplayer::model().server_admin && local_profile_world_layers().controlled_by_host) {
+        if (server_can(multiplayer::model(), "tod") && local_profile_world_layers().controlled_by_host) {
             const bool sent = multiplayer::queue_command("server", "tod " + wanted, "");
             out(sent ? "Sent to the server." : "error: The request queue is busy; try again.");
             return;
@@ -264,11 +265,11 @@ void register_world_commands(Commands &registry) {
     registry.add(std::move(defaults));
     auto random_parks = action("park random", "Load a random layout in every park slot", Group::world);
     random_parks.inspect = [](const Model &m) {
-        return State{m.parks.available && (!m.parks.controlled_by_host || m.multiplayer.server_admin), {},
+        return State{m.parks.available && (!m.parks.controlled_by_host || server_can(m.multiplayer, "park")), {},
                      "The host controls park layouts, or park controls are unavailable.", {}, false};
     };
     random_parks.run = [](const Model &, const Values &, const Output &out) {
-        if (multiplayer::model().server_admin) {
+        if (server_can(multiplayer::model(), "park")) {
             const bool sent = multiplayer::queue_command("server", "park random", "");
             out(sent ? "Sent to the server." : "error: The request queue is busy; try again.");
             return;
@@ -301,8 +302,8 @@ void register_world_commands(Commands &registry) {
                          "Park controls are unavailable.", "Saved layout", false};
         };
         entry.run = [lot](const Model &, const Values &args, const Output &out) {
-            // A lobby's parks follow its host; a dedicated server's admins choose them for everyone.
-            if (multiplayer::model().server_admin) {
+            // A lobby's parks follow its host; on a dedicated server a role with the command chooses them for everyone.
+            if (server_can(multiplayer::model(), "park")) {
                 const bool sent = multiplayer::queue_command(
                     "server", "park " + std::string(park_lots[lot].key) + " " + std::get<std::string>(args[0]), "");
                 out(sent ? "Sent to the server." : "error: The request queue is busy; try again.");

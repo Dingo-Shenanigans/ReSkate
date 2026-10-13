@@ -89,5 +89,13 @@ void music_ui_initialize_hook(std::uint64_t all, std::uint64_t hidden, std::uint
     const std::uint32_t* handle, const void* callback);
 
 void update_music_catalog();
+// The Spotify station (spotify_station.h): the cover of its song in the music screen is what
+// Spotify is playing while the station is on, and the song's own again when it is left.
+void update_spotify_cover();
+// The music screen's playlists and songs are given to it again as they are now (a playlist
+// the player has just added, in the setup page, is then there without the game being started
+// again). Any thread asks; it is done by the thread that fills the screen. (Being tried.)
+void request_music_catalog_refresh() noexcept;
+void update_music_catalog_refresh();
 
 }

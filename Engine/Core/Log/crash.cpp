@@ -1,5 +1,5 @@
 #include "logging_internal.h"
-#include "Engine/Core/Debug/backtrace.h"
+#include "Engine/Core/Debug/crash_report.h"
 #include <array>
 
 namespace dingosdk::logging::detail {
@@ -37,7 +37,7 @@ LONG WINAPI unhandled(EXCEPTION_POINTERS* exception) {
             FlushFileBuffers(file); CloseHandle(file);
         }
     }
-    backtrace::capture(exception);
+    crash_report::capture(exception);
     return previous ? previous(exception) : EXCEPTION_CONTINUE_SEARCH;
 }
 }
@@ -56,6 +56,6 @@ void remove_crash_report() noexcept {
     const auto current = SetUnhandledExceptionFilter(previous);
     if (current != unhandled) SetUnhandledExceptionFilter(current);
     installed = false;
-    backtrace::stop();
+    crash_report::stop();
 }
 }

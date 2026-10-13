@@ -675,6 +675,23 @@ void chat_codec() {
     check(clean_chat_text(std::string(199, 'a') + "\xC3\xA9").size() == 199, "Chat cleaning cut a character in half");
     check(clean_chat_text("\x01\x02").empty(), "Chat cleaning left only controls");
     check(valid_chat_text(clean_chat_text("  typed \xE2\x80\x94 text  ")), "Cleaned chat text is not valid");
+    Packet typing;
+    typing.kind = PacketKind::typing; typing.session = 9; typing.epoch = 10; typing.map = 11;
+    typing.source = 76561198000000001ULL; typing.typing = true;
+    const auto typed = decode(encode(typing));
+    check(typed && typed->kind == PacketKind::typing && typed->typing && typed->source == typing.source,
+          "Typing notice failed to round-trip");
+    check(decode_wire(encode_wire(typing))->typing, "Typing notice failed the wire codec");
+    typing.typing = false;
+    const auto stopped = decode(encode(typing));
+    check(stopped && !stopped->typing, "A stopped typing notice stayed on");
+    typing.source = 0;
+    check(reject(typing), "A typing notice without a sender was encoded");
+    typing.source = 76561198000000001ULL;
+    typing.typing = true;
+    auto bad = encode(typing);
+    bad.back() = 2; // the on/off byte; anything but 0 or 1 is refused
+    check(!decode(bad), "A typing notice with a bad flag decoded");
 }
 // Linked throwdowns: the packet carries one opaque message; the message codec is strict.
 void throwdown_codec() {
@@ -983,6 +1000,74 @@ void dedicated_server_codec() {
     auto crowned = roster;
     crowned.members[0].admin = true;
     check(reject(crowned), "A host marked as an admin");
+    {
+        // A dedicated server's roles: the tags its players wear, and what one player may do.
+        auto tagged = roster;
+        tagged.members[1].tag = "Mod";
+        tagged.members[1].tag_color = 0xffffc85eU;
+        const auto worn = decode(encode(tagged));
+        check(worn && worn->members[1].tag == "Mod" && worn->members[1].tag_color == 0xffffc85eU && worn->members[2].tag.empty(),
+              "A role's tag failed to round-trip");
+        auto self = tagged;
+        self.members[0].tag = "Boss";
+        check(reject(self), "A server wearing a tag was accepted");
+        auto lobby = roster;
+        lobby.members.erase(lobby.members.begin());
+        lobby.source = player;
+        lobby.members[0].admin = false;
+        check(!reject(lobby), "A lobby roster was refused");
+        lobby.members[1].tag = "Mod";
+        check(reject(lobby), "A lobby's host gave out a tag");
+        auto wide = tagged;
+        wide.members[1].tag = std::string(max_role_tag + 1, 'a');
+        check(reject(wide), "A tag past its length was accepted");
+        wide.members[1].tag = " Mod";
+        check(reject(wide), "A tag starting with a blank was accepted");
+        Packet rights;
+        rights.kind = PacketKind::permissions; rights.session = 9; rights.epoch = 10; rights.map = 11; rights.source = server;
+        rights.role = "moderator";
+        rights.role_commands = {"kick", "ban", "msg-admins"};
+        rights.role_permissions = role_alerts | role_chat | role_votes;
+        const auto given = decode(encode(rights));
+        check(given && given->role == "moderator" && !given->role_all_commands && given->role_commands == rights.role_commands &&
+                  given->role_permissions == rights.role_permissions, "A player's permissions failed to round-trip");
+        Packet filter;
+        filter.kind = PacketKind::words; filter.session = 9; filter.epoch = 10; filter.map = 11; filter.source = server;
+        filter.words = {"florp", "gl0rp", "two words"};
+        const auto sent = decode(encode(filter));
+        check(sent && sent->kind == PacketKind::words && sent->words == filter.words, "A server's filtered words failed to round-trip");
+        auto long_word = filter;
+        long_word.words = {std::string(max_server_word + 1, 'a')};
+        check(reject(long_word), "A filtered word past its length was accepted");
+        long_word.words.assign(max_server_words + 1, "a");
+        check(reject(long_word), "More filtered words than a server may send were accepted");
+        Packet coming;
+        coming.kind = PacketKind::next_maps; coming.session = 9; coming.epoch = 10; coming.map = 11; coming.source = server;
+        coming.next_maps = {{"Vancouver Plaza", "Sandos-Vancouver_Plaza-2.0.0"}, {"Isle of Grom", ""}};
+        const auto told = decode(encode(coming));
+        check(told && told->kind == PacketKind::next_maps && told->next_maps == coming.next_maps, "The next maps failed to round-trip");
+        auto wrong_maps = coming;
+        wrong_maps.next_maps[0].package = "not a package";
+        check(reject(wrong_maps), "A next map with a bad package was accepted");
+        wrong_maps = coming;
+        wrong_maps.next_maps.assign(max_next_maps + 1, {"A map", ""});
+        check(reject(wrong_maps), "More next maps than a vote has answers were accepted");
+        coming.next_maps.clear();
+        check(decode(encode(coming)) && decode(encode(coming))->next_maps.empty(), "No next maps failed to round-trip");
+        auto none = rights;
+        none.role.clear(); none.role_commands.clear(); none.role_permissions = 0; none.role_all_commands = true;
+        const auto bare = decode(encode(none));
+        check(bare && bare->role.empty() && bare->role_all_commands && bare->role_commands.empty(), "Permissions with no role failed to round-trip");
+        auto bad = rights;
+        bad.role_commands = {"Kick"};
+        check(reject(bad), "A command that is not a command's name was accepted");
+        bad = rights;
+        bad.role_permissions = role_permission_bits + 1;
+        check(reject(bad), "An unknown permission was accepted");
+        bad = rights;
+        bad.source = 0;
+        check(reject(bad), "Permissions from nobody were accepted");
+    }
     auto far = roster;
     far.voice_range = 5;
     check(reject(far), "Invalid voice range encoded");
@@ -1095,6 +1180,24 @@ void dedicated_server_codec() {
         elsewhere.map_fetching = true;
         check(reject(elsewhere), "A map fetch notice on a map change encoded");
     }
+    // A map installed at another version than the host's is fetched at the host's: only when
+    // both name a version of the same package.
+    check(other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Sandos-Vancouver_Plaza-1.9.0") == "1.9.0" &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "sandos-vancouver_plaza-1.9.0") == "1.9.0" &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Sandos-Vancouver_Plaza-2.0.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza", "Sandos-Vancouver_Plaza-1.9.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Sandos-Vancouver_Plaza").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "Other-Vancouver_Plaza-1.9.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-2.0.0", "").empty() && other_map_version("", "").empty() &&
+              // (A player ahead of the host keeps their version.)
+              other_map_version("Sandos-Vancouver_Plaza-1.9.0", "Sandos-Vancouver_Plaza-2.0.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-1.9.2", "Sandos-Vancouver_Plaza-1.10.0").empty() &&
+              other_map_version("Sandos-Vancouver_Plaza-1.10.0", "Sandos-Vancouver_Plaza-1.9.2") == "1.9.2" &&
+              map_version_newer("1.10.0", "1.9.2") && map_version_newer("2.0", "1.9.9") && map_version_newer("1.0.1", "1.0") &&
+              !map_version_newer("1.0.0", "1.0.0") && !map_version_newer("1.0", "1.0.0") && !map_version_newer("1.9.2", "1.10.0") &&
+              !map_version_newer("", "1.0.0") && !map_version_newer("1.0.0-beta", "0.9.0") && !map_version_newer("abc", "1.0.0") &&
+              map_package_version("Sandos-Vancouver_Plaza-2.0.0") == "2.0.0" && map_package_version("Sandos-Vancouver_Plaza").empty(),
+          "A map's version is not compared with the host's as it should be");
     check(map_package_name("Sandos-Vancouver_Plaza", "2.0.0") == "Sandos-Vancouver_Plaza-2.0.0" &&
           map_package_name("Sandos-Vancouver_Plaza", "") == "Sandos-Vancouver_Plaza" &&
           map_package_name("Sandos-Vancouver_Plaza", "two") == "Sandos-Vancouver_Plaza" &&

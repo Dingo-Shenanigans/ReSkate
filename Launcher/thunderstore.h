@@ -2,13 +2,15 @@
 
 #include <cstdint>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 // Thunderstore (thunderstore.io/c/reskate): the package listing the launcher's
 // Mods browser shows. No network here; gui_mods_browse.cpp fetches with
-// launcher_update::http_get. ReSkate packages have no dependencies.
+// launcher_update::http_get. A package may list others it needs (a mod pack is
+// one that is nothing else); with_dependencies gathers them.
 //
 // A ReSkate package is a mod folder zipped with Thunderstore's manifest.json,
 // icon.png and README.md at the top, and installs as Mods/<Namespace-Name>.
@@ -37,6 +39,7 @@ struct Version {
     std::string date_created;
     std::uint64_t downloads{};
     std::uint64_t file_size{};
+    std::vector<std::string> dependencies;  // Namespace-Name-1.2.3 each
 };
 
 struct Package {
@@ -55,7 +58,23 @@ struct Package {
     // The name as the site shows it: underscores as spaces.
     std::string title() const;
     bool in_category(std::string_view category) const;
+    // This package with `number` as its latest version, for installing that one; unchanged
+    // when it has no such version.
+    Package at_version(std::string_view number) const;
 };
+
+// "Team-Mod-1.2.3" as {"Team-Mod", "1.2.3"}: how a dependency is named. The version is
+// empty when the text does not end in one.
+std::pair<std::string, std::string> split_dependency(std::string_view text);
+// The package `full_name` (Namespace-Name) in `listing`, or null.
+const Package* find_package(std::span<const Package> listing, std::string_view full_name);
+// `package` and everything it needs from `listing`, each once and what is needed first,
+// so installing in order never leaves a mod without what it depends on. A dependency that
+// `have` (installed folders and their versions) holds at the version asked for or newer is
+// left out; any other is taken at its latest. Names the listing lacks go to `unknown`.
+std::vector<Package> with_dependencies(const Package& package, std::span<const Package> listing,
+                                       const std::map<std::string, std::string, std::less<>>& have,
+                                       std::vector<std::string>* unknown = nullptr);
 
 // A package's README, as its page on the site shows it:
 // /api/experimental/package/<owner>/<name>/<version>/readme/, a JSON object with "markdown".

@@ -8,7 +8,7 @@
 
 namespace {
 int failures{};
-void check(bool ok, const char *what) {
+void check(bool ok, const std::string &what) {
     if (!ok) {
         std::cerr << "FAIL: " << what << '\n';
         ++failures;
@@ -46,6 +46,10 @@ int run() {
     check(has("votes.map.seconds") && has("votes.map.min_players") && has("votes.polls") && has("votes.custom") &&
               has("announcements.messages") && has("announcements.interval_minutes") && has("commands"),
           "The new vote and announcement settings were not reported");
+    // Park mods came after commands.
+    check(has("maps.park_mods") && has("maps.park_limits") && config.park_mods.empty() && config.park_limits.parks == 3 &&
+              config.park_limits.objects == 512,
+          "park_mods and park_limits are not new settings with their defaults");
     const auto written = text(file);
     check(written.find("\"enforce_tuning\"") != std::string::npos && written.find("\"seconds\"") != std::string::npos,
           "New settings not written into the file");
@@ -100,8 +104,9 @@ int run() {
         // Nothing is held back from anyone; the listed players and the admins have a slot each past the last.
         const std::uint64_t vip2 = 76561198000000004ULL;
         slots.reserved = {vip, vip2};
-        slots.admins = {admin, vip}; // listed twice: one slot
-        check(extra_slots(slots) == 3, "Extra slots were not one for each reserved player and admin");
+        slots.roles = default_roles();
+        slots.roles.players = {{admin, "admin"}, {vip, "vip"}, {anyone, "muted"}}; // vip is listed twice: one slot
+        check(extra_slots(slots) == 3, "Extra slots were not one for each reserved player and each role with a slot");
         check(may_join(slots, anyone, 3) && !may_join(slots, anyone, 4) && !may_join(slots, anyone, 6), "An extra slot was given to anyone, or a slot was held back");
         check(may_join(slots, vip, 4) && may_join(slots, admin, 5) && may_join(slots, vip2, 6), "A reserved player or an admin was kept out of a full server");
         check(!may_join(slots, vip, 7) && !may_join(slots, admin, 7), "More joined than there are extra slots");
@@ -178,7 +183,8 @@ int run() {
         const auto flat = load_config(file, &fresh);
         check(flat.name == "Flat" && !flat.no_bail && flat.score_check == "kick" && flat.score_allow == std::vector<std::uint64_t>{0xabc} &&
                   flat.speed_check == "off" && flat.map == "Isle of Grom" && flat.map_pool.size() == 1 && flat.map_rotation == 30 && flat.welcome == "Hi" &&
-                  flat.admins.size() == 1 && flat.reserved.size() == 1 && !flat.global_bans && !flat.voice_chat && flat.send_rate == 700 &&
+                  flat.roles.players.size() == 1 && flat.roles.given(76561198000000002ULL) &&
+                  flat.roles.given(76561198000000002ULL)->name == "admin" && flat.reserved.size() == 1 && !flat.global_bans && !flat.voice_chat && flat.send_rate == 700 &&
                   flat.distances.half_rate_start == 70 && !flat.votes.map.enabled && flat.votes.map.percent == 40,
               "A config from before the sections lost a setting");
         const auto fresh_has = [&](std::string_view name) { return std::ranges::find(fresh, name) != fresh.end(); };
@@ -211,6 +217,15 @@ int run() {
         check(load_config(away.file).afk_kick == 15, "The away timer was not kept");
         away.afk_kick = 1441;
         check(config_error(away).find("afk_kick_minutes") != std::string::npos, "An away timer over a day was accepted");
+        // How long a kick lasts: until the restart unless set, and no more than a day.
+        ServerConfig kicks;
+        check(kicks.kick_minutes == 0 && config_error(kicks).find("kick_minutes") == std::string::npos, "A kick does not last until the restart by default");
+        kicks.file = folder / "kicks.json";
+        kicks.kick_minutes = 10;
+        save_config(kicks);
+        check(load_config(kicks.file).kick_minutes == 10, "The kick time was not kept");
+        kicks.kick_minutes = 1441;
+        check(config_error(kicks).find("kick_minutes") != std::string::npos, "A kick time over a day was accepted");
         ServerConfig words;
         check(words.word_warnings == 3 && config.word_warnings == 3, "word_warnings is not 3 unless set");
         words.word_warnings = 11;
@@ -358,28 +373,29 @@ int run() {
                   back.commands[0].commands.empty() && !back.commands[0].admin &&
                   back.commands[1].commands == voting.commands[1].commands && back.commands[2].admin,
               "Custom commands lost on save");
-        const auto refused = [&](auto change, const char *what) {
+        const auto turned_down = [&](auto change, const char *what) {
             auto bad = voting;
             change(bad);
             check(!config_error(bad).empty(), what);
         };
-        refused([](ServerConfig &c) { c.votes.custom[0].name = "map"; }, "A custom vote named like a built-in one accepted");
-        refused([](ServerConfig &c) { c.votes.custom[0].name = "Restart!"; }, "A custom vote name with capitals and marks accepted");
-        refused([](ServerConfig &c) { c.votes.custom[0].name = "list"; }, "A custom vote named like /vote list accepted");
-        refused([](ServerConfig &c) { c.votes.custom[0].name = "2"; }, "A custom vote named like a poll answer accepted");
-        refused([](ServerConfig &c) { c.votes.custom[1].name = "restart"; }, "Two custom votes with one name accepted");
-        refused([](ServerConfig &c) { c.votes.custom[0].command.clear(); }, "A custom vote without a command accepted");
-        refused([](ServerConfig &c) { c.votes.custom[1].choices.clear(); }, "{arg} without choices accepted");
-        refused([](ServerConfig &c) { c.votes.custom[0].choices = {"a"}; }, "Choices without {arg} accepted");
-        refused([](ServerConfig &c) { c.votes.custom[1].choices = {"on now"}; }, "A choice with a space accepted");
-        refused([](ServerConfig &c) { c.announcements.messages = {std::string(201, 'a')}; }, "An announcement over one chat line accepted");
-        refused([](ServerConfig &c) { c.votes.custom.resize(17, c.votes.custom[0]); }, "More than 16 custom votes accepted");
-        refused([](ServerConfig &c) { c.commands[0].name = "kick"; }, "A custom command named like a server command accepted");
-        refused([](ServerConfig &c) { c.commands[0].name = "party"; }, "A custom command named like a chat command accepted");
-        refused([](ServerConfig &c) { c.commands[0].name = "Discord"; }, "A custom command name with capitals accepted");
-        refused([](ServerConfig &c) { c.commands[1].name = "discord"; }, "Two custom commands with one name accepted");
-        refused([](ServerConfig &c) { c.commands[0].reply.clear(); }, "A custom command with no reply or command accepted");
-        refused([](ServerConfig &c) { c.commands[0].reply = std::string(201, 'a'); }, "A custom reply over one chat line accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[0].name = "map"; }, "A custom vote named like a built-in one accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[0].name = "Restart!"; }, "A custom vote name with capitals and marks accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[0].name = "list"; }, "A custom vote named like /vote list accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[0].name = "2"; }, "A custom vote named like a poll answer accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[1].name = "restart"; }, "Two custom votes with one name accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[0].command.clear(); }, "A custom vote without a command accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[1].choices.clear(); }, "{arg} without choices accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[0].choices = {"a"}; }, "Choices without {arg} accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom[1].choices = {"on now"}; }, "A choice with a space accepted");
+        turned_down([](ServerConfig &c) { c.announcements.messages = {std::string(201, 'a')}; }, "An announcement over one chat line accepted");
+        turned_down([](ServerConfig &c) { c.votes.custom.resize(17, c.votes.custom[0]); }, "More than 16 custom votes accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].name = "kick"; }, "A custom command named like a server command accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].name = "party"; }, "A custom command named like a chat command accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].name = "teleport"; }, "A custom command named teleport accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].name = "Discord"; }, "A custom command name with capitals accepted");
+        turned_down([](ServerConfig &c) { c.commands[1].name = "discord"; }, "Two custom commands with one name accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].reply.clear(); }, "A custom command with no reply or command accepted");
+        turned_down([](ServerConfig &c) { c.commands[0].reply = std::string(201, 'a'); }, "A custom reply over one chat line accepted");
         // A vote written in by hand needs only its name and command; nonsense is evened out.
         std::ofstream(file, std::ios::binary) << R"({"votes": {"polls": "sometimes", "poll_seconds": 5000,
             "custom": [{"name": "restart", "command": "map {map}", "percent": 500}]},
@@ -391,6 +407,145 @@ int run() {
                   hand.announcements.messages == std::vector<std::string>{"hi"} && hand.announcements.interval == 1440 &&
                   hand.commands.size() == 1 && hand.commands[0].commands == std::vector<std::string>{"say hello"},
               "A hand-written custom vote, announcement list or command was not read sensibly");
+    }
+
+    // Roles: the ones a server starts with, what each comes to, and the file they are kept in.
+    {
+        using namespace dingosdk::multiplayer;
+        const auto roles = default_roles();
+        check(roles_error(roles).empty() && roles.default_role == "player" && roles.find("admin") && roles.find("moderator") &&
+                  roles.find("vip") && roles.find("muted"), "The default roles are not valid");
+        const std::uint64_t boss = 76561198000000002ULL, mod = 76561198000000005ULL, quiet = 76561198000000006ULL, nobody = 76561198000000007ULL;
+        auto held = roles;
+        held.players = {{boss, "admin"}, {mod, "moderator"}, {quiet, "muted"}};
+        // Everybody given no role is a player: chat, votes, parties and private messages, no commands.
+        const auto *player = held.of(nobody);
+        check(player && player->name == "player" && !held.given(nobody) && !staff(player) && !allows(player, "kick") && !allows(player, "help") &&
+                  may(player, role_chat) && may(player, role_votes) && may(player, role_parties) && may(player, role_whisper) &&
+                  !(player->granted & role_reserved_slot), "A player given no role is not the default role");
+        // A role has the default role's as well as its own; one that does not inherit has only its own.
+        const auto *moderator = held.of(mod);
+        check(moderator && staff(moderator) && allows(moderator, "kick") && allows(moderator, "help") && allows(moderator, "roles") &&
+                  allows(moderator, "role") && !allows(moderator, "map") && !allows(moderator, "reserved") && may(moderator, role_chat) &&
+                  (moderator->granted & role_alerts), "The moderator role does not come to what it lists and what a player has");
+        const auto *muted = held.of(quiet);
+        check(muted && !may(muted, role_chat) && !may(muted, role_whisper) && may(muted, role_votes) && !staff(muted), "The muted role can talk");
+        // Every command, but who has a slot or a role only when listed; the menu's names for commands count.
+        const auto *admin = held.of(boss);
+        check(admin && allows(admin, "map") && allows(admin, "voice-allow") && allows(admin, "role") && allows(admin, "reserved") &&
+                  admin->rank > moderator->rank && moderator->rank > player->rank, "The admin role does not have every command");
+        auto star = roles;
+        star.list.push_back({});
+        star.list.back().name = "helper";
+        star.list.back().all_commands = true;
+        star.settle();
+        check(allows(star.find("helper"), "kick") && !allows(star.find("helper"), "role") && !allows(star.find("helper"), "reserved"),
+              "\"*\" gave out the commands only a listing gives");
+        // A server with no default role, and a player with none: as it always was.
+        auto bare = roles;
+        bare.default_role.clear();
+        bare.settle();
+        check(!bare.of(nobody) && may(bare.of(nobody), role_chat) && !allows(bare.of(nobody), "kick") && !(bare.find("moderator")->granted & role_chat),
+              "A server without a default role does not leave players as they were");
+        // The file: written and read back the same, and wrong_roles when it is wrong.
+        const auto back = read_roles(roles_text(held));
+        check(back.default_role == held.default_role && back.players == held.players && back.list.size() == held.list.size() &&
+                  back.find("moderator")->commands == held.find("moderator")->commands && back.find("moderator")->granted == moderator->granted &&
+                  !back.find("muted")->inherit && back.find("admin")->all_commands && back.find("vip")->tag == "VIP",
+              "The roles file did not read back as written");
+        const auto wrong_roles = [](std::string_view json) {
+            try { (void)read_roles(json); } catch (const std::exception &) { return true; }
+            return false;
+        };
+        check(!wrong_roles(R"({"roles": [{"name": "helper", "tag": "Helper", "color": "#00FF00", "rank": 5, "commands": ["kick", "voice-allow"], "permissions": ["chat"]}],
+                          "default_role": "helper", "players": {"76561198000000002": "helper"}})"), "A valid roles file was wrong_roles");
+        check(read_roles(R"({"roles": [{"name": "helper", "commands": ["voice-allow", "*"]}]})").list[0].commands == std::vector<std::string>{"voice"},
+              "A command's menu name was not read as the command");
+        check(wrong_roles(R"({"roles": [{"name": "Helper"}]})") && wrong_roles(R"({"roles": [{"name": "none"}]})") &&
+                  wrong_roles(R"({"roles": [{"name": "a"}, {"name": "a"}]})"), "A role with a bad name was accepted");
+        check(wrong_roles(R"({"roles": [{"name": "a", "tag": "Server"}]})") && wrong_roles(R"({"roles": [{"name": "a", "tag": "content creator"}]})") &&
+                  wrong_roles(R"({"roles": [{"name": "a", "tag": "12345678901234567"}]})"), "A tag the game uses itself, or too long a one, was accepted");
+        check(wrong_roles(R"({"roles": [{"name": "a", "permissions": ["fly"]}]})") && wrong_roles(R"({"roles": [{"name": "a", "commands": ["Kick!"]}]})") &&
+                  wrong_roles(R"({"roles": [{"name": "a", "color": "pink"}]})") && wrong_roles(R"({"roles": [{"name": "a", "rank": 5000}]})"),
+              "A role with an unknown permission, command, colour or rank was accepted");
+        check(wrong_roles(R"({"roles": [{"name": "a"}], "default_role": "b"})") && wrong_roles(R"({"roles": [{"name": "a"}], "players": {"76561198000000002": "b"}})") &&
+                  wrong_roles(R"({"roles": [{"name": "a"}], "players": {"42": "a"}})") && wrong_roles(R"([])"),
+              "A roles file naming a role or a player that is not one was accepted");
+        // An older config's admins become the admin role's players, and leave the config.
+        const auto old = folder / "roles" / "old-admins.json";
+        std::filesystem::create_directories(old.parent_path());
+        {
+            std::ofstream out(old, std::ios::binary);
+            out << R"({"access": {"admins": ["76561198000000002", "76561198000000005"]}})";
+        }
+        const auto moved = load_config(old);
+        check(moved.roles.players.size() == 2 && moved.roles.given(boss) && moved.roles.given(boss)->name == "admin" &&
+                  text(old).find("\"admins\":") == std::string::npos && std::filesystem::exists(roles_file(moved)),
+              "An older config's admins were not moved into the admin role");
+        const auto again = load_config(old);
+        check(again.roles.players == moved.roles.players && again.roles.default_role == "player", "The roles were not kept from one start to the next");
+    }
+    // Park mods: spawned by name on the map each belongs to; the folder may have spaces in it, and
+    // need not be there yet (spawning says so).
+    {
+        ServerConfig parks;
+        parks.file = file;
+        parks.park_mods = {{"street", "popular skate 2 street park", "San Vansterdam", "bam"},
+                           {"plaza-2", "Not Installed Yet", "Isle of Grom", ""}};
+        parks.park_limits = {16, 1024};
+        check(config_error(parks).empty(), "Valid park mods refused: " + config_error(parks));
+        save_config(parks);
+        const auto written_parks = text(file);
+        check(written_parks.find("\"park_mods\"") != std::string::npos && written_parks.find("\"park_limits\"") != std::string::npos,
+              "Park mods not written into the maps section");
+        const auto back = load_config(file);
+        check(back.park_mods.size() == 2 && back.park_mods[0].name == "street" && back.park_mods[0].folder == "popular skate 2 street park" &&
+                  back.park_mods[0].map == "San Vansterdam" && back.park_mods[0].key == "bam" && back.park_mods[1].key.empty() &&
+                  back.park_limits.parks == 16 && back.park_limits.objects == 1024,
+              "Park mods lost on save");
+        // Written in by hand: a park needs no more than its name, folder and map.
+        std::ofstream(file, std::ios::binary) << R"({"maps": {"park_mods": [{"name": "street", "folder": "street park", "map": "San Vansterdam"}],
+            "park_limits": {"parks": 2}}})";
+        const auto hand = load_config(file);
+        check(hand.park_mods.size() == 1 && hand.park_mods[0].key.empty() && hand.park_limits.parks == 2 && hand.park_limits.objects == 512,
+              "A hand-written park mod was not read");
+        std::ofstream(file, std::ios::binary) << R"({"maps": {"park_mods": ["street"]}})";
+        bool thrown{};
+        try { load_config(file); } catch (const std::exception &) { thrown = true; }
+        check(thrown, "A park mod that is not an object was accepted");
+        const auto turned_down = [&](auto change, const char *what) {
+            auto bad = parks;
+            change(bad);
+            check(config_error(bad).find("park_") != std::string::npos, what);
+        };
+        turned_down([](ServerConfig &c) { c.park_mods[0].name = "Street!"; }, "A park name with capitals and marks accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].name = std::string(17, 'a'); }, "A park name over 16 characters accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].name.clear(); }, "A park without a name accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[1].name = "street"; }, "Two parks with one name accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].folder = "parks/street"; }, "A folder with a path accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].folder = "..\\street"; }, "A folder with a backslash accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].folder = ".."; }, "The parent folder accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].folder = " street"; }, "A folder starting with a blank accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].folder.clear(); }, "A park without a folder accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].map = "Nowhere"; }, "A park on an unknown map accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].map.clear(); }, "A park without a map accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].key = "BAM"; }, "A key that is not a base map's accepted");
+        turned_down([](ServerConfig &c) { c.park_mods[0].key = "../bam"; }, "A key with a path accepted");
+        turned_down([](ServerConfig &c) { c.park_limits.parks = 0; }, "A limit of no parks accepted");
+        turned_down([](ServerConfig &c) { c.park_limits.parks = 17; }, "More than 16 parks at once accepted");
+        turned_down([](ServerConfig &c) { c.park_limits.objects = 0; }, "A limit of no park objects accepted");
+        turned_down([](ServerConfig &c) { c.park_limits.objects = 1025; }, "More park objects than one owner can have accepted");
+        turned_down([](ServerConfig &c) { c.park_mods.resize(33, c.park_mods[0]); }, "More than 32 park mods accepted");
+        check(!custom_command_name_free("park-mod"), "A custom command may be called park-mod");
+        // A command a role can be given: the admin role's "*" has it, the moderator's list does not.
+        const auto roles = default_roles();
+        check(allows(roles.find("admin"), "park-mod") && !allows(roles.find("moderator"), "park-mod") && !allows(roles.find("player"), "park-mod"),
+              "park-mod is not the admin role's alone among the default roles");
+        // The vote README.txt shows: "park" is a server command, and still a fine vote name.
+        auto voting = parks;
+        voting.votes.custom = {{"park", "Spawn a park for 30 min", "park-mod add {arg} 30", {"street", "plaza-2"}, {true, 60}},
+                               {"unpark", "Remove a park", "park-mod remove {arg}", {"street", "plaza-2"}, {true, 60}}};
+        check(config_error(voting).empty(), "The park votes from README.txt were refused: " + config_error(voting));
     }
 
     std::filesystem::remove_all(folder);

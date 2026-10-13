@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "launcher_update_config.h"
 #include "text_encoding.h"
@@ -249,6 +250,52 @@ void http_stream(const std::wstring& url, std::uint64_t limit, int timeout_ms,
     http_get(url, limit, timeout_ms, sink);
 }
 
+std::string http_post(const std::wstring& url, const wchar_t* content_type, std::string_view body,
+                      std::uint64_t limit, int timeout_ms) {
+    const auto win32 = [](std::string_view action) {
+        fail(std::format("{} failed (Windows error {})", action, GetLastError()));
+    };
+    URL_COMPONENTS parts{}; parts.dwStructSize = sizeof(parts);
+    parts.dwHostNameLength = parts.dwUrlPathLength = parts.dwExtraInfoLength =
+        parts.dwUserNameLength = parts.dwPasswordLength = static_cast<DWORD>(-1);
+    if (url.size() >= 4096 || !WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &parts) ||
+        parts.nScheme != INTERNET_SCHEME_HTTPS || !parts.dwHostNameLength || parts.dwUserNameLength || parts.dwPasswordLength)
+        fail("Upload URL must be HTTPS: " + utf8(url));
+    if (body.size() > 16 * 1024 * 1024) fail("Upload is larger than expected");
+    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+    std::wstring resource = parts.dwUrlPathLength ? std::wstring(parts.lpszUrlPath, parts.dwUrlPathLength) : L"/";
+    if (parts.dwExtraInfoLength) resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+    Internet session{WinHttpOpen(L"ReSkate-Launcher/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
+    if (!session.value) win32("WinHttpOpen");
+    if (!WinHttpSetTimeouts(session.value, timeout_ms, timeout_ms, timeout_ms, timeout_ms)) win32("WinHttpSetTimeouts");
+    Internet connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
+    if (!connection.value) win32("WinHttpConnect");
+    Internet request{WinHttpOpenRequest(connection.value, L"POST", resource.c_str(), nullptr, nullptr,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)};
+    if (!request.value) win32("WinHttpOpenRequest");
+    DWORD redirects = WINHTTP_DISABLE_REDIRECTS;
+    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &redirects, sizeof(redirects))) win32("WinHttpSetOption");
+    const auto headers = std::wstring(L"Content-Type: ") + content_type + L"\r\n";
+    if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(-1L), const_cast<char*>(body.data()),
+            static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0) ||
+        !WinHttpReceiveResponse(request.value, nullptr)) win32("HTTPS upload");
+    DWORD status{}, size = sizeof(status);
+    if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            nullptr, &status, &size, nullptr)) win32("WinHttpQueryHeaders");
+    if (status == 429) fail("Thunderstore is limiting requests from this network; try again in a little while");
+    if (status != 200 && status != 201) fail(std::format("{} returned HTTP {}", utf8(url), status));
+    std::string answer;
+    std::array<char, 16384> buffer{};
+    for (;;) {
+        DWORD read{};
+        if (!WinHttpReadData(request.value, buffer.data(), static_cast<DWORD>(buffer.size()), &read)) win32("WinHttpReadData");
+        if (!read) break;
+        if (answer.size() + read > limit) fail("The answer is larger than expected: " + utf8(url));
+        answer.append(buffer.data(), read);
+    }
+    return answer;
+}
+
 bool binary_updates_enabled() noexcept { return launcher_binary_updates; }
 
 Config parse_config(std::string_view text) {
@@ -298,6 +345,7 @@ std::optional<Config> fetch_config() {
     try {
         // Public releases: the newest release carries launcher.json and the files it pins. Only
         // this lookup uses GitHub's rate-limited API; the files come from the release's download links.
+        trace::Scope timing("launcher.update_check", "http.client");
         const auto latest = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo + L"/releases/latest";
         logging::write(logging::Level::info, logging::Channel::launcher, L"Checking GitHub releases: " + std::wstring(launcher_release_repo));
         std::string text;
@@ -504,28 +552,48 @@ void replace_file(const fs::path& target, const RemoteFile& file, const Progress
     }
 }
 
+namespace {
+
+constexpr int previous_launcher_names = 8;
+
+// ReSkateLauncher.exe.old, then .old1, .old2, ...
+fs::path previous_launcher(const fs::path& self, int index) {
+    return self.wstring() + L".old" + (index ? std::to_wstring(index) : std::wstring{});
+}
+
+} // namespace
+
 void replace_running_launcher(const fs::path& self, const RemoteFile& file, const Progress& progress) {
     const auto verified = download_verified(self, file, progress);
-    const fs::path previous = self.wstring() + L".old";
-    DeleteFileW(previous.c_str());
-    // Windows allows renaming, but not overwriting, a running executable.
-    if (!MoveFileExW(self.c_str(), previous.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        const auto error = GetLastError();
+    // Windows allows renaming, but not overwriting, a running executable. A .old that is still
+    // there belongs to a launcher that has not exited (or is held by antivirus) and cannot be
+    // deleted, so the next free name is used instead.
+    fs::path previous;
+    DWORD error = ERROR_ALREADY_EXISTS;
+    for (int index = 0; index < previous_launcher_names && error == ERROR_ALREADY_EXISTS; ++index) {
+        previous = previous_launcher(self, index);
+        DeleteFileW(previous.c_str());
+        error = MoveFileExW(self.c_str(), previous.c_str(), MOVEFILE_WRITE_THROUGH) ? ERROR_SUCCESS : GetLastError();
+    }
+    if (error != ERROR_SUCCESS) {
         DeleteFileW(verified.c_str());
         fail(std::format("Cannot move the running launcher aside (Windows error {})", error));
     }
     if (!MoveFileExW(verified.c_str(), self.c_str(), MOVEFILE_WRITE_THROUGH)) {
-        const auto error = GetLastError();
+        error = GetLastError();
         MoveFileExW(previous.c_str(), self.c_str(), MOVEFILE_WRITE_THROUGH);
         fail(std::format("Cannot install the launcher update (Windows error {})", error));
     }
 }
 
 void remove_previous_launcher(const fs::path& self) noexcept {
-    const std::wstring previous = self.wstring() + L".old";
     // The previous process may still be exiting; a later launch retries.
     for (int attempt = 0; attempt < 20; ++attempt) {
-        if (DeleteFileW(previous.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND) return;
+        bool remaining = false;
+        for (int index = 0; index < previous_launcher_names; ++index)
+            if (!DeleteFileW(previous_launcher(self, index).c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+                remaining = true;
+        if (!remaining) return;
         Sleep(100);
     }
 }

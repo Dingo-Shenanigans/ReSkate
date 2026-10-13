@@ -11,6 +11,7 @@
 #include "Extension/Assets/mod_layers.h"
 #include "Extension/Assets/loose_files.h"
 #include "Extension/Scripting/custom_script_loader.h"
+#include "Extension/Scripting/lua_native_block.h"
 #include "Extension/Assets/morph_memory_pool.h"
 #include "Extension/Assets/native_render_resource_pool.h"
 #include "Extension/Rendering/display_startup.h"
@@ -43,6 +44,9 @@ bool initialize_bootstrap(std::uintptr_t base) {
     if (!stage(Channel::assets, "Native InitFS/package support", ready, error)) return false;
     error.clear(); ready = start_mod_layers(base, error);
     if (!stage(Channel::assets, "Mod layout layers", ready, error)) return false;
+    // Before anything that lets a script of the player's own into the game's Lua.
+    error.clear(); ready = start_lua_native_block(base, error);
+    if (!stage(Channel::assets, "Lua kept to Lua (no DLLs, programs, file writes or bytecode)", ready, error)) return false;
     error.clear(); ready = start_loose_files(base, error);
     if (!stage(Channel::assets, "Loose Lua/config files", ready, error)) return false;
     error.clear(); ready = start_custom_script_loader(base, error);

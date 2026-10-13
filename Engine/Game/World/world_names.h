@@ -9,9 +9,21 @@ inline std::string world_level_short_name(std::string_view asset) {
     auto folded = name;
     for (auto& c : folded) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
     if (folded.starts_with("dingolevel_")) { name.erase(0, 11); folded.erase(0, 11); }
+    // A custom map's level is dingolevel_reskate_<map> (ReSkate Studio): the map's own name is
+    // what is shown and typed.
+    if (folded.starts_with("reskate_") && folded.size() > 8) { name.erase(0, 8); folded.erase(0, 8); }
     if (folded.ends_with("_levelroot")) name.resize(name.size() - 10);
     std::replace(name.begin(), name.end(), '_', ' ');
     return name;
+}
+// A map's name as a player typed it. Custom maps used to be listed as "reskate <map>": typed
+// that way it still means the map.
+inline std::string_view world_level_typed_name(std::string_view typed) {
+    constexpr std::string_view old = "reskate ";
+    if (typed.size() <= old.size()) return typed;
+    for (std::size_t i = 0; i < old.size(); ++i)
+        if ((typed[i] | 0x20) != old[i] && typed[i] != old[i]) return typed;
+    return typed.substr(old.size());
 }
 inline std::string world_level_name(std::string_view asset) {
     auto name = world_level_short_name(asset);

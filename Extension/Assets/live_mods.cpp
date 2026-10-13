@@ -436,6 +436,7 @@ void apply_now() {
         std::lock_guard lock(state_mutex);
         // Set with the manifests, so the client tick sees both in one update.
         if (needed) reload_ready = true;
+        mods::board_break_applied(catalog);
         pending_levels = mods::level_manifest_paths(catalog);
         applied.emplace();
         for (const auto &mod : catalog.mods) applied->push_back(mod.name);
@@ -504,7 +505,8 @@ ApplyEffect preview(const mods::ModList &list) {
     };
     bool reload{};
     for (const auto &name : before) {
-        if (named(now, name)) continue;
+        // One of a Board Break deck pack's decks stands for the pack (mod_catalog.h).
+        if (const auto pack = mods::board_break_pack_of(name); named(now, pack.empty() ? name : pack)) continue;
         const auto *entry = entry_of(name);
         // A folder deleted since: what it held is unknown, so assume the worst.
         if (!entry) {

@@ -68,6 +68,7 @@ std::optional<Version> parse_version(const Json& row) {
     version.date_created = text(row, "date_created");
     version.downloads = count(row, "downloads");
     version.file_size = count(row, "file_size");
+    version.dependencies = strings(row, "dependencies");
     if (version.number.empty() || !https(version.download_url)) return std::nullopt;
     if (!https(version.icon)) version.icon.clear();
     return version;
@@ -133,6 +134,63 @@ std::wstring listing_url(std::string_view community) {
 
 std::wstring community_page(std::string_view community) {
     return widen(std::string(site) + "/c/" + std::string(community) + "/");
+}
+
+Package Package::at_version(std::string_view number) const {
+    auto result = *this;
+    const auto found = std::find_if(result.versions.begin(), result.versions.end(),
+        [&](const Version& version) { return version.number == number; });
+    if (found != result.versions.end()) std::rotate(result.versions.begin(), found, found + 1);
+    return result;
+}
+
+std::pair<std::string, std::string> split_dependency(std::string_view text) {
+    const auto dash = text.rfind('-');
+    if (dash == std::string_view::npos || dash == 0) return {std::string(text), {}};
+    const auto version = text.substr(dash + 1);
+    const bool numbered = !version.empty() && std::all_of(version.begin(), version.end(),
+        [](char ch) { return (ch >= '0' && ch <= '9') || ch == '.'; }) && version.find('.') != std::string_view::npos;
+    if (!numbered) return {std::string(text), {}};
+    return {std::string(text.substr(0, dash)), std::string(version)};
+}
+
+const Package* find_package(std::span<const Package> listing, std::string_view full_name) {
+    for (const auto& package : listing)
+        if (package.full_name == full_name) return &package;
+    return nullptr;
+}
+
+std::vector<Package> with_dependencies(const Package& package, std::span<const Package> listing,
+                                       const std::map<std::string, std::string, std::less<>>& have,
+                                       std::vector<std::string>* unknown) {
+    std::vector<Package> order;
+    std::vector<std::string> visiting;
+    const auto seen = [&](std::string_view name) {
+        return std::find(visiting.begin(), visiting.end(), name) != visiting.end() ||
+               std::any_of(order.begin(), order.end(), [&](const Package& done) { return done.full_name == name; });
+    };
+    // Depth first, so a package comes after what it needs. `visiting` breaks a cycle.
+    const auto visit = [&](const auto& self, const Package& current) -> void {
+        visiting.push_back(current.full_name);
+        for (const auto& text : current.latest().dependencies) {
+            const auto [name, version] = split_dependency(text);
+            if (seen(name)) continue;
+            const auto installed = have.find(folder_for(name));
+            if (installed != have.end() && (version.empty() || compare_versions(installed->second, version) >= 0)) continue;
+            const auto* needed = find_package(listing, name);
+            if (!needed) {
+                if (unknown && std::find(unknown->begin(), unknown->end(), name) == unknown->end()) unknown->push_back(name);
+                continue;
+            }
+            // The newest is installed unless only an older one will do, which no listing says:
+            // a dependency names the oldest version that works.
+            self(self, *needed);
+        }
+        visiting.pop_back();
+        order.push_back(current);
+    };
+    visit(visit, package);
+    return order;
 }
 
 std::string Package::title() const {

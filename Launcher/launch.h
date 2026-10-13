@@ -22,6 +22,9 @@ bool game_files_supported(const launcher::SiblingPaths& paths);
 // The config's depot/manifest ships the build this launcher was compiled for.
 bool config_matches_build(const launcher_update::Config& config);
 void relaunch(const std::filesystem::path& self, const std::vector<std::wstring>& arguments);
+// Under Wine/Proton with MangoHud on, restarts the launcher with MangoHud off for
+// its own window and returns true. The game it starts still gets MangoHud.
+bool relaunch_without_mangohud(const std::filesystem::path& self, const std::vector<std::wstring>& arguments);
 // Steam's client process is running and signed in to an account. When it is
 // not, start_game runs the game in offline mode.
 bool steam_signed_in();

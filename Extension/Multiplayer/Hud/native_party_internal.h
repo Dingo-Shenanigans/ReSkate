@@ -52,6 +52,7 @@ struct GroupStatus {
 struct Record { PartyPlayer player; Handle handle{}; std::uint32_t player_id{}; std::int32_t colour = -1; bool friend_of{};
     GroupStatus group; };
 struct Published { Address manager{}; std::array<Record, max_players> records; std::vector<Record> friends;
+    Record server; // the dedicated server's card (set_native_party_server): in no list
     std::uint64_t social_revision{}; unsigned capacity = max_players; bool overlay = true;
     // Built by index() once per publication, for the lookup hooks: the first record
     // with a handle for each player ID, in records and in friends, and the first
@@ -81,6 +82,10 @@ struct Published { Address manager{}; std::array<Record, max_players> records; s
     const Record *friend_record(std::uint64_t id) const {
         const auto found = friend_ids.find(id);
         return found == friend_ids.end() ? nullptr : &friends[found->second];
+    }
+    // The dedicated server's card, by its id: what it placed asks for its owner by id.
+    const Record *server_record(std::uint64_t id) const {
+        return server.handle && server.player.id == id ? &server : nullptr;
     }
     const Record *slot_record(std::size_t slot) const {
         return slot < slot_records.size() && slot_records[slot] ? &records[std::size_t{slot_records[slot]} - 1] : nullptr;
@@ -116,6 +121,11 @@ struct State {
     std::set<Handle> owned;
     std::set<std::uint64_t> owned_ids;
     ULONGLONG next_update{};
+    // set_native_party_server: the session's dedicated server, and whether it changed since
+    // the last publication.
+    std::uint64_t server_id{};
+    std::string server_name;
+    bool server_changed{};
     // From the last publication: whether the party menu's slots were bound (until they
     // are, it is retried every 500 ms) and the local player card it was given.
     bool party_ready{};

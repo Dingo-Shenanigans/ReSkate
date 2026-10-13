@@ -1,10 +1,12 @@
 #pragma once
 #include "distance_settings.h"
 #include "object_placement.h"
+#include "role_commands.h"
 #include "session_limits.h"
 #include "tick_settings.h"
 #include "voice_settings.h"
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -71,6 +73,8 @@ struct MultiplayerPlayer {
     // The player's party (0 = none), whether they lead it, and whether it is the local player's.
     std::uint32_t party{};
     bool party_leader{}, party_member{};
+    // The local player made this player's placed objects solid; they are ghosts otherwise.
+    bool objects_solid{};
 };
 // A party invite waiting for an answer (dedicated servers).
 struct MultiplayerPartyInvite {
@@ -90,6 +94,9 @@ struct MultiplayerHostPreferences {
     unsigned tps = multiplayer_default_tps;
     std::string lobby_name;
 };
+// The least time between two searches of the lobby and server lists, whoever asks: the
+// browser's refresh, a page opening, the console. The browser counts it down.
+inline constexpr std::uint64_t multiplayer_browse_interval_us = 10000000;
 // Session text chat. A message is UTF-8 without control characters, at most
 // this many bytes; the log keeps the most recent lines of the session.
 inline constexpr std::size_t multiplayer_chat_max_bytes = 200;
@@ -101,7 +108,7 @@ struct MultiplayerChatLine {
     std::string name, text;
     bool local{};               // sent by this player
     // The sender's role, as their nametag shows it: its colour (IM_COL32 layout, 0 = none)
-    // and a tag shown in a box before the name ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend", "Server" or empty).
+    // and a tag shown in a box before the name ("Dev", "ReSkate Admin", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend", "Server" or empty).
     std::uint32_t color{};
     std::string tag;
     // With the chat filter on, `text` is masked and this is the line as sent (same length), so
@@ -133,6 +140,9 @@ struct MultiplayerVote {
     bool poll{};
     std::vector<std::string> answers;
     std::vector<unsigned> counts;
+    // The poll is the rotation's vote for the next map: its answers are maps (and "Random map",
+    // "Stay here"), and it is shown as the maps to pick from.
+    bool next_map{};
 };
 // A dedicated server's announcement, for its card. `id` 0: none showing.
 struct MultiplayerAnnouncement {
@@ -202,7 +212,7 @@ struct MultiplayerModel {
     float chat_bubbles_distance{40.f};
     float chat_bubbles_duration{5.f};
     int chat_bubbles_history{3};
-    // Local: the tag the ReSkate backend gives this player ("Dev", "Staff", "Content Creator", "Centrix" or "Homie"; empty
+    // Local: the tag the ReSkate backend gives this player ("Dev", "ReSkate Admin", "Content Creator", "Centrix" or "Homie"; empty
     // for most players) and its role colour, and whether they show it, and the animated items
     // that come with it, to everyone.
     // The local player is on the ReSkate team's developer, staff or homie list: the player list
@@ -227,7 +237,14 @@ struct MultiplayerModel {
     float voice_range = default_voice_range;  // how far the host (or server) forwards proximity voice
     // In a dedicated server's session: the server is the host but not a player.
     // Admins it lists may change its settings, and its map through Levels.
+    // server_admin: the player's role there has at least one of the server's commands.
     bool dedicated{}, server_admin{};
+    // Their role on it (empty: none), the tag it wears, whether it has every command or the
+    // ones listed, and what it gives beyond commands (the protocol's role_* bits).
+    std::string server_role, server_role_tag;
+    bool server_all_commands{};
+    std::vector<std::string> server_commands;
+    std::uint32_t server_permissions{};
     // `bans` is the dedicated server's list (for its admins) rather than this PC's.
     bool server_bans{};
     unsigned server_ban_total{};
@@ -271,6 +288,8 @@ struct MultiplayerModel {
     bool public_host{}, lobby_listed{}, lobby_searching{}, lobby_joining{}, lobby_searched{};
     std::uint64_t public_lobby{}; // Verified public listing, never a private invitation.
     std::string lobby_status, browser_status = "Refresh to find public ReSkate lobbies.";
+    // When the lists may be searched again, on the steady clock in microseconds (browse_wait).
+    std::uint64_t browse_ready_us{};
     std::vector<MultiplayerLobby> lobbies;
     bool network_telemetry{};
     unsigned prioritized_connections{};
@@ -281,8 +300,18 @@ struct MultiplayerModel {
     std::uint64_t queue_us{}, skipped_updates{}, send_failures{}, invalid_messages{}, sent_bytes{},
         raw_sent_bytes{};
 };
+// Whether the player's role on the dedicated server they are on has one of its commands.
+// Whole seconds until the lobby and server lists may be searched again; 0 when they may be now.
+inline int browse_wait(const MultiplayerModel& model) noexcept {
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    return model.browse_ready_us > now ? static_cast<int>((model.browse_ready_us - now + 999999) / 1000000) : 0;
+}
+inline bool server_can(const MultiplayerModel& model, std::string_view command) noexcept {
+    return model.dedicated && role_allows(model.server_all_commands, model.server_commands, command);
+}
 inline bool multiplayer_controls_level(const MultiplayerModel& model) noexcept {
-    // A server admin's level choice is sent to the server, which moves everyone.
-    return model.lobby_joining || (model.active && !model.hosting && !model.echo && !model.server_admin);
+    // The level choice of a player who may change the server's map is sent to the server, which moves everyone.
+    return model.lobby_joining || (model.active && !model.hosting && !model.echo && !server_can(model, "map"));
 }
 } // namespace dingosdk

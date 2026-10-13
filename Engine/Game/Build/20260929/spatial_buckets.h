@@ -26,7 +26,7 @@ struct alignas(16) RootLayout {
     BucketLayout nodes[nodes_per_root];
     std::uint32_t node_count;
 };
-// (Left at eight times the game's while the entity pages are at four: room to spare.)
+// (Left at eight times the game's while the entity pages are at two: room to spare.)
 static_assert(blocks_per_bucket * entries_per_block >= entity_pages::capacity);
 static_assert(blocks_per_bucket < 65'536);
 static_assert(offsetof(BucketLayout, block_pointers) == 0x10000);

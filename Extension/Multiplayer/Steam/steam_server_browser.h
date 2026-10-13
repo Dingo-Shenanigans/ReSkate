@@ -24,6 +24,7 @@ std::optional<MultiplayerLobby> read_server_tags(std::string_view tags, std::uin
 class SteamServerBrowser {
   public:
     ~SteamServerBrowser();
+    // Starts a new search, dropping one still running. The caller limits how often.
     void refresh(std::uint64_t now);
     void tick(std::uint64_t now);
     bool searching() const { return !searches_.empty(); }

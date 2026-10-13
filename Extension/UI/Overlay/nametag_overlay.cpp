@@ -68,6 +68,19 @@ constexpr std::size_t bubble_max_lines = 6;
 constexpr float bubble_pad_factor = 0.6f;
 constexpr float bubble_gap = 3.0f;
 constexpr float bubble_margin = 6.0f;
+// A typing hint is three disc slots. The box stays that wide on every step, and the
+// discs that are showing sit centred in it. A disc is about a lowercase letter tall.
+struct HintMetrics {
+    float disc, gap, width, height;
+};
+HintMetrics hint_metrics(float size) {
+    HintMetrics m;
+    m.disc = size * 0.50f;
+    m.gap = size * 0.28f;
+    m.width = m.disc * 3.0f + m.gap * 2.0f;
+    m.height = m.disc;
+    return m;
+}
 
 float ease_out_back(float t) {
     constexpr float c1 = 1.70158f, c3 = c1 + 1.0f;
@@ -122,7 +135,8 @@ const BubbleLayout &bubble_layout(const std::string &text, const std::string &ra
 // Draws one bubble with its tail (if any), scaled by `pop` about its bottom-centre. Returns
 // the drawn top y.
 float draw_bubble(ImDrawList *draw, ImFont *body_font, float size, const BubbleLayout &layout, ImVec2 at,
-                  float settled_bottom, float alpha, float pop, ImU32 accent, float rounding, bool tail, float k) {
+                  float settled_bottom, float alpha, float pop, ImU32 accent, float rounding, bool tail, float k,
+                  bool hint, int discs) {
     const float pad = size * bubble_pad_factor;
     const float width = (layout.width + pad * 2.0f) * pop;
     const float height = (layout.height + pad * 2.0f) * pop;
@@ -131,8 +145,8 @@ float draw_bubble(ImDrawList *draw, ImFont *body_font, float size, const BubbleL
     const float top = settled_bottom - height;
     const ImVec2 min(left, top), max(left + width, settled_bottom);
     const ImU32 bg = with_alpha(theme::ink, 0.9f * alpha);
-    const ImU32 border = with_alpha(accent, 0.95f * alpha);
-    const ImU32 colour = with_alpha(theme::paper, alpha);
+    const ImU32 border = with_alpha(hint ? theme::muted : accent, 0.95f * alpha);
+    const ImU32 colour = with_alpha(hint ? theme::muted : theme::paper, alpha);
     // A soft drop shadow under the body.
     draw->AddRectFilled(ImVec2(min.x + 1.0f * k, min.y + 2.0f * k), ImVec2(max.x + 1.0f * k, max.y + 2.0f * k),
                         with_alpha(IM_COL32(0, 0, 0, 255), 0.35f * alpha), rounding);
@@ -144,6 +158,20 @@ float draw_bubble(ImDrawList *draw, ImFont *body_font, float size, const BubbleL
     }
     draw->AddRect(min, max, border, rounding, 0, std::max(1.0f, size * 0.1f));
     const ImVec2 origin(min.x + pad * pop, top + pad * pop);
+    if (hint) {
+        const auto dots = hint_metrics(size);
+        const int count = std::clamp(discs, 1, 3);
+        const float disc = dots.disc * pop;
+        const float gap = dots.gap * pop;
+        const float row = disc * static_cast<float>(count) + gap * static_cast<float>(count - 1);
+        float x = origin.x + (layout.width * pop - row) * 0.5f + disc * 0.5f;
+        const float y = origin.y + layout.height * pop * 0.5f;
+        for (int i = 0; i < count; ++i) {
+            draw->AddCircleFilled(ImVec2(x, y), disc * 0.5f, colour, 16);
+            x += disc + gap;
+        }
+        return top;
+    }
     if (layout.rich.items.empty()) {
         draw->AddText(body_font, size * pop, origin, colour, layout.drawn.c_str());
     } else {
@@ -163,6 +191,10 @@ float draw_bubbles(ImDrawList *draw, ImFont *body_font, const Nametag &tag, ImVe
     const float gap = std::max(2.0f, bubble_gap * k);
     const float margin = bubble_margin * k;
     const float rounding = size * 0.45f;
+    const auto dots = hint_metrics(size);
+    BubbleLayout hint_layout;
+    hint_layout.width = dots.width;
+    hint_layout.height = dots.height;
 
     struct Placed {
         const NametagBubble *line;
@@ -173,7 +205,7 @@ float draw_bubbles(ImDrawList *draw, ImFont *body_font, const Nametag &tag, ImVe
     std::vector<Placed> placed;
     float cursor = head_bottom;
     for (auto it = tag.bubbles.rbegin(); it != tag.bubbles.rend(); ++it) {
-        const auto &layout = bubble_layout(it->text, it->raw, body_font, size, wrap, frame);
+        const auto &layout = it->hint ? hint_layout : bubble_layout(it->text, it->raw, body_font, size, wrap, frame);
         const float height = layout.height + pad * 2.0f;
         if (!placed.empty() && cursor - height < margin) break;
         placed.push_back({&*it, &layout, cursor, height});
@@ -186,7 +218,9 @@ float draw_bubbles(ImDrawList *draw, ImFont *body_font, const Nametag &tag, ImVe
         const float pop = 0.55f + 0.45f * ease_out_back(p.line->appear);
         const float alpha = std::clamp(p.line->fade, 0.0f, 1.0f) * smoothstep(p.line->appear);
         if (alpha <= 0.001f) continue;
-        draw_bubble(draw, body_font, size, *p.layout, at, p.settled_bottom, alpha, pop, accent, rounding, i == 0, k);
+        const int discs = p.line->hint ? static_cast<int>(p.line->text.size()) : 0;
+        draw_bubble(draw, body_font, size, *p.layout, at, p.settled_bottom, alpha, pop, accent, rounding, i == 0, k,
+                    p.line->hint, discs);
     }
     return placed.back().settled_bottom - placed.back().height;
 }

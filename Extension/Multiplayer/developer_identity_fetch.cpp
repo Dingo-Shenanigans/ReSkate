@@ -1,6 +1,7 @@
 #include "developer_identity.h"
 #include "word_lists.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Debug/trace.h"
 #include "Engine/Vfs/https_download.h"
 #include <Windows.h>
 #include <atomic>
@@ -20,8 +21,10 @@ void fetch() noexcept {
     bool ok{};
     try {
         https::Download download;
+        trace::Scope timing("backend.identity_lists", "http.client");
         const auto answer = https::get_text(std::wstring(identity_lists_url.begin(), identity_lists_url.end()), max_bytes, 10,
                                             L"ReSkate-Identity/1", &download);
+        if (!answer) timing.fail();
         if (answer) {
             auto lists = parse_identity_lists(*answer);
             server_tokens_rule = parse_server_tokens_required(*answer);

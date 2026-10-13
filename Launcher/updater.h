@@ -63,6 +63,10 @@ std::string releases_page();
 // `limit` bytes, on a non-200 answer, or whatever `sink` throws (to cancel).
 void http_stream(const std::wstring& url, std::uint64_t limit, int timeout_ms,
                  const std::function<void(const char*, DWORD)>& sink);
+// An HTTPS POST of `body`; the answer's body, which must come with a 200 or 201 and
+// fit in `limit` bytes. No redirect is followed. Throws a readable message otherwise.
+std::string http_post(const std::wstring& url, const wchar_t* content_type, std::string_view body,
+                      std::uint64_t limit, int timeout_ms);
 
 // Reports bytes received and the expected total while a download runs.
 using Progress = std::function<void(std::uint64_t received, std::uint64_t total)>;
