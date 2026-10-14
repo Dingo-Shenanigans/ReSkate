@@ -278,6 +278,7 @@ struct Hub {
     ULONGLONG voice_pending_until{};
     // Focus, the keyboard and scrolling.
     std::uint32_t focus{}, fire{}, typing{};
+    std::uint32_t slider_drag{};
     std::uint32_t focus_next{}; // a control that is only drawn from the next frame on, to focus then
     // The game's menu sound this frame calls for (its number; ~0: none), and the focus it was
     // last played for moving to.
@@ -1150,6 +1151,61 @@ struct Column {
         int result{};
         if (button(ui, less, ImVec2(less_x, top), ImVec2(less_x + side, top + tall), "-", Look::plain, enabled, {}, &list.box)) result = -1;
         if (button(ui, more, ImVec2(more_x, top), ImVec2(right, top + tall), "+", Look::plain, enabled, {}, &list.box)) result = 1;
+        return result;
+    }
+    struct SliderResult {
+        float value{};
+        bool changed{}, began{};
+    };
+    // A direct-manipulation number row. Mouse/touch drags the track; controller/keyboard
+    // activation advances one small step so the control remains usable without a pointer.
+    SliderResult slider(const std::string &name, float value, float minimum, float maximum,
+                        const std::string &shown, bool enabled) {
+        const float u = ui.u;
+        const auto id = hash(name, 24);
+        bool drawn{};
+        const float top = list.next(tall, between, drawn);
+        list.reveal(id, top, tall);
+        const ImVec2 a(left, top), b(right, top + tall);
+        const Hit hit = enabled ? item(ui, id, a, b, &list.box) : Hit{};
+        const float track_left = left + (right - left) * .48f;
+        const float track_right = right - 34 * u;
+        const float track_y = top + tall * .68f;
+        const float amount = std::clamp((value - minimum) / (maximum - minimum), 0.f, 1.f);
+        if (drawn) {
+            skate_theme::rough_rect(ui.draw, a, b, hit.focus || hit.hover ? skate_theme::tile_light : skate_theme::tile,
+                                    id & 0xfff, u * 2);
+            label(ui.draw, ui.body, 40 * u, ImVec2(left + 30 * u, top + (tall - 40 * u) * .5f),
+                  track_left - 24 * u, enabled ? theme::paper : theme::muted, name);
+            const float value_width = width_of(ui.bold, 31 * u, shown);
+            ui.draw->AddText(ui.bold, 31 * u, ImVec2(track_right - value_width, top + 13 * u),
+                             enabled ? theme::paper : theme::muted, shown.c_str());
+            ui.draw->AddLine(ImVec2(track_left, track_y), ImVec2(track_right, track_y), IM_COL32(100, 100, 104, 255), 8 * u);
+            ui.draw->AddLine(ImVec2(track_left, track_y), ImVec2(track_left + (track_right - track_left) * amount, track_y),
+                             enabled ? theme::blue : theme::muted, 8 * u);
+            ui.draw->AddCircleFilled(ImVec2(track_left + (track_right - track_left) * amount, track_y), 15 * u,
+                                     enabled ? theme::paper : theme::muted);
+        }
+        SliderResult result{value};
+        const bool pointer_press = enabled && ui.input && ui.clicked && inside(ui.mouse, a, b) && inside(ui.mouse, list.box.a, list.box.b);
+        if (pointer_press) {
+            ui.h.focus = id;
+            ui.h.slider_drag = id;
+            ui.h.sound = sound_select;
+            result.began = true;
+        }
+        if (ui.h.slider_drag == id) {
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) ui.h.slider_drag = 0;
+            else {
+                result.value = minimum + std::clamp((ui.mouse.x - track_left) / (track_right - track_left), 0.f, 1.f) *
+                                               (maximum - minimum);
+                result.changed = std::abs(result.value - value) > .0001f;
+            }
+        } else if (hit.press && !pointer_press) {
+            result.value = value >= maximum ? minimum : std::min(maximum, value + (maximum - minimum) / 20.f);
+            result.changed = true;
+            result.began = true;
+        }
         return result;
     }
     void heading(const char *text) {
@@ -2397,16 +2453,31 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
             change([&] { layer.transform.rotation_degrees += way * 5; });
         if (inspector.setting("LOCK ASPECT", h.create_lock_aspect ? "ON" : "OFF", true))
             h.create_lock_aspect = !h.create_lock_aspect;
-        if (const int way = inspector.adjust("Scale X", decimal(layer.transform.scale_x), true))
-            change([&] { const float next = std::clamp(layer.transform.scale_x + way * .05f, .01f, 100.f);
-                if (h.create_lock_aspect) layer.transform.scale_y *= next / layer.transform.scale_x;
-                layer.transform.scale_x = next; });
-        if (const int way = inspector.adjust("Scale Y", decimal(layer.transform.scale_y), true))
-            change([&] { const float next = std::clamp(layer.transform.scale_y + way * .05f, .01f, 100.f);
-                if (h.create_lock_aspect) layer.transform.scale_x *= next / layer.transform.scale_y;
-                layer.transform.scale_y = next; });
-        if (const int way = inspector.adjust("Opacity", whole(layer.opacity * 100, "%"), true))
-            change([&] { layer.opacity = std::clamp(layer.opacity + way * .05f, 0.f, 1.f); });
+        const auto slide = [&](const std::string &name, float current, float minimum, float maximum,
+                               const std::string &shown, const auto &apply) {
+            const auto moved = inspector.slider(name, current, minimum, maximum, shown, true);
+            if (!moved.changed) return;
+            if (moved.began) {
+                h.create_undo.push_back(h.create_document);
+                if (h.create_undo.size() > 64) h.create_undo.erase(h.create_undo.begin());
+                h.create_redo.clear();
+            }
+            apply(moved.value);
+        };
+        if (h.create_lock_aspect) {
+            slide("Size", layer.transform.scale_x, .05f, 10.f, whole(layer.transform.scale_x * 100, "%"), [&](float next) {
+                const float ratio = next / std::max(.0001f, layer.transform.scale_x);
+                layer.transform.scale_x = next;
+                layer.transform.scale_y = std::clamp(layer.transform.scale_y * ratio, .01f, 100.f);
+            });
+        } else {
+            slide("Width", layer.transform.scale_x, .05f, 10.f, whole(layer.transform.scale_x * 100, "%"),
+                  [&](float next) { layer.transform.scale_x = next; });
+            slide("Height", layer.transform.scale_y, .05f, 10.f, whole(layer.transform.scale_y * 100, "%"),
+                  [&](float next) { layer.transform.scale_y = next; });
+        }
+        slide("Opacity", layer.opacity, 0.f, 1.f, whole(layer.opacity * 100, "%"),
+              [&](float next) { layer.opacity = next; });
         const auto color_step = [&](std::uint8_t value, int way) {
             return static_cast<std::uint8_t>(std::clamp(static_cast<int>(value) + way * 8, 0, 255));
         };
