@@ -224,7 +224,7 @@ bool install(std::uintptr_t base) noexcept {
     return true;
 }
 
-void station_song_begins() noexcept { expect_until.store(GetTickCount64() + 1500, std::memory_order_relaxed); }
+void station_song_begins() noexcept { expect_until.store(GetTickCount64() + 8000, std::memory_order_relaxed); }
 int mode() noexcept { return which.load(std::memory_order_relaxed); }
 void set_mode(int mode) noexcept { which.store(std::clamp(mode, 0, 3), std::memory_order_relaxed); }
 float gain() noexcept { return loudness.load(std::memory_order_relaxed); }
@@ -269,7 +269,14 @@ void tick() noexcept {
             }
             if (!on) paused = false;
         }
-        if (started) app_audio::mute_source(on && !device && !tube && since < 2500);
+        if (started) {
+            // The game goes silent while its window is behind another's; the player's own
+            // output is let back so the music goes on, and turned down again on return.
+            DWORD front{};
+            GetWindowThreadProcessId(GetForegroundWindow(), &front);
+            const bool in_front = front == GetCurrentProcessId();
+            app_audio::mute_source(on && !device && !tube && since < 2500 && in_front);
+        }
     }
     if (now - looked < 1000) return;
     // How fast the game is taking the sound, against the clock: more than it can play (it is

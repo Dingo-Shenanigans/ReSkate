@@ -1,6 +1,7 @@
 #include "spotify_dashboard.h"
 #include "external_player.h"
 #include "external_audio.h"
+#include "plex_login.h"
 #include "youtube_music.h"
 #include "app_audio_capture.h"
 #include "audio_dsp.h"
@@ -219,6 +220,15 @@ std::string state_json() {
     Json apps = Json::array();
     for (const auto& name : external_audio::apps()) apps.push_back(name);
     external["apps"] = std::move(apps);
+    {
+        const auto plex = plex_login::state();
+        Json login = Json::object();
+        login["signed_in"] = plex.signed_in;
+        login["pending"] = plex.pending;
+        login["code"] = plex.code;
+        login["problem"] = plex.problem;
+        external["plex"] = std::move(login);
+    }
     out["external"] = std::move(external);
     Json settings = Json::object();
     settings["gain"] = static_cast<std::uint64_t>(music_inject::gain() * 100.0f + 0.5f);
@@ -296,6 +306,10 @@ bool change(const std::string& path, const std::string& body) {
     } else if (path == "/api/youtube/remove" || path == "/api/library/remove") {
         if (!json.contains("index") || !json.at("index").is_number()) return false;
         youtube_music::remove(static_cast<std::size_t>(std::clamp<std::int64_t>(json.at("index").get<std::int64_t>(), 0, 1000)));
+    } else if (path == "/api/plex/login") {
+        plex_login::begin();
+    } else if (path == "/api/plex/logout") {
+        plex_login::sign_out();
     } else if (path == "/api/external") {
         external_audio::set_app(json.value("app", ""));
         profile_runtime::request_music_catalog_refresh();

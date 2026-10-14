@@ -329,6 +329,13 @@ label.check input{width:18px;height:18px;margin-top:2px;accent-color:var(--blue)
         <p class="help">In the game’s music screen, open the <b>External Audio</b> row and pick its tile. The app’s own sound is turned down while it plays through the game, and put back when you leave. If the row is not there yet, restart the game once.</p>
       </li>
     </ol>
+    <div id="plexBox" style="display:none">
+      <div class="title" style="margin-top:14px">Plexamp: album art in the game</div>
+      <p class="help">Plexamp does not tell Windows what it is playing, so ReSkate asks Plexamp directly. To show the cover too, sign in to Plex once.</p>
+      <div class="row"><button id="plexLogin" class="primary">Sign in to Plex</button><button id="plexLogout" class="quiet">Sign out</button></div>
+      <p class="help" id="plexCode" style="display:none">Go to <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a> and enter the code <b id="plexCodeText" style="font-size:1.4em;letter-spacing:.15em"></b></p>
+      <div class="note" id="plexText"></div>
+    </div>
   </div>
 </details>
 
@@ -451,6 +458,8 @@ document.querySelectorAll('[data-eq]').forEach(b => b.onclick = () => { const va
 $('levelling').onchange = () => post('/api/settings', {levelling:$('levelling').checked});
 $('saveApp').onclick = () => post('/api/external', {app:$('app').value});
 $('clearApp').onclick = () => post('/api/external', {app:''});
+$('plexLogin').onclick = () => post('/api/plex/login');
+$('plexLogout').onclick = () => post('/api/plex/logout');
 $('gain').oninput = () => { gainHeld = Date.now(); $('gainText').textContent = $('gain').value + '%'; };
 $('gain').onchange = () => post('/api/settings', {gain:+$('gain').value});
 $('speakers').onchange = () => post('/api/settings', {speakers:$('speakers').checked});
@@ -587,6 +596,12 @@ function render(s) {
   $('appText').className = 'note' + (silent ? ' bad' : e.app ? ' ok' : '');
   $('appText').textContent = e.app ? ('Using ' + e.app + '.' + (e.on ? ' ' + e.capture + '.' : '')) : '';
   card('external', silent ? 'problem' : e.app ? 'ready' : 'todo', silent ? 'No sound' : e.app ? 'Ready' : 'Set up');
+  const px = e.plex || {};
+  show('plexBox', /^plexamp/i.test(e.app));
+  show('plexLogin', !px.signed_in && !px.pending); show('plexLogout', !!px.signed_in || !!px.pending);
+  show('plexCode', !!px.pending && !!px.code); $('plexCodeText').textContent = px.code || '';
+  $('plexText').className = 'note' + (px.problem ? ' bad' : px.signed_in ? ' ok' : '');
+  $('plexText').textContent = px.problem || (px.signed_in ? 'Signed in to Plex. Covers show in the game.' : '');
 
   // Sound.
   if (Date.now() - gainHeld > 1500) { $('gain').value = s.settings.gain; $('gainText').textContent = s.settings.gain + '%'; }

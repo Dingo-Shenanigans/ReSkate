@@ -614,8 +614,8 @@ std::uintptr_t __fastcall music_channel_playlist_bind_hook(std::uintptr_t channe
             CriticalSectionGuard manager_lock(manager + 0x20);
             std::uintptr_t begin{};
             if (const auto node = find_playlist_node(manager, playlist_id); node && member_count(node, begin, station_members) &&
-                station_members <= 128 && spotify_station::has_stations()) {
-                std::array<unsigned char, 128 * 16> members{};
+                station_members <= 256 && spotify_station::has_stations()) {
+                std::array<unsigned char, 256 * 16> members{};
                 std::array<unsigned char, 16> carrier{};
                 bool add{};
                 if (dingosdk::memory::peek_bytes(begin, members.data(), std::size_t{station_members} * 16))

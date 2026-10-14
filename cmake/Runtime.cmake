@@ -72,6 +72,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/replay_guard.cpp
     Extension/World/load_error_guard.cpp
     Extension/Music/external_player.cpp
+    Extension/Music/plexamp_player.cpp
+    Extension/Music/plex_login.cpp
     Extension/Music/spotify_station.cpp
     Extension/Music/spotify_cover.cpp
     Extension/Music/spotify_web.cpp

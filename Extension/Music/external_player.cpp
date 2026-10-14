@@ -1,4 +1,5 @@
 #include "external_player.h"
+#include "plexamp_player.h"
 #include "spotify_device.h"
 #include "youtube_music.h"
 #include <Windows.h>
@@ -57,6 +58,11 @@ control::GlobalSystemMediaTransportControlsSession pick(const control::GlobalSys
     // (A browser's session does not always go by the browser's name.)
     return wanted.empty() ? nullptr : manager.GetCurrentSession();
 }
+// Plexamp has no media session; plexamp_player.h reads and drives it through its own server.
+bool is_plexamp() {
+    std::lock_guard lock(app_mutex);
+    return wanted_app == "plexamp";
+}
 std::vector<std::uint8_t> read_artwork(const streams::IRandomAccessStreamReference& reference) {
     if (!reference) return {};
     const auto stream = reference.OpenReadAsync().get();
@@ -71,6 +77,10 @@ std::vector<std::uint8_t> read_artwork(const streams::IRandomAccessStreamReferen
 // One look at the player: the track, with its cover read again only when the song changed.
 Track look(const control::GlobalSystemMediaTransportControlsSessionManager& manager, const Track& before) {
     Track track;
+    if (is_plexamp()) {
+        track = plexamp_player::look();
+        return track;
+    }
     const auto session = pick(manager);
     if (!session) return track;
     track.available = true;
@@ -109,6 +119,10 @@ bool same(const Track& a, const Track& b) {
            a.title == b.title && a.artist == b.artist && a.album == b.album && a.artwork_revision == b.artwork_revision;
 }
 void run_command(const control::GlobalSystemMediaTransportControlsSessionManager& manager, Command command, const std::string& app) {
+    if (app == "plexamp") {
+        plexamp_player::send(command);
+        return;
+    }
     const auto session = pick(manager, &app);
     if (!session) return;
     switch (command) {
