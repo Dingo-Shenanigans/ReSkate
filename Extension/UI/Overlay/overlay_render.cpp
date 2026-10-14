@@ -74,8 +74,9 @@ void destroy_graphics() {
     s.win32_ready = s.dx12_ready = s.ready = false;
     s.ui_was_interactive = false;
     s.frames.clear();
-    s.card_texture.Reset(); s.card_upload.Reset();
+    s.card_texture.Reset(); s.card_upload.Reset(); s.create_texture.Reset(); s.create_upload.Reset();
     card_image_lost();
+    create_preview_lost();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -281,7 +282,7 @@ bool setup_graphics() {
         return false;
     }
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap.NumDescriptors = 2; // ImGui's atlas, then the map download card's icon (upload_card_image)
+    heap.NumDescriptors = 3; // ImGui atlas, map card, ReSkate.Create canvas.
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     graphics_result = s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&s.srvs));
     if (FAILED(graphics_result)) {
@@ -597,6 +598,80 @@ void upload_card_image(State& s) {
     card_image_uploaded(static_cast<ImTextureID>(gpu.ptr), pixels.serial);
 }
 
+void upload_create_image(State& s) {
+    if (s.create_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+    CreatePixels pixels;
+    if (!take_create_pixels(pixels) || pixels.rgba.empty() || !s.device || !s.srvs) return;
+    s.create_texture.Reset();
+    s.create_upload.Reset();
+    D3D12_RESOURCE_DESC texture{};
+    texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture.Width = pixels.width;
+    texture.Height = pixels.height;
+    texture.DepthOrArraySize = 1;
+    texture.MipLevels = 1;
+    texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture.SampleDesc.Count = 1;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+    UINT rows{};
+    UINT64 row_bytes{}, total{};
+    s.device->GetCopyableFootprints(&texture, 0, 1, 0, &layout, &rows, &row_bytes, &total);
+    D3D12_RESOURCE_DESC buffer{};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = total;
+    buffer.Height = 1;
+    buffer.DepthOrArraySize = 1;
+    buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_HEAP_PROPERTIES upload_heap{};
+    upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    ComPtr<ID3D12Resource> made, upload;
+    if (!total || rows != pixels.height || row_bytes < std::uint64_t{pixels.width} * 4 ||
+        FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                 nullptr, IID_PPV_ARGS(&made))) ||
+        FAILED(s.device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &buffer,
+                                                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload))))
+        return;
+    void* mapped{};
+    const D3D12_RANGE none{};
+    if (FAILED(upload->Map(0, &none, &mapped)) || !mapped) return;
+    for (UINT row = 0; row < pixels.height; ++row)
+        std::memcpy(static_cast<unsigned char*>(mapped) + layout.Offset + std::size_t{row} * layout.Footprint.RowPitch,
+                    pixels.rgba.data() + std::size_t{row} * pixels.width * 4, std::size_t{pixels.width} * 4);
+    upload->Unmap(0, nullptr);
+    D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+    to.pResource = made.Get();
+    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    from.pResource = upload.Get();
+    from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    from.PlacedFootprint = layout;
+    s.commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+    D3D12_RESOURCE_BARRIER ready{};
+    ready.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    ready.Transition.pResource = made.Get();
+    ready.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ready.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    ready.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    s.commands->ResourceBarrier(1, &ready);
+    const auto step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto cpu = s.srvs->GetCPUDescriptorHandleForHeapStart();
+    auto gpu = s.srvs->GetGPUDescriptorHandleForHeapStart();
+    cpu.ptr += step * 2;
+    gpu.ptr += step * 2;
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = texture.Format;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture2D.MipLevels = 1;
+    s.device->CreateShaderResourceView(made.Get(), &view, cpu);
+    s.create_texture = std::move(made);
+    s.create_upload = std::move(upload);
+    create_preview_uploaded(static_cast<ImTextureID>(gpu.ptr), pixels.serial);
+}
+
 void render(IDXGISwapChain* presented, UINT flags) {
     auto& s = state();
     if (flags & DXGI_PRESENT_TEST) return;
@@ -743,6 +818,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         ImGui::SetCurrentContext(previous); s.failed = true; restore_input(true); return;
     }
     upload_card_image(s);
+    upload_create_image(s);
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = frame.buffer.Get();

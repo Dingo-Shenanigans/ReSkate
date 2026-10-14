@@ -33,8 +33,8 @@ struct Transform {
     bool operator==(const Transform&) const = default;
 };
 
-enum class ShapeKind { rectangle, ellipse, triangle, diamond, star, image };
-enum class DesignTarget { sticker, board, beanie, hoodie, shirt };
+enum class ShapeKind { rectangle, ellipse, triangle, diamond, star, hexagon, heart, cross, bolt, image };
+enum class DesignTarget { sticker, board, beanie, hoodie, shirt, shoes };
 
 struct Shape {
     ShapeKind kind = ShapeKind::rectangle;

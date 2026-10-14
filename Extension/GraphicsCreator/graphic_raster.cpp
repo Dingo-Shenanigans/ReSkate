@@ -31,6 +31,20 @@ bool contains(ShapeKind kind, float x, float y, float half_width, float half_hei
         return polygon(x, y, {{0, -half_height}, {half_width, half_height}, {-half_width, half_height}});
     if (kind == ShapeKind::diamond)
         return std::abs(x) / half_width + std::abs(y) / half_height <= 1;
+    if (kind == ShapeKind::hexagon)
+        return polygon(x, y, {{-half_width * .55f, -half_height}, {half_width * .55f, -half_height},
+            {half_width, 0}, {half_width * .55f, half_height}, {-half_width * .55f, half_height}, {-half_width, 0}});
+    if (kind == ShapeKind::heart) {
+        const float nx = x / half_width, ny = y / half_height;
+        const float a = nx * nx + (ny * 1.15f) * (ny * 1.15f) - .72f;
+        return a * a * a - nx * nx * (ny * 1.15f) * (ny * 1.15f) * (ny * 1.15f) <= 0;
+    }
+    if (kind == ShapeKind::cross)
+        return std::abs(x) <= half_width * .34f || std::abs(y) <= half_height * .34f;
+    if (kind == ShapeKind::bolt)
+        return polygon(x, y, {{half_width * .12f, -half_height}, {-half_width * .72f, .08f * half_height},
+            {-half_width * .12f, .08f * half_height}, {-half_width * .38f, half_height},
+            {half_width * .76f, -.20f * half_height}, {half_width * .16f, -.20f * half_height}});
     std::vector<std::array<float, 2>> star;
     for (int i = 0; i < 10; ++i) {
         const float angle = -1.570796327f + static_cast<float>(i) * .628318531f;

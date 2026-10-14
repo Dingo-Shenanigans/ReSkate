@@ -1,5 +1,6 @@
 #include "graphic_assets.h"
 #include "graphic_document.h"
+#include "graphic_raster.h"
 #include <Windows.h>
 #include <wincodec.h>
 #include <objbase.h>
@@ -140,6 +141,103 @@ ImagePreview load_image(const std::filesystem::path& asset_directory,
         static_cast<UINT>(image.rgba.size()), image.rgba.data())))
         throw std::runtime_error("The imported image could not be read.");
     return image;
+}
+
+ImportedImage create_text_image(const std::filesystem::path& asset_directory,
+                                std::string_view text, std::wstring_view font_face) {
+    if (text.empty() || text.size() > 96) throw std::runtime_error("Text must be between 1 and 96 characters.");
+    const int wide_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
+                                               static_cast<int>(text.size()), nullptr, 0);
+    if (wide_size <= 0) throw std::runtime_error("The text contains unsupported characters.");
+    std::wstring wide(static_cast<std::size_t>(wide_size), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
+                        wide.data(), wide_size);
+
+    const auto private_font = asset_directory.parent_path() / L"Fonts" / L"MTV2C___.TTF";
+    const bool private_font_loaded = font_face == L"MTV2C" && std::filesystem::exists(private_font) &&
+        AddFontResourceExW(private_font.c_str(), FR_PRIVATE, nullptr) > 0;
+    if (font_face == L"MTV2C" && !private_font_loaded) font_face = L"Impact";
+
+    constexpr int width = 1536, height = 384;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void *bits{};
+    HDC dc = CreateCompatibleDC(nullptr);
+    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HFONT font = CreateFontW(270, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                            OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                            VARIABLE_PITCH, std::wstring(font_face).c_str());
+    if (!dc || !bitmap || !font || !bits) {
+        if (font) DeleteObject(font);
+        if (bitmap) DeleteObject(bitmap);
+        if (dc) DeleteDC(dc);
+        throw std::runtime_error("The text layer could not be rendered.");
+    }
+    const auto old_bitmap = SelectObject(dc, bitmap);
+    const auto old_font = SelectObject(dc, font);
+    SetBkColor(dc, RGB(0, 0, 0));
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT bounds{20, 20, width - 20, height - 20};
+    DrawTextW(dc, wide.c_str(), static_cast<int>(wide.size()), &bounds,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    ImagePreview image{width, height, std::vector<std::uint8_t>(width * height * 4)};
+    const auto *source = static_cast<const std::uint8_t *>(bits);
+    for (std::size_t pixel = 0; pixel < static_cast<std::size_t>(width) * height; ++pixel) {
+        const auto alpha = std::max({source[pixel * 4], source[pixel * 4 + 1], source[pixel * 4 + 2]});
+        image.rgba[pixel * 4] = image.rgba[pixel * 4 + 1] = image.rgba[pixel * 4 + 2] = 255;
+        image.rgba[pixel * 4 + 3] = alpha;
+    }
+    SelectObject(dc, old_font);
+    SelectObject(dc, old_bitmap);
+    DeleteObject(font);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    if (private_font_loaded) RemoveFontResourceExW(private_font.c_str(), FR_PRIVATE, nullptr);
+
+    std::uint64_t value = 1469598103934665603ULL;
+    for (const unsigned char c : text) value = (value ^ c) * 1099511628211ULL;
+    for (const wchar_t c : font_face) value = (value ^ static_cast<std::uint16_t>(c)) * 1099511628211ULL;
+    const auto name = std::format("text-{:016x}.png", value);
+    export_png(asset_directory / name, image);
+    return {name, width, height};
+}
+
+ImportedImage import_embedded_image(const std::filesystem::path& asset_directory,
+                                    const wchar_t* resource_name) {
+    HMODULE module{};
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&import_embedded_image), &module);
+    const auto resource = module ? FindResourceW(module, resource_name, RT_RCDATA) : nullptr;
+    const auto loaded = resource ? LoadResource(module, resource) : nullptr;
+    const auto *bytes = loaded ? static_cast<const char *>(LockResource(loaded)) : nullptr;
+    const auto size = resource ? SizeofResource(module, resource) : 0;
+    if (!bytes || !size) throw std::runtime_error("The built-in logo is unavailable.");
+    std::filesystem::create_directories(asset_directory);
+    const auto temporary = asset_directory / L"embedded-logo.tmp.png";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output.write(bytes, size);
+        if (!output) throw std::runtime_error("The built-in logo could not be prepared.");
+    }
+    try {
+        auto imported = import_image(asset_directory, temporary);
+        std::filesystem::remove(temporary);
+        auto image = load_image(asset_directory, imported.asset_name);
+        for (std::size_t pixel = 0; pixel < image.rgba.size(); pixel += 4)
+            if (image.rgba[pixel] < 12 && image.rgba[pixel + 1] < 12 && image.rgba[pixel + 2] < 12)
+                image.rgba[pixel + 3] = 0;
+        export_png(asset_directory / imported.asset_name, image);
+        return imported;
+    } catch (...) {
+        std::filesystem::remove(temporary);
+        throw;
+    }
 }
 
 } // namespace dingosdk::graphics_creator

@@ -288,6 +288,15 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc"
     "FONT_BRUSH RCDATA \"${dingosdk_menu_fonts}/PermanentMarker-Regular.ttf\"\n")
 target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc")
 
+set(dingosdk_create_logo "${PROJECT_SOURCE_DIR}/assets/create/reskate-logo.png")
+if(EXISTS "${dingosdk_create_logo}")
+    file(TO_NATIVE_PATH "${dingosdk_create_logo}" dingosdk_create_logo_native)
+    string(REPLACE "\\" "\\\\" dingosdk_create_logo_native "${dingosdk_create_logo_native}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/create_assets.rc"
+        "CREATE_RESKATE_LOGO RCDATA \"${dingosdk_create_logo_native}\"\n")
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/create_assets.rc")
+endif()
+
 # Local HUB artwork. Compact PNG resources keep the visuals self-contained in
 # ReSkate.dll while the renderer reuses ImGui's existing atlas texture.
 set(dingosdk_hub_backgrounds "${PROJECT_SOURCE_DIR}/assets/ui/backgrounds")

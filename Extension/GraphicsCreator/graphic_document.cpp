@@ -22,6 +22,10 @@ const char* shape_name(ShapeKind kind) {
     case ShapeKind::triangle: return "triangle";
     case ShapeKind::diamond: return "diamond";
     case ShapeKind::star: return "star";
+    case ShapeKind::hexagon: return "hexagon";
+    case ShapeKind::heart: return "heart";
+    case ShapeKind::cross: return "cross";
+    case ShapeKind::bolt: return "bolt";
     case ShapeKind::image: return "image";
     }
     throw std::runtime_error("Unknown graphic shape kind.");
@@ -33,6 +37,10 @@ ShapeKind shape_kind(std::string_view value) {
     if (value == "triangle") return ShapeKind::triangle;
     if (value == "diamond") return ShapeKind::diamond;
     if (value == "star") return ShapeKind::star;
+    if (value == "hexagon") return ShapeKind::hexagon;
+    if (value == "heart") return ShapeKind::heart;
+    if (value == "cross") return ShapeKind::cross;
+    if (value == "bolt") return ShapeKind::bolt;
     if (value == "image") return ShapeKind::image;
     throw std::runtime_error("Graphic layer has an unsupported shape kind.");
 }
@@ -44,6 +52,7 @@ const char* target_name(DesignTarget target) {
     case DesignTarget::beanie: return "beanie";
     case DesignTarget::hoodie: return "hoodie";
     case DesignTarget::shirt: return "shirt";
+    case DesignTarget::shoes: return "shoes";
     }
     throw std::runtime_error("Unknown graphic design target.");
 }
@@ -54,6 +63,7 @@ DesignTarget target_kind(std::string_view value) {
     if (value == "beanie") return DesignTarget::beanie;
     if (value == "hoodie") return DesignTarget::hoodie;
     if (value == "shirt") return DesignTarget::shirt;
+    if (value == "shoes") return DesignTarget::shoes;
     throw std::runtime_error("Graphic document has an unsupported design target.");
 }
 

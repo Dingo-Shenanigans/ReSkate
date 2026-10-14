@@ -110,7 +110,7 @@ void request_create_image(std::filesystem::path asset_directory) {
                 if (GetOpenFileNameW(&dialog)) {
                     const std::filesystem::path selected(file.data());
                     result.image = graphics_creator::import_image(asset_directory, selected);
-                    result.preview = graphics_creator::load_preview(asset_directory, result.image.asset_name);
+                    result.preview = graphics_creator::load_preview(asset_directory, result.image.asset_name, 128);
                     result.display_name = selected.stem().string();
                 } else if (const auto code = CommDlgExtendedError())
                     result.error = std::format("The image picker failed (Windows error {:#x}).", code);
@@ -241,8 +241,13 @@ struct Hub {
     std::vector<std::string> create_files;
     std::map<std::string, graphics_creator::ImagePreview> create_previews;
     std::string create_file = "Untitled Graphic";
+    std::string create_text = "ReSkate";
     std::size_t create_layer{};
-    bool create_ready{};
+    bool create_ready{}, create_dragging{}, create_stamp{}, create_lock_aspect{true};
+    int create_export_kind{-1};
+    int create_font{};
+    int create_brand{};
+    ImVec2 create_drag_offset{};
     // Recording a bind (the BINDS tab): which action (0: none), what has been pressed so far,
     // and when it gives up (GetTickCount64).
     int recording_bind{};
@@ -2017,6 +2022,7 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         case DesignTarget::beanie: return "BEANIE";
         case DesignTarget::hoodie: return "HOODIE";
         case DesignTarget::shirt: return "SHIRT";
+        case DesignTarget::shoes: return "SHOES";
         }
         return "STICKER";
     };
@@ -2027,11 +2033,12 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         case DesignTarget::beanie: return "beanie";
         case DesignTarget::hoodie: return "hoodie";
         case DesignTarget::shirt: return "shirt";
+        case DesignTarget::shoes: return "shoes";
         }
         return "sticker";
     };
     if (gallery.setting("DESIGN TARGET", target_name(h.create_document.target), true, Look::sticky))
-        change([&] { h.create_document.target = static_cast<DesignTarget>((static_cast<int>(h.create_document.target) + 1) % 5); });
+        change([&] { h.create_document.target = static_cast<DesignTarget>((static_cast<int>(h.create_document.target) + 1) % 6); });
     field(ui, hash("create-file"), ImVec2(ga.x, gallery.list.y), ImVec2(gallery.right, gallery.list.y + bar),
           h.create_file, "Graphic name", false, 64);
     gallery.list.y += bar + gallery.between;
@@ -2054,10 +2061,18 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         } catch (const std::exception &error) { say(h, error.what()); }
     }
     const auto exporting = create_export_job().busy.load();
-    if (gallery.setting(exporting ? "EXPORTING TARGET" : "EXPORT TARGET PNG", {},
-                        !exporting && valid_file_name(h.create_file), Look::sticky)) {
-        const auto file = h.create_file + "-" + target_slug(h.create_document.target) + ".png";
-        request_create_export(h.create_document, asset_directory(), export_directory() / file);
+    if (gallery.setting(exporting ? "EXPORTING" : "EXPORT AS...", {},
+                        !exporting && valid_file_name(h.create_file), Look::sticky))
+        h.create_export_kind = h.create_export_kind < 0 ? 0 : -1;
+    if (h.create_export_kind >= 0) {
+        const std::array<const char *, 3> names{"BOARD GRAPHIC", "CLOTHING GRAPHIC", "STICKER GRAPHIC"};
+        const std::array<const wchar_t *, 3> folders{L"Boards", L"Clothing", L"Stickers"};
+        for (int kind = 0; kind < 3; ++kind) {
+            if (!gallery.setting(names[kind], {}, !exporting, Look::plain)) continue;
+            const auto file = h.create_file + "-" + target_slug(h.create_document.target) + ".png";
+            request_create_export(h.create_document, asset_directory(), export_directory() / folders[kind] / file);
+            h.create_export_kind = -1;
+        }
     }
     gallery.title("HISTORY");
     if (gallery.setting("UNDO", {}, !h.create_undo.empty())) undo();
@@ -2071,6 +2086,16 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
             h.create_undo.clear(); h.create_redo.clear();
             say(h, loaded.recovered_from_backup ? "Recovered the previous valid graphic save." : "Graphic loaded.");
         } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    gallery.title("EXPORTED CATALOGUE");
+    for (const auto &category : {L"Boards", L"Clothing", L"Stickers"}) {
+        const auto folder = export_directory() / category;
+        std::size_t count{};
+        std::error_code error;
+        if (std::filesystem::exists(folder, error))
+            for (const auto &entry : std::filesystem::directory_iterator(folder, error))
+                if (entry.is_regular_file() && entry.path().extension() == L".png") ++count;
+        gallery.note(std::filesystem::path(category).string() + ": " + std::to_string(count));
     }
     gallery.note(h.notice);
     gallery.end();
@@ -2086,6 +2111,7 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const ImVec2 canvas_a(canvas_region.x + (available_width - canvas_size.x) * .5f,
                           canvas_region.y + (available_height - canvas_size.y) * .5f);
     const ImVec2 canvas_z(canvas_a.x + canvas_size.x, canvas_a.y + canvas_size.y);
+    request_create_preview(h.create_document, asset_directory());
     ui.draw->AddRectFilled(canvas_a, canvas_z, IM_COL32(238, 238, 238, 255));
     const float checker = std::max(14 * u, canvas_size.x / 24);
     for (unsigned y = 0; canvas_a.y + y * checker < canvas_z.y; ++y)
@@ -2123,7 +2149,17 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
             ui.draw->AddCircle(ImVec2(tc.x, canvas_a.y + th * .22f), tw * .18f, template_line, 32, 3 * u);
             ui.draw->AddRect(ImVec2(tc.x - tw * .13f, canvas_a.y + th * .62f), ImVec2(tc.x + tw * .13f, canvas_a.y + th * .76f), template_line, 18 * u, 0, 3 * u);
         }
+    } else if (h.create_document.target == DesignTarget::shoes) {
+        const ImVec2 left_a(tc.x - tw * .42f, tc.y - th * .12f), left_z(tc.x - tw * .02f, tc.y + th * .14f);
+        const ImVec2 right_a(tc.x + tw * .02f, tc.y - th * .12f), right_z(tc.x + tw * .42f, tc.y + th * .14f);
+        ui.draw->AddRectFilled(left_a, left_z, template_colour, tw * .08f);
+        ui.draw->AddRectFilled(right_a, right_z, template_colour, tw * .08f);
+        ui.draw->AddRect(left_a, left_z, template_line, tw * .08f, 0, 3 * u);
+        ui.draw->AddRect(right_a, right_z, template_line, tw * .08f, 0, 3 * u);
     }
+    const auto rendered_canvas = create_preview_texture();
+    if (rendered_canvas)
+        ui.draw->AddImage(rendered_canvas, canvas_a, canvas_z);
     ui.draw->PushClipRect(canvas_a, canvas_z, true);
     for (std::size_t index = 0; index < h.create_document.layers.size(); ++index) {
         const auto &layer = h.create_document.layers[index];
@@ -2136,6 +2172,13 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const auto point = [&](float x, float y) { return ImVec2(centre.x + x * cs - y * sn, centre.y + x * sn + y * cs); };
         const ImU32 color = IM_COL32(shape.fill.red, shape.fill.green, shape.fill.blue,
                                      static_cast<unsigned>(shape.fill.alpha * layer.opacity));
+        if (rendered_canvas) {
+            if (index == h.create_layer) {
+                const ImVec2 outline[]{point(-half_x, -half_y), point(half_x, -half_y), point(half_x, half_y), point(-half_x, half_y)};
+                ui.draw->AddPolyline(outline, 4, theme::blue, ImDrawFlags_Closed, 5 * u);
+            }
+            continue;
+        }
         if (shape.kind == ShapeKind::image) {
             auto found = h.create_previews.find(shape.source);
             if (found == h.create_previews.end()) {
@@ -2190,8 +2233,103 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     ui.draw->PopClipRect();
     ui.draw->AddRect(canvas_a, canvas_z, theme::paper, 0, 0, 4 * u);
 
+    // Canvas interaction is kept in document coordinates so it behaves identically at every UI scale.
+    const auto document_point = [&](ImVec2 point) {
+        return ImVec2((point.x - canvas_a.x) / scale, (point.y - canvas_a.y) / scale);
+    };
+    const auto hit_layer = [&](const Layer &layer, ImVec2 point) {
+        const auto local = document_point(point);
+        const float radians = -layer.transform.rotation_degrees * .0174532925f;
+        const float dx = local.x - layer.transform.x, dy = local.y - layer.transform.y;
+        const float x = dx * std::cos(radians) - dy * std::sin(radians);
+        const float y = dx * std::sin(radians) + dy * std::cos(radians);
+        return std::abs(x) <= layer.shape.width * layer.transform.scale_x * .5f &&
+               std::abs(y) <= layer.shape.height * layer.transform.scale_y * .5f;
+    };
+    if (ui.input && ui.clicked && inside(ui.mouse, canvas_a, canvas_z)) {
+        const auto at = document_point(ui.mouse);
+        if (h.create_stamp && !h.create_document.layers.empty() && h.create_document.layers.size() < maximum_layers) {
+            change([&] {
+                auto copy = h.create_document.layers[h.create_layer];
+                copy.id = unique_id(); copy.name += " Stamp";
+                copy.transform.x = at.x; copy.transform.y = at.y;
+                h.create_document.layers.push_back(std::move(copy));
+                h.create_layer = h.create_document.layers.size() - 1;
+            });
+        } else {
+            for (std::size_t index = h.create_document.layers.size(); index-- > 0;) {
+                auto &layer = h.create_document.layers[index];
+                if (!layer.visible || !hit_layer(layer, ui.mouse)) continue;
+                h.create_layer = index;
+                h.create_undo.push_back(h.create_document);
+                if (h.create_undo.size() > 64) h.create_undo.erase(h.create_undo.begin());
+                h.create_redo.clear();
+                h.create_drag_offset = ImVec2(at.x - layer.transform.x, at.y - layer.transform.y);
+                h.create_dragging = true;
+                break;
+            }
+        }
+    }
+    if (h.create_dragging && !h.create_document.layers.empty()) {
+        if (ui.input && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const auto at = document_point(ui.mouse);
+            auto &layer = h.create_document.layers[h.create_layer];
+            layer.transform.x = std::clamp(at.x - h.create_drag_offset.x, -16384.f, 16384.f);
+            layer.transform.y = std::clamp(at.y - h.create_drag_offset.y, -16384.f, 16384.f);
+        } else h.create_dragging = false;
+    }
+
     Column inspector(ui, hash("create-inspector"), ia, iz);
     inspector.heading("LAYERS");
+    field(ui, hash("create-text"), ImVec2(ia.x, inspector.list.y),
+          ImVec2(inspector.right, inspector.list.y + bar), h.create_text, "Text layer", false, 96);
+    inspector.list.y += bar + inspector.between;
+    const std::array<const char *, 3> font_labels{"MTV2C", "IMPACT", "ARIAL BLACK"};
+    const std::array<const wchar_t *, 3> font_faces{L"MTV2C", L"Impact", L"Arial Black"};
+    if (inspector.setting("TEXT FONT", font_labels[h.create_font], true, Look::plain))
+        h.create_font = (h.create_font + 1) % static_cast<int>(font_labels.size());
+    if (inspector.setting("ADD TEXT", {}, !h.create_text.empty() && h.create_document.layers.size() < maximum_layers, Look::sticky)) {
+        try {
+            const auto made = create_text_image(asset_directory(), h.create_text, font_faces[h.create_font]);
+            const float fit = 620.f / static_cast<float>(std::max(made.width, made.height));
+            change([&] {
+                h.create_document.layers.push_back({unique_id(), h.create_text, true, 1, {512, 512, 0, 1, 1},
+                    {ShapeKind::image, made.width * fit, made.height * fit, {255, 255, 255, 255}, made.asset_name}});
+                h.create_layer = h.create_document.layers.size() - 1;
+            });
+            h.create_previews.insert_or_assign(made.asset_name, load_preview(asset_directory(), made.asset_name, 128));
+            say(h, "Text layer added.");
+        } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    if (inspector.setting("ADD RESKATE LOGO", {}, h.create_document.layers.size() < maximum_layers, Look::plain)) {
+        try {
+            const auto made = import_embedded_image(asset_directory(), L"CREATE_RESKATE_LOGO");
+            const float fit = 620.f / static_cast<float>(std::max(made.width, made.height));
+            change([&] {
+                h.create_document.layers.push_back({unique_id(), "ReSkate Logo", true, 1, {512, 512, 0, 1, 1},
+                    {ShapeKind::image, made.width * fit, made.height * fit, {255, 255, 255, 255}, made.asset_name}});
+                h.create_layer = h.create_document.layers.size() - 1;
+            });
+            h.create_previews.insert_or_assign(made.asset_name, load_preview(asset_directory(), made.asset_name, 128));
+        } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    const std::array<const char *, 4> brand_names{"BAKER", "DEATHWISH", "PRIMITIVE", "ZERO"};
+    if (inspector.setting("BRAND WORDMARK", brand_names[h.create_brand], true, Look::plain))
+        h.create_brand = (h.create_brand + 1) % static_cast<int>(brand_names.size());
+    if (inspector.setting("ADD BRAND WORDMARK", {}, h.create_document.layers.size() < maximum_layers, Look::plain)) {
+        try {
+            const auto made = create_text_image(asset_directory(), brand_names[h.create_brand], L"Impact");
+            const float fit = 620.f / static_cast<float>(std::max(made.width, made.height));
+            change([&] {
+                h.create_document.layers.push_back({unique_id(), brand_names[h.create_brand], true, 1, {512, 512, 0, 1, 1},
+                    {ShapeKind::image, made.width * fit, made.height * fit, {255, 255, 255, 255}, made.asset_name}});
+                h.create_layer = h.create_document.layers.size() - 1;
+            });
+            h.create_previews.insert_or_assign(made.asset_name, load_preview(asset_directory(), made.asset_name, 128));
+        } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    if (inspector.setting("STAMP TOOL", h.create_stamp ? "ON" : "OFF", true, h.create_stamp ? Look::sticky : Look::plain))
+        h.create_stamp = !h.create_stamp;
     if (inspector.setting("ADD RECTANGLE", {}, h.create_document.layers.size() < maximum_layers, Look::plain)) {
         change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, "Rectangle", true, 1,
             {512, 512, 0, 1, 1}, {ShapeKind::rectangle, 300, 180, {1, 131, 255, 255}}});
@@ -2211,6 +2349,10 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     add_shape("ADD TRIANGLE", "Triangle", ShapeKind::triangle, {248, 85, 73, 255});
     add_shape("ADD DIAMOND", "Diamond", ShapeKind::diamond, {255, 255, 255, 255});
     add_shape("ADD STAR", "Star", ShapeKind::star, {246, 198, 36, 255});
+    add_shape("ADD HEXAGON", "Hexagon", ShapeKind::hexagon, {1, 131, 255, 255});
+    add_shape("ADD HEART", "Heart", ShapeKind::heart, {248, 85, 73, 255});
+    add_shape("ADD CROSS", "Cross", ShapeKind::cross, {245, 245, 245, 255});
+    add_shape("ADD LIGHTNING BOLT", "Lightning Bolt", ShapeKind::bolt, {246, 198, 36, 255});
     const auto importing = create_image_picker().open.load();
     if (inspector.setting(importing ? "IMAGE PICKER OPEN" : "IMPORT PNG / JPEG", {},
                           !importing && h.create_document.layers.size() < maximum_layers, Look::sticky))
@@ -2253,10 +2395,16 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
             change([&] { layer.transform.y = std::clamp(layer.transform.y + way * 8, -16384.f, 16384.f); });
         if (const int way = inspector.adjust("Rotation", whole(layer.transform.rotation_degrees, " deg"), true))
             change([&] { layer.transform.rotation_degrees += way * 5; });
+        if (inspector.setting("LOCK ASPECT", h.create_lock_aspect ? "ON" : "OFF", true))
+            h.create_lock_aspect = !h.create_lock_aspect;
         if (const int way = inspector.adjust("Scale X", decimal(layer.transform.scale_x), true))
-            change([&] { layer.transform.scale_x = std::clamp(layer.transform.scale_x + way * .05f, .01f, 100.f); });
+            change([&] { const float next = std::clamp(layer.transform.scale_x + way * .05f, .01f, 100.f);
+                if (h.create_lock_aspect) layer.transform.scale_y *= next / layer.transform.scale_x;
+                layer.transform.scale_x = next; });
         if (const int way = inspector.adjust("Scale Y", decimal(layer.transform.scale_y), true))
-            change([&] { layer.transform.scale_y = std::clamp(layer.transform.scale_y + way * .05f, .01f, 100.f); });
+            change([&] { const float next = std::clamp(layer.transform.scale_y + way * .05f, .01f, 100.f);
+                if (h.create_lock_aspect) layer.transform.scale_x *= next / layer.transform.scale_y;
+                layer.transform.scale_y = next; });
         if (const int way = inspector.adjust("Opacity", whole(layer.opacity * 100, "%"), true))
             change([&] { layer.opacity = std::clamp(layer.opacity + way * .05f, 0.f, 1.f); });
         const auto color_step = [&](std::uint8_t value, int way) {

@@ -2,6 +2,7 @@
 #include "overlay.h"
 #include "Engine/Core/Console/command_registry.h"
 #include "Extension/Skater/free_flight.h"
+#include "Extension/GraphicsCreator/graphic_document.h"
 #include "gpu_diagnostics.h"
 #include "skate_menu.h"
 #include "skate_style.h"
@@ -28,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 #include <map>
 #include <string>
@@ -178,7 +180,7 @@ struct State {
     ComPtr<ID3D12DescriptorHeap> rtvs, srvs;
     // The map download card's icon (map_download_card.cpp), in the SRV heap's second slot, and
     // the buffer it was uploaded from, which lives until the next one replaces it.
-    ComPtr<ID3D12Resource> card_texture, card_upload;
+    ComPtr<ID3D12Resource> card_texture, card_upload, create_texture, create_upload;
     ComPtr<ID3D12GraphicsCommandList> commands;
     ComPtr<ID3D12Fence> fence;
     HANDLE fence_event = nullptr;
@@ -301,6 +303,17 @@ struct CardPixels {
 bool take_card_pixels(CardPixels& pixels);
 void card_image_uploaded(ImTextureID texture, unsigned serial);
 void card_image_lost();
+struct CreatePixels {
+    std::vector<unsigned char> rgba;
+    UINT width{}, height{};
+    unsigned serial{};
+};
+void request_create_preview(const graphics_creator::GraphicDocument& document,
+                            const std::filesystem::path& asset_directory);
+ImTextureID create_preview_texture() noexcept;
+bool take_create_pixels(CreatePixels& pixels);
+void create_preview_uploaded(ImTextureID texture, unsigned serial);
+void create_preview_lost();
 // Game debug text (game_text_overlay.cpp): polled every presented frame.
 bool game_text_pending();
 void draw_game_text();
