@@ -10,6 +10,7 @@
 #include "Extension/Boot/user_data_redirect.h"
 #include "Extension/GraphicsCreator/graphic_document.h"
 #include "Extension/GraphicsCreator/graphic_assets.h"
+#include "Extension/GraphicsCreator/graphic_raster.h"
 #include "Extension/GraphicsCreator/graphic_store.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Music/local_music_assets.h"
@@ -32,9 +33,11 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <objbase.h>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -70,6 +73,116 @@ namespace {
 namespace view = dingosdk::multiplayer::menu_view;
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
+
+struct CreateImportResult {
+    graphics_creator::ImportedImage image;
+    graphics_creator::ImagePreview preview;
+    std::string display_name;
+    std::string error;
+};
+struct CreateImagePicker {
+    std::mutex mutex;
+    std::optional<CreateImportResult> ready;
+    std::atomic<bool> open{};
+};
+CreateImagePicker &create_image_picker() {
+    static CreateImagePicker picker;
+    return picker;
+}
+void request_create_image(std::filesystem::path asset_directory) {
+    auto &picker = create_image_picker();
+    bool expected{};
+    if (!picker.open.compare_exchange_strong(expected, true)) return;
+    try {
+        std::thread([asset_directory = std::move(asset_directory)] {
+            auto &picker = create_image_picker();
+            CreateImportResult result;
+            HRESULT com = E_FAIL;
+            try {
+                com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+                std::array<wchar_t, 32768> file{};
+                OPENFILENAMEW dialog{sizeof(dialog)};
+                dialog.lpstrTitle = L"Import into ReSkate.Create";
+                dialog.lpstrFilter = L"Images (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0PNG (*.png)\0*.png\0JPEG (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0";
+                dialog.lpstrFile = file.data();
+                dialog.nMaxFile = static_cast<DWORD>(file.size());
+                dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_DONTADDTORECENT;
+                if (GetOpenFileNameW(&dialog)) {
+                    const std::filesystem::path selected(file.data());
+                    result.image = graphics_creator::import_image(asset_directory, selected);
+                    result.preview = graphics_creator::load_preview(asset_directory, result.image.asset_name);
+                    result.display_name = selected.stem().string();
+                } else if (const auto code = CommDlgExtendedError())
+                    result.error = std::format("The image picker failed (Windows error {:#x}).", code);
+            } catch (const std::exception &error) { result.error = error.what(); }
+              catch (...) { result.error = "The image could not be imported."; }
+            if (com == S_OK || com == S_FALSE) CoUninitialize();
+            {
+                std::lock_guard lock(picker.mutex);
+                if (!result.image.asset_name.empty() || !result.error.empty()) picker.ready = std::move(result);
+            }
+            picker.open.store(false);
+        }).detach();
+    } catch (...) {
+        picker.open.store(false);
+        std::lock_guard lock(picker.mutex);
+        picker.ready = CreateImportResult{{}, {}, {}, "The image picker could not be started."};
+    }
+}
+std::optional<CreateImportResult> take_create_image() {
+    auto &picker = create_image_picker();
+    std::lock_guard lock(picker.mutex);
+    auto result = std::move(picker.ready);
+    picker.ready.reset();
+    return result;
+}
+struct CreateExportResult {
+    std::string file_name;
+    std::string error;
+};
+struct CreateExportJob {
+    std::mutex mutex;
+    std::optional<CreateExportResult> ready;
+    std::atomic<bool> busy{};
+};
+CreateExportJob &create_export_job() {
+    static CreateExportJob job;
+    return job;
+}
+void request_create_export(graphics_creator::GraphicDocument document,
+                           std::filesystem::path asset_directory,
+                           std::filesystem::path destination) {
+    auto &job = create_export_job();
+    bool expected{};
+    if (!job.busy.compare_exchange_strong(expected, true)) return;
+    try {
+        std::thread([document = std::move(document), asset_directory = std::move(asset_directory),
+                     destination = std::move(destination)] {
+            auto &job = create_export_job();
+            CreateExportResult result;
+            try {
+                graphics_creator::export_png(destination, graphics_creator::rasterize(document, asset_directory));
+                result.file_name = destination.filename().string();
+            } catch (const std::exception &error) { result.error = error.what(); }
+            {
+                std::lock_guard lock(job.mutex);
+                job.ready = std::move(result);
+            }
+            job.busy.store(false);
+        }).detach();
+    } catch (...) {
+        job.busy.store(false);
+        std::lock_guard lock(job.mutex);
+        job.ready = CreateExportResult{{}, "The PNG export could not be started."};
+    }
+}
+std::optional<CreateExportResult> take_create_export() {
+    auto &job = create_export_job();
+    std::lock_guard lock(job.mutex);
+    auto result = std::move(job.ready);
+    job.ready.reset();
+    return result;
+}
 
 // The game's menu is laid out on a screen of 3840 by 2160 units, scaled to fit the window
 // whole (so by its width in a tall window and its height in a wide one). What does not fit
@@ -1749,17 +1862,6 @@ std::vector<std::string> enabled_music_playlists() {
     return result;
 }
 
-std::optional<std::filesystem::path> choose_create_image() {
-    std::array<wchar_t, 32768> file{};
-    OPENFILENAMEW dialog{sizeof(dialog)};
-    dialog.hwndOwner = state().window.load();
-    dialog.lpstrFilter = L"Images (*.png;*.jpg;*.jpeg)\0*.png;*.jpg;*.jpeg\0PNG (*.png)\0*.png\0JPEG (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0";
-    dialog.lpstrFile = file.data();
-    dialog.nMaxFile = static_cast<DWORD>(file.size());
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    return GetOpenFileNameW(&dialog) ? std::optional<std::filesystem::path>(file.data()) : std::nullopt;
-}
-
 void jukebox_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     auto &h = ui.h;
     const auto now = Clock::now();
@@ -1836,6 +1938,7 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const float u = ui.u, gap = 24 * u, bar = 86 * u;
     const auto directory = [] { return redirected_local_app_data().parent_path() / L"Create" / L"Graphics"; };
     const auto asset_directory = [] { return redirected_local_app_data().parent_path() / L"Create" / L"Assets"; };
+    const auto export_directory = [] { return redirected_local_app_data().parent_path() / L"Create" / L"Exports"; };
     const auto fresh = [] {
         return GraphicDocument{current_schema_version, "untitled", "Untitled Graphic", {1024, 1024},
             {{"background", "Background", true, 1, {512, 512, 0, 1, 1},
@@ -1879,6 +1982,23 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         }
         return std::string("layer-overflow");
     };
+    if (auto imported = take_create_image()) {
+        if (!imported->error.empty()) say(h, imported->error);
+        else if (h.create_document.layers.size() >= maximum_layers) say(h, "This graphic already has the maximum number of layers.");
+        else {
+            const float fit = 560.f / static_cast<float>(std::max(imported->image.width, imported->image.height));
+            change([&] {
+                h.create_document.layers.push_back({unique_id(), imported->display_name, true, 1,
+                    {512, 512, 0, 1, 1}, {ShapeKind::image, imported->image.width * fit,
+                    imported->image.height * fit, {255, 255, 255, 255}, imported->image.asset_name}});
+                h.create_layer = h.create_document.layers.size() - 1;
+            });
+            h.create_previews.insert_or_assign(imported->image.asset_name, std::move(imported->preview));
+            say(h, "Image copied into ReSkate.Create and added as a layer.");
+        }
+    }
+    if (auto exported = take_create_export())
+        say(h, exported->error.empty() ? "Exported " + exported->file_name + " for the item pipeline." : exported->error);
 
     const float total = z.x - a.x;
     const float gallery_width = std::min(820 * u, total * .23f);
@@ -1899,6 +2019,16 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         case DesignTarget::shirt: return "SHIRT";
         }
         return "STICKER";
+    };
+    const auto target_slug = [](DesignTarget target) {
+        switch (target) {
+        case DesignTarget::sticker: return "sticker";
+        case DesignTarget::board: return "board";
+        case DesignTarget::beanie: return "beanie";
+        case DesignTarget::hoodie: return "hoodie";
+        case DesignTarget::shirt: return "shirt";
+        }
+        return "sticker";
     };
     if (gallery.setting("DESIGN TARGET", target_name(h.create_document.target), true, Look::sticky))
         change([&] { h.create_document.target = static_cast<DesignTarget>((static_cast<int>(h.create_document.target) + 1) % 5); });
@@ -1922,6 +2052,12 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
             graphics_creator::save(directory(), h.create_file, h.create_document);
             refresh(); say(h, "Graphic saved locally.");
         } catch (const std::exception &error) { say(h, error.what()); }
+    }
+    const auto exporting = create_export_job().busy.load();
+    if (gallery.setting(exporting ? "EXPORTING TARGET" : "EXPORT TARGET PNG", {},
+                        !exporting && valid_file_name(h.create_file), Look::sticky)) {
+        const auto file = h.create_file + "-" + target_slug(h.create_document.target) + ".png";
+        request_create_export(h.create_document, asset_directory(), export_directory() / file);
     }
     gallery.title("HISTORY");
     if (gallery.setting("UNDO", {}, !h.create_undo.empty())) undo();
@@ -2075,20 +2211,10 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
     add_shape("ADD TRIANGLE", "Triangle", ShapeKind::triangle, {248, 85, 73, 255});
     add_shape("ADD DIAMOND", "Diamond", ShapeKind::diamond, {255, 255, 255, 255});
     add_shape("ADD STAR", "Star", ShapeKind::star, {246, 198, 36, 255});
-    if (inspector.setting("IMPORT PNG / JPEG", {}, h.create_document.layers.size() < maximum_layers, Look::sticky)) {
-        if (const auto picked = choose_create_image()) {
-            try {
-                const auto imported = import_image(asset_directory(), *picked);
-                const float fit = 560.f / static_cast<float>(std::max(imported.width, imported.height));
-                change([&] { const auto id = unique_id(); h.create_document.layers.push_back({id, picked->stem().string(), true, 1,
-                    {512, 512, 0, 1, 1}, {ShapeKind::image, imported.width * fit, imported.height * fit,
-                    {255, 255, 255, 255}, imported.asset_name}});
-                    h.create_layer = h.create_document.layers.size() - 1; });
-                h.create_previews.erase(imported.asset_name);
-                say(h, "Image copied into ReSkate.Create and added as a layer.");
-            } catch (const std::exception &error) { say(h, error.what()); }
-        }
-    }
+    const auto importing = create_image_picker().open.load();
+    if (inspector.setting(importing ? "IMAGE PICKER OPEN" : "IMPORT PNG / JPEG", {},
+                          !importing && h.create_document.layers.size() < maximum_layers, Look::sticky))
+        request_create_image(asset_directory());
     if (inspector.setting("ADD RESKATE MARK", {}, h.create_document.layers.size() + 3 <= maximum_layers, Look::plain)) {
         change([&] {
             const auto add = [&](std::string name, Transform transform, Shape shape) {

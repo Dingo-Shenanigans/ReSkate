@@ -1,5 +1,6 @@
 #include "Extension/GraphicsCreator/graphic_document.h"
 #include "Extension/GraphicsCreator/graphic_assets.h"
+#include "Extension/GraphicsCreator/graphic_raster.h"
 #include "Extension/GraphicsCreator/graphic_store.h"
 #include "Engine/Core/Json/json.h"
 #include <Windows.h>
@@ -94,6 +95,16 @@ int main(int argc, char** argv) {
         check(load(directory, "Night Lines").recovered_from_backup, "Rejected save changed the stored document");
         const auto names = list(directory);
         check(std::find(names.begin(), names.end(), "Night Lines") != names.end(), "Saved graphic missing from browser");
+        GraphicDocument flat{current_schema_version, "flat", "Flat", {64, 64}, {
+            {"red", "Red", true, 1, {32, 32, 0, 1, 1},
+             {ShapeKind::rectangle, 64, 64, {255, 0, 0, 255}}}}};
+        const auto rendered = rasterize(flat, directory / "Assets", 64);
+        check(rendered.width == 64 && rendered.height == 64 && rendered.rgba[0] == 255 && rendered.rgba[3] == 255,
+              "A basic graphic did not rasterize at full opacity");
+        export_png(directory / "Exports" / "flat.png", rendered);
+        const auto exported = load_image(directory / "Exports", "flat.png");
+        check(exported.width == 64 && exported.height == 64 && exported.rgba == rendered.rgba,
+              "The exported target PNG did not round trip");
         bad = document;
         bad.layers[0].shape.kind = ShapeKind::image;
         bad.layers[0].shape.source = "../outside.png";
@@ -109,6 +120,12 @@ int main(int argc, char** argv) {
                   "Imported PNG preview was not bounded or decoded");
             check(import_image(directory / "Assets", argv[2]).asset_name == imported.asset_name,
                   "Importing the same image did not reuse its content-addressed asset");
+            GraphicDocument image_document{current_schema_version, "image", "Image", {128, 128}, {
+                {"image", "Image", true, 1, {64, 64, 0, 1, 1},
+                 {ShapeKind::image, 128, 128, {255, 255, 255, 255}, imported.asset_name}}}};
+            const auto image_render = rasterize(image_document, directory / "Assets", 128);
+            check(image_render.width == 128 && image_render.height == 128 && image_render.rgba.size() == 128 * 128 * 4,
+                  "An imported image did not rasterize into the target canvas");
         }
         std::filesystem::remove_all(directory);
 

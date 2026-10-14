@@ -24,5 +24,7 @@ ImportedImage import_image(const std::filesystem::path& asset_directory,
 ImagePreview load_preview(const std::filesystem::path& asset_directory,
                           const std::string& asset_name,
                           std::uint32_t maximum_side = 32);
+ImagePreview load_image(const std::filesystem::path& asset_directory,
+                        const std::string& asset_name);
 
 } // namespace dingosdk::graphics_creator

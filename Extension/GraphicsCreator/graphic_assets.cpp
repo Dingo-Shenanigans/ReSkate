@@ -123,4 +123,23 @@ ImagePreview load_preview(const std::filesystem::path& asset_directory,
     return preview;
 }
 
+ImagePreview load_image(const std::filesystem::path& asset_directory,
+                        const std::string& asset_name) {
+    ComApartment apartment;
+    if (!valid_asset_name(asset_name))
+        throw std::runtime_error("The graphic references an invalid local image.");
+    const auto decoded = inspect(asset_directory / asset_name);
+    ComPtr<IWICFormatConverter> converter;
+    if (FAILED(decoded.factory->CreateFormatConverter(&converter)) ||
+        FAILED(converter->Initialize(decoded.frame.Get(), GUID_WICPixelFormat32bppRGBA,
+            WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)))
+        throw std::runtime_error("The imported image could not be decoded.");
+    ImagePreview image{decoded.width, decoded.height,
+        std::vector<std::uint8_t>(static_cast<std::size_t>(decoded.width) * decoded.height * 4)};
+    if (FAILED(converter->CopyPixels(nullptr, decoded.width * 4,
+        static_cast<UINT>(image.rgba.size()), image.rgba.data())))
+        throw std::runtime_error("The imported image could not be read.");
+    return image;
+}
+
 } // namespace dingosdk::graphics_creator

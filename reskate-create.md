@@ -14,7 +14,7 @@ The historical references establish that Graphic Creator output appeared on shir
 ## Confirmed in this repository
 
 - `Extension/UI/NativeMenu/native_menu.cpp` registers a native `RESKATE.CREATE` tab and owns its lifecycle with the other ReSkate pages.
-- `Extension/UI/Overlay/hub_page.cpp` renders the current locked construction page. It is the integration point for the editor UI, not a second top-level overlay.
+- `Extension/UI/Overlay/hub_page.cpp` renders the native editor page. It is the integration point for the editor UI, not a second top-level overlay.
 - `Engine/Core/Json` provides bounded parsing and deterministic object-key ordering.
 - `Extension/Objects/ParkEditor/park_document.cpp` demonstrates validated, atomic local document replacement.
 - `Extension/Boot/user_data_redirect.*` provides ReSkate-owned Local AppData isolation. Runtime integration should store graphics beneath that root.
@@ -35,11 +35,13 @@ The historical references establish that Graphic Creator output appeared on shir
 
 PNG and JPEG imports are capped at 16 MB and 4096 pixels per side, decoded through WIC, copied into `Create/Assets` under a content-derived name, and rendered as a bounded editor preview. Re-importing the same bytes reuses the same local asset. The UI also includes two reusable ReSkate-branded vector marks and duplicate/reorder controls.
 
+The Windows image picker, decoding, and asset copy run away from the game's render thread so leaving the picker open cannot stall the level. Every design target can be rasterized to a deterministic full-resolution PNG under `Create/Exports`; imported images, shape transforms, opacity, tint, ordering, and transparency are baked into that output. This gives the existing mod-authoring pipeline a real board, beanie, hoodie, shirt, or sticker texture without pretending that the current game build exposes a safe live texture setter.
+
 The model has no engine pointers, network identity, remote URLs, scripts, or equipment mutations. This keeps documents testable and prevents editor data from crossing gameplay ownership boundaries.
 
 ## Inferred next integrations
 
-1. Replace the bounded CPU editor preview with an off-screen GPU raster target cached by document content hash. Rendering must not mutate the source document.
+1. Cache editor previews and full-resolution exports by document content hash. Rendering must not mutate the source document.
 2. Introduce `EquipmentGraphicAdapter` as an optional boundary. Board, shirt, hoodie, beanie, and sticker targets must each report unavailable until a supported game-build binding is validated.
 
 ## Unknown and intentionally blocked
@@ -56,6 +58,6 @@ No UI control should claim that a graphic is equipped until those questions have
 1. Document model, validation, deterministic codec, atomic store, and recovery tests. Implemented.
 2. Native editor state, canvas, layer controls, undo/redo, targets, and local gallery. Implemented.
 3. Bounded local PNG/JPEG import and preview compositing. Implemented.
-4. Off-screen full-resolution thumbnail rendering and cache invalidation.
+4. Background full-resolution target rendering and PNG export. Implemented; content-hash caching remains.
 5. One build-validated equipment adapter, starting with board bottom art; expand targets independently.
 6. Controller navigation, color-theme integration, polish, and optional sharing design.
