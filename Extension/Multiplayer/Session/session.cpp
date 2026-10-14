@@ -726,6 +726,7 @@ MultiplayerModel model() {
     return s.view;
 }
 std::string take_leave_notice() { return std::exchange(session().leave_notice, {}); }
+std::string take_removed_notice() { return std::exchange(session().removed_notice, {}); }
 std::optional<MapNeed> take_map_need() { return std::exchange(session().map_need, std::nullopt); }
 void set_map_package_lookup(MapPackageLookup lookup) noexcept { map_package_lookup.store(lookup, std::memory_order_relaxed); }
 bool fetching_map() noexcept { return fetching_map_flag.load(std::memory_order_relaxed); }

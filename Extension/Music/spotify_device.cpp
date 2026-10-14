@@ -79,7 +79,10 @@ void told(const char* text) {
         if (parts.empty()) return;
         if (parts[0] == "LOG") {
             static std::atomic<int> logged{};
-            if (parts.size() > 1 && logged.fetch_add(1, std::memory_order_relaxed) < 300) say(logging::Level::debug, "(librespot) " + parts[1]);
+            // (What it says went wrong is for everyone's log: a player whose Spotify stays silent
+            // has it to send. The rest is for working on it.)
+            const bool wrong = parts.size() > 1 && (parts[1].starts_with("ERROR") || parts[1].starts_with("WARN"));
+            if (parts.size() > 1 && logged.fetch_add(1, std::memory_order_relaxed) < 300) say(wrong ? logging::Level::warning : logging::Level::debug, "(librespot) " + parts[1]);
             // (What it says just before it gives up on an account that is not Premium.)
             if (parts.size() > 1 && parts[1].find("does not support") != std::string::npos && parts[1].find("accounts") != std::string::npos) not_premium.store(true);
         } else if (parts[0] == "READY") {

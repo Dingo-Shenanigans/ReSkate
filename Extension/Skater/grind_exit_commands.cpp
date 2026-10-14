@@ -13,9 +13,10 @@ void register_grind_exit_commands(Commands &registry) {
         {"exits", "Grind exit triggers: LT/RT pressed while grinding pick the side you pop out to (kept)", "on|off|status"},
         {"stance", "Grind exits: your skater's stance, for toe/heel sides (kept)", "goofy|regular"},
         {"sides", "Grind exits: LT toe / RT heel, or LT left / RT right of travel (kept)", "toeheel|travel"},
+        {"strength", "Grind exits: how far to the side a trigger exit pops, percent of the full exit (kept; 100 is the game's own)", "<10-100>"},
         {"guard", "Grind exits: hide a trigger used to pick the side from the game until released (no accidental grab)", "on|off"},
         {"leanguard", "Grind exits: the left stick's left/right reaches the game at the pop while a trigger picks the side", "on|off"},
-        {"prewindow", "Grind exits: seconds a trigger may be pressed before the grind connects and still count (0.4)", "<seconds>"},
+        {"prewindow", "Grind exits: seconds a trigger may be pressed before the grind connects and still count (1)", "<seconds>"},
         {"sidespeed", "Grind exits: sideways speed of a chosen exit when the game had none (m/s, game's own 1.8)", "<m/s>"},
     };
     for (const auto &verb : verbs) {

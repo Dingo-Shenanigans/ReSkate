@@ -269,6 +269,7 @@ struct Session {
     };
     std::optional<Rejoin> rejoin;
     std::string leave_notice;                 // take_leave_notice()
+    std::string removed_notice;               // take_removed_notice()
     std::uint64_t joined_public_lobby{};
     std::array<Peer, max_remote_players> peers;
     // Players take the lowest free slots, so every one sits below this mark

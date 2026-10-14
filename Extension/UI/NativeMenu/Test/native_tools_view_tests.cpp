@@ -177,6 +177,16 @@ int main() {
               "which needs no stance");
         activate(state, model, cb, "grind-exits", "");
         check(capture.command == "grindexit exits off", "and the triggers turn off");
+        // Pop-out strength steps down from the full exit and wraps back to it.
+        check(grind_row("grind-exit-strength").title == "Pop-out strength: 100%", "Pop-out strength shows the full exit");
+        activate(state, model, cb, "grind-exit-strength", "");
+        check(capture.command == "grindexit strength 75", "and steps down");
+        model.grind_exit.strength = 40;
+        activate(state, model, cb, "grind-exit-strength", "");
+        check(capture.command == "grindexit strength 25", "a slider value steps to the next lower step");
+        model.grind_exit.strength = 25;
+        activate(state, model, cb, "grind-exit-strength", "");
+        check(capture.command == "grindexit strength 100", "and the lowest wraps to the full exit");
         model.multiplayer.local_name = "steam_name";
         model.player_card = {true, "Card Name", {}};
         const auto card_page = render(state, model, cb, player_section);

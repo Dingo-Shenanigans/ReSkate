@@ -207,12 +207,13 @@ afk_kick_minutes   Remove a player who has been away this many minutes, 1-1440
                    in chat or changing their objects. They are warned in chat
                    a minute before and can join again at once. Admins are
                    never removed for it. Console: afk-kick <minutes>|off.
-kick_minutes       How long a kicked player is kept out, by an admin's kick or
-                   by a vote: 1-1440 minutes (default 0: until the server
-                   restarts). They are told how long when they are kicked and
-                   when they try to join. A kick keeps the time it was given;
-                   changing this is for later kicks. A ban is still for good.
-                   One kick can be given its own time: kick <player> 30.
+kick_minutes       How long a player kicked by an admin is kept out: 1-1440
+                   minutes (default 0: until the server restarts). They are
+                   told how long when they are kicked and when they try to
+                   join. A kick keeps the time it was given; changing this is
+                   for later kicks. A ban is still for good. One kick can be
+                   given its own time: kick <player> 30. A kick by a vote has
+                   its own time, votes.kick_minutes.
                    Console: kick-time <minutes>|restart.
 word_warnings      The ReSkate team keeps a list of words that are not allowed
                    in chat at all (read from api.reskate.dev with the global
@@ -378,6 +379,9 @@ votes              Player votes, each off until turned on:
                    "cooldown_seconds" (default 60) how long a player waits before
                    starting another. Players vote with /yes and /no in chat;
                    admins cannot be vote-kicked.
+                   "kick_minutes" (default 5) is how long a player kicked by a
+                   vote is kept out: 1-1440 minutes, or 0 for until the server
+                   restarts. Console: votes kick-minutes <minutes>|restart.
                    Each vote may also have its own "seconds" and
                    "cooldown_seconds" (0: the ones above) and "min_players", the
                    players who must be on before anyone can start it (default 1).
@@ -559,7 +563,7 @@ or Travel, and voice, distances, placement and kicks from the Multiplayer menu.
   kick <player> [minutes]       For that many minutes (1-1440), or "restart" for until
                                 the server restarts; with neither, for as long as
                                 kick-time says. Name start or SteamID64.
-  kick-time <minutes>|restart   How long a kicked player (by an admin or a vote) is kept
+  kick-time <minutes>|restart   How long a player kicked by an admin is kept
                                 out: 1-1440 minutes, or until the server restarts.
                                 Nobody kicks or bans a player of their rank or above; the console can.
   ban <player or id> [name]     For good.   unban <id>   bans
@@ -620,6 +624,7 @@ or Travel, and voice, distances, placement and kicks from the Multiplayer menu.
                                 Time of day on every map (needs layer-sync on).
   votes [map|kick|tod on|off|<percent>]   The vote settings (see votes).
   votes seconds <n>   votes cooldown <n>   vote-cancel
+  votes kick-minutes <n>|restart   How long a vote kick keeps the player out (5).
   votes <vote> seconds|cooldown|min-players <n>   One vote's own limits; <vote>
                                 is map, kick, tod or a custom vote's name, which
                                 also takes on|off|<percent>.

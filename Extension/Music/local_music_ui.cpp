@@ -31,9 +31,9 @@ std::string music_artwork_url(std::string_view value) {
 // MusicGraphAsset metadata/TagRefs. No generated catalog, guessed memberships,
 
 // artwork or audio-residency gate. Favorite identities are saved separately in
-// the local profile and applied after song publication. Bounds: 1024 songs,
+// the local profile and applied after song publication. Bounds: 2000 songs,
 
-// 256 authored groups, 8192 membership edges. Include after assets/news/model helpers.
+// 256 authored groups, 16384 membership edges (music_ui_most_songs, music_ui_most_places). Include after assets/news/model helpers.
 
 void music_release_weak(std::uintptr_t owner) noexcept {
     if (owner && InterlockedDecrement(reinterpret_cast<volatile LONG*>(owner + 12)) == 0) {
@@ -117,19 +117,19 @@ bool music_ui_text(std::string_view value, std::size_t limit ) {
 }
 
 bool music_ui_catalog_valid(const MusicCatalog& catalog, const std::string& favorites) {
-    if (catalog.songs.empty() || catalog.songs.size() > 1024 || catalog.playlists.empty() || catalog.playlists.size() > 256) return false;
+    if (catalog.songs.empty() || catalog.songs.size() > music_ui_most_songs || catalog.playlists.empty() || catalog.playlists.size() > 256) return false;
     std::set<std::string> songs, playlists;
     std::set<std::pair<std::string, std::string>> declared, grouped;
     for (const auto& song : catalog.songs) {
         if (!music_ui_text(song.id) || !music_ui_text(song.artist, 512) || !music_ui_text(song.title, 512) ||
             song.id != song.artist + " - " + song.title || !songs.insert(song.id).second) return false;
         for (const auto& playlist : song.playlists)
-            if (!music_ui_text(playlist) || !declared.emplace(playlist, song.id).second || declared.size() > 8192) return false;
+            if (!music_ui_text(playlist) || !declared.emplace(playlist, song.id).second || declared.size() > music_ui_most_places) return false;
     }
     for (const auto& playlist : catalog.playlists) {
         if (!music_ui_text(playlist.id) || playlist.id == favorites || !playlists.insert(playlist.id).second) return false;
         for (const auto& id : playlist.songs)
-            if (!songs.contains(id) || !grouped.emplace(playlist.id, id).second || grouped.size() > 8192) return false;
+            if (!songs.contains(id) || !grouped.emplace(playlist.id, id).second || grouped.size() > music_ui_most_places) return false;
     }
     return declared == grouped;
 }
@@ -333,7 +333,18 @@ void update_music_catalog() {
         if (!music_ui_current(*pending)) { retry = false; return; }
         std::string favorite_id;
         if (!identifier(reinterpret_cast<const void*>(pending->manager + 8), favorite_id) ||
-            !music_ui_catalog_valid(catalog, favorite_id)) throw std::runtime_error("Invalid runtime music catalog");
+            !music_ui_catalog_valid(catalog, favorite_id)) {
+            // (Said once, with what it held: an empty music screen has this to go on.)
+            static bool said{};
+            if (!std::exchange(said, true)) {
+                std::size_t places{};
+                for (const auto& playlist : catalog.playlists) places += playlist.songs.size();
+                dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::music,
+                    "Music screen: its list of songs was turned down, and it is empty: {} song(s) (the most is {}), {} playlist(s) (256), {} place(s) in playlists ({}).",
+                    catalog.songs.size(), music_ui_most_songs, catalog.playlists.size(), places, music_ui_most_places);
+            }
+            throw std::runtime_error("Invalid runtime music catalog");
+        }
         std::uintptr_t arena{}, vtable{};
         if (!read(s.base + addr::engine::default_arena, arena) || !arena || !read(arena, vtable) || vtable < s.base || vtable >= s.base + supported_build::game_image_size) return;
         ui.functions.allocator[1] = arena;

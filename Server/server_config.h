@@ -42,6 +42,9 @@ struct VoteSettings {
     std::vector<CustomVote> custom;
     unsigned seconds = 30;  // how long a vote runs
     unsigned cooldown = 60; // seconds before the same player may start another
+    // How long a player kicked by a vote is kept out, in minutes; 0: until the server restarts.
+    // (An admin's kick goes by ServerConfig::kick_minutes.)
+    unsigned kick_minutes = 5;
     bool starter_votes_yes = true; // whoever starts a vote has voted yes
     // Polls: questions with up to six answers that run nothing. "off", "admins" or "everyone".
     std::string polls = "admins";

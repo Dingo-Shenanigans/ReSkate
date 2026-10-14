@@ -24,6 +24,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool gameplay_ready, std::
           MapLoader loader = nullptr);
 MultiplayerModel model();
 std::string take_leave_notice(); // why the session just ended over a missing map, once; client thread
+// What the host or server said as it put the player out of the session (kicked, banned, away too
+// long, a mod or a cheat it does not allow), or refused to let them in for it; once. Client thread.
+std::string take_removed_notice();
 // The same map when the host said which Thunderstore package it is from, so it can be offered
 // for download instead (Extension/Assets/map_download.h): the session does not end. It tells
 // the host the map is being fetched, which is given much longer than a load, and goes on

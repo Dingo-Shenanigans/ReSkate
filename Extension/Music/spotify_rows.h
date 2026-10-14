@@ -12,6 +12,9 @@ namespace dingosdk::spotify_rows {
 // yet: its id in the music screen ("artist - title"), or empty when it could not be made.
 // The thread that reads the catalog; not with the manager's lock held.
 std::string ensure(std::uintptr_t base, std::uintptr_t manager, const std::string& artist, const std::string& title);
+// Whether a row of that artist and title has been registered already (it then costs the music
+// screen nothing more to use it again).
+bool known(const std::string& artist, const std::string& title);
 // The id ("artist - title") of the row known to the game by these 16 bytes, or empty.
 std::string id_of(const unsigned char* row);
 // Watches for the game beginning to play one of these (the player picked its row), which

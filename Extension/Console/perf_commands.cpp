@@ -2,6 +2,7 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Settings/engine_tweaks.h"
 #include "Extension/Settings/job_spin.h"
+#include "Extension/UI/Overlay/overlay.h"
 #include "Extension/Music/spotify_station.h"
 #include "Extension/Music/music_inject.h"
 #include "Extension/Music/spotify_web.h"
@@ -338,6 +339,16 @@ void register_perf_commands(Commands& registry) {
         out(std::format("Music through the game: {}% loud.", static_cast<int>(music_inject::gain() * 100.0f + 0.5f)));
     };
     registry.add(std::move(gain));
+
+    // The message a kicked or banned player is shown (Extension/UI/Overlay/message_card.cpp), to
+    // look at and to answer with a controller without being kicked for it.
+    auto popup = action("popup test", "Show the message a kicked player sees, to try answering it (A / Enter / click OK)", Group::console);
+    popup.execution = Execution::local;
+    popup.run = [](const Model&, const Values&, const Output& out) {
+        overlay::show_message("YOU WERE KICKED", "You were kicked from this server by a vote for 5 minutes.");
+        out("Close the console to answer it.");
+    };
+    registry.add(std::move(popup));
 
     // How close the game is to its limit of streamed textures (texture_handle_limit).
     auto textures = action("textures", "Streamed textures in use, and the most the game can hold", Group::console);

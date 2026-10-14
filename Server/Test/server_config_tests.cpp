@@ -226,6 +226,15 @@ int run() {
         check(load_config(kicks.file).kick_minutes == 10, "The kick time was not kept");
         kicks.kick_minutes = 1441;
         check(config_error(kicks).find("kick_minutes") != std::string::npos, "A kick time over a day was accepted");
+        // A kick by a vote has a time of its own: five minutes unless set.
+        ServerConfig voted;
+        check(voted.votes.kick_minutes == 5 && config_error(voted).find("votes.kick_minutes") == std::string::npos, "A vote kick does not last five minutes by default");
+        voted.file = folder / "voted.json";
+        voted.votes.kick_minutes = 0;
+        save_config(voted);
+        check(load_config(voted.file).votes.kick_minutes == 0, "A vote kick until the restart was not kept");
+        voted.votes.kick_minutes = 1441;
+        check(config_error(voted).find("votes.kick_minutes") != std::string::npos, "A vote kick time over a day was accepted");
         ServerConfig words;
         check(words.word_warnings == 3 && config.word_warnings == 3, "word_warnings is not 3 unless set");
         words.word_warnings = 11;

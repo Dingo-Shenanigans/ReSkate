@@ -7,6 +7,8 @@
 #include "Engine/Core/Debug/trace.h"
 #include "Engine/Vfs/mod_catalog.h"
 
+#include <algorithm>
+#include <deque>
 #include <shellapi.h>
 
 #include <format>
@@ -179,7 +181,9 @@ void Launcher::download(bool validate, bool qr, std::string password) {
         password_ = std::move(password);
         qr_login_ = qr;
     }
-    start([this, validate] { run_download(validate); });
+    // Data of another build is put right by checking every file, not only fetching what is missing.
+    const bool verify = validate || launcher_app::game_data_mismatched(session_.paths);
+    start([this, verify] { run_download(verify); });
 }
 
 void Launcher::play() { start([this] { run_play(); }); }
@@ -331,7 +335,13 @@ void Launcher::run_check() {
             fail("This launcher is out of date. Download the latest ReSkate release.");
             return;
         }
-        if (installed) set(Phase::game_outdated, "Steam updated Skate",
+        // (Data of another build under a Skate.exe that may itself be right: every file is
+        // checked, which download() sees to.)
+        if (installed && launcher_app::game_data_mismatched(session_.paths))
+            set(Phase::game_outdated, "Game files need verifying",
+                "Some of the game's files are from another version of skate. (Steam updated it, or a download did not finish). "
+                "Press DOWNLOAD: every file is checked and only the wrong ones are downloaded.");
+        else if (installed) set(Phase::game_outdated, "Steam updated Skate",
             "ReSkate needs the build below. Only the files that differ are downloaded.");
         else set(Phase::game_missing, "Skate is not installed here",
             "Download the build below from Steam, about 14 GB, with an account that owns skate.");
@@ -372,6 +382,10 @@ void Launcher::run_download(bool validate) {
         progress_for("DepotDownloader"));
     set(Phase::downloading, "Connecting to Steam");
     DepotOutput output;
+    // DepotDownloader's last lines, for the log when the download fails: they say why (the
+    // account does not own the game, Steam refused the sign-in, the disk is full), and are
+    // otherwise only written at the debug level.
+    std::deque<std::string> last_lines;
     update::SteamLogin login;
     login.username = settings_.steam_username;
     login.remember = settings_.steam_remember;
@@ -390,6 +404,11 @@ void Launcher::run_download(bool validate) {
                 for (auto at = logged.find(login.username); at != std::string::npos; at = logged.find(login.username, at + 8))
                     logged.replace(at, login.username.size(), "<hidden>");
             logging::write(logging::Level::debug, logging::Channel::launcher, logged);
+            // (Not the rows of a QR code, nor each step of the progress.)
+            if (!logged.empty() && logged.find('%') == std::string::npos && std::ranges::none_of(logged, [](unsigned char c) { return c >= 0x80; })) {
+                if (last_lines.size() >= 40) last_lines.pop_front();
+                last_lines.push_back(logged.substr(0, 300));
+            }
             output.feed(line);
             std::lock_guard lock(mutex_);
             if (line.find("Use the Steam Mobile App to confirm") != std::string_view::npos) {
@@ -427,6 +446,8 @@ void Launcher::run_download(bool validate) {
         return;
     }
     timing.fail();
+    logging::log(logging::Level::warning, logging::Channel::launcher, "The Steam download did not finish (exit code {}). DepotDownloader's last lines:", code);
+    for (const auto& line : last_lines) logging::write(logging::Level::warning, logging::Channel::launcher, "  " + line);
     fail(std::format("The Steam download did not finish (exit code {}). {}", code, output.message));
 }
 

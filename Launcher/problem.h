@@ -27,9 +27,9 @@ inline constexpr std::string_view attach_advice =
 inline Problem explain(std::string_view raw) {
     // Most specific first: the later rules match whole families of failures.
     if (mentions(raw, "must be beside ReSkateLauncher.exe"))
-        return {"ReSkate is not in your skate. folder",
-                "Put ReSkateLauncher.exe and ReSkate.dll beside Skate.exe, in the folder Steam opens with "
-                "skate. > Manage > Browse local files."};
+        return {"ReSkate's files are not together",
+                "Keep ReSkateLauncher.exe and ReSkate.dll together in a folder of their own (not Steam's "
+                "skate. folder) and run the launcher from there. It installs the game into that folder."};
     if (mentions(raw, "ReSkate.dll is missing"))
         return {"ReSkate.dll is missing",
                 "Extract ReSkateLauncher.exe and ReSkate.dll from the same release zip into this folder, "

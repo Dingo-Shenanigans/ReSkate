@@ -287,6 +287,9 @@ void draw_notices();
 // chat_pending also refreshes the feed, so it runs every presented frame.
 bool chat_pending();
 void draw_chat();
+// The message to say OK to (message_card.cpp): whether one is up, and drawing it.
+bool message_pending();
+void draw_message();
 // The map download card (map_download_card.cpp): whether there is one this frame, and drawing it.
 bool map_download_pending();
 void draw_map_download();

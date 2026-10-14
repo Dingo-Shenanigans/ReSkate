@@ -557,6 +557,8 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
                 "{\"event\":\"music_channel_playlist_binding_contract_mismatch\"}");
             hook(addr::local_music::playback_select_next_contract,
                 &music_select_next_hook, music_select_next_original());
+            hook(addr::local_music::playback_song_score_contract,
+                &music_song_score_hook, music_song_score_original());
         } else dingosdk::logging::event(dingosdk::logging::Channel::music,
             "{\"event\":\"music_playback_order_contract_mismatch\"}");
         hook(buildkit_text_exists_contract, &buildkit_text_exists, buildkit_text_functions().exists);

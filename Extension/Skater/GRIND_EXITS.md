@@ -11,7 +11,8 @@ out to your heel side, a kickflip out to whichever side you pick.
 Off until you switch it on: skate.'s menu, **Mod Options > Player > Grind exit triggers** (or the
 ReSkate menu's skater page, or the console (`~`) with `grindexit exits on|off`). The choices are kept.
 
-- **While grinding, press LT or RT** (or up to 0.4 s before the grind connects), then do any trick
+- **While grinding, press LT or RT** (or up to 1 s before the grind connects,
+  for example as you ollie up to the rail), then do any trick
   out of the grind with the right stick as usual. Keep the trigger held until you land, then let go.
 - **Input Mode** (`grindexit sides toeheel|travel`):
   - **Toe / Heel**: LT pops out to your toe side, RT to your heel side, riding normal, fakie or
@@ -26,6 +27,9 @@ ReSkate menu's skater page, or the console (`~`) with `grindexit exits on|off`).
   grind, the stick's left / right reaches the game at the pop instead of before it (it cannot
   lean-balance the grind meanwhile), so the game's own lean exit cannot drag the board toward the
   spin and into the rail (`grindexit leanguard on|off`).
+- **Pop-out strength** (`grindexit strength 10-100`, kept): how far to the side a trigger exit
+  pops, as a share of the full exit (100%, the default, is the game's own sideways speed). Lower it
+  for rails next to a wall. Very low values leave little clearance on exits over the rail.
 - **Multiplayer**: works in any session or server, whatever the host's settings, throwdowns
   included. It adds no speed or height (the sideways speed is the game's own); it only changes which
   input picks the exit side. Server checks do not see it, since it changes no game data.

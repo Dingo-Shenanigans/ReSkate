@@ -7,7 +7,7 @@
 // trick and of the body's rotation (Skate's own controls tie both to the left stick).
 //
 // While on:
-//   - A trigger pressed DURING a grind, or up to `prewindow` seconds (0.4) before the grind
+//   - A trigger pressed DURING a grind, or up to `prewindow` seconds (1) before the grind
 //     connects, is "claimed": it picks the side of the next pop out of the grind. The player
 //     chooses what LT / RT mean:
 //       toe/heel     LT the toe side, RT the heel side, worked out from which foot leads (the
@@ -20,6 +20,8 @@
 //     sideways speed when it had one, mirrored to the chosen side, else `sidespeed` (1.8 m/s, the
 //     game's own). Along the rail, the pop's height, the trick, the flip and the body's rotation
 //     are the game's.
+//   - Pop-out strength (10-100%, kept): scales the sideways speed of every trigger-set exit, for
+//     rails next to a wall. 100% is the behaviour above, the game's own full exit.
 //   - Grab guard: a claimed trigger is hidden from the game until it is let go, so holding it
 //     through the pop does not start a grab; press it again in the air to grab.
 //   - Lean guard: while a claimed trigger is held in a grind, the left stick's left/right is
@@ -40,7 +42,7 @@ bool start(std::uintptr_t image_base) noexcept;
 // Client thread, every tick, with the local client: keeps the launch hook ready, samples the
 // skater's facing, writes the physics thread's decisions to the log.
 void on_client_tick(std::uintptr_t client) noexcept;
-// The console verbs: exits on|off|status, stance goofy|regular, sides toeheel|travel,
+// The console verbs: exits on|off|status, stance goofy|regular, sides toeheel|travel, strength <10-100>,
 // guard on|off, leanguard on|off, prewindow <seconds>, sidespeed <m/s>.
 std::string command(const std::vector<std::string>& words);
 
@@ -49,4 +51,5 @@ bool available() noexcept;
 bool enabled() noexcept;
 bool toe_heel() noexcept;           // else left/right of travel
 int stance() noexcept;              // 0 not set, 1 regular, 2 goofy
+int strength() noexcept;            // pop-out strength, percent of the sideways speed (10-100; 100 the full exit)
 }

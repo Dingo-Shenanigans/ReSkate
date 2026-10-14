@@ -127,8 +127,10 @@ bool map_download_pending() {
     card = read ? read() : MapDownloadCard{};
     // (Nothing is shown once the map is in the game: its loading has the game's own screen.)
     if (card.stage == 5) card.stage = 0;
-    state().prompt_pointer.store(card.stage == 1 || map_vote_asking());
-    return card.stage != 0;
+    // (A message to say OK to, message_card.cpp, has the pointer as these have, and is drawn
+    // with them: it counts as a card to draw.)
+    state().prompt_pointer.store(card.stage == 1 || map_vote_asking() || message_pending());
+    return card.stage != 0 || message_pending();
 }
 
 namespace {
@@ -181,10 +183,16 @@ void draw_progress(State& s) {
 }
 }
 
+void draw_asked_map(State& s);
 void draw_map_download() {
-    if (!card.stage) return;
-    auto& s = state();
-    if (card.stage != 1) return draw_progress(s);
+    if (card.stage) {
+        auto& s = state();
+        if (card.stage != 1) draw_progress(s);
+        else draw_asked_map(s);
+    }
+    draw_message(); // (over whatever else is up)
+}
+void draw_asked_map(State& s) {
     // Drawn as the pages of the game's pause menu are (hub_page.cpp): the same unit (one of
     // the game's 3840 by 2160), brushed heading, hand-cut tiles, the yellow note for what to
     // press and the keycaps under it.

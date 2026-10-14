@@ -19,6 +19,14 @@ struct Session {
 Session open_session(const std::string& log_level);
 // Skate.exe and steam_api64.dll are present and exactly the supported build.
 bool game_files_supported(const launcher::SiblingPaths& paths);
+// The build number the installed game's data says it is (Data\layout.toc), or empty when
+// there is none or it cannot be read.
+std::string game_data_build(const launcher::SiblingPaths& paths);
+// Whether the game's data is missing or of another build than the supported one, whatever
+// Skate.exe is: Steam updated the game under it, a copy of an updated game was put here, or a
+// download stopped part-way. Such a game has to be verified against the supported build, file
+// by file, not only topped up. False when the data's build cannot be told.
+bool game_data_mismatched(const launcher::SiblingPaths& paths);
 // The config's depot/manifest ships the build this launcher was compiled for.
 bool config_matches_build(const launcher_update::Config& config);
 void relaunch(const std::filesystem::path& self, const std::vector<std::wstring>& arguments);

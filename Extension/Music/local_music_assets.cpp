@@ -98,15 +98,40 @@ bool read_music_catalog(MusicCatalog& result) {
     // For each station, its rows' ids and the Spotify track each is (none for a row that only
     // says what picking the playlist does).
     std::vector<std::vector<std::pair<std::string, std::string>>> spotify_row_ids;
+    // The music screen takes only so many songs, and so many places in playlists, and with more
+    // is given none at all (music_ui_catalog_valid). Rows are registered while there is room,
+    // under those by a margin for the game's own; the rest of a playlist is left out of its rows
+    // (it still plays through: only its list is shorter).
+    std::uint32_t registered{};
+    read(manager + 0x84, registered);
+    std::size_t room = registered + 200 < music_ui_most_songs ? music_ui_most_songs - 200 - registered : 0;
+    std::size_t places = music_ui_most_places / 2, left_out{};
     for (const auto& theirs : spotify_playlists) {
         auto& rows = spotify_row_ids.emplace_back();
-        for (const auto& track : theirs.tracks)
-            if (music_ui_text(track.artist, 200) && music_ui_text(track.title, 200))
-                if (auto id = spotify_rows::ensure(base, manager, track.artist, track.title); !id.empty() &&
-                    std::none_of(rows.begin(), rows.end(), [&](const auto& row) { return row.first == id; }))
-                    rows.emplace_back(std::move(id), track.uri);
+        for (const auto& track : theirs.tracks) {
+            // (Its id, "artist - title", has to be one the screen takes as well.)
+            if (!music_ui_text(track.artist, 200) || !music_ui_text(track.title, 200) || track.artist.size() + track.title.size() + 3 > 255) continue;
+            const bool known = spotify_rows::known(track.artist, track.title);
+            if (!places || (!known && !room)) {
+                ++left_out;
+                continue;
+            }
+            if (auto id = spotify_rows::ensure(base, manager, track.artist, track.title); !id.empty() &&
+                std::none_of(rows.begin(), rows.end(), [&](const auto& row) { return row.first == id; })) {
+                rows.emplace_back(std::move(id), track.uri);
+                --places;
+                if (!known) --room;
+            }
+        }
         if (theirs.id == spotify_station::plain_station) rows.emplace_back(spotify_rows::ensure(base, manager, "Spotify", "Start Radio"), std::string());
         else if (rows.empty() && music_ui_text(theirs.name, 200)) rows.emplace_back(theirs.id == external_audio::station ? spotify_rows::ensure(base, manager, external_audio::station_name, "Start") : spotify_rows::ensure(base, manager, "Spotify", "Play " + theirs.name), std::string());
+    }
+    if (static std::size_t said{}; left_out != said) {
+        said = left_out;
+        if (left_out)
+            dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::music,
+                "Music screen: {} song(s) of your playlists are not listed: it has room for about {} songs in all. They still play; fewer or shorter playlists list them all.",
+                left_out, music_ui_most_songs);
     }
     native.lock(manager + 0x20);
     struct Unlock {

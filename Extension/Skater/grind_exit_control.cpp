@@ -32,6 +32,7 @@ constexpr double release_grace_seconds = 0.1;                 // a trigger let g
 constexpr double axes_fresh_seconds = 0.25;                   // the skater's facing, sampled on the client tick
 constexpr std::size_t rail_steps = 6;                         // grind steps the rail's direction is averaged over
 constexpr float min_rail_speed = 0.5f, min_kept_side_speed = 1.0f;
+constexpr int min_strength = 10; // pop-out strength floor, percent: below it a trigger barely picks a side
 constexpr float min_toe_across = 0.35f; // below this the toe points along the rail (slides): left/right of travel instead
 
 enum class Stance : int { unset, regular, goofy };
@@ -77,7 +78,8 @@ struct Trigger {
 struct Control {
     std::atomic<std::uintptr_t> base{};
     std::atomic<bool> started{}, enabled{}, guard{true}, lean_guard{true}, hooked{};
-    std::atomic<float> side_speed{gx::measured_side_speed}, prewindow{0.4f};
+    std::atomic<float> side_speed{gx::measured_side_speed}, prewindow{1.0f};
+    std::atomic<int> strength{100}; // pop-out strength, percent of the sideways speed (10-100)
     std::atomic<int> stance{static_cast<int>(Stance::unset)}, sides{static_cast<int>(Sides::toeheel)};
     std::atomic<bool> wanted{}; // the player's on/off choice, kept; `enabled` is whether it is installed now
     // Physics thread -> the launch hook and the pad filter.
@@ -155,6 +157,11 @@ void load_settings(Control& c) {
         else if (line == "sides=toeheel") c.sides.store(static_cast<int>(Sides::toeheel));
         else if (line == "enabled=1") c.wanted.store(true);
         else if (line == "enabled=0") c.wanted.store(false);
+        else if (line.starts_with("strength=")) {
+            int value{};
+            const auto parsed = std::from_chars(line.data() + 9, line.data() + line.size(), value);
+            if (parsed.ec == std::errc{} && value >= min_strength && value <= 100) c.strength.store(value);
+        }
     }
 }
 void save_settings(Control& c) {
@@ -166,6 +173,7 @@ void save_settings(Control& c) {
     if (stance != Stance::unset) out << "stance=" << (stance == Stance::goofy ? "goofy" : "regular") << "\n";
     out << "sides=" << (static_cast<Sides>(c.sides.load()) == Sides::travel ? "travel" : "toeheel") << "\n";
     out << "enabled=" << (c.wanted.load() ? 1 : 0) << "\n";
+    out << "strength=" << c.strength.load() << "\n";
 }
 
 // ---- physics side --------------------------------------------------------------------------
@@ -338,9 +346,13 @@ void modify_launch(std::uintptr_t caller_rva, std::uintptr_t, float (&v)[3]) noe
     if (d.trigger == 0) { d.reason = both ? Reason::both_triggers : Reason::no_trigger; record(c, d); return; }
     d.toward = toward_side(c, d.trigger, nx, nz, now, d);
     const float side = static_cast<float>(d.toward);
-    if (d.before_side * side >= min_kept_side_speed) { d.reason = Reason::kept; record(c, d); return; }
-    const float magnitude = std::abs(d.before_side) >= min_kept_side_speed ? std::abs(d.before_side)
-                                                                           : c.side_speed.load(std::memory_order_relaxed);
+    // Pop-out strength scales the sideways speed of every trigger-set exit; at 100% (the default)
+    // the game's own exit toward the chosen side is kept as it is.
+    const int strength = c.strength.load(std::memory_order_relaxed);
+    if (strength >= 100 && d.before_side * side >= min_kept_side_speed) { d.reason = Reason::kept; record(c, d); return; }
+    const float full = std::abs(d.before_side) >= min_kept_side_speed ? std::abs(d.before_side)
+                                                                      : c.side_speed.load(std::memory_order_relaxed);
+    const float magnitude = full * static_cast<float>(strength) / 100.0f;
     const float change = side * magnitude - d.before_side;
     v[0] += change * nx;
     v[2] += change * nz;
@@ -361,11 +373,11 @@ std::string status_text(Control& c) {
     const auto stance = static_cast<Stance>(c.stance.load());
     const bool toeheel = static_cast<Sides>(c.sides.load()) == Sides::toeheel;
     std::string text = std::format(
-        "Grind exit control: {}. Sides: {}. Stance: {}. Grab guard {}, lean guard {}, pre-press window {:.2f} s, side speed {:.2f} m/s. "
-        "Pops out of grinds seen: {}, sides set: {}.",
+        "Grind exit control: {}. Sides: {}. Stance: {}. Pop-out strength {}%. Grab guard {}, lean guard {}, pre-press window {:.2f} s, "
+        "side speed {:.2f} m/s. Pops out of grinds seen: {}, sides set: {}.",
         on ? "ON" : "off", toeheel ? "LT toe / RT heel" : "LT left / RT right of travel",
         stance == Stance::goofy ? "goofy" : stance == Stance::regular ? "regular" : "NOT SET (type: grindexit stance goofy|regular)",
-        c.guard.load() ? "on" : "off", c.lean_guard.load() ? "on" : "off", c.prewindow.load(), c.side_speed.load(), c.pops.load(),
+        c.strength.load(), c.guard.load() ? "on" : "off", c.lean_guard.load() ? "on" : "off", c.prewindow.load(), c.side_speed.load(), c.pops.load(),
         c.applied.load());
     if (on && toeheel && stance == Stance::unset) text += " Until the stance is set, LT/RT are left/right of travel.";
     if (on && !c.hooked.load()) text += " The launch hook is not ready yet (it installs once the game's code is recognised).";
@@ -398,6 +410,7 @@ bool available() noexcept { return control().started.load(std::memory_order_acqu
 bool enabled() noexcept { return control().enabled.load(std::memory_order_acquire); }
 bool toe_heel() noexcept { return static_cast<Sides>(control().sides.load()) == Sides::toeheel; }
 int stance() noexcept { return control().stance.load(); }
+int strength() noexcept { return control().strength.load(); }
 
 bool start(std::uintptr_t image_base) noexcept {
     auto& c = control();
@@ -492,6 +505,15 @@ std::string command(const std::vector<std::string>& words) {
         try { save_settings(c); } catch (...) {}
         return status_text(c);
     }
+    if (verb == "strength") {
+        int value{};
+        const auto parsed = std::from_chars(arg.data(), arg.data() + arg.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != arg.data() + arg.size() || value < min_strength || value > 100)
+            return "Usage: grindexit strength <10 to 100> (percent of the full pop-out to the side; 100 is the game's own)";
+        c.strength.store(value);
+        try { save_settings(c); } catch (...) {}
+        return status_text(c);
+    }
     if (verb == "guard" || verb == "leanguard") {
         if (arg != "on" && arg != "off") return "Usage: grindexit " + verb + " on|off";
         (verb == "guard" ? c.guard : c.lean_guard).store(arg == "on");
@@ -500,7 +522,7 @@ std::string command(const std::vector<std::string>& words) {
     }
     if (verb == "prewindow") {
         float value{};
-        if (!number(0.0f, 1.0f, value)) return "Usage: grindexit prewindow <0 to 1> (seconds a trigger may be pressed before the grind connects; 0.4)";
+        if (!number(0.0f, 2.0f, value)) return "Usage: grindexit prewindow <0 to 2> (seconds a trigger may be pressed before the grind connects; 1)";
         c.prewindow.store(value);
         return status_text(c);
     }
@@ -510,6 +532,6 @@ std::string command(const std::vector<std::string>& words) {
         c.side_speed.store(value);
         return status_text(c);
     }
-    return "Usage: grindexit exits on|off|status, stance goofy|regular, sides toeheel|travel, guard on|off, leanguard on|off, prewindow <s>, sidespeed <m/s>";
+    return "Usage: grindexit exits on|off|status, stance goofy|regular, sides toeheel|travel, strength <10-100>, guard on|off, leanguard on|off, prewindow <s>, sidespeed <m/s>";
 }
 } // namespace dingosdk::grind_exit_control

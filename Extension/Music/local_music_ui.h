@@ -62,6 +62,12 @@ bool music_ui_current(const MusicUiPending& pending);
 CosmeticShared music_ui_lease(const MusicUiPending& pending);
 
 bool music_ui_text(std::string_view value, std::size_t limit = 255);
+// The most songs the music screen is given, and the most places songs have in playlists: over
+// either, music_ui_catalog_valid turns the whole list down and the screen is empty. The rows of
+// the player's own playlists (Spotify, YouTube Music, their files) are held under them
+// (local_music_assets.cpp): a few large playlists went over the old thousand (2026-10-13).
+// (Two thousand songs: the screen's own table of songs is read only up to 2048, music_ui_context.)
+inline constexpr std::size_t music_ui_most_songs = 2000, music_ui_most_places = 16384;
 
 bool music_ui_catalog_valid(const MusicCatalog& catalog, const std::string& favorites);
 

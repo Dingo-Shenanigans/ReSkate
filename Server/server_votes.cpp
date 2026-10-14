@@ -542,7 +542,8 @@ void Host::check_vote(bool expired) {
     }
     case VoteKind::kick:
         if (find(done.target)) {
-            const auto how_long = keep_out(done.target);
+            // (For as long as votes.kick_minutes says, not as long as an admin's kick.)
+            const auto how_long = keep_out(done.target, config_.votes.kick_minutes);
             drop(done.target, "You were kicked from this server by a vote" + how_long + ".");
         }
         break;
@@ -573,6 +574,7 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
         text += "\npolls: " + config_.votes.polls + ", run " + std::to_string(config_.votes.poll_seconds) + " s";
         text += "\nvotes last " + std::to_string(config_.votes.seconds) + " s; a player waits " + std::to_string(config_.votes.cooldown) +
                 " s between votes; the starter " + (config_.votes.starter_votes_yes ? "votes yes" : "does not vote");
+        text += "\na vote kick lasts " + (config_.votes.kick_minutes ? std::to_string(config_.votes.kick_minutes) + " min" : std::string("until the server restarts"));
         if (vote_) text += "\nrunning: " + vote_title(vote_->kind, vote_->label);
         return {text, false};
     }
@@ -583,6 +585,15 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
         if (!n || (seconds ? *n < 10 || *n > 300 : *n > 3600)) return {seconds ? "votes seconds <10-300>" : "votes cooldown <0-3600>", false};
         (seconds ? config_.votes.seconds : config_.votes.cooldown) = static_cast<unsigned>(*n);
         return {seconds ? "Votes now last " + std::to_string(*n) + " s." : "Players now wait " + std::to_string(*n) + " s between votes.", true};
+    }
+    if (what == "kick-minutes") {
+        const auto n = value == "restart" ? number("0") : number(value);
+        if (!n || *n > 1440)
+            return {"votes kick-minutes <1-1440>|restart (now " +
+                        (config_.votes.kick_minutes ? std::to_string(config_.votes.kick_minutes) + " min" : std::string("until the server restarts")) + ")",
+                    false};
+        config_.votes.kick_minutes = static_cast<unsigned>(*n);
+        return {*n ? "A player kicked by a vote can join again after " + std::to_string(*n) + " min." : "A player kicked by a vote is kept out until the server restarts.", true};
     }
     if (what == "polls") {
         if (value != "off" && value != "admins" && value != "everyone") return {"votes polls off|admins|everyone (now " + config_.votes.polls + ")", false};
@@ -614,7 +625,7 @@ std::pair<std::string, bool> Host::votes_command(std::string_view argument) {
         while (custom < config_.votes.custom.size() && config_.votes.custom[custom].name != what) ++custom;
         if (custom == config_.votes.custom.size())
             return {"votes [<vote> on|off|<percent>|seconds <n>|cooldown <n>|min-players <n>] (map, kick, tod, extend or a custom vote)\n"
-                    "votes seconds|cooldown <n> | votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off",
+                    "votes seconds|cooldown <n> | votes kick-minutes <n>|restart | votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off",
                     false};
         label = "\"/vote " + what + "\" votes";
     }

@@ -3,6 +3,7 @@
 #include "mod_merge.h"
 #include "native_db.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Game/Build/supported_build.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -402,7 +403,8 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
         auto exclusions = read_exclusions(result.root);
         const auto sdk = sdk_identity();
         std::map<std::string, Exclusion, std::less<>> still_excluded;
-        const auto leave_out = [&](std::size_t index, std::vector<std::string> problems, const std::string& fingerprint) {
+        // `remembered`: it stays out on later launches without a retry, until its files or ReSkate change.
+        const auto leave_out = [&](std::size_t index, std::vector<std::string> problems, const std::string& fingerprint, bool remembered = true) {
             auto mod = std::move(result.mods[index]);
             result.mods.erase(result.mods.begin() + static_cast<std::ptrdiff_t>(index));
             // Level bundles decide whether a map loads at all, so their problems lead.
@@ -410,7 +412,7 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
                 return problem.find("levels/game/") != std::string::npos;
             });
             mod.problems = std::move(problems);
-            still_excluded[mod.name] = {fingerprint, sdk, mod.problems};
+            if (remembered) still_excluded[mod.name] = {fingerprint, sdk, mod.problems};
             result.excluded.push_back(std::move(mod));
         };
         for (std::size_t i = result.mods.size(); i-- > 0;) {
@@ -418,6 +420,10 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             if (found == list.excluded.end()) continue;
             const auto& previous = exclusions.at(result.mods[i].name);
             if (sdk.empty() || previous.sdk != sdk) continue; // a new ReSkate may merge it now
+            // One left out because the game was of another build is looked at again below: the
+            // game may have been put right since (its files verified), with the mod untouched.
+            // Remembered, it stayed out for good with the game fixed (seen 2026-10-13).
+            if (!found->second.empty() && found->second.front().starts_with("made for game build ")) continue;
             result.notes.push_back("Leaving out " + result.mods[i].name +
                 ": it could not be merged cleanly before and its files have not changed since");
             leave_out(i, found->second, previous.fingerprint);
@@ -438,9 +444,13 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             if (build.empty()) continue;
             result.notes.push_back("Leaving out " + result.mods[i].name + ": it was made for game build " + build +
                                    ", the installed game is " + game_build);
+            // (When it is the game that is of another build than ReSkate's, the mod is not what
+            // needs seeing to.)
             leave_out(i, {"made for game build " + build + ", not the installed " + game_build +
-                          "; rebuild it with ReSkate Studio for this game build"},
-                      mod_fingerprint(result.mods[i].directory));
+                          (game_build != supported_build::game_data_changelist
+                               ? "; your game files are not the version ReSkate supports: in the launcher, open Settings and press Verify game files"
+                               : "; rebuild it with ReSkate Studio for this game build")},
+                      mod_fingerprint(result.mods[i].directory), false); // (checked on every launch: the game's build can change under it)
         }
         for (std::size_t i = result.inactive.size(); i-- > 0;) {
             const auto build = made_for(result.inactive[i]);

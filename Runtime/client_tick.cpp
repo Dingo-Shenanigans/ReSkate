@@ -417,12 +417,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const bool map_prompt = dingosdk::map_download::asking();
     // The vote for the next map comes up the same way (overlay.h: map_vote_asking), when no map is being asked about.
     const bool map_vote = !map_prompt && dingosdk::overlay::map_vote_asking();
+    // And a message to say OK to (overlay.h: message_asking), over either.
+    const bool message_up = dingosdk::overlay::message_asking();
     // The hold on the game's input outlasts the card's question until everything pressed is let
     // go (or a moment has passed): the button that answered must not also be a press in the
     // game, or in the pause menu behind the card.
     static bool prompt_held{};
     static ULONGLONG prompt_release_by{};
-    if (map_prompt || map_vote) {
+    if (map_prompt || map_vote || message_up) {
         prompt_held = true;
         prompt_release_by = 0;
     } else if (prompt_held) {
@@ -433,7 +435,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
                              std::ranges::any_of(held.keys, [](std::uint64_t word) { return word != 0; });
         if (!pressed || GetTickCount64() >= prompt_release_by) prompt_held = false;
     }
-    DingoSDKOverlaySetPromptInputCapture(map_prompt || map_vote || prompt_held);
+    DingoSDKOverlaySetPromptInputCapture(map_prompt || map_vote || message_up || prompt_held);
     const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
     bool freecam_controller = dingosdk::local_freecam_controller();
     {
@@ -461,10 +463,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
     DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
-        vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote ||
+        vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote || message_up ||
         std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
         // (The card that asks has the pointer, as a menu does: it is still read for.)
-        DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote);
+        DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote || message_up);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
         if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
             std::array<char, 256> result{};
@@ -490,10 +492,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
         static bool prompt_before{};
         static std::uint32_t buttons_before{};
         // The keyboard's arrows, Enter and Esc do the same, above the pad's bits.
-        const bool prompt = map_prompt || map_vote;
+        const bool prompt = map_prompt || map_vote || message_up;
         const std::uint32_t buttons = !prompt ? 0
             : (controller.available ? controller.buttons : 0) | (DingoSDKOverlayReadPromptKeys() << 20);
-        if (map_prompt && prompt_before) {
+        // The message is over the others and is answered first: A or B, Enter or Esc, is its OK.
+        static bool message_before{};
+        if (message_up && message_before) {
+            if ((buttons & ~buttons_before) & (0x1000 | 0x2000 | 1u << 22 | 1u << 23)) dingosdk::overlay::message_dismiss();
+        } else if (map_prompt && prompt_before) {
             const auto pressed = buttons & ~buttons_before;
             if (pressed & (0x0004 | 1u << 20)) dingosdk::map_download::pick(true);
             if (pressed & (0x0008 | 1u << 21)) dingosdk::map_download::pick(false);
@@ -502,7 +508,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         }
         // The vote's popup: left and right move the pick, A votes for it, B closes it.
         static bool vote_before{};
-        if (map_vote && vote_before) {
+        if (!message_up && map_vote && vote_before) {
             const auto pressed = buttons & ~buttons_before;
             if (pressed & (0x0004 | 1u << 20)) dingosdk::overlay::map_vote_move(-1);
             if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::map_vote_move(1);
@@ -510,6 +516,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::map_vote_dismiss();
         }
         vote_before = map_vote;
+        message_before = message_up;
         prompt_before = map_prompt;
         buttons_before = buttons;
     }
@@ -966,7 +973,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),
                          dingosdk::board_break::deck_label(breakable_deck)};
     model.grind_exit = {dingosdk::grind_exit_control::available(), dingosdk::grind_exit_control::enabled(),
-                        dingosdk::grind_exit_control::toe_heel(), dingosdk::grind_exit_control::stance()};
+                        dingosdk::grind_exit_control::toe_heel(), dingosdk::grind_exit_control::stance(),
+                        dingosdk::grind_exit_control::strength()};
     model.bindings = dingosdk::local_profile_controller_bindings();
     model.camera_mods = dingosdk::local_camera_mod_controls();
     model.parks = dingosdk::local_profile_parks();
@@ -1222,6 +1230,13 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             dingosdk::multiplayer::tick(r.base,client,multiplayer_ready,r.multiplayer_map,load_multiplayer_map);
             if (auto notice = dingosdk::multiplayer::take_leave_notice(); !notice.empty())
                 dingosdk::overlay::notify(dingosdk::overlay::NoticeLevel::warning, "Map not installed", std::move(notice));
+            // Kicked, banned or otherwise put out by the host or server: said in the middle of
+            // the screen, to be answered (message_card.cpp).
+            if (auto removed = dingosdk::multiplayer::take_removed_notice(); !removed.empty()) {
+                const char* title = removed.find("banned") != std::string::npos ? "YOU WERE BANNED"
+                                  : removed.find("kicked") != std::string::npos ? "YOU WERE KICKED" : "YOU WERE REMOVED";
+                dingosdk::overlay::show_message(title, std::move(removed));
+            }
             // Or, when the host said which Thunderstore package its map is from, the offer to
             // fetch it (map_download.h), which then applies it and joins the session again.
             if (const auto need = dingosdk::multiplayer::take_map_need()) dingosdk::map_download::offer(*need);

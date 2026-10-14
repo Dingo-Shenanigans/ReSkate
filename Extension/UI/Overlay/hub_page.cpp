@@ -1395,6 +1395,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (grind.toe_heel &&
             list.setting("Your stance", grind.stance == 2 ? "Goofy" : grind.stance == 1 ? "Regular" : "Not set", grind.available && console))
             act("grind-exit-stance");
+        if (list.setting("Pop-out strength", std::to_string(grind.strength) + "%", grind.available && console)) act("grind-exit-strength");
         const auto &wear = m.offline.board_wear;
         if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
         if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");

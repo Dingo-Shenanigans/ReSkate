@@ -240,6 +240,7 @@ struct BoardBreakModel {
 struct GrindExitModel {
     bool available = false, enabled = false, toe_heel = true;
     int stance = 0;
+    int strength = 100; // pop-out strength, percent (10-100)
 };
 
 struct Model {
@@ -344,6 +345,13 @@ void set_map_vote_icons(const std::vector<MapVoteIcon>& icons) noexcept;
 // That vote's popup (map_download_card.cpp), for the runtime, which reads the controller and
 // holds the game's input while it is up: whether it is, moving the pick, voting for the pick
 // (the popup then closes), and closing it without a vote. Any thread.
+// A message the player has to see and say OK to, in the middle of the screen (message_card.cpp):
+// that they were kicked or banned from a server, and why. One at a time: a new one takes the
+// place of one still up. For the runtime, which reads the controller and holds the game's input
+// while it is up, as for the vote below: whether it is, and closing it. Any thread.
+void show_message(std::string title, std::string text) noexcept;
+bool message_asking() noexcept;
+void message_dismiss() noexcept;
 bool map_vote_asking() noexcept;
 void map_vote_move(int by) noexcept;
 void map_vote_take() noexcept;

@@ -2,6 +2,7 @@
 // in-game server browser. Runs from its own folder, next to steam_api64.dll and
 // the Steam client files (steamclient64.dll, tier0_s64.dll, vstdlib_s64.dll).
 // On Linux the Steam files are libsteam_api.so and steamclient.so.
+#include "Engine/Game/Build/supported_build.h"
 #include "global_bans.h"
 #include "server_map_update.h"
 #include "server_config.h"
@@ -276,6 +277,10 @@ int run(int argc, wchar_t **argv, bool skip_update) {
         try {
             const auto catalog = world_layer_scan::scan(argv[2]);
             if (catalog.layers.empty()) throw std::runtime_error("no world layers found; is that the Skate folder?");
+            if (catalog.layers.size() != supported_build::world_layer_count)
+                throw std::runtime_error("that game has " + std::to_string(catalog.layers.size()) + " world layers, and the build ReSkate supports has " +
+                                         std::to_string(supported_build::world_layer_count) +
+                                         ": it is another version of skate. (one Steam has updated?). Give the folder ReSkate's own game is in");
             std::ofstream out(argv[3], std::ios::binary | std::ios::trunc);
             out << world_layer_scan::to_json(catalog, "server");
             if (!out) throw std::runtime_error("cannot write the file");
@@ -303,6 +308,10 @@ int run(int argc, char **argv, bool skip_update) {
         try {
             const auto catalog = world_layer_scan::scan(std::filesystem::path(argv[2]));
             if (catalog.layers.empty()) throw std::runtime_error("no world layers found; is that the Skate folder?");
+            if (catalog.layers.size() != supported_build::world_layer_count)
+                throw std::runtime_error("that game has " + std::to_string(catalog.layers.size()) + " world layers, and the build ReSkate supports has " +
+                                         std::to_string(supported_build::world_layer_count) +
+                                         ": it is another version of skate. (one Steam has updated?). Give the folder ReSkate's own game is in");
             std::ofstream out(std::filesystem::path(argv[3]), std::ios::binary | std::ios::trunc);
             out << world_layer_scan::to_json(catalog, "server");
             if (!out) throw std::runtime_error("cannot write the file");
@@ -383,7 +392,12 @@ int run(int argc, char **argv, bool skip_update) {
     // World layers are optional: without the players' catalog every player keeps their own.
     if (const auto catalog = here / "world-layers.json"; std::filesystem::exists(catalog)) {
         try {
-            install_world_layer_catalog(world_layer_scan::read(catalog));
+            auto layers = world_layer_scan::read(catalog);
+            // (Players would turn down every message that carries the layers, and could not join.)
+            if (layers.layers.size() != supported_build::world_layer_count)
+                throw std::runtime_error("it has " + std::to_string(layers.layers.size()) + " layers and players' games have " +
+                                         std::to_string(supported_build::world_layer_count) + ": it is of another version of skate. Take the one from this server's release");
+            install_world_layer_catalog(std::move(layers));
             write_log("World layers: " + std::to_string(world_layers().size()) + " from world-layers.json.");
         } catch (const std::exception &e) {
             write_log(std::string("world-layers.json is unreadable; world layer sync is off: ") + e.what());

@@ -219,6 +219,11 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
     } else if (command == "grind-exit-stance") {
         // Not set or regular -> goofy -> regular.
         console(m.grind_exit.stance == 2 ? "grindexit stance regular" : "grindexit stance goofy", m.grind_exit.available);
+    } else if (command == "grind-exit-strength") {
+        // 100 -> 75 -> 50 -> 25 -> 100 (the ReSkate menu's slider sets any value from 10 to 100).
+        const int strength = m.grind_exit.strength;
+        const int next = strength > 75 ? 75 : strength > 50 ? 50 : strength > 25 ? 25 : 100;
+        console("grindexit strength " + std::to_string(next), m.grind_exit.available);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -331,6 +336,8 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
             button(p.main, "grind-exit-stance",
                 std::string("Your stance: ") + (grind.stance == 2 ? "Goofy" : grind.stance == 1 ? "Regular" : "Not set"),
                 "grind-exit-stance", grind_console);
+        button(p.main, "grind-exit-strength", "Pop-out strength: " + std::to_string(grind.strength) + "%", "grind-exit-strength",
+            grind_console);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",

@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include "Engine/Game/Build/supported_build.h"
+#include <algorithm>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -468,6 +470,33 @@ Session open_session(const std::string& log_level) {
     return session;
 }
 
+std::string game_data_build(const launcher::SiblingPaths& paths) {
+    try {
+        std::ifstream file(paths.directory / L"Data" / L"layout.toc", std::ios::binary);
+        if (!file) return {};
+        const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        // The number follows its name as text, after a few bytes that say what kind of value it is.
+        constexpr std::string_view name = "pipelineCodeChangelists";
+        const auto at = bytes.find(name);
+        if (at == std::string::npos) return {};
+        const auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+        auto from = at + name.size();
+        const auto limit = std::min(bytes.size(), from + 16);
+        while (from < limit && !is_digit(bytes[from])) ++from;
+        auto to = from;
+        while (to < bytes.size() && to - from < 16 && is_digit(bytes[to])) ++to;
+        return to - from >= 6 ? bytes.substr(from, to - from) : std::string{};
+    } catch (...) {
+        return {};
+    }
+}
+bool game_data_mismatched(const launcher::SiblingPaths& paths) {
+    std::error_code error;
+    if (!fs::is_regular_file(paths.directory / L"Data" / L"layout.toc", error)) return true;
+    const auto build = game_data_build(paths);
+    return !build.empty() && build != supported_build::game_data_changelist;
+}
+
 bool game_files_supported(const launcher::SiblingPaths& paths) {
     std::error_code error;
     if (!fs::is_regular_file(paths.game, error)) {
@@ -477,6 +506,14 @@ bool game_files_supported(const launcher::SiblingPaths& paths) {
     try {
         launcher::validate_game_file(paths.game);
         launcher::validate_steam_api_file(paths.steam_api);
+        // The right Skate.exe over another build's data is no supported game: its mods are
+        // left out and it may not load (seen 2026-10-13, after a Steam update of the game).
+        if (game_data_mismatched(paths)) {
+            const auto build = game_data_build(paths);
+            logging::log(logging::Level::warning, logging::Channel::launcher, "Game files are not the supported build: Skate.exe is, but the game's data is {} (supported: {}).",
+                build.empty() ? std::string("missing") : "build " + build, supported_build::game_data_changelist);
+            return false;
+        }
         return true;
     } catch (const std::exception& exception) {
         logging::log(logging::Level::warning, logging::Channel::launcher,
