@@ -2,6 +2,7 @@
 #include "skate_style.h"
 #include "cursor.h"
 #include "input_capture.h"
+#include "dual_stick_settings.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include "Extension/Boot/discord_presence.h"
@@ -953,7 +954,7 @@ void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- Mod Options
 
-enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
+enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab, dual_stick_tab };
 
 // The next (or the one before) of a setting's steps from where it is now; it stops at the ends.
 template<std::size_t N> float stepped(float current, const std::array<float, N> &steps, int direction) {
@@ -1103,6 +1104,80 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     };
 
     switch (h.tools_tab) {
+    case dual_stick_tab: {
+        static const dual_stick::Settings settings(dual_stick::Settings::game_path());
+        static int slot = 1, overwrite_slot = 0;
+        Column list(ui, hash("dual-stick"), a, ImVec2(a.x + column_width, z.y));
+        list.heading("DUAL STICK CONTROLS");
+        const bool installed = settings.available();
+        const auto apply = [&](bool success) {
+            overwrite_slot = 0;
+            say(h, success ? "Saved. The companion mod picks up gameplay settings within two seconds."
+                           : "Couldn't save session_controls.ini. Check that the file is writable.");
+        };
+        if (!installed) {
+            list.note("Install the Dual Stick Controls companion mod (v5.133 or later) beside Skate.exe first. This page manages its settings; ReSkate does not include the control translator.");
+            list.end();
+            break;
+        }
+        if (list.setting("Session-style preset", settings.active(false) ? "Active" : "Apply", true)) apply(settings.preset(false));
+        if (list.setting("XL-style preset", settings.active(true) ? "Active" : "Apply", true)) apply(settings.preset(true));
+        list.note("Both presets translate Skate controls across two sticks. Their inputs differ from Session and Skater XL.");
+        list.note("Session: front/back feet, flick pop, trigger steering, one-stick flips blocked. XL: fixed physical setup directions, jobs swap in switch, release pop, left-stick steering, one-stick flips allowed.");
+        if (const int way = list.adjust("Custom slot", std::to_string(slot), true)) {
+            slot = std::clamp(slot + way, 1, 5);
+            overwrite_slot = 0;
+        }
+        if (list.setting("Load custom controls", settings.filled(slot) ? "Load" : "Empty", settings.filled(slot))) apply(settings.load(slot));
+        if (list.setting("Save custom controls", overwrite_slot == slot ? "Confirm overwrite" : "Save", true)) {
+            if (settings.filled(slot) && overwrite_slot != slot) {
+                overwrite_slot = slot;
+                say(h, "Press Save custom controls again to replace this slot.");
+            } else apply(settings.save(slot));
+        }
+        list.note("Custom slots share the companion mod's five slots. Loading here restores the controls below; menu preferences and other tuning stay unchanged.");
+        list.title("YOUR SETTINGS");
+        const int stance = settings.number(L"AutoStance",1) ? 0 : _wcsicmp(settings.text(L"Stance",L"regular").c_str(),L"goofy") == 0 ? 2 : 1;
+        if (list.setting("Stance", stance == 0 ? "Automatic" : stance == 1 ? "Regular" : "Goofy", true)) {
+            dual_stick::Section entries;
+            if (settings.read(entries)) {
+                const int next = (stance + 1) % 3;
+                entries[L"AutoStance"] = next == 0 ? L"1" : L"0";
+                if (next) entries[L"Stance"] = next == 2 ? L"goofy" : L"regular";
+                apply(settings.write(entries));
+            } else apply(false);
+        }
+        const int layout = settings.layout();
+        const char* layouts[]{"Front / back foot", "Left / right foot", "Skater XL", "Legacy left / right"};
+        if (list.setting("Stick layout", layouts[layout], true)) apply(settings.set_layout((layout + 1) % 3));
+        for (const auto& c : dual_stick::choices) {
+            if (std::wcscmp(c.key,L"SwitchStance") == 0 && settings.number(L"FrontBackFoot",0)) continue;
+            const int value = settings.number(c.key,c.fallback);
+            int index = -1;
+            for (int i = 0; i < c.count; ++i) if (c.values[static_cast<std::size_t>(i)] == value) index = i;
+            const std::string label = index < 0 ? "Custom (" + std::to_string(value) + ")" : c.labels[static_cast<std::size_t>(index)];
+            if (list.setting(c.label,label,true)) apply(settings.set(c.key,c.values[static_cast<std::size_t>((index + 1) % c.count)]));
+        }
+        const int ramp = settings.number(L"StockGrabAir",0) ? settings.number(L"StockTransitionGround",0) ? 2 : 1 : 0;
+        if (list.setting("Stock ramp controls", ramp == 0 ? "Off" : ramp == 1 ? "Air only" : "Early on ramp",true)) {
+            dual_stick::Section entries;
+            if (settings.read(entries)) {
+                const int next = (ramp + 1) % 3;
+                entries[L"StockGrabAir"] = next ? L"1" : L"0";
+                entries[L"StockTransitionGround"] = next == 2 ? L"1" : L"0";
+                apply(settings.write(entries));
+            } else apply(false);
+        }
+        list.note("Stock ramp controls are experimental. Qualified transitions use physical Skate stick controls and trigger grabs; flat tricks keep foot controls. Pumping stays on R3.");
+        if (list.setting("Dual Stick on next launch",on_off(settings.number(L"EnabledAtStart",1) != 0),true)) {
+            if (settings.set(L"EnabledAtStart",!settings.number(L"EnabledAtStart",1))) say(h,"Saved for the next launch. Use the companion menu to toggle controls now.");
+            else apply(false);
+        }
+        list.note("The companion menu remains available on its configured hotkey (End by default), including control diagrams and additional tuning.");
+        list.note(h.notice);
+        list.end();
+        break;
+    }
     case official_tab: levels(false, "FIND YOUR SPOT", "Waiting for available levels...", ""); break;
     case custom_tab: levels(true, "CUSTOM MAPS", "No custom maps installed.", "Custom maps from the Mods folder appear here."); break;
     case world_tab: {
@@ -1577,7 +1652,7 @@ void draw_hub_page() {
         int &open = tools ? h.tools_tab : multiplayer_tab;
         if (tools) {
             tabs = {{official_tab, "OFFICIAL MAPS"}, {custom_tab, "CUSTOM MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
-                    {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
+                    {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}, {dual_stick_tab, "DUAL STICK"}};
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
             // The session and its voice chat are only there in one.

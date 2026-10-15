@@ -3,6 +3,8 @@
 #include "skate_menu.h"
 #include "modding_menu.h"
 #include "skate_style.h"
+#include "dual_stick_settings.h"
+#include "menu_navigation.h"
 #include "Extension/UI/skate_theme.h"
 
 #include <Windows.h>
@@ -176,7 +178,7 @@ bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_lis
         const auto at = ImGui::GetCursorScreenPos();
         ImGui::PushID(i);
         ImGui::BeginDisabled(!enabled);
-        if (ImGui::InvisibleButton("##choice", ImVec2(width, height)) && selected != i) {
+        if (ImGui::InvisibleButton("##choice", ImVec2(width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
             selected = i;
             changed = true;
         }
@@ -184,13 +186,13 @@ bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_lis
         const bool hovered = enabled && ImGui::IsItemHovered();
         const char* tooltip = i < static_cast<int>(tooltips.size()) ? tooltips.begin()[i] : nullptr;
         if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
-        if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-            draw->AddRect(at, ImVec2(at.x + width, at.y + height), paper, 0, 0, px(2));
+        const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible;
         ImGui::PopID();
         const bool on = selected == i;
         const ImU32 fill = on ? (enabled ? blue : IM_COL32(1, 131, 255, 120))
                          : hovered ? skate_theme::tile_light : skate_theme::tile_grey;
         skate_theme::rough_rect(draw, at, ImVec2(at.x + width, at.y + height), fill, static_cast<unsigned>(i + 29), ui_scale);
+        if (focused) draw->AddRect(at, ImVec2(at.x + width, at.y + height), paper, 0, 0, px(2));
         const char* label = options.begin()[i];
         const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, label);
         draw->PushClipRect(at, ImVec2(at.x + width, at.y + height), true);
@@ -237,17 +239,17 @@ void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const c
         if (i) ImGui::SameLine(0, gap);
         const auto at = ImGui::GetCursorScreenPos();
         ImGui::PushID(i);
-        if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height)) && selected != i) {
+        if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
             selected = i;
             menu.feedback.clear();
         }
         const bool hovered = ImGui::IsItemHovered();
-        if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-            draw->AddRect(at, ImVec2(at.x + tab_width, at.y + height), paper, 0, 0, px(2));
+        const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible;
         ImGui::PopID();
         const bool on = selected == i;
         skate_theme::rough_rect(draw, at, ImVec2(at.x + tab_width, at.y + height),
             on ? blue : hovered ? skate_theme::tile_light : skate_theme::tile_grey, static_cast<unsigned>(i + 11), ui_scale);
+        if (focused) draw->AddRect(at, ImVec2(at.x + tab_width, at.y + height), paper, 0, 0, px(2));
         const char* label = tabs.begin()[i];
         const auto size = menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, label);
         draw->PushClipRect(at, ImVec2(at.x + tab_width, at.y + height), true);
@@ -278,12 +280,84 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, training, multiplayer, progress, mods, music, settings, special, developer, page_count };
+
+void dual_stick_page(SkateMenu& menu) {
+    static const dual_stick::Settings config(dual_stick::Settings::game_path());
+    static int slot = 1, overwrite_slot = 0;
+    const auto saved = [&](bool success) {
+        overwrite_slot = 0;
+        feedback(menu, success ? "Saved. Controls refresh within two seconds."
+                               : "Could not save session_controls.ini.");
+    };
+    if (!config.available()) {
+        ImGui::TextWrapped("Install Dual Stick Controls beside Skate.exe first. This page edits its session_controls.ini; the companion mod is required.");
+        return;
+    }
+    section(menu, "PRESETS");
+    if (primary_button(menu, config.active(false) ? "Session-style (active)" : "Apply Session-style")) saved(config.preset(false));
+    if (primary_button(menu, config.active(true) ? "XL-style (active)" : "Apply XL-style")) saved(config.preset(true));
+    ImGui::TextWrapped("Both map Skate controls across two sticks. Inputs differ from Session and Skater XL. Session uses front/back feet and flick pop; XL keeps physical setup directions, swaps jobs in switch and uses release pop.");
+    const char* slots[]{"Slot 1", "Slot 2", "Slot 3", "Slot 4", "Slot 5"};
+    int selected_slot = slot - 1;
+    if (ImGui::Combo("Custom preset", &selected_slot, slots, 5)) { slot = selected_slot + 1; overwrite_slot = 0; }
+    if (primary_button(menu, "Load custom controls", config.filled(slot))) saved(config.load(slot));
+    if (primary_button(menu, overwrite_slot == slot ? "Confirm overwrite" : "Save custom controls")) {
+        if (config.filled(slot) && overwrite_slot != slot) {
+            overwrite_slot = slot;
+            feedback(menu, "Press Confirm overwrite to replace this slot.");
+        } else saved(config.save(slot));
+    }
+    section(menu, "YOUR CONTROLS");
+    int stance = config.number(L"AutoStance", 1) ? 0 :
+        _wcsicmp(config.text(L"Stance", L"regular").c_str(), L"goofy") == 0 ? 2 : 1;
+    const char* stances[]{"Automatic", "Regular", "Goofy"};
+    if (ImGui::Combo("Stance", &stance, stances, 3)) {
+        dual_stick::Section entries;
+        if (config.read(entries)) {
+            entries[L"AutoStance"] = stance == 0 ? L"1" : L"0";
+            if (stance) entries[L"Stance"] = stance == 2 ? L"goofy" : L"regular";
+            saved(config.write(entries));
+        } else saved(false);
+    }
+    int layout = config.layout();
+    const char* layouts[]{"Front / back foot", "Left / right foot", "Skater XL", "Legacy left / right"};
+    if (ImGui::Combo("Stick layout", &layout, layouts, 4)) {
+        if (layout < 3) saved(config.set_layout(layout));
+        else feedback(menu, "Choose a named layout; legacy settings are only retained for older INIs.");
+    }
+    for (const auto& choice : dual_stick::choices) {
+        if (std::wcscmp(choice.key, L"SwitchStance") == 0 && config.number(L"FrontBackFoot", 0)) continue;
+        const int value = config.number(choice.key, choice.fallback);
+        int index = -1;
+        for (int i = 0; i < choice.count; ++i)
+            if (choice.values[static_cast<std::size_t>(i)] == value) index = i;
+        if (ImGui::Combo(choice.label, &index, choice.labels.data(), choice.count))
+            saved(config.set(choice.key, choice.values[static_cast<std::size_t>(index)]));
+    }
+    int ramp = config.number(L"StockGrabAir", 0) ? config.number(L"StockTransitionGround", 0) ? 2 : 1 : 0;
+    const char* ramps[]{"Off", "Air only", "Early on ramp"};
+    if (ImGui::Combo("Stock ramp controls", &ramp, ramps, 3)) {
+        dual_stick::Section entries;
+        if (config.read(entries)) {
+            entries[L"StockGrabAir"] = ramp ? L"1" : L"0";
+            entries[L"StockTransitionGround"] = ramp == 2 ? L"1" : L"0";
+            saved(config.write(entries));
+        } else saved(false);
+    }
+    bool enabled = config.number(L"EnabledAtStart", 1) != 0;
+    if (toggle_row(menu, "Dual Stick on next launch", "Use the companion menu to toggle controls immediately.", enabled))
+        saved(config.set(L"EnabledAtStart", enabled ? 1 : 0));
+    ImGui::TextWrapped("Custom slots are shared with the companion menu. Loading here preserves menu preferences and other tuning. Ramp controls are experimental; pumping stays on R3. The companion menu (End by default) still has diagrams and additional tuning.");
+}
+
+
+enum Page { map, world, build, skater, training, dualstick, multiplayer, progress, mods, music, settings, special, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
+    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "DUAL STICK", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
     "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.",
-    "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.", "Your controls, your screen.", "Not everyone gets this page.",
+    "Two feet. Your controls.", "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.", "Your controls, your screen.", "Not everyone gets this page.",
+
     "Under the hood."};
 }
 
@@ -317,6 +391,11 @@ void load_skate_fonts(SkateMenu& menu) {
 
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible) {
+    static ImGuiContext* navigation_context{};
+    if (navigation_context != ImGui::GetCurrentContext()) {
+        navigation_context = ImGui::GetCurrentContext();
+        menu.navigation_sidebar = menu.navigation_content = nullptr;
+    }
     const bool on_controls = menu.page == settings && menu.settings_tab == 0;
     const bool on_voice = menu.page == multiplayer && menu.multiplayer_tab == multiplayer_voice_tab;
     if (!visible || !on_controls || menu.last_menu_frame + 1 != ImGui::GetFrameCount()) menu.recording_bind = 0;
@@ -349,6 +428,8 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0);
     const int colours = skate_theme::push_widget_colours();
     if (ImGui::Begin("ReSkate###skate-menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar)) {
+        menu_back(menu.navigation_sidebar, menu.navigation_content);
+        bool enter_content = false;
         const auto size = ImGui::GetWindowSize();
         const auto current = ImGui::GetWindowPos();
         const ImVec2 bounded(std::clamp(current.x, 0.0f, std::max(0.0f, io.DisplaySize.x - size.x)),
@@ -380,18 +461,21 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         if (hidden(menu.page)) menu.page = map;
         ImGui::SetCursorPos(ImVec2(px(10), px(96)));
         ImGui::BeginChild("navigation", ImVec2(sidebar - px(20), size.y - px(140)), ImGuiChildFlags_None);
+        menu.navigation_sidebar = ImGui::GetCurrentWindow();
         const float tab_height = px(40);
         for (int i = 0; i < static_cast<int>(page_count); ++i) {
             if (hidden(i)) continue;
             const auto at = ImGui::GetCursorScreenPos();
             const bool selected = menu.page == i;
             ImGui::PushID(i);
-            if (ImGui::InvisibleButton("##page", ImVec2(sidebar - px(20), tab_height)) && !selected) {
+            if (ImGui::InvisibleButton("##page", ImVec2(sidebar - px(20), tab_height), ImGuiButtonFlags_EnableNav)) {
                 menu.page = i;
+                enter_content = true;
                 menu.recording_bind = 0;
                 menu.voice_bind_capture = 0;
                 menu.feedback.clear();
             }
+            if (selected) ImGui::SetItemDefaultFocus();
             const bool hovered = ImGui::IsItemHovered();
             auto* nav = ImGui::GetWindowDrawList();
             const ImVec2 end(at.x + sidebar - px(20), at.y + tab_height - px(4));
@@ -405,6 +489,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         ImGui::EndChild();
         // Keycap-style hint, like the game's "Esc Back" prompt.
         {
+            draw->AddText(menu.body, px(12), ImVec2(origin.x + px(16), origin.y + size.y - px(56)), muted, "A Select   B Back");
             static const auto label = dingosdk::launcher::key_cap(dingosdk::launcher::overlay_keys().menu);
             keycap(draw, menu.bold, ui_scale, ImVec2(origin.x + px(16), origin.y + size.y - px(34)), label.c_str(), "Close");
         }
@@ -419,10 +504,10 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
             skate_theme::rotate_since(draw, start, -3.0f, ImVec2(at.x + extent.x * .5f, at.y + extent.y * .5f));
             draw->AddText(menu.body, px(14), ImVec2(at.x + extent.x + px(18), at.y + px(22)), muted, page_subtitles[menu.page]);
         }
-        ImGui::SetCursorPos(ImVec2(size.x - px(44), px(16)));
-        if (ImGui::Button("X", ImVec2(px(28), px(28)))) visible = false;
         ImGui::SetCursorPos(ImVec2(sidebar + px(20), px(76)));
         ImGui::BeginChild("page", ImVec2(size.x - sidebar - px(40), size.y - px(96)), ImGuiChildFlags_None);
+        menu.navigation_content = ImGui::GetCurrentWindow();
+        if (enter_content) focus_menu_panel(menu.navigation_content, true);
         switch (menu.page) {
         case map: map_page(menu, model, callbacks); break;
         case world: world_page(menu, model, callbacks); break;
@@ -445,6 +530,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case settings: settings_page(menu, model, callbacks); break;
         case special: special_page(menu, model, callbacks); break;
         case developer: developer_page(menu, model, callbacks); break;
+        case dualstick: dual_stick_page(menu); break;
         }
         if (!menu.feedback.empty() && ImGui::GetTime() < menu.feedback_until) {
             // The feedback line sits in a dark strip with a blue edge, like the game's toasts.
