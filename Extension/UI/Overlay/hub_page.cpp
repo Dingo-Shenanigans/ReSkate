@@ -11,6 +11,7 @@
 #include "Extension/GraphicsCreator/graphic_document.h"
 #include "Extension/GraphicsCreator/graphic_assets.h"
 #include "Extension/GraphicsCreator/graphic_raster.h"
+#include "Extension/GraphicsCreator/native_export.h"
 #include "Extension/GraphicsCreator/graphic_store.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Music/local_music_assets.h"
@@ -138,6 +139,7 @@ std::optional<CreateImportResult> take_create_image() {
 }
 struct CreateExportResult {
     std::string file_name;
+    std::string native_status;
     std::string error;
 };
 struct CreateExportJob {
@@ -163,6 +165,7 @@ void request_create_export(graphics_creator::GraphicDocument document,
             try {
                 graphics_creator::export_png(destination, graphics_creator::rasterize(document, asset_directory));
                 result.file_name = destination.filename().string();
+                result.native_status = graphics_creator::stage_native_export(document, destination).message;
             } catch (const std::exception &error) { result.error = error.what(); }
             {
                 std::lock_guard lock(job.mutex);
@@ -173,7 +176,7 @@ void request_create_export(graphics_creator::GraphicDocument document,
     } catch (...) {
         job.busy.store(false);
         std::lock_guard lock(job.mutex);
-        job.ready = CreateExportResult{{}, "The PNG export could not be started."};
+        job.ready = CreateExportResult{{}, {}, "The PNG export could not be started."};
     }
 }
 std::optional<CreateExportResult> take_create_export() {
@@ -2060,7 +2063,7 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         }
     }
     if (auto exported = take_create_export())
-        say(h, exported->error.empty() ? "Exported " + exported->file_name + " for the item pipeline." : exported->error);
+        say(h, exported->error.empty() ? "Exported " + exported->file_name + ". " + exported->native_status : exported->error);
 
     const float total = z.x - a.x;
     const float gallery_width = std::min(820 * u, total * .23f);
@@ -2127,7 +2130,10 @@ void create_hub_page(Ui &ui, ImVec2 a, ImVec2 z) {
         for (int kind = 0; kind < 3; ++kind) {
             if (!gallery.setting(names[kind], {}, !exporting, Look::plain)) continue;
             const auto file = h.create_file + "-" + target_slug(h.create_document.target) + ".png";
-            request_create_export(h.create_document, asset_directory(), export_directory() / folders[kind] / file);
+            auto exported_document = h.create_document;
+            if (kind == 0) exported_document.target = DesignTarget::board;
+            else if (kind == 2) exported_document.target = DesignTarget::sticker;
+            request_create_export(std::move(exported_document), asset_directory(), export_directory() / folders[kind] / file);
             h.create_export_kind = -1;
         }
     }

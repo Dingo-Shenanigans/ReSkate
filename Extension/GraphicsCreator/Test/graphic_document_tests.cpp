@@ -1,6 +1,7 @@
 #include "Extension/GraphicsCreator/graphic_document.h"
 #include "Extension/GraphicsCreator/graphic_assets.h"
 #include "Extension/GraphicsCreator/graphic_raster.h"
+#include "Extension/GraphicsCreator/native_export.h"
 #include "Extension/GraphicsCreator/graphic_store.h"
 #include "Engine/Core/Json/json.h"
 #include <Windows.h>
@@ -105,6 +106,28 @@ int main(int argc, char** argv) {
         const auto exported = load_image(directory / "Exports", "flat.png");
         check(exported.width == 64 && exported.height == 64 && exported.rgba == rendered.rgba,
               "The exported target PNG did not round trip");
+        const auto staged = stage_native_export(flat, directory / "Exports" / "flat.png");
+        check(std::filesystem::is_regular_file(staged.manifest), "Native export manifest was not written");
+        {
+            std::ifstream native_manifest_input(staged.manifest, std::ios::binary);
+            const auto native_manifest = Json::parse(std::string(std::istreambuf_iterator<char>(native_manifest_input),
+                                                                 std::istreambuf_iterator<char>()));
+            check(native_manifest.at("schema").string() == "ReSkate.Create.NativeExport.v1" &&
+                  native_manifest.at("state").string() == "png-only",
+                  "Unsupported-target native export manifest differs");
+        }
+        if (GetEnvironmentVariableW(L"RESKATE_NATIVE_EXPORT_INTEGRATION", nullptr, 0)) {
+            flat.target = DesignTarget::board;
+            const auto native = stage_native_export(flat, directory / "Exports" / "flat.png");
+            check(native.attempted && native.validated && std::filesystem::is_regular_file(native.encoded_preview),
+                  "Frostbite board texture integration validation failed");
+            std::ifstream integration_manifest_input(native.manifest, std::ios::binary);
+            const auto integration_manifest = Json::parse(std::string(
+                std::istreambuf_iterator<char>(integration_manifest_input), std::istreambuf_iterator<char>()));
+            check(integration_manifest.at("state").string() == "frostbite-texture-validated" &&
+                  integration_manifest.at("packaging_state").string() == "studio-authoring-required",
+                  "Frostbite board validation manifest differs");
+        }
         bad = document;
         bad.layers[0].shape.kind = ShapeKind::image;
         bad.layers[0].shape.source = "../outside.png";
