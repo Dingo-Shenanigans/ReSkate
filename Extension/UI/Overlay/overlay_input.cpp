@@ -3,6 +3,7 @@
 #include "Extension/Boot/exit_watch.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
+#include "gamepad_navigation.h"
 #include "playstation_input.h"
 #include "cursor.h"
 
@@ -449,11 +450,32 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
 }
 }
 
+namespace dingosdk::overlay::detail {
+void update_gamepad_navigation(bool enabled) {
+    ControllerSample sample{};
+    if (enabled) sample = read_controller_sample();
+    const auto& pad = sample.pad;
+    feed_gamepad_navigation(ImGui::GetIO(),enabled && sample.device != 0,pad.wButtons,
+                            pad.sThumbLX,pad.sThumbLY,pad.bLeftTrigger,pad.bRightTrigger);
+}
+}
+
 extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active) {
     const bool previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
     if (previous != active)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::input,
             "Freecam controller input capture %s.", active ? "enabled" : "disabled");
+}
+
+// Optional companion DLLs can respect UI/freecam ownership without peeking at
+// internal offsets or guessing from whether the skater is still ticking.
+extern "C" __declspec(dllexport) unsigned long WINAPI ReSkateOverlayOwnsInputV1() {
+    const auto error = GetLastError();
+    const auto& s = state();
+    const unsigned long owns = owns_menu_cursor(s) || s.freecam_controller_active.load(std::memory_order_relaxed) ||
+           s.prompt_input_active.load(std::memory_order_relaxed) ? 1ul : 0ul;
+    SetLastError(error);
+    return owns;
 }
 
 extern "C" void DingoSDKOverlaySetPromptInputCapture(bool active) {

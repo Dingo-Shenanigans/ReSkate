@@ -7,6 +7,7 @@
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
+#include "menu_navigation.h"
 #include "cursor.h"
 #include <dxgi1_6.h>
 #include <imgui_internal.h>
@@ -353,7 +354,7 @@ bool setup_graphics() {
     ImGui::SetCurrentContext(s.context);
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().LogFilename = nullptr;
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     ImGui::StyleColorsDark();
     dingosdk::overlay::load_skate_fonts(s.menu);
     // Thumbnails are read from the game's own data at startup; the read is
@@ -696,8 +697,13 @@ void render(IDXGISwapChain* presented, UINT flags) {
     ImGui::GetIO().MouseDrawCursor = owns_menu_cursor(s);
     ImGui_ImplDX12_NewFrame();
     { OverlayInputAccess access; ImGui_ImplWin32_NewFrame(); }
+    {
+        const bool menu_input = s.visible.load() && game_window_foreground(s.window.load());
+        update_gamepad_navigation(menu_input);
+    }
     update_menu_pointer();
     fit_display_to_buffer(s, frame.buffer.Get());
+    menu::claim_menu_back(s.visible.load() && !s.editor_visible.load());
     ImGui::NewFrame();
     if (menu_frame) {
         draw_menu();

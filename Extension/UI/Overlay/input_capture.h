@@ -12,6 +12,8 @@ struct OverlayInputAccess {
 // through GetRawInputData is then not noted a second time.
 extern thread_local HRAWINPUT noted_raw_input;
 bool block_polled_input();
+// Raw XInput/native HID navigation for the Insert overlay's ImGui context.
+void update_gamepad_navigation(bool enabled);
 // How the game read its controllers while a card held its input (prompt_input_active), for the
 // log when the hold ends: which of the ways the overlay can keep input from it the game used.
 struct PromptReads {

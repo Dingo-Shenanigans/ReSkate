@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <optional>
 #include <map>
+struct ImGuiWindow;
 
 namespace dingosdk::overlay {
 struct AtmosphereEdit {
@@ -68,6 +69,8 @@ struct SkateMenu {
     ControllerComboCapture bind_capture;
     double bind_capture_until = 0;
     int last_menu_frame = -1;
+    ImGuiWindow* navigation_sidebar{};
+    ImGuiWindow* navigation_content{};
     // Live while the scale slider is held; the saved value is authoritative otherwise.
     float scale = default_menu_scale;
     bool scale_editing{};
