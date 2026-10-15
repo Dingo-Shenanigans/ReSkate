@@ -345,8 +345,17 @@ std::string edit_nametags(Session &s, std::string_view argument) {
     profile_runtime::set_local_preference("Nametags", s.nametags);
     return s.nametags ? "Peer nametags shown." : "Peer nametags hidden.";
 }
+const char *shuffle_mode_word(ShuffleMode mode) {
+    switch (mode) {
+    case ShuffleMode::everything: return "all";
+    case ShuffleMode::not_installed: return "missing";
+    case ShuffleMode::off: break;
+    }
+    return "off";
+}
 std::string edit_shuffle_outfits(Session &s, std::string_view argument) {
     const bool reroll = argument == "reroll";
+    const auto previous = s.shuffle_mode;
     const auto wanted = argument == "cycle" || argument == "toggle" ? std::optional(next_shuffle_mode(s.shuffle_mode))
                         : reroll                                    ? std::optional(s.shuffle_mode)
                                                                     : parse_shuffle_mode(argument);
@@ -358,9 +367,17 @@ std::string edit_shuffle_outfits(Session &s, std::string_view argument) {
     if (reroll) s.shuffle_epoch = now_us();
     profile_runtime::set_local_values({{"ShuffleMode", static_cast<double>(static_cast<int>(s.shuffle_mode))}});
     // Every player's skater puts its outfit on again, a few a frame (session.cpp).
+    unsigned redressed{};
     if (changed || reroll)
         for (auto &peer : active_peers(s))
-            if (peer.appearance.value()) ++peer.cosmetic_revision;
+            if (peer.appearance.value()) ++peer.cosmetic_revision, ++redressed;
+    if (changed || reroll) {
+        const auto textures = texture_handle_limit::use();
+        logging::log(logging::Level::info, logging::Channel::runtime,
+                     "Multiplayer: shuffled outfits {} (mode {} -> {}, epoch {}); {} players re-dressed, {} of {} streamed textures in use{}.",
+                     reroll ? "rerolled" : "mode changed", shuffle_mode_word(previous), shuffle_mode_word(s.shuffle_mode),
+                     s.shuffle_epoch, redressed, textures.taken, textures.limit, s.shuffle_loaded_only ? ", loaded items only" : "");
+    }
     if (reroll) return "Everyone's items were shuffled again.";
     switch (s.shuffle_mode) {
     case ShuffleMode::everything: return "Every item other players wear is random, for you only.";

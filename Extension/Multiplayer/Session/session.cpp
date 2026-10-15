@@ -309,6 +309,9 @@ void publish_party(Session &s) {
         if (const auto saved = profile_runtime::local_value("ShuffleMode"); saved && saved->is_number())
             s.shuffle_mode = shuffle_mode_from(static_cast<long long>(saved->get<double>()));
         s.shuffle_epoch = now_us();
+        logging::log(logging::Level::info, logging::Channel::runtime,
+                     "Multiplayer: shuffled outfits mode {} loaded from the profile (epoch {}).",
+                     static_cast<int>(s.shuffle_mode), s.shuffle_epoch);
         if (const auto saved = profile_runtime::local_value("NametagDistance"); saved && saved->is_number())
             s.nametag_distance = std::clamp(saved->get<float>(), 10.f, 500.f);
         s.nametag_dots = profile_runtime::local_preference("NametagDots").value_or(true);
