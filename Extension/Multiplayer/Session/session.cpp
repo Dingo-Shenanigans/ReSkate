@@ -511,16 +511,31 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     bool native_pass{};
     // Near the game's limit of textures shuffled outfits pick only items already loaded.
     check_shuffle_room(s);
+    const auto shuffle_for = [](std::uint64_t id, ShuffleMode mode, std::uint64_t epoch) {
+        return mode == ShuffleMode::off ? Shuffle{} : Shuffle{mode, shuffle_seed(id, epoch)};
+    };
     const auto apply_cosmetics = [&](Peer &p, bool spawned) {
         if (now - p.last_cosmetic_apply < 500000) return;
+        // A spawn or a real outfit change takes the current shuffle with it. A new mode or reroll
+        // alone waits its turn (shuffle_redress_interval_us); until then the player keeps theirs.
+        bool adopt = spawned;
         if (p.applied_cosmetics != p.cosmetic_revision && !spawned) {
             if (native_pass) return;
             native_pass = true;
+            adopt = true;
+        } else if (!spawned && !native_pass && now >= s.next_shuffle_redress &&
+                   shuffle_for(p.member.id, p.shuffle_mode, p.shuffle_epoch) !=
+                       shuffle_for(p.member.id, s.shuffle_mode, s.shuffle_epoch)) {
+            native_pass = true;
+            s.next_shuffle_redress = now + shuffle_redress_interval_us;
+            adopt = true;
+        }
+        if (adopt) {
+            p.shuffle_mode = s.shuffle_mode;
+            p.shuffle_epoch = s.shuffle_epoch;
         }
         update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status,
-                                s.shuffle_mode == ShuffleMode::off
-                                    ? Shuffle{}
-                                    : Shuffle{s.shuffle_mode, shuffle_seed(p.member.id, s.shuffle_epoch)});
+                                shuffle_for(p.member.id, p.shuffle_mode, p.shuffle_epoch));
         // The effects their costume and board items come with follow the outfit.
         if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;

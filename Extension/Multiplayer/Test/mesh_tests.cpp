@@ -650,8 +650,10 @@ void shuffle_room_checks() {
     check(told() == 1, "The notice repeated around the line");
 
     const auto epoch = s.shuffle_epoch;
+    // A reroll is a new epoch; render re-dresses players in turn (shuffle_redress_interval_us),
+    // so their outfit revision is left alone.
     check(edit_shuffle_outfits(s, "reroll") == "Everyone's items were shuffled again." && s.shuffle_epoch != epoch &&
-              revision == before + 1,
+              revision == before,
           "A reroll near the texture limit was refused");
     (void)edit_shuffle_outfits(s, "missing");
     check(s.shuffle_mode == ShuffleMode::not_installed, "A mode near the texture limit was refused");

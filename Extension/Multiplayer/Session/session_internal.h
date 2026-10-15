@@ -56,6 +56,9 @@ inline constexpr unsigned throwdown_burst = 60;
 // The party the echo test shows its mirrored player in (a real lobby has none until its
 // players form one).
 inline constexpr std::uint32_t lobby_party = 1;
+// How often a new shuffle mode or reroll re-dresses the next player: four a second, so a full
+// server takes about a minute, and the textures the new items bring arrive a few at a time.
+inline constexpr std::uint64_t shuffle_redress_interval_us = 250000;
 struct Peer {
     // Guests: this owner's layout as relayed by the host. Host: the owner's own
     // upload, which is never forwarded directly. The host publishes `shared`
@@ -113,6 +116,10 @@ struct Peer {
     // Bumped per accepted outfit; render compares it with the one its actor wears
     // (0 after a spawn) to spread native recipe applies over frames.
     std::uint64_t cosmetic_revision{}, applied_cosmetics{};
+    // The shuffle (mode and epoch) their skater wears. A new mode or reroll reaches them in
+    // turn, one player per shuffle_redress_interval_us (session.cpp).
+    ShuffleMode shuffle_mode{};
+    std::uint64_t shuffle_epoch{};
     DeveloperHoodieState developer_hoodie;
     DeveloperBoardState developer_board;
     AudioBuffer audio;
@@ -282,6 +289,9 @@ struct Session {
     ShuffleMode shuffle_mode{};
     std::uint64_t shuffle_epoch{1};
     bool shuffle_loaded_only{};
+    // A new mode or reroll re-dresses one player at a time, no sooner than this: every
+    // re-dressed player can bring textures of their own. Spawns and real outfit changes are not held.
+    std::uint64_t next_shuffle_redress{};
     float nametag_distance = 120.f; // names within this many metres, dots past it
     // Only players within this many metres have a skater (session.cpp); checked a few times a second.
     float player_distance = 120.f;

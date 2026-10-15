@@ -366,15 +366,15 @@ std::string edit_shuffle_outfits(Session &s, std::string_view argument) {
     s.display_preferences_loaded = true;
     if (reroll) s.shuffle_epoch = now_us();
     profile_runtime::set_local_values({{"ShuffleMode", static_cast<double>(static_cast<int>(s.shuffle_mode))}});
-    // Every player's skater puts its outfit on again, a few a frame (session.cpp).
-    unsigned redressed{};
-    if (changed || reroll)
-        for (auto &peer : active_peers(s))
-            if (peer.appearance.value()) ++peer.cosmetic_revision, ++redressed;
+    // Every player's skater puts its outfit on again in turn, one per
+    // shuffle_redress_interval_us (session.cpp).
     if (changed || reroll) {
+        unsigned redressed{};
+        for (auto &peer : active_peers(s))
+            if (peer.appearance.value()) ++redressed;
         const auto textures = texture_handle_limit::use();
         logging::log(logging::Level::info, logging::Channel::runtime,
-                     "Multiplayer: shuffled outfits {} (mode {} -> {}, epoch {}); {} players re-dressed, {} of {} streamed textures in use{}.",
+                     "Multiplayer: shuffled outfits {} (mode {} -> {}, epoch {}); {} players to re-dress, {} of {} streamed textures in use{}.",
                      reroll ? "rerolled" : "mode changed", shuffle_mode_word(previous), shuffle_mode_word(s.shuffle_mode),
                      s.shuffle_epoch, redressed, textures.taken, textures.limit, s.shuffle_loaded_only ? ", loaded items only" : "");
     }
