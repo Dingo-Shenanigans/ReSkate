@@ -5,6 +5,7 @@
 #include "party_book.h"
 #include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Multiplayer/Remote/outfit_shuffle.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -305,6 +306,9 @@ void publish_party(Session &s) {
     if (!s.display_preferences_loaded) {
         s.display_preferences_loaded = true;
         s.nametags = profile_runtime::local_preference("Nametags").value_or(true);
+        if (const auto saved = profile_runtime::local_value("ShuffleMode"); saved && saved->is_number())
+            s.shuffle_mode = shuffle_mode_from(static_cast<long long>(saved->get<double>()));
+        s.shuffle_epoch = now_us();
         if (const auto saved = profile_runtime::local_value("NametagDistance"); saved && saved->is_number())
             s.nametag_distance = std::clamp(saved->get<float>(), 10.f, 500.f);
         s.nametag_dots = profile_runtime::local_preference("NametagDots").value_or(true);
@@ -502,13 +506,18 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     // changed outfit is one heavy native pass. When several players arrive together
     // (joining a busy server) run one pass per frame; the others wait for later frames.
     bool native_pass{};
+    // Near the game's limit of textures shuffled outfits pick only items already loaded.
+    check_shuffle_room(s);
     const auto apply_cosmetics = [&](Peer &p, bool spawned) {
         if (now - p.last_cosmetic_apply < 500000) return;
         if (p.applied_cosmetics != p.cosmetic_revision && !spawned) {
             if (native_pass) return;
             native_pass = true;
         }
-        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status);
+        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status,
+                                s.shuffle_mode == ShuffleMode::off
+                                    ? Shuffle{}
+                                    : Shuffle{s.shuffle_mode, shuffle_seed(p.member.id, s.shuffle_epoch)});
         // The effects their costume and board items come with follow the outfit.
         if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;
@@ -853,6 +862,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
         ~VoicePlaybackTick() { voice.process_native(base); }
     } voice_playback_tick{s.voice, base};
     s.base = base;
+    s.client = client;
     initialize_native_throwdowns(base);
     profile_runtime::install_script_error_log(base);
     profile_runtime::install_board_wear_hold(base);

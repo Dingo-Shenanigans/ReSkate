@@ -32,6 +32,7 @@ void register_multiplayer_commands(Commands &registry) {
                           Command{"tpall", "Host or server admin: teleport everyone to you"},
                           Command{"tphere", "Host or server admin: teleport one player to you"},
                           Command{"nametags", "Show or hide player nametags (on, off, toggle)"},
+                          Command{"shuffle-outfits", "Other players' outfits and boards as random items, for you only: off, all (every item), missing (only items you don't have installed), cycle, or reroll for new picks"},
                           Command{"pose-dump", "Research: record your own poses for a number of seconds (1-600) to logs/poses-*.bin"},
                           Command{"vote", "Answer the vote a dedicated server is running (yes, no), or its poll (1, 2...)"},
                           Command{"voice-chat", "Your own voice chat (on, off, toggle)"},
@@ -49,7 +50,9 @@ void register_multiplayer_commands(Commands &registry) {
                                                  "coop challenges (on, off, toggle; on by default)"},
                           Command{"retry", "Retry remote skater creation after an error"},
                           Command{"test", "Test a Steam socket-pair round trip"},
-                          Command{"status", "Show multiplayer connection and animation status"}}) {
+                          Command{"status", "Show multiplayer connection and animation status"},
+                          Command{"slots", "Debug: your skater's and board's cosmetic slots, the category each takes "
+                                           "(what shuffled outfits match on), the item worn and how many installed items fit"}}) {
         std::vector<Argument> args;
         if (std::string_view(c.name) == "join")
             args.push_back(argument("join_code"));
@@ -63,7 +66,7 @@ void register_multiplayer_commands(Commands &registry) {
             std::string_view(c.name) == "chat-bubbles" || std::string_view(c.name) == "chat-bubbles-own" ||
             std::string_view(c.name) == "nametag-dots" || std::string_view(c.name) == "nametags-friends" ||
             std::string_view(c.name) == "direct-connections" || std::string_view(c.name) == "vote" ||
-            std::string_view(c.name) == "voice-chat" ||
+            std::string_view(c.name) == "voice-chat" || std::string_view(c.name) == "shuffle-outfits" ||
             std::string_view(c.name) == "score-check")
             args.push_back(argument("choice"));
         if (std::string_view(c.name) == "chat-bubbles-distance" || std::string_view(c.name) == "nametag-distance")
@@ -92,7 +95,14 @@ void register_multiplayer_commands(Commands &registry) {
                     arguments += ' ';
                 arguments += part;
             }
-            out(multiplayer::command(name, arguments));
+            // One console line per line of the result (mp slots prints a table).
+            const auto result = multiplayer::command(name, arguments);
+            for (std::size_t at = 0;;) {
+                const auto end = result.find('\n', at);
+                out(result.substr(at, end - at));
+                if (end == std::string::npos) break;
+                at = end + 1;
+            }
         };
         registry.add(std::move(entry));
     }

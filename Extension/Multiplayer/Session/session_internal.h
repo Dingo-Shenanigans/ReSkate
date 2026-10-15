@@ -278,6 +278,10 @@ struct Session {
     unsigned capacity = max_players;
     // Local display preferences, loaded once from the profile. Never sent to peers.
     bool nametags = true, chat_visible = true, display_preferences_loaded{};
+    // Shuffled outfits (outfit_shuffle.h) A new epoch is a re-roll. Never sent to peers.
+    ShuffleMode shuffle_mode{};
+    std::uint64_t shuffle_epoch{1};
+    bool shuffle_loaded_only{};
     float nametag_distance = 120.f; // names within this many metres, dots past it
     // Only players within this many metres have a skater (session.cpp); checked a few times a second.
     float player_distance = 120.f;
@@ -325,7 +329,7 @@ struct Session {
     float voice_range = default_voice_range;
     DirectUploadBudget direct_upload;
     Mode mode = Mode::off;
-    std::uintptr_t base{}, context{}, parent{};
+    std::uintptr_t base{}, client{}, context{}, parent{};
     std::uint64_t secret{}, epoch{}, map{}, host_id{}, next_send{}, last_hello{}, last_roster{},
         last_cosmetic_capture{}, last_routes{}, last_network_log{}, network_now{};
     std::uint32_t sequence{}, roster_sequence{};
@@ -444,6 +448,10 @@ void refresh_friends(Session &s);
 bool identity_link(Session &s, std::uint64_t other);
 // `marks`: whether the line may show the badge the backend gives its sender (player_role).
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local = false, bool marks = true);
+// Tells the player once when the game's streamed textures come close to their limit
+// (shuffle_texture_ceiling), where shuffled outfits pick only items already loaded
+// (native_cosmetics.cpp), and again only after use has fallen well below it. Client thread.
+void check_shuffle_room(Session &s);
 // The colour and badge of one of the backend's categories.
 std::pair<std::uint32_t, std::string> mark_role(IdentityList list);
 // A player's role colour and badge ("Dev", "Staff", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or none), shown in chat

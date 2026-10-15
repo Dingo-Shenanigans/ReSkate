@@ -7,10 +7,14 @@
 #include "Engine/Game/Build/20260929/native_cosmetics.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Customization/local_player_card_runtime.h"
+#include "Extension/World/texture_handle_limit.h"
 #include <Windows.h>
+#include <atomic>
+#include <format>
 #include <mutex>
 #include <set>
 #include <tuple>
+#include "outfit_shuffle.h"
 
 namespace dingosdk::multiplayer {
 namespace {
@@ -25,7 +29,59 @@ template <class T> void put(std::uintptr_t p, const T &value) {
         done != sizeof(value))
         throw std::runtime_error("Cannot update the remote cosmetic component.");
 }
+// The catalog the shuffle draws from: what is installed, less the items only their owners may
+// wear. It is names only, so it is kept until the number of installed items changes (a mod
+// applied live). Client thread.
+template <class Memory> const ShuffleCatalog &shuffle_catalog(const Memory &memory) {
+    static ShuffleCatalog kept;
+    static std::uintptr_t manager{};
+    static std::uint32_t total{};
+    const auto now = memory.ptr(memory.base, addr::engine::cosmetics_manager);
+    const auto count = memory.template get<std::uint32_t>(now, 0x3c);
+    if (kept.size() && now == manager && count == total) return kept;
+    std::vector<ShuffleCandidate> items;
+    for (auto &item : memory.catalog())
+        if (!profile_runtime::reserved_cosmetic(item.name)) items.push_back({std::move(item.name), std::move(item.categories)});
+    kept = ShuffleCatalog(std::move(items));
+    manager = now;
+    total = count;
+    return kept;
+}
+// Every item put on a skater or board in this level, shuffled or not, and the local player's
+// own. The game keeps an item's textures once they are loaded, so near its limit of streamed
+// textures the shuffle picks only from these (loaded_items). A new level (another context) starts
+// it again: the level's load may have let them go, and a smaller pool is the safe side to err on.
+// Engine thread.
+struct Loaded {
+    std::uintptr_t context{};
+    std::set<std::string> names;
+};
+Loaded &loaded() {
+    static auto *kept = new Loaded;
+    return *kept;
+}
+void note_loaded(const CosmeticRecipe &recipe) {
+    for (const auto &item : recipe.items)
+        if (!item.asset.empty()) loaded().names.insert(item.asset);
+}
+// The items loaded this level, sorted, with whatever the local player's skater or board
+// (`local_entity`) wears now.
+template <class Memory> std::vector<std::string> loaded_items(const Memory &memory, std::uintptr_t local_entity) {
+    try {
+        note_loaded(memory.capture(local_entity));
+    } catch (const std::exception &) {
+        // (Their outfit is updating: what was noted before is still loaded.)
+    }
+    const auto &names = loaded().names;
+    return {names.begin(), names.end()};
+}
 } // namespace
+void note_cosmetics_level(std::uintptr_t context) {
+    auto &kept = loaded();
+    if (kept.context == context) return;
+    kept.context = context;
+    kept.names.clear();
+}
 std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFrame &local,
                                             std::string &detail) {
     try {
@@ -54,8 +110,39 @@ std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFra
         return {};
     }
 }
+std::string describe_cosmetic_slots(std::uintptr_t base, const NativeFrame &local) {
+    if (!local.ready || !local.board_entity) return "Waiting for the local skater and skateboard.";
+    const CosmeticMemory memory{readable, base};
+    std::string out;
+    try {
+        const auto &catalog = shuffle_catalog(memory);
+        for (const auto [what, entity] : {std::pair{"Skater", local.entity}, std::pair{"Board", local.board_entity}}) {
+            const auto resource = memory.resource(memory.component(entity));
+            const auto categories = memory.slot_categories(resource);
+            const auto recipe = memory.capture(entity);
+            const auto slots = memory.ptr(resource, 0x28);
+            out += std::format("{} (recipe key {}): {} slots, {} worn items\n", what, recipe.key, categories.size(),
+                               recipe.items.size());
+            for (std::size_t i = 0; i < categories.size(); ++i) {
+                // The template's slot id (as fit_slots reads it), and what the skater wears in it.
+                const auto id = memory.get<std::uint32_t>(memory.ptr(slots, i * 24 + 8) & ~std::uintptr_t{4}, 0x4c);
+                const auto worn = std::find_if(recipe.items.begin(), recipe.items.end(),
+                                               [&](const CosmeticSlot &item) { return item.slot == id; });
+                const auto *pool = catalog.in_category(categories[i]);
+                out += std::format("  [{:2}] slot 0x{:08x}  category 0x{:08x}  {}  fits {}{}\n", i, id, categories[i],
+                                   worn == recipe.items.end() || worn->asset.empty() ? std::string("wearing nothing")
+                                                                                     : "wearing \"" + worn->asset + "\"",
+                                   pool ? pool->size() : 0, shuffles_slot(id) ? "  shuffled" : "");
+            }
+        }
+    } catch (const std::exception &e) {
+        out += std::string("Cosmetics: ") + e.what();
+    }
+    if (!out.empty() && out.back() == '\n') out.pop_back();
+    return out;
+}
 void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t local_entity,
-                           const CosmeticRecipe &recipe) {
+                           const CosmeticRecipe &recipe, const Shuffle &shuffle) {
     const CosmeticMemory memory{readable, base};
     const auto c = memory.component(entity), local = memory.component(local_entity);
     memory.check(entity != local_entity && c != local && memory.ptr(entity) == memory.ptr(local_entity) &&
@@ -99,6 +186,14 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
                          "removes some): {} of this game's slots left empty, {} of their items left out.",
                          recipe.key == board_recipe_key ? "board" : "skater", empty, left_out);
     }
+    // Shuffled outfits: the slots whose item this PC lacks, noted before they are swapped for
+    // stand-ins below (shuffle_slots says what each mode does with them).
+    std::vector<bool> lacking;
+    if (shuffle.active()) {
+        lacking.assign(usable.items.size(), false);
+        for (std::size_t i = 0; i < usable.items.size(); ++i)
+            lacking[i] = !usable.items[i].asset.empty() && !memory.item_installed(resource, i, usable.items[i]);
+    }
     const auto reserved = [](const std::string &asset) { return profile_runtime::reserved_cosmetic(asset); };
     for (const auto &[missing, replacement] :
          memory.substitute_missing(resource, usable, default_cosmetic_items, reserved)) {
@@ -110,6 +205,31 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
             logging::log(logging::Level::info, logging::Channel::runtime,
                          "Multiplayer: a player wears \"{}\", which is not installed here; showing {} instead.",
                          missing, replacement.empty() ? "nothing" : replacement);
+    }
+    // Shuffled outfits and boards: the slots the mode covers (every worn item, or just those this
+    // PC lacks) take a random installed item that fits, in place of what is there now. Near the game's limit of streamed
+    // textures, only an item already put on a skater this level: it brings no textures of its own. Whatever
+    // goes wrong, the outfit is shown with the stand-ins.
+    const auto shuffled = shuffle.active() ? shuffle_slots(shuffle.mode, usable, lacking) : std::vector<bool>{};
+    if (std::find(shuffled.begin(), shuffled.end(), true) != shuffled.end()) {
+        auto as_sent = usable;
+        try {
+            const auto textures = texture_handle_limit::use();
+            const auto &catalog = shuffle_catalog(memory);
+            if (!textures.known || shuffle_texture_room(textures.taken, textures.limit))
+                shuffle_recipe(usable, memory.slot_categories(resource), catalog, shuffle.seed, shuffled);
+            else
+                shuffle_recipe(usable, memory.slot_categories(resource), catalog.only(loaded_items(memory, local_entity)),
+                               shuffle.seed, shuffled);
+            memory.validate(resource, usable);
+        } catch (const std::exception &e) {
+            usable = std::move(as_sent);
+            static std::atomic<unsigned> reported{};
+            if (reported.fetch_add(1) < 3)
+                logging::log(logging::Level::warning, logging::Channel::runtime,
+                             "Multiplayer: a player's {} could not be shuffled, so it is shown with stand-ins: {}",
+                             recipe.key == board_recipe_key ? "board" : "outfit", e.what());
+        }
     }
     memory.validate(resource, usable);
     constexpr auto copy_prefix = addr::native_cosmetics::recipe_copy_prefix;
@@ -126,6 +246,7 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
                      memory.get<std::uint8_t>(c, 0x10d) == 1 &&
                      memory.ptr(c, 0x158) != reinterpret_cast<std::uintptr_t>(borrowed.value.items),
                  "Native cosmetic copy did not take ownership.");
+    note_loaded(usable);
     logging::log(
         logging::Level::debug, logging::Channel::runtime,
         "Multiplayer: peer cosmetics queued; entity={:#x}, component={:#x}, template={:#x}, slots={}.",

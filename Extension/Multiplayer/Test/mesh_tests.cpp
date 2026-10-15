@@ -11,6 +11,11 @@
 #include <map>
 #include <set>
 
+namespace dingosdk::texture_handle_limit {
+Use simulated_use;
+Use use() noexcept { return simulated_use; }
+}
+
 namespace dingosdk {
 bool read_local_camera_transform(std::uintptr_t, std::uintptr_t, std::array<float, 16>&) noexcept { return false; }
 ParksModel simulated_parks;
@@ -281,7 +286,7 @@ bool show_remote(std::uintptr_t, std::uintptr_t, const NativeFrame &, const Pose
     return true;
 }
 void remove_remote(std::uintptr_t) noexcept {}
-void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &) {}
+void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &, const Shuffle &) {}
 std::uint64_t remote_pose_updates() noexcept { return 0; }
 std::uint64_t remote_board_pose_updates() noexcept { return 0; }
 NativeAnimationStats remote_animation_stats() noexcept { return {}; }
@@ -321,6 +326,7 @@ std::shared_ptr<const SteamSocialSnapshot> steam_social_snapshot() {
     return snapshot;
 }
 std::optional<Appearance> capture_cosmetics(std::uintptr_t, const NativeFrame &, std::string &) { return {}; }
+std::string describe_cosmetic_slots(std::uintptr_t, const NativeFrame &) { return {}; }
 void prepare_audio_capture(std::uintptr_t, const NativeFrame &) noexcept {}
 std::vector<AudioSample> drain_audio_capture(std::uint64_t) { return {}; }
 void update_remote_audio(std::uintptr_t, const NativeFrame &, const Pose &, const AudioState &) noexcept {}
@@ -604,6 +610,65 @@ struct Simulation {
                 }
     }
 };
+// Near the texture limit shuffled outfits pick only loaded items (native_cosmetics.cpp): the
+// session tells the player once, keeps everyone as dressed, and still takes modes and rerolls.
+void shuffle_room_checks() {
+    auto &limit = texture_handle_limit::simulated_use;
+    limit = {true, 20480, 1000};
+    auto storage = std::make_unique<Session>();
+    auto &s = *storage;
+    s.used_slots = 1;
+    s.epoch = 1;
+    auto outfit = packet(s, PacketKind::cosmetics, now_us());
+    outfit.appearance = {{skater_recipe_key, 2, {}, {{1, "Outfit", {}}}}, {board_recipe_key, 1, {}, {{2, "Deck", {}}}}};
+    check(s.peers[0].appearance.push(outfit), "Shuffle fixture appearance rejected");
+    auto &revision = s.peers[0].cosmetic_revision;
+    const auto told = [&] {
+        return std::count_if(s.chat.begin(), s.chat.end(),
+                             [](const auto &line) { return line.text.find("only use items the game has already loaded") != std::string::npos; });
+    };
+
+    limit.taken = 18000; // past 80%, with the shuffle off
+    check_shuffle_room(s);
+    check(!s.shuffle_loaded_only && !told(), "The player was told about a shuffle that is off");
+
+    limit.taken = 1000;
+    (void)edit_shuffle_outfits(s, "all");
+    const auto before = revision;
+    check_shuffle_room(s);
+    check(!s.shuffle_loaded_only && !told(), "The player was told with room to spare");
+
+    limit.taken = 16384; // 80%
+    check_shuffle_room(s);
+    check(s.shuffle_loaded_only && told() == 1 && revision == before && s.shuffle_mode == ShuffleMode::everything,
+          "Near the texture limit the player was not told once, or everyone was re-dressed");
+    check_shuffle_room(s);
+    limit.taken = 15500; // under 80%, not well under (75%)
+    check_shuffle_room(s);
+    limit.taken = 16384;
+    check_shuffle_room(s);
+    check(told() == 1, "The notice repeated around the line");
+
+    const auto epoch = s.shuffle_epoch;
+    check(edit_shuffle_outfits(s, "reroll") == "Everyone's items were shuffled again." && s.shuffle_epoch != epoch &&
+              revision == before + 1,
+          "A reroll near the texture limit was refused");
+    (void)edit_shuffle_outfits(s, "missing");
+    check(s.shuffle_mode == ShuffleMode::not_installed, "A mode near the texture limit was refused");
+
+    limit.taken = 1000; // well under: told again next time
+    check_shuffle_room(s);
+    check(!s.shuffle_loaded_only, "Well under the limit the notice was not re-armed");
+    limit.taken = 16384;
+    check_shuffle_room(s);
+    check(told() == 2, "The player was not told again after use fell and rose");
+
+    s.shuffle_loaded_only = false;
+    limit.known = false, limit.taken = 20480;
+    check_shuffle_room(s);
+    check(!s.shuffle_loaded_only, "The player was told before the game's texture streaming was there");
+    limit = {};
+}
 // Linked throwdowns travel through the host like chat: each message reaches every
 // other player exactly once, never its sender, and never another world.
 void throwdown_routing_checks() {
@@ -2318,6 +2383,7 @@ int main(int argc, char **argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--travel-only") return 0;
         dingosdk::multiplayer::mesh_checks();
         dingosdk::multiplayer::throwdown_routing_checks();
+        dingosdk::multiplayer::shuffle_room_checks();
         dingosdk::multiplayer::party_checks();
         dingosdk::multiplayer::role_checks();
         dingosdk::multiplayer::global_ban_checks();

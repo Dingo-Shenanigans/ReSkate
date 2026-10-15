@@ -438,7 +438,7 @@ void remove_remote(std::uintptr_t base) noexcept {
     }
 }
 void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, const Appearance &appearance,
-                             std::string &detail) {
+                             std::string &detail, const Shuffle &shuffle) {
     auto &r = remote();
     try {
         require(valid_appearance(appearance), "Peer cosmetic recipe is invalid.");
@@ -446,6 +446,7 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
                     GetCurrentThreadId() == shared().engine_thread,
                 "Waiting for the remote cosmetic actors.");
         std::lock_guard lock(r.mutex);
+        note_cosmetics_level(local.context);
         // Each attempt checks the whole outfit against the catalog. One that was
         // rejected is retried at the next pass (a fresh actor may still be settling),
         // then every 5 s until the peer sends another; the detail keeps the rejection.
@@ -453,9 +454,12 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
         if (r.rejected_appearance && *r.rejected_appearance == appearance && now < r.next_appearance_retry)
             return;
         try {
-            if (!r.skater_appearance || *r.skater_appearance != appearance.skater) {
-                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater);
+            // An inactive shuffle is always the default one, so "off" compares equal whatever seed came with it.
+            const Shuffle skater_shuffle = shuffle.active() ? shuffle : Shuffle{};
+            if (!r.skater_appearance || *r.skater_appearance != appearance.skater || r.skater_shuffle != skater_shuffle) {
+                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater, skater_shuffle);
                 r.skater_appearance = appearance.skater;
+                r.skater_shuffle = skater_shuffle;
             }
             r.rejected_appearance.reset();
             if (!r.board_entity || !local.board_entity) {
@@ -463,9 +467,12 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
                 detail = "Cosmetics: skater recipe applied; waiting for the skateboard.";
                 return;
             }
-            if (!r.board_appearance || *r.board_appearance != appearance.board) {
-                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board);
+            // The board has a seed of its own, so its picks do not follow the clothes'.
+            const Shuffle board_shuffle = skater_shuffle.board();
+            if (!r.board_appearance || *r.board_appearance != appearance.board || r.board_shuffle != board_shuffle) {
+                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board, board_shuffle);
                 r.board_appearance = appearance.board;
+                r.board_shuffle = board_shuffle;
             }
         } catch (...) {
             const bool again = r.rejected_appearance && *r.rejected_appearance == appearance;

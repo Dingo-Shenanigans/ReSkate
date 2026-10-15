@@ -1,5 +1,6 @@
 #pragma once
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Extension/Multiplayer/Remote/outfit_shuffle.h"
 
 namespace dingosdk::multiplayer {
 struct NativeFrame {
@@ -20,7 +21,7 @@ bool show_remote(std::uintptr_t base, std::uintptr_t client, const NativeFrame &
                  std::string &detail);
 void remove_remote(std::uintptr_t base) noexcept;
 void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &, const Appearance &,
-                             std::string &detail);
+                             std::string &detail, const Shuffle &shuffle = {});
 std::uint64_t remote_pose_updates() noexcept;
 std::uint64_t remote_board_pose_updates() noexcept;
 NativeAnimationStats remote_animation_stats() noexcept;

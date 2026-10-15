@@ -146,6 +146,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_multiplayer_prediction_tests
         Extension/Multiplayer/Test/prediction_tests.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Remote/playback_buffers.cpp)
     add_test(NAME multiplayer_prediction COMMAND dingosdk_multiplayer_prediction_tests)
+    add_executable(dingosdk_outfit_shuffle_tests Extension/Multiplayer/Test/outfit_shuffle_tests.cpp)
+    add_test(NAME multiplayer_outfit_shuffle COMMAND dingosdk_outfit_shuffle_tests)
 endif()
 if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_velocity_boost_tests Engine/Game/Skater/Test/velocity_boost_tests.cpp)

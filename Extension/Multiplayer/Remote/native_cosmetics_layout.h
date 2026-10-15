@@ -138,6 +138,46 @@ template <class Read> struct CosmeticMemory {
         }
         throw std::runtime_error("Cosmetic asset is not installed.");
     }
+    // Every cosmetic in the local catalog, with the categories it fits. Walks the whole table, so
+    // callers keep the result (outfit_shuffle). An entry that cannot be read is left out.
+    std::vector<Item> catalog() const {
+        const auto manager = ptr(base, addr::engine::cosmetics_manager);
+        check(ptr(manager) == base + addr::engine::cosmetics_manager_vtable && get<std::uint8_t>(manager, 0xa8) == 1,
+              "Cosmetic catalog is not ready.");
+        const auto buckets = ptr(manager, 0x30);
+        const auto size = get<std::uint32_t>(manager, 0x38), total = get<std::uint32_t>(manager, 0x3c);
+        check(size && size <= 16384 && total && total <= 8192, "Cosmetic catalog exceeds bounds.");
+        std::vector<Item> out;
+        std::uint32_t visited{};
+        for (std::uint32_t bucket = 0; bucket < size && visited < total; ++bucket) {
+            auto node = ptr(buckets, bucket * 8ULL);
+            for (std::uint32_t chain = 0; node && chain < total && visited < total; ++chain, ++visited, node = ptr(node, 0x10)) {
+                const auto asset = ptr(node, 8) & ~std::uintptr_t{4};
+                if (!asset) continue;
+                try {
+                    Item item{text(ptr(asset, 0x38)), {}};
+                    // The same check lookup() makes: the name must be the item's own.
+                    if (item.name.empty() || get<std::uint32_t>(asset, 0x48) != cosmetic_asset_hash(item.name)) continue;
+                    for (auto category : array<std::uintptr_t>(ptr(asset, 0x20), 32))
+                        item.categories.push_back(get<std::uint32_t>(category & ~std::uintptr_t{4}, 0x38));
+                    out.push_back(std::move(item));
+                } catch (const std::exception &) {
+                }
+            }
+        }
+        return out;
+    }
+    // The category each slot of a resource's template takes, in the template's order: the one
+    // an item must list to fit it (see validate).
+    std::vector<std::uint32_t> slot_categories(std::uintptr_t res) const {
+        const auto slots = ptr(res, 0x28);
+        std::vector<std::uint32_t> out(count(slots, 24, max_cosmetic_slots));
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            const auto slot = ptr(slots, i * 24 + 8) & ~std::uintptr_t{4};
+            out[i] = get<std::uint32_t>(ptr(slot, 0x30) & ~std::uintptr_t{4}, 0x38);
+        }
+        return out;
+    }
     CosmeticRecipe capture(std::uintptr_t entity) const {
         const auto c = component(entity), res = resource(c);
         check(!get<std::uint8_t>(c, 0x10a) && !get<std::uint8_t>(c, 0x10d),

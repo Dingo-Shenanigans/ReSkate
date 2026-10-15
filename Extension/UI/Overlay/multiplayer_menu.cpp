@@ -305,6 +305,15 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         send_private(menu, "nametags-friends", friends_only ? "on" : "off", unused, false);
     }
+    constexpr std::array<const char *, 3> words{"off", "all", "missing"};
+    field(menu, "Shuffle outfits",
+          "Randomise other players outfits and boards, "
+          "Everything: every item. Not installed: only the items you don't have installed.");
+    int mode = mp.outfit_shuffle < words.size() ? static_cast<int>(mp.outfit_shuffle) : 0;
+    if (choice(menu, "shuffle-outfits", mode, {"Nothing", "Everything", "Not installed"})) {
+        std::array<char, 65> unused{};
+        send_private(menu, "shuffle-outfits", words[static_cast<std::size_t>(mode)], unused, false);
+    }
     bool chat = mp.chat_visible;
     if (toggle_row(menu, "Text chat", "Show session chat in the bottom-right corner; T opens it. Hidden, nothing shows and T does nothing.",
             chat)) {

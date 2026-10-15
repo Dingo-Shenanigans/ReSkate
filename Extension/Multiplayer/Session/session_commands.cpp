@@ -3,9 +3,12 @@
 #include "Extension/Multiplayer/Hud/native_indicators.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
+#include "Extension/Multiplayer/Remote/native_cosmetics.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
+#include "Extension/World/texture_handle_limit.h"
+#include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
@@ -342,6 +345,30 @@ std::string edit_nametags(Session &s, std::string_view argument) {
     profile_runtime::set_local_preference("Nametags", s.nametags);
     return s.nametags ? "Peer nametags shown." : "Peer nametags hidden.";
 }
+std::string edit_shuffle_outfits(Session &s, std::string_view argument) {
+    const bool reroll = argument == "reroll";
+    const auto wanted = argument == "cycle" || argument == "toggle" ? std::optional(next_shuffle_mode(s.shuffle_mode))
+                        : reroll                                    ? std::optional(s.shuffle_mode)
+                                                                    : parse_shuffle_mode(argument);
+    if (!wanted) return "Use off, all, missing, cycle, or reroll for shuffled outfits.";
+    if (reroll && s.shuffle_mode == ShuffleMode::off) return "Shuffled outfits are off. Pick all or missing first.";
+    const bool changed = *wanted != s.shuffle_mode;
+    s.shuffle_mode = *wanted;
+    s.display_preferences_loaded = true;
+    if (reroll) s.shuffle_epoch = now_us();
+    profile_runtime::set_local_values({{"ShuffleMode", static_cast<double>(static_cast<int>(s.shuffle_mode))}});
+    // Every player's skater puts its outfit on again, a few a frame (session.cpp).
+    if (changed || reroll)
+        for (auto &peer : active_peers(s))
+            if (peer.appearance.value()) ++peer.cosmetic_revision;
+    if (reroll) return "Everyone's items were shuffled again.";
+    switch (s.shuffle_mode) {
+    case ShuffleMode::everything: return "Every item other players wear is random, for you only.";
+    case ShuffleMode::not_installed: return "Items other players wear that you don't have installed are random, for you only.";
+    case ShuffleMode::off: break;
+    }
+    return "Other players' items show as they wear them; ones you don't have installed use the usual stand-ins.";
+}
 // The Special page: a player on one of the backend's lists going without their tag, or
 // without the animation on their items. Their next appearance packet tells everyone
 // (session_send.cpp).
@@ -614,11 +641,28 @@ bool own_mark_command(std::string_view action) {
     return action == "mark-tag" || action == "mark-items" || action == "mark-style";
 }
 } // namespace
+void session_detail::check_shuffle_room(Session &s) {
+    if (s.shuffle_mode == ShuffleMode::off) return;
+    const auto use = texture_handle_limit::use();
+    if (!use.known) return;
+    if (s.shuffle_loaded_only) {
+        // Told again only once well clear of the line, so the notice does not repeat around it.
+        if (std::uint64_t{use.taken} * 100 < std::uint64_t{use.limit} * (shuffle_texture_ceiling - 5)) s.shuffle_loaded_only = false;
+        return;
+    }
+    if (shuffle_texture_room(use.taken, use.limit)) return;
+    s.shuffle_loaded_only = true;
+    logging::log(logging::Level::info, logging::Channel::runtime,
+                 "Multiplayer: shuffled outfits pick only items already loaded, with {} of {} streamed textures in use.", use.taken,
+                 use.limit);
+    add_chat(s, 0, "ReSkate",
+             "The game is close to its limit of textures, so shuffled outfits now only use items the game has already loaded.");
+}
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action)) return false;
     if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
-         action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
+         action != "nametags" && action != "shuffle-outfits" && action != "chat-visible" && action != "chat-filter" &&
          action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" && action != "vote" && action != "voice-chat" &&
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
@@ -653,6 +697,13 @@ std::vector<NextMapWanted> next_maps() {
 }
 unsigned next_maps_serial() noexcept { return session_detail::next_maps_serial_value.load(std::memory_order_relaxed); }
 std::string command(std::string_view action, std::string_view argument, std::string_view password) {
+    // Debug: the local skater's cosmetic slots. Reads only the local player, so it needs no
+    // session (or Steam). Runs on the client thread, as the console's game-thread commands do.
+    if (action == "slots") {
+        const auto &s = session();
+        if (!s.base || !s.client) return "Load a map first.";
+        return describe_cosmetic_slots(s.base, capture_local(s.base, s.client, false));
+    }
     if (launcher::offline_mode() && !own_mark_command(action))
         return "Multiplayer is unavailable in offline mode. Start Steam and relaunch ReSkate.";
     const bool configured_host = action == "host-config";
@@ -828,7 +879,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             {"ban", ban_player},                           {"unban", unban_player},
             {"clear-objects", clear_guest_objects},
             {"world-layer-sync", edit_world_layer_sync},   {"distances", edit_distances},
-            {"nametags", edit_nametags},
+            {"nametags", edit_nametags}, {"shuffle-outfits", edit_shuffle_outfits},
             {"nametag-distance", edit_nametag_distance}, {"nametag-dots", edit_nametag_dots},
             {"nametags-friends", edit_nametags_friends}, {"player-distance", edit_player_distance}, {"direct-connections", edit_direct_connections}, {"pose-dump", start_pose_dump},
             {"mark-tag", edit_own_tag}, {"mark-items", edit_own_items}, {"mark-style", edit_mark_style},
