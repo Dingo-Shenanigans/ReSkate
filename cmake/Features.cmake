@@ -37,8 +37,9 @@ add_library(dingosdk_graphics_creator STATIC
     Extension/GraphicsCreator/graphic_store.cpp
     Extension/GraphicsCreator/graphic_assets.cpp
     Extension/GraphicsCreator/graphic_raster.cpp
-    Extension/GraphicsCreator/native_export.cpp)
-target_link_libraries(dingosdk_graphics_creator PUBLIC dingosdk_json PRIVATE windowscodecs ole32 gdi32)
+    Extension/GraphicsCreator/native_export.cpp
+    Extension/GraphicsCreator/project_slot.cpp)
+  target_link_libraries(dingosdk_graphics_creator PUBLIC dingosdk_json PRIVATE windowscodecs ole32 gdi32 bcrypt)
 
 include(cmake/ProfileData.cmake)
 

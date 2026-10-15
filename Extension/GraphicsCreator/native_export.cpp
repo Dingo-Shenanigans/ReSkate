@@ -1,4 +1,5 @@
 #include "native_export.h"
+#include "project_slot.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/path_text.h"
 #include <Windows.h>
@@ -142,7 +143,21 @@ NativeExportResult stage_native_export(const GraphicDocument& document,
     manifest["state"] = result.validated ? "frostbite-texture-validated" : "frostbite-texture-failed";
     manifest["packaging_state"] = "studio-authoring-required";
     result.message = result.validated ?
-        "Board artwork passed Studio's BC7/mip encoder. Native cosmetic authoring and FBMOD packaging are still required." : problem;
+        "Board artwork passed Studio's BC7/mip encoder. Configure a board slot to author the Studio project." : problem;
+    if (result.validated) {
+        result.authored_project = exported_png;
+        result.authored_project.replace_extension(L"board-slot.fbproject");
+        const auto slot = build_board_project_slot(exported_png, result.authored_project);
+        result.project_authored = slot.authored;
+        manifest["slot_attempted"] = slot.attempted;
+        manifest["authored_project"] = path_utf8(result.authored_project);
+        if (!slot.encoded_dds.empty()) manifest["encoded_dds"] = path_utf8(slot.encoded_dds);
+        if (slot.authored) {
+            manifest["state"] = "board-project-authored";
+            manifest["packaging_state"] = "studio-fbmod-export-required";
+        }
+        result.message = slot.message;
+    }
     manifest["message"] = result.message;
     publish_manifest(result.manifest, manifest);
     return result;

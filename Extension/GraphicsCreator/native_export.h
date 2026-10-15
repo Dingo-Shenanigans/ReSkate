@@ -9,8 +9,10 @@ namespace dingosdk::graphics_creator {
 struct NativeExportResult {
     bool attempted{};
     bool validated{};
+    bool project_authored{};
     std::filesystem::path manifest;
     std::filesystem::path encoded_preview;
+    std::filesystem::path authored_project;
     std::string message;
 };
 

@@ -2,17 +2,20 @@
 #include "Extension/GraphicsCreator/graphic_assets.h"
 #include "Extension/GraphicsCreator/graphic_raster.h"
 #include "Extension/GraphicsCreator/native_export.h"
+#include "Extension/GraphicsCreator/project_slot.h"
 #include "Extension/GraphicsCreator/graphic_store.h"
 #include "Engine/Core/Json/json.h"
 #include <Windows.h>
 #include <objbase.h>
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 void check(bool value, const char* message) {
@@ -23,6 +26,23 @@ template<class F> void rejects(F&& fn) {
     bool rejected{};
     try { fn(); } catch (...) { rejected = true; }
     check(rejected, "Invalid graphic document was accepted");
+}
+
+void write_bytes(const std::filesystem::path& path, const std::vector<std::byte>& bytes) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!stream) throw std::runtime_error("Test fixture could not be written");
+}
+
+std::vector<std::byte> read_bytes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary | std::ios::ate);
+    const auto size = stream.tellg();
+    if (size < 0) throw std::runtime_error("Test fixture could not be read");
+    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+    stream.seekg(0);
+    stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!stream && !bytes.empty()) throw std::runtime_error("Test fixture could not be read");
+    return bytes;
 }
 } // namespace
 
@@ -124,9 +144,64 @@ int main(int argc, char** argv) {
             std::ifstream integration_manifest_input(native.manifest, std::ios::binary);
             const auto integration_manifest = Json::parse(std::string(
                 std::istreambuf_iterator<char>(integration_manifest_input), std::istreambuf_iterator<char>()));
-            check(integration_manifest.at("state").string() == "frostbite-texture-validated" &&
-                  integration_manifest.at("packaging_state").string() == "studio-authoring-required",
-                  "Frostbite board validation manifest differs");
+            if (GetEnvironmentVariableW(L"RESKATE_CREATE_BOARD_SLOT", nullptr, 0)) {
+                check(native.project_authored && std::filesystem::is_regular_file(native.authored_project) &&
+                      integration_manifest.at("state").string() == "board-project-authored" &&
+                      integration_manifest.at("packaging_state").string() == "studio-fbmod-export-required",
+                      "Board slot authoring integration differs");
+            } else {
+                check(integration_manifest.at("state").string() == "frostbite-texture-validated" &&
+                      integration_manifest.at("packaging_state").string() == "studio-authoring-required",
+                      "Frostbite board validation manifest differs");
+            }
+        }
+        {
+            constexpr std::size_t payload_offset = 256;
+            constexpr std::size_t payload_size = 1'398'160;
+            const auto slot_directory = directory / "Slot";
+            std::filesystem::create_directories(slot_directory);
+            const auto slot_project = slot_directory / "slot.fbproject";
+            std::vector<std::byte> project(payload_offset + payload_size + 32, std::byte{0x35});
+            std::memcpy(project.data(), "RSPROJT1", 8);
+            std::fill_n(project.begin() + payload_offset, payload_size, std::byte{0x5a});
+            write_bytes(slot_project, project);
+            std::vector<std::byte> payload(project.begin() + payload_offset,
+                                           project.begin() + payload_offset + payload_size);
+            const auto payload_file = slot_directory / "payload.bin";
+            write_bytes(payload_file, payload);
+            const auto descriptor = slot_directory / "slot.json";
+            {
+                std::ofstream stream(descriptor, std::ios::binary | std::ios::trunc);
+                stream << Json{{"schema", "ReSkate.Create.BoardSlot.v1"},
+                               {"project", "slot.fbproject"},
+                               {"project_sha256", sha256_file_hex(slot_project)},
+                               {"payload_offset", payload_offset},
+                               {"payload_size", payload_size},
+                               {"payload_sha256", sha256_file_hex(payload_file)}}.dump(2);
+            }
+            std::vector<std::byte> dds(148 + payload_size, std::byte{0});
+            const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+                for (unsigned i = 0; i < 4; ++i) dds[offset + i] = static_cast<std::byte>((value >> (i * 8)) & 0xff);
+            };
+            put32(0, 0x20534444); put32(4, 124); put32(12, 2048); put32(16, 512);
+            put32(28, 12); put32(84, 0x30315844); put32(128, 99);
+            for (std::size_t i = 0; i < payload_size; ++i) dds[148 + i] = static_cast<std::byte>(i * 31);
+            const auto encoded_dds = slot_directory / "graphic.dds";
+            write_bytes(encoded_dds, dds);
+            const auto output_project = slot_directory / "authored.fbproject";
+            patch_board_project_slot(descriptor, encoded_dds, output_project);
+            const auto authored = read_bytes(output_project);
+            check(authored.size() == project.size() &&
+                  std::equal(dds.begin() + 148, dds.end(), authored.begin() + payload_offset),
+                  "Board slot payload was not replaced exactly");
+            std::ifstream descriptor_stream(descriptor, std::ios::binary);
+            const auto saved_descriptor = Json::parse(std::istreambuf_iterator<char>(descriptor_stream), {});
+            check(sha256_file_hex(slot_project) == saved_descriptor.at("project_sha256").string(),
+                  "Board slot template was modified");
+            rejects([&] { patch_board_project_slot(descriptor, encoded_dds, slot_project); });
+            dds.pop_back();
+            write_bytes(encoded_dds, dds);
+            rejects([&] { patch_board_project_slot(descriptor, encoded_dds, output_project); });
         }
         bad = document;
         bad.layers[0].shape.kind = ShapeKind::image;
@@ -150,7 +225,10 @@ int main(int argc, char** argv) {
             check(image_render.width == 128 && image_render.height == 128 && image_render.rgba.size() == 128 * 128 * 4,
                   "An imported image did not rasterize into the target canvas");
         }
-        std::filesystem::remove_all(directory);
+        if (GetEnvironmentVariableW(L"RESKATE_KEEP_GRAPHICS_FIXTURES", nullptr, 0))
+            std::cout << "fixtures=" << directory.string() << '\n';
+        else
+            std::filesystem::remove_all(directory);
 
         std::cout << "ReSkate.Create document, validation, atomic save and recovery tests passed.\n";
         CoUninitialize();
