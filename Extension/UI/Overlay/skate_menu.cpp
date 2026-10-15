@@ -2,6 +2,7 @@
 #include "skate_menu_internal.h"
 #include "Extension/Skater/drone_flight.h"
 #include "skate_menu.h"
+#include "Extension/Style/style_overlay.h"
 #include "modding_menu.h"
 #include "skate_style.h"
 #include "Extension/UI/skate_theme.h"
@@ -16,10 +17,28 @@ using namespace menu;
 namespace menu {
 using namespace theme;
 
-// Set once per frame in draw_skate_menu, then read through px() while the menu
-// and its pages draw.
 namespace { float ui_scale = default_menu_scale; }
 float px(float value) { return value * ui_scale; }
+MenuLook::MenuLook(SkateMenu& menu, float scale, ImVec2 window_padding) : font_scale_(ImGui::GetIO().FontGlobalScale) {
+    ui_scale = std::clamp(scale, min_menu_scale, max_menu_scale);
+    // Widget text follows the global font scale; the pixel layout follows px().
+    ImGui::GetIO().FontGlobalScale = ui_scale;
+    ImGui::PushFont(menu.body);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(window_padding.x), px(window_padding.y)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(10), px(7)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), px(8)));
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 0);
+    colours_ = skate_theme::push_widget_colours();
+}
+MenuLook::~MenuLook() {
+    ImGui::PopStyleColor(colours_);
+    ImGui::PopStyleVar(7);
+    ImGui::PopFont();
+    ImGui::GetIO().FontGlobalScale = font_scale_;
+}
 
 // Heavy uppercase header over a thin rule, like the titles on skate.'s HUB tiles.
 void section(SkateMenu& menu, const char* text) {
@@ -279,12 +298,13 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, training, drone, multiplayer, progress, mods, music, settings, special, developer, page_count };
+enum Page { map, world, build, skater, style_tab, training, drone, multiplayer, progress, mods, music, settings, special, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "TRAINER", "DRONE", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
+    "MAP", "WORLD", "BUILD", "SKATER", "STYLE", "TRAINER", "DRONE", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
-    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Tune it. Drill it. Measure it.", "Take it to the sky.",
-    "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.", "Your controls, your screen.", "Not everyone gets this page.",
+    "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Move like you.", "Tune it. Drill it. Measure it.",
+    "Take it to the sky.", "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.",
+    "Your controls, your screen.", "Not everyone gets this page.",
     "Under the hood."};
 }
 
@@ -330,25 +350,13 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         visible = false;
     menu.last_menu_frame = ImGui::GetFrameCount();
     auto& io = ImGui::GetIO();
-    ui_scale = std::clamp(model.menu_scale, min_menu_scale, max_menu_scale);
-    const auto restore_font_scale = io.FontGlobalScale;
-    // Widget text follows the global font scale; the pixel layout below follows px().
-    io.FontGlobalScale = ui_scale;
+    const MenuLook look(menu, model.menu_scale, ImVec2(0, 0));
     const ImVec2 maximum(std::max(px(400.0f), io.DisplaySize.x - 24), std::max(px(320.0f), io.DisplaySize.y - 24));
     ImGui::SetNextWindowSize(ImVec2(std::min(px(1000.0f), maximum.x), std::min(px(700.0f), maximum.y)), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * .5f, io.DisplaySize.y * .5f), ImGuiCond_FirstUseEver, ImVec2(.5f, .5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(px(680.0f), maximum.x), std::min(px(480.0f), maximum.y)), maximum);
-    ImGui::PushFont(menu.body);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(10), px(7)));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), px(8)));
-    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0);
-    const int colours = skate_theme::push_widget_colours();
     if (ImGui::Begin("ReSkate###skate-menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar)) {
         const auto size = ImGui::GetWindowSize();
         const auto current = ImGui::GetWindowPos();
@@ -377,7 +385,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         // Special is only there for a player the backend lists.
         const auto hidden = [&](int page) {
             return page == developer || (model.steam_offline && page == multiplayer) ||
-                   (page == special && model.multiplayer.identity_tag.empty());
+                   (page == special && model.multiplayer.identity_tag.empty()) || (page == style_tab && !model.style.enabled);
         };
         if (hidden(menu.page)) menu.page = map;
         ImGui::SetCursorPos(ImVec2(px(10), px(96)));
@@ -430,6 +438,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case world: world_page(menu, model, callbacks); break;
         case build: build_page(menu, model, callbacks); break;
         case skater: skater_page(menu, model, callbacks); break;
+        case style_tab: style_page(menu, model, callbacks); break;
         case training: trainer_page(menu, model, callbacks); break;
         case drone: drone_page(menu, model, callbacks); break;
         case multiplayer: multiplayer_page(menu, model, callbacks); break;
@@ -468,10 +477,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         ImGui::EndChild();
     }
     ImGui::End();
-    ImGui::PopStyleColor(colours);
-    ImGui::PopStyleVar(9);
-    ImGui::PopFont();
-    io.FontGlobalScale = restore_font_scale;
+    ImGui::PopStyleVar(2);
 }
 }
 

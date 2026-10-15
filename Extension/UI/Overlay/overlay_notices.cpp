@@ -16,7 +16,77 @@ std::mutex notices_mutex;
 std::deque<Notice> notices;
 constexpr std::size_t maximum_notices = 6;
 
+constexpr std::uint64_t cover_fade_ms = 300;
+std::atomic<std::uint64_t> cover_until{}, cover_started{};
+std::mutex cover_mutex;
+std::string cover_text;
+bool cover_pending() { return GetTickCount64() < cover_until.load(std::memory_order_relaxed) + cover_fade_ms; }
+float cover_alpha(std::uint64_t now) {
+    const auto until = cover_until.load(std::memory_order_relaxed), started = cover_started.load(std::memory_order_relaxed);
+    if (now >= until + cover_fade_ms) return 0;
+    const float in = std::clamp(static_cast<float>(now - std::min(now, started)) / cover_fade_ms, 0.0f, 1.0f);
+    const float out = now < until ? 1.0f : 1.0f - static_cast<float>(now - until) / cover_fade_ms;
+    return std::min(in, out);
+}
+std::atomic<std::uint64_t> banner_until{};
+std::string banner_text; // guarded by cover_mutex
+bool banner_pending() { return GetTickCount64() < banner_until.load(std::memory_order_relaxed); }
+}
+void dingosdk::overlay::cover(std::string text, unsigned milliseconds) noexcept {
+    try {
+        std::lock_guard lock(cover_mutex);
+        const auto now = GetTickCount64();
+        const bool showing = cover_pending();
+        if (!milliseconds) {
+            if (showing) cover_until.store(std::min(cover_until.load(std::memory_order_relaxed), now), std::memory_order_relaxed);
+            return;
+        }
+        cover_text = std::move(text);
+        // A cover that is fading out fades back in from its current alpha.
+        if (!showing) cover_started.store(now, std::memory_order_relaxed);
+        else if (now >= cover_until.load(std::memory_order_relaxed))
+            cover_started.store(now - static_cast<std::uint64_t>(cover_alpha(now) * cover_fade_ms), std::memory_order_relaxed);
+        cover_until.store(now + milliseconds, std::memory_order_relaxed);
+    } catch (...) {}
+}
+bool dingosdk::overlay::covered() noexcept { return cover_pending(); }
+void dingosdk::overlay::banner(std::string text, unsigned milliseconds) noexcept {
+    try {
+        std::lock_guard lock(cover_mutex);
+        banner_text = std::move(text);
+        banner_until.store(milliseconds ? GetTickCount64() + milliseconds : 0, std::memory_order_relaxed);
+    } catch (...) {}
+}
+namespace dingosdk::overlay::detail {
+namespace {
+// A dark band from the top of the screen to `bottom`, with `text` centred in it.
+void draw_band(const std::string& text, float bottom, float text_height, int background_alpha, int text_alpha) {
+    const auto width = ImGui::GetIO().DisplaySize.x;
+    auto* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled({0, 0}, {width, bottom}, IM_COL32(10, 10, 12, background_alpha));
+    const auto extent = ImGui::GetFont()->CalcTextSizeA(text_height, FLT_MAX, 0.0f, text.c_str());
+    draw->AddText(ImGui::GetFont(), text_height, {(width - extent.x) / 2, (bottom - extent.y) / 2}, IM_COL32(235, 235, 235, text_alpha),
+                  text.c_str());
+}
+std::string copy_text(const std::string& text) {
+    std::lock_guard lock(cover_mutex);
+    return text;
+}
+}
+void draw_banner() {
+    if (!banner_pending() || cover_pending()) return;
+    const float height = std::max(20.0f, ImGui::GetIO().DisplaySize.y * 0.03f);
+    draw_band(copy_text(banner_text), height * 2.2f, height, 200, 255);
+}
+void draw_cover() {
+    const float alpha = cover_alpha(GetTickCount64());
+    if (alpha <= 0) return;
+    const auto screen = ImGui::GetIO().DisplaySize.y;
+    const auto shade = static_cast<int>(alpha * 255);
+    draw_band(copy_text(cover_text), screen, std::max(22.0f, screen * 0.035f), shade, shade);
+}
 bool notices_pending() {
+    if (cover_pending() || banner_pending()) return true;
     std::lock_guard lock(notices_mutex);
     return !notices.empty();
 }

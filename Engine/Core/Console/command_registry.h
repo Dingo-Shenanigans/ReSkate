@@ -58,7 +58,7 @@ struct State {
     bool overridden = false;
 };
 std::string lower(std::string_view text);
-bool equal(std::string_view a, std::string_view b);
+bool equal(std::string_view a, std::string_view b) noexcept;
 const char *group_name(Group group) noexcept;
 std::string value_text(const Value &value);
 std::optional<Value> parse_value(Type type, std::string_view text);

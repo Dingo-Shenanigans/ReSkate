@@ -1,6 +1,8 @@
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include <cstdio>
+#include <optional>
 #include <stdexcept>
+#include <utility>
 
 using namespace dingosdk;
 using namespace dingosdk::native_tools;
@@ -124,6 +126,121 @@ int main() {
         model.hall_of_meat = {true, true};
         activate(state, model, cb, "hall-of-meat", "");
         check(meat_row().title == "Hall of Meat: On" && capture.command == "hallofmeat 0", "and off again");
+        const auto player_row = [&](std::string_view id) -> std::optional<Row> {
+            const auto page = render(state, model, cb, player_section);
+            const auto found = find(page.main, id);
+            return found == page.main.end() ? std::nullopt : std::optional<Row>(*found);
+        };
+        model.style.enabled = false;
+        check(player_row("style") && player_row("style")->title == "Style: Off", "Style has a switch, and it starts off");
+        activate(state, model, cb, "style", "");
+        check(player_row("style")->command == "style" && capture.command == "style 1", "Style turns on");
+        model.style.enabled = true;
+        model.style.available = false;
+        check(player_row("style")->command.empty(), "Style is greyed out while it is unavailable");
+        model.style.available = true;
+        activate(state, model, cb, "style", "");
+        check(player_row("style")->title == "Style: On" && capture.command == "style 0", "and off again");
+        {
+            const auto queue = std::exchange(cb.queue_console_command, nullptr);
+            check(player_row("style")->command.empty(), "Style is greyed out without the console");
+            cb.queue_console_command = queue;
+        }
+        model.style.enabled = false;
+        // Its editor row shows only while style is on.
+        check(!player_row("style-editor"), "Style starts without its editor");
+        model.style.enabled = true;
+        check(player_row("style-editor").has_value(), "The style editor shows while style is on");
+        model.multiplayer.active = model.debug.available = true;
+        check(player_row("style-editor") && player_row("style-editor")->command == "style-editor",
+              "The style editor opens on a multiplayer server");
+        model.style.server_too_full = true;
+        check(player_row("style-editor") && player_row("style-editor")->title == "Style editor" &&
+                  player_row("style-editor")->command.empty(),
+              "but is greyed out on a server too full for its stand-in");
+        model.style.server_too_full = model.multiplayer.active = model.debug.available = false;
+        model.style.available = false;
+        check(player_row("style-editor") && player_row("style-editor")->command.empty(), "and while style is unavailable");
+        model.style.available = true;
+        {
+            model.debug.available = false;
+            capture.command.clear();
+            activate(state, model, cb, "style-editor", "");
+            check(capture.command.empty(), "The style editor row does not open the editor without the debug camera");
+            model.debug.available = true;
+            activate(state, model, cb, "style-editor", "");
+            check(capture.command == "style editor open", "The style editor row opens the editor");
+            model.debug.available = false;
+        }
+        {
+            // The STYLE tab, the HUB and this view open the editor on one rule.
+            const auto openable = [&](auto change) {
+                model.style.enabled = model.style.available = model.debug.available = true;
+                model.style.server_too_full = false;
+                change();
+                return overlay::style_editor_openable(model);
+            };
+            check(openable([] {}) && openable([&] { model.multiplayer.active = true; }),
+                  "The style editor opens with style on and available, with the debug tools, also on a multiplayer server");
+            check(!openable([&] { model.debug.available = false; }), "but not without the debug tools");
+            check(!openable([&] { model.style.server_too_full = true; }) && !openable([&] { model.style.available = false; }) &&
+                      !openable([&] { model.style.enabled = false; }),
+                  "nor on a server too full for its stand-in, while style is unavailable, or while it is off");
+            check(!openable([&] { model.style.recording_tricks = true; }), "nor while the tricks are being recorded");
+            model.style.recording_tricks = false;
+            const auto reason = [&](auto change) {
+                model.style.enabled = model.style.available = model.debug.available = true;
+                model.style.server_too_full = false;
+                model.style.unavailable_reason.clear();
+                change();
+                return overlay::style_editor_blocked_reason(model);
+            };
+            check(reason([] {}).empty(), "An editor that opens has no reason");
+            check(reason([&] { model.style.enabled = false; }) == "Turn on Style to use the editor.", "Style off says so");
+            check(reason([&] { model.style.available = false; model.style.unavailable_reason = "no bail is not ready"; }) ==
+                      "No bail is not ready.",
+                  "Style unavailable gives the layer's reason");
+            check(reason([&] { model.style.available = false; }) == "Style is not available for this game build.",
+                  "and a plain reason without one");
+            check(reason([&] { model.style.server_too_full = true; }) ==
+                      "The style editor is not available on a server this full.",
+                  "A full server says so");
+            check(reason([&] { model.style.recording_tricks = true; }) == "Your tricks are being recorded.",
+                  "A running recording says so");
+            model.style.recording_tricks = false;
+            check(reason([&] { model.debug.available = false; }) == "The editor opens once your skater is in the game.",
+                  "No debug tools: the skater is not in the game yet");
+            model.style.enabled = model.style.available = true;
+            model.multiplayer.active = model.debug.available = false;
+        }
+        {
+            model.style.enabled = false;
+            check(!player_row("style-preset"), "Style starts without its preset row");
+            model.style.enabled = true;
+            model.style.preset = "default";
+            model.style.presets = {"default"};
+            check(player_row("style-preset") && player_row("style-preset")->title == "Style preset: default" &&
+                      player_row("style-preset")->command.empty(),
+                  "The preset row names the preset in use, and is greyed out with no other preset");
+            model.style.presets = {"alpha", "default", "street"};
+            capture.command.clear();
+            activate(state, model, cb, "style-preset", "");
+            check(player_row("style-preset") && player_row("style-preset")->command == "style-preset" &&
+                      capture.command == "style preset load street",
+                  "The preset row loads the next preset");
+            model.style.preset = "street";
+            activate(state, model, cb, "style-preset", "");
+            check(capture.command == "style preset load alpha", "and after the last, the first");
+            model.style.available = false;
+            check(player_row("style-preset") && player_row("style-preset")->command.empty(),
+                  "The preset row is greyed out while style is unavailable");
+            model.style.available = true;
+            const auto queue = std::exchange(cb.queue_console_command, nullptr);
+            check(player_row("style-preset") && player_row("style-preset")->command.empty(), "and without the console");
+            cb.queue_console_command = queue;
+            model.style.preset.clear(), model.style.presets.clear();
+        }
+        model.style.enabled = false;
         // Road Rash's switches sit there too; its blood and its healing wait for it to be on.
         const auto rash_row = [&](std::string_view id) {
             const auto page = render(state, model, cb, player_section);

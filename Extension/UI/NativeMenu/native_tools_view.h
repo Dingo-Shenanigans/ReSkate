@@ -173,6 +173,14 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         s.parks[s.lot] = family == park_families.size() ? "empty" : park_id(family, 1);
     } else if (command == "load-park") {
         console("park " + std::string(park_lots[s.lot].key) + " " + s.parks[s.lot], can_park(m, cb) && valid_park(s.lot, s.parks[s.lot]));
+    } else if (command == "style") {
+        console(m.style.enabled ? "style 0" : "style 1", m.style.available);
+    } else if (command == "style-preset") {
+        auto next = m.style.preset;
+        cycle(next, m.style.presets);
+        console("style preset load " + next, m.style.available && next != m.style.preset);
+    } else if (command == "style-editor") {
+        console("style editor open", overlay::style_editor_openable(m));
     } else if (command == "load-random-parks") {
         // Use the shared command path: hosts load locally, server admins request
         // one server roll, and guests cannot replace the host's layouts.
@@ -319,6 +327,12 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
             : m.parks.controlled_by_host ? "You are an admin: layouts you load change for the whole server." : "");
     } else if (section == player_section) {
         text(p.main, "player-title", "SKATE YOUR WAY");
+        toggle(p.main, "style", "Style", m.style.enabled, m.style.available && cb.queue_console_command);
+        if (m.style.enabled)
+            button(p.main, "style-preset", "Style preset: " + m.style.preset, "style-preset",
+                m.style.available && m.style.presets.size() > 1 && cb.queue_console_command);
+        if (m.style.enabled)
+            button(p.main, "style-editor", "Style editor", "style-editor", overlay::style_editor_openable(m) && cb.queue_console_command);
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);

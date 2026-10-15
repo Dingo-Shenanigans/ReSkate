@@ -11,4 +11,6 @@ struct Skeleton {
 };
 // `asset` is the SkeletonAsset (an EBX document's root object). Throws when it is not one.
 [[nodiscard]] Skeleton read_skeleton(const ebx::Object& asset);
+// `asset` is an AntSkeletonAsset: Joints, each a Name (an offset into NameTable) and a Parent. Throws when it is not one.
+[[nodiscard]] Skeleton read_ant_skeleton(const ebx::Object& asset);
 }

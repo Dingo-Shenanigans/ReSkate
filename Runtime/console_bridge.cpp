@@ -106,8 +106,8 @@ void execute_console_command(const std::string& command) {
 }
 
 namespace dingosdk::console {
-void request_debug(overlay::DebugAction action, bool enabled, float value) {
-    dingosdk::runtime::detail::queue_console_debug(action, enabled, value);
+bool request_debug(overlay::DebugAction action, bool enabled, float value) {
+    return dingosdk::runtime::detail::queue_console_debug(action, enabled, value);
 }
 void request_feature(overlay::OfflineFeatureGroup group, bool enabled) {
     dingosdk::runtime::detail::queue_console_feature(group, enabled);

@@ -26,6 +26,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/skate_menu.cpp
     Extension/UI/Overlay/skate_menu_world.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
+    Extension/Style/style_overlay.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp
@@ -34,6 +35,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/park_previews.cpp
     Extension/UI/Overlay/gpu_diagnostics.cpp
     Extension/UI/Overlay/input_capture.cpp
+    Extension/UI/Overlay/scripted_pad.cpp
     Extension/UI/Overlay/cursor.cpp
     Extension/UI/Overlay/progression_menu.cpp
     Extension/UI/Overlay/atmosphere_menu.cpp
