@@ -1,4 +1,5 @@
 #pragma once
+#include "map_fetch_policy.h"
 #include "Extension/Multiplayer/Remote/cosmetics.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
 #include "Extension/Multiplayer/Session/object_state.h"
@@ -26,7 +27,7 @@ namespace dingosdk::multiplayer {
 constexpr std::size_t max_skater_bones = 512, max_board_bones = 64;
 constexpr std::size_t max_packet = 24576;
 constexpr std::size_t packet_header_size = 64;
-constexpr std::uint16_t protocol_version = 51;
+constexpr std::uint16_t protocol_version = 52;
 // How long a receiver keeps typing dots after the last "still typing" notice. The sender
 // clears them after three seconds without input; this only covers a lost "stopped" packet.
 constexpr std::uint64_t typing_hold_us = 4000000;
@@ -149,8 +150,27 @@ enum class PacketKind : std::uint16_t {
     next_maps = 34,
     // The sender's chat box changed recently (typing true) or they stopped (false).
     // Relayed like chat. Not a chat line: receivers draw grey dots above that skater.
-    typing = 35
+    typing = 35,
+    // Where a player's FPV drone is (drone_beacon.h), for the marker others see. Unreliable,
+    // relayed like effects. Only sent when the player turns `dronetune beacon` on.
+    drone = 36
 };
+// A drone packet: a flag byte (1 = flying), the drone's position as three floats and which way
+// it faces as a unit quaternion (four floats: x, y, z, w).
+inline constexpr std::size_t drone_wire_size = 1 + 12 + 16;
+inline bool valid_drone_rotation(const std::array<float, 4> &q) noexcept {
+    float length = 0.f;
+    for (const float v : q) {
+        if (!(v >= -1.01f && v <= 1.01f)) return false; // also false for NaN
+        length += v * v;
+    }
+    return length > 0.81f && length < 1.21f;
+}
+inline bool valid_drone_position(const std::array<float, 3> &p) noexcept {
+    for (const float v : p)
+        if (!(v > -1.0e6f && v < 1.0e6f)) return false; // also false for NaN
+    return true;
+}
 // Packet::party_action. Requests go from a player to whoever hosts, a dedicated server or a
 // lobby's host (party_player = the other player involved, 0 for leave/open/close); invited
 // and withdrawn go from the host to the invitee (party_player = the inviter). The host
@@ -207,9 +227,9 @@ bool valid_map_asset(std::string_view asset) noexcept;
 bool valid_map_pool(std::span<const std::uint16_t> pool, std::size_t maps) noexcept; // distinct indices below `maps`
 bool valid_map_label(std::string_view label) noexcept; // empty, or a name like a member's
 // How long a host goes on waiting for a player who says they are fetching the map
-// (Packet::map_fetching), from the first time they say so: a large map on a slow line. Past
-// it they are held to the time a load takes again.
-inline constexpr std::uint64_t map_fetch_limit_us = 45ull * 60 * 1000000;
+// (Packet::map_fetching), from the first time they say so, including installation and joining.
+// Repeated requests never extend this limit. Each host uses its own monotonic clock.
+inline constexpr std::uint64_t map_fetch_limit_us = map_fetch_policy::session_us;
 // The Thunderstore package a map comes from, so a player without it can be offered it:
 // "Owner-Name", or "Owner-Name-1.2.3" when the host knows its version. Empty for the game's own
 // maps and for a map mod that is not from Thunderstore.
@@ -331,6 +351,9 @@ struct Packet {
     // each other's costumes and skateboards). Off: a dedicated server relays none and games
     // neither send theirs nor show other players'.
     bool sync_effects{true};
+    // Roster: players see each other's FPV drones (Skater/drone_beacon.h). Off: a dedicated server
+    // relays none, and games neither send theirs nor show other players'.
+    bool sync_drones{true};
     // Bumped each time the host deletes all guest objects. Guests delete their
     // own session objects when it changes after their first roster.
     std::uint32_t object_clears{};
@@ -376,6 +399,9 @@ struct Packet {
     std::vector<std::string> words;           // words: a dedicated server's own filtered chat words
     std::vector<NextMap> next_maps;           // next_maps: at most max_next_maps
     std::uint32_t role_permissions{};
+    std::array<float, 3> drone_position{};    // drone: where the drone is (finite, within 1e6)
+    std::array<float, 4> drone_rotation{0.f, 0.f, 0.f, 1.f}; // drone: which way it faces (unit quaternion)
+    bool drone_active{};                      // drone: flying now (false = it stopped)
     PartyAction party_action = PartyAction::leave; // party: what is asked or told
     std::uint64_t party_player{};                   // party: the other player (see PartyAction)
     // scoring: the sender's scoring fingerprint, 0 for the game's own; `text` names the mods

@@ -119,6 +119,28 @@ int main() {
     make_zip(sources / L"v2.zip", {{"Cool Park/layout.toc", "toc v2"}});
     check(install(mods, sources / L"v2.zip", true) == "Cool Park" && read(mods / L"Cool Park" / L"layout.toc") == "toc v2",
           "Replacing installs the new copy");
+    {
+        std::atomic<bool> cancel{};
+        unsigned callbacks{};
+        make_zip(sources / L"cancelled.zip", {{"Cool Park/layout.toc", "must not replace"}});
+        const auto issue = error_of([&] {
+            launcher_mods::install(mods, sources / L"cancelled.zip", true,
+                [&](float) { if (++callbacks == 2) cancel.store(true); }, cancel);
+        });
+        check(issue == "Install cancelled." && callbacks == 2,
+              "Cancellation at the final safe installation boundary was ignored");
+        check(read(mods / L"Cool Park" / L"layout.toc") == "toc v2" &&
+                  !fs::exists(mods / L".reskate-install"),
+              "Cancelled replacement damaged the existing mod or left staging files");
+        write(sources / L"cancelled folder" / L"Cool Park" / L"layout.toc", "must not replace");
+        cancel.store(false);
+        callbacks = 0;
+        check(error_of([&] {
+            launcher_mods::install(mods, sources / L"cancelled folder", true,
+                [&](float) { if (++callbacks == 2) cancel.store(true); }, cancel);
+        }) == "Install cancelled." && read(mods / L"Cool Park" / L"layout.toc") == "toc v2",
+              "Cancelled folder replacement did not preserve the installed mod");
+    }
 
     // Hostile or unrelated archives.
     make_zip(sources / L"evil.zip", {{"../evil.txt", "x"}, {"layout.toc", "toc"}});

@@ -90,6 +90,11 @@ inline constexpr std::ptrdiff_t resource_state_vector_offset = 0x2da920;
 inline constexpr std::ptrdiff_t relation_mask_vector_offset = 0x114ab60;
 
 inline constexpr std::uintptr_t constructor_rva = 0x03e7f300;
+// The constructor is the base of two renderers. Only the one constructed here
+// (vtable 0x64f2c10) has the resource-state and relation-mask vectors: every
+// read of owner+0x2da920 and owner+0x114ab60 is in its code, and the other
+// (constructed at 0x030a0a46, vtable 0x6414168) keeps fields of its own there.
+inline constexpr std::uintptr_t state_owner_call_rva = 0x03f33a46;
 inline constexpr std::uintptr_t index_table_constructor_rva = 0x03e7e400;
 inline constexpr std::uintptr_t resource_flags_priority_rva = 0x03f56073;
 inline constexpr std::uintptr_t resource_flags_visibility_rva = 0x03f5789a;

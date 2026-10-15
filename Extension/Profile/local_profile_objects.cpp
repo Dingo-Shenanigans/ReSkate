@@ -82,6 +82,25 @@ std::optional<float> local_ground_height(float x, float z, float top, float bott
     if (!hit) return {};
     return (*hit)[1];
 }
+std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>& from, const std::array<float, 3>& to) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.context) return {};
+    for (const auto v : {from[0], from[1], from[2], to[0], to[1], to[2]})
+        if (!std::isfinite(v) || std::abs(v) > 1e5f) return {};
+    static std::uintptr_t api_base{};
+    static editor::NativeSurfaceApi api;
+    if (api_base != local_runtime().base) { api = editor::surface_api(local_runtime().base); api_base = local_runtime().base; }
+    if (!api.ready) return {};
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    if (!context[0]) return {};
+    const auto world = api.world(context[0]);
+    if (!world) return {};
+    const auto hit = editor::cast_surface(api, world, {from[0], from[1], from[2]}, {to[0], to[1], to[2]});
+    if (!hit) return {};
+    return std::array<float, 3>{(*hit)[0], (*hit)[1], (*hit)[2]};
+}
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();

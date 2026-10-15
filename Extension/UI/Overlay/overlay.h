@@ -234,6 +234,12 @@ struct RoadRashModel {
 struct BoardBreakModel {
     bool available = false, enabled = false, has_deck = false;
     std::string deck = "None";
+    // Its settings (Extension/BoardBreak/board_break_feel.h) and how worn the board is (0 to 1, and
+    // its word).
+    bool always = false, rails = true, wear = true, crack_sounds = true, body_sounds = true;
+    int sensitivity = 100, joined = 50, wear_rate = 100;
+    float worn = 0;
+    std::string condition = "new";
 };
 
 // Grind exit control's switches (Extension/Skater/grind_exit_control.h): started, switched on,
@@ -438,6 +444,7 @@ struct Nametag {
     std::string tag;                  // role badge before the name ("Dev", "ReSkate Admin", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend")
     float distance{};                 // metres from the local skater
     bool talking{};
+    bool flying_drone{};              // flying the FPV drone: a FLYING DRONE label above the name
     // Recent chat lines to show as bubbles above the head, oldest first ("" = none).
     std::vector<NametagBubble> bubbles;
     bool self{};                      // the local player: bubbles only, never a name or dot
@@ -539,6 +546,23 @@ extern "C" __declspec(dllexport) bool DingoSDKOverlayStartV2(
     const dingosdk::overlay::CallbacksV2* callbacks);
 extern "C" __declspec(dllexport) bool DingoSDKOverlayStartV3(
     const dingosdk::overlay::CallbacksV3* callbacks);
+
+// The first Xbox (XInput) or PlayStation (DualShock 4 / DualSense) controller, read directly.
+// Sticks are -1..1 (up and right positive), triggers 0..1; `buttons` is XInput's wButtons bit mask.
+// Used by the FPV drone's controller selection (Skater/drone_radio.h); safe from any thread.
+struct Gamepad {
+    bool valid = false;
+    bool playstation = false;
+    float left_x = 0, left_y = 0, right_x = 0, right_y = 0;
+    float left_trigger = 0, right_trigger = 0;
+    unsigned buttons = 0;
+};
+Gamepad read_gamepad();
+// Reads of a controller between these two calls see the real device even while ReSkate keeps
+// the game from reading it (freecam or drone controller capture). Same thread, paired.
+// The FPV drone reads its controller this way (Skater/drone_radio.h).
+void begin_input_access() noexcept;
+void end_input_access() noexcept;
 
 // Nonblocking. A later Present releases GPU resources after its fence completes.
 // The DLL stays pinned until process exit so no thread can return into unloaded

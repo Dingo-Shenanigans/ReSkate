@@ -120,6 +120,10 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_link_libraries(dingosdk_store_copies_tests PRIVATE dingosdk_mods dingosdk_content_cache)
     target_include_directories(dingosdk_store_copies_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME store_copies COMMAND dingosdk_store_copies_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    # A tool, not a test: checks a mod's meshes as the GPU reads them (Engine/Vfs/Test/mod_mesh_check.cpp).
+    add_executable(dingosdk_mod_mesh_check Engine/Vfs/Test/mod_mesh_check.cpp)
+    target_link_libraries(dingosdk_mod_mesh_check PRIVATE dingosdk_mods dingosdk_frostbite dingosdk_game_archives)
+    target_include_directories(dingosdk_mod_mesh_check PRIVATE "${PROJECT_SOURCE_DIR}")
 endif()
 
 if(WIN32)

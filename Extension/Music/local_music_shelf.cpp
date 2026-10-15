@@ -318,6 +318,7 @@ std::uint64_t music_model_construct_hook(std::uintptr_t manager, std::uint8_t mo
 }
 
 void music_shelf_before_level_transition(unsigned next) noexcept {
+    spotify_station::before_level_transition();
     try {
         music_shelf_lifetime.before_transition(next, [&] {
             music_release_shelf(local_runtime().base);

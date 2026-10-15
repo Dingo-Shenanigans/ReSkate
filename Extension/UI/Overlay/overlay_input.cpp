@@ -449,6 +449,25 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
 }
 }
 
+namespace dingosdk::overlay {
+void begin_input_access() noexcept { ++detail::overlay_input_access; }
+void end_input_access() noexcept { --detail::overlay_input_access; }
+Gamepad read_gamepad() {
+    const auto sample = read_controller_sample();
+    Gamepad out;
+    if (!sample.device) return out;
+    const auto axis = [](std::int16_t v) { return std::clamp(static_cast<float>(v) / 32767.0f, -1.0f, 1.0f); };
+    out.valid = true;
+    out.playstation = sample.device >= 0x100u;
+    out.left_x = axis(sample.pad.sThumbLX); out.left_y = axis(sample.pad.sThumbLY);
+    out.right_x = axis(sample.pad.sThumbRX); out.right_y = axis(sample.pad.sThumbRY);
+    out.left_trigger = static_cast<float>(sample.pad.bLeftTrigger) / 255.0f;
+    out.right_trigger = static_cast<float>(sample.pad.bRightTrigger) / 255.0f;
+    out.buttons = sample.pad.wButtons;
+    return out;
+}
+} // namespace dingosdk::overlay
+
 extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active) {
     const bool previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
     if (previous != active)

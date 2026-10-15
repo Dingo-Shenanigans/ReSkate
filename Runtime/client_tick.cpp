@@ -8,8 +8,10 @@
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "Extension/Music/music_inject.h"
 #include "Extension/World/texture_handle_limit.h"
+#include "Extension/Assets/native_render_resource_pool.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
+#include "Extension/Console/memory_ledger.h"
 #include "Extension/Settings/job_spin.h"
 #include "Extension/Settings/replay_drafts.h"
 #include "Engine/Game/World/client_state.h"
@@ -39,10 +41,14 @@
 #include "Extension/Style/style.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
+#include "Extension/Skater/drone_flight.h"
+#include "Extension/Skater/drone_outfit.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
+#include <Windows.h>
+#include <TlHelp32.h>
 #include <dxgi.h>
 #include <Psapi.h>
 #include <algorithm>
@@ -200,8 +206,18 @@ Card largest_card() {
     factory->Release();
     return card;
 }
+// RESKATE_MESH_POOL_MB: the pool's size for this session in MB, whatever the card (520 to 3584);
+// for finding what size a map that fails needs.
+std::uint32_t override_kb() {
+    wchar_t value[16]{};
+    const auto length = GetEnvironmentVariableW(L"RESKATE_MESH_POOL_MB", value, 16);
+    if (!length || length >= 16) return 0;
+    const auto megabytes = std::wcstoul(value, nullptr, 10);
+    return megabytes ? static_cast<std::uint32_t>(std::clamp<std::uint64_t>(std::uint64_t{megabytes} * 1024, stock_kb, most_kb)) : 0;
+}
 // KiB for the pool on this card, or 0 to keep the game's own value.
 std::uint32_t size_kb(std::uint64_t memory) {
+    if (const auto chosen = override_kb()) return chosen;
     // Cards report a little under or over their nominal size.
     constexpr std::uint64_t six_gib = 6ull << 30, twelve_gib = 12ull << 30, slack = 256ull << 20;
     if (memory <= six_gib + slack) return 0;
@@ -460,7 +476,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     // Capture belongs to the freecam state itself. Keep it active across brief
     // request/loading phases instead of opening a path back to player input.
-    DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
+    DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
         vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote || message_up ||
@@ -546,7 +562,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
         if (dingosdk::set_local_freecam_controller(!freecam_controller))
             freecam_controller = !freecam_controller;
-        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
+        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"freecam_controller\"}");
     }
     
@@ -639,7 +655,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
             phase_issue == nullptr,
             debug_request ? &*debug_request : nullptr, &flight_input);
         // Input ownership must follow the live camera even with every overlay closed.
-        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && freecam_controller);
+        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
         // A debug action, or a mode the tick ended by itself (host policy, lost
         // camera), can have replaced the native camera: validate it again.
         if (debug_request || debug.free_camera != r.debug_model.free_camera ||
@@ -827,6 +843,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     dingosdk::hall_of_meat::on_client_tick();
     dingosdk::road_rash::on_client_tick(client);
+    dingosdk::drone::outfit::on_client_tick();
     dingosdk::board_break::on_client_tick(client);
     dingosdk::grind_exit_control::on_client_tick(client);
     if (!has_request && now < r.next_model && state == r.previous_state) return;
@@ -971,6 +988,20 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto breakable_deck = dingosdk::board_break::deck();
     model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),
                          dingosdk::board_break::deck_label(breakable_deck)};
+    {
+        const auto feel = dingosdk::board_break::settings();
+        auto& bb = model.board_break;
+        bb.always = feel.always;
+        bb.rails = feel.rails;
+        bb.wear = feel.wear;
+        bb.crack_sounds = feel.crack_sounds;
+        bb.body_sounds = feel.body_sounds;
+        bb.sensitivity = feel.sensitivity;
+        bb.joined = feel.joined;
+        bb.wear_rate = feel.wear_rate;
+        bb.worn = dingosdk::board_break::wear();
+        bb.condition = std::string(dingosdk::board_break::condition_name(bb.worn));
+    }
     model.grind_exit = {dingosdk::grind_exit_control::available(), dingosdk::grind_exit_control::enabled(),
                         dingosdk::grind_exit_control::toe_heel(), dingosdk::grind_exit_control::stance(),
                         dingosdk::grind_exit_control::strength()};
@@ -1242,6 +1273,7 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             dingosdk::map_download::tick();
             dingosdk::map_icons::tick();
     dingosdk::texture_handle_limit::tick();
+    dingosdk::report_native_render_resources();
     // (Whether a menu of the game's is up, the music screen among them: a playlist changed then
     // is the player's own choice, and one changed in play is a speaker's music being grabbed.)
     {
@@ -1275,13 +1307,55 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
                 static std::uint64_t said_private{};
                 static int said_players = -1, said_skaters = -1;
                 const auto moved = counters.PrivateUsage > said_private ? counters.PrivateUsage - said_private : said_private - counters.PrivateUsage;
-                if (moved >= (256ull << 20) || std::abs(players - said_players) >= 5 || std::abs(skaters - said_skaters) >= 5) {
+                // (And every two minutes whatever it has done: a slow leak moves it by less than
+                // that quarter for a long while.)
+                static std::uint64_t said_at{};
+                if (moved >= (256ull << 20) || std::abs(players - said_players) >= 5 || std::abs(skaters - said_skaters) >= 5 ||
+                        GetTickCount64() - said_at >= 120000) {
+                    said_at = GetTickCount64();
                     said_private = counters.PrivateUsage; said_players = players; said_skaters = skaters;
                     const auto gigabytes = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0); };
+                    // Whose memory it is. The game allocates from its own pools; what ReSkate, the
+                    // Spotify library in it and Windows' own libraries allocate comes from the
+                    // process's heaps, so memory that grows there is not the game's (a leak looked
+                    // for in the music player, 2026-10-13). Threads and handles grow with a leak of
+                    // those. HeapSummary is asked for by name: older Windows SDKs do not declare it.
+                    struct Summary { DWORD size; SIZE_T allocated, committed, reserved, most; };
+                    static const auto heap_summary = reinterpret_cast<BOOL (WINAPI*)(HANDLE, DWORD, Summary*)>(
+                        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "HeapSummary"));
+                    std::uint64_t heap_allocated{}, heap_committed{};
+                    std::array<HANDLE, 256> heaps{};
+                    const auto heap_count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
+                    for (DWORD i = 0; heap_summary && i < heap_count && i < heaps.size(); ++i) {
+                        Summary summary{sizeof(Summary)};
+                        if (heap_summary(heaps[i], 0, &summary)) {
+                            heap_allocated += summary.allocated;
+                            heap_committed += summary.committed;
+                        }
+                    }
+                    DWORD handles{};
+                    GetProcessHandleCount(GetCurrentProcess(), &handles);
+                    unsigned threads{};
+                    if (const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snapshot != INVALID_HANDLE_VALUE) {
+                        THREADENTRY32 entry{sizeof(entry)};
+                        const auto self = GetCurrentProcessId();
+                        for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry))
+                            if (entry.th32OwnerProcessID == self) ++threads;
+                        CloseHandle(snapshot);
+                    }
+                    // The GPU's share (its system memory is not in the committed figure), and while
+                    // the memory ledger is on, who holds the most (memory_ledger.h).
+                    std::string more;
+                    try {
+                        if (const auto gpu = dingosdk::memory_ledger::gpu_line(); !gpu.empty()) more += " " + gpu + ".";
+                        if (const auto owners = dingosdk::memory_ledger::owners_line(); !owners.empty()) more += " " + owners + ".";
+                    } catch (...) {}
                     dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
-                        "Memory: %.2f GB committed, %.2f GB in RAM; %d player(s) in the session, %d built as skaters (player distance %.0f m); map %s.",
+                        "Memory: %.2f GB committed, %.2f GB in RAM; %d player(s) in the session, %d built as skaters (player distance %.0f m); map %s. "
+                        "Outside the game's own pools: %.2f GB in use of %.2f GB in %lu heap(s); %u thread(s), %lu handle(s).%s",
                         gigabytes(counters.PrivateUsage), gigabytes(counters.WorkingSetSize), players, skaters, mp.player_distance,
-                        (session && !mp.map.empty() ? mp.map : r.multiplayer_map).c_str());
+                        (session && !mp.map.empty() ? mp.map : r.multiplayer_map).c_str(),
+                        gigabytes(heap_allocated), gigabytes(heap_committed), heap_count, threads, handles, more.c_str());
                 }
             }
         }

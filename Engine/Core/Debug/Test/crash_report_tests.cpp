@@ -229,6 +229,11 @@ void crash_check(const std::filesystem::path& root, bool native) {
         (native ? "game-native" : "unhandled-exception"), "Wrong capture source");
     check(Json::parse(read(dump.wstring() + L".json")).at("attachment.log").string() == "complete" &&
         read(log_attachment_path(dump)) == log, "Crash did not snapshot its session log");
+    const auto tags = Json::parse(read(dump.wstring() + L".json"));
+    check(tags.at("game.map").string() == "dingolevel_reskate_lsc_b2" &&
+        tags.at("game.destination").string() == "Levels/Game/DingoLevel_Root/DingoLevel_Root + levels/game/dingolevel_reskate_lsc_b2/dingolevel_reskate_lsc_b2 @ DefaultStartPoint" &&
+        tags.at("gpu.name").string() == "Fixture GPU" && tags.at("gpu.driver").string() == "32.0.21025.1",
+        "Crash was not tagged with its level and graphics card");
     if (native) {
         const auto source = root / L"local" / L"ReSkate" / L"Game" / L"Skate" / L"CrashDumps";
         const auto pid = GetProcessId(child.value), created = process_creation_seconds(child.value);
@@ -298,6 +303,8 @@ int wmain(int argc, wchar_t** argv) {
             logging::Options options; options.directory = argv[2]; options.truncate_file = true;
             check(logging::initialize(options), "Fixture logging failed");
             if (native) SetUnhandledExceptionFilter(native_child_handler); // Reproduce the game's later handler registration.
+            set_destination(L"Levels/Game/DingoLevel_Root/DingoLevel_Root + levels/game/dingolevel_reskate_lsc_b2/dingolevel_reskate_lsc_b2 @ DefaultStartPoint");
+            set_gpu(L"Fixture GPU", L"32.0.21025.1");
             RaiseException(test_exception, EXCEPTION_NONCONTINUABLE, 0, nullptr);
             return 3;
         }

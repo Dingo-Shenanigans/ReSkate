@@ -65,6 +65,9 @@ void bound(std::uint32_t channel, bool music_channel, std::uint32_t playlist, st
 // which is what the game shows as now playing. They are put back when it is left, and before
 // the catalog is read from them.
 void restore_presentation() noexcept;
+// Before the map changes: every song reads as itself again, and none is held on to (their
+// assets go with the map). The thread that changes the level.
+void before_level_transition() noexcept;
 // The game's music player chose a song while one is on (local_music_playback.cpp:
 // music_select_next_hook). `queue` is the player's queue, `asked` whether it was asked for its
 // next song (its flags for that, at +0xf1 and +0xf2, are still up), which is Spotify's next

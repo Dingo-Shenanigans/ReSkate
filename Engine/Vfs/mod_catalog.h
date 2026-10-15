@@ -63,8 +63,8 @@ struct Catalog {
 // A deck goes by its name in small letters. These are the decks the feature was made with, in the
 // order the menus list them, and the console also knows them by their place here (deck 1 is the
 // first). Any other deck comes after them, by its name: a new shape needs no change to ReSkate.
-inline constexpr std::array<std::string_view, 8> board_break_decks{"standard", "wide", "concave", "powell",
-                                                                   "slim", "egg", "square", "shaped"};
+inline constexpr std::array<std::string_view, 10> board_break_decks{"standard", "wide", "concave", "powell", "slim",
+                                                                    "egg", "square", "shaped", "oldschool", "pig"};
 // The name of the deck a mod holds going by the mod's name (a folder's, or a pack's deck's), or
 // nothing; and the folder name of the pack that one of a pack's decks is listed under, or nothing.
 std::string board_break_deck_of(std::string_view mod);
@@ -78,6 +78,9 @@ bool save_board_break_deck(std::string_view deck) noexcept;
 // beside its decks.
 std::vector<std::string> installed_board_break_decks() noexcept;
 std::vector<std::filesystem::path> board_break_folders() noexcept;
+// The folder with a deck's own files (a pack's decks/<name>, or the Board_Break_<Name> folder): what
+// it says of itself (deck.ini) is there. Empty when that deck is not installed.
+std::filesystem::path board_break_deck_folder(std::string_view deck) noexcept;
 // What the mods in effect give the game: the launch's catalogue, or the one the last live apply
 // read (live_mods tells with board_break_applied).
 std::string board_break_in_play() noexcept;

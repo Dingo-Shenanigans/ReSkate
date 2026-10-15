@@ -14,6 +14,7 @@
 #include <bit>
 #include <cstring>
 #include <format>
+#include <deque>
 #include <mutex>
 
 // Other players' skaters and skateboards are the game's own entities, and the game gives each
@@ -76,6 +77,7 @@ struct State {
     BuildEffects build_effects{};
     std::mutex mutex;
     std::vector<Impact> captured;       // the local game's, since the last drain
+    std::deque<LocalImpact> recent;     // the local game's, the last few seconds' (recent_local_impacts)
     std::vector<Registered> registered; // every effects component seen registering, newest last
     std::vector<Pair> pairs;
     std::array<bool, max_impact_material + 1> seen{}; // materials this game's own contacts named
@@ -132,6 +134,8 @@ Address impact_hook(Address manager, Address key, const void *native) {
             s.seen[impact.material] = true;
             if (s.captured.size() >= 16) s.captured.erase(s.captured.begin());
             s.captured.push_back(impact);
+            if (s.recent.size() >= 96) s.recent.pop_front();
+            s.recent.push_back({impact, GetTickCount64()});
             ++s.captured_count;
         }
     }
@@ -357,6 +361,15 @@ std::vector<Impact> drain_impacts() {
     std::lock_guard lock(s.mutex);
     auto out = std::exchange(s.captured, {});
     if (out.size() > max_impacts) out.erase(out.begin(), out.end() - max_impacts);
+    return out;
+}
+std::vector<LocalImpact> recent_local_impacts(std::uint64_t within_ms) {
+    auto &s = state();
+    const auto now = GetTickCount64();
+    std::lock_guard lock(s.mutex);
+    std::vector<LocalImpact> out;
+    for (const auto &one : s.recent)
+        if (now - one.at <= within_ms) out.push_back(one);
     return out;
 }
 void play_impact(const Impact &impact) noexcept {

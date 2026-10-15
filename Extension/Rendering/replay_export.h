@@ -7,5 +7,6 @@ namespace dingosdk::replay_export {
 // drops the rest. Rendering faster than it updates (an uncapped frame rate),
 // an export came out with a fraction of its frames and played that much too
 // fast. Every rendered frame of a replay export is encoded instead.
+// The export dialog's 8/12/18 Mbps choice is also raised to 100 Mbps H.264.
 bool start(std::uintptr_t base) noexcept;
 }

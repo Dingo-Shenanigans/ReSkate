@@ -291,6 +291,7 @@ std::string install_zip(const fs::path& mods, const fs::path& source, bool repla
     std::vector<std::string> files;
     const auto count = mz_zip_reader_get_num_files(&zip.archive);
     for (mz_uint index = 0; index < count; ++index) {
+        if (cancel) fail("Install cancelled.");
         mz_zip_archive_file_stat stat{};
         if (!mz_zip_reader_file_stat(&zip.archive, index, &stat)) fail("The .zip file is damaged.");
         const auto name = safe_entry(stat.m_filename);
@@ -328,6 +329,9 @@ std::string install_zip(const fs::path& mods, const fs::path& source, bool repla
         if (!ok) fail("Could not extract " + relative + " from the .zip file.");
     }
     finish(staging.path(), *root, utf8(source.filename().wstring()), options);
+    // Cancellation is safe before replacing the installed folder, not midway through commit.
+    if (progress) progress(1.f);
+    if (cancel) fail("Install cancelled.");
     commit(mods, staging, name, replace);
     return name;
 }
@@ -337,6 +341,7 @@ std::string install_folder(const fs::path& mods, const fs::path& source, bool re
     std::vector<std::string> files;
     std::vector<fs::path> paths;
     for (auto it = fs::recursive_directory_iterator(source); it != fs::recursive_directory_iterator(); ++it) {
+        if (cancel) fail("Install cancelled.");
         if (!it->is_regular_file()) continue;
         paths.push_back(it->path());
         auto relative = utf8(fs::relative(it->path(), source).generic_wstring());
@@ -363,6 +368,8 @@ std::string install_folder(const fs::path& mods, const fs::path& source, bool re
         if (progress && total) progress(static_cast<float>(written) / static_cast<float>(total));
     }
     finish(staging.path(), *root, utf8(source.filename().wstring()), options);
+    if (progress) progress(1.f);
+    if (cancel) fail("Install cancelled.");
     commit(mods, staging, name, replace);
     return name;
 }

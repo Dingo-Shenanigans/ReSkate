@@ -155,12 +155,12 @@ DWORD WINAPI scanner(void* parameter) noexcept {
 PlayStationSample read_playstation_pads() {
     auto& p = pads();
     std::lock_guard lock(p.mutex);
-    const auto now = GetTickCount64();
-    if (now >= p.next_scan) {
+    const auto scan_now = GetTickCount64();
+    if (scan_now >= p.next_scan) {
         // Hot-plug: look for new pads every few seconds while someone reads them.
         // Enumeration is one configuration-manager call; opening happens only for
         // Sony paths. Both run on the scanner thread, started by the first read.
-        p.next_scan = now + 3000;
+        p.next_scan = scan_now + 3000;
         if (!p.wake) {
             p.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
             const auto thread = p.wake ? CreateThread(nullptr, 0, scanner, &p, 0, nullptr) : nullptr;
@@ -172,18 +172,24 @@ PlayStationSample read_playstation_pads() {
         }
         if (p.wake) SetEvent(p.wake);
     }
-    PlayStationSample sample;
     for (auto it = p.open.begin(); it != p.open.end();) {
         if (!drain(**it)) {
             logging::write(logging::Level::info, logging::Channel::input, "PlayStation controller disconnected.");
             it = p.open.erase(it); ++p.generation; continue;
         }
-        const auto& pad = **it;
+        ++it;
+    }
+    // drain() timestamps newly parsed reports. Sample freshness only after
+    // every pad has drained, so elapsed work cannot underflow an unsigned age.
+    const auto now = GetTickCount64();
+    PlayStationSample sample;
+    for (const auto& opened : p.open) {
+        const auto& pad = *opened;
         sample.present = true;
         if (sample.style == ControllerStyle::xbox)
             sample.style = pad.kind == PlayStationPad::dualsense ? ControllerStyle::dualsense : ControllerStyle::dualshock4;
         // Pads stream continuously; silence means asleep or out of range.
-        if (pad.latest && now - pad.latest_time < 1000) {
+        if (pad.latest && now >= pad.latest_time && now - pad.latest_time < 1000) {
             sample.available = true;
             sample.pad.buttons |= pad.latest->buttons;
             sample.pad.left_trigger = std::max(sample.pad.left_trigger, pad.latest->left_trigger);
@@ -192,7 +198,6 @@ PlayStationSample read_playstation_pads() {
             if (!sample.pad.left_x && !sample.pad.left_y) { sample.pad.left_x = pad.latest->left_x; sample.pad.left_y = pad.latest->left_y; }
             if (!sample.pad.right_x && !sample.pad.right_y) { sample.pad.right_x = pad.latest->right_x; sample.pad.right_y = pad.latest->right_y; }
         }
-        ++it;
     }
     sample.generation = p.generation;
     return sample;

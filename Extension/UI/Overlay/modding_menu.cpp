@@ -4,6 +4,7 @@
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Extension/Assets/live_mods.h"
+#include "Extension/BoardBreak/board_break.h"
 #include "Extension/UI/skate_theme.h"
 #include "Engine/Core/Log/logging.h"
 
@@ -21,14 +22,17 @@ namespace menu {
 // deck is a mod's copy of it, so picking one applies the mods with that deck first and loads the
 // level again. A button for each deck the feature was made with, greyed out while it is not
 // installed, and for any other deck that is; the Mods folder is read again every 1.5 s while the
-// card shows.
+// card shows. A deck goes by the name its deck.ini gives it (label), else by its folder's.
 void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     static std::vector<std::string> installed;
+    static std::vector<std::string> titles; // each installed deck's name for people
     static std::string chosen;
     static ULONGLONG next_scan{};
     if (const auto now = GetTickCount64(); now >= next_scan) {
         installed = mods::installed_board_break_decks();
         chosen = mods::wanted_board_break_deck();
+        titles.clear();
+        for (const auto& deck : installed) titles.push_back(board_break::deck_label(deck));
         next_scan = now + 1500;
     }
     if (!model.board_break.available || installed.empty()) return;
@@ -39,12 +43,18 @@ void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV
     for (const auto& deck : installed)
         if (std::find(decks.begin(), decks.end(), deck) == decks.end()) decks.push_back(deck);
     const auto label = [&](const std::string& deck) {
-        auto name = deck;
-        bool start = true;
-        for (auto& c : name) {
-            if (c == '_') c = ' ';
-            else if (start && c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-            start = c == ' ';
+        std::string name;
+        if (const auto at = std::find(installed.begin(), installed.end(), deck);
+            at != installed.end() && static_cast<std::size_t>(at - installed.begin()) < titles.size())
+            name = titles[static_cast<std::size_t>(at - installed.begin())];
+        else {
+            name = deck;
+            bool start = true;
+            for (auto& c : name) {
+                if (c == '_') c = ' ';
+                else if (start && c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+                start = c == ' ';
+            }
         }
         const auto place = std::find(decks.begin(), decks.end(), deck) - decks.begin() + 1;
         return std::to_string(place) + " " + name;

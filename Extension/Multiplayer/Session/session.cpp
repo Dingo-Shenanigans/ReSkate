@@ -1,4 +1,5 @@
 #include "session_internal.h"
+#include "Extension/Skater/drone_beacon.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
@@ -82,6 +83,8 @@ void stop(Session &s, std::string reason) {
     s.object_limit = 0;
     s.object_scaling = true;
     s.sync_effects = true;
+    s.sync_drones = true;
+    drone::beacon::server_allows().store(true);
     set_lobby_object_limit(0);
     s.server_admin = false;
     s.role.clear();
@@ -155,6 +158,8 @@ void stop(Session &s, std::string reason) {
     s.map_label.clear();
     s.map_package.clear();
     s.fetching_since = 0;
+    s.map_fetch_deadline = 0;
+    map_fetch_deadline_flag.store(0);
     fetching_map_flag.store(false, std::memory_order_relaxed);
     s.world = 1;
     s.travelling = false;
@@ -513,6 +518,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         // Friends only: everyone else keeps their chat bubbles and loses the name and dot.
         tag.nameless = s.nametags_friends && !std::binary_search(s.friend_ids.begin(), s.friend_ids.end(), p.member.id);
         tag.talking = std::any_of(voices.begin(), voices.end(), [&](const auto &v) { return v.id == p.member.id && v.speaking; });
+        tag.flying_drone = drone::beacon::flying(p.member.id);
         tag.bubbles = recent_bubbles(p.member.id);
         if (bubbles)
             if (auto hint = typing_bubble(p.typing_until); !hint.text.empty()) tag.bubbles.push_back(std::move(hint));
@@ -730,7 +736,10 @@ std::string take_removed_notice() { return std::exchange(session().removed_notic
 std::optional<MapNeed> take_map_need() { return std::exchange(session().map_need, std::nullopt); }
 void set_map_package_lookup(MapPackageLookup lookup) noexcept { map_package_lookup.store(lookup, std::memory_order_relaxed); }
 bool fetching_map() noexcept { return fetching_map_flag.load(std::memory_order_relaxed); }
-void hold_map_load(bool hold) noexcept { map_load_held.store(hold, std::memory_order_relaxed); }
+std::uint64_t map_fetch_deadline() noexcept { return map_fetch_deadline_flag.load(); }
+void hold_map_load(bool hold, std::string_view package) noexcept {
+    map_load_held.store(hold && !package.empty() ? map_hash(package) : 0);
+}
 MultiplayerChat chat() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
@@ -769,6 +778,8 @@ bool observe_local_world(Session &s, const NativeFrame &local, std::string_view 
     } else if (s.travelling) {
         if (local.ready && !s.awaiting_map && s.host_world_ready) {
             s.travelling = false;
+            s.map_fetch_deadline = 0;
+            map_fetch_deadline_flag.store(0);
             s.last_world_ready = 0;
             for (auto &peer : active_peers(s)) {
                 peer.last_packet = now;
@@ -797,6 +808,10 @@ bool observe_local_world(Session &s, const NativeFrame &local, std::string_view 
 // Native loading can unload every local actor. Keep the connection in preflight
 // until the selected map and a controllable skater are available.
 bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoader loader, std::uint64_t now) {
+    if (map_fetch_policy::expired(s.map_fetch_deadline, now)) {
+        stop(s, "Map download timed out. Please try joining the server again.");
+        return false;
+    }
     if (!s.awaiting_map)
         return true;
     // (While the map is being fetched the clock is held: see below.)
@@ -832,7 +847,7 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
         // installed one's place), and loads when the two agree.
         const auto have = std::string(other_map_version(s.map_package, host_map_package(s.join_destination)));
         // (Nor while its files are being put in place and applied: hold_map_load.)
-        const bool held = map_load_held.load(std::memory_order_relaxed);
+        const bool held = !s.map_package.empty() && map_load_held.load() == map_hash(s.map_package);
         const auto result = have.empty() && !held ? loader(s.join_destination, s.map_load_submitted, detail) : MapLoadResult::missing;
         if (result == MapLoadResult::missing) {
             const auto name = s.map_label.empty() ? world_level_name(world_destination_asset(s.join_destination)) : s.map_label;
@@ -845,15 +860,12 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
             if (!s.map_package.empty()) {
                 if (!s.fetching_since) {
                     s.fetching_since = now;
+                    if (!s.map_fetch_deadline) s.map_fetch_deadline = now + map_fetch_limit_us;
+                    map_fetch_deadline_flag.store(s.map_fetch_deadline);
                     fetching_map_flag.store(true, std::memory_order_relaxed);
-                    s.map_need = MapNeed{s.map_package, name, dedicated_host(s), s.travelling, have};
-                    s.rejoin = Session::Rejoin{{s.host_id, s.secret}, s.password};
+                    s.map_need = MapNeed{s.map_package, name, dedicated_host(s), s.travelling, have, s.map_fetch_deadline};
+                    s.rejoin = Session::Rejoin{{s.host_id, s.secret}, s.password, s.map_fetch_deadline};
                     s.last_map_request = s.last_world_ready = 0;   // say so at once
-                }
-                if (now - s.fetching_since > map_fetch_limit_us) {
-                    s.leave_notice = where + ", which did not finish downloading in time. Install its map mod and join again.";
-                    stop(s, s.leave_notice);
-                    return false;
                 }
                 // The time a load gets starts when the map is here.
                 s.join_started = now;

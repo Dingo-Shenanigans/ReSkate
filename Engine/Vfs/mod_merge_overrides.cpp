@@ -74,7 +74,8 @@ struct Change {
 struct Script {
     std::string name;   // lower case
     fb::Sha1 game;      // the game's copy it replaces
-    AssetOverride value;
+    std::optional<AssetOverride> value;   // none: it could not be read, and `note` says so
+    std::size_t note{};                   // its place in the mod's notes
 };
 // What one mod's files say, read without regard to any other mod: the part of the work that
 // is reading and decoding, done for several mods at once. What it means beside the mods
@@ -176,14 +177,23 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                     // (A higher mod's version of the script, or this mod's own from another
                     // bundle, wins when the mods are settled: read here either way.)
                     if (std::ranges::any_of(scripts, [&](const Script& have) {
-                            return have.name == name && have.game == originalScript->second->sha1; })) continue;
+                            return have.name == name && have.game == originalScript->second->sha1 && have.value; })) continue;
                     const auto at = modListing->first + modListing->manifest.ebx.size() + index;
                     if (at >= modListing->files.size()) continue;
                     const auto& file = modListing->files[at];
-                    scripts.push_back({name, originalScript->second->sha1,
-                        AssetOverride{mod.name, asset.sha1, asset.originalSize,
-                            store.read(file.location.patch ? mod.directory : baseRoot,
-                                       file.location, file.offset, file.size), asset}});
+                    try {
+                        scripts.push_back({name, originalScript->second->sha1,
+                            AssetOverride{mod.name, asset.sha1, asset.originalSize,
+                                store.read(file.location.patch ? mod.directory : baseRoot,
+                                           file.location, file.offset, file.size), asset}});
+                    } catch (const std::exception& failed) {
+                        // Read whether or not it will be wanted, so a failure is only this
+                        // script's: where a higher mod's version stands, it is nobody's and
+                        // the note goes (settled below). The rest of the TOC is read on.
+                        notes.push_back(mod.name + ": " + relative +
+                            ": its changes could not be read for other mods' copies (" + failed.what() + ")");
+                        scripts.push_back({name, originalScript->second->sha1, std::nullopt, notes.size() - 1});
+                    }
                 }
                 // Resources the mod adds, kept to go with an added EBX of the same name
                 // (a wave's sound-bank resource registers the wave with the audio system).
@@ -273,7 +283,6 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         if (read.failure) std::rethrow_exception(read.failure);
         auto& [candidates, companions, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
         std::size_t changed{};
-        report.notes.insert(report.notes.end(), std::make_move_iterator(notes.begin()), std::make_move_iterator(notes.end()));
         // A higher mod's version of an asset, which this mod's change is combined with
         // below, may name what this mod adds.
         for (const auto& change : changes)
@@ -284,10 +293,16 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 } catch (const std::exception&) {}
         for (auto& script : scripts) {
             auto& versions = out.scripts[script.name];
-            if (versions.contains(script.game)) continue;
-            versions.emplace(script.game, std::move(script.value));
+            if (versions.contains(script.game)) {
+                if (!script.value) notes[script.note].clear();   // not wanted: as if never read
+                continue;
+            }
+            if (!script.value) continue;   // wanted, and noted
+            versions.emplace(script.game, std::move(*script.value));
             ++changed;
         }
+        for (auto& note : notes)
+            if (!note.empty()) report.notes.push_back(std::move(note));
         // One addition per kind and name in a bundle, the highest-priority mod's. Two
         // mods adding the same asset is no clash; two different assets under one name
         // is, and only one of them can be what a copy gets: say whose, so a song or an

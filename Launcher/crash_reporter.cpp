@@ -23,6 +23,17 @@ std::string utf8(const wchar_t* text) {
     result.pop_back();
     return result;
 }
+template<std::size_t N> std::string field(const std::array<wchar_t, N>& value) {
+    return utf8(std::wstring(value.data(), wcsnlen(value.data(), N)).c_str());
+}
+// "Levels/Game/DingoLevel_Root/DingoLevel_Root + levels/game/x/x @ Start" -> "x": the sublevel when
+// there is one, else the level, by its last name.
+std::string map_name(std::string destination) {
+    if (const auto at = destination.find(" @ "); at != std::string::npos) destination.resize(at);
+    if (const auto plus = destination.find(" + "); plus != std::string::npos) destination.erase(0, plus + 3);
+    if (const auto slash = destination.find_last_of('/'); slash != std::string::npos) destination.erase(0, slash + 1);
+    return destination;
+}
 bool publish_dump(const std::filesystem::path& temporary, const SharedReport& report, const char* source) {
     auto dump = temporary; dump.replace_extension(L".dmp");
     Json attributes = Json::object();
@@ -38,6 +49,13 @@ bool publish_dump(const std::filesystem::path& temporary, const SharedReport& re
     attributes["error.type"] = "crash";
     attributes["report.id"] = utf8(dump.stem().c_str());
     attributes["capture.source"] = source;
+    // (Tags for grouping crashes by the level and the graphics card; absent when unknown.)
+    if (const auto destination = field(report.destination); !destination.empty()) {
+        attributes["game.destination"] = destination;
+        attributes["game.map"] = map_name(destination);
+    }
+    if (const auto gpu = field(report.gpu_name); !gpu.empty()) attributes["gpu.name"] = gpu;
+    if (const auto driver = field(report.gpu_driver); !driver.empty()) attributes["gpu.driver"] = driver;
     const auto log = snapshot_log(std::filesystem::path(report.directory.data()).parent_path() / L"ReSkate.log", dump);
     attributes["attachment.log"] = log == LogSnapshot::complete ? "complete" : log == LogSnapshot::tail ? "tail" : "unavailable";
     std::ofstream metadata(dump.wstring() + L".json", std::ios::binary);

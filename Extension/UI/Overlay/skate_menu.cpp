@@ -1,5 +1,6 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "skate_menu_internal.h"
+#include "Extension/Skater/drone_flight.h"
 #include "skate_menu.h"
 #include "Extension/Style/style_overlay.h"
 #include "modding_menu.h"
@@ -297,13 +298,13 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
         &config, ranges);
 }
 
-enum Page { map, world, build, skater, style_tab, training, multiplayer, progress, mods, music, settings, special, developer, page_count };
+enum Page { map, world, build, skater, style_tab, training, drone, multiplayer, progress, mods, music, settings, special, developer, page_count };
 constexpr std::array<const char*, page_count> page_names{
-    "MAP", "WORLD", "BUILD", "SKATER", "STYLE", "TRAINER", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
+    "MAP", "WORLD", "BUILD", "SKATER", "STYLE", "TRAINER", "DRONE", "MULTIPLAYER", "PROGRESS", "MODS", "MUSIC", "SETTINGS", "SPECIAL", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
     "Pick your spot.", "Set the vibe.", "Make the park yours.", "Ride it your way.", "Move like you.", "Tune it. Drill it. Measure it.",
-    "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.", "Your controls, your screen.",
-    "Not everyone gets this page.",
+    "Take it to the sky.", "Bring your crew.", "Pick up where you want.", "Bring your own.", "Your sound, in the game.",
+    "Your controls, your screen.", "Not everyone gets this page.",
     "Under the hood."};
 }
 
@@ -378,6 +379,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         }
         draw->AddText(menu.body, px(12), ImVec2(origin.x + px(18), origin.y + px(66)), muted, "YOUR SESSION. YOUR RULES.");
         if (trainer_page_wanted()) menu.page = training;
+        if (dingosdk::drone::menu_flag().exchange(false)) menu.page = drone; // `dronemenu`
         menu.page = std::clamp(menu.page, 0, static_cast<int>(page_count) - 1);
         // Developer (the network view) is hidden for now; offline there is no Multiplayer either.
         // Special is only there for a player the backend lists.
@@ -438,6 +440,7 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         case skater: skater_page(menu, model, callbacks); break;
         case style_tab: style_page(menu, model, callbacks); break;
         case training: trainer_page(menu, model, callbacks); break;
+        case drone: drone_page(menu, model, callbacks); break;
         case multiplayer: multiplayer_page(menu, model, callbacks); break;
         case progress: progression_page(menu, model, callbacks); break;
         case mods:

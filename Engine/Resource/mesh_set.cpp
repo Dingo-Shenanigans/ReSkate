@@ -1,4 +1,5 @@
 #include "mesh_set.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -128,6 +129,118 @@ std::vector<std::array<float, 3>> read_mesh_positions(std::span<const std::byte>
         }
         require(found, "a section has no positions");
     }
+    return result;
+}
+
+namespace {
+// The two layouts check_mesh_lod reads: the skinned one above, and the static one world meshes
+// have (192, 176, 384, 0), whose levels of detail are laid out the same. A static mesh's sections
+// are 384 or 416 bytes, and nothing found yet says which: check_mesh_lod takes the size under
+// which every section reads as one.
+struct Layout {
+    bool skinned{};
+};
+Layout layout_of(const Reader& r) {
+    const auto first = r.at<std::uint32_t>(0), second = r.at<std::uint32_t>(4), third = r.at<std::uint32_t>(8);
+    if (first == 208 && second == 188 && third == 384) return {true};
+    if (first == 192 && second == 176 && third == 384) return {false};
+    require(false, "its layout is not one this reader knows");
+    return {};
+}
+// Whether every section, `stride` bytes apart, reads as one: a triangle list whose indices are in
+// the index buffer and whose vertices start in the vertex buffer.
+bool sections_read(const Reader& r, std::size_t table, std::uint32_t sections, std::size_t stride, std::size_t index_size,
+                   std::size_t vertex_size, std::size_t index_total) {
+    for (std::uint32_t section = 0; section < sections; ++section) {
+        const auto s = table + section * stride;
+        if (s + stride > r.data.size()) return false;
+        const std::size_t triangles = r.at<std::uint32_t>(s + triangle_count);
+        if (!triangles) continue;
+        if (r.at<std::uint8_t>(s + primitive) != triangle_list || r.at<std::uint32_t>(s + vertex_start) >= vertex_size ||
+            std::size_t{r.at<std::uint32_t>(s + first_index)} * index_size + triangles * 3 * index_size > index_total)
+            return false;
+    }
+    return true;
+}
+}
+
+std::vector<std::string> check_mesh_lod(std::span<const std::byte> resource, std::size_t lod,
+                                        std::span<const std::byte> geometry, std::uint32_t* format_out) {
+    const Reader r{resource};
+    const auto shape = layout_of(r);
+    require(lod < r.at<std::uint16_t>(lod_count), "it has no such level of detail");
+    const auto at = r.pointer(lod_table + lod * 8);
+    const std::size_t vertex_size = r.at<std::uint32_t>(at + vertex_bytes), index_size_total = r.at<std::uint32_t>(at + index_bytes);
+    const auto format = r.at<std::uint32_t>(at + index_format);
+    if (format_out) *format_out = format;
+    const std::size_t index_size = format == sixteen_bit_indices ? 2 : 4;
+    std::vector<std::string> problems;
+    const auto say = [&](std::string text) { if (problems.size() < 8) problems.push_back(std::move(text)); };
+    if (geometry.size() < vertex_size + index_size_total)
+        say("the geometry chunk holds " + std::to_string(geometry.size()) + " bytes of the " +
+            std::to_string(vertex_size + index_size_total) + " its buffers need");
+    const auto sections = r.at<std::uint32_t>(at + section_count);
+    require(sections <= 4096, "it has too many sections");
+    if (!sections) return problems;
+    const auto table = r.pointer(at + section_table);
+    std::size_t stride = section_size;
+    if (!shape.skinned) {
+        if (sections_read(r, table, sections, 384, index_size, vertex_size, index_size_total)) stride = 384;
+        else if (sections_read(r, table, sections, 416, index_size, vertex_size, index_size_total)) stride = 416;
+        else say("its sections read as neither 384 nor 416 bytes apart: one of them is out of its buffers");
+    }
+    for (std::uint32_t section = 0; section < sections; ++section) {
+        const auto s = table + section * stride;
+        const auto name = "section " + std::to_string(section);
+        const auto type = r.at<std::uint8_t>(s + primitive);
+        const std::size_t count = r.at<std::uint32_t>(s + vertex_count), triangles = r.at<std::uint32_t>(s + triangle_count);
+        if (!triangles) continue;
+        if (type != triangle_list) { say(name + " is primitive type " + std::to_string(type) + ", not a triangle list"); continue; }
+        if (!count) { say(name + " has " + std::to_string(triangles) + " triangles and no vertices"); continue; }
+        const std::size_t first = r.at<std::uint32_t>(s + vertex_start);
+        if (first >= vertex_size) say(name + "'s vertices start at byte " + std::to_string(first) + " of a " + std::to_string(vertex_size) + "-byte vertex buffer");
+        if (shape.skinned) {
+            // (Where its vertices end: each stream's follow the one before.)
+            const auto d = s + declaration;
+            const auto streams = r.at<std::uint8_t>(d + stream_total);
+            std::size_t end = first;
+            for (std::size_t stream = 0; stream < streams && stream < 16; ++stream)
+                end += std::size_t{r.at<std::uint8_t>(d + stream_table + stream * 2)} * count;
+            if (end > vertex_size)
+                say(name + "'s vertices end at byte " + std::to_string(end) + " of a " + std::to_string(vertex_size) + "-byte vertex buffer");
+        }
+        const std::size_t start = std::size_t{r.at<std::uint32_t>(s + first_index)} * index_size;
+        const std::size_t length = triangles * 3 * index_size;
+        if (start + length > index_size_total) {
+            say(name + "'s indices end at byte " + std::to_string(start + length) + " of a " + std::to_string(index_size_total) + "-byte index buffer");
+            continue;
+        }
+        const auto base = vertex_size + start;
+        if (base + length > geometry.size()) continue;
+        std::size_t outside{}, largest{};
+        for (std::size_t i = 0; i < triangles * 3; ++i) {
+            std::size_t index{};
+            std::memcpy(&index, geometry.data() + base + i * index_size, index_size);
+            if (index >= count) ++outside, largest = std::max(largest, index);
+        }
+        if (outside)
+            say(name + ": " + std::to_string(outside) + " of " + std::to_string(triangles * 3) + " indices name a vertex outside its " +
+                std::to_string(count) + " (the largest " + std::to_string(largest) + ")");
+    }
+    return problems;
+}
+
+MeshLod any_mesh_lod_geometry(std::span<const std::byte> resource, std::size_t lod, std::size_t* lods) {
+    const Reader r{resource};
+    (void)layout_of(r);
+    const std::size_t total = r.at<std::uint16_t>(lod_count);
+    if (lods) *lods = total;
+    require(lod < total, "it has no such level of detail");
+    const auto at = r.pointer(lod_table + lod * 8);
+    MeshLod result;
+    result.chunk = r.at<Guid>(at + geometry_chunk);
+    result.vertex_bytes = r.at<std::uint32_t>(at + vertex_bytes);
+    result.index_bytes = r.at<std::uint32_t>(at + index_bytes);
     return result;
 }
 

@@ -204,6 +204,9 @@ struct ServerConfig {
     // and the trails and fire of costumes and skateboards. Off: nothing of them is relayed and
     // players' games show each other without them.
     bool sync_effects = true;
+    // Players see each other's FPV drones (the marker where a player's drone is). Off: none are
+    // relayed, and players' games neither send theirs nor show anyone's.
+    bool sync_drones = true;
     // Whether players may use noclip (and teleport) / No Bail / the boosts (admins always may).
     bool noclip = true, no_bail = true, boosts = true;
     // Players skate with the game's own physics tuning, not copies they edited.

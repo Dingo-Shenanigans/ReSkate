@@ -143,6 +143,56 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     end_card();
 }
 
+// Board Break's settings (Extension/BoardBreak/board_break_feel.h): how a board breaks, wears and
+// sounds. Each is a console verb, kept with the profile.
+void board_break_settings_card(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    const auto& bb = model.board_break;
+    if (!bb.available) return;
+    const bool console = bb.enabled && callbacks.queue_console_command;
+    std::string subtitle = !bb.has_deck ? "No Board Break deck is in the game"
+                                        : "Your board: " + std::to_string(static_cast<int>(bb.worn * 100.0f + 0.5f)) + "% worn (" + bb.condition + ")";
+    begin_card(menu, "board-break-settings", "BOARD BREAK SETTINGS", subtitle.c_str());
+    if (!bb.enabled) note("Switch Board Break on to change these.");
+    const auto flag = [&](const char* label, const char* hint, bool on, const char* verb) {
+        bool value = on;
+        if (toggle_row(menu, label, hint, value, console)) send_console(menu, callbacks, std::string("boardbreak ") + verb + (value ? " 1" : " 0"));
+    };
+    flag("Always break", "Every slam breaks the board, and every slide that comes down onto a rail: for replay clips.", bb.always, "always");
+    flag("Rail snaps", "A boardslide or darkslide that comes down too hard onto a rail or ledge can snap the board, and you go down with it.",
+         bb.rails, "rails");
+    flag("Wear and tear", "Every hit wears your board. A worn board turns lazier, wobbles and breaks more easily; worn out, it can give way. "
+         "Turn on Board wear (Mod Options) to see the scratches.", bb.wear, "wear");
+    flag("Break sounds", "The crack of a break, and metal when it breaks on metal.", bb.crack_sounds, "cracks");
+    flag("Body hit sounds", "Each hit of your body in a bail, as hard as it hits.", bb.body_sounds, "bodysounds");
+    // Sent once a slider is let go; the dragged value shows until the setting comes back.
+    const auto percent = [&](const char* id, const char* label, const char* hint, int value, int low, int high, int step, const char* verb) {
+        static std::array<int, 3> edited{-1, -1, -1};
+        static std::array<double, 3> edited_at{};
+        const auto slot = std::string_view(id) == "bb-sensitivity" ? 0u : std::string_view(id) == "bb-joined" ? 1u : 2u;
+        int shown = edited[slot] >= 0 ? edited[slot] : value;
+        field(menu, label, hint);
+        ImGui::BeginDisabled(!console);
+        if (ImGui::SliderInt((std::string("##") + id).c_str(), &shown, low, high, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
+            edited[slot] = std::clamp((shown + step / 2) / step * step, low, high);
+            edited_at[slot] = ImGui::GetTime();
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && edited[slot] >= 0) {
+            send_console(menu, callbacks, std::string("boardbreak ") + verb + " " + std::to_string(edited[slot]));
+            edited_at[slot] = ImGui::GetTime();
+        }
+        if (edited[slot] >= 0 && !ImGui::IsItemActive() && (value == edited[slot] || ImGui::GetTime() - edited_at[slot] > 2.0)) edited[slot] = -1;
+        ImGui::EndDisabled();
+    };
+    percent("bb-sensitivity", "Break sensitivity", "How easily a board breaks. 200% takes half the force, 50% twice as much.", bb.sensitivity, 10, 400, 10,
+            "sensitivity");
+    percent("bb-joined", "Grip tape holds", "How many breaks the grip tape holds together instead of a piece coming off.", bb.joined, 0, 100, 5, "joined");
+    percent("bb-wear-rate", "Wear speed", "How fast boards wear. 0% keeps a board as it is.", bb.wear_rate, 0, 500, 10, "wearrate");
+    ImGui::BeginDisabled(!console || !bb.has_deck);
+    if (ImGui::Button("New board", ImVec2(-FLT_MIN, 0))) send_console(menu, callbacks, "boardbreak worn 0");
+    ImGui::EndDisabled();
+    end_card();
+}
+
 void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
     begin_card(menu, "movement", "FLIGHT & BAILS");
@@ -187,6 +237,7 @@ void movement_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
         send_console(menu, callbacks, board_break ? "boardbreak 1" : "boardbreak 0");
     end_card();
     board_break_deck_card(menu, model, callbacks);
+    board_break_settings_card(menu, model, callbacks);
 
     // Grind exit control (Extension/Skater/grind_exit_control.h).
     const auto& grind = model.grind_exit;

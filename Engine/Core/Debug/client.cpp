@@ -22,6 +22,11 @@ template<std::size_t N> bool copy(std::array<wchar_t, N>& target, const std::wst
     target[value.size()] = 0;
     return true;
 }
+template<std::size_t N> void copy_cut(std::array<wchar_t, N>& target, std::wstring_view value) noexcept {
+    const auto size = std::min(value.size(), N - 1);
+    std::copy_n(value.begin(), size, target.begin());
+    target[size] = 0;
+}
 }
 StartResult start(const std::filesystem::path& log_directory) noexcept {
     try {
@@ -107,6 +112,15 @@ void capture(EXCEPTION_POINTERS* exception) noexcept {
     if (SetEvent(handles[requested])) {
         const HANDLE wait_for[]{handles[captured], helper};
         WaitForMultipleObjects(2, wait_for, FALSE, capture_timeout_ms);
+    }
+}
+void set_destination(std::wstring_view destination) noexcept {
+    if (auto* const shared = report) copy_cut(shared->destination, destination);
+}
+void set_gpu(std::wstring_view name, std::wstring_view driver) noexcept {
+    if (auto* const shared = report) {
+        copy_cut(shared->gpu_name, name);
+        copy_cut(shared->gpu_driver, driver);
     }
 }
 void stop() noexcept {

@@ -311,6 +311,9 @@ void card_image_lost();
 // Game debug text (game_text_overlay.cpp): polled every presented frame.
 bool game_text_pending();
 void draw_game_text();
+// The FPV drone's goggle display and stick overlay (drone_hud_overlay.cpp): polled every presented frame.
+bool drone_hud_pending();
+void draw_drone_hud();
 // ReSkate's S.K.A.T.E. throwdown HUD (skate_hud_overlay.cpp): polled every presented frame.
 bool skate_hud_pending();
 void draw_skate_hud();

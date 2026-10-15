@@ -622,7 +622,7 @@ bool own_mark_command(std::string_view action) {
 } // namespace
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action)) return false;
-    if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
+    if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" && action != "stop-map-fetch" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
          action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
          action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" && action != "vote" && action != "voice-chat" &&
@@ -875,7 +875,15 @@ std::string command(std::string_view action, std::string_view argument, std::str
         if (action == "status")
             return s.status + " | Players " + std::to_string(player_count(s)) + "/" +
                    std::to_string(s.capacity);
-        if (action == "stop") {
+        if (action == "stop-map-fetch") {
+            std::uint64_t expected{};
+            const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), expected);
+            // A worker's queued cancellation may execute after a fresh join command.
+            if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() ||
+                !expected || expected != s.map_fetch_deadline)
+                return s.status;
+        }
+        if (action == "stop" || action == "stop-map-fetch") {
             stop(s, "Multiplayer stopped.");
             publish(s);
             return s.status;
@@ -968,6 +976,8 @@ std::string command(std::string_view action, std::string_view argument, std::str
         if (action == "rejoin") {
             rejoin = std::exchange(s.rejoin, std::nullopt);
             if (!rejoin) return "There is no session to go back to.";
+            if (map_fetch_policy::expired(rejoin->deadline_us, now_us()))
+                return "Map download timed out. Please try joining the server again.";
         }
         if (action != "host" && action != "join" && action != "echo" && !rejoin)
             return "Unknown multiplayer action.";
@@ -1113,6 +1123,8 @@ std::string command(std::string_view action, std::string_view argument, std::str
             s.host_id = invitation->steam_id;
             s.awaiting_map = true;
             s.join_started = now_us();
+            s.map_fetch_deadline = rejoin ? rejoin->deadline_us : 0;
+            map_fetch_deadline_flag.store(s.map_fetch_deadline);
             s.status = "Connecting and checking the host's map...";
         }
         set_lobby_park_mode(s.mode == Mode::host || s.mode == Mode::join, s.mode == Mode::join);

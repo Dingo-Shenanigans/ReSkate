@@ -1,11 +1,14 @@
 #include "native_render_resource_pool.h"
 
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/render_resource_pool.h"
 
 #include <Windows.h>
+#include <intrin.h>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -13,6 +16,7 @@
 #include <limits>
 #include <mutex>
 #include <span>
+#include <utility>
 
 namespace dingosdk {
 namespace {
@@ -61,6 +65,10 @@ static_assert(relation_mask_bytes == 0x00300000);
 using NativeConstructor = void* (__fastcall *)(void*, void*);
 using IndexTableConstructor = void* (__fastcall *)(void*, void*, void*);
 
+// Records and metadata every renderer built on the constructor uses; the
+// resource states and relation masks only the state owner has
+// (contract::state_owner_call_rva). 115.5 MB of states went to the other
+// renderer as well, which never touches them.
 struct Buffers {
     std::byte* records{};
     std::uint32_t* metadata{};
@@ -68,9 +76,8 @@ struct Buffers {
     std::byte* resource_states{};
     std::uint64_t* relation_masks{};
 
-    explicit operator bool() const noexcept {
-        return records && metadata && resource_flags && resource_states && relation_masks;
-    }
+    explicit operator bool() const noexcept { return records && metadata && resource_flags; }
+    bool has_states() const noexcept { return resource_states && relation_masks; }
 };
 
 struct IndexTableBuffers {
@@ -89,6 +96,10 @@ std::array<IndexTableBuffers, 2> reserved_index_tables{};
 std::size_t next_reserved_index_table{};
 std::byte* resource_flag_stubs{};
 std::uintptr_t installed_base{};
+// Where the state owner's constructor call returns to in the game.
+std::atomic<std::uintptr_t> state_owner_return{};
+// The renderer that has resource states, once constructed.
+std::atomic<std::uintptr_t> state_owner{};
 
 bool read_memory(const void* source, void* destination, std::size_t size) noexcept {
     SIZE_T count{};
@@ -122,13 +133,22 @@ bool validate_contract(std::uintptr_t base) noexcept {
             contract::resource_flags_read_priority) ||
         !matches(base + contract::resource_flags_visibility_rva,
             contract::resource_flags_read_visibility)) return false;
+    // The state owner's call to the constructor: an E8 call whose target is it.
+    std::array<std::uint8_t, 5> call{};
+    std::int32_t displacement{};
+    if (!read_memory(reinterpret_cast<const void*>(base + contract::state_owner_call_rva), call.data(), call.size()) ||
+        call[0] != 0xe8) return false;
+    std::memcpy(&displacement, call.data() + 1, sizeof(displacement));
+    if (contract::state_owner_call_rva + call.size() + displacement != contract::constructor_rva) return false;
     for (const auto& patch : contract::patches)
         if (patch.expected.size() != patch.replacement.size() ||
             !matches(base + patch.rva, patch.expected)) return false;
     return true;
 }
 
-Buffers allocate_buffers() noexcept {
+void free_buffers(Buffers& buffers) noexcept;
+
+Buffers allocate_buffers(bool states) noexcept {
     Buffers result{};
     result.records = static_cast<std::byte*>(VirtualAlloc(
         nullptr, record_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
@@ -140,19 +160,13 @@ Buffers allocate_buffers() noexcept {
         return {};
     }
     result.resource_flags = reinterpret_cast<std::uint8_t*>(result.metadata) + metadata_bytes;
+    if (!states) return result;
     result.resource_states = static_cast<std::byte*>(VirtualAlloc(
         nullptr, resource_state_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-    if (!result.resource_states) {
-        VirtualFree(result.metadata, 0, MEM_RELEASE);
-        VirtualFree(result.records, 0, MEM_RELEASE);
-        return {};
-    }
-    result.relation_masks = static_cast<std::uint64_t*>(VirtualAlloc(
+    result.relation_masks = !result.resource_states ? nullptr : static_cast<std::uint64_t*>(VirtualAlloc(
         nullptr, relation_mask_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
-    if (!result.relation_masks) {
-        VirtualFree(result.resource_states, 0, MEM_RELEASE);
-        VirtualFree(result.metadata, 0, MEM_RELEASE);
-        VirtualFree(result.records, 0, MEM_RELEASE);
+    if (!result.has_states()) {
+        free_buffers(result);
         return {};
     }
     return result;
@@ -195,16 +209,34 @@ void free_reserved_allocations() noexcept {
     next_reserved_index_table = 0;
 }
 
-Buffers take_buffers() noexcept {
+Buffers take_buffers(bool states) noexcept {
     std::lock_guard lock(allocation_mutex);
+    // Two renderers are built on the constructor: the first takes the reserved
+    // records and metadata, the state owner the reserved states, whichever
+    // comes first. Another instance costs an isolated allocation of its own
+    // and avoids aliasing records.
+    Buffers result{};
     if (reserved_buffers) {
-        const auto result = reserved_buffers;
-        reserved_buffers = {};
+        result.records = std::exchange(reserved_buffers.records, nullptr);
+        result.metadata = std::exchange(reserved_buffers.metadata, nullptr);
+        result.resource_flags = std::exchange(reserved_buffers.resource_flags, nullptr);
+    } else {
+        result = allocate_buffers(false);
+        if (!result) return {};
+    }
+    if (!states) return result;
+    if (reserved_buffers.has_states()) {
+        result.resource_states = std::exchange(reserved_buffers.resource_states, nullptr);
+        result.relation_masks = std::exchange(reserved_buffers.relation_masks, nullptr);
         return result;
     }
-    // The renderer is normally a singleton. Supporting a subsequent native
-    // instance costs another isolated allocation and avoids aliasing records.
-    return allocate_buffers();
+    const auto fresh = allocate_buffers(true);
+    if (!fresh) { free_buffers(result); return {}; }
+    result.resource_states = fresh.resource_states;
+    result.relation_masks = fresh.relation_masks;
+    VirtualFree(fresh.metadata, 0, MEM_RELEASE);
+    VirtualFree(fresh.records, 0, MEM_RELEASE);
+    return result;
 }
 
 IndexTableBuffers take_index_table_buffers() noexcept {
@@ -259,9 +291,15 @@ void* __fastcall construct_index_table(void* self, void* first, void* second) {
 
 void* __fastcall construct_native_renderer(void* self, void* configuration) {
     const auto incoming_error = GetLastError();
-    const auto buffers = take_buffers();
+    // (The hook is jumped to, so this returns where the game's call does.)
+    const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    const bool states = caller == state_owner_return.load(std::memory_order_acquire);
+    const auto buffers = take_buffers(states);
     const auto original = original_constructor.load(std::memory_order_acquire);
-    if (!self || !buffers || !original) allocation_failure();
+    if (!self || !buffers || (states && !buffers.has_states()) || !original) allocation_failure();
+    logging::log(logging::Level::info, logging::Channel::graphics,
+        "Render-resource pool: renderer built from Skate.exe+{:#x}, {}.", caller - installed_base,
+        states ? "with the enlarged resource states" : "without resource states (it has none)");
 
     auto* const record_end = buffers.records + record_bytes;
     auto* const metadata_end = buffers.metadata + native_render_resource_capacity;
@@ -272,8 +310,10 @@ void* __fastcall construct_native_renderer(void* self, void* configuration) {
     store_field(self, vector_begin_offset, buffers.records);
     store_field(self, metadata_begin_offset, buffers.metadata);
     store_field(self, metadata_end_offset, metadata_end);
-    store_field(self, resource_state_vector_offset, buffers.resource_states);
-    store_field(self, relation_mask_vector_offset, relation_mask_begin);
+    if (states) {
+        store_field(self, resource_state_vector_offset, buffers.resource_states);
+        store_field(self, relation_mask_vector_offset, relation_mask_begin);
+    }
     SetLastError(incoming_error);
     auto* const result = original(self, configuration);
 
@@ -281,6 +321,7 @@ void* __fastcall construct_native_renderer(void* self, void* configuration) {
     // stock build. Keep the external values authoritative across construction.
     store_field(self, metadata_begin_offset, buffers.metadata);
     store_field(self, metadata_end_offset, metadata_end);
+    if (states) state_owner.store(reinterpret_cast<std::uintptr_t>(self), std::memory_order_release);
     if (load_field<std::byte*>(self, vector_begin_offset) != buffers.records ||
         load_field<std::byte*>(self, vector_capacity_offset) != record_end ||
         load_field<std::byte*>(self, vector_end_offset) < buffers.records ||
@@ -314,34 +355,6 @@ bool relative_jump(std::uintptr_t instruction, std::uintptr_t destination,
     return true;
 }
 
-std::byte* allocate_near_game_image(std::uintptr_t base) noexcept {
-    SYSTEM_INFO information{};
-    GetSystemInfo(&information);
-    const auto granularity = static_cast<std::uintptr_t>(information.dwAllocationGranularity);
-    const auto align_up = [granularity](std::uintptr_t value) {
-        return (value + granularity - 1) & ~(granularity - 1);
-    };
-    auto cursor = align_up(base + supported_build::game_image_size);
-    const auto limit = base + 0x70000000ULL;
-    while (cursor < limit) {
-        MEMORY_BASIC_INFORMATION region{};
-        if (!VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region))) break;
-        const auto region_base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
-        const auto region_end = region_base + region.RegionSize;
-        if (region.State == MEM_FREE) {
-            const auto candidate = align_up(cursor > region_base ? cursor : region_base);
-            if (candidate <= region_end && region_end - candidate >= resource_flag_stub_page_bytes) {
-                if (auto* const result = static_cast<std::byte*>(VirtualAlloc(
-                        reinterpret_cast<void*>(candidate), resource_flag_stub_page_bytes,
-                        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))) return result;
-            }
-        }
-        if (region_end <= cursor) break;
-        cursor = align_up(region_end);
-    }
-    return nullptr;
-}
-
 template<std::size_t N>
 bool write_stub(std::byte* destination, std::span<const std::uint8_t, N> prefix,
     std::uintptr_t return_address) noexcept {
@@ -357,7 +370,8 @@ bool write_stub(std::byte* destination, std::span<const std::uint8_t, N> prefix,
 }
 
 bool prepare_resource_flag_stubs(std::uintptr_t base) noexcept {
-    resource_flag_stubs = allocate_near_game_image(base);
+    resource_flag_stubs = static_cast<std::byte*>(
+        memory::allocate_near_image(base, supported_build::game_image_size, resource_flag_stub_page_bytes));
     if (!resource_flag_stubs) return false;
     std::memset(resource_flag_stubs, 0xcc, resource_flag_stub_page_bytes);
     if (!write_stub(resource_flag_stubs + priority_stub_offset,
@@ -431,6 +445,33 @@ void restore_patches(std::uintptr_t base, std::size_t count) noexcept {
 }
 } // namespace
 
+void report_native_render_resources() noexcept {
+    const auto owner = state_owner.load(std::memory_order_acquire);
+    std::uintptr_t begin{}, end{};
+    if (!owner || !memory::peek(owner + vector_begin_offset, begin) || !memory::peek(owner + vector_end_offset, end) ||
+        end < begin || end > begin + record_bytes)
+        return;
+    const auto used = (end - begin) / native_render_resource_record_size;
+    static std::size_t said{};
+    static bool warned{}, full{};
+    // (A new high, in steps of 1/32: how close a level came is worth having in a log.)
+    if (used < said + native_render_resource_capacity / 32 && !(used >= native_render_resource_capacity && !full)) return;
+    said = used;
+    const auto percent = used * 100 / native_render_resource_capacity;
+    if (used >= native_render_resource_capacity) {
+        full = true;
+        logging::log(logging::Level::error, logging::Channel::graphics,
+            "Render-resource pool: all {} records are taken; the level needs more than the game can address.", used);
+    } else if (percent >= 90 && !warned) {
+        warned = true;
+        logging::log(logging::Level::warning, logging::Channel::graphics, "Render-resource pool: {} of {} records taken ({}%).", used,
+            native_render_resource_capacity, percent);
+    } else {
+        logging::log(logging::Level::info, logging::Channel::graphics, "Render-resource pool: {} of {} records taken ({}%).", used,
+            native_render_resource_capacity, percent);
+    }
+}
+
 bool start_native_render_resource_pool(std::uintptr_t base, std::string& error) {
     std::lock_guard lock(install_mutex);
     error.clear();
@@ -446,7 +487,7 @@ bool start_native_render_resource_pool(std::uintptr_t base, std::string& error) 
 
     {
         std::lock_guard allocation_lock(allocation_mutex);
-        reserved_buffers = allocate_buffers();
+        reserved_buffers = allocate_buffers(true);
         for (auto& table : reserved_index_tables) table = allocate_index_table_buffers();
         next_reserved_index_table = 0;
         if (!reserved_buffers || !reserved_index_tables[0] || !reserved_index_tables[1]) {
@@ -520,6 +561,7 @@ bool start_native_render_resource_pool(std::uintptr_t base, std::string& error) 
         return false;
     }
 
+    state_owner_return.store(base + contract::state_owner_call_rva + 5, std::memory_order_release);
     original_constructor.store(original, std::memory_order_release);
     original_index_table_constructor.store(original_index, std::memory_order_release);
     const auto queued_index = hook_queue_enable(index_target);

@@ -84,6 +84,10 @@ bool teleport_local_skater(const std::array<float, 3>& position);
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.
 std::optional<float> local_ground_height(float x, float z, float top, float bottom);
+// The first collision surface along the line from `from` to `to` (world positions), from the same
+// client physics world. Empty when the line is clear, collision is still streaming, or the query
+// is unavailable. Client update thread.
+std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>& from, const std::array<float, 3>& to);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

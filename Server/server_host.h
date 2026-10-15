@@ -183,6 +183,7 @@ class Host {
         OutfitBudget outfit_budget;
         SoundBudget sound_budget;
         EffectBudget effect_budget;
+        EffectBudget drone_budget; // FPV drone markers (drone_beacon.h): a few a second
         // Their poses read this pass, passed on once all of the pass's messages are read
         // (relay_poses), and how many of their effects packets were passed on in it.
         std::vector<Packet> relay_poses;

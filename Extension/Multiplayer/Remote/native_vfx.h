@@ -9,6 +9,14 @@ namespace dingosdk::multiplayer {
 void prepare_effects(std::uintptr_t base) noexcept;
 // The local game's contacts since the last call, oldest first: the newest max_impacts.
 std::vector<Impact> drain_impacts();
+// The same contacts as the game played their effects (sparks, dust, landings), newest last, from
+// the last `within_ms` milliseconds, kept apart from the drain: what a board broke on (Board Break).
+// `at` is GetTickCount64's. Any thread.
+struct LocalImpact {
+    Impact impact;
+    std::uint64_t at{};
+};
+std::vector<LocalImpact> recent_local_impacts(std::uint64_t within_ms);
 // For the current PeerScope slot's skater: the game's effect for one of that player's contacts.
 void play_impact(const Impact &impact) noexcept;
 // For the current PeerScope slot's skater, after its outfit changed: the effects its costume

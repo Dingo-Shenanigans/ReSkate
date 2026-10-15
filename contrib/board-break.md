@@ -6,9 +6,18 @@ comes off, flies and lies where it lands, truck and wheels with it. The board is
 the skater has picked it up, rides again or respawns. Built into ReSkate; the broken pieces
 themselves come from a content mod with the deck shapes in it.
 
-Code: [board_break.cpp](../Extension/BoardBreak/board_break.cpp) (client tick and the boards'
-render pose hook), [board_break_model.h](../Extension/BoardBreak/board_break_model.h) (the rules and
-the geometry on their own, with [tests](../Extension/BoardBreak/Test/board_break_tests.cpp)),
+Boards also wear: every hard landing, rail hit, grind and slam takes something out of the board of
+the deck in the game, and a worn board steers lazier, wobbles, breaks from less and in the end can
+give way under the rider. A boardslide or darkslide that comes down too hard onto a rail can snap
+the board and throw the rider. A break cracks (and sounds like metal when it happened on metal),
+and the body's hits in a bail are heard where and as hard as they land. The player sets all of it.
+
+Code: [board_break.cpp](../Extension/BoardBreak/board_break.cpp) (client tick, the boards'
+render pose hook, wear, rail snaps), [board_break_model.h](../Extension/BoardBreak/board_break_model.h)
+(the rules and the geometry on their own) and
+[board_break_feel.h](../Extension/BoardBreak/board_break_feel.h) (the settings, what each hit wears,
+what wear does, rail contacts), both with [tests](../Extension/BoardBreak/Test/board_break_tests.cpp),
+[board_break_audio.cpp](../Extension/BoardBreak/board_break_audio.cpp) (the sounds),
 [board_break_commands.cpp](../Extension/BoardBreak/board_break_commands.cpp) (console), and the
 deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp).
 
@@ -24,6 +33,27 @@ deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp)
   press asks for that deck, the mods are applied and the level loads again with it. The switch is
   saved with the profile.
 - A break plays back in the replay editor as it happened.
+- **Wear and tear.** Each deck's board wears from 0% (new) to 100% (worn out): a landing coming down
+  faster than 3.5 m/s, a hit onto a rail or ledge (harder on a slide than on the trucks), every second
+  of grinding or sliding, and a slam of force 4 or more. The menus call it new, used, worn, beat or
+  done. From a fifth worn the board answers the steering less and its trucks go soft and twist
+  further; worn out, it takes half the force to break and can give way under the rider. A board
+  that broke is a new one once it is whole again; a worn one is renewed with the button New board
+  or `boardbreak worn 0`. The scratches are the game's own board wear (Mod Options > Board wear),
+  cleared with every new board.
+- **Rail snaps.** A boardslide, lipslide or darkslide that comes down onto a rail or ledge at 3 m/s
+  or more (2.2 on the grip) can snap the board in the middle, certainly 3 m/s above that, and the
+  rider goes down with it. Grinds on the trucks never do.
+- **Sounds.** A crack by the size of the break, a metal one on top when the board broke on metal,
+  and the body's hits in a bail, louder the harder they land.
+- **Settings**, on the overlay's Skater page in a card BOARD BREAK SETTINGS (with how worn the board
+  is): always break (for replay clips), rail snaps, wear and tear, break sounds, body hit sounds,
+  break sensitivity (10% to 400%), how many breaks the grip tape holds (0% to 100%), wear speed (0%
+  to 500%), and New board. Always break and wear and tear are also rows in the game's Mod Options.
+  The console has them all: `boardbreak always|sensitivity|joined|rails|wear|wearrate|cracks|bodysounds
+  [value]`, `boardbreak worn [percent]`, `boardbreak status`, and for metal `boardbreak metal
+  mark|unmark|clear|list` and `boardbreak materials`. They are kept, with each deck's wear and the
+  materials marked as metal, in `%LOCALAPPDATA%\ReSkate\BoardBreak.settings`.
 - Without a deck pack installed nothing breaks and nothing is changed.
 
 ## How it works
@@ -83,6 +113,35 @@ deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp)
 - **On foot the grip tape always holds.** A loose piece takes the ground from where the board
   rolled or lies; a board in the skater's hand does not tell where the ground is, and a piece that
   came off there hung in the air at hand height.
+- **Every physics step of the local skater** (a step listener of No Bail's) is where wear, rail
+  snaps and the body's hits are seen. How fast the board came down is its root body's speed in its
+  last step in the air; a landing is that step followed by rolling (physics states 1xx), a hit onto
+  a rail by grinding (4xx). What kind of contact it is comes from the board's axes, from the client
+  tick, against how it moves (`contact_of`): across its way it slides, on its grip it is a darkslide,
+  else it grinds on its trucks.
+- **What wear does to the handling** is four values of the game's own physics tuning
+  (`PhysicsSteering.GeneralScalar`, `PhysicsTrucks.StaticTruckSpringStrength`, `StaticTruckDamping`
+  and `TruckTwistLimit`), each the game's value times a factor of the wear. A value the player
+  changed (the trainer) is left alone, and nothing is changed in a multiplayer session, whose
+  players share their tuning.
+- **A rail snap throws the rider** through No Bail (`no_bail_request_wipeout`): the cause goes in
+  just before the game's selector picks the next state, the way the game's own contact tests
+  record theirs, and the pick becomes Wipeout. The force is kept low (2.5): the game reads a cause's
+  force as how hard the rider was hit, and a slam's (10 and more) with the board flat on a rail
+  threw the rider high into the air.
+- **Metal.** Each contact effect the game plays (sparks, dust, landings) names a material of the
+  level (Extension/Multiplayer/Remote/native_vfx.h, `recent_local_impacts`); Board Break installs
+  that hook once in a world, as multiplayer would. The level's materials have no names that can be
+  read, so which are metal is a list: marked in play with `boardbreak metal mark` while grinding a
+  metal rail, and brought by a pack in `sounds/metal/materials.txt`.
+- **The body's hits** are the ragdoll's contacts that Hall of Meat reads each step, one sound at a
+  time, none below a graze.
+- **The sounds** play through XAudio2 on a thread of their own, several at once and each at its own
+  loudness; 16-bit and 32-bit float wave files both play.
+- **Wider decks, wider trucks.** The game puts each wheel on its truck's bone along the axle, about
+  0.0876 m out. A deck that says so (deck.ini `axle`) has its wheels set further apart, or closer,
+  by the render pose hook: set, not scaled, so a pose that comes by twice is not moved twice, and
+  only what is drawn changes. The deck's own truck model is made to match.
 - Off, the board holds. Without a deck pack in the game the hook returns at once.
 
 ## The deck packs
@@ -106,9 +165,9 @@ A deck is a content mod's copy of the deck model (no code), and comes in one of 
   bones would draw the baseplates turning with the hangers, and such a version reads the pack's
   own layout, never `decks/`.
 
-The name is what the deck goes by. The eight the feature was made with are standard, wide,
-concave, powell, slim, egg, square and shaped, and the console also knows those by number. Any
-other deck that follows the recipe works, with no change to ReSkate:
+The name is what the deck goes by. The ten the feature was made with are standard, wide,
+concave, powell, slim, egg, square, shaped, oldschool and pig, and the console also knows those by
+number. Any other deck that follows the recipe works, with no change to ReSkate:
 
 - Start from the deck mesh as ReSkate Studio exports it (three parts on the bone Deck: the grip
   sheet, the wood, and a plain copy of the whole deck). Studio only takes back a mesh whose
@@ -124,7 +183,13 @@ other deck that follows the recipe works, with no change to ReSkate:
 - The truck model for a deck inside a pack: the game's own, with every vertex that is on the bone
   Deck moved to `eff_truckBack` (behind the middle of the board) or `eff_truckFront` (ahead of
   it). Nothing else changes; Studio takes it back as it is.
-- The sounds are `sounds/light|medium|heavy/*.wav` in the folder of any mod that brings a deck.
+- The sounds are `sounds/light|medium|heavy|metal|body/*.wav` in the folder of any mod that brings
+  a deck (a crack size without sounds of its own takes the nearest that has some), and
+  `sounds/metal/materials.txt` may list the level's materials that are metal, by number.
+- A deck may say something of itself in a `deck.ini` in its folder (a pack's `decks/<name>/`, or the
+  `Board_Break_<Name>` folder): `label = Old School`, its name in the menus, and `axle = 1.17`, how
+  far apart its wheels sit against a standard board's (0.8 to 1.6), for a deck wider or narrower
+  than the standard one.
 
 ## Seen working in game
 
@@ -155,6 +220,11 @@ overlay's deck card: the mods applied in 3.8 s, the level loaded again in 15 s w
 which then broke. In the game's Mod Options > Player page, on 2.0.6: one press on Board Break
 deck is one deck further and one reload.
 
+Wear, rail snaps, sounds and settings, in the player's own game offline, on the first build of
+them (on main at 6c45e96): boardslides that came down onto rails at 4.6 to 7.0 m/s snapped the
+board in the middle; the settings card switched always break on; boards wore, at that time far
+too fast (the rates are a third of that now).
+
 ## Not tried yet
 
 - Multiplayer: other players' boards are only handled by the code path (their stretches are moved
@@ -168,3 +238,10 @@ deck is one deck further and one reload.
   baseplates would follow the hangers.
 - A mod that brings a truck model of its own beside a deck pack: the pack's is the one that loads.
 - A level change in the middle of a break.
+- The rider going down with a board that snapped on a rail, and the material a board broke on: both
+  changed after the build that was played. No material is marked as metal yet, so the metal sound
+  waits for `boardbreak metal mark` or a pack's list.
+- The body's hit sounds in a real bail.
+- Wear's effect on the handling, felt in play, and a worn-out board giving way.
+- The Old School and Pig decks, and wheels set further apart by `axle`, in play.
+- This branch as it is, on main at 6df4f9a: built without warnings and its tests run, not played.

@@ -8,6 +8,8 @@
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "free_flight.h"
 #include "Engine/Game/Skater/first_person_cycle.h"
+#include "drone_flight.h"
+#include "drone_audio.h"
 #include "Engine/Game/Skater/velocity_boost.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
@@ -16,6 +18,8 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <format>
 #include <optional>
 #include <utility>
 
@@ -33,7 +37,10 @@ double source_flight_now() {
     return static_cast<double>(counter.QuadPart) / frequency;
 }
 namespace {
-constexpr std::array<float, 7> debug_speeds{5.0f, 0.6f, 3.0f, 15.0f, 60.0f, 300.0f, 1500.0f};
+// Free-flight speed: any speed between the slowest and fastest the console offers (0.6 to 1500),
+// so the FPV drone's presets and its top speed slider can set their own (drone_flight.h).
+constexpr float min_debug_speed = 0.6f, max_debug_speed = 1500.0f;
+bool valid_debug_speed(float speed) { return std::isfinite(speed) && speed >= min_debug_speed && speed <= max_debug_speed; }
 struct DebugUi { std::uintptr_t object{}; std::uint8_t draw{}; };
 // The UI settings object last verified writable, rechecked once a second: its
 // VirtualQuery otherwise ran on every debug tick. Callers hold SourceState::busy.
@@ -237,7 +244,38 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     } else if (editor_screen::held_camera_pose(next)) {
         // held_camera_pose wrote `next`.
     } else {
-        next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
+        if (drone::is_enabled()) {
+            drone::audio::ensure_started();
+            // The game's own collision query (the Park Editor's ray), so the drone hits ground, walls and ramps.
+            static const drone::World world{[](const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              std::array<float, 3>& hit) {
+                const auto found = local_surface_hit(from, to);
+                if (!found) return false;
+                hit = *found;
+                return true;
+            }};
+            bool flown_by_radio = false;
+            if (drone::radio::calibrating()) {
+                // The controller setup is moving the sticks and switches: hold the drone where it is.
+                next = debug.flight_matrix;
+                flown_by_radio = true;
+            } else if (drone::radio::config().enabled.load(std::memory_order_acquire) && drone::radio::game_in_foreground()) {
+                const auto sample = drone::radio::poll();
+                if (sample.valid) {
+                    drone::apply_switches(sample.axes, sample.buttons);
+                    next = drone::step_drone_radio(debug.flight_matrix, debug.drone_state,
+                        drone::read_sticks(sample.axes), seconds, debug.flight_speed,
+                        drone::live_settings(), &world);
+                    flown_by_radio = true;
+                }
+            }
+            if (!flown_by_radio)
+                next = drone::step_drone_flight(debug.flight_matrix, debug.drone_state, input ? *input : idle, seconds, debug.flight_speed,
+                    drone::live_settings(), &world);
+        } else {
+            debug.drone_state.valid = false; // restart from the current view next time drone mode turns on
+            next = step_free_flight(debug.flight_matrix, input ? *input : idle, seconds, debug.flight_speed);
+        }
     }
     // Runs after the native client update on the same engine thread. Publishing
     // our owned pose each tick also prevents native helper input from drifting it.
@@ -333,7 +371,7 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
             debug.no_bail_restore_after = GetTickCount64() + 2000;
         }
         if (const auto speed = saved::number(saved::flight_speed);
-            speed && std::find(debug_speeds.begin(), debug_speeds.end(), *speed) != debug_speeds.end())
+            speed && valid_debug_speed(*speed))
             debug.flight_speed = *speed;
         if (const auto speed = saved::number(saved::forward_velocity); speed && *speed >= 1.0f && *speed <= 300.0f)
             debug.forward_velocity_speed = *speed;
@@ -349,6 +387,18 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         if (const auto fov = saved::number(saved::free_camera_fov);
             fov && (*fov == 0.0f || (*fov >= first_person_fov_min && *fov <= first_person_fov_max)))
             debug.free_camera_fov = *fov;
+        // Drone tuning saved by `dronetune`.
+        for (std::size_t i = 0; i < drone::knob_count; ++i) {
+            const auto tuned = saved::number(std::format("Drone.Tune.{}", drone::knob_info[i].name).c_str());
+            if (tuned && *tuned >= drone::knob_info[i].lo && *tuned <= drone::knob_info[i].hi) drone::knobs().value[i] = *tuned;
+        }
+        // Drone radio: on/off and which axis is which (signed 1..6), saved by the console commands.
+        if (const auto radio_on = saved::number("Drone.Radio")) drone::radio::config().enabled = *radio_on != 0.0f;
+        for (int i = 0; i < 4; ++i) {
+            const auto axis = saved::number(std::format("Drone.Axis{}", i).c_str());
+            const int signed_axis = axis ? static_cast<int>(std::lround(*axis)) : 0;
+            if (signed_axis != 0 && std::abs(signed_axis) <= 6) drone::radio::config().map[i] = signed_axis;
+        }
         auto arm = debug.first_person_settings;
         if (const auto enabled = profile_runtime::local_preference(saved::spring)) arm.enabled = *enabled;
         for (std::size_t i = 0; i < 3; ++i) {
@@ -533,9 +583,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         return;
     }
     if (request.action == overlay::DebugAction::set_camera_speed) {
-        const auto choice = std::find(debug_speeds.begin(), debug_speeds.end(), request.value);
-        source_require(choice != debug_speeds.end(), "Choose one of the flight speed presets.");
-        debug.flight_speed = *choice;
+        source_require(valid_debug_speed(request.value), "Flight speed must be between 0.6 and 1500.");
+        debug.flight_speed = request.value;
         mark_debug_changed(debug);
         debug.status = "Flight speed updated. Mouse sensitivity is unchanged.";
         return;
@@ -815,7 +864,9 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         debug.flight_matrix = pose;
         debug.flight_time = source_flight_now();
         debug.flight_ready = true;
-        debug.status = "Freecam enabled. WASD / Q E move; hold RMB to look; Shift boosts.";
+        debug.drone_state.valid = false; // a fresh Freecam starts the drone at rest
+        debug.status = drone::is_enabled() ? "Freecam enabled in drone mode. WASD pitch/roll, Q E throttle, hold RMB + mouse to yaw."
+            : "Freecam enabled. WASD / Q E move; hold RMB to look; Shift boosts.";
         return;
     }
     source_require(false, "Unknown debug request.");

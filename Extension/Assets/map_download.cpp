@@ -6,15 +6,18 @@
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include "Launcher/mod_manager.h"
 #include <Windows.h>
+#include <winhttp.h>
 #include <algorithm>
 #include <atomic>
 #include <fstream>
 #include <map>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace dingosdk::map_download {
 namespace {
@@ -23,14 +26,16 @@ namespace package = thunderstore_package;
 
 constexpr wchar_t agent[] = L"ReSkate";
 constexpr char community[] = "reskate";
-// A map is at most a few gigabytes (an archive of one holds four); the download may take as
-// long as a slow line needs for that.
+// Keep the existing package size restriction; time is bounded by the session policy.
 constexpr std::uint64_t largest_download = 8ull << 30;
-constexpr std::uint32_t download_seconds = 4 * 60 * 60;
+namespace policy = multiplayer::map_fetch_policy;
 
 std::mutex mutex;
 std::atomic<Stage> stage{Stage::idle};
+std::atomic<unsigned> workers{};
+std::atomic<std::uint64_t> deadline{}, ask_until{}, transfer_until{};
 multiplayer::MapNeed need;       // under mutex, while not idle
+std::optional<multiplayer::MapNeed> pending; // a fresh attempt waiting for cancelled work to drain
 package::Name wanted;            // under mutex
 std::string version;             // under mutex: the one to download
 std::string newest;              // under mutex
@@ -65,26 +70,55 @@ bool need_server() {
 }
 
 // The session that is waiting on the map is left: there is no map to wait for.
-void leave_session() {
-    if (multiplayer::fetching_map()) multiplayer::queue_command("stop", "", "");
+void leave_session(std::uint64_t expected = 0) {
+    const auto owned = expected ? expected : multiplayer::map_fetch_deadline();
+    if (multiplayer::fetching_map() && owned)
+        multiplayer::queue_command("stop-map-fetch", std::to_string(owned), "");
 }
 
 // Back to idle with the reason said, as the plain "map not installed" notice is.
-void fail(std::string reason) {
+void fail(std::string reason, bool retry = false) {
     std::string text;
     bool update{};
+    std::uint64_t failed_deadline{};
     {
         std::lock_guard lock(mutex);
+        if (stage.exchange(Stage::idle) == Stage::idle) return;
+        failed_deadline = deadline.load();
+        watch.cancel.store(true);
+        stop_install.store(true);
+        apply_wanted.store(false);
         update = !need.have.empty();
         text = "The " + host_word(need.server) + (need.moved ? " changed to " : " is on ") + need.map +
                (update ? ", at another version (" + std::string(multiplayer::map_package_version(need.package)) + ") than the one installed on this PC (" + need.have + "). "
                        : ", which is not installed on this PC. ") + reason;
-        last_failed = need.package;
+        if (!retry) last_failed = need.package;
     }
-    stage.store(Stage::idle);
-    leave_session();
+    if (multiplayer::map_fetch_deadline() == failed_deadline) leave_session(failed_deadline);
     logging::log(logging::Level::warning, logging::Channel::assets, "Map download: {}", text);
     overlay::notify(overlay::NoticeLevel::warning, update ? "Map version differs" : "Map not installed", std::move(text));
+}
+
+bool continuing() {
+    if (stage.load() == Stage::idle) return false;
+    if (policy::expired(deadline.load(), multiplayer::now_us())) {
+        const auto now = stage.load();
+        fail(now == Stage::installing || now == Stage::applying
+            ? "The map could not be installed before the session timeout."
+            : "Map download timed out. Please try joining the server again.", true);
+        return false;
+    }
+    return !watch.cancel.load();
+}
+
+bool advance(Stage from, Stage to) {
+    if (!continuing()) return false;
+    return stage.compare_exchange_strong(from, to);
+}
+
+void ask() {
+    ask_until.store(std::min(deadline.load(), multiplayer::now_us() + policy::confirmation_us));
+    advance(Stage::checking, Stage::asking);
 }
 // The packages of the maps installed here, by level (package_of): forgotten when one is installed.
 struct Known {
@@ -130,11 +164,12 @@ void check() {
                 const auto bytes = read_bytes(mods_root() / name.folder() / L"icon.png", 4 * 1024 * 1024);
                 overlay::set_map_download_icon(bytes);
             } catch (const std::exception&) {}
-            stage.store(Stage::asking);
+            ask();
             return;
         }
         https::Download result;
-        const auto answer = https::get_text(package::details_url(name), 512 * 1024, 20, agent, &result);
+        const auto answer = https::get_text(package::details_url(name), 512 * 1024, 20, agent, &result, &watch);
+        if (!continuing()) return;
         if (!answer)
             return fail(result.http_status == 404 ? "Its mod is not on Thunderstore. Install its map mod yourself and join again."
                                                   : "Thunderstore could not be reached to look for it.");
@@ -151,9 +186,9 @@ void check() {
         }
         // Its icon for the card: small, and not worth holding the question up for long.
         if (!choice.icon.empty())
-            if (const auto png = https::get_text(std::wstring(choice.icon.begin(), choice.icon.end()), 2 * 1024 * 1024, 8, agent))
+            if (const auto png = https::get_text(std::wstring(choice.icon.begin(), choice.icon.end()), 2 * 1024 * 1024, 8, agent, nullptr, &watch))
                 overlay::set_map_download_icon(*png);
-        stage.store(Stage::asking);
+        ask();
     } catch (const std::exception& failure) {
         fail(std::string("Looking for it failed: ") + failure.what());
     }
@@ -175,6 +210,7 @@ void fetch() {
     const auto root = mods_root();
     const auto folder = name.folder();
     try {
+        if (!continuing()) return;
         if (!off) {
             wchar_t temp[MAX_PATH + 1]{};
             const auto length = GetTempPathW(MAX_PATH, temp);
@@ -184,41 +220,61 @@ void fetch() {
             fs::remove(archive, error);
             watch.received.store(0);
             watch.total.store(0);
-            auto result = https::get(package::download_url(name, get), archive, largest_download, download_seconds, agent, &watch);
+            // One transfer budget across fallback requests; leave time for installation and joining.
+            const auto transfer = transfer_until.load();
+            const auto download = [&](const std::string& selected) {
+                watch.deadline_us.store(transfer);
+                return https::get(package::download_url(name, selected), archive, largest_download,
+                    static_cast<std::uint32_t>(policy::transfer_us / policy::second_us), agent, &watch);
+            };
+            auto result = download(get);
             // The host's version can be gone from Thunderstore: the newest is the same map.
             if (!update && !result.ok && result.http_status == 404 && get != fallback && !watch.cancel.load()) {
                 fs::remove(archive, error);
                 logging::log(logging::Level::info, logging::Channel::assets,
                     "Map download: {} {} is not on Thunderstore any more; getting {}.", folder, get, fallback);
-                result = https::get(package::download_url(name, fallback), archive, largest_download, download_seconds, agent, &watch);
+                result = download(fallback);
             }
             if (!result.ok) {
                 fs::remove(archive, error);
-                if (watch.cancel.load()) { stage.store(Stage::idle); leave_session(); return; }
+                if (!continuing()) return;
+                if (result.error == ERROR_TIMEOUT || result.error == ERROR_WINHTTP_TIMEOUT ||
+                    policy::expired(transfer, multiplayer::now_us()))
+                    return fail("Map download timed out. Please try joining the server again.", true);
                 return fail(result.http_status && result.http_status != 200
                     ? "The download failed (Thunderstore answered " + std::to_string(result.http_status) + ")."
                     : "The download failed (Windows error " + std::to_string(result.error) + ").");
             }
-            stage.store(Stage::installing);
+            if (policy::expired(transfer, multiplayer::now_us())) {
+                fs::remove(archive, error);
+                return fail("Map download timed out. Please try joining the server again.", true);
+            }
+            if (!advance(Stage::downloading, Stage::installing)) {
+                fs::remove(archive, error);
+                return;
+            }
             try {
                 // (In the installed one's place when it is the same map at another version. The
                 // game may hold the old one's files open when it was skated this run: then it
                 // cannot be replaced until the game is closed.)
-                launcher_mods::install(root, archive, update, [](float) {}, stop_install, {folder, name.owner, true});
+                launcher_mods::install(root, archive, update, [](float) { continuing(); }, stop_install, {folder, name.owner, true});
             } catch (const std::exception& failure) {
                 fs::remove(archive, error);
+                if (!continuing()) return;
                 return fail(update ? std::string("It could not be replaced while the game runs (") + failure.what() +
                                          "). Close the game, update it from the launcher and join again."
                                    : std::string("It could not be installed: ") + failure.what());
             }
             fs::remove(archive, error);
+            if (!continuing()) return;
             {
                 std::lock_guard known(known_mutex);
                 known_packages.clear();
             }
         } else {
-            stage.store(Stage::installing);
+            if (!advance(Stage::downloading, Stage::installing)) return;
         }
+        if (!continuing()) return;
         // A map and nothing else: this way in is for maps.
         std::error_code error;
         if (!fs::exists(root / folder / L"reskate-levels.json", error) || !live_mods::only_maps(root / folder)) {
@@ -228,16 +284,18 @@ void fetch() {
             return fail("Its package holds more than a map, so it is not installed from here. Install it from the launcher if you trust it.");
         }
         if (off || update) { // (a map at another version may have been switched off: it is wanted now)
+            if (!continuing()) return;
             auto list = mods::scan_mods(mods::engine_data_root());
             if (!list.issue.empty()) return fail("mods.json could not be read: " + list.issue);
             for (auto& entry : list.entries)
                 if (same(entry.mod.name, folder)) entry.enabled = true;
             mods::save_mod_order(list.root, list.entries);
         }
+        if (!continuing()) return;
         logging::log(logging::Level::info, logging::Channel::assets, "Map download: {} is in Mods; applying it.", folder);
         apply_started.store(false);
         apply_wanted.store(true);
-        stage.store(Stage::applying);
+        if (!advance(Stage::installing, Stage::applying)) apply_wanted.store(false);
     } catch (const std::exception& failure) {
         fail(std::string("It could not be installed: ") + failure.what());
     }
@@ -245,10 +303,35 @@ void fetch() {
 
 // One piece of work at a time, which the stage sees to: each is started by the move into its
 // stage. Detached, as the live merge's thread is: the game may close while a map downloads.
-void start(void (*work)()) { std::thread(work).detach(); }
+void start(void (*work)()) {
+    ++workers;
+    try {
+        std::thread([work] {
+            struct Finished { ~Finished() { --workers; } } finished;
+            work();
+        }).detach();
+    } catch (...) {
+        --workers;
+        throw;
+    }
+}
 } // namespace
 
 void offer(const multiplayer::MapNeed& asked) {
+    std::unique_lock lock(mutex);
+    if (stage.load() != Stage::idle && asked.deadline_us && asked.deadline_us != deadline.load()) {
+        lock.unlock();
+        fail("Map download cancelled.", true);
+        lock.lock();
+    }
+    // A cancelled worker/atomic live merge must drain before its globals or files are reused.
+    if (stage.load() == Stage::idle && (workers.load() || (apply_started.load() && live_mods::busy()))) {
+        pending = asked;
+        overlay::notify(overlay::NoticeLevel::warning, "Map download",
+            "The previous map operation is still finishing. Waiting before starting this map.");
+        return;
+    }
+    pending.reset();
     auto idle = Stage::idle;
     const auto name = package::parse_name(asked.package);
     // (Taken before anything is set up, so a second need while this one is in hand is dropped.)
@@ -256,10 +339,7 @@ void offer(const multiplayer::MapNeed& asked) {
         // Another map is in hand (the session moved on while it came). One at a time: the one
         // being fetched is finished, and the session, which now waits on this other one, is left.
         bool other{};
-        {
-            std::lock_guard lock(mutex);
-            other = asked.package != need.package;
-        }
+        other = asked.package != need.package;
         if (other) {
             overlay::notify(overlay::NoticeLevel::warning, "Map changed again",
                 "The " + host_word(asked.server) + " moved on to " + asked.map + " while another map was downloading. Join again when it is done.");
@@ -268,7 +348,6 @@ void offer(const multiplayer::MapNeed& asked) {
         return;
     }
     {
-        std::lock_guard lock(mutex);
         need = asked;
         if (!name || asked.package == last_failed) {
             // (Said once already, or nothing this can fetch: the plain notice.)
@@ -287,23 +366,52 @@ void offer(const multiplayer::MapNeed& asked) {
     }
     overlay::set_map_download_icon({});
     watch.cancel.store(false);
+    const auto now = multiplayer::now_us();
+    deadline.store(asked.deadline_us ? asked.deadline_us : now + policy::session_us);
+    ask_until.store(0);
+    transfer_until.store(0);
+    watch.deadline_us.store(deadline.load());
     stop_install.store(false);
+    apply_wanted.store(false);
+    apply_started.store(false);
     pick_download.store(true);
-    start(check);
+    try {
+        start(check);
+    } catch (...) {
+        lock.unlock();
+        fail("The map download could not be started. Please try joining again.", true);
+    }
 }
 
 void answer(bool download) noexcept {
     try {
         // (A click and a key can answer in the same moment: only the first does.)
-        auto asked = Stage::asking;
-        if (stage.compare_exchange_strong(asked, download ? Stage::downloading : Stage::idle)) {
-            if (download) start(fetch);
-            else leave_session();
-        } else if (asked == Stage::downloading && !download) {
-            watch.cancel.store(true);
+        if (!continuing()) return;
+        const auto now = multiplayer::now_us();
+        if (stage.load() == Stage::asking && policy::expired(ask_until.load(), now)) {
+            fail("The map download was not confirmed within two minutes. Please try joining again.", true);
+            return;
+        }
+        if (!download) {
+            if (stage.load() == Stage::asking || stage.load() == Stage::downloading)
+                fail("Map download cancelled.", true);
+        } else {
+            bool no_time{};
+            {
+                // Publish the stage and claim its worker together. Cancellation cannot allow
+                // a fresh offer to reuse the globals before this thread starts its worker.
+                std::lock_guard lock(mutex);
+                auto asked = Stage::asking;
+                if (!watch.cancel.load() && stage.compare_exchange_strong(asked, Stage::downloading)) {
+                    transfer_until.store(policy::transfer_deadline(deadline.load(), now));
+                    no_time = policy::expired(transfer_until.load(), now) && !installed_off;
+                    if (!no_time) start(fetch);
+                }
+            }
+            if (no_time) fail("Map download timed out. Please try joining the server again.", true);
         }
     } catch (...) {
-        stage.store(Stage::idle);
+        fail("The map download could not be started. Please try joining again.", true);
     }
 }
 
@@ -345,10 +453,42 @@ View view() {
 }
 
 void tick() {
-    const auto now = stage.load();
+    std::optional<multiplayer::MapNeed> next;
+    {
+        std::lock_guard lock(mutex);
+        if (pending && pending->deadline_us != multiplayer::map_fetch_deadline()) pending.reset();
+        if (pending && stage.load() == Stage::idle && !workers.load() &&
+            !(apply_started.load() && live_mods::busy()))
+            next = std::exchange(pending, std::nullopt);
+    }
+    if (next) offer(*next);
+    auto now = stage.load();
+    if (now != Stage::idle) {
+        const auto session = multiplayer::model();
+        // Admission (or completed travel) retires the session deadline. Do not turn an
+        // already successful join into a timeout while waiting out the UI's settling delay.
+        if (now == Stage::joining && session.active && session.connected &&
+            !multiplayer::fetching_map() && !multiplayer::map_fetch_deadline()) {
+            std::lock_guard lock(mutex);
+            if (stage.compare_exchange_strong(now, Stage::idle)) last_failed.clear();
+            now = stage.load();
+        }
+        if (session.active && now != Stage::joining && multiplayer::map_fetch_deadline() != deadline.load())
+            fail("Map download cancelled.", true);
+        if (!session.active && session.status.find("stopped waiting for the map download") != std::string::npos)
+            fail("The server stopped waiting for the map download.", true);
+        if (continuing() && now == Stage::asking &&
+            policy::expired(ask_until.load(), multiplayer::now_us()))
+            fail("The map download was not confirmed within two minutes. Please try joining again.", true);
+        if (continuing() && now == Stage::downloading &&
+            policy::expired(transfer_until.load(), multiplayer::now_us()))
+            fail("Map download timed out. Please try joining the server again.", true);
+        now = stage.load();
+    }
     // The session leaves the map alone until it has been applied (an update's level is one the
     // game already has, and would load from files that are being replaced).
-    multiplayer::hold_map_load(now == Stage::downloading || now == Stage::installing || now == Stage::applying);
+    multiplayer::hold_map_load((now != Stage::idle && now != Stage::joining) ||
+        workers.load() || (apply_started.load() && live_mods::busy()), need_package());
     if (now == Stage::applying) {
         if (apply_wanted.load()) {
             // (A merge of the player's own may be running: wait for it and start this one.)
@@ -371,24 +511,25 @@ void tick() {
             return fail("It is installed, but was left out when the mods were applied (" + live_mods::status() + ").");
         // The level list takes the new map on the next ticks, and the session, which has been
         // trying the map all along, loads it then.
-        join_at.store(GetTickCount64());
-        stage.store(Stage::joining);
+        join_at.store(multiplayer::now_us());
+        advance(Stage::applying, Stage::joining);
         return;
     }
     if (now == Stage::joining) {
-        const auto waited = GetTickCount64() - join_at.load();
-        if (waited < 2500) return;
+        const auto waited = multiplayer::now_us() - join_at.load();
+        if (waited < 2500000) return;
         // Still waiting on it: the game has the mod and cannot find the map in it.
-        if (multiplayer::fetching_map()) {
-            if (waited > 30000) fail("It is installed, but the game still cannot load the map. Restart the game and join again.");
+        const auto session = multiplayer::model();
+        if (multiplayer::fetching_map() || (session.active && !session.connected)) {
+            if (waited >= policy::installed_load_us) fail("It is installed, but the game still cannot load the map. Restart the game and join again.");
             return;
         }
         {
             // Should it not load after all, it is said and not offered round and round.
             std::lock_guard lock(mutex);
-            last_failed = need.package;
+            last_failed.clear();
         }
-        stage.store(Stage::idle);
+        if (!continuing() || !stage.compare_exchange_strong(now, Stage::idle)) return;
         // The session ended while the map came (the host left, the connection dropped): back to it.
         if (!multiplayer::model().active && !multiplayer::queue_command("rejoin", "", ""))
             overlay::notify(overlay::NoticeLevel::warning, "Map installed", "Join the session again from the server browser.");

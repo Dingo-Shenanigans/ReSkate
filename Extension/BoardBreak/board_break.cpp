@@ -9,25 +9,39 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Skater/no_bail.h"
+#include "board_break_audio.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/skater_state.h"
+#include "Extension/HallOfMeat/hall_of_meat_model.h"
+#include "Extension/HallOfMeat/hall_of_meat_skater.h"
+#include "Extension/Multiplayer/Remote/native_vfx.h"
+#include "Extension/Multiplayer/Session/session.h"
+#include "Extension/Progression/script_natives.h"
+#include "Extension/Skater/physics_tuning.h"
 #include <Windows.h>
-#include <mmsystem.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
-#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace dingosdk::board_break {
 namespace {
@@ -35,8 +49,8 @@ constexpr const char* enabled_preference = "BoardBreak";
 // A slam of `heavy` force or more always breaks the board; a lighter one with `light`, rising to
 // certain between 60% of `heavy` and `heavy` (break_chance). Half of all breaks stay joined by the
 // grip tape. Now and then a board gives way under the rider: per second of riding, the nose goes.
-constexpr float heavy = 10.0f, light = 0.25f, joined_share = 0.5f;
-constexpr double gives_way = 0.0001;
+// (board_break_feel.h holds the forces, the chances and what wear does.)
+namespace sstate = addr::skater_state;
 constexpr std::size_t cause_count = 35;   // the collector's cause bytes (+0x28) and forces (+0x4c)
 constexpr std::uint64_t recent_ms = 1500; // a cause belongs to a wipeout this soon before it
 // The board is back in the skater's hand: close to the skater and not lying flat.
@@ -50,6 +64,8 @@ constexpr int root_bone = 1, mount_bone = 2, deck_bone = 3, back_truck_bone = 4,
 constexpr int back_plate_bone = 5, front_plate_bone = 9;
 constexpr std::array<int, 4> carrier{12, 13, 15, 14};
 constexpr std::uint32_t rig_bones = 16;
+// The wheels, each on its truck's bone: back right and left, front right and left.
+constexpr std::array<int, 4> wheel_bones{6, 7, 10, 11};
 
 bool readable(std::uintptr_t p, void* out, std::size_t size) { return size ? memory::peek_bytes(p, out, size) : p >= 0x10000; }
 
@@ -71,6 +87,7 @@ struct Broken {
     std::uint64_t since{};
     bool gave_way{}; // it went under the rider: it stays broken while it is ridden
     bool asked{};    // it was broken from the console, to be looked at: it stays until it is mended there
+    std::string deck; // the deck it was: the one that gets a new board
 };
 struct State {
     // Any thread.
@@ -93,6 +110,23 @@ struct State {
     std::uint64_t ride_when{};
     float break_ground{std::numeric_limits<float>::quiet_NaN()};
     std::mt19937 random{std::random_device{}()};
+    // The player's settings as the physics thread reads them (feel() holds the real ones).
+    std::atomic<bool> always{}, rails{true}, wear_on{true}, body_sounds{true};
+    std::atomic<int> sensitivity{100};
+    // Wear: the board in the game's (for the physics thread), and what the physics thread has
+    // added since the tick took it.
+    std::atomic<float> wear_now{}, wear_added{};
+    // A board that came down too hard onto a rail, seen by the physics thread: the tick breaks it.
+    std::atomic<bool> rail_snap{};
+    std::atomic<int> rail_contact{};
+    std::atomic<float> rail_speed{};
+    // The board's long axis (towards the nose) and its up axis in the world, from the tick.
+    std::mutex axes_mutex;
+    Vec along{}, up{};
+    std::uint64_t axes_at{};
+    // Client thread: the tuning set for wear, and when; when the settings were last saved.
+    std::uint64_t handled_at{}, saved_at{}, session_checked{};
+    bool in_session{}, setup_read{}, effects_hooked{};
 };
 State& state() {
     static auto* value = new State;
@@ -106,6 +140,8 @@ struct RenderEdit {
     std::atomic<int> hinge{};
     std::atomic<float> angle{};
     std::atomic<bool> park{};              // a breakable deck is in the game: whole boards hide their stretches
+    // The deck's own trucks (deck.ini: axle): how far apart the wheels sit against a standard board's.
+    std::atomic<float> axle{1.0f};
 };
 RenderEdit& render_edit() { static RenderEdit value; return value; }
 
@@ -168,6 +204,28 @@ void hold_baseplates(std::uintptr_t buffer) noexcept {
     };
     hold(back_truck_bone, back_plate_bone, back_truck_rest);
     hold(front_truck_bone, front_plate_bone, front_truck_rest);
+}
+
+// A deck's own trucks (deck.ini: axle): the wheels further apart on a wider deck, closer together on
+// a narrower one. The game puts each wheel on its truck's bone along the axle, about 0.0876 m out;
+// that place is set here rather than scaled, so a pose that comes by twice is not moved twice. Only
+// what is drawn changes: the board rides as it always does.
+constexpr float wheel_offset = 0.0876f;
+void spread_wheels(std::uintptr_t buffer) noexcept {
+    const float axle = render_edit().axle.load(std::memory_order_relaxed);
+    if (axle == 1.0f) return;
+    for (const int index : wheel_bones) {
+        PoseBone wheel{};
+        if (!load_bone(bone_at(buffer, index), wheel)) continue;
+        int way = 0; // the axle, in the truck's axes: the largest part of where the wheel sits
+        for (int i = 1; i < 3; ++i)
+            if (std::abs(wheel.position[i]) > std::abs(wheel.position[way])) way = i;
+        const float out = std::abs(wheel.position[way]);
+        if (!(out > 0.05f && out < 0.16f)) continue; // not where the game puts a wheel
+        __try {
+            reinterpret_cast<float*>(bone_at(buffer, index))[8 + way] = std::copysign(wheel_offset * axle, wheel.position[way]);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 }
 
 // ---- the piece that comes off --------------------------------------------------------------------
@@ -303,6 +361,7 @@ void draw_broken(std::uintptr_t base, std::uintptr_t holder, std::uint32_t kept,
         !load_bone(bone_at(buffer, deck_bone), deck))
         return;
     hold_baseplates(buffer);
+    spread_wheels(buffer);
     // From where its animation put it this frame; a pose nobody has written since the last move stays as it is.
     if (const Vec at = place_of(deck); length(at) < 100.0f) (void)store_bone(bone_at(buffer, deck_bone), facing_of(deck), at + away);
     auto layout = lay_out(kept, hinge, angle, turn(facing_of(root), {0, 1, 0}).y, facing_of(mount));
@@ -323,61 +382,447 @@ void park_pieces(std::uintptr_t base, std::uintptr_t holder) {
     const auto buffer = board_pose(base, holder);
     if (!buffer) return;
     hold_baseplates(buffer);
+    spread_wheels(buffer);
     const auto bones = bones_of({});
     for (std::size_t i = 0; i < bones.size(); ++i) (void)store_bone(bone_at(buffer, carrier[i]), bones[i].facing, bones[i].at);
 }
 
-// ---- breaking and mending --------------------------------------------------------------------------
-// The crack of the deck, straight to the speakers (not through the game's mixer): a wave file out
-// of the `sounds` folder of one of Board Break's deck mods. Its subfolders light, medium and heavy
-// hold the sounds for a break of that size, as many as one likes under any names; a size with none
-// of its own takes the nearest size that has some, and wave files in the folder itself serve when
-// no subfolder does.
-void crack_sound(State& s, Size size) {
-    static const std::array<std::vector<std::filesystem::path>, 4> sounds = [] {
-        std::array<std::vector<std::filesystem::path>, 4> found;
-        constexpr std::array<const wchar_t*, 4> names{L"light", L"medium", L"heavy", L""};
+// ---- the player's settings, the deck's setup, wear -------------------------------------------------
+// Kept in %LOCALAPPDATA%\ReSkate\BoardBreak.settings, a line each: the settings by name (as the
+// console knows them), each deck's wear (wear.<deck>=0.37), the materials marked as metal.
+struct Feel {
+    std::mutex mutex;
+    Settings settings;
+    std::map<std::string, float> wear;  // by deck
+    std::set<std::uint16_t> metal;      // marked by the player
+    std::set<std::uint16_t> pack_metal; // a pack's list (sounds/metal/materials.txt)
+    bool loaded{}, dirty{};
+};
+Feel& feel() {
+    static auto* value = new Feel;
+    return *value;
+}
+std::filesystem::path settings_path() {
+    PWSTR raw{};
+    std::filesystem::path result;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
+        result = std::filesystem::path(raw) / L"ReSkate" / L"BoardBreak.settings";
+    if (raw) CoTaskMemFree(raw);
+    return result;
+}
+std::string trimmed(std::string_view text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.remove_prefix(1);
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.remove_suffix(1);
+    return std::string(text);
+}
+template <class T> bool number(std::string_view text, T& out) {
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), out);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
+}
+// Numbers out of a line of them ("12 40, 77").
+std::set<std::uint16_t> numbers_in(std::string_view text) {
+    std::set<std::uint16_t> out;
+    std::string one;
+    const auto take = [&] {
+        unsigned value{};
+        if (!one.empty() && number(std::string_view(one), value) && value <= 0xffff) out.insert(static_cast<std::uint16_t>(value));
+        one.clear();
+    };
+    for (const char c : text) {
+        if (c >= '0' && c <= '9') one += c;
+        else take();
+    }
+    take();
+    return out;
+}
+// Under the lock.
+void load_feel(Feel& f) {
+    if (f.loaded) return;
+    f.loaded = true;
+    try {
+        std::ifstream in(settings_path());
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const auto key = trimmed(std::string_view(line).substr(0, eq));
+            const auto value = trimmed(std::string_view(line).substr(eq + 1));
+            if (key.starts_with("wear.")) {
+                float worn{};
+                if (number(std::string_view(value), worn) && std::isfinite(worn)) f.wear[key.substr(5)] = std::clamp(worn, 0.0f, 1.0f);
+            } else if (key == "metal") f.metal = numbers_in(value);
+            else if (int setting{}; number(std::string_view(value), setting)) (void)set_setting_value(f.settings, key, setting);
+        }
+    } catch (...) {}
+}
+void save_feel(Feel& f) {
+    try {
+        const auto path = settings_path();
+        if (path.empty()) return;
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        std::ofstream out(path, std::ios::trunc);
+        for (const auto& info : setting_info) out << info.name << "=" << setting_value(f.settings, info.name) << "\n";
+        for (const auto& [deck, worn] : f.wear) out << "wear." << deck << "=" << std::format("{:.4f}", worn) << "\n";
+        if (!f.metal.empty()) {
+            out << "metal=";
+            for (const auto m : f.metal) out << m << " ";
+            out << "\n";
+        }
+        f.dirty = false;
+    } catch (...) {}
+}
+// The settings into the atomics the physics thread reads.
+void mirror(State& s, const Settings& st) {
+    s.always.store(st.always, std::memory_order_relaxed);
+    s.rails.store(st.rails, std::memory_order_relaxed);
+    s.wear_on.store(st.wear, std::memory_order_relaxed);
+    s.body_sounds.store(st.body_sounds, std::memory_order_relaxed);
+    s.sensitivity.store(st.sensitivity, std::memory_order_relaxed);
+}
+Settings settings_now() {
+    auto& f = feel();
+    std::lock_guard lock(f.mutex);
+    load_feel(f);
+    return f.settings;
+}
+std::string deck_now(State& s) {
+    std::lock_guard lock(s.names);
+    return s.deck;
+}
+
+// What a deck says of itself, in its folder's deck.ini: `axle` for its trucks (1 = a standard board's;
+// more on a wider deck) and `label`, its name in the menus.
+struct DeckSetup {
+    float axle = 1.0f;
+    std::string label;
+};
+DeckSetup read_deck_setup(std::string_view deck) {
+    DeckSetup out;
+    if (deck.empty()) return out;
+    try {
+        const auto folder = mods::board_break_deck_folder(deck);
+        if (folder.empty()) return out;
+        std::ifstream in(folder / L"deck.ini");
+        std::string line;
+        while (std::getline(in, line)) {
+            if (const auto hash = line.find_first_of("#;"); hash != std::string::npos) line.erase(hash);
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            auto key = trimmed(std::string_view(line).substr(0, eq));
+            for (auto& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            const auto value = trimmed(std::string_view(line).substr(eq + 1));
+            float amount{};
+            if (key == "axle" && number(std::string_view(value), amount) && std::isfinite(amount)) out.axle = std::clamp(amount, 0.8f, 1.6f);
+            else if (key == "label") out.label = value;
+        }
+    } catch (...) {}
+    return out;
+}
+
+// The same, kept a few seconds per deck: the menus ask every frame.
+DeckSetup setup_of(std::string_view deck) {
+    struct Kept {
+        DeckSetup setup;
+        std::uint64_t at{};
+    };
+    static std::mutex mutex;
+    static std::map<std::string, Kept, std::less<>> kept;
+    const auto now = GetTickCount64();
+    {
+        std::lock_guard lock(mutex);
+        if (const auto at = kept.find(deck); at != kept.end() && now - at->second.at < 3000) return at->second.setup;
+    }
+    auto setup = read_deck_setup(deck);
+    std::lock_guard lock(mutex);
+    kept[std::string(deck)] = {setup, now};
+    return setup;
+}
+
+// ---- sounds ---------------------------------------------------------------------------------------
+// Out of the `sounds` folder of one of Board Break's deck mods: light, medium and heavy for the
+// crack of a break that size, metal for a board breaking on metal, body for the body's hits in a
+// bail; as many wave files in each as one likes, under any names. A crack size with none of its own
+// takes the nearest that has some, and wave files in the folder itself serve when no subfolder does.
+// sounds/metal/materials.txt may list the level's materials that are metal.
+void load_sounds() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const auto wavs = [](const std::filesystem::path& folder) {
+            std::vector<std::filesystem::path> found;
+            std::error_code failed;
+            for (std::filesystem::directory_iterator at(folder, failed), end; !failed && at != end; at.increment(failed)) {
+                auto extension = at->path().extension().wstring();
+                for (auto& c : extension) c = static_cast<wchar_t>(towlower(c));
+                if (at->is_regular_file(failed) && extension == L".wav") found.push_back(at->path());
+            }
+            std::sort(found.begin(), found.end());
+            return found;
+        };
         for (const auto& mod : mods::board_break_folders()) {
             std::error_code failed;
-            if (!std::filesystem::is_directory(mod / L"sounds", failed)) continue;
-            for (std::size_t i = 0; i < names.size(); ++i) {
-                for (std::filesystem::directory_iterator at(mod / L"sounds" / names[i], failed), end; !failed && at != end; at.increment(failed)) {
-                    auto extension = at->path().extension().wstring();
-                    for (auto& c : extension) c = static_cast<wchar_t>(towlower(c));
-                    if (at->is_regular_file(failed) && extension == L".wav") found[i].push_back(at->path());
-                }
-                std::sort(found[i].begin(), found[i].end());
+            const auto folder = mod / L"sounds";
+            if (!std::filesystem::is_directory(folder, failed)) continue;
+            const auto loose = wavs(folder);
+            constexpr std::array<std::pair<audio::Kind, const wchar_t*>, 5> kinds{{{audio::Kind::light, L"light"}, {audio::Kind::medium, L"medium"},
+                {audio::Kind::heavy, L"heavy"}, {audio::Kind::metal, L"metal"}, {audio::Kind::body, L"body"}}};
+            for (const auto& [kind, name] : kinds) {
+                auto files = wavs(folder / name);
+                if (files.empty() && kind <= audio::Kind::heavy) files = loose;
+                audio::load(kind, files);
             }
+            try {
+                std::ifstream in(folder / L"metal" / L"materials.txt");
+                std::string line, all;
+                while (std::getline(in, line))
+                    if (const auto hash = line.find('#'); hash != 0) all += " " + line.substr(0, hash);
+                auto& f = feel();
+                std::lock_guard lock(f.mutex);
+                f.pack_metal = numbers_in(all);
+            } catch (...) {}
             break;
         }
-        return found;
-    }();
+    });
+}
+void crack_sound(Size size) {
+    if (!settings_now().crack_sounds) return;
     // Nearest first: a medium break without sounds of its own takes a heavy one before a light one.
-    static constexpr std::array<std::array<std::size_t, 4>, 3> order{{{0, 1, 2, 3}, {1, 2, 0, 3}, {2, 1, 0, 3}}};
-    for (const auto from : order[static_cast<std::size_t>(size)]) {
-        const auto& files = sounds[from];
-        if (files.empty()) continue;
-        const auto& file = files[std::uniform_int_distribution<std::size_t>(0, files.size() - 1)(s.random)];
-        (void)PlaySoundW(file.c_str(), nullptr, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
-        return;
+    static constexpr std::array<std::array<audio::Kind, 3>, 3> order{{{audio::Kind::light, audio::Kind::medium, audio::Kind::heavy},
+                                                                       {audio::Kind::medium, audio::Kind::heavy, audio::Kind::light},
+                                                                       {audio::Kind::heavy, audio::Kind::medium, audio::Kind::light}}};
+    for (const auto kind : order[static_cast<std::size_t>(size)])
+        if (audio::has(kind)) return audio::play(kind, 1.0f);
+}
+
+// ---- what a board broke on --------------------------------------------------------------------------
+// The material of the level the board touched most in the last half second, near `at`: the game's
+// own contact effects say (Extension/Multiplayer/Remote/native_vfx.h).
+std::optional<std::uint16_t> material_near(Vec at, std::uint64_t within_ms, float reach) {
+    std::map<std::uint16_t, int> count;
+    for (const auto& one : multiplayer::recent_local_impacts(within_ms)) {
+        const auto& p = one.impact.position;
+        if (std::hypot(p[0] - at.x, p[1] - at.y, p[2] - at.z) <= reach) ++count[one.impact.material];
+    }
+    std::optional<std::uint16_t> best;
+    int most{};
+    for (const auto& [material, times] : count)
+        if (times > most) best = material, most = times;
+    return best;
+}
+bool is_metal(std::uint16_t material) {
+    auto& f = feel();
+    std::lock_guard lock(f.mutex);
+    return f.metal.contains(material) || f.pack_metal.contains(material);
+}
+
+// ---- wear ----------------------------------------------------------------------------------------
+// Client thread: what the physics thread added goes onto the deck in the game's board.
+void take_wear(State& s, const std::string& deck, float extra = 0.0f) {
+    const float added = s.wear_added.exchange(0.0f, std::memory_order_acq_rel) + extra;
+    if (deck.empty() || added <= 0.0f) return;
+    auto& f = feel();
+    std::lock_guard lock(f.mutex);
+    load_feel(f);
+    auto& worn = f.wear[deck];
+    const auto before = worn;
+    worn = add_wear(worn, added, f.settings.wear_rate);
+    s.wear_now.store(worn, std::memory_order_relaxed);
+    if (worn - before >= 0.01f) say(logging::Level::debug, "a hard hit: the board is {:.1f}% worn now (+{:.1f}).", worn * 100.0f, (worn - before) * 100.0f);
+    if (worn != before) f.dirty = true;
+    if (condition_name(before) != condition_name(worn))
+        say(logging::Level::info, "the {} board is {} now ({:.0f}% worn).", deck_label(deck), condition_name(worn), worn * 100.0f);
+}
+// A board that broke is a new one once it is whole again: no wear, no scratches.
+void new_board(State& s, const std::string& deck) {
+    if (deck.empty()) return;
+    auto& f = feel();
+    {
+        std::lock_guard lock(f.mutex);
+        load_feel(f);
+        f.wear[deck] = 0.0f;
+        f.dirty = true;
+    }
+    if (deck == deck_now(s)) {
+        s.wear_now.store(0.0f, std::memory_order_relaxed);
+        s.wear_added.store(0.0f, std::memory_order_relaxed);
+        profile_runtime::reset_board_wear();
     }
 }
+void add_physics_wear(State& s, float amount) {
+    if (!(amount > 0.0f)) return;
+    float current = s.wear_added.load(std::memory_order_relaxed);
+    while (!s.wear_added.compare_exchange_weak(current, current + amount, std::memory_order_acq_rel)) {}
+}
+// What wear does to the board's handling: four values of the game's physics tuning, the game's own
+// value times handling()'s factor. A value the player changed (the trainer) is left alone; outside
+// a multiplayer session only, which shares tuning between its players.
+struct Tuned {
+    bool tried{}, known{}, wrote{};
+    std::array<std::uint16_t, 4> offset{};
+    std::array<float, 4> game{}, written{};
+};
+Tuned& tuned() {
+    static Tuned value;
+    return value;
+}
+void apply_handling(std::uintptr_t base, std::uintptr_t entity, const Handling& want) {
+    auto& t = tuned();
+    if (!t.known) {
+        physics_tuning::prepare();
+        const auto model = physics_tuning::game_tuning();
+        if (!model) return;
+        constexpr std::array<std::string_view, 4> names{"PhysicsSteering.GeneralScalar", "PhysicsTrucks.StaticTruckSpringStrength",
+                                                         "PhysicsTrucks.StaticTruckDamping", "PhysicsTrucks.TruckTwistLimit"};
+        std::size_t found{};
+        for (std::size_t i = 0; i < model->fields.size() && i < model->field_names.size(); ++i)
+            for (std::size_t k = 0; k < names.size(); ++k)
+                if (model->field_names[i] == names[k] && model->fields[i].real && model->fields[i].offset + 4u <= model->image.size()) {
+                    t.offset[k] = model->fields[i].offset;
+                    std::memcpy(&t.game[k], model->image.data() + t.offset[k], 4);
+                    ++found;
+                }
+        if (!t.tried) {
+            t.tried = true;
+            if (found != names.size()) say(logging::Level::warning, "wear cannot change the handling: {} of the 4 tuning values found.", found);
+        }
+        if (found != names.size()) return;
+        t.known = true;
+    }
+    physics_tuning::Values live;
+    if (!physics_tuning::read_live(base, live)) return;
+    const std::array<float, 4> factor{want.steering, want.spring, want.damping, want.twist};
+    bool change{};
+    for (std::size_t k = 0; k < factor.size(); ++k) {
+        if (t.offset[k] + 4u > live.image.size()) return;
+        float now{};
+        std::memcpy(&now, live.image.data() + t.offset[k], 4);
+        const auto same = [](float a, float b) { return std::abs(a - b) <= 1e-4f * (std::max)(1.0f, std::abs(b)); };
+        if (!same(now, t.game[k]) && !(t.wrote && same(now, t.written[k]))) continue;
+        const float target = t.game[k] * factor[k];
+        t.written[k] = target;
+        if (!same(now, target)) {
+            std::memcpy(live.image.data() + t.offset[k], &target, 4);
+            change = true;
+        }
+    }
+    t.wrote = true;
+    if (change) (void)physics_tuning::write_live(base, entity, live);
+}
+
+// ---- the board's axes, for the physics thread -------------------------------------------------------
+void note_axes(State& s, std::uintptr_t base, std::uintptr_t holder) {
+    const auto buffer = board_pose(base, holder);
+    PoseBone root{}, mount{};
+    if (!buffer || !load_bone(bone_at(buffer, root_bone), root) || !load_bone(bone_at(buffer, mount_bone), mount)) return;
+    const auto facing = unit(facing_of(root) * facing_of(mount));
+    std::lock_guard lock(s.axes_mutex);
+    s.along = turn(facing, {0, 0, 1});
+    s.up = turn(facing, {0, 1, 0});
+    s.axes_at = GetTickCount64();
+}
+bool board_axes(State& s, Vec& along, Vec& up) {
+    std::lock_guard lock(s.axes_mutex);
+    if (!s.axes_at || GetTickCount64() - s.axes_at > 250) return false;
+    along = s.along;
+    up = s.up;
+    return true;
+}
+
+// ---- every physics step of the local skater (No Bail's step listeners) ------------------------------
+// The board's root body velocity (as the grind exit control reads it).
+bool board_velocity(const NoBailSkater& skater, std::array<float, 3>& velocity) noexcept {
+    std::uintptr_t holder{}, physics{}, type{}, bodies{}, owner{};
+    std::uint32_t count{};
+    if (!memory::peek(skater.core + sstate::board_holder_offset, holder) ||
+        !memory::peek(holder + sstate::board_physics_offset, physics) || !memory::peek(physics, type) ||
+        type != skater.base + sstate::board_physics_vtable || !memory::peek(physics + sstate::physics_bodies_offset, bodies) ||
+        !memory::peek(bodies, count) || count != sstate::board_body_count)
+        return false;
+    const auto body = bodies + sstate::board_root_body * sstate::physics_body_size;
+    if (!memory::peek(body + sstate::body_owner_offset, owner) || owner != physics || !memory::peek(body + sstate::body_velocity_offset, velocity))
+        return false;
+    return std::all_of(velocity.begin(), velocity.end(), [](float v) { return std::isfinite(v) && std::abs(v) < 1000; });
+}
+struct StepWatch {
+    bool was_air{};
+    float air_down{}; // how fast the board was coming down, in its last step in the air
+    std::array<std::uint64_t, skater_body::count> body_at{};
+    std::uint64_t any_at{};
+};
+void on_step(const NoBailSkater& skater, float seconds, bool wipeout) noexcept {
+    auto& s = state();
+    if (!s.ready.load(std::memory_order_acquire) || !s.on.load(std::memory_order_relaxed)) return;
+    static StepWatch w; // the physics thread's own
+    thread_local std::mt19937 roll{std::random_device{}()};
+    const auto error = GetLastError();
+    std::uint32_t physics{};
+    if (memory::peek(skater.context + sstate::physics_state_offset, physics)) {
+        std::array<float, 3> v{};
+        const bool known = board_velocity(skater, v);
+        const bool air = physics == 200 || physics == 201;
+        const bool grinding = physics >= 400 && physics < 500;
+        const bool rolling = physics >= 100 && physics < 200;
+        const bool wear_on = s.wear_on.load(std::memory_order_relaxed);
+        Vec along{}, up{};
+        const auto contact = known && board_axes(s, along, up) ? contact_of(along, up, {v[0], v[1], v[2]}) : Contact::grind;
+        if (air && known) w.air_down = -v[1];
+        if (w.was_air && (rolling || grinding)) {
+            const float down = w.air_down;
+            if (wear_on) add_physics_wear(s, rolling ? landing_wear(down) : rail_wear(down, contact != Contact::grind));
+            const bool can_break = s.has_deck.load(std::memory_order_relaxed) && !s.rail_snap.load(std::memory_order_acquire);
+            if (can_break && grinding && contact != Contact::grind && s.rails.load(std::memory_order_relaxed)) {
+                const float chance = s.always.load(std::memory_order_relaxed) ? (down > 1.5f ? 1.0f : 0.0f)
+                                                                              : rail_chance(down, contact, s.sensitivity.load(std::memory_order_relaxed),
+                                                                                            s.wear_now.load(std::memory_order_relaxed));
+                if (std::uniform_real_distribution<float>(0.0f, 1.0f)(roll) < chance) {
+                    s.rail_contact.store(static_cast<int>(contact), std::memory_order_relaxed);
+                    s.rail_speed.store(down, std::memory_order_relaxed);
+                    s.rail_snap.store(true, std::memory_order_release);
+                    // The board snaps under the rider: the rider goes down with it. Gently: the game reads the
+                    // cause's force as how hard it was hit, and a slam's force (10 and more) with the board
+                    // flat on the ground threw the rider high into the air.
+                    no_bail_request_wipeout(2.5f);
+                }
+            }
+        }
+        if (grinding && wear_on) add_physics_wear(s, grind_wear_per_second(contact != Contact::grind) * seconds);
+        w.was_air = air;
+    }
+    // The body's hits in a bail, each where and as hard as it hit.
+    if (s.body_sounds.load(std::memory_order_relaxed) && hall_of_meat::skater_available()) {
+        const auto step = hall_of_meat::read_step(skater, seconds, wipeout);
+        if (step.ragdoll.value_or(false)) {
+            const auto now = GetTickCount64();
+            for (std::size_t i = 1; i < skater_body::count; ++i) {
+                const auto& c = step.body.bodies[i];
+                if (skater_body::foot(static_cast<skater_body::Bone>(i)) || !c.touching || c.impact < body_hit) continue;
+                if (now - w.body_at[i] < 220 || now - w.any_at < 70) continue;
+                w.body_at[i] = w.any_at = now;
+                audio::play(audio::Kind::body, body_loudness(c.impact));
+                break;
+            }
+        }
+    }
+    SetLastError(error);
+}
+
+// ---- breaking and mending --------------------------------------------------------------------------
 // `carried`: the skater is on foot with the board. The grip tape always holds then: a piece that
 // came off would have to fall to the ground under the skater's feet, and where that is the board
 // in a hand does not tell (a loose piece takes the ground from where the board rolled or lies).
 bool snap(State& s, std::uintptr_t board, std::optional<Place> at, bool gave_way, bool carried, std::string_view why, bool asked = false) {
     if (!s.has_deck.load(std::memory_order_acquire) || s.broken || !board) return false;
     const auto place = at ? *at : static_cast<Place>(std::uniform_int_distribution<int>(0, 2)(s.random));
-    const bool joined = carried || std::uniform_real_distribution<float>(0.0f, 1.0f)(s.random) < joined_share;
+    const bool joined = carried || std::uniform_real_distribution<float>(0.0f, 1.0f)(s.random) < settings_now().joined / 100.0f;
     const auto now = GetTickCount64();
     s.parts = broken_at(place, joined);
     s.angle = s.parts.hinge == Hinge::fold ? std::uniform_real_distribution<float>(0.35f, 1.0f)(s.random)
                                            : std::uniform_real_distribution<float>(0.30f, 0.65f)(s.random);
     s.break_ground = s.ride_when && now - s.ride_when < 400 ? s.ride_height : std::numeric_limits<float>::quiet_NaN();
     ++s.flights;
-    s.broken = Broken{board, now, gave_way, asked};
+    s.broken = Broken{board, now, gave_way, asked, deck_now(s)};
     s.back_since = 0;
-    crack_sound(s, break_size(place, joined, s.angle));
+    crack_sound(break_size(place, joined, s.angle));
     say(logging::Level::debug, "the board broke at the {}{} ({}).", place_names[static_cast<std::size_t>(place)],
         joined ? ", held together by the grip tape" : "", why);
     return true;
@@ -385,8 +830,20 @@ bool snap(State& s, std::uintptr_t board, std::optional<Place> at, bool gave_way
 void mend(State& s, std::string_view why) {
     if (!s.broken) return;
     say(logging::Level::debug, "the board is whole again after {:.1f} s ({}).", (GetTickCount64() - s.broken->since) / 1000.0, why);
+    // A board that really broke is a new one now; one broken from the console was only looked at.
+    if (!s.broken->asked) new_board(s, s.broken->deck);
     s.broken.reset();
     s.parts = {};
+}
+// A board that broke on metal (a rail, a bench's edge, a car) sounds like it.
+void metal_sound(std::uintptr_t base, std::uintptr_t holder) {
+    Vec at{};
+    Quat facing{};
+    if (!board_place(base, holder, at, facing)) return;
+    const auto material = material_near(at, 600, 3.0f);
+    const bool metal = material && is_metal(*material);
+    if (metal && settings_now().crack_sounds) audio::play(audio::Kind::metal, 1.0f);
+    say(logging::Level::debug, "it broke on material {}{}.", material ? std::to_string(*material) : std::string("unknown"), metal ? " (metal)" : "");
 }
 // Where the board is relative to the skater: how far, and how flat it lies (1 = flat on the ground
 // either way up, 0 = on its edge, as when it is carried).
@@ -473,6 +930,16 @@ bool start(std::uintptr_t base) noexcept {
     }
     s.base.store(base, std::memory_order_release);
     s.on.store(profile_runtime::local_preference(enabled_preference).value_or(false), std::memory_order_release);
+    {
+        auto& f = feel();
+        std::lock_guard lock(f.mutex);
+        load_feel(f);
+        mirror(s, f.settings);
+    }
+    // Rail snaps, wear and the body's hits come from each physics step of the local skater.
+    if (!add_no_bail_step_listener(&on_step))
+        logging::write(logging::Level::warning, logging::Channel::skater,
+            "Board Break: No Bail has no room for its physics step listener: no rail snaps, wear or body sounds.");
     const auto in_game = mods::board_break_in_play();
     {
         std::lock_guard lock(s.names);
@@ -545,10 +1012,31 @@ void on_client_tick(std::uintptr_t client) noexcept {
             wanted.swap(s.wanted_deck);
         }
         s.has_deck.store(in_game, std::memory_order_release);
+        if (changed || !s.setup_read) {
+            s.setup_read = true;
+            const auto setup = read_deck_setup(deck_in_game);
+            render_edit().axle.store(setup.axle, std::memory_order_release);
+            {
+                auto& f = feel();
+                std::lock_guard lock(f.mutex);
+                load_feel(f);
+                const auto worn = f.wear.find(deck_in_game);
+                s.wear_now.store(worn == f.wear.end() ? 0.0f : worn->second, std::memory_order_relaxed);
+            }
+            if (in_game) load_sounds();
+            if (in_game && setup.axle != 1.0f)
+                say(logging::Level::info, "the {} deck's wheels sit {:.2f} as far apart as a standard board's.", deck_label(deck_in_game), setup.axle);
+        }
         if (changed) say(logging::Level::info, "the deck in the game is now: {}{}.", deck_label(deck_in_game), in_game ? "" : " (boards cannot break)");
         if (!wanted.empty() && wanted != deck_in_game && mods::save_board_break_deck(wanted)) {
             mend(s, "another deck");
             say(logging::Level::info, "deck {} chosen. {}", deck_label(wanted), live_mods::apply(true));
+        }
+        if (NoBailSkater probe; in_game && !s.effects_hooked && no_bail_skater(probe)) {
+            // What a board broke on comes from the game's contact effects (native_vfx.h). The hook is
+            // installed once, in a world (multiplayer would do it there too).
+            s.effects_hooked = true;
+            multiplayer::prepare_effects(base);
         }
         if (in_game && !s.hooked) {
             // The boards' render pose hook is shared with multiplayer and first person, and only
@@ -579,7 +1067,33 @@ void on_client_tick(std::uintptr_t client) noexcept {
             return;
         }
         s.board_seen = now;
+        note_axes(s, base, holder);
         if (s.broken && s.broken->board != board) mend(s, "the skater has another board");
+        // What wear has done, onto the board; and what that does to its handling.
+        take_wear(s, deck_in_game);
+        if (now - s.handled_at > 500) {
+            s.handled_at = now;
+            if (now - s.session_checked > 2000) {
+                s.session_checked = now;
+                const auto session = multiplayer::model();
+                s.in_session = session.active || session.connected;
+            }
+            const auto st = settings_now();
+            const bool worn = s.on.load(std::memory_order_acquire) && st.wear && !s.in_session;
+            apply_handling(base, skater.entity, worn ? handling(s.wear_now.load(std::memory_order_relaxed)) : Handling{});
+        }
+        if (now - s.saved_at > 5000) {
+            s.saved_at = now;
+            auto& f = feel();
+            std::lock_guard lock(f.mutex);
+            if (f.dirty) save_feel(f);
+        }
+        // A board that came down too hard onto a rail in a slide (the physics thread saw it).
+        if (s.rail_snap.exchange(false, std::memory_order_acq_rel) && s.on.load(std::memory_order_acquire) && !s.broken) {
+            const auto contact = static_cast<std::size_t>(s.rail_contact.load(std::memory_order_relaxed));
+            const auto what = std::format("a {} onto a rail at {:.1f} m/s", contact_names[(std::min)(contact, contact_names.size() - 1)], s.rail_speed.load());
+            if (snap(s, board, Place::mid, false, false, what)) metal_sound(base, holder);
+        }
         watch_physics_state(client, skater.entity);
         const auto watch = watched_physics_state();
         if (s.wanted_mend.exchange(false, std::memory_order_acq_rel)) mend(s, "asked for");
@@ -608,13 +1122,24 @@ void on_client_tick(std::uintptr_t client) noexcept {
                 if (hit->reason.load() < 0 || now - hit->at.load() > recent_ms) hit = &last_cause();
                 const bool known = now - hit->at.load() <= recent_ms && hit->reason.load() >= 0;
                 const auto force = known ? hit->force.load() : 0.0f;
-                if (on && !s.broken && std::uniform_real_distribution<float>(0.0f, 1.0f)(s.random) < break_chance(force, heavy, light))
-                    (void)snap(s, board, std::nullopt, false, watch.previous >= 500 && watch.previous < 600, std::format("a slam of force {:.1f}", force));
+                const auto st = settings_now();
+                if (on && st.wear) take_wear(s, deck_in_game, slam_wear(force));
+                const float chance = st.always ? 1.0f : slam_chance(force, st.sensitivity, s.wear_now.load(std::memory_order_relaxed));
+                if (on && !s.broken && std::uniform_real_distribution<float>(0.0f, 1.0f)(s.random) < chance) {
+                    // Nose first it goes at the nose, tail first at the tail, flat mostly in the middle.
+                    Vec along{}, up{};
+                    const float slope = board_axes(s, along, up) ? -along.y : 0.0f;
+                    const auto place = place_of_break(slope, false, std::uniform_real_distribution<float>(0.0f, 1.0f)(s.random));
+                    if (snap(s, board, place, false, watch.previous >= 500 && watch.previous < 600,
+                            std::format("a slam of force {:.1f}{}", force, st.always ? ", set to always break" : "")))
+                        metal_sound(base, holder);
+                }
             }
             // Now and then a board simply gives way under the rider: the nose goes.
             if (on && !s.broken && s.rode_at && riding(watch.state)) {
                 const auto seconds = (std::min<std::uint64_t>)(now - s.rode_at, 250) / 1000.0;
-                if (std::uniform_real_distribution<double>(0.0, 1.0)(s.random) < gives_way * seconds)
+                const float worn = s.wear_on.load(std::memory_order_relaxed) ? s.wear_now.load(std::memory_order_relaxed) : 0.0f;
+                if (std::uniform_real_distribution<double>(0.0, 1.0)(s.random) < gives_way_per_second(worn) * seconds)
                     (void)snap(s, board, Place::nose, true, false, "it gave way while riding");
             }
             s.rode_at = now;
@@ -660,6 +1185,7 @@ std::string deck() {
 }
 std::string deck_label(std::string_view deck) {
     if (deck.empty()) return "None";
+    if (auto title = setup_of(deck).label; !title.empty()) return title;
     std::string name(deck);
     bool start = true;
     for (auto& c : name) {
@@ -688,4 +1214,84 @@ std::string choose_deck(std::string wanted) {
 }
 void snap(int place) noexcept { state().wanted_snap.store(place >= 0 && place < 3 ? place : 3, std::memory_order_release); }
 void mend() noexcept { state().wanted_mend.store(true, std::memory_order_release); }
+
+Settings settings() noexcept {
+    try {
+        return settings_now();
+    } catch (...) { return {}; }
+}
+bool set_setting(std::string_view name, int value) noexcept {
+    try {
+        auto& f = feel();
+        std::lock_guard lock(f.mutex);
+        load_feel(f);
+        if (!set_setting_value(f.settings, name, value)) return false;
+        mirror(state(), f.settings);
+        save_feel(f);
+        return true;
+    } catch (...) { return false; }
+}
+float wear() noexcept { return state().wear_now.load(std::memory_order_relaxed); }
+void set_wear(float value) noexcept {
+    try {
+        auto& s = state();
+        const auto deck = deck_now(s);
+        if (deck.empty()) return;
+        value = std::clamp(value, 0.0f, 1.0f);
+        {
+            auto& f = feel();
+            std::lock_guard lock(f.mutex);
+            load_feel(f);
+            f.wear[deck] = value;
+            save_feel(f);
+        }
+        s.wear_now.store(value, std::memory_order_relaxed);
+        if (value == 0.0f) profile_runtime::reset_board_wear();
+    } catch (...) {}
+}
+std::string metal_command(std::string_view action) {
+    auto& f = feel();
+    if (action == "mark" || action == "unmark") {
+        const auto material = material_near({}, 1500, std::numeric_limits<float>::infinity());
+        if (!material) return "No contacts in the last second and a half: grind the rail first, then mark it.";
+        std::lock_guard lock(f.mutex);
+        load_feel(f);
+        if (action == "mark") f.metal.insert(*material);
+        else f.metal.erase(*material);
+        save_feel(f);
+        return std::format("Material {} is {} metal.", *material, action == "mark" ? "now" : "no longer");
+    }
+    std::lock_guard lock(f.mutex);
+    load_feel(f);
+    if (action == "clear") {
+        f.metal.clear();
+        save_feel(f);
+        return "No material is marked as metal now (a pack's own list still counts).";
+    }
+    std::string list;
+    for (const auto m : f.metal) list += (list.empty() ? "" : ", ") + std::to_string(m);
+    std::string pack;
+    for (const auto m : f.pack_metal) pack += (pack.empty() ? "" : ", ") + std::to_string(m);
+    return "Metal: " + (list.empty() ? std::string("none marked") : list) + "; from the deck pack: " + (pack.empty() ? std::string("none") : pack) + ".";
+}
+std::string materials_report() {
+    std::map<std::uint16_t, int> count;
+    for (const auto& one : multiplayer::recent_local_impacts(3000)) ++count[one.impact.material];
+    if (count.empty()) return "No contacts in the last 3 seconds.";
+    std::string out = "Materials touched in the last 3 s:";
+    for (const auto& [material, times] : count) out += std::format(" {} ({}x{})", material, times, is_metal(material) ? ", metal" : "");
+    return out + ".";
+}
+std::string status() {
+    auto& s = state();
+    if (!available()) return "Board Break is unavailable for this game build.";
+    const auto st = settings_now();
+    const auto deck = deck_now(s);
+    const auto worn = s.wear_now.load(std::memory_order_relaxed);
+    return std::format("Board Break {}; deck {}; the board is {} ({:.0f}% worn); sensitivity {}%, always break {}, rail snaps {}, wear {} at {}%, "
+                       "grip holds {}% of breaks, crack sounds {}, body sounds {}.",
+        s.on.load() ? "on" : "off", deck_label(deck), condition_name(worn), worn * 100.0f,
+        st.sensitivity, st.always ? "on" : "off", st.rails ? "on" : "off", st.wear ? "on" : "off", st.wear_rate, st.joined,
+        st.crack_sounds ? "on" : "off", st.body_sounds ? "on" : "off");
+}
 } // namespace dingosdk::board_break

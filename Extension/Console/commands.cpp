@@ -20,24 +20,23 @@ void register_console_commands(Commands &registry) {
         if (args.empty()) {
             out("Enter a variable by itself to read it, or follow it with a value: "
                 "noclip 1, nobail 0, flyspeed 60.");
-            out("Use commands [prefix] to list entries, help <command> for details, "
-                "and Tab to complete names and "
-                "arguments.");
+            out("Use commands [prefix] to list entries, help <command> for details and the commands under it "
+                "(help perf, help mp, help trainer), and Tab to complete names and arguments.");
             out("Groups: Movement, Gameplay, World, Graphics, Progression, Objects, "
                 "Engine, Console.");
             return;
         }
         const auto &name = std::get<std::string>(args[0]);
         const auto *entry = registry.find(name);
+        const auto below = registry.under(entry ? entry->name : name);
+        const auto list_below = [&below, &out] {
+            for (const auto *item : below)
+                out(Commands::usage(*item) + (item->description.empty() ? "" : " - " + item->description));
+        };
         if (!entry) {
-            bool found = false;
-            for (const auto &item : registry.entries())
-                if (ascii_case_insensitive_starts_with(item.name, name + " ")) {
-                    out(Commands::usage(item) + (item.description.empty() ? "" : " - " + item.description));
-                    found = true;
-                }
-            if (!found)
+            if (below.empty())
                 out("error: Unknown help topic.");
+            list_below();
             return;
         }
         out(Commands::usage(*entry));
@@ -59,6 +58,10 @@ void register_console_commands(Commands &registry) {
         }
         if (entry->reset)
             out("Restore: reset " + entry->name);
+        // `perf` is a command of its own and the first word of `perf hud`, `perf status` and the rest.
+        if (!below.empty())
+            out(entry->name + " commands:");
+        list_below();
     };
     registry.add(std::move(help));
     auto list = action("commands", "List commands and variables, optionally filtered by prefix", Group::console,

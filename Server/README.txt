@@ -250,6 +250,11 @@ sync_effects       Let players see each other's skater effects (default true):
                    relays none and players' games show each other without
                    them, which saves a little traffic and drawing on a busy
                    server. Console: effects on|off.
+sync_drones        Let players see each other's FPV drones (default true): the
+                   marker where a player flying ReSkate's drone mode has
+                   their drone. false relays none, and players' games
+                   neither send their drone nor show anyone else's.
+                   Console: drones on|off.
 announce_throwdowns  Tell everyone in chat when a throwdown drop is placed
                    (default true).
 
@@ -590,6 +595,7 @@ or Travel, and voice, distances, placement and kicks from the Multiplayer menu.
   objects <number>|off          How many objects each player may have placed.
   object-scaling on|off         Whether players may resize the objects they place.
   effects on|off                Whether players see each other's skater effects.
+  drones on|off                 Whether players see each other's FPV drones.
   noclip on|off   nobail on|off   boosts on|off
                                 What players may use (admins always can).
   tuning on|off                 Everyone on the game's own physics tuning.

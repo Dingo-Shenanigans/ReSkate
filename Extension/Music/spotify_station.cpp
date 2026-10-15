@@ -8,6 +8,7 @@
 #include "spotify_rows.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
+#include <set>
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -58,7 +59,13 @@ std::vector<std::uintptr_t> again;
 // What each of the game's music channels last began (its metadata asset).
 std::array<std::uintptr_t, 16> channel_song{};
 std::uintptr_t current_artist{}, current_title{};
-std::vector<std::unique_ptr<char[]>> kept;
+// The texts the game's songs are made to read: each kept once, for as long as the game runs
+// (the game holds their addresses). A set's strings stay where they are as it grows.
+//
+// They were copied anew on every call of show(), which is every frame while the station's own
+// song cannot be made to read (its asset gone after a change of map, or 64 songs shown
+// already): memory that only ever grew, by two copies a frame (reported 2026-10-13).
+std::set<std::string, std::less<>> kept;
 
 bool poke(std::uintptr_t address, std::uintptr_t value) noexcept {
     __try {
@@ -73,10 +80,7 @@ bool there(std::uintptr_t metadata) noexcept {
     return metadata && memory::peek(metadata, table) && table == metadata_table;
 }
 std::uintptr_t keep(const std::string& text) {
-    auto copy = std::make_unique<char[]>(text.size() + 1);
-    std::memcpy(copy.get(), text.c_str(), text.size() + 1);
-    kept.push_back(std::move(copy));
-    return reinterpret_cast<std::uintptr_t>(kept.back().get());
+    return reinterpret_cast<std::uintptr_t>(kept.insert(text).first->c_str());
 }
 // (With the mutex held.)
 void restore_locked() noexcept {
@@ -226,6 +230,23 @@ void bound(std::uint32_t channel, bool music_channel, std::uint32_t playlist, st
     }
 }
 
+// The map is about to change, and the game's songs with it.
+//
+// A song is in the game's registry under its artist and title, and is taken out of it by them
+// when its bundle is unloaded. One that reads as Spotify's is looked for under Spotify's
+// words and not found, so its own entry stays, pointing at an asset that is freed; the game
+// then reads that asset as it registers the song again for the new map (Skate.exe+0x3dd1db0
+// from 0x43e260, on joining a session with a station on, 2026-10-13). So every song is given
+// its own words back first, and none is remembered: their assets are not the next map's.
+void before_level_transition() noexcept {
+    try {
+        std::lock_guard lock(mutex);
+        restore_locked();
+        again.clear();
+        channel_song.fill(0);
+        for (auto& station : stations) station.metadata = 0;
+    } catch (...) {}
+}
 void restore_presentation() noexcept {
     std::lock_guard lock(mutex);
     // (While a station is on they are only put back for a moment, for the catalog to be read.)

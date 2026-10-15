@@ -220,6 +220,10 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         console(m.board_break.enabled ? "boardbreak 0" : "boardbreak 1", m.board_break.available);
     } else if (command == "board-break-deck") {
         console("boardbreak deck next", m.board_break.available && m.board_break.has_deck);
+    } else if (command == "board-break-always") {
+        console(m.board_break.always ? "boardbreak always 0" : "boardbreak always 1", m.board_break.available);
+    } else if (command == "board-break-wear") {
+        console(m.board_break.wear ? "boardbreak wear 0" : "boardbreak wear 1", m.board_break.available);
     } else if (command == "grind-exits") {
         console(m.grind_exit.enabled ? "grindexit exits off" : "grindexit exits on", m.grind_exit.available);
     } else if (command == "grind-exit-sides") {
@@ -341,6 +345,10 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
         button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
             m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
+        toggle(p.main, "board-break-always", "Board Break: always break", m.board_break.always,
+            m.board_break.available && m.board_break.enabled && cb.queue_console_command);
+        toggle(p.main, "board-break-wear", "Board Break: wear and tear", m.board_break.wear,
+            m.board_break.available && m.board_break.enabled && cb.queue_console_command);
         const auto& grind = m.grind_exit;
         const bool grind_console = grind.available && cb.queue_console_command;
         toggle(p.main, "grind-exits", "Grind exit triggers", grind.enabled, grind_console);

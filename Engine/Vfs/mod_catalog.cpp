@@ -220,6 +220,20 @@ std::vector<std::filesystem::path> board_break_folders() noexcept {
     } catch (...) {}
     return found;
 }
+std::filesystem::path board_break_deck_folder(std::string_view deck) noexcept {
+    try {
+        const auto wanted = lower(deck);
+        std::error_code error;
+        for (fs::directory_iterator at(engine_data_root() / L"Mods", error), end; !error && at != end; at.increment(error)) {
+            if (!at->is_directory(error)) continue;
+            const auto inside = decks_inside(at->path());
+            for (const auto& one : inside)
+                if (one.first == wanted) return one.second;
+            if (inside.empty() && board_break_deck_of(at->path().filename().string()) == wanted) return at->path();
+        }
+    } catch (...) {}
+    return {};
+}
 std::vector<std::string> installed_board_break_decks() noexcept {
     std::vector<std::string> found;
     try {

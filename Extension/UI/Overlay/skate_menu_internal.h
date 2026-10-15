@@ -74,6 +74,8 @@ void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
 void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Music/music_page.cpp
 void music_page(SkateMenu&, const Model&, const CallbacksV3&);
+// The FPV drone (drone_page.cpp).
+void drone_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp
 void trainer_page(SkateMenu&, const Model&, const CallbacksV3&);
 bool trainer_page_wanted();

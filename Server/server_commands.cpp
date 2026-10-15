@@ -19,7 +19,7 @@ constexpr std::string_view help_text =
     "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> [minutes|restart] | kick-time <minutes>|restart | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
     "map <name, e.g. San Vansterdam> | maps [reload] | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
     "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off | bone-reach <0.5-20>|off\n"
-    "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
+    "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | drones on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
     "tpall [player] | tphere <player> | teleport <player|SteamID64,SteamID64,...> <player|x y z (y is up)>\n"
     "votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>] | vote-cancel\n"
     "votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off\n"
@@ -609,6 +609,13 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         config_.sync_effects = *value;
         return changed(*value ? "Players see each other's skater effects."
                               : "Players no longer see each other's skater effects. Ones already showing stay until that player's skater is shown again.");
+    }
+    if (name == "drones") {
+        const auto value = on_off(argument);
+        if (!value) return std::string("drones on|off (now ") + (config_.sync_drones ? "on" : "off") + ")";
+        config_.sync_drones = *value;
+        return changed(*value ? "Players see each other's FPV drones."
+                              : "Players no longer see each other's FPV drones.");
     }
     if (name == "votes") {
         const auto [text, did] = votes_command(argument);

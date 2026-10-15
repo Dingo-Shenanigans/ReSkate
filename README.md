@@ -83,6 +83,21 @@ CachyOS: the launcher, the server browser, joining a public server and hosting a
 custom map and then join a server on another map, the screen can stay black
 ([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
 
+### Multiplayer map downloads
+
+Missing multiplayer custom maps can be downloaded from Thunderstore after confirmation.
+The confirmation expires after two minutes. Checking, downloading, installing, applying and
+joining share one 30-minute budget; HTTP transfers get at most 27 minutes and leave three minutes
+for completion (confirmation and metadata checks reduce the available transfer time).
+Dedicated servers and player-hosted lobbies enforce the same overall limit on their own
+monotonic clocks. Ordinary map loading still gets 180 seconds; loading after a live installation
+still gets 30 seconds, capped by the remaining budget.
+
+Timeouts cancel HTTP transfers and remove incomplete temporary downloads. Installation stops
+before replacing an existing mod when cancellation is observed. A filesystem commit or live
+merge already in progress finishes safely rather than being forcibly interrupted; it cannot
+restart a timed-out join. Retry after that work has finished, without restarting ReSkate.
+
 ### Controls
 
 | Key | Opens |
