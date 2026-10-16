@@ -522,7 +522,7 @@ void ServerEngine::worker_loop() {
             next_advertise = now + std::chrono::seconds(2);
             const bool allowed = !text::contains_bad_words(config_.name);
             steam_->advertise({config_.name, host_->map_name(), host_->players(), config_.max_players, !config_.password.empty(),
-                             config_.listed && allowed, host_->secret(), host_->direct_port()});
+                             config_.listed && allowed, host_->secret(), host_->direct_port(), config_.mode});
         }
 
         // Snapshot stats

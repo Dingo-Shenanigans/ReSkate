@@ -17,6 +17,7 @@
 #include "Engine/Game/World/client_state.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/RoadRash/road_rash.h"
+#include "Extension/CustomModes/custom_modes.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Extension/BoardBreak/board_break_audio.h"
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
@@ -882,6 +883,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::drone::outfit::on_client_tick();
     dingosdk::board_break::on_client_tick(client);
     dingosdk::grind_exit_control::on_client_tick(client);
+    dingosdk::custom_modes::tick();
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;
     DINGO_PROFILE_ZONE("tick/update_model/world model (500 ms)");
@@ -1020,6 +1022,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.progression = dingosdk::local_profile_progression();
     model.player_card = dingosdk::local_profile_player_card();
     model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
+    model.custom_modes = {dingosdk::custom_modes::list(), dingosdk::custom_modes::host_state()};
     model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood()};
     const auto breakable_deck = dingosdk::board_break::deck();
     model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),

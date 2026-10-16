@@ -7,6 +7,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/CustomModes/custom_modes.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
@@ -260,7 +261,8 @@ void insert(const Context& context) {
     bool has_tools{};
     { std::lock_guard callbacks_lock(callbacks_mutex); has_tools = tools_callbacks.read_model != nullptr; }
     const bool offline = launcher::offline_mode();
-    const auto missing = menu_view::missing_tabs(keys, our_key, has_tools, !offline);
+    // Offline the Multiplayer page is there only for ReSkate's own modes (custom_modes.h), played alone.
+    const auto missing = menu_view::missing_tabs(keys, our_key, has_tools, !offline || custom_modes::count() > 0);
     // Offline, the Multiplayer tab whose key ends the scan above never exists.
     if (offline && missing.empty()) return;
     // Prepare both pages before exposing either. Their initial insertion is

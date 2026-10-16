@@ -283,6 +283,7 @@ void publish(Session &s, const NativeFrame *local) {
     view.local_ready = s.gameplay_ready && !s.available_map.empty();
     const auto &lobby = s.lobbies.status();
     view.public_host = s.public_host;
+    view.advertised_mode = advertised_mode();
     view.public_lobby = s.mode == Mode::host ? s.lobbies.hosted_lobby() : s.joined_public_lobby;
     view.lobby_listed = lobby.listed;
     view.lobby_searching = lobby.searching || s.servers.searching();

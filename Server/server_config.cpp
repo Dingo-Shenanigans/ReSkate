@@ -63,6 +63,7 @@ Layout layout(const ServerConfig &c) {
     Layout root;
     auto &server = root.section("server");
     server.set("name", c.name);
+    server.set("mode", c.mode);
     server.set("password", c.password);
     server.set("welcome_message", c.welcome);
     server.set("chat_color", c.chat_color);
@@ -301,6 +302,7 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
         return found ? found->template get<T>() : fallback;
     };
     c.name = get("server", "name", c.name);
+    c.mode = get("server", "mode", c.mode);
     c.password = get("server", "password", c.password);
     c.welcome = get("server", "welcome_message", c.welcome, {"welcome"});
     c.chat_color = get("server", "chat_color", c.chat_color);

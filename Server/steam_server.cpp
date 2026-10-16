@@ -1,6 +1,7 @@
 #include "steam_server.h"
 #include "server_text.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Engine/Game/Multiplayer/session_model.h"
 #ifdef _WIN32
 #include <Windows.h>
 #include <fcntl.h>
@@ -128,6 +129,7 @@ std::string server_tags(const Advertisement &a) {
     auto tags = "reskate,v" + std::to_string(multiplayer::protocol_version) + ",k" + secret + ",p" +
                 std::to_string(a.players) + ",c" + std::to_string(a.max_players) + (a.password ? ",w1" : ",w0");
     if (a.direct_port) tags += ",d" + std::to_string(a.direct_port);
+    if (valid_mode_id(a.mode)) tags += ",g" + a.mode;
     tags += ",m" + tag_text(a.map, 24);
     tags += ",n" + tag_text(a.name, 127 - tags.size() - 2);
     return tags;

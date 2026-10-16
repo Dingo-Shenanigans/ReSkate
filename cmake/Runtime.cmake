@@ -166,6 +166,8 @@ add_library(dingosdk_runtime SHARED
     Extension/HallOfMeat/hall_of_meat_slow_motion.cpp
     Extension/RoadRash/road_rash.cpp
     Extension/RoadRash/road_rash_commands.cpp
+    Extension/CustomModes/custom_modes.cpp
+    Extension/CustomModes/custom_modes_commands.cpp
     Extension/BoardBreak/board_break.cpp
     Extension/BoardBreak/board_break_commands.cpp
     Extension/BoardBreak/board_break_audio.cpp

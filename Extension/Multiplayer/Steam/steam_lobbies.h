@@ -44,6 +44,9 @@ class SteamLobbies {
     void host(const std::string &code, unsigned capacity = multiplayer_lobby_player_limit, bool password_required = false,
               std::string_view name = {});
     void update_host(bool ready, unsigned players, std::string_view map, std::uint64_t now);
+    // The custom mode the hosted lobby advertises (rs_mode; empty for none). Any time: a change is
+    // published with the next update.
+    void set_mode(std::string_view mode) { mode_ = valid_mode_id(mode) ? std::string(mode) : std::string(); }
     void refresh(std::uint64_t now);
     void join(std::uint64_t id, std::uint64_t local_id, std::uint64_t now);
     void join_friend(std::uint64_t id, std::uint64_t local_id, std::uint64_t now);
@@ -67,7 +70,7 @@ class SteamLobbies {
     unsigned players_ = 1, capacity_ = multiplayer_lobby_player_limit;
     std::uint64_t lobby_{}, local_id_{}, last_poll_{}, last_search_{}, join_id_{}, join_owner_{};
     std::uint64_t owner_checked_{}; // update_host's last full publication and ownership check
-    std::string code_, map_, host_name_, published_, join_map_, join_code_;
+    std::string code_, map_, host_name_, published_, join_map_, join_code_, mode_;
     std::optional<MultiplayerLobby> joined_;
     void close_lobby();
     void publish_host();

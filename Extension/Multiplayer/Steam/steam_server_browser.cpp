@@ -151,6 +151,7 @@ std::optional<MultiplayerLobby> read_server_tags(std::string_view tags, std::uin
             else row.direct_ip = address; // 0: the address the server is listed under
             break;
         }
+        case 'g': if (valid_mode_id(value)) row.mode = std::string(value); break;
         case 'm': row.map = std::string(value); break;
         // The name is last and may itself contain anything but commas.
         case 'n': row.name = std::string(value) + (tags.empty() ? "" : "," + std::string(tags)); tags = {}; break;

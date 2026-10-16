@@ -109,6 +109,12 @@ struct Hub {
     // Mod Options: the same rows and actions the page has always had (native_tools_view.h).
     native_tools::State tools;
     int tools_tab{};
+    // A custom mode's tab on the Multiplayer page (-1: one of the page's own tabs is open), and how
+    // a game for it would be hosted.
+    int mode_open = -1, custom_mode{};
+    std::string dropdown; // a mode's dropdown row that is open (mode id / row name); empty: none
+    bool custom_public{true};
+    int custom_players = 8;
     // Recording a bind (the BINDS tab): which action (0: none), what has been pressed so far,
     // and when it gives up (GetTickCount64).
     int recording_bind{};
@@ -160,6 +166,7 @@ struct Hub {
     bool join_seen{}, join_fetching{}, join_cancelled{};
     ULONGLONG join_asked{};
     std::string failed, failed_name; // why the last join did not get in, and where to; empty: nothing to say
+    int section_before = -1;          // the page drawn last (a join's failure is said on the page it was made from)
     ULONGLONG notice_until{};
     // The frame the ReSkate menu last drew these pages itself (draw_online_embedded).
     int embedded_frame{-10};
@@ -983,7 +990,10 @@ struct Column {
         : ui(owner), list(owner, id, a, b), left(a.x), right(b.x - 26 * owner.u), tall(96 * owner.u), between(10 * owner.u) {}
     // A row that is pressed: a switch, a choice that goes round, or an action (no value).
     bool setting(const std::string &name, const std::string &value, bool enabled, Look look = Look::tile) {
-        const auto id = hash(name, 21);
+        return setting(hash(name, 21), name, value, enabled, look);
+    }
+    // A row whose name may repeat (a list of games): its own id.
+    bool setting(std::uint32_t id, const std::string &name, const std::string &value, bool enabled, Look look = Look::tile) {
         bool drawn{};
         const float top = list.next(tall, between, drawn);
         list.reveal(id, top, tall);
@@ -1028,6 +1038,134 @@ struct Column {
     }
     void end() { list.end(); }
 };
+
+// A custom mode's tab on the Multiplayer page: ReSkate's game modes (Extension/CustomModes), one
+// tab each after the page's own, in the order they registered. On the left the mode's own panel
+// (its settings, status and buttons, each a console command of the mode's); on the right playing
+// it online: hosting a game for it, and the games that play it now.
+void modes_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const auto &m = h.full;
+    const auto &cb = h.callbacks;
+    const float u = ui.u, gap = 28 * u;
+    const float column_width = std::min(z.x - a.x, 2100 * u);
+    const bool console = cb.queue_console_command != nullptr;
+    const auto run = [&](const std::string &line) {
+        std::array<char, 512> result{};
+        if (!console || !cb.queue_console_command(cb.user, line.c_str(), result.data(), result.size())) say(h, "Couldn't apply that change. Try again when the game is ready.");
+        h.next_model = {};
+    };
+    const auto &modes = m.custom_modes.modes;
+    if (modes.empty()) {
+        Column list(ui, hash("modes"), a, ImVec2(std::min(z.x, a.x + column_width), z.y));
+        list.heading("CUSTOM MODES");
+        list.note("No custom multiplayer modes are installed. Modes that plug in (Extension/CustomModes) get a tab each here.");
+        list.end();
+        return;
+    }
+    h.custom_mode = std::clamp(h.custom_mode, 0, static_cast<int>(modes.size()) - 1);
+    const auto &mode = modes[static_cast<std::size_t>(h.custom_mode)];
+    const auto &panel = mode.panel;
+    // The mode's own panel on the left, playing it online on the right.
+    const float half = std::min((z.x - a.x - gap * 2) * .5f, 1600 * u);
+    Column list(ui, hash("mode-panel", hash(mode.id)), a, ImVec2(a.x + half, z.y));
+    // (Shorter rows than the other pages': a mode's settings fit without scrolling.)
+    list.tall = 72 * u, list.between = 6 * u;
+    std::string title = mode.name;
+    std::ranges::transform(title, title.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    list.heading(title.c_str());
+    if (!panel.description.empty()) list.note(panel.description);
+    if (!panel.available) list.note(panel.unavailable.empty() ? std::string("Not available here.") : panel.unavailable);
+    // A dropdown: the row shows what is chosen; pressed, its choices are listed under it, one row
+    // each (whole names, however long), until one is picked or the row is pressed again.
+    const auto dropdown = [&](const std::string &name, const std::string &value, const std::vector<custom_modes::Choice> &choices, bool enabled) {
+        const auto key = mode.id + "/" + name;
+        const bool open = h.dropdown == key && enabled;
+        if (list.setting(hash(key, 24), name, value + (open ? "   ^" : "   v"), enabled)) {
+            if (open) h.dropdown.clear();
+            else h.dropdown = key;
+        }
+        if (!open) return;
+        for (const auto &choice : choices)
+            if (list.setting(hash(key + "/" + choice.command, 25), "      " + choice.label, choice.chosen ? std::string("chosen") : choice.note, true,
+                             choice.chosen ? Look::chosen : Look::plain)) {
+                if (!choice.chosen) run(choice.command);
+                h.dropdown.clear();
+            }
+    };
+    if (!panel.map.empty() || !panel.map_name.empty()) {
+        const auto value = panel.map_name.empty() ? panel.map : panel.map_name + (panel.map_here || panel.map.empty() ? "" : " (loads it)");
+        if (!panel.map_choices.empty()) dropdown("Map", value, panel.map_choices, console);
+        else list.setting("Map", value, false);
+    }
+    for (const auto &line : panel.status) list.setting(line.label, line.value, false);
+    for (const auto &setting : panel.settings) {
+        if (!setting.choices.empty()) dropdown(setting.label, setting.value, setting.choices, setting.enabled && console);
+        else if (!setting.less.empty() || !setting.more.empty()) {
+            if (const int way = list.adjust(setting.label, setting.value, setting.enabled && console))
+                run(way < 0 ? setting.less : setting.more);
+        } else if (list.setting(setting.label, setting.value, setting.enabled && console && !setting.press.empty()))
+            run(setting.press);
+    }
+    for (const auto &b : panel.buttons)
+        if (list.setting(b.label, b.value, b.enabled && console && !b.command.empty())) {
+            // A mode's button on another map loads the map first (the load command's own checks).
+            if (!panel.map.empty() && !panel.map_here && b.command.find(" start") != std::string::npos) run("load " + panel.map);
+            run(b.command);
+        }
+    list.note(panel.note);
+    list.end();
+    // ---- online: host a game for this mode, or join one that plays it
+    Column online(ui, hash("mode-online", hash(mode.id)), ImVec2(a.x + half + gap * 2, a.y), ImVec2(std::min(z.x, a.x + half * 2 + gap * 2), z.y));
+    online.tall = 72 * u, online.between = 6 * u;
+    online.heading("PLAY ONLINE");
+    const auto &host = m.custom_modes.host;
+    const auto &net = ui.mp; // the session and the browser's lists, as the multiplayer pages read them
+    if (m.steam_offline) online.note("Multiplayer is off in offline mode.");
+    else if (net.active && !net.hosting) online.note("You are in someone else's game.");
+    else if (net.active && net.hosting) {
+        if (net.advertised_mode == mode.id)
+            online.setting("Your game", net.public_host ? "Advertised as " + mode.name : "For " + mode.name + " (advertised once it's a public lobby)", false);
+        else if (online.setting("Advertise your game as " + mode.name, {}, console)) run("modes host " + mode.id);
+    } else {
+        if (online.setting("Visibility", h.custom_public ? "Public lobby" : "Join code only", true)) h.custom_public = !h.custom_public;
+        constexpr std::array<float, 5> players{2.f, 4.f, 8.f, 16.f, static_cast<float>(multiplayer_lobby_player_limit)};
+        if (const int way = online.adjust("Skaters", std::to_string(h.custom_players), true))
+            h.custom_players = static_cast<int>(stepped(static_cast<float>(h.custom_players), players, way));
+        if (host.pending && host.mode == mode.id) {
+            if (online.setting("Host a " + mode.name + " game", "Waiting for the map...", console)) run("modes cancel");
+        } else if (online.setting("Host a " + mode.name + " game", panel.map_here || panel.map.empty() ? std::string() : "Loads the map, then hosts",
+                                console && panel.available)) {
+            if (!panel.map.empty() && !panel.map_here) run("load " + panel.map);
+            run("modes host " + mode.id + (h.custom_public ? " public " : " code ") + std::to_string(h.custom_players));
+        }
+    }
+    if (!m.steam_offline) {
+        // The browser's lobbies and servers that advertise this mode (the browser's own list).
+        const int wait = browse_wait(net);
+        const auto refresh = wait ? "Refresh in " + std::to_string(wait) : std::string(net.lobby_searching ? "Searching..." : "Refresh");
+        if (online.setting("Find " + mode.name + " games", refresh, !wait)) queue_multiplayer_action("browse", "");
+        int shown = 0;
+        for (const auto &lobby : net.lobbies) {
+            if (lobby.mode != mode.id) continue;
+            ++shown;
+            const auto what = view::caption(lobby.name, 40);
+            const auto detail = std::to_string(lobby.players) + "/" + std::to_string(lobby.capacity) +
+                                (lobby.dedicated ? " server" : " lobby") + (lobby.password_required ? ", password" : "");
+            // (As the server browser decides; a password asks for the browser's own join.)
+            const bool can = view::can_join(net, lobby) && !lobby.password_required;
+            if (online.setting(hash("lobby", lobby.id), what, detail, can) && send(h, "join-lobby", std::to_string(lobby.id), {})) {
+                h.joining_name = what;
+                asked_join(h);
+                say(h, "Joining " + what + "...");
+            }
+        }
+        if (!shown) online.note(net.lobby_searched ? "No " + mode.name + " games right now. Host one!" : "Refresh to find " + mode.name + " games.");
+    }
+    if (!h.notice.empty()) online.note(h.notice);
+    if (!host.status.empty()) online.note(host.status);
+    online.end();
+}
 
 // The page's tabs. What a control does, and when it can, is the same as on ReSkate's own menu
 // (native_tools_view.h for travel, parks and the world; the same requests and commands that
@@ -1614,21 +1752,40 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
 
     // ---- the page's tabs
     const bool tools = !embedded && h.page.section == 1;
+    // Another page: a join that failed on the one before is not this page's to say.
+    if (h.page.section != h.section_before) {
+        if (h.section_before >= 0) h.failed.clear(), h.failed_name.clear();
+        h.section_before = h.page.section;
+    }
     {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
-        int multiplayer_tab = static_cast<int>(h.tab);
+        // A custom mode's tab is mode_tab and its index, after the page's own tabs.
+        constexpr int mode_tab = 100;
+        int multiplayer_tab = h.mode_open >= 0 ? mode_tab + h.mode_open : static_cast<int>(h.tab);
         int &open = tools ? h.tools_tab : multiplayer_tab;
+        std::vector<std::string> mode_names; // (the tabs point into these)
         if (tools) {
             if (h.tools_tab == custom_tab) h.tools_tab = official_tab;
             tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
                     {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
         } else {
-            tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
-            // The session and its voice chat are only there in one.
-            if (in_session) tabs.emplace_back(static_cast<int>(Tab::session), "CURRENT SESSION"), tabs.emplace_back(static_cast<int>(Tab::voice), "VOICE CHAT");
-            // And its settings only for whoever runs it.
-            if (runs_session) tabs.emplace_back(static_cast<int>(Tab::settings), "SESSION SETTINGS");
+            // Offline there is no multiplayer: the page is there for the custom modes alone.
+            if (!h.full.steam_offline || h.full.custom_modes.modes.empty()) {
+                tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
+                // The session and its voice chat are only there in one.
+                if (in_session) tabs.emplace_back(static_cast<int>(Tab::session), "CURRENT SESSION"), tabs.emplace_back(static_cast<int>(Tab::voice), "VOICE CHAT");
+                // And its settings only for whoever runs it.
+                if (runs_session) tabs.emplace_back(static_cast<int>(Tab::settings), "SESSION SETTINGS");
+            }
+            // Then a tab for each custom mode (Domination, ...).
+            for (const auto &mode : h.full.custom_modes.modes) {
+                auto name = mode.name;
+                std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+                mode_names.push_back(std::move(name));
+            }
+            for (std::size_t i = 0; i < mode_names.size(); ++i) tabs.emplace_back(mode_tab + static_cast<int>(i), mode_names[i].c_str());
+            if (std::ranges::none_of(tabs, [&](const auto &tab) { return tab.first == open; })) open = tabs.front().first;
         }
         if (previous_tab || next_tab) {
             std::size_t at = 0;
@@ -1640,7 +1797,19 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             h.sound = sound_tab;
             set_typing(h, 0);
         }
-        const float top = tabs_y, bottom = top + tabs_height * u, size = 44 * u;
+        const float top = tabs_y, bottom = top + tabs_height * u;
+        float size = 44 * u, pad = 56 * u, gap = 20 * u;
+        {
+            // More tabs than the page is wide (Mod Options, or many modes): all of them
+            // narrower, text and padding alike, rather than any running off the page.
+            float wide = 0;
+            for (const auto &[tab, name] : tabs) wide += width_of(ui.bold, size, name) + pad + gap;
+            const float room = std::max(z.x - a.x - 140 * u, 1.0f); // the two keycaps
+            if (wide > room) {
+                const float k = std::max(room / wide, .6f);
+                size *= k, pad *= k, gap *= k;
+            }
+        }
         float x = a.x;
         const auto cap = [&](std::uint32_t pad_button, const char *key) {
             const auto name = ui.pad.available ? controller_combo_label(pad_button, ui.pad.style) : std::string(key);
@@ -1648,19 +1817,22 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         };
         cap(0x10000, "Z");
         for (const auto &[tab, name] : tabs) {
-            const float w = width_of(ui.bold, size, name) + 56 * u;
+            const float w = width_of(ui.bold, size, name) + pad;
             const ImVec2 p(x, top), q(x + w, bottom);
             const Hit hit = item(ui, hash(name, 1), p, q);
             const bool on = open == tab, lit = hit.focus || hit.hover;
             skate_theme::rough_rect(ui.draw, p, q, lit && !on ? theme::blue : on ? theme::paper : IM_COL32(26, 26, 26, 200), hash(name) & 0xfff, u * 2);
-            ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), on ? skate_theme::black : theme::paper, name);
+            ui.draw->AddText(ui.bold, size, ImVec2(p.x + pad * .5f, top + (bottom - top - size) * .5f), on ? skate_theme::black : theme::paper, name);
             // The game's brushed blue line under the tab that is open.
             if (on) ui.draw->AddRectFilled(ImVec2(p.x + 6 * u, bottom + 4 * u), ImVec2(q.x - 6 * u, bottom + 14 * u), theme::blue, 5 * u);
             if (hit.press && !on) open = tab, h.sound = sound_tab, set_typing(h, 0);
-            x = q.x + 20 * u;
+            x = q.x + gap;
         }
         cap(0x20000, "C");
-        if (!tools) h.tab = static_cast<Tab>(multiplayer_tab);
+        if (!tools) {
+            if (multiplayer_tab >= mode_tab) h.mode_open = h.custom_mode = multiplayer_tab - mode_tab;
+            else h.mode_open = -1, h.tab = static_cast<Tab>(multiplayer_tab);
+        }
     }
 
     // Under the connecting card the page is still drawn, to look at and not to use.
@@ -1668,6 +1840,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     const bool failed = !connecting && !h.failed.empty() && !in_session;
     if ((connecting || failed) && !tools) ui.input = ui.clicked = ui.doubled = false;
     if (tools) tools_page(ui, a, z);
+    else if (h.mode_open >= 0) modes_page(ui, a, z);
     else switch (h.tab) {
     case Tab::browser: browser_page(ui, a, z); break;
     case Tab::host: host_page(ui, a, z); break;

@@ -651,7 +651,7 @@ int run(int argc, char **argv, bool skip_update) {
                 name_allowed = allowed;
             }
             steam.advertise({config.name, host.map_name(), host.players(), config.max_players, !config.password.empty(),
-                             config.listed && allowed, host.secret(), host.direct_port()});
+                             config.listed && allowed, host.secret(), host.direct_port(), config.mode});
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
