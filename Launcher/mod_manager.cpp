@@ -12,10 +12,11 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
+#include <atomic>
 #include <fstream>
 #include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -51,6 +52,234 @@ fs::path from_utf8(std::string_view value) {
     return output;
 }
 
+constexpr char unsafe_link_message[] =
+    "Mod folders cannot contain symbolic links, junctions, or other reparse points. Remove the link and try again.";
+
+// FILE_ATTRIBUTE_REPARSE_POINT also catches Windows junctions and mount points.
+DWORD attributes(const fs::path& path) {
+    const auto value = GetFileAttributesW(path.c_str());
+    if (value == INVALID_FILE_ATTRIBUTES)
+        fail("Could not inspect " + utf8(path.filename().wstring()) + " (Windows error " +
+             std::to_string(GetLastError()) + ").");
+    return value;
+}
+
+void reject_reparse_point(const fs::path& path) {
+    if (attributes(path) & FILE_ATTRIBUTE_REPARSE_POINT) fail(unsafe_link_message);
+}
+
+void verify_path_chain(const fs::path& path, bool create_missing) {
+    const auto absolute = fs::absolute(path).lexically_normal();
+    auto current = absolute.root_path();
+    if (current.empty()) fail("Could not resolve a filesystem path.");
+    for (const auto& part : absolute.relative_path()) {
+        current /= part;
+        DWORD value = GetFileAttributesW(current.c_str());
+        if (value == INVALID_FILE_ATTRIBUTES && create_missing) {
+            const auto error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+                if (!CreateDirectoryW(current.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+                    fail("Could not create the Mods folder (Windows error " + std::to_string(GetLastError()) + ").");
+                value = GetFileAttributesW(current.c_str());
+            }
+        }
+        if (value == INVALID_FILE_ATTRIBUTES)
+            fail("Could not inspect " + utf8(current.filename().wstring()) + " (Windows error " +
+                 std::to_string(GetLastError()) + ").");
+        if (value & FILE_ATTRIBUTE_REPARSE_POINT) fail(unsafe_link_message);
+        if (!(value & FILE_ATTRIBUTE_DIRECTORY)) fail("A folder path contains a file.");
+    }
+}
+
+bool path_within(const fs::path& root, const fs::path& path) {
+    const auto normalized_root = root.lexically_normal();
+    const auto normalized_path = path.lexically_normal();
+    auto root_part = normalized_root.begin();
+    const auto root_end = normalized_root.end();
+    auto path_part = normalized_path.begin();
+    const auto path_end = normalized_path.end();
+    for (; root_part != root_end; ++root_part, ++path_part)
+        if (path_part == path_end || *root_part != *path_part) return false;
+    return path_part != path_end;
+}
+
+bool safe_windows_component(std::wstring_view component) {
+    if (component.empty() || component == L"." || component == L".." ||
+        component.back() == L'.' || component.back() == L' ') return false;
+    for (const auto ch : component)
+        if (ch < 32 || ch == L'<' || ch == L'>' || ch == L':' || ch == L'"' ||
+            ch == L'|' || ch == L'?' || ch == L'*') return false;
+    auto base = component.substr(0, component.find(L'.'));
+    while (!base.empty() && (base.back() == L'.' || base.back() == L' ')) base.remove_suffix(1);
+    std::wstring folded(base);
+    for (auto& ch : folded) if (ch >= L'a' && ch <= L'z') ch -= L'a' - L'A';
+    if (folded == L"CON" || folded == L"PRN" || folded == L"AUX" || folded == L"NUL" ||
+        folded == L"CONIN$" || folded == L"CONOUT$" || folded == L"CLOCK$") return false;
+    if (folded.size() == 4 && (folded.starts_with(L"COM") || folded.starts_with(L"LPT")) &&
+        ((folded[3] >= L'1' && folded[3] <= L'9') || folded[3] == L'\u00b9' ||
+         folded[3] == L'\u00b2' || folded[3] == L'\u00b3')) return false;
+    return true;
+}
+
+std::optional<std::string> safe_relative_path(std::string name) {
+    std::replace(name.begin(), name.end(), '\\', '/');
+    if (name.empty() || name.front() == '/' || name.find(':') != std::string::npos) return std::nullopt;
+    std::string_view rest(name);
+    while (!rest.empty()) {
+        const auto slash = rest.find('/');
+        const auto part = rest.substr(0, slash);
+        if (part.empty() || !safe_windows_component(from_utf8(part).wstring())) return std::nullopt;
+        if (slash == std::string_view::npos) break;
+        rest.remove_prefix(slash + 1);
+        if (rest.empty()) break;
+    }
+    return name;
+}
+
+struct Handle {
+    HANDLE value{INVALID_HANDLE_VALUE};
+    explicit Handle(HANDLE handle = INVALID_HANDLE_VALUE) : value(handle) {}
+    Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
+    Handle(Handle&& other) noexcept : value(std::exchange(other.value, INVALID_HANDLE_VALUE)) {}
+    Handle& operator=(Handle&& other) noexcept {
+        if (this != &other) {
+            if (value != INVALID_HANDLE_VALUE) CloseHandle(value);
+            value = std::exchange(other.value, INVALID_HANDLE_VALUE);
+        }
+        return *this;
+    }
+    ~Handle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+};
+
+void ensure_destination_parent(const fs::path& staging, const fs::path& target);
+
+Handle open_staging_file(const fs::path& staging, const fs::path& target) {
+    ensure_destination_parent(staging, target);
+    Handle output{CreateFileW(target.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+    bool existing = false;
+    if (output.value == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+            fail("Could not safely create a file in the staged mod.");
+        output.value = CreateFileW(target.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        existing = true;
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (output.value == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(output.value, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ||
+        GetFileType(output.value) != FILE_TYPE_DISK)
+        fail("Could not safely create a file in the staged mod.");
+    if (existing) {
+        LARGE_INTEGER beginning{};
+        if (!SetFilePointerEx(output.value, beginning, nullptr, FILE_BEGIN) || !SetEndOfFile(output.value))
+            fail("Could not replace a file in the staged mod.");
+    }
+    return output;
+}
+
+void ensure_destination_parent(const fs::path& staging, const fs::path& target) {
+    const auto root = fs::absolute(staging).lexically_normal();
+    const auto normalized = fs::absolute(target).lexically_normal();
+    if (!path_within(root, normalized)) fail("The mod contains a path outside its installation folder.");
+    verify_path_chain(root, false);
+    if (!(attributes(root) & FILE_ATTRIBUTE_DIRECTORY)) fail("The staging folder is not a directory.");
+    auto current = root;
+    const auto relative_parent = normalized.parent_path().lexically_relative(root);
+    if (relative_parent == L".") return;
+    for (const auto& part : relative_parent) {
+        if (part == L"." || part == L".." || part.empty()) fail("The mod contains an unsafe path.");
+        current /= part;
+        DWORD value = GetFileAttributesW(current.c_str());
+        if (value == INVALID_FILE_ATTRIBUTES) {
+            const auto error = GetLastError();
+            if ((error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) ||
+                !CreateDirectoryW(current.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+                fail("Could not create a folder in the staged mod.");
+            value = GetFileAttributesW(current.c_str());
+        }
+        if (value == INVALID_FILE_ATTRIBUTES || (value & FILE_ATTRIBUTE_REPARSE_POINT) ||
+            !(value & FILE_ATTRIBUTE_DIRECTORY)) fail(unsafe_link_message);
+    }
+}
+
+void copy_to_staging(const fs::path& source, const fs::path& staging, const fs::path& target) {
+    Handle input{CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+    BY_HANDLE_FILE_INFORMATION source_info{};
+    if (input.value == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(input.value, &source_info) ||
+        (source_info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+        (source_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || GetFileType(input.value) != FILE_TYPE_DISK)
+        fail(unsafe_link_message);
+
+    auto output = open_staging_file(staging, target);
+
+    std::array<char, 64 * 1024> buffer{};
+    for (;;) {
+        DWORD read{};
+        if (!ReadFile(input.value, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr))
+            fail("Could not read a file from the mod folder.");
+        if (!read) break;
+        DWORD offset{};
+        while (offset < read) {
+            DWORD written{};
+            if (!WriteFile(output.value, buffer.data() + offset, read - offset, &written, nullptr) || !written)
+                fail("Could not write a file to the staged mod.");
+            offset += written;
+        }
+    }
+}
+
+void remove_tree_without_following_links(const fs::path& path) noexcept {
+    try {
+        const auto absolute = fs::absolute(path).lexically_normal();
+        auto current = absolute.root_path();
+        for (const auto& part : absolute.relative_path()) {
+            current /= part;
+            const auto attributes = GetFileAttributesW(current.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES) return;
+            if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                if (current == absolute) {
+                    if (attributes & FILE_ATTRIBUTE_DIRECTORY) RemoveDirectoryW(current.c_str());
+                    else DeleteFileW(current.c_str());
+                }
+                return;
+            }
+        }
+    } catch (...) {
+        return;
+    }
+    const auto value = GetFileAttributesW(path.c_str());
+    if (value == INVALID_FILE_ATTRIBUTES) return;
+    if (value & FILE_ATTRIBUTE_REPARSE_POINT) {
+        if (value & FILE_ATTRIBUTE_DIRECTORY) RemoveDirectoryW(path.c_str());
+        else DeleteFileW(path.c_str());
+        return;
+    }
+    if (value & FILE_ATTRIBUTE_DIRECTORY) {
+        std::error_code error;
+        for (fs::directory_iterator it(path, error), end; !error && it != end; it.increment(error))
+            remove_tree_without_following_links(it->path());
+        RemoveDirectoryW(path.c_str());
+    } else {
+        DeleteFileW(path.c_str());
+    }
+}
+
+void validate_tree_without_links(const fs::path& root) {
+    verify_path_chain(root, false);
+    if (!(attributes(root) & FILE_ATTRIBUTE_DIRECTORY)) fail("The staged mod is not a folder.");
+    std::error_code error;
+    for (fs::recursive_directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
+        const auto value = GetFileAttributesW(it->path().c_str());
+        if (value == INVALID_FILE_ATTRIBUTES) fail("Could not inspect the staged mod.");
+        if (value & FILE_ATTRIBUTE_REPARSE_POINT) fail(unsafe_link_message);
+    }
+    if (error) fail("Could not inspect the staged mod.");
+}
+
 // Folder names travel into engine paths (mod_list's valid_mod_name), so map
 // anything else to '_' rather than refusing the mod.
 std::string folder_name(std::string_view proposed) {
@@ -65,6 +294,10 @@ std::string folder_name(std::string_view proposed) {
     while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back();
     if (name.size() > mods::maximum_mod_name) name.resize(mods::maximum_mod_name);
     if (name.empty()) name = "Mod";
+    if (!safe_windows_component(from_utf8(name).wstring())) {
+        if (name.size() == mods::maximum_mod_name) name.pop_back();
+        name += '_';
+    }
     return name;
 }
 
@@ -153,8 +386,10 @@ void finish(const fs::path& staging, const Root& root, const std::string& source
         fail(source_name + " has nothing for ReSkate to load: no layout.toc, reskate-levels.json or parks folder. "
              "Only mods built with ReSkate Studio, and park mods, can be installed.");
     const auto manifest = staging / mods::manifest_file;
-    std::error_code error;
-    if (options.author.empty() || !fs::is_regular_file(manifest, error)) return;
+    const auto value = GetFileAttributesW(manifest.c_str());
+    if (options.author.empty() || value == INVALID_FILE_ATTRIBUTES) return;
+    if (value & FILE_ATTRIBUTE_REPARSE_POINT) fail(unsafe_link_message);
+    if (value & FILE_ATTRIBUTE_DIRECTORY) return;
     try {
         std::string text;
         {
@@ -175,18 +410,10 @@ void finish(const fs::path& staging, const Root& root, const std::string& source
 // Entry names from an archive are untrusted: no absolute paths, drive
 // letters, alternate streams or parent references may leave the target.
 std::optional<std::string> safe_entry(std::string name) {
-    std::replace(name.begin(), name.end(), '\\', '/');
-    if (name.empty() || name.front() == '/' || name.find(':') != std::string::npos) return std::nullopt;
-    std::string_view rest(name);
-    while (!rest.empty()) {
-        const auto slash = rest.find('/');
-        const auto part = rest.substr(0, slash);
-        if (part == "..") return std::nullopt;
-        if (slash == std::string_view::npos) break;
-        rest.remove_prefix(slash + 1);
-    }
-    if (name.starts_with("__MACOSX/")) return std::string();
-    return name;
+    auto safe = safe_relative_path(std::move(name));
+    if (!safe) return std::nullopt;
+    if (safe->starts_with("__MACOSX/")) return std::string();
+    return safe;
 }
 
 // Package sizes come from the zip itself, so refuse one that would fill the drive.
@@ -211,26 +438,62 @@ void recycle(const fs::path& path) {
 
 class Staging {
 public:
-    Staging(const fs::path& mods, const std::string& name) : path_(mods / staging_folder / from_utf8(name)) {
-        std::error_code error;
-        fs::remove_all(path_, error);
-        fs::create_directories(path_);
+    Staging(const fs::path& mods, const std::string&) : path_(mods / staging_folder) {
+        const auto parent = path_;
+        verify_path_chain(mods, false);
+        auto parent_attributes = GetFileAttributesW(parent.c_str());
+        if (parent_attributes == INVALID_FILE_ATTRIBUTES) {
+            const auto error = GetLastError();
+            if ((error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) ||
+                !CreateDirectoryW(parent.c_str(), nullptr))
+                fail("Could not create a staging folder for the mod.");
+            created_parent_ = true;
+        } else if (parent_attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+            fail(unsafe_link_message);
+        } else if (!(parent_attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            fail("The mod staging path is not a folder.");
+        }
+        verify_path_chain(parent, false);
+        static std::atomic<std::uint64_t> sequence{};
+        for (unsigned attempt = 0; attempt < 64; ++attempt) {
+            path_ = parent / (L"install-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                              std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(sequence.fetch_add(1)));
+            if (CreateDirectoryW(path_.c_str(), nullptr)) return;
+            if (GetLastError() != ERROR_ALREADY_EXISTS)
+                fail("Could not create a staging folder for the mod (Windows error " +
+                     std::to_string(GetLastError()) + ").");
+        }
+        fail("Could not create a unique staging folder for the mod.");
     }
     ~Staging() {
-        std::error_code error;
-        fs::remove_all(path_.parent_path(), error);
+        remove_tree_without_following_links(path_);
+        const auto parent = path_.parent_path();
+        const auto value = GetFileAttributesW(parent.c_str());
+        if (created_parent_ && value != INVALID_FILE_ATTRIBUTES && (value & FILE_ATTRIBUTE_DIRECTORY) &&
+            !(value & FILE_ATTRIBUTE_REPARSE_POINT)) RemoveDirectoryW(parent.c_str());
     }
     const fs::path& path() const { return path_; }
 private:
     fs::path path_;
+    bool created_parent_{};
 };
 
 // Moves the finished staging folder into place, replacing only when asked.
 void commit(const fs::path& mods, const Staging& staging, const std::string& name, bool replace) {
     const auto target = mods / from_utf8(name);
-    std::error_code error;
-    if (fs::exists(target, error)) {
+    verify_path_chain(mods, false);
+    verify_path_chain(staging.path(), false);
+    validate_tree_without_links(staging.path());
+    const auto value = GetFileAttributesW(target.c_str());
+    const bool exists = value != INVALID_FILE_ATTRIBUTES;
+    if (exists && (value & FILE_ATTRIBUTE_REPARSE_POINT)) fail(unsafe_link_message);
+    const auto target_error = exists ? ERROR_SUCCESS : GetLastError();
+    if (!exists && target_error != ERROR_FILE_NOT_FOUND && target_error != ERROR_PATH_NOT_FOUND)
+        fail("Could not inspect the existing mod folder.");
+    if (exists) {
+        if (!(value & FILE_ATTRIBUTE_DIRECTORY)) fail("The existing mod path is not a folder.");
         if (!replace) throw AlreadyInstalled(name);
+        validate_tree_without_links(target);
         recycle(target);
     }
     if (!MoveFileExW(staging.path().c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
@@ -257,7 +520,7 @@ std::size_t read_at(void* opaque, mz_uint64 offset, void* buffer, std::size_t si
 }
 
 struct Sink {
-    FILE* file{};
+    HANDLE file{INVALID_HANDLE_VALUE};
     std::uint64_t* written{};
     std::uint64_t total{};
     const Progress* progress{};
@@ -267,7 +530,9 @@ struct Sink {
 std::size_t write_chunk(void* opaque, mz_uint64, const void* data, std::size_t size) {
     auto& sink = *static_cast<Sink*>(opaque);
     if (sink.cancel->load()) return 0;
-    if (std::fwrite(data, 1, size, sink.file) != size) return 0;
+    if (size > MAXDWORD) return 0;
+    DWORD written{};
+    if (!WriteFile(sink.file, data, static_cast<DWORD>(size), &written, nullptr) || written != size) return 0;
     *sink.written += size;
     if (*sink.progress && sink.total) (*sink.progress)(static_cast<float>(*sink.written) / static_cast<float>(sink.total));
     return size;
@@ -317,14 +582,18 @@ std::string install_zip(const fs::path& mods, const fs::path& source, bool repla
         const auto mapped = relative_in_mod(*root, files, entry.name);
         if (!mapped) continue;
         const auto& relative = *mapped;
-        const auto target = staging.path() / from_utf8(relative);
-        if (entry.directory) { fs::create_directories(target); continue; }
-        fs::create_directories(target.parent_path());
-        FILE* output{};
-        if (_wfopen_s(&output, target.c_str(), L"wb") || !output) fail("Could not write " + relative + ".");
-        Sink sink{output, &written, total, &progress, &cancel};
+        const auto safe = safe_relative_path(relative);
+        if (!safe) fail("The .zip file contains an unsafe path (" + relative + "); it was not installed.");
+        const auto target = staging.path() / from_utf8(*safe);
+        if (!path_within(staging.path(), target)) fail("The .zip file contains a path outside its installation folder.");
+        if (entry.directory) {
+            ensure_destination_parent(staging.path(), target / L"entry");
+            continue;
+        }
+        ensure_destination_parent(staging.path(), target);
+        auto output = open_staging_file(staging.path(), target);
+        Sink sink{output.value, &written, total, &progress, &cancel};
         const bool ok = mz_zip_reader_extract_to_callback(&zip.archive, entry.index, write_chunk, &sink, 0);
-        std::fclose(output);
         if (cancel) fail("Install cancelled.");
         if (!ok) fail("Could not extract " + relative + " from the .zip file.");
     }
@@ -338,14 +607,37 @@ std::string install_zip(const fs::path& mods, const fs::path& source, bool repla
 
 std::string install_folder(const fs::path& mods, const fs::path& source, bool replace,
                            const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options) {
+    // fs::relative() resolves filesystem links and can turn a link inside the
+    // source into a parent traversal. Keep archive-style names lexical, reject
+    // reparse points, and recheck staging parents before opening destination
+    // handles. These path checks narrow races but cannot prevent another
+    // same-user process changing a parent between validation and path-based
+    // operations; this is not a full handle-relative TOCTOU defense.
+    verify_path_chain(source, false);
+    const auto source_root = fs::absolute(source).lexically_normal();
     std::vector<std::string> files;
     std::vector<fs::path> paths;
-    for (auto it = fs::recursive_directory_iterator(source); it != fs::recursive_directory_iterator(); ++it) {
+    std::vector<std::uint64_t> sizes;
+    for (auto it = fs::recursive_directory_iterator(source_root); it != fs::recursive_directory_iterator(); ++it) {
         if (cancel) fail("Install cancelled.");
-        if (!it->is_regular_file()) continue;
+        const auto value = GetFileAttributesW(it->path().c_str());
+        if (value == INVALID_FILE_ATTRIBUTES) fail("Could not inspect a file in the mod folder.");
+        if (value & FILE_ATTRIBUTE_REPARSE_POINT) fail(unsafe_link_message);
+        if (value & FILE_ATTRIBUTE_DIRECTORY) continue;
+        const auto status = fs::symlink_status(it->path());
+        if (!fs::is_regular_file(status)) continue;
+        const auto lexical = it->path().lexically_relative(source_root);
+        const auto relative = safe_relative_path(utf8(lexical.generic_wstring()));
+        if (!relative) fail("The mod folder contains an unsafe path and was not installed.");
         paths.push_back(it->path());
-        auto relative = utf8(fs::relative(it->path(), source).generic_wstring());
-        files.push_back(std::move(relative));
+        files.push_back(*relative);
+        Handle file{CreateFileW(it->path().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+        BY_HANDLE_FILE_INFORMATION info{};
+        if (file.value == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(file.value, &info) ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            fail(unsafe_link_message);
+        sizes.push_back((static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow);
     }
     const auto root = mod_root(files);
     if (!root) fail(utf8(source.filename().wstring()) + no_mod);
@@ -355,16 +647,17 @@ std::string install_folder(const fs::path& mods, const fs::path& source, bool re
 
     std::uint64_t total = 0, written = 0;
     for (std::size_t i = 0; i < files.size(); ++i)
-        if (relative_in_mod(*root, files, files[i])) total += fs::file_size(paths[i]);
+        if (relative_in_mod(*root, files, files[i])) total += sizes[i];
     Staging staging(mods, name);
     for (std::size_t i = 0; i < files.size(); ++i) {
         if (cancel) fail("Install cancelled.");
         const auto relative = relative_in_mod(*root, files, files[i]);
         if (!relative) continue;
-        const auto target = staging.path() / from_utf8(*relative);
-        fs::create_directories(target.parent_path());
-        fs::copy_file(paths[i], target, fs::copy_options::overwrite_existing);
-        written += fs::file_size(paths[i]);
+        const auto safe = safe_relative_path(*relative);
+        if (!safe) fail("The mod folder contains an unsafe path and was not installed.");
+        const auto target = staging.path() / from_utf8(*safe);
+        copy_to_staging(paths[i], staging.path(), target);
+        written += sizes[i];
         if (progress && total) progress(static_cast<float>(written) / static_cast<float>(total));
     }
     finish(staging.path(), *root, utf8(source.filename().wstring()), options);
@@ -385,17 +678,19 @@ fs::path mods_root(const fs::path& game_directory) {
 std::string install(const fs::path& mods, const fs::path& source, bool replace,
                     const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options) {
     try {
-        fs::create_directories(mods);
+        const auto mods_directory = fs::absolute(mods).lexically_normal();
+        const auto source_path = fs::absolute(source).lexically_normal();
+        verify_path_chain(mods_directory, true);
         std::error_code error;
-        if (fs::is_directory(source, error)) {
+        if (fs::is_directory(source_path, error)) {
             std::error_code same;
-            if (fs::equivalent(source.parent_path(), mods, same))
-                fail(utf8(source.filename().wstring()) + " is already in the Mods folder.");
-            return install_folder(mods, source, replace, progress, cancel, options);
+            if (fs::equivalent(source_path.parent_path(), mods_directory, same))
+                fail(utf8(source_path.filename().wstring()) + " is already in the Mods folder.");
+            return install_folder(mods_directory, source_path, replace, progress, cancel, options);
         }
-        if (lower(utf8(source.extension().wstring())) != ".zip")
+        if (lower(utf8(source_path.extension().wstring())) != ".zip")
             fail("Choose a .zip file or a mod folder to install.");
-        return install_zip(mods, source, replace, progress, cancel, options);
+        return install_zip(mods_directory, source_path, replace, progress, cancel, options);
     } catch (const AlreadyInstalled&) {
         throw;
     } catch (const fs::filesystem_error& failure) {
