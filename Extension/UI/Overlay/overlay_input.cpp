@@ -148,6 +148,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         else window_cursor_input(window, message, wp);
         const bool key = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
         const bool release = message == WM_KEYUP || message == WM_SYSKEYUP;
+        if ((key || message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN) && item_browser_open()) item_browser_keyboard_used();
         if (console_character(message) && s.console_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.chat_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;
@@ -155,7 +156,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         // is open, F favorites the highlighted item, X steps the filter and "-" (or Ctrl+F) opens the
         // search box, which then takes the keys until Enter or Esc. (The game uses Q, E, T and G here:
         // G opens its feedback card.)
-        if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
+        if (s.item_search_visible.load() || s.item_panel.load() || s.item_search_escape_pending.load()) {
             if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
                 if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
                     s.item_search_escape_pending.store(true);
@@ -173,7 +174,30 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool minus = wp == VK_SUBTRACT || (MapVirtualKeyW(static_cast<UINT>(wp), MAPVK_VK_TO_CHAR) == L'-' &&
                                                      !(GetKeyState(VK_SHIFT) & 0x8000));
+            // V: the highlighted item into the player's own tabs; R: making and changing them. Both
+            // open a panel that takes the keys and the mouse until Esc.
+            if (!control && (wp == 'V' || wp == 'R')) {
+                s.item_panel.store(wp == 'V' ? 1 : 2);
+                s.item_search_character_pending.store(true);
+                sync_menu_cursor();
+                window_cursor_input(window, message, wp);
+                std::lock_guard lock(s.input_mutex);
+                s.input.clear();
+                return 0;
+            }
+            // Tab: the player's own tabs in place of the game's, or back. While they are shown, Q and E
+            // step through them and Enter wears the highlighted item on top (the game does not see them:
+            // input_capture.cpp withholds them).
+            if (!control && wp == VK_TAB) {
+                item_browser_key(ItemBrowserKey::custom);
+                return 0;
+            }
+            if (!control && item_browser_custom() && (wp == 'Q' || wp == 'E' || wp == VK_RETURN)) {
+                item_browser_key(wp == 'Q' ? ItemBrowserKey::previous_tab : wp == 'E' ? ItemBrowserKey::next_tab : ItemBrowserKey::layer);
+                return 0;
+            }
             if ((minus && !control) || (wp == 'F' && control)) {
+                s.item_picker.store(false);
                 s.item_search_character_pending.store(true);
                 s.item_search_visible.store(true);
                 s.item_search_focus_requested.store(true);
@@ -185,6 +209,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             }
             if (!control && wp == 'F') item_browser_key(ItemBrowserKey::favorite);
             if (!control && wp == 'X') item_browser_key(ItemBrowserKey::filter);
+            if (!control && wp == 'B') item_browser_key(ItemBrowserKey::layer);
+            if (!control && wp == VK_DELETE) item_browser_key(ItemBrowserKey::clear_layers);
         }
         // T opens the chat, the key the game itself reserves for it
         // (Processor_Keyboard_Gameplay_Chat), while in a session and nothing

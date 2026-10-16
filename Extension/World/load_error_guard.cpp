@@ -16,7 +16,7 @@ using Describe = void (*)(void* errors, void* text);
 Describe original{};
 std::uintptr_t image_begin{}, image_end{};
 std::atomic<bool> installed{};
-std::atomic<std::uint64_t> empties{}, faults{}, told{};
+std::atomic<std::uint64_t> empties{}, faults{}, told{}, described_loads{};
 thread_local unsigned depth{}; // a part can be a list of its own: only the outermost is logged
 constexpr std::uint64_t most_parts = 4096, most_told = 40;
 
@@ -83,7 +83,10 @@ void guarded(void* errors, void* text) {
     const bool whole = describe_guarded(errors, text);
     --depth;
     if (!whole) faults.fetch_add(1, std::memory_order_relaxed);
-    if (!depth) tell(reinterpret_cast<std::uintptr_t>(text), emptied, whole);
+    if (!depth) {
+        described_loads.fetch_add(1, std::memory_order_relaxed);
+        tell(reinterpret_cast<std::uintptr_t>(text), emptied, whole);
+    }
 }
 } // namespace
 
@@ -112,4 +115,5 @@ bool install(std::uintptr_t base) noexcept {
 }
 
 std::uint64_t emptied() noexcept { return empties.load(std::memory_order_relaxed); }
+std::uint64_t described() noexcept { return described_loads.load(std::memory_order_relaxed); }
 } // namespace dingosdk::load_error_guard

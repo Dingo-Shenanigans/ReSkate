@@ -28,6 +28,7 @@
 #include "Extension/Boot/offline_boot.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/RoadRash/road_rash.h"
+#include "Extension/OutfitLayers/outfit_layers.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Extension/Skater/grind_exit_control.h"
 #include "Extension/Skater/camera_observer.h"
@@ -439,6 +440,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         record("{\"event\":\"hall_of_meat_initialized\",\"active\":" + std::string(meat ? "true" : "false") + "}");
         const bool rash = dingosdk::road_rash::start(r.base);
         record("{\"event\":\"road_rash_initialized\",\"active\":" + std::string(rash ? "true" : "false") + "}");
+        const bool layers = dingosdk::outfit_layers::start(r.base);
+        record("{\"event\":\"outfit_layers_initialized\",\"active\":" + std::string(layers ? "true" : "false") + "}");
         const bool board_break = dingosdk::board_break::start(r.base);
         record("{\"event\":\"board_break_initialized\",\"active\":" + std::string(board_break ? "true" : "false") + "}");
         const bool grind_control = dingosdk::grind_exit_control::start(r.base);

@@ -159,6 +159,8 @@ add_library(dingosdk_runtime SHARED
     Extension/HallOfMeat/hall_of_meat_skeleton.cpp
     Extension/HallOfMeat/hall_of_meat_slow_motion.cpp
     Extension/RoadRash/road_rash.cpp
+    Extension/OutfitLayers/outfit_layers.cpp
+    Extension/OutfitLayers/outfit_layers_commands.cpp
     Extension/RoadRash/road_rash_commands.cpp
     Extension/BoardBreak/board_break.cpp
     Extension/BoardBreak/board_break_commands.cpp
@@ -316,6 +318,18 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
         "EMOTES_JSON RCDATA \"${dingosdk_emotes_native}\\\\emotes.json\"\n"
         "EMOTES_PNG RCDATA \"${dingosdk_emotes_native}\\\\emotes.png\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/emotes.rc")
+endif()
+# ReSkate's own icons for the player's item tabs (Extension/UI/Overlay/tab_icons.h), drawn by
+# assets/tab_icons/make_tab_icons.py.
+set(dingosdk_tab_icons "${PROJECT_SOURCE_DIR}/assets/tab_icons")
+if(EXISTS "${dingosdk_tab_icons}/tab_icons.json" AND EXISTS "${dingosdk_tab_icons}/tab_icons.png")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_tab_icons}/tab_icons.json" "${dingosdk_tab_icons}/tab_icons.png")
+    file(TO_NATIVE_PATH "${dingosdk_tab_icons}" dingosdk_tab_icons_native)
+    string(REPLACE "\\" "\\\\" dingosdk_tab_icons_native "${dingosdk_tab_icons_native}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/tab_icons.rc"
+        "TABICONS_JSON RCDATA \"${dingosdk_tab_icons_native}\\\\tab_icons.json\"\n"
+        "TABICONS_PNG RCDATA \"${dingosdk_tab_icons_native}\\\\tab_icons.png\"\n")
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/tab_icons.rc")
 endif()
 # Game content ReSkate carries itself (Engine/Vfs/builtin_packs.h): the FPV drone's model, built
 # by tools/models/build_drone_pack.py. Without the zip, other players' drones use a stand-in prop.

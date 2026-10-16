@@ -4,6 +4,7 @@
 #include "cursor.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
+#include "tab_icons.h"
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -44,7 +45,7 @@ bool is_input(UINT message) {
 
 bool interactive_visible(const State& s) {
     return s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() ||
-           s.hub_typing.load() || s.prompt_pointer.load() || s.item_search_visible.load();
+           s.hub_typing.load() || s.prompt_pointer.load() || s.item_search_visible.load() || s.item_panel.load() != 0;
 }
 
 void restore_input(bool hide_menu) {
@@ -55,6 +56,7 @@ void restore_input(bool hide_menu) {
         s.chat_visible.store(false);
         s.hub_typing.store(false);
         s.item_search_visible.store(false);
+        s.item_panel.store(0);
         s.editor_visible.store(false);
         s.editor_flight.store(false);
     }
@@ -384,6 +386,7 @@ bool start_overlay(const dingosdk::overlay::CallbacksV3* callbacks) {
         {
             dingosdk::overlay::start_park_previews(std::filesystem::path(std::wstring(game, length)).parent_path());
             dingosdk::overlay::start_chat_emotes();
+            dingosdk::overlay::start_tab_icons(std::filesystem::path(std::wstring(game, length)).parent_path());
         }
     }
     HMODULE pinned = nullptr;

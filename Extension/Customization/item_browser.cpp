@@ -7,6 +7,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Vfs/content_catalogs.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/OutfitLayers/outfit_layers.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/UI/NativeMenu/native_menu_lifetime.h"
 #include "Extension/UI/Overlay/overlay.h"
@@ -49,6 +50,11 @@ constexpr md::Schema rarity_style{0xb6800075, 416};
 constexpr std::uint32_t rarity_icon = 0xd4f0f044;
 // The game's own star (UI/Textures/Common/Shapes/Bespoke), as its asset is named.
 constexpr char star_texture[] = "UI/Textures/comMon/Shapes/Bespoke/img_Star_Fill_64";
+// The game's check marks, for items worn on top (the first that is loaded on the screen).
+// The brushed one first: the menus' own hand-drawn look.
+constexpr std::array<std::string_view, 3> check_textures{"UI/Textures/comMon/Shapes/Bespoke/img_Icon_BrushCheckmark_256_256_256",
+                                                         "UI/Textures/Common/Shapes/Bespoke/img_Icon_RoughCheckmark_White_128",
+                                                         "UI/Textures/Icons/Generic/img_Generic_Check_64"};
 
 std::uint32_t schema_of(md::Address type) { return type ? md::read<std::uint32_t>(md::read<md::Address>(type)) : 0; }
 
@@ -113,6 +119,83 @@ struct Favorites {
     }
 };
 
+// The player's collections and the items worn on top: ReSkate.collections.json beside Skate.exe, as
+// the favorites are (RESKATE_COLLECTIONS_FILE overrides). The console thread uses them too: own lock.
+struct Collections {
+    std::mutex mutex;
+    std::vector<Collection> lists;
+    std::vector<std::string> layers;
+    std::filesystem::path file;
+    bool loaded{};
+
+    void load() {
+        std::lock_guard lock(mutex);
+        if (loaded) return;
+        loaded = true;
+        std::array<wchar_t, 32768> buffer{};
+        if (const auto length = GetEnvironmentVariableW(L"RESKATE_COLLECTIONS_FILE", buffer.data(), static_cast<DWORD>(buffer.size()));
+            length && length < buffer.size()) {
+            file = std::wstring(buffer.data(), length);
+        } else {
+            const auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (!count || count >= buffer.size()) return;
+            file = std::filesystem::path(std::wstring(buffer.data(), count)).parent_path() / L"ReSkate.collections.json";
+        }
+        try {
+            std::ifstream in(file, std::ios::binary);
+            if (in) {
+                const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                const auto json = Json::parse(text);
+                if (json.is_object() && json.contains("collections") && json.at("collections").is_array())
+                    for (std::size_t i = 0; i < json.at("collections").size(); ++i) {
+                        const auto& one = json.at("collections").at(i);
+                        if (!one.is_object() || !one.contains("name") || !one.at("name").is_string()) continue;
+                        Collection collection{trimmed(one.at("name").string()), {}, {}};
+                        if (one.contains("icon") && one.at("icon").is_string()) collection.icon = one.at("icon").string();
+                        if (collection.name.empty() || collection_named(lists, collection.name) >= 0) continue;
+                        if (one.contains("items") && one.at("items").is_array())
+                            for (std::size_t k = 0; k < one.at("items").size(); ++k)
+                                if (one.at("items").at(k).is_string()) collection.items.insert(one.at("items").at(k).string());
+                        lists.push_back(std::move(collection));
+                    }
+                if (json.is_object() && json.contains("layers") && json.at("layers").is_array())
+                    for (std::size_t i = 0; i < json.at("layers").size(); ++i)
+                        if (json.at("layers").at(i).is_string()) layers.push_back(json.at("layers").at(i).string());
+                logging::log(Level::info, Channel::customization, "Item collections: {} loaded, {} item(s) worn on top.", lists.size(), layers.size());
+            }
+        } catch (const std::exception& error) {
+            logging::log(Level::warning, Channel::customization, "Item collections could not be read ({}); starting empty.", error.what());
+        }
+        outfit_layers::set_layers(layers);
+    }
+    void save() const { // with the lock held
+        if (file.empty()) return;
+        try {
+            Json json = Json::object();
+            json["version"] = 1;
+            json["collections"] = Json::array();
+            for (const auto& collection : lists) {
+                Json one = Json::object();
+                one["name"] = collection.name;
+                one["icon"] = collection.icon;
+                one["items"] = Json::array();
+                for (const auto& key : collection.items) one["items"].push_back(key);
+                json["collections"].push_back(std::move(one));
+            }
+            json["layers"] = Json::array();
+            for (const auto& key : layers) json["layers"].push_back(key);
+            auto temporary = file;
+            temporary += L".tmp";
+            { std::ofstream out(temporary, std::ios::binary | std::ios::trunc); out << json.dump(2) << '\n'; }
+            if (!MoveFileExW(temporary.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                throw std::runtime_error("Windows error " + std::to_string(GetLastError()));
+        } catch (const std::exception& error) {
+            logging::log(Level::warning, Channel::customization, "Item collections could not be saved: {}.", error.what());
+        }
+    }
+};
+Collections& collections_store() { static auto* value = new Collections; return *value; }
+
 struct Layout {
     md::Address row_type{};
     unsigned stride{}, content{}, focused{};
@@ -136,13 +219,20 @@ struct State {
     std::vector<Grid> grids;
     // A favorite's tile shows a star where its rarity icon is: its item model points at our copy of its
     // rarity style, which has the star for an icon. One copy per rarity style, made when first needed.
-    std::map<std::uint64_t, md::Value> starred;        // the game's style -> our starred copy
+    // Our copies of the game's rarity styles: (the game's style, 0 star / 1 check) -> the copy.
+    std::map<std::pair<std::uint64_t, int>, md::Value> starred;
     std::map<std::uint64_t, std::uint64_t> restyled;   // item model -> the game's style it had
-    bool star_unavailable{};
+    bool star_unavailable{}, check_unavailable{};
+    Keys worn;                                         // the items worn on top, as of this update
     unsigned tick{};
     Favorites favorites;
     std::string search;
     Filter filter{};
+    std::size_t collection{};    // the collection Filter::collection shows
+    bool custom{};               // the player's own tabs are shown in place of the game's
+    std::size_t tab{};           // the one of them that is open
+    Keys members;                // its items, as of this update
+    std::string filter_name;
     ULONGLONG next_sync{}, next_scan{}, last_open{};
     std::uint64_t serial{};
     bool open{};
@@ -155,8 +245,9 @@ struct Shared {
     View view;
     std::string search;
     bool search_pending{};
-    std::vector<std::string> pokes;
-    std::atomic<unsigned> toggles{}, cycles{};
+    std::vector<std::string> pokes, picks;
+    std::atomic<unsigned> toggles{}, cycles{}, layer_toggles{}, custom_toggles{};
+    std::atomic<int> tab_steps{}, tab_selected{-1};
     std::atomic<int> filter{-1};
     std::atomic<bool> status{};
 };
@@ -237,43 +328,55 @@ void release(const md::Context& context, Grid& grid) {
     }
 }
 
-std::uint64_t starred_source(const State& s, std::uint64_t style) {
+// The game's style our copy `style` was made from, and which mark it carries; {0, -1} for the game's own.
+std::pair<std::uint64_t, int> starred_source(const State& s, std::uint64_t style) {
     for (const auto& [source, copy] : s.starred) if (copy.handle == style) return source;
-    return 0;
+    return {0, -1};
 }
 
-// Gives every favorite in the grid its star and takes it from the others. The game sets an item's style
-// when its tile is first shown (and again when the tile comes back into view), so this repeats.
+// Gives every favorite in the grid its star and every item worn on top a check mark, where its rarity
+// icon is (the check wins when it is both), and takes them from the others. The game sets an item's
+// style when its tile is first shown (and again when the tile comes back into view), so this repeats.
 void mark(State& s, const md::Context& context, const Grid& grid) {
-    if (s.star_unavailable) return;
     for (const auto& item : grid.native) {
         const md::Value view{item.content, context.type_of(item.content)};
         if (schema_of(view.type) != ownable_view) continue;
         const auto at = context.address(view) + inline_offset(context, view.type, rarity_path);
         const auto current = md::read<md::Ref>(at).handle & ~std::uint64_t{1};
-        const auto source = starred_source(s, current);
-        if (s.favorites.keys.contains(item.key)) {
-            if (!current || source) continue;
-            auto copy = s.starred.find(current);
-            if (copy == s.starred.end()) {
-                const md::Value style{current, context.type_of(current)};
-                if (schema_of(style.type) != rarity_style.hash) continue;
-                const auto made = context.create(rarity_style, (GetTickCount64() << 12) | (++s.serial & 0xfff));
-                copy = s.starred.emplace(current, made).first;
-                context.copy(made, context.address(style));
-                if (!md::publish_texture(context, context.field(made, rarity_icon), star_texture)) {
-                    s.star_unavailable = true;
-                    logging::log(Level::warning, Channel::customization,
-                        "Item browser: the game's star icon is not loaded here; favorites show no star.");
-                    return;
-                }
-            }
-            context.set(context.path(view, {rarity_path[0], rarity_path[1]}), md::Ref{0, copy->second.handle});
-            s.restyled[item.content] = current;
-        } else if (source) {
+        const auto [source, has] = starred_source(s, current);
+        const int wanted = s.worn.contains(item.key) && !s.check_unavailable ? 1
+                           : s.favorites.keys.contains(item.key) && !s.star_unavailable ? 0
+                                                                                        : -1;
+        if (wanted == has) continue;
+        if (wanted < 0) {
             context.set(context.path(view, {rarity_path[0], rarity_path[1]}), md::Ref{0, source});
             s.restyled.erase(item.content);
+            continue;
         }
+        const auto base = source ? source : current;
+        if (!base) continue;
+        auto copy = s.starred.find({base, wanted});
+        if (copy == s.starred.end()) {
+            const md::Value style{base, context.type_of(base)};
+            if (schema_of(style.type) != rarity_style.hash) continue;
+            const auto made = context.create(rarity_style, (GetTickCount64() << 12) | (++s.serial & 0xfff));
+            context.copy(made, context.address(style));
+            bool published{};
+            if (wanted == 0) published = md::publish_texture(context, context.field(made, rarity_icon), star_texture);
+            else
+                for (const auto name : check_textures)
+                    if ((published = md::publish_texture(context, context.field(made, rarity_icon), name))) break;
+            if (!published) {
+                try { context.destroy(made); } catch (const std::exception&) {}
+                (wanted == 0 ? s.star_unavailable : s.check_unavailable) = true;
+                logging::log(Level::warning, Channel::customization, "Item browser: the game's {} icon is not loaded here; {} show none.",
+                             wanted == 0 ? "star" : "check", wanted == 0 ? "favorites" : "items worn on top");
+                continue;
+            }
+            copy = s.starred.emplace(std::pair{base, wanted}, made).first;
+        }
+        context.set(context.path(view, {rarity_path[0], rarity_path[1]}), md::Ref{0, copy->second.handle});
+        s.restyled[item.content] = base;
     }
 }
 
@@ -333,6 +436,40 @@ std::vector<std::byte> take_rows(const std::vector<std::byte>& from, const std::
     return out;
 }
 
+// The item a tile model shows, whichever grid it came from.
+const Item* known(const State& s, std::uint64_t content) {
+    for (const auto& grid : s.grids)
+        for (const auto& item : grid.native)
+            if (item.content == content) return &item;
+    return nullptr;
+}
+// A tile for a grid: row `index` of `from`'s own list (its copy in `backing`).
+struct Pick {
+    const Grid* from{};
+    unsigned index{};
+};
+// What a grid shows: its own tiles as the order and the filters have them. While a collection is shown
+// (one of the player's tabs), that collection's items from every item grid of the screen, its own first:
+// the screen's grids are all there at once, one per tab of the game.
+std::vector<Pick> picks_for(const State& s, const Grid& grid) {
+    std::vector<Pick> out;
+    if (s.filter != Filter::collection) {
+        for (const auto index : arrange(grid.native, s.favorites.keys, s.search, s.filter, &s.members)) out.push_back({&grid, index});
+        return out;
+    }
+    std::set<std::string, std::less<>> seen;
+    const auto take = [&](const Grid& from) {
+        if (from.failed || !from.backing.handle) return;
+        for (const auto index : collection_tiles(from.native, s.members, s.search))
+            if (seen.insert(from.native[index].key).second) out.push_back({&from, index});
+    };
+    take(grid);
+    for (const auto& other : s.grids)
+        if (&other != &grid) take(other);
+    if (out.empty() && !grid.native.empty()) out.push_back({&grid, 0}); // an empty grid cannot take the focus back
+    return out;
+}
+
 void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
     if (grid.failed) return;
     grid.items = context.field(grid.list, owned_items);
@@ -348,9 +485,8 @@ void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
         if (ours) {
             // Same item models as we published: check they still show the same items.
             for (std::size_t i = 0; i < items.size() && ours; ++i) {
-                const auto known = std::find_if(grid.native.begin(), grid.native.end(),
-                    [&](const Item& item) { return item.content == items[i].content; });
-                ours = known != grid.native.end() && known->key == items[i].key;
+                const auto* was = known(s, items[i].content);
+                ours = was && was->key == items[i].key;
             }
         }
         if (!ours) {
@@ -361,14 +497,27 @@ void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
             grid.shown = rows.content;
         }
     }
-    const auto order = arrange(grid.native, s.favorites.keys, s.search, s.filter);
+    const auto picks = picks_for(s, grid);
     std::vector<std::uint64_t> wanted;
-    wanted.reserve(order.size());
-    for (const auto index : order) wanted.push_back(grid.native[index].content);
+    wanted.reserve(picks.size());
+    for (const auto& pick : picks) wanted.push_back(pick.from->native[pick.index].content);
     if (wanted == grid.shown) return;
-    unsigned count{}, stride{};
-    const auto source = context.array(context.field(grid.backing, owned_items), 4096, count, stride);
-    md::require(count == grid.native.size() && stride == s.layout.stride, "Item grid copy differs.");
+    // The rows, out of each grid's own copy.
+    std::map<const Grid*, std::vector<std::byte>> copies;
+    std::vector<std::byte> source;
+    for (const auto& pick : picks) {
+        auto copy = copies.find(pick.from);
+        if (copy == copies.end()) {
+            unsigned count{}, stride{};
+            auto bytes = context.array(context.field(pick.from->backing, owned_items), 4096, count, stride);
+            md::require(count == pick.from->native.size() && stride == s.layout.stride, "Item grid copy differs.");
+            copy = copies.emplace(pick.from, std::move(bytes)).first;
+        }
+        const auto* row = copy->second.data() + std::size_t{pick.index} * s.layout.stride;
+        source.insert(source.end(), row, row + s.layout.stride);
+    }
+    std::vector<unsigned> order(picks.size());
+    for (unsigned i = 0; i < order.size(); ++i) order[i] = i;
     const auto focused = grid.focused < 0 ? -1 : std::min(grid.focused, static_cast<int>(order.size()) - 1);
     context.array(grid.items, take_rows(source, order, s.layout, focused), static_cast<unsigned>(order.size()));
     const auto after = read_rows(context, grid.items, s.layout);
@@ -506,7 +655,7 @@ void log_roots(State& s, const md::Context& context) {
 }
 void log_status(const State& s) {
     logging::log(Level::info, Channel::customization, "Item browser: {} grid(s), search \"{}\", filter {}, {} favorite(s), file {}.",
-        s.grids.size(), s.search, filter_names[static_cast<std::size_t>(s.filter)], s.favorites.keys.size(),
+        s.grids.size(), s.search, s.filter_name, s.favorites.keys.size(),
         s.favorites.file.string());
     for (const auto& grid : s.grids) {
         std::string focus = "-";
@@ -540,18 +689,195 @@ const overlay::ItemBrowserHost* overlay_host() noexcept {
             overlay::ItemBrowserView out;
             out.open = current.open;
             out.search = current.search;
-            out.filter = std::string(filter_names[static_cast<std::size_t>(current.filter)]);
+            out.filter = current.filter_name;
             out.shown = current.shown;
             out.total = current.total;
             out.focused_favorite = current.focused_favorite;
+            out.collections = current.collections;
+            out.focused_in = current.focused_in;
+            out.focused_item = !current.focused_title.empty();
+            out.focused_title = current.focused_title;
+            out.focused_layer = current.focused_layer;
+            out.layers = current.layers;
+            out.layers_worn = current.layers_worn;
+            out.layers_note = current.layers_note;
+            out.custom = current.custom;
+            out.tab = current.tab;
+            out.icons = current.icons;
+            out.tab_empty = current.tab_empty;
             return out;
         },
         [] { toggle_focused_favorite(); },
         [](const char* text) { set_search(text ? text : ""); },
-        [] { cycle_filter(); }};
+        [] { cycle_filter(); },
+        [] { toggle_focused_layer(); },
+        [](const char* text) { pick_collection(text ? text : ""); },
+        [] { toggle_custom_tabs(); },
+        [](int steps) { step_tab(steps); },
+        [](int index) { select_tab(index); },
+        [](const char* name, const char* icon) { return make_tab(name ? name : "", icon ? icon : ""); },
+        [](int index, const char* name) { rename_tab(index, name ? name : ""); },
+        [](int index, const char* icon) { set_tab_icon(index, icon ? icon : ""); },
+        [](int index) { remove_tab(index); },
+        [](int index, int by) { move_tab(index, by); },
+        [] { (void)clear_layers(); }};
     return &host;
 }
 void cycle_filter() noexcept { shared().cycles.fetch_add(1); }
+void pick_collection(std::string typed) {
+    auto& sh = shared();
+    std::lock_guard lock(sh.mutex);
+    if (sh.picks.size() < 32) sh.picks.push_back(std::move(typed));
+}
+void toggle_focused_layer() noexcept { shared().layer_toggles.fetch_add(1); }
+
+namespace {
+std::string join(const Keys& keys, std::size_t limit = 12) {
+    std::string out;
+    std::size_t n{};
+    for (const auto& key : keys) {
+        if (n++ == limit) { out += ", ..."; break; }
+        out += (out.empty() ? "" : ", ") + key;
+    }
+    return out;
+}
+bool all_digits(const std::string& text) {
+    return !text.empty() && std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+// The layers as the store has them, to the skater (with the store's lock held).
+void layers_changed(Collections& c) {
+    c.save();
+    outfit_layers::set_layers(c.layers);
+}
+}
+std::string list_collections() {
+    auto& c = collections_store();
+    c.load();
+    std::lock_guard lock(c.mutex);
+    std::string out = std::to_string(c.lists.size()) + " collection(s) in " + c.file.string();
+    for (std::size_t i = 0; i < c.lists.size(); ++i)
+        out += "\n" + std::to_string(i + 1) + ". " + c.lists[i].name + " (" + std::to_string(c.lists[i].items.size()) + "): " +
+               join(c.lists[i].items);
+    const auto status = outfit_layers::status();
+    out += "\nOn top: " + std::to_string(c.layers.size()) + " (" + std::to_string(status.worn) + " on the skater)";
+    for (const auto& key : c.layers) out += "\n  " + key;
+    if (!status.note.empty()) out += "\n" + status.note;
+    return out;
+}
+std::string make_collection(std::string name) {
+    auto& c = collections_store();
+    c.load();
+    name = trimmed(name);
+    if (name.empty() || all_digits(name)) return "Give the collection a name (not just a number).";
+    std::lock_guard lock(c.mutex);
+    if (collection_named(c.lists, name) >= 0) return "There is a collection " + name + " already.";
+    c.lists.push_back({name, {}});
+    c.save();
+    return "Collection " + name + " made.";
+}
+std::string delete_collection(std::string name) {
+    auto& c = collections_store();
+    c.load();
+    std::lock_guard lock(c.mutex);
+    const auto at = collection_named(c.lists, name);
+    if (at < 0) return "No collection is called " + trimmed(name) + ".";
+    const auto gone = c.lists[static_cast<std::size_t>(at)].name;
+    c.lists.erase(c.lists.begin() + at);
+    c.save();
+    return "Collection " + gone + " deleted.";
+}
+std::string wear_collection(std::string name) {
+    auto& c = collections_store();
+    c.load();
+    std::lock_guard lock(c.mutex);
+    const auto at = collection_named(c.lists, name);
+    if (at < 0) return "No collection is called " + trimmed(name) + ".";
+    const auto& collection = c.lists[static_cast<std::size_t>(at)];
+    unsigned added{};
+    for (const auto& key : collection.items)
+        if (std::find(c.layers.begin(), c.layers.end(), key) == c.layers.end()) c.layers.push_back(key), ++added;
+    layers_changed(c);
+    return std::to_string(added) + " item(s) of " + collection.name + " to wear on top (" + std::to_string(c.layers.size()) +
+           " in all); they show on the skater in the world.";
+}
+std::string wear_layer(std::string item, bool on) {
+    auto& c = collections_store();
+    c.load();
+    const auto name = outfit_layers::item_named(trimmed(item));
+    if (name.empty()) return "No installed item has \"" + trimmed(item) + "\" in its name.";
+    std::lock_guard lock(c.mutex);
+    const auto at = std::find_if(c.layers.begin(), c.layers.end(), [&](const std::string& key) { return folded(key) == folded(name); });
+    if (on == (at != c.layers.end())) return name + (on ? " is worn on top already." : " is not worn on top.");
+    if (on) c.layers.push_back(name);
+    else c.layers.erase(at);
+    layers_changed(c);
+    return name + (on ? " to wear on top." : " taken off.");
+}
+void toggle_custom_tabs() noexcept { shared().custom_toggles.fetch_add(1); }
+void step_tab(int steps) noexcept { shared().tab_steps.fetch_add(steps); }
+void select_tab(int index) noexcept { shared().tab_selected.store(index); }
+int make_tab(std::string name, std::string icon) {
+    auto& c = collections_store();
+    c.load();
+    name = trimmed(name);
+    if (name.empty() || all_digits(name)) return -1;
+    std::lock_guard lock(c.mutex);
+    if (const auto at = collection_named(c.lists, name); at >= 0) return at;
+    c.lists.push_back({name, {}, std::move(icon)});
+    c.save();
+    logging::log(Level::info, Channel::customization, "Item tabs: {} made.", name);
+    return static_cast<int>(c.lists.size()) - 1;
+}
+void rename_tab(int index, std::string name) {
+    auto& c = collections_store();
+    name = trimmed(name);
+    std::lock_guard lock(c.mutex);
+    if (index < 0 || static_cast<std::size_t>(index) >= c.lists.size() || name.empty() || all_digits(name)) return;
+    if (const auto at = collection_named(c.lists, name); at >= 0 && at != index) return;
+    c.lists[static_cast<std::size_t>(index)].name = name;
+    c.save();
+}
+void set_tab_icon(int index, std::string icon) {
+    auto& c = collections_store();
+    std::lock_guard lock(c.mutex);
+    if (index < 0 || static_cast<std::size_t>(index) >= c.lists.size()) return;
+    c.lists[static_cast<std::size_t>(index)].icon = std::move(icon);
+    c.save();
+}
+void remove_tab(int index) {
+    auto& c = collections_store();
+    std::lock_guard lock(c.mutex);
+    if (index < 0 || static_cast<std::size_t>(index) >= c.lists.size()) return;
+    logging::log(Level::info, Channel::customization, "Item tabs: {} deleted.", c.lists[static_cast<std::size_t>(index)].name);
+    c.lists.erase(c.lists.begin() + index);
+    c.save();
+}
+void move_tab(int index, int by) {
+    auto& c = collections_store();
+    std::lock_guard lock(c.mutex);
+    const auto to = index + by;
+    if (index < 0 || to < 0 || static_cast<std::size_t>(index) >= c.lists.size() || static_cast<std::size_t>(to) >= c.lists.size()) return;
+    std::swap(c.lists[static_cast<std::size_t>(index)], c.lists[static_cast<std::size_t>(to)]);
+    c.save();
+}
+std::string show_collection(std::string name) {
+    auto& c = collections_store();
+    c.load();
+    std::lock_guard lock(c.mutex);
+    const auto at = collection_named(c.lists, name);
+    if (at < 0) return "No collection is called " + trimmed(name) + ".";
+    shared().filter.store(4 + at);
+    return "The item grids show " + c.lists[static_cast<std::size_t>(at)].name + " (X steps on).";
+}
+std::string clear_layers() {
+    auto& c = collections_store();
+    c.load();
+    std::lock_guard lock(c.mutex);
+    const auto count = c.layers.size();
+    c.layers.clear();
+    layers_changed(c);
+    return std::to_string(count) + " item(s) taken off the top.";
+}
 void request_status() noexcept { shared().status.store(true); }
 void request_poke(std::string arguments) {
     auto& sh = shared();
@@ -587,9 +913,13 @@ void update(std::uintptr_t base) noexcept {
     try {
         if (s.lifetime.blocked()) return;
         const auto now = GetTickCount64();
-        if (now < s.next_sync) return;
+        // A key or button waits for nothing: the next frame acts on it.
+        const bool asked = sh.toggles.load() || sh.cycles.load() || sh.layer_toggles.load() || sh.custom_toggles.load() ||
+                           sh.tab_steps.load() || sh.tab_selected.load() >= 0 || sh.filter.load() >= 0;
+        if (now < s.next_sync && !asked) return;
         s.next_sync = now + (s.open ? 40 : 200);
         s.favorites.load();
+        collections_store().load();
         const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
         md::Address ui{}, manager{};
         if (!memory::read(base + addr::engine::ui_manager, ui) || !ui || !memory::read(ui + 0x140, manager) || !manager) return;
@@ -609,16 +939,36 @@ void update(std::uintptr_t base) noexcept {
             scan(s, context);
         }
         // Requests.
-        std::vector<std::string> pokes;
+        std::vector<std::string> pokes, picks;
         {
             std::lock_guard shared_lock(sh.mutex);
             if (std::exchange(sh.search_pending, false)) s.search = sh.search;
             pokes.swap(sh.pokes);
+            picks.swap(sh.picks);
         }
-        if (const auto filter = sh.filter.exchange(-1); filter >= 0 && filter <= static_cast<int>(Filter::game))
-            s.filter = static_cast<Filter>(filter);
-        for (auto cycles = sh.cycles.exchange(0); cycles; --cycles)
-            s.filter = static_cast<Filter>((static_cast<unsigned>(s.filter) + 1) % std::size(filter_names));
+        auto& store = collections_store();
+        std::vector<std::string> names;
+        {
+            std::lock_guard store_lock(store.mutex);
+            for (const auto& collection : store.lists) names.push_back(collection.name);
+        }
+        // Console: a fixed filter by its number, or a collection as 4 + its index.
+        if (const auto filter = sh.filter.exchange(-1); filter >= 0) {
+            if (filter <= static_cast<int>(Filter::game)) s.filter = static_cast<Filter>(filter);
+            else if (static_cast<std::size_t>(filter - 4) < names.size()) {
+                s.filter = Filter::collection;
+                s.collection = static_cast<std::size_t>(filter - 4);
+            }
+        }
+        // X: All, Favorites, Mods, Game items, then each collection in turn.
+        for (auto cycles = sh.cycles.exchange(0); cycles; --cycles) {
+            if (s.filter < Filter::game) s.filter = static_cast<Filter>(static_cast<unsigned>(s.filter) + 1);
+            else if (s.filter == Filter::game) {
+                s.filter = names.empty() ? Filter::all : Filter::collection;
+                s.collection = 0;
+            } else if (s.collection + 1 < names.size()) ++s.collection;
+            else s.filter = Filter::all;
+        }
         const Grid* active = nullptr;
         const Item* focused = nullptr;
         const auto find_focus = [&] {
@@ -626,12 +976,68 @@ void update(std::uintptr_t base) noexcept {
             for (const auto& grid : s.grids) {
                 if (grid.focused < 0 || static_cast<std::size_t>(grid.focused) >= grid.shown.size()) continue;
                 active = &grid;
-                for (const auto& item : grid.native)
-                    if (item.content == grid.shown[static_cast<std::size_t>(grid.focused)]) focused = &item;
+                focused = known(s, grid.shown[static_cast<std::size_t>(grid.focused)]);
                 break;
             }
         };
         find_focus();
+        // V: the highlighted item into a collection, or out of it; a new name makes the collection.
+        for (const auto& typed : picks) {
+            std::lock_guard store_lock(store.mutex);
+            auto at = collection_named(store.lists, typed);
+            if (at < 0) {
+                const auto name = trimmed(typed);
+                if (name.empty() || all_digits(name)) continue;
+                store.lists.push_back({name, {}});
+                at = static_cast<int>(store.lists.size()) - 1;
+                names.push_back(name);
+                logging::log(Level::info, Channel::customization, "Item collections: {} made.", name);
+            }
+            auto& collection = store.lists[static_cast<std::size_t>(at)];
+            if (focused && !focused->key.empty()) {
+                const bool in = collection.items.erase(focused->key) == 0;
+                if (in) collection.items.insert(focused->key);
+                logging::log(Level::info, Channel::customization, "Item collections: {} {} {}.", focused->key,
+                             in ? "added to" : "taken out of", collection.name);
+            }
+            store.save();
+        }
+        // B: the highlighted item worn on top of the outfit, or taken off.
+        // (Not in an empty tab of the player's: its one tile is only there to hold the game's highlight.)
+        if (const auto toggles = sh.layer_toggles.exchange(0);
+            (toggles & 1) && focused && !focused->key.empty() && !(s.custom && s.members.empty())) {
+            std::lock_guard store_lock(store.mutex);
+            const auto at = std::find(store.layers.begin(), store.layers.end(), focused->key);
+            const bool on = at == store.layers.end();
+            if (on) store.layers.push_back(focused->key);
+            else store.layers.erase(at);
+            layers_changed(store);
+            logging::log(Level::info, Channel::customization, "Outfit layers: {} {}.", focused->key, on ? "to wear on top" : "taken off");
+        }
+        // Tab: the player's own tabs in place of the game's, or back; Q and E step through them.
+        for (auto toggles = sh.custom_toggles.exchange(0); toggles; --toggles) {
+            s.custom = !s.custom && !names.empty();
+            if (!s.custom) s.filter = Filter::all;
+        }
+        if (const auto steps = sh.tab_steps.exchange(0); steps && !names.empty()) {
+            const auto n = static_cast<int>(names.size());
+            s.tab = static_cast<std::size_t>(((static_cast<int>(s.tab) + steps) % n + n) % n);
+        }
+        if (const auto chosen = sh.tab_selected.exchange(-1); chosen >= 0 && static_cast<std::size_t>(chosen) < names.size())
+            s.tab = static_cast<std::size_t>(chosen);
+        if (names.empty()) s.custom = false;
+        if (s.tab >= names.size()) s.tab = names.empty() ? 0 : names.size() - 1;
+        if (s.custom) {
+            s.filter = Filter::collection;
+            s.collection = s.tab;
+        }
+        if (s.filter == Filter::collection && s.collection >= names.size()) s.filter = Filter::all;
+        {
+            std::lock_guard store_lock(store.mutex);
+            s.members = s.filter == Filter::collection && s.collection < store.lists.size() ? store.lists[s.collection].items : Keys{};
+            s.worn = Keys(store.layers.begin(), store.layers.end());
+        }
+        s.filter_name = s.filter == Filter::collection ? names[s.collection] : std::string(filter_names[static_cast<std::size_t>(s.filter)]);
         if (const auto toggles = sh.toggles.exchange(0); (toggles & 1) && focused && !focused->key.empty()) {
             const auto key = focused->key;
             if (!s.favorites.keys.erase(key)) s.favorites.keys.insert(key);
@@ -640,7 +1046,14 @@ void update(std::uintptr_t base) noexcept {
                 s.favorites.keys.contains(key) ? "added" : "removed");
         }
         ++s.tick;
+        // While a collection is shown (the player's own tabs) only the grid that has the focus shows it:
+        // the others are out of sight (and some are other screens'), so they are left as they are.
+        const Grid* showing = nullptr;
+        if (s.filter == Filter::collection)
+            for (const auto& grid : s.grids)
+                if (grid.focused >= 0 && !grid.failed) { showing = &grid; break; }
         for (auto& grid : s.grids) {
+            if (showing && &grid != showing) continue;
             try {
                 sync(s, context, grid, rescan);
                 if (rescan || (grid.focused >= 0 && s.tick % 3 == 0)) mark(s, context, grid);
@@ -671,13 +1084,30 @@ void update(std::uintptr_t base) noexcept {
         next.open = s.open;
         next.search = s.search;
         next.filter = s.filter;
+        next.filter_name = s.filter_name;
+        next.collections = names;
+        next.custom = s.custom;
+        next.tab = s.tab;
+        next.tab_empty = s.custom && s.members.empty();
+        {
+            std::lock_guard store_lock(store.mutex);
+            for (const auto& collection : store.lists) {
+                next.focused_in.push_back(focused && collection.items.contains(focused->key));
+                next.icons.push_back(collection.icon);
+            }
+            next.focused_layer = focused && std::find(store.layers.begin(), store.layers.end(), focused->key) != store.layers.end();
+        }
+        const auto worn = outfit_layers::status();
+        next.layers = worn.wanted;
+        next.layers_worn = worn.worn;
+        next.layers_note = worn.note;
         if (active) {
             const auto blanks = leading_blanks(active->native);
             next.shown = static_cast<unsigned>(active->shown.size()) - (std::min)(blanks, static_cast<unsigned>(active->shown.size()));
             next.total = static_cast<unsigned>(active->native.size()) - blanks;
             for (const auto& item : active->native) next.favorites += s.favorites.keys.contains(item.key);
         }
-        if (focused) {
+        if (focused && !(s.custom && s.members.empty())) {
             next.focused_title = focused->title;
             next.focused_favorite = s.favorites.keys.contains(focused->key);
         }

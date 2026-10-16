@@ -21,6 +21,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/skate_hud_overlay.cpp
     Extension/UI/Overlay/nametag_overlay.cpp
     Extension/UI/Overlay/chat_emotes.cpp
+    Extension/UI/Overlay/tab_icons.cpp
     Extension/UI/Overlay/chat_rich.cpp
     Extension/UI/Overlay/console_suggestions.cpp
     Extension/UI/Overlay/skate_menu.cpp

@@ -7,6 +7,7 @@
 #include "Extension/HallOfMeat/hall_of_meat_overlay.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
+#include "tab_icons.h"
 #include "input_capture.h"
 #include "cursor.h"
 #include <algorithm>
@@ -375,9 +376,11 @@ bool setup_graphics() {
     };
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, left());
     reserve_hall_of_meat_images(*ImGui::GetIO().Fonts, left());
+    reserve_tab_icons(*ImGui::GetIO().Fonts, left());
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, left());
     fill_chat_emotes(*ImGui::GetIO().Fonts);
     fill_hall_of_meat_images(*ImGui::GetIO().Fonts);
+    fill_tab_icons(*ImGui::GetIO().Fonts);
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);

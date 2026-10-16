@@ -1,4 +1,4 @@
-# Favorites, search and filters in the skater item grids
+# Favorites, search, filters, own tabs and items worn on top in the skater item grids
 
 Built into ReSkate in the same way the music screen's Mods shelf was added
 ([native-music-ui.md](native-music-ui.md)): the grids stay the game's own and their data models are
@@ -7,7 +7,9 @@ a mod is touched.
 
 Code: [item_browser.cpp](../Extension/Customization/item_browser.cpp) (client thread),
 [item_browser_order.h](../Extension/Customization/item_browser_order.h) (the pure ordering rule),
-[item_browser_overlay.cpp](../Extension/UI/Overlay/item_browser_overlay.cpp) (search bar, prompts, keys).
+[item_browser_overlay.cpp](../Extension/UI/Overlay/item_browser_overlay.cpp) (search bar, prompts, keys, the
+player's tab row and its panel), [tab_icons.cpp](../Extension/UI/Overlay/tab_icons.cpp) (the tabs' icons),
+[outfit_layers.cpp](../Extension/OutfitLayers/outfit_layers.cpp) (items worn on top).
 
 ## What the player gets
 
@@ -18,6 +20,48 @@ Code: [item_browser.cpp](../Extension/Customization/item_browser.cpp) (client th
 - **X**: steps a filter (All, Favorites, Mods, Game items).
 - Favorites are saved to `ReSkate.favorites.json` beside Skate.exe (`RESKATE_FAVORITES_FILE` overrides
   the path), keyed by the item's asset name, so items added later just work.
+
+### The player's own tabs
+
+- **Tab** (View on a pad): the grid's tab row becomes the player's own tabs ("Jewelry", "Gloves",
+  "Random"...), drawn in the game's place and style on a panel of its own; Tab again gives the game's
+  tabs back. With no tabs yet it opens the tab editor.
+- **Q / E** (LB / RB) step through them, nine to a page ("1 / 2" under E). The grid then shows that
+  tab's items from every grid of the screen (tops, bottoms and shoes together).
+- **V** (hold View): a panel to put the highlighted item into tabs, or take it out; "+" makes a tab.
+- **R**: the tab editor: name, icon, order, delete. Icons are the game's own category icons, read from
+  the installed game at start-up (`ui/textures/icons/cas/img_cas_<kind>_128_128_128`, decoded like the
+  park previews), and 26 of ReSkate's own for kinds the game has none for (`assets/tab_icons`, drawn by
+  `make_tab_icons.py`, built into ReSkate.dll).
+- Tabs are saved to `ReSkate.collections.json` beside Skate.exe (`RESKATE_COLLECTIONS_FILE` overrides).
+- While the player's tabs are shown, Q, E and Enter do not reach the game (Tab never does over an item
+  grid): `set_withheld_keys` drops their presses from the game's raw input and key-state reads.
+
+### Items worn on top
+
+- **B** (R3; Enter or A in the player's tabs): the highlighted item is worn on top of the outfit, or
+  taken off again; **Delete** (hold R3) takes them all off. Several hats, chains, gloves... at once.
+  Their tiles carry the game's brushed check where the rarity icon is.
+- The skater's recipe has one slot per kind and the game only builds an item from a slot of its own
+  category. An item worn on top goes into a slot the outfit leaves empty (its own kind's, else the
+  accessory slots, then the tattoo and face slots), and the catalog item is given that slot's
+  category besides its own, in memory, for this run. The world skater then wears the outfit and the
+  layers in a recipe of its own through the native recipe copy, as Road Rash puts its marks on; while a
+  game menu is up it is the game's again, so the menus change the outfit, and the layers go back on
+  0.15 s after the menu closes.
+- Not every item loads from every slot (a top from the left hand's slot leaves the skater without a
+  body). An item never tried in a slot goes on alone; if the game describes a failed load within 0.9 s
+  (`load_error_guard::described()`), it comes off and the next slot is tried. What loads where is kept
+  in `ReSkate.layer_slots.txt` beside the tabs file, so it is not tried again.
+- They wait while Road Rash has marks on the skater (both hand the skater a recipe of their own).
+
+### Controller
+
+The prompts follow what was used last (a key, or a pad's button; a pad that connects counts), drawn as
+Xbox letters or PlayStation shapes. Buttons held for an action fill a ring while held. Over an item
+grid the game does not see the stick clicks and View, nor LB, RB and A while the player's tabs are
+shown (`set_withheld_pad_buttons`, applied in the XInput filter). `RESKATE_ITEM_PAD_PROMPTS=1` shows
+the pad's prompts without a pad, for screenshots.
 
 ## How it works
 
@@ -50,12 +94,24 @@ Keyboard, offline, 3440x1440, in Apparel (Tops, Bottoms, Shoes), Accessories, Bo
 favoriting and unfavoriting, the star, reordering, the search box, the filter, favorites loaded from
 the file on the next launch, leaving the menus and coming back.
 
+Own tabs and items worn on top (keyboard and an Xbox pad, offline, 3440x1440): making, naming,
+re-iconing, moving and deleting tabs, pages of nine, a tab mixing items from Tops and Shoes, five hats
+worn at once, layers kept through level reloads and menus, an item that does not load in a slot moved
+to the next, the check on worn tiles while scrolling.
+
 ## Not tried yet
 
-- A controller (the left stick click is read, but that path was not checked).
+- A PlayStation pad read natively (not through XInput / Steam Input): its buttons are not withheld from
+  the game.
+- The menus' preview skater does not show items worn on top: it is not the world skater and was not
+  found among the skater item components; they show in the world.
+- Other players do not see items worn on top (their game holds items to their slots' categories).
+- Two items in exactly the same place (two leggings) flicker between one another, as any overlapping
+  meshes do.
 - Tattoos (the same grid type is expected; untested).
 - Multiplayer sessions, level changes with a grid open, live mod apply.
 - Other screen sizes for the overlay's placement.
 - The star replaces the rarity icon (bottom left). The tile has no icon slot bottom right.
-- No automated tests yet; `arrange()` in item_browser_order.h is written to be tested on its own.
+- Tests: `dingosdk_item_browser_tests` (`DINGOSDK_BUILD_ITEM_BROWSER_TESTS`) for the ordering, the
+  collection filter and the tab lookup.
 - `items peek` / `items poke` are research aids used to find the fields above; drop or keep as wanted.
