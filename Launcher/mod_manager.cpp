@@ -439,7 +439,7 @@ void recycle(const fs::path& path) {
 class Staging {
 public:
     Staging(const fs::path& mods, const std::string&) : path_(mods / staging_folder) {
-        const auto parent = path_.parent_path();
+        const auto parent = path_;
         verify_path_chain(mods, false);
         auto parent_attributes = GetFileAttributesW(parent.c_str());
         if (parent_attributes == INVALID_FILE_ATTRIBUTES) {
