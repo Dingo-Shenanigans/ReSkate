@@ -137,6 +137,11 @@ struct State {
     // The item grids' search box (item_browser_overlay.cpp): "-" opens it while a grid has the focus.
     std::atomic<bool> item_search_visible{false}, item_search_focus_requested{false};
     std::atomic<bool> item_search_character_pending{false}, item_search_escape_pending{false};
+    // "V" opens the same box for a collection's name or number (the item into that collection).
+    std::atomic<bool> item_picker{false};
+    // The player's own tabs' panel over the item grid (item_browser_overlay.cpp): 0 closed, 1 adding
+    // the highlighted item to tabs (V), 2 making and changing tabs (R). It takes the keys and the mouse.
+    std::atomic<int> item_panel{0};
     std::atomic<bool> input_attached{false};
     std::atomic<bool> stop{false};
     std::atomic<HWND> window{nullptr};
@@ -322,9 +327,11 @@ bool perf_hud_pending();
 void draw_perf_hud();
 void draw_perf_window();
 // The skater item grids' search bar and prompts (item_browser_overlay.cpp): polled every presented frame.
-enum class ItemBrowserKey { favorite, filter };
+enum class ItemBrowserKey { favorite, filter, layer, clear_layers, custom, previous_tab, next_tab };
 bool item_browser_pending();
 bool item_browser_open();
+bool item_browser_custom(); // the player's own tabs are shown in place of the game's
+void item_browser_keyboard_used(); // a key or mouse button: the prompts show keys again
 void item_browser_key(ItemBrowserKey key);
 void item_browser_search_cleared(); // Esc in the search box
 void draw_item_browser();

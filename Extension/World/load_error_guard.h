@@ -13,4 +13,6 @@ namespace dingosdk::load_error_guard {
 bool install(std::uintptr_t base) noexcept;
 // How many parts were emptied since the game started.
 std::uint64_t emptied() noexcept;
+// How many failed loads the game has described since it started (0 without the guard).
+std::uint64_t described() noexcept;
 }

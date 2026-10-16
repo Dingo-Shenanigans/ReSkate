@@ -9,8 +9,10 @@
 
 // Which tiles of an item grid are shown, and in what order. Pure: no game state, so it is tested on its own.
 namespace dingosdk::item_browser {
-enum class Filter : std::uint8_t { all, favorites, mods, game };
+enum class Filter : std::uint8_t { all, favorites, mods, game, collection };
+// The fixed filters' names; the last filter is one of the player's collections, named as it is.
 inline constexpr std::string_view filter_names[]{"All", "Favorites", "Mods", "Game items"};
+using Keys = std::set<std::string, std::less<>>;
 
 struct Item {
     std::string key, title, category;
@@ -59,11 +61,13 @@ inline unsigned leading_blanks(std::span<const Item> native) {
 // Indices into `native` (the game's own order): the tiles that show no item (they stay where they
 // are, in front, whatever is searched for), the worn item, the favorites, then everything else,
 // each kept in the game's order, less what the search and the filter leave out. Never empty for a
-// grid that has tiles: a grid with nothing in it cannot take the focus back.
-inline std::vector<unsigned> arrange(std::span<const Item> native, const std::set<std::string, std::less<>>& favorites,
-                                     std::string_view search, Filter filter) {
+// grid that has tiles: a grid with nothing in it cannot take the focus back. `collection` holds the
+// items of the collection the filter shows (Filter::collection); none, and that filter shows nothing.
+inline std::vector<unsigned> arrange(std::span<const Item> native, const Keys& favorites, std::string_view search, Filter filter,
+                                     const Keys* collection = nullptr) {
     const auto shown = [&](const Item& item) {
         if (filter == Filter::favorites && !favorites.contains(item.key)) return false;
+        if (filter == Filter::collection && (!collection || !collection->contains(item.key))) return false;
         if (filter == Filter::mods && !item.modded) return false;
         if (filter == Filter::game && item.modded) return false;
         return matches(item, search);
@@ -79,5 +83,38 @@ inline std::vector<unsigned> arrange(std::span<const Item> native, const std::se
             if (favorites.contains(native[i].key) == (pass == 0) && shown(native[i])) result.push_back(i);
     if (result.empty() && !native.empty()) result.push_back(0);
     return result;
+}
+
+// The player's own collections ("Jewelry", "Gloves", anything): named lists of items, made and filled
+// from the item grids. Names are kept as typed and matched without regard to case.
+struct Collection {
+    std::string name;
+    Keys items;
+    std::string icon; // the tab's icon (Extension/UI/Overlay/tab_icons.h), by name
+};
+// The tiles of one grid that a collection shown as a tab takes: its items in the collection that the
+// search leaves, in the grid's own order. Tiles that show no item ("none") are not taken.
+inline std::vector<unsigned> collection_tiles(std::span<const Item> native, const Keys& members, std::string_view search) {
+    std::vector<unsigned> out;
+    for (unsigned i = 0; i < native.size(); ++i)
+        if (!native[i].key.empty() && members.contains(native[i].key) && matches(native[i], search)) out.push_back(i);
+    return out;
+}
+inline std::string trimmed(std::string_view text) {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '	')) text.remove_prefix(1);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '	')) text.remove_suffix(1);
+    return std::string(text);
+}
+// What a typed name or number picks: the collection's index, or -1 when it names none (a new one).
+// A number picks by its place in the list, from 1.
+inline int collection_named(std::span<const Collection> collections, std::string_view typed) {
+    const auto text = trimmed(typed);
+    if (!text.empty() && text.size() <= 3 && std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        const auto number = std::stoi(text);
+        return number >= 1 && number <= static_cast<int>(collections.size()) ? number - 1 : -1;
+    }
+    for (std::size_t i = 0; i < collections.size(); ++i)
+        if (folded(collections[i].name) == folded(text)) return static_cast<int>(i);
+    return -1;
 }
 } // namespace dingosdk::item_browser

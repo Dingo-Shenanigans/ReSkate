@@ -1,5 +1,6 @@
 #pragma once
 #include <Windows.h>
+#include <initializer_list>
 #include <string>
 namespace dingosdk::overlay::detail {
 extern thread_local unsigned overlay_input_access;
@@ -12,6 +13,13 @@ struct OverlayInputAccess {
 // through GetRawInputData is then not noted a second time.
 extern thread_local HRAWINPUT noted_raw_input;
 bool block_polled_input();
+// Keys the game is not to see for now, whatever else it reads: the player's own item tabs take Q, E
+// and Enter while they are shown. Presses are dropped from the game's raw input and key-state reads;
+// releases pass. Any thread.
+void set_withheld_keys(std::initializer_list<unsigned> keys) noexcept;
+bool key_withheld(unsigned key) noexcept;
+// Controller buttons (XInput bits) the game is not to see for now: the item grids' own buttons.
+void set_withheld_pad_buttons(unsigned buttons) noexcept;
 // How the game read its controllers while a card held its input (prompt_input_active), for the
 // log when the hold ends: which of the ways the overlay can keep input from it the game used.
 struct PromptReads {

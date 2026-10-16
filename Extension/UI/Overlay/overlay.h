@@ -454,12 +454,36 @@ struct ItemBrowserView {
     std::string search, filter; // the search text and the filter's name
     unsigned shown{}, total{};  // tiles in the grid that has the focus
     bool focused_favorite{};    // the highlighted item is a favorite
+    bool focused_item{};        // the highlight is on an item (not on a "none" tile)
+    std::string focused_title;  // its name
+    // The player's collections, and whether the highlighted item is in each.
+    std::vector<std::string> collections;
+    std::vector<bool> focused_in;
+    bool focused_layer{};               // the highlighted item is worn on top of the outfit
+    unsigned layers{}, layers_worn{};   // items to wear on top, and on the skater now
+    std::string layers_note;
+    bool custom{};                      // the player's own tabs are shown in place of the game's
+    std::size_t tab{};                  // which of them is open
+    std::vector<std::string> icons;     // each collection's tab icon (tab_icons.h)
+    bool tab_empty{};                   // the open one of them has nothing in it yet
 };
 struct ItemBrowserHost {
     ItemBrowserView (*view)(){};
     void (*toggle_favorite)(){};
     void (*set_search)(const char *text){};
     void (*cycle_filter)(){};
+    void (*toggle_layer)(){};
+    void (*pick_collection)(const char *typed){}; // a collection's name or number: the highlighted item in or out
+    // The player's own tabs.
+    void (*toggle_custom)(){};
+    void (*step_tab)(int steps){};
+    void (*select_tab)(int index){};
+    int (*make_tab)(const char *name, const char *icon){};
+    void (*rename_tab)(int index, const char *name){};
+    void (*set_tab_icon)(int index, const char *icon){};
+    void (*remove_tab)(int index){};
+    void (*move_tab)(int index, int by){};
+    void (*clear_layers)(){}; // every item off the top
 };
 // `host` must stay valid for the life of the process.
 void set_item_browser(const ItemBrowserHost *host) noexcept;

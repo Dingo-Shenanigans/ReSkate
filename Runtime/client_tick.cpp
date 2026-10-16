@@ -17,6 +17,7 @@
 #include "Engine/Game/World/client_state.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/RoadRash/road_rash.h"
+#include "Extension/OutfitLayers/outfit_layers.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Extension/Skater/grind_exit_control.h"
 #include "Extension/Skater/camera_observer.h"
@@ -872,6 +873,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     dingosdk::hall_of_meat::on_client_tick();
     dingosdk::road_rash::on_client_tick(client);
+    dingosdk::outfit_layers::on_client_tick(client);
     dingosdk::drone::outfit::on_client_tick();
     dingosdk::board_break::on_client_tick(client);
     dingosdk::grind_exit_control::on_client_tick(client);
