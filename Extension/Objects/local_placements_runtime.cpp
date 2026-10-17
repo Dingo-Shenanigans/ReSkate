@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <numbers>
 #include <unordered_map>
 
 namespace dingosdk::profile_runtime {
@@ -631,9 +633,13 @@ void update_position_teleport() {
         !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
         !read(manager, state) || state != 0) return;
     const auto at = *r.position_teleport;
+    const float yaw = r.position_teleport_heading.value_or(0.0f) * std::numbers::pi_v<float> / 180.0f;
     r.position_teleport.reset();
-    // Upright at the spot. The native teleport manager handles streaming, ground checks and physics reset.
-    alignas(16) const std::array<float, 16> transform{1,0,0,0, 0,1,0,0, 0,0,1,0, at[0], at[1], at[2], 1};
+    r.position_teleport_heading.reset();
+    // Upright at the spot, facing the heading. Rows: right, up, forward, position. The native
+    // teleport manager handles streaming, ground checks and physics reset.
+    const float c = std::cos(yaw), s = std::sin(yaw);
+    alignas(16) const std::array<float, 16> transform{c,0,-s,0, 0,1,0,0, s,0,c,0, at[0], at[1], at[2], 1};
     alignas(16) std::array<std::uint64_t, 2> transition{};
     r.transition_ctor(transition.data());
     struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <array>
+#include <optional>
 #include <string>
 #include "Extension/UI/Overlay/overlay.h"
 
@@ -20,6 +21,14 @@ struct JumpScaleResult {
     float up_speed{}; // before scaling
 };
 JumpScaleResult take_jump_scale_result() noexcept;
+// Map teleports: the local skater's board velocity (world axes, m/s), when it is on the board.
+std::optional<std::array<float, 3>> read_board_velocity(std::uintptr_t client, std::uintptr_t entity) noexcept;
+// Map teleports: once the game's teleport has put the skater down, give the board back this
+// ground speed (x and z; y is left to the game). One request at a time; it expires after 1.5 s.
+bool queue_carry_speed(std::uintptr_t client, std::uintptr_t entity, const std::array<float, 3>& velocity) noexcept;
+// What the last request did: 0 pending or none, 2 kept, -1 the game would not keep it,
+// -2 the skater was off the board, -3 it failed or expired.
+int take_carry_speed_result() noexcept;
 // Trainer: the local skater's push speed as a multiple of the game's own (1 leaves the skater
 // alone); `stock` is the game's top pushing speed in m/s. `cruise` above 0 is auto push: a
 // rolling skater that is not braking gains speed up to it (m/s). Publish every client tick: it

@@ -220,6 +220,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/local_gameplay_settings.cpp
     Extension/Settings/local_native_settings.cpp
     Extension/Travel/local_location_travel.cpp
+    Extension/Travel/map_teleports.cpp
     Extension/World/local_park_rotation.cpp
     Extension/World/local_world_layers.cpp
     Extension/World/visual_environment.cpp

@@ -448,6 +448,17 @@ void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked
     Owner owner;
     if (rearm && resolve(client, entity, owner) && set_teleport_on_board(owner.component)) rearm = false;
 }
+static bool write_teleport_board(std::uintptr_t component, std::uint8_t value) noexcept {
+    __try {
+        *reinterpret_cast<volatile std::uint8_t*>(component + 0xc0) = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool keep_board_for_teleport(std::uintptr_t client, std::uintptr_t entity, bool on_board) noexcept {
+    LastError error;
+    Owner owner;
+    return protection().base && resolve(client, entity, owner) && write_teleport_board(owner.component, on_board ? 1 : 0);
+}
 void clear_no_bail() noexcept {
     auto& p = protection();
     AcquireSRWLockExclusive(&p.lock);
