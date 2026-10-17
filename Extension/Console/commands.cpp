@@ -233,6 +233,7 @@ const Commands &game_commands() {
         register_board_break_commands(*result);
         register_grind_exit_commands(*result);
         register_replay_keyframes_commands(*result);
+        register_custom_modes_commands(*result);
         return result;
     }();
     return *registry;

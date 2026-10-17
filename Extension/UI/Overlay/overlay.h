@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include "Extension/CustomModes/custom_modes.h"
 #include <string>
 #include <vector>
 
@@ -223,6 +224,13 @@ struct HallOfMeatModel {
     bool available = false, enabled = false;
 };
 
+// The custom modes' tabs on the Multiplayer page (Extension/CustomModes/custom_modes.h): every
+// registered mode with its panel, and what hosting a game for one is doing.
+struct CustomModesModel {
+    std::vector<custom_modes::Listed> modes;
+    custom_modes::HostState host;
+};
+
 // Road Rash's switches (Extension/RoadRash/road_rash.h): started, switched on, and whether its
 // worst wounds bleed.
 struct RoadRashModel {
@@ -279,6 +287,7 @@ struct Model {
     ProgressionModel progression;
     PlayerCardModel player_card;
     HallOfMeatModel hall_of_meat;
+    CustomModesModel custom_modes;
     RoadRashModel road_rash;
     BoardBreakModel board_break;
     GrindExitModel grind_exit;
@@ -392,7 +401,7 @@ void set_chat_feed(ChatFeed) noexcept;
 // (thread-safe, cheap).
 struct HubPage {
     bool visible{};
-    int section{};
+    int section{}; // 0 Multiplayer, 1 Mod Options
 };
 using HubPageFeed = HubPage (*)();
 void set_hub_page_feed(HubPageFeed) noexcept;

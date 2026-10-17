@@ -95,6 +95,10 @@ inline constexpr std::uint8_t lock_all = lock_movement | lock_tuning;
 struct ServerConfig {
     std::filesystem::path file;
     std::string name = "ReSkate server";
+    // A custom multiplayer mode the server is for (Extension/CustomModes), e.g. "domination":
+    // advertised in its browser tags so players can find it by mode; empty for none. The mode runs
+    // on the players' games, not on the server.
+    std::string mode;
     // The map everyone skates, named like the game's `load` command: "San Vansterdam",
     // "Isle of Grom", or a custom map in Mods\ such as "bbcity".
     std::string map = "San Vansterdam";

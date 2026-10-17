@@ -13,6 +13,7 @@ struct Advertisement {
     bool password{}, listed{true};
     std::uint64_t secret{};
     std::uint16_t direct_port{}; // players may connect straight to this UDP port; 0: relays only
+    std::string mode;            // the custom mode it is for (the `g` tag); empty for none
 };
 std::string server_tags(const Advertisement &);
 

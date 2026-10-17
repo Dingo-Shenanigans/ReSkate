@@ -1267,6 +1267,19 @@ void dedicated_server_codec() {
     check(row && row->dedicated && row->name == "Big  friendly server" && row->map == ad.map && row->players == 3 &&
               row->capacity == 16 && row->password_required && row->code == format_invite({server, ad.secret}),
           "Server tags did not round trip");
+    // A custom mode rides in the `g` tag; one that is not a valid id, or none, reads as none.
+    dingosdk::server::Advertisement moded{"Bowl jam", "Skate3Improved", 2, 8, false, true, 0x42};
+    moded.mode = "domination";
+    const auto with_mode = read_server_tags(dingosdk::server::server_tags(moded), server);
+    check(with_mode && with_mode->mode == "domination" && with_mode->name == "Bowl jam" && with_mode->map == "Skate3Improved",
+          "A server's custom mode did not round trip");
+    check(row && row->mode.empty(), "A server without a custom mode read as having one");
+    moded.mode = "Not A Mode!";
+    const auto bad_mode = read_server_tags(dingosdk::server::server_tags(moded), server);
+    check(bad_mode && bad_mode->mode.empty() && bad_mode->name == "Bowl jam", "An invalid custom mode was advertised");
+    check(dingosdk::valid_mode_id("domination") && dingosdk::valid_mode_id("a-1") && !dingosdk::valid_mode_id("") && !dingosdk::valid_mode_id("Domination") &&
+              !dingosdk::valid_mode_id("seventeen-chars-x"),
+          "Custom mode ids are 1 to 16 of a-z, 0-9 and -");
     // A whole last character is kept, and one the byte limit cuts through is dropped whole.
     const auto accented = read_server_tags(dingosdk::server::server_tags({"Skate Caf\xC3\xA9", "Caf\xC3\xA9", 1, 8, false, true, 1}), server);
     check(accented && accented->name == "Skate Caf\xC3\xA9" && accented->map == "Caf\xC3\xA9",
