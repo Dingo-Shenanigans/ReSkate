@@ -5,6 +5,7 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/client_source_spawn_internal.h"
+#include "Extension/Skater/no_bail.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include <windows.h>
 #include <algorithm>
@@ -228,7 +229,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         const auto& zone = s.zones[*hit];
         // Rows: right, up, forward, position.
         const float heading = wrap_heading(degrees(std::atan2(matrix[8], matrix[10])));
-        const auto velocity = read_board_velocity(client, skater.skater_identity).value_or(Vec3{});
+        // No board velocity means off the board (or bailing): the skater comes out as it went in.
+        const auto board = read_board_velocity(client, skater.skater_identity);
+        const auto velocity = board.value_or(Vec3{});
+        if (!keep_board_for_teleport(client, skater.skater_identity, board.has_value()))
+            say(logging::Level::warning, "Map teleports: could not set the board option; the game's own choice stands.");
         const auto exit = exit_for(zone, heading, velocity);
         if (!teleport_local_skater(exit.position, exit.heading)) {
             say(logging::Level::warning, std::format("Map teleports: \"{}\" could not teleport right now.", zone.name));
