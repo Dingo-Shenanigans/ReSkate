@@ -497,6 +497,7 @@ PhysicsStateWatch watched_physics_state() noexcept {
         GetTickCount64() < w.until.load(std::memory_order_acquire);
     result.state = w.state.load(std::memory_order_acquire);
     result.previous = w.previous.load(std::memory_order_relaxed);
+    result.since = w.since.load(std::memory_order_relaxed);
     static const double frequency = [] { LARGE_INTEGER value{}; QueryPerformanceFrequency(&value); return static_cast<double>(value.QuadPart); }();
     result.previous_seconds = static_cast<float>(static_cast<double>(w.previous_ticks.load(std::memory_order_relaxed)) / frequency);
     result.changes = w.changes.load(std::memory_order_relaxed);
