@@ -155,6 +155,15 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/physics_tuning.cpp
     Extension/Multiplayer/Remote/remote_collision.cpp
     Extension/Skater/physics_tuning_model.cpp
+    Extension/Domination/domination.cpp
+    Extension/Domination/domination_commands.cpp
+    Extension/Domination/domination_menu.cpp
+    Extension/Domination/domination_model.cpp
+    Extension/Domination/domination_files.cpp
+    Extension/Domination/domination_hud.cpp
+    Extension/Domination/domination_tools.cpp
+    Extension/Domination/domination_sync.cpp
+    Extension/Domination/domination_wire.cpp
     Extension/HallOfMeat/hall_of_meat.cpp
     Extension/HallOfMeat/hall_of_meat_card.cpp
     Extension/HallOfMeat/hall_of_meat_commands.cpp
@@ -290,6 +299,11 @@ endif()
 dingosdk_version_info(dingosdk_runtime "ReSkate mod runtime" "ReSkate.dll" VFT_DLL)
 target_include_directories(dingosdk_runtime SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_lz4 dingosdk_zstd)
+# Domination's tab on the Multiplayer page, when Custom Multiplayer is in the tree (a change to this
+# file re-runs CMake, so the tab follows Custom Multiplayer coming or going).
+if(EXISTS "${PROJECT_SOURCE_DIR}/Extension/CustomModes/custom_modes.h")
+    set_property(SOURCE Extension/Domination/domination_menu.cpp APPEND PROPERTY COMPILE_DEFINITIONS DINGOSDK_CUSTOM_MODES=1)
+endif()
 
 # Menu fonts shared with the launcher (licences in External/fonts).
 set(dingosdk_menu_fonts "${PROJECT_SOURCE_DIR}/External/fonts")

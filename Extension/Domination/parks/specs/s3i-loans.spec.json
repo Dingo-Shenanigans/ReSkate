@@ -1,0 +1,24 @@
+{
+ "id": "s3i-loans",
+ "level": "levels/game/dingolevel_reskate_skate3improved/dingolevel_reskate_skate3improved",
+ "park": "Loans plaza",
+ "map": "Skate 3 Improved",
+ "package": "333-Skate_3_Improved",
+ "view": [1045, -1162, 1162, -1060],
+ "spots": [
+  {"id": "zigzags-west", "name": "West fountain ledges", "kind": "ledge", "points": [[1050.5, -1122], [1092, -1122], [1092, -1098], [1050.5, -1098]]},
+  {"id": "zigzags-east", "name": "East fountain ledges", "kind": "ledge", "points": [[1092, -1122], [1136, -1122], [1136, -1098], [1092, -1098]]},
+  {"id": "rail-bank", "name": "Rail bank", "kind": "bank", "points": [[1050.5, -1146], [1105, -1146], [1105, -1128], [1050.5, -1128]]},
+  {"id": "north-bank", "name": "North bank", "kind": "bank", "points": [[1105, -1146], [1156, -1146], [1156, -1128], [1105, -1128]]},
+  {"id": "south-steps", "name": "South steps", "kind": "stairs", "points": [[1072, -1092], [1156, -1092], [1156, -1066], [1072, -1066]]},
+  {"id": "benches", "name": "Back wall", "kind": "ledge", "a": [1086, -1153.5], "b": [1140, -1153.5], "r": 2.2}
+ ],
+ "starts": [
+  [1070, -1125, 63],
+  [1110, -1125, -34],
+  [1065, -1095, 113],
+  [1145, -1110, -90],
+  [1145, -1125, -72],
+  [1100, -1095, 180]
+ ]
+}

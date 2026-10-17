@@ -1,6 +1,8 @@
 #include "session_internal.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Extension/Skater/drone_beacon.h"
+#include "Extension/Domination/domination.h"
+#include "Extension/Domination/domination_wire.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
@@ -410,9 +412,15 @@ void relay_throwdowns(Session &s, bool in_world) {
     }
     if (names)
         input.local_name = in_session ? s.transport.name(local) : std::string(steam_social_snapshot()->local.name);
-    for (const auto &[sender, message] : s.throwdown_inbox) receive_throwdown_relay(sender, message);
+    // Domination's messages ride in throwdown packets too, told apart by their first byte; they
+    // go to Domination, never to the relay (whose decoder would drop them with a warning).
+    for (const auto &[sender, message] : s.throwdown_inbox) {
+        if (domination::wire::is_domination(message)) domination::receive(sender, message);
+        else receive_throwdown_relay(sender, message);
+    }
     s.throwdown_inbox.clear();
     for (auto &message : tick_throwdown_relay(s.base, input)) send_throwdown(s, std::move(message));
+    for (auto &message : domination::take_outgoing()) send_throwdown(s, std::move(message));
     for (auto &text : take_throwdown_relay_notices()) add_chat(s, 0, "ReSkate", std::move(text));
 }
 // A player in the local coop celebration stands at their spot there: the whole pose moves,

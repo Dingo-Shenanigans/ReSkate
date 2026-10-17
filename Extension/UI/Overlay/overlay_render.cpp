@@ -5,6 +5,7 @@
 #include "Extension/Trainer/trainer_page.h"
 #include "Extension/Skater/drone_flight.h"
 #include "Extension/HallOfMeat/hall_of_meat_overlay.h"
+#include "Extension/Domination/domination_overlay.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
@@ -740,6 +741,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
     const bool meat_frame = hall_of_meat_pending();
+    const bool domination_frame = domination_pending();
     const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
@@ -762,7 +764,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !drone_hud_frame && !skate_hud_frame &&
-            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame) return;
+            !nametag_frame && !meat_frame && !domination_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -814,6 +816,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     }
     draw_hub_page();
     draw_hall_of_meat();
+    draw_domination();
     draw_nametags();
     draw_game_text();
     draw_drone_hud();

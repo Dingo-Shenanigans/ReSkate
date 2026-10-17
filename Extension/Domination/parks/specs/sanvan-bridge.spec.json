@@ -1,0 +1,26 @@
+{
+ "id": "sanvan-bridge",
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "Bonski Park",
+ "map": "San Vansterdam",
+ "view": [400, 1052, 492, 1178],
+ "ceiling": 210.0,
+ "spots": [
+  {"id": "north-bowl", "name": "North bowl", "kind": "bowl", "points": [[412.5, 1060], [447.5, 1060], [447.5, 1087.5], [412.5, 1087.5]]},
+  {"id": "hump-bowl", "name": "Hump bowl", "kind": "bowl", "points": [[409.5, 1088.5], [458, 1088.5], [458, 1109.5], [409.5, 1109.5]]},
+  {"id": "wall-bank", "name": "Wall bank", "kind": "bank", "points": [[465.5, 1083], [474.5, 1083], [474.5, 1105], [465.5, 1105]]},
+  {"id": "coping-ledges", "name": "Coping ledges", "kind": "ledge", "points": [[409.5, 1109.5], [450, 1109.5], [450, 1115.5], [409.5, 1115.5]]},
+  {"id": "volcano", "name": "Volcano", "kind": "mound", "a": [462.4, 1118], "b": [462.5, 1118.1], "r": 4.6},
+  {"id": "west-run", "name": "West run", "kind": "transition", "points": [[409.5, 1115.5], [430, 1115.5], [430, 1167], [409.5, 1167]]},
+  {"id": "kidney", "name": "Kidney bowl", "kind": "bowl", "points": [[430, 1123], [457, 1123], [463, 1128], [463, 1163], [430, 1163]]},
+  {"id": "east-bank", "name": "East bank", "kind": "bank", "points": [[472.5, 1105.5], [477, 1105.5], [483, 1122], [483, 1133], [475, 1133], [468, 1124]]}
+ ],
+ "starts": [
+  [455, 1080, -25],
+  [470, 1070, -36],
+  [461, 1095, -51],
+  [445, 1119, -144],
+  [430, 1056, 10],
+  [455, 1060, -16]
+ ]
+}

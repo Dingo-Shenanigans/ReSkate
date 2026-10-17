@@ -1,0 +1,28 @@
+{
+ "id": "s3i-hillpark",
+ "level": "levels/game/dingolevel_reskate_skate3improved/dingolevel_reskate_skate3improved",
+ "park": "Hillside park",
+ "map": "Skate 3 Improved",
+ "package": "333-Skate_3_Improved",
+ "view": [1350, 298, 1510, 470],
+ "spots": [
+  {"id": "deep-bowl", "name": "Deep bowl", "kind": "bowl", "points": [[1448, 355], [1495, 355], [1498, 410], [1490, 432], [1455, 432], [1441, 415], [1447, 390], [1450, 370]]},
+  {"id": "north-pool", "name": "North pool", "kind": "bowl", "points": [[1463, 302], [1500, 302], [1500, 345], [1475, 346], [1466, 336]]},
+  {"id": "pyramid", "name": "Pyramid", "kind": "box", "points": [[1400, 312], [1418, 316], [1408, 343], [1395, 338]]},
+  {"id": "dish", "name": "Round dish", "kind": "bowl", "a": [1415.5, 357], "b": [1415.6, 357.1], "r": 6},
+  {"id": "curved-ledges", "name": "Curved ledges", "kind": "ledge", "points": [[1388, 362], [1400, 362], [1415, 378], [1418, 393], [1404, 394], [1393, 380]]},
+  {"id": "quarter-arc", "name": "Quarter arc", "kind": "transition", "points": [[1370, 350], [1388, 350], [1388, 416], [1374, 413], [1368, 380]]},
+  {"id": "hips", "name": "Twin hips", "kind": "transition", "points": [[1404, 402], [1421, 402], [1421, 447], [1404, 447]]},
+  {"id": "bank-wall", "name": "Bank wall", "kind": "bank", "points": [[1424, 372], [1438, 362], [1446, 367], [1444, 388], [1428, 392]]},
+  {"id": "hubba-steps", "name": "North ledge", "kind": "ledge", "points": [[1393, 300], [1458, 300], [1458, 307], [1393, 307]]}
+ ],
+ "starts": [
+  [1380, 430, 135],
+  [1430, 435, 180],
+  [1460, 440, -153],
+  [1440, 350, -18],
+  [1395, 330, 35],
+  [1500, 425, -123],
+  [1360, 380, 90]
+ ]
+}
