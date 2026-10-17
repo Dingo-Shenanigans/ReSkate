@@ -1,0 +1,25 @@
+{
+ "id": "s3i-industrial",
+ "level": "levels/game/dingolevel_reskate_skate3improved/dingolevel_reskate_skate3improved",
+ "park": "Industrial bowls",
+ "map": "Skate 3 Improved",
+ "package": "333-Skate_3_Improved",
+ "view": [680, 1125, 840, 1290],
+ "spots": [
+  {"id": "west-pocket", "name": "West pocket", "kind": "bowl", "points": [[688, 1176], [700, 1170], [715, 1176], [716, 1196], [700, 1200], [688, 1194]]},
+  {"id": "pyramid", "name": "Pyramid hump", "kind": "mound", "points": [[726, 1166], [741.5, 1166], [741, 1180], [728, 1178]]},
+  {"id": "ne-pocket", "name": "North pocket", "kind": "bowl", "points": [[744, 1150], [761, 1152], [763, 1172], [752, 1180], [745, 1168]]},
+  {"id": "junction", "name": "Junction", "kind": "bowl", "points": [[718, 1181], [742, 1182], [752, 1192], [745, 1212], [728, 1214], [718, 1199]]},
+  {"id": "spine-arm", "name": "Spine arm", "kind": "bowl", "points": [[745, 1212], [760, 1199], [790, 1219], [782, 1230], [766, 1240], [748, 1228]]},
+  {"id": "big-pipe", "name": "Big pipe", "kind": "rail", "a": [683, 1248], "b": [721, 1211.5], "r": 2.5},
+  {"id": "rim-rail", "name": "North rim", "kind": "rail", "a": [727, 1142], "b": [766, 1150], "r": 2}
+ ],
+ "starts": [
+  [705, 1215, 104],
+  [722, 1160, 27],
+  [770, 1190, -59],
+  [757, 1248, -164],
+  [735, 1235, 162],
+  [780, 1180, -54]
+ ]
+}

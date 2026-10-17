@@ -1,0 +1,30 @@
+{
+ "id": "sanvan-flowtopia",
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "FlowTopia",
+ "map": "San Vansterdam",
+ "view": [612, 1278, 716, 1472],
+ "outline": [[620, 1280], [712, 1280], [712, 1424], [686, 1424], [686, 1440], [648, 1440], [648, 1470], [620, 1470]],
+ "spots": [
+  {"id": "wedges", "name": "Wedges", "kind": "bank", "points": [[672, 1356], [685, 1351], [701.5, 1356], [701.5, 1375], [700, 1392], [686, 1393], [676, 1386], [668, 1380], [670, 1368]]},
+  {"id": "diamond-bank", "name": "Diamond bank", "kind": "bank", "points": [[639, 1316], [652.5, 1360], [636, 1397], [629, 1352]]},
+  {"id": "ribbed-fan", "name": "Ribbed fan", "kind": "bank", "points": [[656, 1281], [675, 1281], [668, 1331], [662, 1327], [657, 1300]]},
+  {"id": "kinked-ledges", "name": "Kinked ledges", "kind": "ledge", "points": [[645, 1314], [652, 1312], [667, 1340], [665, 1352], [657, 1352]]},
+  {"id": "cross", "name": "The cross", "kind": "mound", "a": [655.6, 1395.3], "b": [655.7, 1395.4], "r": 7},
+  {"id": "pads-west", "name": "West pads", "kind": "ledge", "points": [[641, 1406], [658, 1406], [657, 1419], [641, 1419]]},
+  {"id": "pads-east", "name": "East pads", "kind": "ledge", "points": [[667, 1406], [689, 1407], [688, 1420], [667, 1420]]},
+  {"id": "long-rail", "name": "Long rail", "kind": "rail", "a": [632.7, 1425], "b": [632.7, 1452], "r": 2.5},
+  {"id": "quarter-arc", "name": "Quarter arc", "kind": "transition", "points": [[622, 1290], [634, 1290], [634, 1310], [622, 1310]]}
+ ],
+ "starts": [
+  [626, 1335, 99],
+  [626, 1400, 128],
+  [648, 1300, 13],
+  [648, 1338, 28],
+  [645, 1432, 162],
+  [660, 1422, 180],
+  [690, 1428, -158],
+  [700, 1400, -131],
+  [662, 1405, 175]
+ ]
+}

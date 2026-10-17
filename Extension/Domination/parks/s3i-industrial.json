@@ -1,0 +1,25 @@
+{
+ "schema": 1,
+ "level": "levels/game/dingolevel_reskate_skate3improved/dingolevel_reskate_skate3improved",
+ "park": "Industrial bowls",
+ "map": "Skate 3 Improved",
+ "package": "333-Skate_3_Improved",
+ "outline": [[680, 1125], [840, 1125], [840, 1290], [680, 1290]],
+ "spots": [
+  {"id": "west-pocket", "name": "West pocket", "kind": "bowl", "shape": "polygon", "points": [[688.0, 1176.0], [700.0, 1170.0], [715.0, 1176.0], [716.0, 1196.0], [700.0, 1200.0], [688.0, 1194.0]], "y": [0.05, 10.66], "marker": [701.76, 8.16, 1185.36]},
+  {"id": "pyramid", "name": "Pyramid hump", "kind": "mound", "shape": "polygon", "points": [[726.0, 1166.0], [741.5, 1166.0], [741.0, 1180.0], [728.0, 1178.0]], "y": [0.04, 10.66], "marker": [734.3, 8.16, 1172.25]},
+  {"id": "ne-pocket", "name": "North pocket", "kind": "bowl", "shape": "polygon", "points": [[744.0, 1150.0], [761.0, 1152.0], [763.0, 1172.0], [752.0, 1180.0], [745.0, 1168.0]], "y": [0.04, 10.66], "marker": [753.38, 8.16, 1163.45]},
+  {"id": "junction", "name": "Junction", "kind": "bowl", "shape": "polygon", "points": [[718.0, 1181.0], [742.0, 1182.0], [752.0, 1192.0], [745.0, 1212.0], [728.0, 1214.0], [718.0, 1199.0]], "y": [0.01, 10.66], "marker": [733.78, 8.16, 1196.41]},
+  {"id": "spine-arm", "name": "Spine arm", "kind": "bowl", "shape": "polygon", "points": [[745.0, 1212.0], [760.0, 1199.0], [790.0, 1219.0], [782.0, 1230.0], [766.0, 1240.0], [748.0, 1228.0]], "y": [0.05, 10.67], "marker": [765.28, 8.17, 1219.88]},
+  {"id": "big-pipe", "name": "Big pipe", "kind": "rail", "shape": "capsule", "a": [683.0, 1248.0], "b": [721.0, 1211.5], "radius": 2.5, "y": [3.71, 38.23], "marker": [702.01, 35.73, 1229.74]},
+  {"id": "rim-rail", "name": "North rim", "kind": "rail", "shape": "capsule", "a": [727.0, 1142.0], "b": [766.0, 1150.0], "radius": 2.0, "y": [4.66, 17.78], "marker": [746.48, 15.28, 1146.0]}
+ ],
+ "starts": [
+  {"position": [705, 5.71, 1215], "heading": 104},
+  {"position": [722, 1.09, 1160], "heading": 27},
+  {"position": [770, 12.83, 1190], "heading": -59},
+  {"position": [757, 14.17, 1248], "heading": -164},
+  {"position": [735, 16.27, 1235], "heading": 162},
+  {"position": [780, 15.04, 1180], "heading": -54}
+ ]
+}

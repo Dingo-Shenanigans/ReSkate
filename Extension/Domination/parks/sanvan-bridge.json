@@ -1,0 +1,25 @@
+{
+ "schema": 1,
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "Bonski Park",
+ "map": "San Vansterdam",
+ "outline": [[400, 1052], [492, 1052], [492, 1178], [400, 1178]],
+ "spots": [
+  {"id": "north-bowl", "name": "North bowl", "kind": "bowl", "shape": "polygon", "points": [[412.5, 1060.0], [447.5, 1060.0], [447.5, 1087.5], [412.5, 1087.5]], "y": [194.48, 209.46], "marker": [429.87, 206.96, 1073.63]},
+  {"id": "hump-bowl", "name": "Hump bowl", "kind": "bowl", "shape": "polygon", "points": [[409.5, 1088.5], [458.0, 1088.5], [458.0, 1109.5], [409.5, 1109.5]], "y": [196.02, 205.88], "marker": [433.62, 203.38, 1098.88]},
+  {"id": "wall-bank", "name": "Wall bank", "kind": "bank", "shape": "polygon", "points": [[465.5, 1083.0], [474.5, 1083.0], [474.5, 1105.0], [465.5, 1105.0]], "y": [198.81, 209.5], "marker": [469.87, 208.16, 1093.88]},
+  {"id": "coping-ledges", "name": "Coping ledges", "kind": "ledge", "shape": "polygon", "points": [[409.5, 1109.5], [450.0, 1109.5], [450.0, 1115.5], [409.5, 1115.5]], "y": [196.1, 209.5], "marker": [429.62, 207.94, 1112.38]},
+  {"id": "volcano", "name": "Volcano", "kind": "mound", "shape": "capsule", "a": [462.4, 1118.0], "b": [462.5, 1118.1], "radius": 4.6, "y": [198.82, 206.31], "marker": [462.43, 203.81, 1118.06]},
+  {"id": "west-run", "name": "West run", "kind": "transition", "shape": "polygon", "points": [[409.5, 1115.5], [430.0, 1115.5], [430.0, 1167.0], [409.5, 1167.0]], "y": [198.81, 209.5], "marker": [419.62, 207.84, 1141.13]},
+  {"id": "kidney", "name": "Kidney bowl", "kind": "bowl", "shape": "polygon", "points": [[430.0, 1123.0], [457.0, 1123.0], [463.0, 1128.0], [463.0, 1163.0], [430.0, 1163.0]], "y": [198.81, 209.07], "marker": [446.21, 206.57, 1143.09]},
+  {"id": "east-bank", "name": "East bank", "kind": "bank", "shape": "polygon", "points": [[472.5, 1105.5], [477.0, 1105.5], [483.0, 1122.0], [483.0, 1133.0], [475.0, 1133.0], [468.0, 1124.0]], "y": [198.81, 209.5], "marker": [475.94, 208.18, 1120.47]}
+ ],
+ "starts": [
+  {"position": [455, 199.86, 1080], "heading": -25},
+  {"position": [470, 199.96, 1070], "heading": -36},
+  {"position": [461, 199.87, 1095], "heading": -51},
+  {"position": [445, 199.87, 1119], "heading": -144},
+  {"position": [430, 199.9, 1056], "heading": 10},
+  {"position": [455, 199.87, 1060], "heading": -16}
+ ]
+}

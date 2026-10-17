@@ -1,0 +1,32 @@
+{
+ "id": "sanvan-mcorp",
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "Hartcore Plaza",
+ "map": "San Vansterdam",
+ "view": [360, 1258, 550, 1425],
+ "spots": [
+  {"id": "rings", "name": "Twin rings", "kind": "bowl", "a": [380, 1300], "b": [392, 1312], "r": 6.5},
+  {"id": "zigzag", "name": "Zigzag ledges", "kind": "ledge", "points": [[463, 1324], [478, 1322], [493, 1338], [492, 1362], [482, 1366], [466, 1360], [460, 1345]]},
+  {"id": "pyramid-north", "name": "North pyramid", "kind": "box", "points": [[465, 1287], [481, 1287], [481, 1304], [465, 1304]]},
+  {"id": "banks", "name": "Hubba banks", "kind": "bank", "points": [[431, 1366], [474, 1373], [474, 1384], [431, 1383]]},
+  {"id": "stair-box", "name": "Stair box", "kind": "box", "points": [[476, 1370], [490, 1370], [490, 1386], [476, 1386]]},
+  {"id": "stairs", "name": "East stairs", "kind": "stairs", "points": [[505, 1350], [523, 1350], [523, 1376], [505, 1376]]},
+  {"id": "kicker", "name": "Kicker block", "kind": "box", "points": [[373, 1391], [417, 1391], [417, 1407.5], [373, 1407.5]]},
+  {"id": "pyramid-south", "name": "South pyramid", "kind": "box", "points": [[428, 1391], [441, 1391], [441, 1406], [428, 1406]]},
+  {"id": "fountain", "name": "Fountain dish", "kind": "bowl", "a": [419.5, 1416], "b": [419.6, 1416.1], "r": 8},
+  {"id": "round-bowl", "name": "Round bowl", "kind": "bowl", "points": [[442, 1394], [498, 1394], [498, 1424], [442, 1424]]},
+  {"id": "mini-bowl", "name": "Mini bowl", "kind": "bowl", "a": [508.5, 1397.5], "b": [508.6, 1397.6], "r": 5.5},
+  {"id": "pyramid-east", "name": "East pyramid", "kind": "box", "points": [[518, 1391], [533, 1391], [533, 1407], [518, 1407]]}
+ ],
+ "starts": [
+  [440, 1358, 79],
+  [500, 1310, -45],
+  [455, 1388, -170],
+  [400, 1370, 101],
+  [520, 1330, -67],
+  [485, 1312, -36],
+  [395, 1385, 114],
+  [540, 1380, -103],
+  [372, 1350, 83]
+ ]
+}
