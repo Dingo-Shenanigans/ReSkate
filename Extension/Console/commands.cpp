@@ -232,6 +232,7 @@ const Commands &game_commands() {
         register_road_rash_commands(*result);
         register_board_break_commands(*result);
         register_grind_exit_commands(*result);
+        register_rock_to_fakie_commands(*result);
         register_replay_keyframes_commands(*result);
         return result;
     }();

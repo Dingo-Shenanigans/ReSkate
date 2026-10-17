@@ -26,6 +26,8 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
     out to (toe / heel, or left / right), whatever trick and spin you do
     ([how it works](Extension/Skater/GRIND_EXITS.md)).
+  - **Rock to Fakie** (off by default): a Board Stall or Lip Stall left with B shows and records as a
+    rock to fakie ([how it works](Extension/Skater/ROCK_TO_FAKIE.md)).
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
