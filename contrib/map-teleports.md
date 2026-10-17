@@ -18,7 +18,8 @@ carried speed in [client_noclip.cpp](../Extension/Skater/client_noclip.cpp) (phy
   heading at the speed it came in with, still fakie if it rode in fakie. Up and down speed stay
   the game's own. A zone can keep the skater's own heading instead (`"orient": false`) or drop
   the speed (`"keep_speed": false`).
-- A skater on foot comes out facing the spot, with no speed.
+- A skater on the board comes out on the board; a skater on foot comes out on foot, facing the
+  spot, with no speed.
 - After a teleport nothing fires for 0.75 s, and the zone the skater came out in waits until
   the skater has left it, so two zones that send to each other cannot bounce.
 - Players on a version of ReSkate without this, and maps without the file, are unchanged.
@@ -55,6 +56,11 @@ as `trainer.json` and the trainer's `where` give them. Headings are degrees abou
 - `"level"` (a level asset) is optional: without it the file stands for every level the mod's
   `reskate-levels.json` adds. Up to 256 zones; a zone with a missing or bad value is left out
   and the log says how many.
+- A zone in a doorway with a solid door behind it should reach about a metre out in front of the
+  door. Otherwise the door stops the skater before the zone fires, and there is no speed left to
+  carry.
+- Nothing goes in `manifest.json`. Ship the file in the same folder as `layout.toc` and
+  `reskate-levels.json`, and bump the package version so players get it.
 
 ## Multiplayer
 
