@@ -30,6 +30,8 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
     screens, cosmetics and scripts.
+  - Custom maps can ship teleport zones that keep the skater's speed
+    ([map teleports](contrib/map-teleports.md)).
   - Browse and install mods from the [Thunderstore community](https://thunderstore.io/c/reskate/) in the
     launcher. A mod that needs others (a mod pack) brings them with it.
   - Save sets of mods as profiles, switch between them, and share one as a code or a file.

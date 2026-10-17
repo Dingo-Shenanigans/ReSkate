@@ -77,6 +77,7 @@ struct PlacementsRuntime {
     std::uint64_t next_token{1}, teleport_token{}, teleport_queued_at{};
     // A teleport of the local skater to a position (console tp, the host's tpall).
     std::optional<std::array<float, 3>> position_teleport;
+    std::optional<float> position_teleport_heading; // degrees about y; none keeps the world axes
     std::uint64_t position_teleport_at{};
     std::optional<profile::PlacedObject> inflight;
     std::uint64_t sent_at{}, next_poll{}, map_since{}, map_generation{}, next_id{1};

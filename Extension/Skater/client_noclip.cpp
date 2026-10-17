@@ -344,12 +344,76 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
         }
     } catch (...) {}
 }
+// A map teleport's kept speed (Extension/Travel/map_teleports.cpp). The game's teleport stops
+// the skater; once it has put the skater down, each physics step tops the board's ground speed
+// back up to what the skater rode in with, turned to its new heading, until the game keeps it
+// for a few steps. Up and down speed stay the game's own.
+constexpr int carry_tries = 4, carry_kept_steps = 5;
+struct CarrySpeed {
+    std::atomic<bool> pending{};
+    std::uintptr_t client{}, entity{}, core{};
+    ULONGLONG expires{};
+    std::array<float, 3> velocity{};
+    // Physics thread only while pending.
+    int tries{}, kept{};
+    std::atomic<int> outcome{};
+};
+CarrySpeed& carry_speed() { static auto* value = new CarrySpeed; return *value; }
+void map_teleport_carry_speed(std::uintptr_t core) noexcept {
+    auto& c = carry_speed();
+    if (!c.pending.load(std::memory_order_acquire) || c.core != core) return;
+    SourceLastError error;
+    auto& state = source_state();
+    if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return;
+    SourceBusyScope scope{state.busy};
+    const auto finish = [&](int outcome) {
+        c.outcome.store(outcome);
+        c.pending.store(false, std::memory_order_release);
+    };
+    try {
+        if (GetTickCount64() >= c.expires) return finish(-3);
+        const auto bodies = debug_noclip_bodies(state.trial.base, c.client, c.entity);
+        if (bodies.core != core) return finish(-3);
+        SourceReader reader;
+        if (reader.value<std::uint8_t>(c.entity, 0x7e0) != 0) return; // the teleport is still under way
+        if (bodies.offboard || bodies.wipeout) return finish(-2);
+        std::array<std::array<float, 3>, 32> velocities{};
+        std::array<std::uint32_t, 32> flags{};
+        const auto count = std::min<std::size_t>(bodies.parts.size(), velocities.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            velocities[i] = reader.value<std::array<float, 3>>(bodies.parts[i], 0x70);
+            flags[i] = reader.value<std::uint32_t>(bodies.parts[i], 0x60);
+        }
+        reader.verify();
+        const auto& board = velocities[0];
+        const float wanted = std::hypot(c.velocity[0], c.velocity[2]);
+        const float along = (board[0] * c.velocity[0] + board[2] * c.velocity[2]) / std::max(wanted, 0.01f);
+        if (along >= wanted * 0.85f) {
+            if (++c.kept >= carry_kept_steps) finish(2);
+            return;
+        }
+        c.kept = 0;
+        if (c.tries >= carry_tries) return finish(-1);
+        ++c.tries;
+        const float dx = c.velocity[0] - board[0], dz = c.velocity[2] - board[2];
+        // Like the native velocity writers: XYZ at +70 and the dirty bit 8 at +60.
+        for (std::size_t i = 0; i < count; ++i) {
+            velocities[i][0] += dx;
+            velocities[i][2] += dz;
+            source_require(std::isfinite(velocities[i][0]) && std::isfinite(velocities[i][2]) &&
+                std::abs(velocities[i][0]) <= 100000 && std::abs(velocities[i][2]) <= 100000, "Invalid carried speed.");
+            body_write(bodies.parts[i] + 0x70, velocities[i]);
+            body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
+        }
+    } catch (...) { finish(-3); }
+}
 void noclip_physics_update(std::uintptr_t core) {
     const auto original = source_state().velocity_update_original.load(std::memory_order_acquire);
     if (original) original(core);
     noclip_apply_velocity(core);
     trainer_apply_jump_scale(core);
     trainer_push_speed(core);
+    map_teleport_carry_speed(core);
 }
 bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::array<float,16>& target) noexcept {
@@ -474,6 +538,46 @@ void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, 
     p.stock.store(stock > 1 && stock < 100 ? stock : 9.25f, std::memory_order_relaxed);
     p.factor.store(factor > 0.02f && factor <= 50 ? factor : 1.0f, std::memory_order_relaxed);
     p.expires.store(GetTickCount64() + 500, std::memory_order_release);
+}
+std::optional<std::array<float, 3>> read_board_velocity(std::uintptr_t client, std::uintptr_t entity) noexcept {
+    SourceLastError error;
+    try {
+        auto& state = source_state();
+        if (!state.initialized.load(std::memory_order_acquire)) return std::nullopt;
+        const auto bodies = debug_noclip_bodies(state.trial.base, client, entity);
+        if (bodies.offboard || bodies.wipeout) return std::nullopt;
+        SourceReader reader;
+        const auto velocity = reader.value<std::array<float, 3>>(bodies.parts[0], 0x70);
+        reader.verify();
+        return velocity;
+    } catch (...) { return std::nullopt; }
+}
+bool queue_carry_speed(std::uintptr_t client, std::uintptr_t entity, const std::array<float, 3>& velocity) noexcept {
+    SourceLastError error;
+    try {
+        auto& state = source_state();
+        auto& c = carry_speed();
+        if (!state.initialized.load(std::memory_order_acquire) || !state.velocity_guard_active.load(std::memory_order_acquire) ||
+            c.pending.load(std::memory_order_acquire)) return false;
+        for (const float v : velocity)
+            if (!std::isfinite(v) || std::abs(v) > 300) return false;
+        const auto bodies = debug_noclip_bodies(state.trial.base, client, entity);
+        c.client = client;
+        c.entity = entity;
+        c.core = bodies.core;
+        c.velocity = velocity;
+        c.tries = 0;
+        c.kept = 0;
+        c.expires = GetTickCount64() + 1500;
+        c.outcome.store(0);
+        c.pending.store(true, std::memory_order_release);
+        return true;
+    } catch (...) { return false; }
+}
+int take_carry_speed_result() noexcept {
+    auto& c = carry_speed();
+    if (c.pending.load(std::memory_order_acquire)) return 0;
+    return c.outcome.exchange(0);
 }
 JumpScaleResult take_jump_scale_result() noexcept {
     auto& j = jump_scale();
