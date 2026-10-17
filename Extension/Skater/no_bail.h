@@ -22,6 +22,7 @@ struct PhysicsStateWatch {
     std::uint32_t state{};
     std::uint32_t previous{}; // the state before this one
     float previous_seconds{}; // how long that one lasted
+    std::int64_t since{};     // when this one began (performance-counter ticks)
     std::uint64_t changes{}, wipeouts{}; // counted since the process started
 };
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept;

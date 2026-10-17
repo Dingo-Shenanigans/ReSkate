@@ -33,6 +33,7 @@
 #include "Extension/RoadRash/road_rash.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Extension/Skater/grind_exit_control.h"
+#include "Extension/Skater/rock_to_fakie.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
@@ -452,6 +453,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         record("{\"event\":\"board_break_initialized\",\"active\":" + std::string(board_break ? "true" : "false") + "}");
         const bool grind_control = dingosdk::grind_exit_control::start(r.base);
         record("{\"event\":\"grind_exit_control_initialized\",\"active\":" + std::string(grind_control ? "true" : "false") + "}");
+        const bool rock_to_fakie = dingosdk::rock_to_fakie::start(r.base);
+        record("{\"event\":\"rock_to_fakie_initialized\",\"active\":" + std::string(rock_to_fakie ? "true" : "false") + "}");
         const bool noclip_velocity = dingosdk::start_client_noclip_velocity(r.base);
         record("{\"event\":\"noclip_velocity_initialized\",\"active\":" + std::string(noclip_velocity ? "true" : "false") + "}");
         const bool loading_screens = dingosdk::loading_screen::start(r.base);
