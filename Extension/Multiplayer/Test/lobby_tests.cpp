@@ -104,6 +104,14 @@ void metadata_tests() {
     check(read_lobby(9001, host_id, get).has_value(), "Valid lobby rejected");
     check(read_lobby(9001, 0, get).has_value(), "Non-member browser discarded advertised host");
     check(!read_lobby(9001, guest_id, get), "Changed owner accepted");
+    // A lobby's custom mode (rs_mode): absent or invalid reads as none, and never refuses the lobby.
+    check(read_lobby(9001, host_id, get)->mode.empty(), "A lobby without rs_mode read as having a mode");
+    f.metadata[9001]["rs_mode"] = "domination";
+    check(read_lobby(9001, host_id, get)->mode == "domination", "A lobby's custom mode was not read");
+    f.metadata[9001]["rs_mode"] = "DOMINATION!";
+    const auto odd = read_lobby(9001, host_id, get);
+    check(odd && odd->mode.empty(), "An invalid rs_mode was read, or refused the lobby");
+    f.metadata[9001].erase("rs_mode");
     for (const auto &[key, value] : std::map<std::string, std::string>{{"rs_kind", "another-game"},
                                                                        {"rs_protocol", "999"},
                                                                        {"rs_build", "other-build"},

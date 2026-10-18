@@ -68,6 +68,10 @@ struct NextMapWanted {
 std::vector<NextMapWanted> next_maps();
 unsigned next_maps_serial() noexcept;
 void set_map_package_lookup(MapPackageLookup lookup) noexcept;
+// The custom multiplayer mode (Extension/CustomModes) this player's hosted public lobby advertises
+// to the browser (rs_mode), or empty for none. Any thread; published with the next lobby update.
+void set_advertised_mode(std::string_view mode) noexcept;
+std::string advertised_mode() noexcept;
 // The session's chat lines for the overlay. Thread-safe and cheap: callable every frame.
 MultiplayerChat chat();
 } // namespace dingosdk::multiplayer

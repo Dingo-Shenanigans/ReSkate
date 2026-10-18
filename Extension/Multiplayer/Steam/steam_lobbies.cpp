@@ -42,6 +42,8 @@ std::optional<MultiplayerLobby> read_lobby(std::uint64_t id, std::uint64_t owner
         return {};
     row.password_required = password == "1";
     row.owner = code->steam_id;
+    // Older hosts publish no rs_mode; anything not a valid id counts as none.
+    if (const auto mode = get("rs_mode"); valid_mode_id(mode)) row.mode = mode;
     return row;
 }
 void SteamLobbies::close_lobby() {
@@ -82,7 +84,7 @@ void SteamLobbies::publish_host() {
     require(api_->owner(lobby_) == local_id_, "Steam lobby ownership changed. Restart hosting.");
     const bool open = ready_ && players_ < capacity_;
     const auto signature = map_ + code_ + std::to_string(players_) + "/" + std::to_string(capacity_) +
-                           (open ? "open" : "closed");
+                           (open ? "open" : "closed") + "|" + mode_;
     if (signature == published_)
         return;
     // Hide first, then publish a complete compatible record before exposing it.
@@ -98,6 +100,7 @@ void SteamLobbies::publish_host() {
         {"rs_players", std::to_string(players_)},
         {"rs_capacity", std::to_string(capacity_)},
         {"rs_password", password_required_ ? "1" : "0"},
+        {"rs_mode", mode_},
         {"rs_open", open ? "1" : "0"}};
     for (const auto &[key, value] : values)
         require(api_->data(lobby_, key, value), "Steam could not publish the lobby details.");

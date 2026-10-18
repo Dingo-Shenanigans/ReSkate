@@ -45,7 +45,17 @@ struct MultiplayerLobby {
     int direct_port{};
     // Steam friends skating there now, by name (steam_social.h).
     std::vector<std::string> friends;
+    // The custom multiplayer mode it plays (Extension/CustomModes), as its host or server
+    // advertises it: a lobby's rs_mode, a server's `g` tag; empty for none.
+    std::string mode;
 };
+// A custom multiplayer mode's id as lobbies and servers advertise it: 1 to 16 of a-z, 0-9 and '-'.
+inline bool valid_mode_id(std::string_view id) {
+    if (id.empty() || id.size() > 16) return false;
+    for (const char c : id)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+    return true;
+}
 // "Ana, Ben and 2 more": the friends in a server, as a browser row has room for.
 inline std::string lobby_friends_text(const MultiplayerLobby &lobby, std::size_t named = 2) {
     std::string text;
@@ -257,6 +267,8 @@ struct MultiplayerModel {
     bool force_world_layers{};
     std::uint64_t host_id{};
     std::string local_name;
+    // The custom mode this player's hosted lobby advertises (multiplayer::set_advertised_mode); empty none.
+    std::string advertised_mode;
     std::string lobby_name;
     std::string object_status;
     MultiplayerClientTiming client_timing;

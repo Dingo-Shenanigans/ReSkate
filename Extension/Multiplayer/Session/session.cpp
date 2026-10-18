@@ -728,6 +728,22 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                                 s.nametag_dots);
 }
 } // namespace
+namespace {
+std::mutex advertised_mutex;
+std::string advertised; // set_advertised_mode
+} // namespace
+void set_advertised_mode(std::string_view mode) noexcept {
+    try {
+        std::lock_guard lock(advertised_mutex);
+        advertised = valid_mode_id(mode) ? std::string(mode) : std::string();
+    } catch (...) {}
+}
+std::string advertised_mode() noexcept {
+    try {
+        std::lock_guard lock(advertised_mutex);
+        return advertised;
+    } catch (...) { return {}; }
+}
 MultiplayerModel model() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
