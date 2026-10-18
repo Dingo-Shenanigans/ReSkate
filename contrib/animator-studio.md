@@ -1,7 +1,7 @@
 # Animator Studio
 
-An in-game animation editor (F8, or L3 + R3 held on a controller). Pick one of the game's tricks or
-record your own, change the skater's joints and the board on a timeline, save it, and from then on doing
+An in-game animation editor (F8, or L3 + R3 held on a controller). Pick one of the game's tricks from
+the list, change the skater's joints and the board on a timeline, save it, and from then on doing
 that trick in game plays your animation instead of the game's. No game file is changed.
 
 ## How it works
@@ -19,6 +19,10 @@ that trick in game plays your animation instead of the game's. No game file is c
   over one for any pop.
 - **Studio**: Freecam with an orbit camera around the skater, the game's HUD hidden, the skater slowed to
   a stop (horizontal body velocity, every physics step). Everything is given back on close.
+- **On the floor**: the game's clips are in place (the physics makes the jump), so the studio pins the
+  clip's board to the floor (the skater's Ground joint, 375, taken when the studio opens; the board's mount
+  rides 0.086 m above it) before the pop and after the landing, and moves it along a jump's arc as long as
+  the clip's air in between. The skater shows on his board on the ground however the studio was opened.
 
 ## Files
 
@@ -37,7 +41,7 @@ Saved animations go to `ReSkate.Tricks/` beside Skate.exe.
 - Opening the game's kickflip from the list, changing it, saving: real kickflips then play it, with one
   board; other tricks stay the game's.
 - A boned ollie: 8 of 8 ollies played it, 4 kickflips stayed the game's.
-- Recording, scrubbing, keys on whole frames, undo, save and load, the close warning, every screen size
+- Opening on foot, riding and mid-air (always shown on the board on the ground), scrubbing, keys on whole frames, undo, save and load, the close warning, every screen size
   from the layout's scale.
 
 ## Not yet

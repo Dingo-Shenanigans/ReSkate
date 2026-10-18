@@ -406,9 +406,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         // The game's tricks by category: a heading, then each trick's pops.
         const auto& list = studio::game_tricks();
         if (list.empty()) {
-            rows.push_back({"No trick library yet", "", "The library is made from the game's own animations by make_trick_library.py.", {}, false});
-            rows.push_back({"Record a trick", "", "Or record one: the studio closes, you do the trick and land it, and it comes back with it.",
-                            [] { studio::record_next_trick(); }});
+            rows.push_back({"No trick library yet", "", "The trick list is made from the game's own animations by make_trick_library.py.", {}, false});
             break;
         }
         std::string category;
@@ -427,18 +425,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             row.on = v.trick == t.trick && v.pop == t.pop;
             rows.push_back(std::move(row));
         }
-        rows.push_back({"Record a trick", "", "Or record one: the studio closes, you do the trick and land it, and it comes back with it.",
-                        [] { studio::record_next_trick(); }});
         break;
     }
     case Tab::animations:
-        rows.push_back({"Record a trick", v.recording != studio::Recording::off ? "waiting" : "",
-                        "The studio closes. Skate, and land the trick you want to edit: the studio comes back with it.",
-                        [] { studio::record_next_trick(); }});
-        rows.push_back({"New animation", "", "Starts an empty animation. Record a trick for it next.", [] {
-                            studio::new_animation();
-                            ui().names_for = 0;
-                        }});
+        if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
         for (const auto& name : v.library) {
             Row row{name, name == v.name ? "open" : "", "A saved animation: choose it to open it. Delete takes it out of the library (press it twice).",
                     [name] {
@@ -1457,8 +1447,16 @@ void poll_animation_studio_controller() {
 void draw_animation_studio() {
     auto& s = state();
     if (!studio::is_open()) return;
-    const auto v = studio::view();
+    auto v = studio::view();
     auto& u = ui();
+    if (!v.has_clip && !studio::game_tricks().empty()) {
+        // Nothing open: the first trick of the list (the ollie), so the skater stands on his board.
+        const auto& list = studio::game_tricks();
+        const auto pick = std::find_if(list.begin(), list.end(), [](const studio::GameTrick& t) { return t.pop == "mid"; });
+        std::string m;
+        studio::load_game_trick(pick != list.end() ? *pick : list.front(), m);
+        v = studio::view();
+    }
     studio::advance(ImGui::GetIO().DeltaTime);
     const auto display = ImGui::GetIO().DisplaySize;
     Fonts f{s.menu.body ? s.menu.body : ImGui::GetFont(), s.menu.bold ? s.menu.bold : ImGui::GetFont(),
@@ -1499,9 +1497,8 @@ void draw_animation_studio() {
     std::string line = v.failure.empty() ? v.status : v.failure;
     if (ImGui::GetTime() < u.message_until) line = u.message;
     if (!v.has_clip) {
-        const char* first = "NO TRICK RECORDED YET";
-        const std::string second = u.pad_mode ? "In ANIMATIONS choose Record a trick, then skate and land it. The studio comes back with it."
-                                              : "In ANIMATIONS choose Record a trick, skate, and land it. The studio comes back with it.";
+        const char* first = "PICK A TRICK";
+        const std::string second = "Choose a trick in TRICKS: it opens here to be changed.";
         const auto w1 = text_size(f.heading, 30 * k, first);
         const float bw = std::max(w1.x + 60 * k, 520 * k);
         // In the empty timeline, clear of the skater.

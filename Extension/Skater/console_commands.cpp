@@ -378,14 +378,6 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::set_up_velocity_speed, false, 20.0f);
     };
     registry.add(std::move(up_speed));
-    auto anim_record = action("animrecord", "Animator Studio: record the next trick (the studio opens with it)", Group::movement);
-    anim_record.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
-    anim_record.run = [](const Model &, const Values &, const Output &out) {
-        anim_studio::new_animation();
-        anim_studio::record_next_trick();
-        out("Recording the next trick.");
-    };
-    registry.add(std::move(anim_record));
     auto anim_save = action("animsave", "Animator Studio: save the animation under a name", Group::movement, {argument("name", Type::text)});
     anim_save.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     anim_save.run = [](const Model &, const Values &args, const Output &out) {

@@ -196,6 +196,11 @@ struct Live {
     std::shared_ptr<const CustomTricks> game_tricks;
     std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
+    // The studio's floor: the skater's Ground joint (375) when the studio opened, which lies on the
+    // ground he stands or rides on (measured 2026-10-18: the board's root sits on it while riding, the
+    // deck's mount 0.086 m above). Kept while the studio is open; taken again while he is in the air.
+    float floor{};
+    bool floor_valid{};
     std::uint64_t failures{};
     bool logged_layout{};
 };
@@ -644,7 +649,43 @@ void on_animation(std::uintptr_t component) noexcept {
             const auto& start = snap->clip->frame(0)[placement_joint];
             const auto& now_rec = l.sampled[placement_joint];
             const auto turn = normalised(multiply(conjugate(start.rotation), now_rec.rotation));
-            const auto rise = rotate(conjugate(l.pose[placement_joint].rotation), {0, now_rec.position[1] - start.position[1], 0});
+            // On the floor, on the board: the clip is moved up or down so its board stands on the studio's
+            // floor before the pop and after the landing, and between them follows the arc of a jump as
+            // long as the clip's air (unless the clip rises by itself, as a recording does).
+            if (!l.floor_valid || (air && *air)) {
+                l.floor = world(l.pose, 375).position[1];
+                l.floor_valid = std::isfinite(l.floor);
+            }
+            const auto& clip = *snap->clip;
+            const auto board_y = [&](float t, float& ait_y) {
+                std::vector<Joint>& tmp = l.custom;
+                tmp.resize(layout.count);
+                clip.sample(t, tmp);
+                const auto ait = world(tmp, placement_joint);
+                ait_y = ait.position[1];
+                Joint rel;
+                return clip.sample_board(t, rel) ? compose(ait, rel).position[1] : world(tmp, 10).position[1] - 0.1f;
+            };
+            constexpr float deck = 0.086f; // the deck's mount above the floor while riding
+            float ait_now{}, ait_up{}, ait_down{};
+            const float by_now = board_y(snap->time, ait_now);
+            float rise_y = 0;
+            if (l.floor_valid) {
+                const float up = std::max(clip.takeoff, 0.0f), down = clip.landing > up ? clip.landing : up;
+                const float t = snap->time;
+                if (t <= up || t >= down || down <= up) rise_y = l.floor + deck - by_now;
+                else {
+                    const float s_up = l.floor + deck - board_y(up, ait_up), s_down = l.floor + deck - board_y(down, ait_down);
+                    const float u = (t - up) / (down - up);
+                    // The clip's own rise in the air: a recording jumps by itself, the game's clips do not.
+                    const bool own_jump = ait_now - (ait_up + (ait_down - ait_up) * u) > 0.12f;
+                    const float air_time = down - up;
+                    const float arc = own_jump ? 0.0f : 9.81f * air_time * air_time / 8.0f * 4 * u * (1 - u);
+                    rise_y = s_up + (s_down - s_up) * u + arc;
+                }
+                rise_y += ait_now - live_placement.position[1];
+            } else rise_y = now_rec.position[1] - start.position[1];
+            const auto rise = rotate(conjugate(l.pose[placement_joint].rotation), {0, rise_y, 0});
             for (std::size_t i = 2; i < std::min<std::size_t>(layout.count, snap->clip->joints); ++i) {
                 l.pose[i] = l.sampled[i];
                 if (parent(static_cast<std::uint16_t>(i)) == placement_joint) {
@@ -665,7 +706,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 board_weight = 1;
             }
         } else if (snap->open) {
-            // No trick recorded yet: the live pose, with the edits of the start of the timeline.
+            // No trick loaded yet: the live pose, with the edits of the start of the timeline.
             apply_edits(*snap->edits, 0, l.pose);
             first = 2;
             last = layout.count;
@@ -791,6 +832,7 @@ void on_animation(std::uintptr_t component) noexcept {
             pb.mount = board_target;
             pb.at = at;
         }
+        if (!snap->open) l.floor_valid = false;
         if (snap->open) {
             std::optional<Joint> board;
             if (board_weight > 0 && finite(board_target)) board = board_target;
@@ -1422,7 +1464,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.redo.clear();
         s.time = std::max(0.0f, s.clip->takeoff);
         s.playing = false;
-        s.dirty = true;
+        s.dirty = false; // only an edit makes it unsaved
         message = "Opened the game's " + trick.label + " (" + trick.pop + " pop). Change it and save: it then plays on your " + trick.label + "s.";
         s.status = message;
         publish_locked(s);
