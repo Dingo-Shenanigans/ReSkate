@@ -335,7 +335,11 @@ void observe_destruction(std::uintptr_t entity) {
     }
 }
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
+    // Animation Studio's board, before the pose is handed on: what the renderer takes is ours.
     const bool result = shared().original_render_pose(animation_interface, render_data);
+    // Animation Studio's board, with the renderer's own pointer to the pose (render_data +0x10).
+    if (const auto listener = shared().studio_board_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface, render_data);
     if (const auto listener = shared().render_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface);
     // A board holder's animation interface is holder + 0xc0.
@@ -346,6 +350,9 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         const PeerScope scope(slot);
         apply_render_pose(animation_interface, render_data);
     }
+    // Animation Studio's pose of the local skater, after everything that ran since its animation update.
+    if (const auto listener = shared().studio_render_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface);
     // Last, so that what it does to a board's pose (another player's included) is what is drawn.
     if (result) board_break::on_render_pose(animation_interface);
     return result;
@@ -381,6 +388,8 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
     }
     shared().original_animation(component, update);
     if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
+        listener(component);
+    if (const auto listener = shared().studio_listener.load(std::memory_order_acquire))
         listener(component);
 }
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
@@ -602,5 +611,14 @@ void set_render_pose_listener(RenderPosePublished listener) noexcept {
 }
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
     shared().evaluated_listener.store(listener, std::memory_order_release);
+}
+void set_animation_studio_listener(AnimationEvaluated listener) noexcept {
+    shared().studio_listener.store(listener, std::memory_order_release);
+}
+void set_animation_studio_board_listener(StudioBoardPublished listener) noexcept {
+    shared().studio_board_listener.store(listener, std::memory_order_release);
+}
+void set_animation_studio_render_listener(RenderPosePublished listener) noexcept {
+    shared().studio_render_listener.store(listener, std::memory_order_release);
 }
 } // namespace dingosdk::multiplayer

@@ -102,6 +102,10 @@ struct InteractiveDebug {
     bool camera_owned{}, camera_ambiguous{}, ui_owned{};
     bool park_editor{}, editor_transition{}, editor_previous_camera{}, editor_previous_ui{}, editor_previous_noclip{};
     bool editor_previous_first_person{};
+    // FOURTH Animation Studio (Extension/AnimationStudio): the studio's orbit camera drives the
+    // owned Freecam, as the Park Editor's flight does, and the game's HUD is hidden meanwhile.
+    bool animation_studio{}, studio_previous_camera{}, studio_previous_ui{}, studio_previous_noclip{},
+        studio_previous_first_person{};
     // Shares Freecam's owned mode-1 camera; each tick publishes the head pose
     // instead of a flight step.
     bool first_person{}, first_person_waiting{};
@@ -143,6 +147,8 @@ struct InteractiveDebug {
     VelocityRequest forward_velocity;
     VelocityRequest up_velocity;
     VelocityRequest offboard_up_velocity;
+    // Animator Studio: while it is open every body of the skater and his board is held still.
+    VelocityRequest studio_brake;
     std::uint64_t noclip_velocity_updates{}, noclip_motion_updates{};
     std::uint64_t forward_velocity_updates{};
     float forward_velocity_speed = 20.0f;

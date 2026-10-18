@@ -57,6 +57,10 @@ struct HookState {
     RenderPose original_render_pose{};
     std::atomic<EntityDestroyed> destroyed_listener{};
     std::atomic<AnimationEvaluated> evaluated_listener{};
+    // Animation Studio (Extension/AnimationStudio), after the one above.
+    std::atomic<AnimationEvaluated> studio_listener{};
+    std::atomic<RenderPosePublished> studio_render_listener{};
+    std::atomic<StudioBoardPublished> studio_board_listener{};
     std::atomic<RenderPosePublished> render_listener{};
 };
 // Keys the per-entity hooks match, one contiguous array per kind in slot order.

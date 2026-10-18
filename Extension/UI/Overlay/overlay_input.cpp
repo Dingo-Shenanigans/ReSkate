@@ -2,6 +2,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Boot/exit_watch.h"
 #include "overlay_internal.h"
+#include "Extension/AnimationStudio/anim_studio.h"
 #include "input_capture.h"
 #include "playstation_input.h"
 #include "cursor.h"
@@ -248,6 +249,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 std::lock_guard lock(s.input_mutex);
                 s.input.clear();
             } else if (release) s.console_escape_pending.store(false);
+            return 0;
+        }
+        // F8 opens and closes FOURTH Animation Studio, unless something of ours takes typing.
+        if (wp == VK_F8 && wp != dingosdk::launcher::overlay_keys().menu && wp != dingosdk::launcher::overlay_keys().console &&
+            (key || release) && !s.console_visible.load() && !s.chat_visible.load() && !s.visible.load() &&
+            !s.editor_visible.load()) {
+            if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
+                if (s.studio_visible.load()) dingosdk::anim_studio::request_close();
+                else dingosdk::anim_studio::request_open(true);
+                std::lock_guard lock(s.input_mutex);
+                s.input.clear();
+            }
             return 0;
         }
         if (wp == dingosdk::launcher::overlay_keys().menu && (key || release)) {

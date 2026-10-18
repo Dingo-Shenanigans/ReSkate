@@ -1,4 +1,5 @@
 #include "Extension/Console/commands.h"
+#include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "ai_skaters.h"
 #include "drone_flight.h"
@@ -377,6 +378,48 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::set_up_velocity_speed, false, 20.0f);
     };
     registry.add(std::move(up_speed));
+    auto anim_record = action("animrecord", "Animator Studio: record the next trick (the studio opens with it)", Group::movement);
+    anim_record.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    anim_record.run = [](const Model &, const Values &, const Output &out) {
+        anim_studio::new_animation();
+        anim_studio::record_next_trick();
+        out("Recording the next trick.");
+    };
+    registry.add(std::move(anim_record));
+    auto anim_save = action("animsave", "Animator Studio: save the animation under a name", Group::movement, {argument("name", Type::text)});
+    anim_save.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    anim_save.run = [](const Model &, const Values &args, const Output &out) {
+        anim_studio::rename(std::get<std::string>(args[0]));
+        std::string message;
+        anim_studio::save(message);
+        out(message);
+    };
+    registry.add(std::move(anim_save));
+    auto anim_time = action("animtime", "Animator Studio: put the playhead at a time on the trick (seconds)", Group::movement,
+                            {argument("seconds", Type::number)});
+    anim_time.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    anim_time.run = [](const Model &, const Values &args, const Output &) {
+        anim_studio::set_time(static_cast<float>(std::get<double>(args[0])));
+    };
+    registry.add(std::move(anim_time));
+    auto anim_key = action("animkey", "Animator Studio: key a joint's turn here (joint index, degrees X Y Z)", Group::movement,
+                           {argument("joint", Type::unsigned_integer), argument("x", Type::number), argument("y", Type::number),
+                            argument("z", Type::number)});
+    anim_key.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    anim_key.run = [](const Model &, const Values &args, const Output &out) {
+        const auto joint = static_cast<std::uint16_t>(std::get<std::uint64_t>(args[0]));
+        if (!anim_studio::editable(joint)) {
+            out("That joint is not one the studio edits.");
+            return;
+        }
+        anim_studio::begin_change();
+        auto value = anim_studio::offset_of(joint);
+        value.rotation = anim_studio::from_euler({static_cast<float>(std::get<double>(args[1])), static_cast<float>(std::get<double>(args[2])),
+                                                  static_cast<float>(std::get<double>(args[3]))});
+        anim_studio::set_offset(joint, value);
+        out("Keyed.");
+    };
+    registry.add(std::move(anim_key));
     auto boost = action("forwardboost", "Add the configured velocity along the skater's forward direction", Group::movement);
     boost.inspect = [](const Model &m) {
         return State{m.debug.forward_velocity_available, {}, m.debug.forward_velocity_unavailable, {}, false};

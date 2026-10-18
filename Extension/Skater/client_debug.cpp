@@ -1,3 +1,4 @@
+#include "Extension/AnimationStudio/anim_studio.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
@@ -204,7 +205,11 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     source_require(camera.identity == debug.camera_identity && camera.mode == 1 && camera.active == camera.identity.camera,
         debug.first_person ? "First person lost the camera; view paused." : "Freecam ownership changed; movement paused.");
     auto next = debug.flight_matrix;
-    if (debug.first_person) {
+    if (debug.animation_studio) {
+        // The studio's orbit around the skater; until its first pose arrives the view holds.
+        (void)anim_studio::camera(next);
+        source_require(valid_flight_transform(next), "The Animation Studio camera is invalid.");
+    } else if (debug.first_person) {
         // Respawns, loads and bails can briefly leave no readable head. Hold the
         // last pose instead of dropping the view, and say why once.
         std::uintptr_t component{};
@@ -965,6 +970,72 @@ bool first_person_camera_height_write(bool high) noexcept {
         cycle_request.store(static_cast<std::uint8_t>(write.step), std::memory_order_release);
     return write.high;
 }
+// FOURTH Animation Studio: hands the studio the local skater every tick, and opens or closes it when
+// it asks (F8, or a finished recording), through the same camera and HUD steps as the Park Editor.
+void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
+    auto& debug = trial.debug;
+    std::uintptr_t component{};
+    if (can_control) {
+        try { component = first_person_component(trial.base, client); } catch (...) {}
+    }
+    float fov{};
+    if (debug.camera_owned && debug.camera_identity.camera)
+        (void)first_person_read(debug.camera_identity.camera + camera_fov_offset, &fov, sizeof(fov));
+    const auto wanted = anim_studio::tick(trial.base, component, debug.animation_studio, fov);
+    // Open, the studio holds the skater still (client_noclip.cpp applies it in the physics step).
+    if (debug.animation_studio && can_control) {
+        try {
+            overlay::DebugModel skater;
+            (void)debug_skater(trial.base, client, skater);
+            const auto bodies = debug_noclip_bodies(trial.base, client, skater.skater_identity);
+            debug.studio_brake = {client, skater.skater_identity, bodies.core, GetTickCount64() + 250, {}, true};
+        } catch (...) { debug.studio_brake.valid = false; }
+    } else debug.studio_brake.valid = false;
+    if (!wanted.changed || wanted.want_open == debug.animation_studio) return;
+    const auto apply = [&](overlay::DebugAction action, bool enabled) {
+        debug_action(trial, client, can_control, phase, {action, enabled}, error);
+    };
+    try {
+        source_require(!debug.park_editor, "Close Park Editor before opening Animation Studio.");
+        debug.editor_transition = true;
+        struct EndTransition { bool& flag; ~EndTransition() { flag = false; } } transition{debug.editor_transition};
+        if (wanted.want_open) {
+            source_require(can_control && phase && component, "Animation Studio waits for your skater.");
+            const auto camera = source_camera_snapshot(trial, client);
+            debug.studio_previous_camera = camera.mode == 1;
+            debug.studio_previous_ui = debug_ui(trial.base).draw == 0;
+            debug.studio_previous_noclip = debug.noclip;
+            debug.studio_previous_first_person = debug.first_person;
+            debug.animation_studio = true;
+            try {
+                apply(overlay::DebugAction::set_free_camera, true);
+                apply(overlay::DebugAction::set_game_ui_hidden, true);
+            } catch (...) {
+                debug.animation_studio = false;
+                try {
+                    apply(overlay::DebugAction::set_game_ui_hidden, debug.studio_previous_ui);
+                    if (!debug.studio_previous_camera) apply(overlay::DebugAction::set_free_camera, false);
+                } catch (...) {}
+                throw;
+            }
+            debug.status = "Animation Studio open.";
+        } else {
+            debug.animation_studio = false;
+            apply(overlay::DebugAction::set_game_ui_hidden, debug.studio_previous_ui);
+            if (!debug.studio_previous_camera) apply(overlay::DebugAction::set_free_camera, false);
+            if (debug.studio_previous_noclip && session_noclip_allowed()) apply(overlay::DebugAction::set_noclip, true);
+            if (debug.studio_previous_first_person) apply(overlay::DebugAction::set_first_person, true);
+            debug.status = "Animation Studio closed. Camera and HUD restored.";
+        }
+        dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::skater, "{}", debug.status);
+    } catch (const SourceGuard& guard) {
+        debug.status = guard.message;
+        anim_studio::report(guard.message);
+    } catch (...) {
+        anim_studio::report("Animation Studio could not take the camera.");
+    }
+    (void)anim_studio::tick(trial.base, component, debug.animation_studio, fov);
+}
 void first_person_cycle_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
     auto& debug = trial.debug;
     const auto now = GetTickCount64();
@@ -1052,6 +1123,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     }
     first_person_board_tick(trial, client, can_control, camera_phase_observed, error.value);
     first_person_cycle_tick(trial, client, can_control, camera_phase_observed, error.value);
+    animation_studio_tick(trial, client, can_control, camera_phase_observed, error.value);
     // Camera ownership survives a busy tick or a failed presentation snapshot.
     // Input capture must follow the lease, not those transient model failures.
     // (First person and drone follow own the same camera but leave the skater its controls.)

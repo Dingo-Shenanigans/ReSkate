@@ -746,6 +746,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     if (trainer_open_requested()) s.visible.store(true);
     if (dingosdk::drone::menu_flag().load()) s.visible.store(true); // `dronemenu`: the menu opens on its DRONE page
     if (dingosdk::overlay::menu_open_flag().exchange(false)) s.visible.store(true); // `menu`, or its controller bind
+    if (!animation_studio_open() && !s.visible.load() && !s.console_visible.load() && !s.editor_visible.load()) poll_animation_studio_controller();
+    s.studio_visible.store(animation_studio_open());
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
         if (s.ui_was_interactive) {
@@ -822,6 +824,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_trainer_hud();
     draw_notices();
     draw_item_browser();
+    draw_animation_studio();
     draw_chat();
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message

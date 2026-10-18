@@ -108,6 +108,8 @@ struct State {
     unsigned game_mouse_buttons = 0;
     std::atomic<bool> visible{false};
     std::atomic<bool> editor_visible{false}, editor_exit_requested{false}, editor_flight{false};
+    // FOURTH Animation Studio has the screen (animation_studio_overlay.cpp).
+    std::atomic<bool> studio_visible{false};
     std::atomic<ULONGLONG> editor_input_time{0};
     // Raw mouse seen on the game window (WM_INPUT). The park editor's look and
     // buttons use it because Skate's controller mode stops the legacy cursor
@@ -342,6 +344,11 @@ bool item_browser_open();
 void item_browser_key(ItemBrowserKey key);
 void item_browser_search_cleared(); // Esc in the search box
 void draw_item_browser();
+// FOURTH Animation Studio (Extension/AnimationStudio): its whole screen while open.
+void draw_animation_studio();
+bool animation_studio_open();
+// Every presented frame, the studio shut: L3 + R3 held on a controller opens it.
+void poll_animation_studio_controller();
 // Queues a private multiplayer action from outside the menu (multiplayer_menu.cpp).
 bool queue_multiplayer_action(const char* action, const std::string& argument);
 bool queue_multiplayer_action(const char* action, const std::string& argument, const std::string& password);
