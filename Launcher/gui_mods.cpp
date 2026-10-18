@@ -84,9 +84,10 @@ std::uint64_t folder_size(const fs::path& directory) {
     return total;
 }
 
-std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
+// `version` false leaves the version out, for a row that shows it with its update.
+std::string summary(const ModsPanel& panel, const mods::Mod& mod, bool version = true) {
     std::vector<std::string> parts;
-    if (!mod.version.empty()) parts.push_back("v" + mod.version);
+    if (version && !mod.version.empty()) parts.push_back("v" + mod.version);
     if (const auto size = panel.sizes.find(mod.name); size != panel.sizes.end() && size->second)
         parts.push_back(size_text(size->second));
     if (!mod.author.empty()) parts.push_back("by " + mod.author);
@@ -176,17 +177,8 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
         if (panel.tab == 3) default_focus();
     }
 
+    // UPDATE ALL is not here: it sits over the MY MODS list, next to the rows it updates.
     ImGui::Dummy(ImVec2(0, S(8)));
-    if (!pending.empty()) {
-        push_primary_button();
-        if (ImGui::Button(std::format("UPDATE ALL ({})", pending.size()).c_str(), ImVec2(-1, S(34)))) {
-            std::vector<thunderstore::Package> packages;
-            for (const auto* package : pending) packages.push_back(*package);
-            start_store_install(panel, std::move(packages));
-        }
-        pop_primary_button();
-        ImGui::Dummy(ImVec2(0, S(4)));
-    }
     if (ImGui::Button("Install .zip", ImVec2(-1, S(32))))
         if (const auto path = pick(window, false); !path.empty()) start_install(panel, path, false);
     if (ImGui::Button("Install folder", ImVec2(-1, S(32))))
@@ -351,6 +343,62 @@ void carry_out(ModsPanel& panel, const thunderstore::Installed& installed, const
             if (entries[i].mod.name == open) panel.selected = static_cast<int>(i);
 }
 
+// The bar over the list while Thunderstore has updates: what they are, what they
+// cost to download, and UPDATE ALL. It sits right above the rows it updates
+// (they are listed first), where the eye already is.
+void updates_bar(const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
+                 const std::vector<const thunderstore::Package*>& pending) {
+    if (pending.empty()) return;
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x, tall = S(56);
+    const ImVec2 end(start.x + width, start.y + tall);
+    draw->AddRectFilled(start, end, rgba(20, 34, 54), S(6));
+    draw->AddRect(start, end, rgba(0, 122, 255, 0.55f), S(6));
+    draw->AddRectFilled(start, ImVec2(start.x + S(5), end.y), color::blue, S(6), ImDrawFlags_RoundCornersLeft);
+
+    // Right to left: UPDATE ALL, then the filter that shows only these.
+    const float button = S(150), show = S(130), button_y = start.y + (tall - S(34)) * 0.5f;
+    float next = end.x - S(12) - button;
+    ImGui::SetCursorScreenPos(ImVec2(next, button_y));
+    push_primary_button();
+    const bool update_all = ImGui::Button(std::format("UPDATE ALL ({})", pending.size()).c_str(), ImVec2(button, S(34)));
+    pop_primary_button();
+    std::uint64_t download{};
+    for (const auto* package : pending) download += package->latest().file_size;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", download ? ("Downloads " + size_text(download) + " from Thunderstore").c_str()
+                                         : "Downloads the new versions from Thunderstore");
+    if (update_all) {
+        std::vector<thunderstore::Package> packages;
+        for (const auto* package : pending) packages.push_back(*package);
+        start_store_install(panel, std::move(packages));
+    }
+    next -= S(8) + show;
+    ImGui::SetCursorScreenPos(ImVec2(next, button_y));
+    const bool only = panel.filter == 5;
+    if (ImGui::Button(only ? "Show all" : "Show only these", ImVec2(show, S(34)))) panel.filter = only ? 0 : 5;
+
+    // What is waiting: names with old -> new, as many as fit.
+    const float text_x = start.x + S(20);
+    const ImVec4 clip(text_x, start.y, next - S(14), end.y);
+    auto heading = std::format("{} {} WAITING", pending.size(), pending.size() == 1 ? "UPDATE" : "UPDATES");
+    if (download) heading += "  /  " + size_text(download);
+    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, start.y + S(9)), color::text, heading.c_str(), nullptr,
+        0, &clip);
+    std::string names;
+    for (const auto* package : pending) {
+        const auto have = installed.find(thunderstore::folder_for(package->full_name));
+        names += (names.empty() ? "" : ",  ") + package->title() +
+                 (have != installed.end() && !have->second.empty() ? " " + have->second + " \xe2\x86\x92 " : " \xe2\x86\x92 ") +
+                 package->latest().number;
+    }
+    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, start.y + S(31)), color::muted, names.c_str(), nullptr,
+        0, &clip);
+    ImGui::SetCursorScreenPos(start);
+    ImGui::Dummy(ImVec2(width, tall));
+}
+
 // One installed mod. The tick on the left picks it for the bar above the list,
 // the switch on the right is whether it loads, and a click anywhere else opens
 // everything the mod says about itself.
@@ -446,8 +494,17 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     const auto title = std::to_string(index + 1) + ".  " + mod.title;
     draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, start.y + S(13)),
         entry.enabled ? color::text : color::muted, title.c_str(), nullptr, 0, &clip);
-    if (const auto detail = summary(panel, mod); !detail.empty())
-        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, start.y + S(37)), color::muted, detail.c_str(),
+    // With an update waiting, the version it goes to leads the line, in blue.
+    float detail_x = text_x;
+    if (update) {
+        const auto to = (mod.version.empty() ? std::string() : "v" + mod.version + " ") + "\xe2\x86\x92 v" +
+                        package->latest().number + "  /  ";
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(detail_x, start.y + S(37)), color::blue, to.c_str(), nullptr,
+            0, &clip);
+        detail_x += fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, to.c_str()).x;
+    }
+    if (const auto detail = summary(panel, mod, !update); !detail.empty())
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(detail_x, start.y + S(37)), color::muted, detail.c_str(),
             nullptr, 0, &clip);
     end_row();
 
@@ -493,7 +550,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
 }
 
 void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
-                    float height, bool installing) {
+                    const std::vector<const thunderstore::Package*>& pending, float height, bool installing) {
     auto& entries = panel.list.entries;
     const float top = ImGui::GetCursorPosY();
     {
@@ -519,7 +576,11 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     // ------------------------------------------------ search, filter, order, refresh
     const float combo = S(170), refresh = S(110);
     ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + S(10)) * 2 - refresh - S(10)));
-    ImGui::InputTextWithHint("##installed_search", "Search your mods", panel.search.data(), panel.search.size());
+    // Ctrl+F jumps to the search, as it does in a browser.
+    if (!installing && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+        ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##installed_search", "Search your mods  (Ctrl+F)", panel.search.data(), panel.search.size());
     ImGui::SameLine();
     const auto choice = [&](const char* id, const auto& names, int& value) {
         const int last = static_cast<int>(names.size()) - 1;
@@ -641,6 +702,12 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     }
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
+    ImGui::BeginDisabled(installing);
+    if (!pending.empty()) {
+        updates_bar(fonts, panel, installed, pending);
+        ImGui::Dummy(ImVec2(0, S(2)));
+    }
+    ImGui::EndDisabled();
 
     // ------------------------------------------------ the list, and under it how its order works
     const float body = std::max(S(120), height - (ImGui::GetCursorPosY() - top));
@@ -1137,7 +1204,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     if (panel.tab == 1) browse_page(launcher, fonts, panel, body, installing);
     else if (panel.tab == 2) profiles_page(fonts, panel, window, body, installing);
     else if (panel.tab == 3) official_page(fonts, panel, body);
-    else installed_page(launcher, fonts, panel, installed, body, installing);
+    else installed_page(launcher, fonts, panel, installed, pending, body, installing);
     if (!panel.message.empty()) {
         ImGui::SetCursorPosY(ImGui::GetWindowHeight() - status + S(8));
         ImGui::PushTextWrapPos(0);

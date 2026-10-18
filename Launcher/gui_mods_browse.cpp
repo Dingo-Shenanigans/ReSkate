@@ -609,7 +609,11 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     const float combo = S(190), refresh = S(110);
     ImGui::SetNextItemWidth(std::max(S(140),
         ImGui::GetContentRegionAvail().x - (combo + S(10)) * 2 - refresh - S(10)));
-    ImGui::InputTextWithHint("##search", "Search mods", store.search.data(), store.search.size());
+    // Ctrl+F jumps to the search, as it does in a browser.
+    if (!installing && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+        ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##search", "Search mods  (Ctrl+F)", store.search.data(), store.search.size());
     ImGui::SameLine();
     std::vector<std::string> categories;
     for (const auto& package : store.packages) {
