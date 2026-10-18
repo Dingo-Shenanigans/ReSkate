@@ -155,4 +155,3 @@ void first_person_glance_controls(SkateMenu& menu) {
     }
 }
 }
-
