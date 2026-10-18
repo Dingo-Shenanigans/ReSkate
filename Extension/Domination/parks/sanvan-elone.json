@@ -1,0 +1,23 @@
+{
+ "schema": 1,
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "El-One Courts",
+ "map": "San Vansterdam",
+ "outline": [[40, 1140], [165, 1140], [165, 1245], [40, 1245]],
+ "spots": [
+  {"id": "curved-ledge", "name": "Curved ledge", "kind": "ledge", "shape": "polygon", "points": [[91.0, 1175.0], [100.0, 1171.5], [110.0, 1177.5], [117.5, 1188.0], [117.5, 1200.5], [111.5, 1202.0], [108.0, 1190.0], [100.0, 1182.0], [92.0, 1180.5]], "y": [199.91, 207.43], "marker": [106.74, 204.93, 1184.61]},
+  {"id": "stair-blocks", "name": "Stair blocks", "kind": "stairs", "shape": "polygon", "points": [[66.0, 1199.0], [80.0, 1192.0], [91.0, 1203.0], [90.0, 1212.0], [77.0, 1219.0], [67.0, 1214.0]], "y": [200.72, 208.2], "marker": [78.01, 205.7, 1205.82]},
+  {"id": "west-stairs", "name": "West stairs", "kind": "stairs", "shape": "polygon", "points": [[49.5, 1196.0], [60.5, 1196.0], [60.5, 1210.0], [49.5, 1210.0]], "y": [195.3, 208.76], "marker": [54.87, 206.26, 1202.88]},
+  {"id": "diagonal-stairs", "name": "Diagonal stairs", "kind": "stairs", "shape": "polygon", "points": [[122.0, 1158.0], [130.0, 1151.0], [147.5, 1180.0], [140.0, 1190.0], [132.0, 1178.0]], "y": [197.12, 206.01], "marker": [134.78, 203.51, 1170.35]},
+  {"id": "long-bank", "name": "Long bank", "kind": "bank", "shape": "polygon", "points": [[99.0, 1215.0], [136.0, 1188.0], [139.5, 1192.5], [101.5, 1219.5]], "y": [199.91, 206.87], "marker": [119.32, 204.37, 1203.53]}
+ ],
+ "starts": [
+  {"position": [80, 201.77, 1185], "heading": 45},
+  {"position": [75, 202.97, 1232], "heading": 148},
+  {"position": [85, 201.77, 1225], "heading": 158},
+  {"position": [100, 201.77, 1209], "heading": -151},
+  {"position": [112, 200.96, 1165], "heading": -26},
+  {"position": [70, 220.59, 1180], "heading": 51},
+  {"position": [122, 200.96, 1192], "heading": -73}
+ ]
+}

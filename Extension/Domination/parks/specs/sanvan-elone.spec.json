@@ -1,0 +1,23 @@
+{
+ "id": "sanvan-elone",
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "El-One Courts",
+ "map": "San Vansterdam",
+ "view": [40, 1140, 165, 1245],
+ "spots": [
+  {"id": "curved-ledge", "name": "Curved ledge", "kind": "ledge", "points": [[91, 1175], [100, 1171.5], [110, 1177.5], [117.5, 1188], [117.5, 1200.5], [111.5, 1202], [108, 1190], [100, 1182], [92, 1180.5]]},
+  {"id": "stair-blocks", "name": "Stair blocks", "kind": "stairs", "points": [[66, 1199], [80, 1192], [91, 1203], [90, 1212], [77, 1219], [67, 1214]]},
+  {"id": "west-stairs", "name": "West stairs", "kind": "stairs", "points": [[49.5, 1196], [60.5, 1196], [60.5, 1210], [49.5, 1210]]},
+  {"id": "diagonal-stairs", "name": "Diagonal stairs", "kind": "stairs", "points": [[122, 1158], [130, 1151], [147.5, 1180], [140, 1190], [132, 1178]]},
+  {"id": "long-bank", "name": "Long bank", "kind": "bank", "points": [[99, 1215], [136, 1188], [139.5, 1192.5], [101.5, 1219.5]]}
+ ],
+ "starts": [
+  [80, 1185, 45],
+  [75, 1232, 148],
+  [85, 1225, 158],
+  [100, 1209, -151],
+  [112, 1165, -26],
+  [70, 1180, 51],
+  [122, 1192, -73]
+ ]
+}

@@ -389,6 +389,22 @@ if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
     target_include_directories(dingosdk_replay_keyframes_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME replay_keyframes COMMAND dingosdk_replay_keyframes_tests)
 endif()
+option(DINGOSDK_BUILD_DOMINATION_TESTS "Build Domination regression tests" OFF)
+if(DINGOSDK_BUILD_DOMINATION_TESTS)
+    enable_testing()
+    # Parks, tricks read from the score HUD, the board, results, teams and the messages.
+    add_executable(dingosdk_domination_tests Extension/Domination/Test/domination_tests.cpp Extension/Domination/domination_model.cpp
+        Extension/Domination/domination_wire.cpp)
+    target_include_directories(dingosdk_domination_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_domination_tests PRIVATE dingosdk_json)
+    add_test(NAME domination COMMAND dingosdk_domination_tests "${DINGOSDK_DOMINATION_PARK}")
+    # Multiplayer rounds between many simulated players over a bad network (domination_sync.h).
+    add_executable(dingosdk_domination_net_tests Extension/Domination/Test/domination_net_tests.cpp Extension/Domination/domination_sync.cpp
+        Extension/Domination/domination_model.cpp Extension/Domination/domination_wire.cpp)
+    target_include_directories(dingosdk_domination_net_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_domination_net_tests PRIVATE dingosdk_json)
+    add_test(NAME domination_net COMMAND dingosdk_domination_net_tests)
+endif()
 option(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS "Build Hall of Meat regression tests" OFF)
 if(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS)
     enable_testing()

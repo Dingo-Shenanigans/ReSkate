@@ -78,6 +78,9 @@ struct PlacementsRuntime {
     // A teleport of the local skater to a position (console tp, the host's tpall).
     std::optional<std::array<float, 3>> position_teleport;
     std::uint64_t position_teleport_at{};
+    // The heading the pending position teleport faces (teleport_local_skater_heading), radians about
+    // world up; unset means the identity rotation the other teleports use (facing +Z).
+    std::optional<float> position_teleport_heading;
     std::optional<profile::PlacedObject> inflight;
     std::uint64_t sent_at{}, next_poll{}, map_since{}, map_generation{}, next_id{1};
     bool failed{}, restore_failed{};

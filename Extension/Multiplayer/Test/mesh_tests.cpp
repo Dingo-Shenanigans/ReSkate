@@ -77,6 +77,14 @@ void enforce(std::uintptr_t, std::uintptr_t, std::span<const std::uint8_t>) noex
 void release(std::uintptr_t) noexcept {}
 std::string status() { return {}; }
 }
+// Domination's messages and rules have their own tests (Extension/Domination/Test).
+namespace dingosdk::domination {
+void receive(std::uint64_t, std::span<const std::uint8_t>) noexcept {}
+std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept { return {}; }
+namespace wire {
+bool is_domination(std::span<const std::uint8_t>) noexcept { return false; }
+}
+}
 namespace dingosdk::profile_runtime {
 void install_script_error_log(std::uintptr_t) noexcept {}
 void install_board_wear_hold(std::uintptr_t) noexcept {}

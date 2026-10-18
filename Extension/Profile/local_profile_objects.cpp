@@ -56,6 +56,19 @@ bool teleport_local_skater(const std::array<float, 3>& position) {
     for (const auto v : position)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
     r.position_teleport = position;
+    r.position_teleport_heading.reset(); // the identity rotation
+    r.position_teleport_at = GetTickCount64();
+    return true;
+}
+bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
+    for (const auto v : position)
+        if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
+    if (!std::isfinite(heading)) return false;
+    r.position_teleport = position;
+    r.position_teleport_heading = heading;
     r.position_teleport_at = GetTickCount64();
     return true;
 }

@@ -1,0 +1,32 @@
+{
+ "schema": 1,
+ "level": "levels/game/bam_levelroot/bam_levelroot",
+ "park": "Hartcore Plaza",
+ "map": "San Vansterdam",
+ "outline": [[360, 1258], [550, 1258], [550, 1425], [360, 1425]],
+ "spots": [
+  {"id": "rings", "name": "Twin rings", "kind": "bowl", "shape": "capsule", "a": [380.0, 1300.0], "b": [392.0, 1312.0], "radius": 6.5, "y": [219.02, 227.12], "marker": [385.99, 224.62, 1305.99]},
+  {"id": "zigzag", "name": "Zigzag ledges", "kind": "ledge", "shape": "polygon", "points": [[463.0, 1324.0], [478.0, 1322.0], [493.0, 1338.0], [492.0, 1362.0], [482.0, 1366.0], [466.0, 1360.0], [460.0, 1345.0]], "y": [207.14, 218.75], "marker": [476.71, 216.25, 1344.1]},
+  {"id": "pyramid-north", "name": "North pyramid", "kind": "box", "shape": "polygon", "points": [[465.0, 1287.0], [481.0, 1287.0], [481.0, 1304.0], [465.0, 1304.0]], "y": [209.13, 216.82], "marker": [472.87, 214.32, 1295.38]},
+  {"id": "banks", "name": "Hubba banks", "kind": "bank", "shape": "polygon", "points": [[431.0, 1366.0], [474.0, 1373.0], [474.0, 1384.0], [431.0, 1383.0]], "y": [209.13, 218.61], "marker": [450.85, 216.11, 1376.35]},
+  {"id": "stair-box", "name": "Stair box", "kind": "box", "shape": "polygon", "points": [[476.0, 1370.0], [490.0, 1370.0], [490.0, 1386.0], [476.0, 1386.0]], "y": [209.13, 223.98], "marker": [482.87, 221.48, 1377.88]},
+  {"id": "stairs", "name": "East stairs", "kind": "stairs", "shape": "polygon", "points": [[505.0, 1350.0], [523.0, 1350.0], [523.0, 1376.0], [505.0, 1376.0]], "y": [210.62, 218.57], "marker": [513.87, 216.07, 1362.88]},
+  {"id": "kicker", "name": "Kicker block", "kind": "box", "shape": "polygon", "points": [[373.0, 1391.0], [417.0, 1391.0], [417.0, 1407.5], [373.0, 1407.5]], "y": [210.64, 218.51], "marker": [394.87, 216.01, 1399.13]},
+  {"id": "pyramid-south", "name": "South pyramid", "kind": "box", "shape": "polygon", "points": [[428.0, 1391.0], [441.0, 1391.0], [441.0, 1406.0], [428.0, 1406.0]], "y": [210.64, 218.07], "marker": [434.37, 215.57, 1398.38]},
+  {"id": "fountain", "name": "Fountain dish", "kind": "bowl", "shape": "capsule", "a": [419.5, 1416.0], "b": [419.6, 1416.1], "radius": 8.0, "y": [210.71, 223.82], "marker": [419.52, 221.32, 1416.03]},
+  {"id": "round-bowl", "name": "Round bowl", "kind": "bowl", "shape": "polygon", "points": [[442.0, 1394.0], [498.0, 1394.0], [498.0, 1424.0], [442.0, 1424.0]], "y": [210.85, 220.35], "marker": [469.87, 217.85, 1408.88]},
+  {"id": "mini-bowl", "name": "Mini bowl", "kind": "bowl", "shape": "capsule", "a": [508.5, 1397.5], "b": [508.6, 1397.6], "radius": 5.5, "y": [212.12, 219.09], "marker": [508.52, 216.59, 1397.53]},
+  {"id": "pyramid-east", "name": "East pyramid", "kind": "box", "shape": "polygon", "points": [[518.0, 1391.0], [533.0, 1391.0], [533.0, 1407.0], [518.0, 1407.0]], "y": [212.1, 219.89], "marker": [525.37, 217.39, 1398.88]}
+ ],
+ "starts": [
+  {"position": [440, 208.19, 1358], "heading": 79},
+  {"position": [500, 211.68, 1310], "heading": -45},
+  {"position": [455, 213.11, 1388], "heading": -170},
+  {"position": [400, 211.69, 1370], "heading": 101},
+  {"position": [520, 220.57, 1330], "heading": -67},
+  {"position": [485, 210.18, 1312], "heading": -36},
+  {"position": [395, 212.17, 1385], "heading": 114},
+  {"position": [540, 213.17, 1380], "heading": -103},
+  {"position": [372, 209.84, 1350], "heading": 83}
+ ]
+}

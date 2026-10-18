@@ -631,9 +631,14 @@ void update_position_teleport() {
         !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
         !read(manager, state) || state != 0) return;
     const auto at = *r.position_teleport;
+    const auto heading = r.position_teleport_heading; // set only by teleport_local_skater_heading
     r.position_teleport.reset();
+    r.position_teleport_heading.reset();
     // Upright at the spot. The native teleport manager handles streaming, ground checks and physics reset.
-    alignas(16) const std::array<float, 16> transform{1,0,0,0, 0,1,0,0, 0,0,1,0, at[0], at[1], at[2], 1};
+    // With a heading h the root's rows are right (cos h, 0, -sin h), up, forward (sin h, 0, cos h):
+    // h = 0 is the identity, facing +Z (measured: the skater faces h within 0.002 degrees).
+    const float sh = heading ? std::sin(*heading) : 0.0f, ch = heading ? std::cos(*heading) : 1.0f;
+    alignas(16) const std::array<float, 16> transform{ch,0,-sh,0, 0,1,0,0, sh,0,ch,0, at[0], at[1], at[2], 1};
     alignas(16) std::array<std::uint64_t, 2> transition{};
     r.transition_ctor(transition.data());
     struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};

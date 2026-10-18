@@ -1,0 +1,24 @@
+{
+ "schema": 1,
+ "level": "levels/game/dingolevel_reskate_skate3improved/dingolevel_reskate_skate3improved",
+ "park": "Loans plaza",
+ "map": "Skate 3 Improved",
+ "package": "333-Skate_3_Improved",
+ "outline": [[1045, -1162], [1162, -1162], [1162, -1060], [1045, -1060]],
+ "spots": [
+  {"id": "zigzags-west", "name": "West fountain ledges", "kind": "ledge", "shape": "polygon", "points": [[1050.5, -1122.0], [1092.0, -1122.0], [1092.0, -1098.0], [1050.5, -1098.0]], "y": [128.91, 135.24], "marker": [1071.12, 132.74, -1110.12]},
+  {"id": "zigzags-east", "name": "East fountain ledges", "kind": "ledge", "shape": "polygon", "points": [[1092.0, -1122.0], [1136.0, -1122.0], [1136.0, -1098.0], [1092.0, -1098.0]], "y": [128.9, 135.25], "marker": [1113.87, 132.75, -1110.12]},
+  {"id": "rail-bank", "name": "Rail bank", "kind": "bank", "shape": "polygon", "points": [[1050.5, -1146.0], [1105.0, -1146.0], [1105.0, -1128.0], [1050.5, -1128.0]], "y": [129.18, 138.33], "marker": [1077.62, 135.83, -1137.12]},
+  {"id": "north-bank", "name": "North bank", "kind": "bank", "shape": "polygon", "points": [[1105.0, -1146.0], [1156.0, -1146.0], [1156.0, -1128.0], [1105.0, -1128.0]], "y": [129.33, 138.33], "marker": [1130.37, 135.83, -1137.12]},
+  {"id": "south-steps", "name": "South steps", "kind": "stairs", "shape": "polygon", "points": [[1072.0, -1092.0], [1156.0, -1092.0], [1156.0, -1066.0], [1072.0, -1066.0]], "y": [129.17, 140.23], "marker": [1113.87, 137.73, -1079.12]},
+  {"id": "benches", "name": "Back wall", "kind": "ledge", "shape": "capsule", "a": [1086.0, -1153.5], "b": [1140.0, -1153.5], "radius": 2.2, "y": [131.17, 139.43], "marker": [1112.99, 136.93, -1153.38]}
+ ],
+ "starts": [
+  {"position": [1070, 130.33, -1125], "heading": 63},
+  {"position": [1110, 130.33, -1125], "heading": -34},
+  {"position": [1065, 130.22, -1095], "heading": 113},
+  {"position": [1145, 130.82, -1110], "heading": -90},
+  {"position": [1145, 130.98, -1125], "heading": -72},
+  {"position": [1100, 130.22, -1095], "heading": 180}
+ ]
+}
