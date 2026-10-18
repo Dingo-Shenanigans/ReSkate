@@ -1,3 +1,4 @@
+#include "gameplay_controller.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Boot/exit_watch.h"
@@ -521,14 +522,16 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
     return keys;
 }
 
-extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* output, bool allow_menu) {
-    if (!output) return;
+dingosdk::overlay::GameplayController dingosdk::overlay::read_gameplay_controller(bool allow_menu) {
+    GameplayController result;
+    auto* output = &result.input;
     struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
     *output = {};
     const auto& s = state();
     const HWND window = s.window.load();
     if (!window || s.stop.load() || s.failed.load() || (!allow_menu && interactive_visible(s)) ||
-        !game_window_foreground(window)) return;
+        !game_window_foreground(window)) return result;
+    result.ready=true;
     // Read through the overlay's bypass: freecam capture hides keys from the game. (As sampled
     // off this thread when there is a recent sample, cursor.cpp.)
     if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
@@ -545,13 +548,19 @@ extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* ou
     }
     const auto sample = read_controller_sample();
     output->style = sample.style;
-    if (!sample.device) return;
+    if (!sample.device) return result;
     const auto& pad = sample.pad;
+    result.pad = {pad.wButtons, pad.bLeftTrigger, pad.bRightTrigger, pad.sThumbLX, pad.sThumbLY, pad.sThumbRX, pad.sThumbRY};
     output->available = true;
     output->device = sample.device;
     output->buttons = pad.wButtons & dingosdk::controller_button_mask;
     if (pad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) output->buttons |= 0x10000;
     if (pad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) output->buttons |= 0x20000;
+    return result;
+}
+
+extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* output, bool allow_menu) {
+    if (output) *output = dingosdk::overlay::read_gameplay_controller(allow_menu).input;
 }
 
 // Raw mouse packets arrived recently enough to trust the tracked buttons.

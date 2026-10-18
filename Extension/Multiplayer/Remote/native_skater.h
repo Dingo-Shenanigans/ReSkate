@@ -43,6 +43,8 @@ void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
 void set_render_pose_listener(RenderPosePublished listener) noexcept;
+// Same hook, after all admitted remote/board pose edits, for camera refinement.
+void set_final_render_pose_listener(RenderPosePublished listener) noexcept;
 // Far-player savings (puppet_cost.cpp): native work a remote player's skater and skateboard
 // skip while far away. Within 200 m of the local skater or the camera nothing changes.
 // Each is on by default; the setter is thread-safe and applies at each player's next

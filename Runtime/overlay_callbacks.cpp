@@ -104,6 +104,17 @@ void read_native_menu_model(void*, dingosdk::overlay::Model& output) {
     // Native UI has no console reader. Do not advance the overlay log cursor.
     output.console_log.clear();
 }
+bool queue_first_person_profile(std::span<const dingosdk::overlay::DebugRequest> requests,
+                                char* result, std::size_t size) {
+    auto& r = runtime();
+    std::lock_guard lock(r.mutex);
+    if (!r.requests.enqueue_batch(requests, request_context(r), GetCurrentThreadId())) {
+        if (size) std::snprintf(result, size, "Camera profile unavailable while loading or queue is full. No camera values queued.");
+        return false;
+    }
+    if (size) result[0] = 0;
+    return true;
+}
 bool queue_debug(void*, const dingosdk::overlay::DebugRequest& request, char* result, std::size_t size) {
     auto& r = runtime();
     std::lock_guard lock(r.mutex);

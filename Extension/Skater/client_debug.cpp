@@ -1,3 +1,7 @@
+#include "FirstPerson/integration.h"
+#include "FirstPerson/Upstream/src/settings.h"
+#include "FirstPerson/Upstream/src/comfort_policy.h"
+#include "first_person_camera_host.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
@@ -211,6 +215,12 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         first_person::Vec3 origin{};
         auto& arm = first_person_arm();
         try {
+            overlay::DebugModel skater; (void)debug_skater(trial.base,client,skater);
+            SourceReader reader;
+            if(reader.value<std::uint8_t>(skater.skater_identity,0x7e0)) {
+                first_person_disarm();debug.first_person_waiting=true;return;
+            }
+            reader.verify();
             component = first_person_component(trial.base, client);
             arm.watched_base.store(trial.base, std::memory_order_release);
             arm.watched.store(component, std::memory_order_release);
@@ -244,7 +254,7 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
         arm.fov = debug.first_person_fov;
         arm.settings = debug.first_person_settings;
         arm.spring.begin(now);
-        next = arm.spring.sample(next, arm.settings, origin);
+        next = first_person_host::sample(arm.spring, next, arm.settings, origin);
         source_require(valid_flight_transform(next), "First-person spring pose is invalid.");
         arm.matrix = next;
         arm.thread.store(GetCurrentThreadId(), std::memory_order_release);
@@ -324,6 +334,7 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     // our owned pose each tick also prevents native helper input from drifting it.
     debug.flight_ready = false; // An exceptional setter must not be retried automatically.
     SetLastError(error);
+    if (debug.first_person) first_person_host::compose(camera.identity.camera, next);
     trial.camera_transform(camera.identity.camera, &next);
     debug.flight_matrix = next;
     debug.flight_ready = true;
@@ -419,7 +430,7 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         if (const auto speed = saved::number(saved::offboard_up_velocity); speed && *speed >= 1.0f && *speed <= 25.0f)
             debug.offboard_up_velocity_speed = *speed;
         if (const auto fov = saved::number(saved::first_person_fov);
-            fov && *fov >= first_person_fov_min && *fov <= first_person_fov_max) {
+            fov && first_person::valid_fov_setting(*fov)) {
             debug.first_person_fov = *fov;
             first_person_arm().fov = *fov;
         }
@@ -756,13 +767,17 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
     }
     auto camera = source_camera_snapshot(trial, client);
     if (request.action == overlay::DebugAction::set_first_person_fov) {
-        source_require(std::isfinite(request.value) && request.value >= first_person_fov_min &&
-            request.value <= first_person_fov_max, "First-person FOV must be between 40 and 120 degrees.");
+        source_require(first_person::valid_fov_setting(request.value),
+            "First-person FOV must be zero (camera default) or between 40 and 120 degrees.");
+        if (debug.first_person) {
+            const auto target = first_person::fov_write_target(request.value, debug.first_person_saved_fov);
+            source_require(target.has_value(), "The original camera FOV is not available yet.");
+            source_require(first_person_write_fov(camera.identity.camera, *target), "Could not update First Person FOV.");
+        }
         debug.first_person_fov = request.value;
         first_person_arm().fov = request.value;
         mark_debug_changed(debug);
-        if (debug.first_person) (void)first_person_write_fov(camera.identity.camera, request.value);
-        debug.status = "First-person FOV updated.";
+        debug.status = request.value == 0 ? "First person uses the camera's default FOV." : "First-person FOV updated.";
         return;
     }
     if (request.action == overlay::DebugAction::set_first_person) {
@@ -806,10 +821,11 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         arm.settings = debug.first_person_settings;
         arm.spring.reset();
         arm.spring.begin(source_flight_now());
-        pose = arm.spring.sample(pose, arm.settings, origin);
+        pose = first_person_host::sample(arm.spring, pose, arm.settings, origin);
         source_require(valid_flight_transform(pose), "First-person arm pose is invalid.");
         debug.flight_ready = false;
         SetLastError(error);
+        first_person_host::compose(camera.identity.camera, pose);
         trial.camera_transform(camera.identity.camera, &pose);
         debug.flight_matrix = pose;
         debug.flight_time = source_flight_now();
@@ -910,29 +926,38 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
 // "Third person on foot": runs only while first person is on or this paused
 // it, so players who never use first person are untouched. Switches through
 // the same actions as the menu toggle, after the state has held briefly.
-void first_person_board_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
+void first_person_board_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error, const first_person_integration::ControlsContext& context) {
     auto& debug = trial.debug;
     // Choosing Freecam or the Park Editor while handed back ends the hand-back.
     if (debug.first_person_paused && (debug.park_editor || (debug.camera_owned && !debug.first_person)))
         debug.first_person_paused = false;
-    // With the option off, a hand-back still in progress resumes below.
-    if (!debug.first_person_paused && !(debug.first_person && debug.first_person_settings.board_only)) return;
+    if (!debug.first_person && !debug.first_person_paused) return;
     if (!can_control || !phase || debug.park_editor || debug.noclip || debug.editor_transition) return;
+    const auto config=jishsfirstpersonmod::menu_snapshot().config;
+    if(!context.verified) return;
+    static jishsfirstpersonmod::RecoveryCameraLatch recovery;
+    static std::uintptr_t recovery_owner{};static bool previous_wipeout{};
+    if(recovery_owner!=context.owner[0]){recovery_owner=context.owner[0];previous_wipeout=false;}
+    const bool renewed=context.wipeout_request && !previous_wipeout;previous_wipeout=context.wipeout_request;
+    const bool getting_up=recovery.update(config.third_person_recovery && !config.third_person_bailing,
+        context.owner[0],context.recovery_verified,context.bail,context.getting_up,
+        context.recovery_controllable,context.normal_foot && !context.bail,renewed);
+    const bool suppress=(debug.first_person_settings.board_only && context.on_foot) ||
+        (config.third_person_bailing && context.bail) || getting_up;
     const auto now = GetTickCount64();
-    const auto on_foot = debug.first_person_settings.board_only ? first_person_on_foot(trial.base, client) : std::optional<bool>(false);
-    if (!on_foot) return;
-    if (*on_foot != debug.first_person_last_on_foot) {
-        debug.first_person_last_on_foot = *on_foot;
+    if (suppress != debug.first_person_last_on_foot) {
+        debug.first_person_last_on_foot = suppress;
         debug.first_person_foot_since = now;
     }
     const auto held = now - debug.first_person_foot_since;
     if (now < debug.first_person_retry_after) return;
     try {
-        if (debug.first_person && *on_foot && held >= 250) {
+        if (debug.first_person && suppress && (context.bail || held >= 250)) {
             debug_action(trial, client, can_control, phase, {overlay::DebugAction::set_first_person, false}, error);
             debug.first_person_paused = true;
-            debug.status = "On foot: third person until you are back on the board.";
-        } else if (debug.first_person_paused && !*on_foot && held >= 120) {
+            debug.status = getting_up ? "Getting up: third person until control returns.":
+                context.bail ? "Bailing: third person until control returns.":"On foot: third person until you are back on the board.";
+        } else if (debug.first_person_paused && !suppress && held >= 120) {
             debug_action(trial, client, can_control, phase, {overlay::DebugAction::set_first_person, true}, error);
             debug.first_person_paused = !debug.first_person;
         }
@@ -968,7 +993,8 @@ bool first_person_camera_height_write(bool high) noexcept {
 void first_person_cycle_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
     auto& debug = trial.debug;
     const auto now = GetTickCount64();
-    const bool enabled = debug.first_person_settings.camera_cycle && can_control && phase &&
+    const auto comfort_config=jishsfirstpersonmod::menu_snapshot().config;
+    const bool enabled = debug.first_person_settings.camera_cycle && !comfort_config.third_person_camera_switching() && can_control && phase &&
         !debug.park_editor && !debug.noclip && !debug.editor_transition;
     const auto step = static_cast<first_person::CycleStep>(cycle_request.exchange(0, std::memory_order_acq_rel));
     if (enabled && step != first_person::CycleStep::none) {
@@ -1000,6 +1026,32 @@ void first_person_cycle_tick(SourceTrial& trial, std::uintptr_t client, bool can
 namespace dingosdk {
 using namespace client_source::detail;
 
+void first_person_party_handoff(std::uintptr_t base,std::uintptr_t client,bool watching,bool ready,bool phase) noexcept {
+    static bool restore{};
+    static std::uintptr_t world{};
+    auto& state=source_state();
+    if(!state.initialized.load() || state.busy.test_and_set())return;
+    SourceBusyScope scope{state.busy};
+    try {
+        if(state.trial.base!=base)return;
+        SourceReader reader;const auto context=reader.pointer(client,8);reader.verify();
+        if(world!=context){world=context;restore=false;}
+        auto& debug=state.trial.debug;
+        if(!ready || !phase || debug.noclip || debug.park_editor)return;
+        if(watching) {
+            if(!jishsfirstpersonmod::menu_snapshot().config.spectator_first_person && !restore)return;
+            if(debug.camera_owned && !debug.first_person){restore=false;return;}
+            if(debug.first_person || debug.first_person_paused) {
+                debug_action(state.trial,client,ready,phase,{overlay::DebugAction::set_first_person,false},GetLastError());
+                debug.first_person_paused=false;restore=true;
+            }
+        } else if(restore) {
+            if(debug.camera_owned){restore=false;return;}
+            debug_action(state.trial,client,ready,phase,{overlay::DebugAction::set_first_person,true},GetLastError());
+            restore=false;
+        }
+    } catch(...) {} // A still-owned party camera restores first; retry on the next native tick.
+}
 overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t client, bool can_control,
     bool camera_phase_observed, const overlay::DebugRequest* request, const overlay::FlightInput* flight_input) {
     SourceLastError error;
@@ -1042,6 +1094,8 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         debug.status = "The host turned off noclip in this session.";
     }
     const bool no_bail_allowed = session_no_bail_allowed();
+    if (request && request->action == overlay::DebugAction::set_first_person &&
+        first_person_integration::toggle_spectator()) request=nullptr;
     if (request) {
         // The player's own First person choice replaces any on-foot hand-back.
         if (request->action == overlay::DebugAction::set_first_person || request->action == overlay::DebugAction::restore_debug)
@@ -1050,7 +1104,9 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         catch (const SourceGuard& guard) { debug.status = guard.message; }
         catch (...) { debug.status = "Debug action failed; inspect the current state before retrying."; }
     }
-    first_person_board_tick(trial, client, can_control, camera_phase_observed, error.value);
+    const auto controls_context=can_control && !debug.park_editor && !debug.noclip ?
+        first_person_integration::read_controls_context(base,client):first_person_integration::ControlsContext{};
+    first_person_board_tick(trial, client, can_control, camera_phase_observed, error.value, controls_context);
     first_person_cycle_tick(trial, client, can_control, camera_phase_observed, error.value);
     // Camera ownership survives a busy tick or a failed presentation snapshot.
     // Input capture must follow the lease, not those transient model failures.
@@ -1058,6 +1114,21 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     state.free_camera_active.store(debug.camera_owned && !debug.first_person && !debug.drone_follow, std::memory_order_release);
     model.free_camera = debug.camera_owned && !debug.first_person && !debug.drone_follow;
     model.drone_follow = debug.camera_owned && debug.drone_follow;
+    bool addon_camera_owned{};
+    if (first_person_integration::ready() && debug.first_person && debug.camera_owned && !debug.camera_ambiguous &&
+        can_control && camera_phase_observed && !debug.park_editor && !debug.noclip && !debug.drone_follow) {
+        try {
+            const auto camera = source_camera_snapshot(trial, client);
+            addon_camera_owned = camera.identity == debug.camera_identity && camera.mode == 1 &&
+                camera.active == camera.identity.camera && camera.view_enabled;
+        } catch (...) {}
+    }
+    first_person_integration::observe(debug.first_person_settings, debug.first_person_fov,
+        addon_camera_owned, can_control && camera_phase_observed && !debug.park_editor && !debug.noclip && !debug.drone_follow,
+        debug.first_person && !debug.park_editor && !debug.noclip && !debug.drone_follow,
+        addon_camera_owned ? first_person_on_foot(base, client) : std::nullopt, client,
+        controls_context);
+
     std::optional<SourceCameraSnapshot> flight_camera;
     try { debug_flight_tick(trial, client, can_control, camera_phase_observed, flight_input, error.value, flight_camera); }
     catch (const SourceGuard& guard) { debug_stop_noclip(debug); debug.status = guard.message; }

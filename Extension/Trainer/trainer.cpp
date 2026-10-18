@@ -6,6 +6,7 @@
 #include "trainer_landing.h"
 #include "trainer_waypoint.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Core/Config/profile_config.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/addresses.h"
@@ -201,31 +202,14 @@ std::optional<double> number(std::string_view text) {
 void say(logging::Level level, const std::string &text) { logging::write(level, logging::Channel::skater, text); }
 
 // ---- storage ---------------------------------------------------------------------------
-std::filesystem::path data_directory() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"trainer";
-    if (raw) CoTaskMemFree(raw);
-    return result;
-}
+std::filesystem::path data_directory() {return profile_config::directory();}
 std::filesystem::path game_directory() {
     std::vector<wchar_t> exe(32768);
     const auto length = GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
     if (!length || length >= exe.size()) return {};
     return std::filesystem::path(exe.data()).parent_path();
 }
-std::optional<Json> read_json(const std::filesystem::path &path) {
-    try {
-        std::ifstream file(path, std::ios::binary);
-        if (!file) return std::nullopt;
-        const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        if (text.empty() || text.size() > 1024 * 1024) return std::nullopt;
-        return Json::parse(text);
-    } catch (...) {
-        return std::nullopt;
-    }
-}
+std::optional<Json> read_json(const std::filesystem::path &path) {return profile_config::read(path);}
 std::optional<Vec3> read_position(const Json &value) {
     if (!value.is_array() || value.size() != 3) return std::nullopt;
     Vec3 result{};

@@ -100,7 +100,7 @@ constexpr int action_bind(std::string_view key) {
 }
 const std::array<BindGroup, 4> bind_groups{{
     {"GENERAL", {action_bind("reskate_menu"), action_bind("hide_hud"), action_bind("challenges"), action_bind("time_of_day")}},
-    {"CAMERA", {2, 1, 6, action_bind("first_person")}},
+    {"CAMERA", {2, 1, 6, action_bind("first_person"), action_bind("first_person_glance_up"), action_bind("first_person_glance_down"), action_bind("first_person_glance_left"), action_bind("first_person_glance_right"), action_bind("first_person_modifier")}},
     {"CHEATS AND BOOSTS", {3, action_bind("no_bail"), 4, 5, 7}},
     {"ONLINE", {action_bind("voice_chat"), action_bind("nametags"), action_bind("nametag_dots"), 8, 9}},
 }};
@@ -150,7 +150,7 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         if (!available || ImGui::GetTime() >= menu.bind_capture_until) {
             menu.recording_bind = 0;
             feedback(menu, "Recording cancelled. Your binding is unchanged.");
-        } else if (const auto combo = menu.bind_capture.update(controller, true)) {
+        } else if (const auto combo = menu.bind_capture.update(controller, menu.recording_bind < 10 || !action_binds[static_cast<std::size_t>(menu.recording_bind-10)].controller_only)) {
             const auto action = menu.recording_bind;
             menu.recording_bind = 0;
             save(action, *combo);
@@ -165,6 +165,7 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     const bool console = console_style();
     if (menu.recording_bind) {
         warn(!menu.bind_capture.ready ? "Release controller buttons and keyboard keys first." :
+             (menu.recording_bind>=10 && action_binds[static_cast<std::size_t>(menu.recording_bind-10)].controller_only) ? "Hold the controller modifier combo, then release it. This action uses controller buttons." :
              console ? "Hold up to five buttons together, then let go. Nothing for 10 seconds cancels." :
              "Hold up to five keys together, then release them. A-Z, 0-9, Space, F1-F12, Ctrl, Shift and Alt work; controller combos work too.");
     }

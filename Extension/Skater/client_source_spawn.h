@@ -34,8 +34,9 @@ bool client_free_camera_active() noexcept;
 // Native camera lease for the party's Spectate action. Null restores only the
 // camera acquired by this function; it never changes another debug camera. A positive
 // `fov` is applied to the spectate camera while it is held; its own comes back after.
+void first_person_party_handoff(std::uintptr_t base,std::uintptr_t client,bool watching,bool ready,bool phase) noexcept;
 bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
-    const std::array<float, 16>* transform, std::string& detail, float fov = 0) noexcept;
+    const std::array<float, 16>* transform, std::string& detail, float fov = 0, bool refine_only = false) noexcept;
 bool read_local_camera_transform(std::uintptr_t base, std::uintptr_t client, std::array<float, 16>& transform) noexcept;
 // Publishes the local view's camera (Engine/Game/UI/game_view.h) for things drawn over the
 // world. Client thread, every tick while something needs it.

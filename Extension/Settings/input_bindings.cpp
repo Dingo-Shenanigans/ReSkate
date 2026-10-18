@@ -95,7 +95,7 @@ static std::uint32_t vote_binding(const Snapshot& s, const char* key, std::uint3
         "Unsupported controller or keyboard key in a vote binding");
     return static_cast<std::uint32_t>(mask);
 }
-std::uint32_t action_binding(const Snapshot& s, std::string_view key) { return vote_binding(s, std::string(key).c_str(), 0); }
+std::uint32_t action_binding(const Snapshot& s, std::string_view key) { return vote_binding(s, std::string(key).c_str(), 0u); }
 std::uint32_t vote_yes_binding(const Snapshot& s) { return vote_binding(s, "vote_yes", default_vote_yes_binding); }
 std::uint32_t vote_no_binding(const Snapshot& s) { return vote_binding(s, "vote_no", default_vote_no_binding); }
 std::uint32_t offboard_up_velocity_binding(const Snapshot& s) {

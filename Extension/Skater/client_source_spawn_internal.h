@@ -1,4 +1,5 @@
 #pragma once
+#include "Engine/Game/Skater/first_person_fov.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/addresses.h"
@@ -198,7 +199,7 @@ struct NoclipBodies {
     std::array<std::uintptr_t, 32> parts{}; // Board 0..8, native skeleton velocity parts 1..23.
 };
 constexpr std::uintptr_t camera_fov_offset = 0xac;
-constexpr float first_person_fov_min = 40.0f, first_person_fov_max = 120.0f;
+constexpr float first_person_fov_min = first_person::minimum_fov, first_person_fov_max = first_person::maximum_fov;
 struct FirstPersonArm {
     std::atomic<DWORD> thread{};
     std::uintptr_t component{}, camera{};
@@ -242,6 +243,8 @@ std::optional<bool> first_person_on_foot(std::uintptr_t base, std::uintptr_t cli
 first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t component, std::array<float, 16>& matrix);
 void first_person_on_render(std::uintptr_t animation_interface) noexcept;
 void first_person_on_animation(std::uintptr_t component) noexcept;
+first_person::Vec3 first_person_spectator_head(std::uintptr_t base,std::uintptr_t entity,first_person::Matrix& pose);
+void first_person_restore_spectator_head() noexcept;
 
 template<class T> void debug_write(std::uintptr_t address, T value) {
     SIZE_T written{};

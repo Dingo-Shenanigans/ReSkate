@@ -88,10 +88,16 @@ struct ControllerInput {
 // `key` is its name in the profile, `name` what "bind <name>" takes.
 struct ActionBind {
     std::string_view key, name, label, command;
+    bool held{}, controller_only{};
 };
-inline constexpr std::array<ActionBind, 9> action_binds{{
-    {"reskate_menu", "reskatemenu", "Open the ReSkate menu", "menu"},
+inline constexpr std::array<ActionBind, 14> action_binds{{
+
     {"first_person", "firstperson", "First person", "firstperson toggle"},
+    {"first_person_glance_up", "fpglanceup", "First person glance up", "", true},
+    {"first_person_glance_down", "fpglancedown", "First person glance down", "", true},
+    {"first_person_glance_left", "fpglanceleft", "First person glance left", "", true},
+    {"first_person_glance_right", "fpglanceright", "First person glance right", "", true},
+    {"first_person_modifier", "fpmodifier", "First person modifier", "", true, true},
     {"hide_hud", "hidehud", "Hide HUD", "hideui toggle"},
     {"voice_chat", "voicechat", "Voice chat on / off", "mp voice-chat toggle"},
     {"time_of_day", "tod", "Next time of day", "tod next"},
@@ -99,6 +105,7 @@ inline constexpr std::array<ActionBind, 9> action_binds{{
     {"challenges", "challenges", "Show / hide challenges", "challenges toggle"},
     {"nametags", "nametags", "Player nametags", "mp nametags toggle"},
     {"nametag_dots", "nametagdots", "Player dots", "mp nametag-dots toggle"},
+    {"reskate_menu", "reskatemenu", "Open the ReSkate menu", "menu"},
 }};
 struct ControllerBindingsModel {
     bool available{};

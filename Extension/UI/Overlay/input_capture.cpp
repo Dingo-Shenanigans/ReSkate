@@ -1,3 +1,4 @@
+#include "Extension/Skater/FirstPerson/native_stick_filter.h"
 #include "Engine/Core/Log/logging.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
@@ -96,7 +97,12 @@ void refresh_bluetooth_crc(std::uint8_t* bytes, DWORD size) noexcept {
     std::memcpy(bytes + size - 4, &crc, sizeof(crc));
 }
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
-    if (!block_polled_input() || !read.buffer || size > read.capacity) return;
+    if (!read.buffer || size > read.capacity) return;
+    if (!block_polled_input()) {
+        if (!overlay_input_access)
+            first_person_integration::filter_stick_report(read.kind,{static_cast<std::uint8_t*>(read.buffer),size});
+        return;
+    }
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     // USB or Bluetooth decides where the buttons are in a report with id 1. It is the device's
     // report length that tells them apart, and Windows pads every read to that length, so it
@@ -172,7 +178,11 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
 // through the gamepad filter.
 void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     if (block_polled_input()) neutral_hid(read, size);
-    else filter_hid(read, size);
+    else {
+        filter_hid(read, size);
+        if (!overlay_input_access && read.buffer && size <= read.capacity)
+            first_person_integration::filter_stick_report(read.kind,{static_cast<std::uint8_t*>(read.buffer),size});
+    }
 }
 void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished) {
     auto& h = input_hooks();
@@ -325,11 +335,18 @@ std::string xinput_entry_owners() {
 // read already being answered (Steam's hook going on to XInput runs inside OverlayInputAccess).
 void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     if (!outer || !output) return;
-    const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter) return;
     auto& g = output->Gamepad;
     dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    filter(static_cast<unsigned>(user), pad);
+    const auto physical=pad;
+    if(const auto filter=gamepad_filter().load(std::memory_order_acquire))filter(static_cast<unsigned>(user),pad);
+    first_person_integration::filter_stick(static_cast<unsigned>(user),pad);
+    if (user < 4) {
+        static std::mutex packet_mutex;
+        static std::array<first_person_integration::PacketSequence,4> packets;
+        std::lock_guard lock(packet_mutex);
+        output->dwPacketNumber=packets[user].update(output->dwPacketNumber,physical,pad);
+    }
+
     g.wButtons = pad.buttons;
     g.bLeftTrigger = pad.left_trigger;
     g.bRightTrigger = pad.right_trigger;
@@ -399,6 +416,21 @@ BOOL WINAPI captured_keyboard(PBYTE keys) {
     if (result && keys && block_polled_input()) std::memset(keys, 0, 256);
     return result;
 }
+void filter_raw_stick(RAWINPUT& raw,std::size_t size) {
+    if(!first_person_integration::stick_filter_active() || overlay_input_access || raw.header.dwType!=RIM_TYPEHID || !raw.header.hDevice) return;
+    constexpr auto offset=offsetof(RAWINPUT,data)+offsetof(RAWHID,bRawData);
+    if(size<offset) return;
+    const auto stride=raw.data.hid.dwSizeHid,count=raw.data.hid.dwCount;
+    if(stride<10 || stride>78 || count>(size-offset)/stride) return;
+    struct PreserveError {DWORD value=GetLastError();~PreserveError(){SetLastError(value);}} error;
+    RID_DEVICE_INFO info{};info.cbSize=sizeof(info);UINT bytes=sizeof(info);
+    if(GetRawInputDeviceInfoW(raw.header.hDevice,RIDI_DEVICEINFO,&info,&bytes)==UINT(-1) || info.dwType!=RIM_TYPEHID ||
+        info.hid.dwVendorId>0xffff || info.hid.dwProductId>0xffff) return;
+    const auto kind=playstation_pad(static_cast<std::uint16_t>(info.hid.dwVendorId),static_cast<std::uint16_t>(info.hid.dwProductId));
+    if(kind==PlayStationPad::none) return;
+    for(DWORD i=0;i<count;++i)
+        first_person_integration::filter_stick_report(kind,{raw.data.hid.bRawData+static_cast<std::size_t>(i)*stride,stride});
+}
 UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT size, UINT header_size) {
     const auto result = original<UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT)>(
         input_hooks().raw_data)(input, command, data, size, header_size);
@@ -416,6 +448,7 @@ UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT 
             raw->header.dwType == RIM_TYPEKEYBOARD && result >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
         if (!block_polled_input()) {
             if ((mouse || keyboard) && !overlay_input_access) held_input().seen(*raw);
+            filter_raw_stick(*raw,result);
         } else if ((mouse || keyboard) && held_input().release_only(*raw)) {
             // A key or button the game holds still comes up; presses stay blocked.
         } else if (mouse)
@@ -521,6 +554,7 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
                 record->header.dwType == RIM_TYPEKEYBOARD && bytes >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
             if (!capture) {
                 if ((mouse || keyboard) && !overlay_input_access) held_input().seen(*record);
+                filter_raw_stick(*record,bytes);
             } else if ((mouse || keyboard) && held_input().release_only(*record)) {
                 // Kept records move forward over the dropped ones, in the same layout.
                 if (write != reinterpret_cast<std::uintptr_t>(record))

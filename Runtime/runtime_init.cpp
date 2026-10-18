@@ -1,3 +1,4 @@
+#include "Extension/Skater/FirstPerson/integration.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/item_browser.h"
 #include "bootstrap.h"
@@ -207,6 +208,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         const dingosdk::overlay::CallbacksV3 callbacks{
             nullptr, read_model, queue_load, queue_debug, queue_offline_feature,
             queue_console_command};
+        dingosdk::first_person_integration::set_callbacks(callbacks, queue_first_person_profile);
         auto native_callbacks = callbacks;
         native_callbacks.read_model = read_native_menu_model;
         dingosdk::multiplayer::set_native_menu_callbacks(native_callbacks);

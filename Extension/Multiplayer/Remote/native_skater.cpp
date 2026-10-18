@@ -348,6 +348,8 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
     }
     // Last, so that what it does to a board's pose (another player's included) is what is drawn.
     if (result) board_break::on_render_pose(animation_interface);
+    if(const auto listener=shared().final_render_listener.load(std::memory_order_acquire);result && listener)
+        listener(animation_interface);
     return result;
 }
 void animation_hook(std::uintptr_t component, std::uintptr_t update) {
@@ -596,6 +598,9 @@ void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
     hidden.component = component;
     hidden.joint = joint;
     hidden.scale = scale;
+}
+void set_final_render_pose_listener(RenderPosePublished listener) noexcept {
+    shared().final_render_listener.store(listener,std::memory_order_release);
 }
 void set_render_pose_listener(RenderPosePublished listener) noexcept {
     shared().render_listener.store(listener, std::memory_order_release);

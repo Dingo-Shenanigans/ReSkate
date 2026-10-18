@@ -64,6 +64,10 @@ struct SkateMenu {
     std::map<std::uint64_t, std::pair<float, double>> voice_volume_pending;
     std::array<bool, 256> voice_keys_down{};
     std::string multiplayer_distance_lobby;
+    std::vector<std::string> first_person_presets;
+    bool first_person_presets_loaded{};
+    int first_person_preset{};
+    std::array<char, 81> first_person_preset_name{};
     int recording_bind = 0;
     ControllerComboCapture bind_capture;
     double bind_capture_until = 0;

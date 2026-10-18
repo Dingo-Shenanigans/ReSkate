@@ -57,15 +57,15 @@ GameUiState read(Address base, State &s) {
     const auto at = context.address(s.screen);
     if (!at) return {};
     const auto flag = [&](std::uint32_t offset) { return menu_data::read<std::uint8_t>(at + offset) != 0; };
-    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset)};
+    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset), true};
 }
 } // namespace
 
-GameUiState sample_game_ui_state(std::uintptr_t base) noexcept {
+GameUiState sample_game_ui_state(std::uintptr_t base, bool fresh) noexcept {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     if (!base) return s.latest = {};
-    if (const auto now = Clock::now(); now >= s.next_sample) {
+    if (const auto now = Clock::now(); fresh || now >= s.next_sample) {
         s.next_sample = now + std::chrono::milliseconds(100);
         try { s.latest = read(base, s); } catch (...) { s.screen = {}; s.latest = {}; }
     }
