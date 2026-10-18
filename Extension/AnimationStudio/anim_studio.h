@@ -2,6 +2,8 @@
 #include "anim_core.h"
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,8 +48,13 @@ struct View {
     // The animation being edited.
     std::string name, trick;
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
+    bool room{true}; // the studio opens in its room (studio_room.h)
     float duration{}, takeoff{-1}, landing{-1}, time{}, speed{1};
     std::vector<JointView> joints; // the editable joints, now
+    // The board without its keys, now, from where it starts: 0, 0, 0 is the board at the trick's start,
+    // on the ground, as it lies there (Y up). The board's fields show it with its keys added.
+    Joint board_base;
+    bool board_base_valid{};
     std::vector<TrackView> tracks;
     std::vector<std::string> library; // saved animations, by name
     Recording recording{};
@@ -60,6 +67,21 @@ struct View {
 View view();
 // Cheap, any thread: whether the studio has the screen.
 bool is_open() noexcept;
+// The studio's room (studio_room.h). Any thread.
+bool room_wanted() noexcept;       // the Studio room row is on
+void watch_room(bool on) noexcept; // look for the menu's skater in the room
+bool room_skater_seen() noexcept;  // the menu's skater was drawn in the room just now
+void set_in_room(bool on) noexcept; // the studio is open in the room: the skater is drawn there
+// The loading screen over the walk to the room and back. `seconds`: how long it stays at least (it is
+// set again while the walk goes on). Any thread.
+enum class Loading : std::uint8_t { none, opening, leaving };
+void set_loading(Loading what, float seconds) noexcept;
+struct LoadingView {
+    Loading what{};
+    float alpha{};   // 0 when it does not show
+    float seconds{}; // since it came up
+};
+LoadingView loading() noexcept;
 
 // ---- commands from the overlay -------------------------------------------------------------------
 void request_open(bool open);         // asks the client tick to open or close the studio
@@ -76,6 +98,7 @@ void set_speed(float speed);
 void record_next_trick();             // closes the studio until the next trick has been landed
 void cancel_recording();
 void set_play_in_game(bool on);
+void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();
 Offset offset_of(std::uint16_t joint); // the joint's edit at the current time
@@ -98,7 +121,7 @@ bool load(const std::string& name, std::string& message);
 struct GameTrick {
     std::string category, label, trick, pop, file;
 };
-const std::vector<GameTrick>& game_tricks(); // read once
+std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // read once
 bool load_game_trick(const GameTrick& trick, std::string& message);
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);

@@ -1,4 +1,5 @@
 #include "runtime_internal.h"
+#include "Extension/UI/Overlay/animation_studio_images.h"
 #include "Extension/Customization/item_browser.h"
 #include "bootstrap.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -446,6 +447,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::start_no_bail(r.base);
         const bool meat = dingosdk::hall_of_meat::start(r.base);
         record("{\"event\":\"hall_of_meat_initialized\",\"active\":" + std::string(meat ? "true" : "false") + "}");
+        // The overlay builds its atlas once, when its graphics start: the loading screen's pictures are read now.
+        dingosdk::overlay::prepare_animation_studio_images();
         const bool rash = dingosdk::road_rash::start(r.base);
         record("{\"event\":\"road_rash_initialized\",\"active\":" + std::string(rash ? "true" : "false") + "}");
         const bool board_break = dingosdk::board_break::start(r.base);

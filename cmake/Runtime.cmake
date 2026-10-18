@@ -199,6 +199,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Customization/item_browser.cpp
     Extension/AnimationStudio/anim_core.cpp
     Extension/AnimationStudio/anim_studio.cpp
+    Extension/AnimationStudio/studio_room.cpp
     Extension/Progression/local_entitlement_trigger_runtime.cpp
     Extension/Progression/local_neighborhood_runtime.cpp
     Extension/Customization/local_player_card_runtime.cpp

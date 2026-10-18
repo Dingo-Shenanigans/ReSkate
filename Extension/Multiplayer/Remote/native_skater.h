@@ -38,6 +38,10 @@ void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
 // not a remote peer, once its output pose for this update is written. Requires
 // install_entity_hooks. Runs on the thread that evaluates animation.
 using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
+// Runs on the client thread with the pose capture_local is about to return; a feature may change what other
+// players receive (PR #230).
+using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;
+void set_local_pose_filter(LocalPoseFilter filter) noexcept;
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
 // The same, for Animation Studio: called after the listener above, so it sees (and may change) the
 // pose first person left.

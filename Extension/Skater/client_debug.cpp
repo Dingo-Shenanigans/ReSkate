@@ -1,4 +1,6 @@
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/AnimationStudio/studio_room.h"
+#include "Extension/UI/Overlay/scripted_pad.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
@@ -991,7 +993,45 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
             debug.studio_brake = {client, skater.skater_identity, bodies.core, GetTickCount64() + 250, {}, true};
         } catch (...) { debug.studio_brake.valid = false; }
     } else debug.studio_brake.valid = false;
-    if (!wanted.changed || wanted.want_open == debug.animation_studio) return;
+    namespace room = anim_studio::room;
+    // The scripted pad (the room's walk) moves on by game ticks.
+    overlay::pad_tick();
+    room::tick(trial.base, component, can_control, component && anim_studio::room_wanted());
+    const auto room_phase = room::phase();
+    // The loading screen stays up while the walk to the room or back goes on.
+    if (debug.studio_room_walk || room_phase == room::Phase::leaving)
+        anim_studio::set_loading(room_phase == room::Phase::leaving ? anim_studio::Loading::leaving : anim_studio::Loading::opening, 0.5f);
+    bool open_now = wanted.changed && wanted.want_open && !debug.animation_studio;
+    if (debug.studio_room_walk) {
+        if (!wanted.want_open) {
+            // Closed (F8) before the room was there: back to the world.
+            debug.studio_room_walk = false;
+            room::leave();
+            return;
+        }
+        if (room_phase == room::Phase::failed) {
+            debug.studio_room_walk = false;
+            anim_studio::report(room::failure() + " The studio opens where you are.");
+            open_now = true; // in place, without the room
+        } else if (room_phase != room::Phase::arrived) return;
+        else {
+            debug.studio_room_walk = false;
+            debug.studio_in_room = true;
+            debug.studio_room_seen = GetTickCount64();
+            open_now = true;
+            // The screen stays 3 s more, while the board settles in the room, then fades.
+            anim_studio::set_loading(anim_studio::Loading::opening, 3.8f);
+        }
+    } else if (open_now && anim_studio::room_wanted() && can_control && phase && component && !debug.park_editor) {
+        // To the room first: the studio opens when it is there.
+        debug.studio_room_walk = true;
+        debug.studio_in_room = false;
+        anim_studio::set_loading(anim_studio::Loading::opening, 1.5f);
+        room::open();
+        return;
+    }
+    const bool close_now = wanted.changed && !wanted.want_open && debug.animation_studio;
+    if (!open_now && !close_now) return;
     const auto apply = [&](overlay::DebugAction action, bool enabled) {
         debug_action(trial, client, can_control, phase, {action, enabled}, error);
     };
@@ -999,7 +1039,7 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
         source_require(!debug.park_editor, "Close Park Editor before opening Animation Studio.");
         debug.editor_transition = true;
         struct EndTransition { bool& flag; ~EndTransition() { flag = false; } } transition{debug.editor_transition};
-        if (wanted.want_open) {
+        if (open_now) {
             source_require(can_control && phase && component, "Animation Studio waits for your skater.");
             const auto camera = source_camera_snapshot(trial, client);
             debug.studio_previous_camera = camera.mode == 1;
@@ -1025,6 +1065,10 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
             if (!debug.studio_previous_camera) apply(overlay::DebugAction::set_free_camera, false);
             if (debug.studio_previous_noclip && session_noclip_allowed()) apply(overlay::DebugAction::set_noclip, true);
             if (debug.studio_previous_first_person) apply(overlay::DebugAction::set_first_person, true);
+            if (std::exchange(debug.studio_in_room, false)) {
+                anim_studio::set_loading(anim_studio::Loading::leaving, 1.2f);
+                room::leave();
+            }
             debug.status = "Animation Studio closed. Camera and HUD restored.";
         }
         dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::skater, "{}", debug.status);
@@ -1034,6 +1078,21 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
     } catch (...) {
         anim_studio::report("Animation Studio could not take the camera.");
     }
+    // The room gone (the game closed its menu) for 4 s: the studio stays open, where the skater is.
+    if (debug.animation_studio && debug.studio_in_room) {
+        if (anim_studio::room_skater_seen()) debug.studio_room_seen = GetTickCount64();
+        else if (GetTickCount64() > debug.studio_room_seen + 4000) {
+            debug.studio_in_room = false;
+            anim_studio::report("The game closed the studio's room: the studio stays open where you are.");
+        }
+    }
+    // In the room only while open there; a studio that did not open goes back out of it.
+    if (debug.studio_in_room && !debug.animation_studio) {
+        debug.studio_in_room = false;
+        anim_studio::set_loading(anim_studio::Loading::leaving, 1.2f);
+        room::leave();
+    }
+    anim_studio::set_in_room(debug.animation_studio && debug.studio_in_room);
     (void)anim_studio::tick(trial.base, component, debug.animation_studio, fov);
 }
 void first_person_cycle_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {

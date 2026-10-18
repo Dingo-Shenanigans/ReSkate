@@ -5,6 +5,7 @@
 #include "Extension/Trainer/trainer_page.h"
 #include "Extension/Skater/drone_flight.h"
 #include "Extension/HallOfMeat/hall_of_meat_overlay.h"
+#include "animation_studio_images.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
@@ -369,7 +370,7 @@ bool setup_graphics() {
     dingosdk::overlay::load_skate_fonts(s.menu);
     // Thumbnails are read from the game's own data at startup; the read is
     // normally long finished by the time the first frame gets here.
-    // Emotes and Hall of Meat's images reserve their room before the park previews build the atlas, and fill it after.
+    // Emotes, Hall of Meat's and the Animator Studio's images reserve their room before the park previews build the atlas, and fill it after.
     // (Five seconds for the three together, not each: this is the game's render thread, and three
     // reads still under way at the first frame held it up to fifteen.)
     const auto waited_until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -379,9 +380,11 @@ bool setup_graphics() {
     };
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, left());
     reserve_hall_of_meat_images(*ImGui::GetIO().Fonts, left());
+    dingosdk::overlay::reserve_animation_studio_images(*ImGui::GetIO().Fonts, left());
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, left());
     fill_chat_emotes(*ImGui::GetIO().Fonts);
     fill_hall_of_meat_images(*ImGui::GetIO().Fonts);
+    dingosdk::overlay::fill_animation_studio_images(*ImGui::GetIO().Fonts);
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -764,7 +767,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !drone_hud_frame && !skate_hud_frame &&
-            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame) return;
+            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame &&
+            !animation_studio_loading_pending() && !animation_studio_recording_pending()) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -825,6 +829,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_notices();
     draw_item_browser();
     draw_animation_studio();
+    draw_animation_studio_loading();
+    draw_animation_studio_recording();
     draw_chat();
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
