@@ -21,6 +21,18 @@ void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch);
 // that player has or places, in this world and the next, until it is changed.
 void set_network_object_owner_solid(std::uint64_t owner, bool solid);
 std::string network_object_status();
+// Never saved; an empty list removes them. False when `map` is not the map being placed on.
+bool set_stage_objects(std::string_view map, std::span<const profile::PlacedObject> objects);
+// The stage object `id` as the game has it, once it exists.
+std::optional<profile::PlacedObject> stage_object(std::uint64_t id);
+// `world` changes at each reset of the world's objects (a new map, or the same map loaded again); a reset removes the stage's.
+struct StagePlace {
+    std::string map;
+    std::uint64_t world{};
+    bool operator==(const StagePlace &) const = default;
+};
+// Where objects are placed now, or nothing when they cannot be placed now (a load, or a failed save).
+std::optional<StagePlace> stage_map();
 // Client update thread, every frame: queues the next of other players' objects
 // while some are still to be created (a no-op otherwise).
 void tick_network_objects() noexcept;

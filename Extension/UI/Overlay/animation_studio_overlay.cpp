@@ -1,7 +1,10 @@
 ﻿#include "overlay_internal.h"
 #include "skate_style.h"
+#include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/AnimationStudio/trick_batch.h"
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -51,6 +54,8 @@ struct Ui {
     std::optional<std::uint16_t> key_joint;
     float key_from{}, key_to{};
     bool key_moved{};
+    // Keys chosen together (Ctrl + A, Shift + click): dragged, moved and deleted as one.
+    std::vector<std::pair<std::uint16_t, float>> picked;
     // The joint's state when a turn (mouse drag or stick) began, and how far it has gone since.
     studio::Offset drag_offset;
     studio::Quat drag_world{0, 0, 0, 1}, drag_parent{0, 0, 0, 1};
@@ -79,7 +84,10 @@ struct Ui {
     bool menu_hidden{};
     int warning_choice{};
     bool zoom_to_playhead{};
-    std::array<float, 4> list_scroll{};
+    std::array<float, 5> list_scroll{};
+    std::array<int, 5> list_followed{-1, -1, -1, -1, -1}; // the row the list last scrolled to, per tab
+    std::string open_trick; // TRICKS: the trick whose pops are shown ("" = the list of tricks)
+    int trick_row{1};       // its row in the list of tricks, to come back to
     ImVec2 last_mouse{};
 };
 Ui& ui() {
@@ -98,6 +106,42 @@ const studio::JointView* joint_view(const studio::View& v, std::uint16_t joint) 
 const studio::TrackView* track_view(const studio::View& v, std::uint16_t joint) {
     for (const auto& t : v.tracks) if (t.joint == joint) return &t;
     return nullptr;
+}
+bool is_picked(std::uint16_t joint, float time) {
+    for (const auto& [j, t] : ui().picked)
+        if (j == joint && std::abs(t - time) < 1e-4f) return true;
+    return false;
+}
+// Every key of every track that is not locked.
+void pick_all(const studio::View& v) {
+    auto& u = ui();
+    u.picked.clear();
+    for (const auto& t : v.tracks)
+        if (!t.locked)
+            for (const auto& key : t.keys) u.picked.emplace_back(t.joint, key.time);
+    say(u.picked.empty() ? "There are no keys yet." : std::to_string(u.picked.size()) + " keys chosen: drag one to move them all, Delete takes them off.");
+}
+// The chosen keys moved by `by` seconds, as one undo step: the far end first, so none lands on another.
+void move_picked(float by) {
+    auto& u = ui();
+    if (std::abs(by) < 1e-4f || u.picked.empty()) return;
+    auto keys = u.picked;
+    std::sort(keys.begin(), keys.end(), [by](const auto& a, const auto& b) { return by > 0 ? a.second > b.second : a.second < b.second; });
+    studio::begin_change();
+    for (auto& [joint, time] : keys) {
+        const float to = std::max(0.0f, time + by);
+        studio::move_key(joint, time, to);
+        time = to;
+    }
+    u.picked = keys;
+}
+void delete_picked() {
+    auto& u = ui();
+    if (u.picked.empty()) return;
+    studio::begin_change();
+    for (const auto& [joint, time] : u.picked) studio::delete_key(joint, time);
+    say(std::to_string(u.picked.size()) + " keys taken off.");
+    u.picked.clear();
 }
 std::string label_of(std::uint16_t joint) {
     if (const auto* e = studio::editable(joint)) return std::string(e->label);
@@ -328,6 +372,7 @@ void apply_turn(const Projector& p, float dx, float dy, bool move) {
     auto& u = ui();
     const auto* e = studio::editable(u.selected);
     studio::Offset next = u.drag_offset;
+    const float radians = 0.0085f;
     if (move && e && e->moves) {
         const float metres = 1.0f / 400;
         studio::Vec3 world{};
@@ -336,7 +381,6 @@ void apply_turn(const Projector& p, float dx, float dy, bool move) {
         const auto local = studio::rotate(studio::conjugate(u.drag_parent), world);
         for (int i = 0; i < 3; ++i) next.offset[i] += local[i] / std::max(u.drag_parent_scale, 0.01f);
     } else {
-        const float radians = 0.0085f;
         studio::Quat turn;
         if (u.axis >= 0) {
             studio::Vec3 axis{};
@@ -348,6 +392,19 @@ void apply_turn(const Projector& p, float dx, float dy, bool move) {
             turn = studio::multiply(studio::multiply(studio::conjugate(u.drag_world), world), u.drag_world);
         }
         next.rotation = studio::normalised(studio::multiply(u.drag_offset.rotation, turn));
+        if (u.selected == studio::board_joint) {
+            // The board's keys turn it about the ground's axes (drag_parent is the ground's turn).
+            studio::Quat ground_turn;
+            if (u.axis >= 0) {
+                studio::Vec3 axis{};
+                axis[static_cast<std::size_t>(u.axis)] = 1;
+                ground_turn = studio::axis_angle(axis, (dx - dy) * radians);
+            } else {
+                const auto world = studio::multiply(studio::axis_angle(p.up, dx * radians), studio::axis_angle(p.right, dy * radians));
+                ground_turn = studio::multiply(studio::multiply(studio::conjugate(u.drag_parent), world), u.drag_parent);
+            }
+            next.rotation = studio::normalised(studio::multiply(ground_turn, u.drag_offset.rotation));
+        }
     }
     studio::set_offset(u.selected, next);
 }
@@ -403,28 +460,71 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     std::vector<Row> rows;
     switch (tab) {
     case Tab::tricks: {
-        // The game's tricks by category: a heading, then each trick's pops.
-        const auto& list = studio::game_tricks();
+        // The game's tricks by category, each once; choosing one shows its pops (low, mid, high).
+        const auto tricks = studio::game_tricks();
+        const auto& list = *tricks;
         if (list.empty()) {
-            rows.push_back({"No trick library yet", "", "The trick list is made from the game's own animations by make_trick_library.py.", {}, false});
+            rows.push_back({"No tricks yet", "", "Choose Record all tricks: your skater does every flip trick and the list fills with them.", {}, false});
+            rows.push_back({"Record all tricks", "", "Your skater goes to a practice stage and does every flip trick with a low, mid and high pop, recorded with the board as the game has it. About 8 minutes; Esc stops after the trick under way.",
+                            [] {
+                                studio::request_record_all();
+                                studio::request_close();
+                            }});
             break;
         }
-        std::string category;
+        if (!u.open_trick.empty()) {
+            std::string label;
+            for (const auto& t : list) if (t.trick == u.open_trick) label = t.label;
+            rows.push_back({"< Back", "", "Back to the list of tricks.", [] {
+                                auto& ui_state = ui();
+                                ui_state.open_trick.clear();
+                                ui_state.row = ui_state.trick_row;
+                            }});
+            rows.push_back({upper(label), "", "", {}, false});
+            for (const auto& t : list) {
+                if (t.trick != u.open_trick) continue;
+                const std::string pop = t.pop == "low" ? "Low pop" : t.pop == "mid" ? "Mid pop" : "High pop";
+                Row row{pop, "", "Opens the game's " + t.label + " with a " + t.pop + " pop to change it. Save it and it plays on your " + t.label + "s.",
+                        [t] {
+                            std::string m;
+                            studio::load_game_trick(t, m);
+                            say(m);
+                            ui().names_for = 0;
+                        }};
+                row.on = v.trick == t.trick && v.pop == t.pop;
+                rows.push_back(std::move(row));
+            }
+            break;
+        }
+        std::string category, trick;
         for (const auto& t : list) {
             if (t.category != category) {
                 category = t.category;
                 rows.push_back({upper(category), "", "", {}, false});
             }
-            Row row{t.label, t.pop + " pop", "Opens the game's " + t.label + " (" + t.pop + " pop) to change it. Save it and it plays on your " + t.label + "s.",
-                    [t] {
-                        std::string m;
-                        studio::load_game_trick(t, m);
-                        say(m);
-                        ui().names_for = 0;
+            if (t.trick == trick) continue; // each trick once
+            trick = t.trick;
+            const int index = static_cast<int>(rows.size());
+            Row row{t.label, ">", "Choose the pop next: low, mid or high.", [name = t.trick, index] {
+                        auto& ui_state = ui();
+                        ui_state.open_trick = name;
+                        ui_state.trick_row = index;
+                        ui_state.row = 2; // the first pop, under the trick's heading
                     }};
-            row.on = v.trick == t.trick && v.pop == t.pop;
+            row.on = v.trick == t.trick;
             rows.push_back(std::move(row));
         }
+        // Or your own: a trick you do, with your board as it really went.
+        rows.push_back({"RECORD", "", "", {}, false});
+        rows.push_back({"Record all tricks", studio::recorded_tricks() ? "again" : "",
+                        "Your skater goes to a practice stage and does every flip trick with a low, mid and high pop, recorded with the board as the game has it. About 8 minutes; Esc stops after the trick under way. The list then shows them.",
+                        [] {
+                            studio::request_record_all();
+                            studio::request_close();
+                        }});
+        rows.push_back({"Record a trick", v.recording != studio::Recording::off ? "waiting" : "",
+                        "The studio closes. Skate and land the trick you want: the studio comes back with it, your board as it went.",
+                        [] { studio::record_next_trick(); }});
         break;
     }
     case Tab::animations:
@@ -460,6 +560,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         const auto joint = upper(label_of(u.selected));
         rows.push_back({"Key this frame", joint, "Keys the joint as it is now on this frame.", [] { key_joint(); }, v.has_clip && !locked});
         rows.push_back({"Delete key", "", "Takes the joint's key on this frame off.", [v] { delete_key(v); }, key && !locked});
+        rows.push_back({"Select all keys", u.picked.empty() ? "Ctrl A" : std::to_string(u.picked.size()),
+                        "Chooses every key of every joint and the board: drag one to move them all, Delete takes them off. Shift + click adds or takes one key; Esc lets go.",
+                        [v] { pick_all(v); }, v.has_clip});
+        rows.push_back({"Delete chosen keys", "", "Takes every chosen key off.", [] { delete_picked(); }, !u.picked.empty()});
         rows.push_back({"Previous key", "", "The playhead to the joint's key before this frame.", [v] { jump_key(v, -1); }, track && !track->keys.empty()});
         rows.push_back({"Next key", "", "The playhead to the joint's key after this frame.", [v] { jump_key(v, 1); }, track && !track->keys.empty()});
         if (key) {
@@ -506,6 +610,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Custom tricks in game", v.play_in_game ? "on" : "off",
                         "On: when you do a trick you saved an animation for (its TRICK, as ollie or kickflip), yours plays instead of the game's.",
                         [v] { studio::set_play_in_game(!v.play_in_game); }});
+        rows.push_back({"Studio room", v.room ? "on" : "off",
+                        "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where you are. Takes effect the next time it opens.",
+                        [v] { studio::set_room(!v.room); }});
         rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
                         "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
                         [v] { studio::set_pop(v.pop.empty() ? "low" : v.pop == "low" ? "mid" : v.pop == "mid" ? "high" : ""); }, v.has_clip});
@@ -540,7 +647,7 @@ bool repeats(unsigned bit, unsigned buttons, unsigned pressed, double now) {
 void switch_tab(int delta) {
     auto& u = ui();
     u.tab = (u.tab + delta + static_cast<int>(tab_names.size())) % static_cast<int>(tab_names.size());
-    u.row = static_cast<Tab>(u.tab) == Tab::tricks ? 1 : 0; // the first trick, under its heading
+    u.row = static_cast<Tab>(u.tab) == Tab::tricks ? (u.open_trick.empty() ? 1 : 2) : 0;
     u.confirm_delete.clear();
 }
 // Up / down in the list: in JOINTS the list is the joints themselves.
@@ -760,10 +867,14 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
     u.row = tab == Tab::joints ? u.row : chosen;
     skate_theme::rough_rect(d, ImVec2(at.x - 18 * k, at.y - 10 * k), ImVec2(at.x + size.x + 18 * k, at.y + size.y + 10 * k), IM_COL32(48, 50, 56, 150), 61, k);
     const float content = rows.size() * (row_h + gap);
-    float& scroll = u.list_scroll[u.tab];
-    const float chosen_top = chosen * (row_h + gap);
-    if (chosen_top < scroll) scroll = chosen_top;
-    if (chosen_top + row_h > scroll + size.y) scroll = chosen_top + row_h - size.y;
+    float& scroll = u.list_scroll[static_cast<std::size_t>(u.tab)];
+    // The list follows the chosen row when it changes (the D-pad, a click); the wheel scrolls freely.
+    if (int& followed = u.list_followed[static_cast<std::size_t>(u.tab)]; followed != chosen) {
+        followed = chosen;
+        const float chosen_top = chosen * (row_h + gap);
+        if (chosen_top < scroll) scroll = chosen_top;
+        if (chosen_top + row_h > scroll + size.y) scroll = chosen_top + row_h - size.y;
+    }
     const auto mouse = ImGui::GetIO().MousePos;
     if (mouse.x >= at.x && mouse.x <= at.x + size.x && mouse.y >= at.y && mouse.y <= at.y + size.y && ImGui::GetIO().MouseWheel != 0)
         scroll -= ImGui::GetIO().MouseWheel * (row_h + gap);
@@ -834,6 +945,12 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         const auto offset = studio::offset_of(u.selected);
         auto euler = studio::to_euler(offset.rotation);
         auto position = offset.offset;
+        // The board: where it is and how it is turned, from where it starts on the ground (its keys added to the trick's own).
+        const bool board_fields = u.selected == studio::board_joint && v.board_base_valid;
+        if (board_fields) {
+            for (std::size_t i = 0; i < 3; ++i) position[i] = v.board_base.position[i] + offset.offset[i];
+            euler = studio::to_euler(studio::multiply(offset.rotation, v.board_base.rotation));
+        }
         const auto* track = track_view(v, u.selected);
         const bool locked = track && track->locked;
         const auto* e = studio::editable(u.selected);
@@ -846,7 +963,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         const float col_w = (size.x - 44 * k) / 3;
         bool turned = false, moved = false;
         const char* axes[] = {"X", "Y", "Z"};
-        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y), ink_soft, "ROTATION");
+        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y), ink_soft, board_fields ? "ROTATION (0, 0, 0 = AS IT STARTS)" : "ROTATION");
         for (int i = 0; i < 3; ++i) {
             ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k + i * col_w, y + 18 * k));
             ImGui::PushID(i);
@@ -857,7 +974,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             ImGui::PopID();
         }
         if (e && e->moves) {
-            text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 52 * k), ink_soft, "POSITION");
+            text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 52 * k), ink_soft, board_fields ? "POSITION (0, 0, 0 = WHERE IT STARTS, ON THE GROUND)" : "POSITION");
             for (int i = 0; i < 3; ++i) {
                 ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k + i * col_w, y + 70 * k));
                 ImGui::PushID(10 + i);
@@ -875,7 +992,12 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             static double last_change = 0;
             if (ImGui::GetTime() - last_change > 0.4) studio::begin_change();
             last_change = ImGui::GetTime();
-            studio::set_offset(u.selected, {studio::from_euler(euler), position});
+            if (board_fields) {
+                studio::Offset next;
+                for (std::size_t i = 0; i < 3; ++i) next.offset[i] = position[i] - v.board_base.position[i];
+                next.rotation = studio::normalised(studio::multiply(studio::from_euler(euler), studio::conjugate(v.board_base.rotation)));
+                studio::set_offset(u.selected, next);
+            } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
         }
         if (tab == Tab::keys) {
             const auto rows = rows_of(tab, v);
@@ -1062,15 +1184,27 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         if (track) {
             d->PushClipRect(ImVec2(ruler_left, rows_top), ImVec2(ruler_right, at.y + size.y), true);
             for (const auto& key : track->keys) {
-                const float shown = u.key_joint == joint.index && std::abs(key.time - u.key_from) < 1e-4f ? u.key_to : key.time;
+                const bool dragged_with = u.key_joint && is_picked(joint.index, key.time) && is_picked(*u.key_joint, u.key_from);
+                const float shown = u.key_joint == joint.index && std::abs(key.time - u.key_from) < 1e-4f ? u.key_to
+                                    : dragged_with ? key.time + (u.key_to - u.key_from) : key.time;
                 const ImVec2 c(x_of(shown), y + row_h * 0.5f);
                 const bool current = std::abs(key.time - v.time) < 0.5f / fps;
                 const bool close_to = lane_hovered && std::abs(ImGui::GetIO().MousePos.x - c.x) < 9 * k;
-                if (current && chosen) diamond(d, c, 13 * k, blue_dim);
-                diamond(d, c, (close_to ? 10.5f : 9) * k, track->hidden ? faint : current && chosen ? blue_light : white);
+                const bool in_pick = is_picked(joint.index, key.time);
+                if ((current && chosen) || in_pick) diamond(d, c, 13 * k, in_pick ? blue : blue_dim);
+                diamond(d, c, (close_to ? 10.5f : 9) * k, track->hidden ? faint : in_pick || (current && chosen) ? blue_light : white);
                 if (key.ease == studio::Ease::step) d->AddLine(ImVec2(c.x, c.y - 4 * k), ImVec2(c.x, c.y + 4 * k), IM_COL32(40, 40, 40, 255), 2 * k);
-                if (close_to && lane_clicked && !track->locked) {
+                if (close_to && lane_clicked && !track->locked && ImGui::GetIO().KeyShift) {
                     on_key = true;
+                    auto& picked = u.picked;
+                    const auto found = std::find_if(picked.begin(), picked.end(), [&](const auto& p) {
+                        return p.first == joint.index && std::abs(p.second - key.time) < 1e-4f;
+                    });
+                    if (found != picked.end()) picked.erase(found);
+                    else picked.emplace_back(joint.index, key.time);
+                } else if (close_to && lane_clicked && !track->locked) {
+                    on_key = true;
+                    if (!in_pick) u.picked.clear();
                     u.key_joint = joint.index;
                     u.key_from = key.time;
                     u.key_to = key.time;
@@ -1082,6 +1216,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             d->PopClipRect();
         }
         if (lane_clicked && !on_key && v.has_clip) {
+            u.picked.clear();
             u.selected = joint.index;
             studio::set_time(std::round(t_of(ImGui::GetIO().MousePos.x) * fps) / fps);
             studio::set_playing(false);
@@ -1096,8 +1231,11 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             u.key_to = to;
         } else {
             if (u.key_moved && std::abs(u.key_to - u.key_from) > 1e-4f) {
-                studio::begin_change();
-                studio::move_key(*u.key_joint, u.key_from, u.key_to);
+                if (is_picked(*u.key_joint, u.key_from) && u.picked.size() > 1) move_picked(u.key_to - u.key_from);
+                else {
+                    studio::begin_change();
+                    studio::move_key(*u.key_joint, u.key_from, u.key_to);
+                }
                 studio::set_time(u.key_to);
             }
             u.key_joint.reset();
@@ -1243,12 +1381,15 @@ void keyboard(const studio::View& v) {
         studio::paste_pose();
     }
     if (ctrl && pressed(ImGuiKey_S)) save_now();
+    if (ctrl && pressed(ImGuiKey_A)) pick_all(v);
+    if (!ctrl && pressed(ImGuiKey_Escape) && !u.picked.empty()) u.picked.clear();
     if (pressed(ImGuiKey_Equal) || pressed(ImGuiKey_KeypadAdd)) zoom_timeline(1.5f);
     if (pressed(ImGuiKey_Minus) || pressed(ImGuiKey_KeypadSubtract)) zoom_timeline(1 / 1.5f);
     if (!ctrl && pressed(ImGuiKey_F)) studio::focus_joint(u.selected);
     if (!ctrl && pressed(ImGuiKey_K) && v.has_clip) key_joint();
     if (pressed(ImGuiKey_Delete)) {
         if (static_cast<Tab>(u.tab) == Tab::animations) delete_row(v);
+        else if (!u.picked.empty()) delete_picked();
         else delete_key(v);
     }
     if (!ctrl && pressed(ImGuiKey_X)) u.axis = u.axis == 0 ? -1 : 0;
@@ -1444,19 +1585,167 @@ void poll_animation_studio_controller() {
     }
 }
 
+// ---- the loading screen ------------------------------------------------------------------------
+// Over the walk to the studio's room and back: dark grainy concrete, the reskate. wordmark with
+// animator studio on a strip of blue tape, who built it on a paper strip, a tip with a bar, and
+// skate.'s own "Loading..." box with its kickflipping board (animation_studio_images.h).
+bool animation_studio_loading_pending() { return studio::loading().alpha > 0 || studio::batch::active(); }
+// While Record all tricks runs: a strip across the top, as skate.'s own banners, with how far it is.
+void draw_animation_studio_batch() {
+    const auto p = studio::batch::progress();
+    if (!p.active || studio::loading().alpha > 0.99f) return;
+    auto& s = state();
+    const auto display = ImGui::GetIO().DisplaySize;
+    ImFont* heading = s.menu.heading ? s.menu.heading : ImGui::GetFont();
+    ImFont* bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    const float H = display.y;
+    auto* d = ImGui::GetForegroundDrawList();
+    const ImVec2 a(0, 0), b(display.x, 0.085f * H);
+    d->AddRectFilled(a, b, IM_COL32(12, 12, 13, 225));
+    d->AddRectFilled(ImVec2(0, b.y - 0.004f * H), ImVec2(display.x * (p.total ? static_cast<float>(p.place) / static_cast<float>(p.total) : 0.0f), b.y),
+                     skate_theme::blue);
+    const std::string title = p.total ? std::format("RECORDING YOUR TRICKS  {} OF {}", std::min(p.place + 1, p.total), p.total) : std::string("RECORDING YOUR TRICKS");
+    text(d, heading, 0.026f * H, ImVec2(0.034f * display.x, 0.014f * H), skate_theme::white, title);
+    text(d, bold, 0.019f * H, ImVec2(0.034f * display.x, 0.048f * H), IM_COL32(200, 200, 204, 255), p.status);
+    const char* hint = p.stopping ? "STOPPING AFTER THIS TRICK" : "ESC / BACK: STOP AFTER THIS TRICK";
+    const auto hw = text_size(heading, 0.019f * H, hint);
+    text(d, heading, 0.019f * H, ImVec2(display.x - 0.034f * display.x - hw.x, 0.03f * H), p.stopping ? skate_theme::warning : skate_theme::white, hint);
+}
+void draw_animation_studio_loading() {
+    const auto l = studio::loading();
+    if (l.alpha <= 0) return;
+    auto& s = state();
+    const auto display = ImGui::GetIO().DisplaySize;
+    ImFont* logo = s.menu.logo ? s.menu.logo : s.menu.heading ? s.menu.heading : ImGui::GetFont();
+    ImFont* heading = s.menu.heading ? s.menu.heading : ImGui::GetFont();
+    ImFont* bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    const float H = display.y, k = std::clamp(H / 1080.0f, 0.45f, 3.0f);
+    const float a = l.alpha;
+    const auto fade = [a](ImU32 c) {
+        return (c & 0x00ffffffu) | (static_cast<ImU32>(static_cast<float>((c >> 24) & 0xff) * a) << 24);
+    };
+    constexpr ImU32 paper = IM_COL32(236, 233, 226, 255), ink = IM_COL32(17, 18, 21, 255);
+    auto* d = ImGui::GetForegroundDrawList();
+    // Concrete: near black, skate.'s grain and scratches over it, darker at the edges.
+    d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(19, 19, 19, 255)));
+    if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
+        for (unsigned i = 0; i < 2600; ++i) {
+            const float x = skate_theme::noise(i * 3 + 1) * display.x, y = skate_theme::noise(i * 3 + 2) * display.y;
+            const auto shade = static_cast<int>(26 + skate_theme::noise(i * 3 + 3) * 40);
+            d->AddRectFilled(ImVec2(x, y), ImVec2(x + 1.6f * k, y + 1.6f * k), fade(IM_COL32(shade, shade, shade, 120)));
+        }
+    const ImU32 clear = IM_COL32(0, 0, 0, 0), dark = fade(IM_COL32(0, 0, 0, 170));
+    d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x, H * 0.25f), dark, dark, clear, clear);
+    d->AddRectFilledMultiColor(ImVec2(0, H * 0.75f), display, clear, clear, dark, dark);
+    d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x * 0.15f, H), dark, clear, clear, dark);
+    d->AddRectFilledMultiColor(ImVec2(display.x * 0.85f, 0), display, clear, dark, dark, clear);
+
+    // The wordmark, set tight: each letter a little into the one before.
+    const auto tight = [&](const char* word, float size, float track, ImVec2 at, ImU32 colour, bool heavy) {
+        float x = at.x;
+        for (const char* c = word; *c; ++c) {
+            const char glyph[2]{*c, 0};
+            // Drawn three times a hair apart: a heavier cut than the font has.
+            if (heavy) {
+                d->AddText(logo, size, ImVec2(x - size * 0.008f, at.y), colour, glyph);
+                d->AddText(logo, size, ImVec2(x + size * 0.008f, at.y), colour, glyph);
+            }
+            d->AddText(logo, size, ImVec2(x, at.y), colour, glyph);
+            x += logo->CalcTextSizeA(size, FLT_MAX, 0, glyph).x + track * size;
+        }
+        return x - track * size - at.x;
+    };
+    const auto tight_width = [&](const char* word, float size, float track) {
+        float x = 0;
+        for (const char* c = word; *c; ++c) {
+            const char glyph[2]{*c, 0};
+            x += logo->CalcTextSizeA(size, FLT_MAX, 0, glyph).x + track * size;
+        }
+        return x - track * size;
+    };
+    const float word_size = 0.30f * H, word_track = -0.045f;
+    const float word_w = tight_width("reskate.", word_size, word_track);
+    const ImVec2 word_at(display.x * 0.5f - word_w * 0.5f, H * 0.215f);
+    tight("reskate.", word_size, word_track, ImVec2(word_at.x + 5 * k, word_at.y + 7 * k), fade(IM_COL32(0, 0, 0, 140)), true);
+    tight("reskate.", word_size, word_track, word_at, fade(paper), true);
+    // Worn paper: the grain again, dark, over the letters (the dark concrete around hides it).
+    draw_studio_picture(d, StudioPicture::grain, ImVec2(word_at.x - 20 * k, word_at.y), ImVec2(word_at.x + word_w + 20 * k, word_at.y + word_size * 1.1f),
+                        fade(IM_COL32(30, 28, 25, 230)));
+
+    // animator studio on a strip of blue tape under it.
+    const float sub_size = 0.085f * H, sub_track = -0.03f;
+    const float sub_w = tight_width("animator studio", sub_size, sub_track);
+    const float tape_top = word_at.y + word_size * 0.99f, tape_h = 0.098f * H;
+    const ImVec2 tape_a(display.x * 0.5f - sub_w * 0.5f - 0.03f * H, tape_top), tape_b(display.x * 0.5f + sub_w * 0.5f + 0.03f * H, tape_top + tape_h);
+    if (!draw_studio_brush(d, tape_a, tape_b, fade(skate_theme::blue))) skate_theme::rough_rect(d, tape_a, tape_b, fade(skate_theme::blue), 7, 2.0f * k);
+    const float sub_h = logo->CalcTextSizeA(sub_size, FLT_MAX, 0, "a").y;
+    tight("animator studio", sub_size, sub_track, ImVec2(display.x * 0.5f - sub_w * 0.5f, tape_top + (tape_h - sub_h) * 0.5f - 0.004f * H), fade(ink), true);
+
+    // Who built it, on a strip of paper.
+    {
+        const float label_size = 0.020f * H, names_size = 0.026f * H;
+        const char* names = "22SH, FOURTH STUDIO, NORMS";
+        const auto sw = text_size(bold, label_size, "BUILT BY"), nw = text_size(heading, names_size, names);
+        const float strip_w = sw.x + nw.x + 0.06f * H, strip_h = 0.06f * H;
+        const ImVec2 pa(display.x * 0.5f - strip_w * 0.5f, tape_top + tape_h + 0.03f * H), pb(pa.x + strip_w, pa.y + strip_h);
+        if (!draw_studio_tile(d, pa, pb, 6 * k, fade(paper))) skate_theme::rough_rect(d, pa, pb, fade(paper), 11, 1.2f * k);
+        text(d, bold, label_size, ImVec2(pa.x + 0.022f * H, pa.y + (strip_h - sw.y) * 0.5f), fade(IM_COL32(40, 40, 44, 255)), "BUILT BY");
+        text(d, heading, names_size, ImVec2(pa.x + 0.038f * H + sw.x, pa.y + (strip_h - nw.y) * 0.5f), fade(ink), names);
+    }
+
+    // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
+    {
+        static constexpr std::array<const char*, 7> tips{
+            "Pick a trick in TRICKS, then its pop: low, mid or high.",
+            "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
+            "K keys the pose on this frame. Keys always sit on whole frames.",
+            "G moves the hips or the board. X, Y and Z lock an axis.",
+            "Save your trick and do it in game: your version plays on that trick.",
+            "Copy to low, mid and high pop in PLAYBACK to fit every pop.",
+            "On a controller: the left stick turns, RT and LT step frames, A keys."};
+        const auto tip = tips[static_cast<std::size_t>(l.seconds / 4.0f) % tips.size()];
+        const ImVec2 ta(0.034f * display.x, H - 0.115f * H);
+        text(d, heading, 0.022f * H, ta, fade(skate_theme::blue), "TIP");
+        text(d, bold, 0.019f * H, ImVec2(ta.x, ta.y + 0.03f * H), fade(IM_COL32(225, 225, 228, 255)), tip);
+        const ImVec2 ba(ta.x, H - 0.05f * H), bb(display.x * 0.415f, H - 0.04f * H);
+        const float r = (bb.y - ba.y) * 0.5f;
+        d->AddRectFilled(ba, bb, fade(IM_COL32(255, 255, 255, 38)), r);
+        // It fills towards the end without reaching it while it waits, and runs out when done.
+        const float fill = l.what == studio::Loading::none ? 1.0f : 0.92f * (1.0f - std::exp(-l.seconds / 3.0f));
+        if (fill > 0.01f) d->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * fill, bb.y), fade(skate_theme::blue), r);
+    }
+    // Bottom right: what is going on, then skate.'s own loading box with its kickflipping board.
+    {
+        const char* what = l.what == studio::Loading::leaving ? "BACK TO THE STREETS" : "SETTING UP THE STUDIO";
+        const float box_h = 0.062f * H, box_w = 0.205f * H;
+        const ImVec2 bb(display.x - 0.034f * display.x, H - 0.045f * H), ba(bb.x - box_w, bb.y - box_h);
+        // skate.'s box: black, with a light rough edge.
+        const float rim = 2.5f * k;
+        if (!draw_studio_tile(d, ba, bb, 8 * k, fade(IM_COL32(205, 205, 205, 255)))) skate_theme::rough_rect(d, ba, bb, fade(IM_COL32(205, 205, 205, 255)), 5, 1.2f * k);
+        const ImVec2 ia(ba.x + rim, ba.y + rim), ib(bb.x - rim, bb.y - rim);
+        if (!draw_studio_tile(d, ia, ib, 8 * k, fade(IM_COL32(8, 8, 9, 255)))) skate_theme::rough_rect(d, ia, ib, fade(IM_COL32(8, 8, 9, 255)), 6, 1.2f * k);
+        const char* dots[]{"Loading", "Loading.", "Loading..", "Loading..."};
+        const auto loading_text = dots[static_cast<int>(l.seconds * 2.5f) % 4];
+        const auto lw = text_size(bold, 0.021f * H, "Loading...");
+        text(d, bold, 0.021f * H, ImVec2(ba.x + 0.024f * H, ba.y + (box_h - lw.y) * 0.5f), fade(skate_theme::white), loading_text);
+        const ImVec2 fa(bb.x - box_h * 1.25f - 0.012f * H, ba.y + box_h * 0.1f), fb(bb.x - 0.012f * H, bb.y - box_h * 0.1f);
+        if (!draw_studio_kickflip(d, fa, fb, l.seconds, fade(skate_theme::white))) {
+            // Without the game's board: a wheel that spins.
+            const ImVec2 c((fa.x + fb.x) * 0.5f, (fa.y + fb.y) * 0.5f);
+            const float wr = (fb.y - fa.y) * 0.35f, t = static_cast<float>(ImGui::GetTime());
+            d->AddCircle(c, wr, fade(skate_theme::white), 24, 3 * k);
+            d->AddLine(c, ImVec2(c.x + std::cos(t * 6) * wr, c.y + std::sin(t * 6) * wr), fade(skate_theme::blue), 3 * k);
+        }
+        const auto ww = text_size(heading, 0.021f * H, what);
+        text(d, heading, 0.021f * H, ImVec2(ba.x - 0.022f * H - ww.x, ba.y + (box_h - ww.y) * 0.5f), fade(skate_theme::white), what);
+    }
+}
+
 void draw_animation_studio() {
     auto& s = state();
     if (!studio::is_open()) return;
-    auto v = studio::view();
+    const auto v = studio::view();
     auto& u = ui();
-    if (!v.has_clip && !studio::game_tricks().empty()) {
-        // Nothing open: the first trick of the list (the ollie), so the skater stands on his board.
-        const auto& list = studio::game_tricks();
-        const auto pick = std::find_if(list.begin(), list.end(), [](const studio::GameTrick& t) { return t.pop == "mid"; });
-        std::string m;
-        studio::load_game_trick(pick != list.end() ? *pick : list.front(), m);
-        v = studio::view();
-    }
     studio::advance(ImGui::GetIO().DeltaTime);
     const auto display = ImGui::GetIO().DisplaySize;
     Fonts f{s.menu.body ? s.menu.body : ImGui::GetFont(), s.menu.bold ? s.menu.bold : ImGui::GetFont(),

@@ -346,6 +346,10 @@ void item_browser_search_cleared(); // Esc in the search box
 void draw_item_browser();
 // FOURTH Animation Studio (Extension/AnimationStudio): its whole screen while open.
 void draw_animation_studio();
+// The Animator Studio's loading screen, over the walk to its room and back (anim_studio::loading()).
+bool animation_studio_loading_pending();
+void draw_animation_studio_loading();
+void draw_animation_studio_batch(); // Record all tricks' strip across the top
 bool animation_studio_open();
 // Every presented frame, the studio shut: L3 + R3 held on a controller opens it.
 void poll_animation_studio_controller();

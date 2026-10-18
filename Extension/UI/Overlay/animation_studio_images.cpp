@@ -1,0 +1,252 @@
+#include "animation_studio_images.h"
+#include "Engine/Core/Log/logging.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/ui_textures.h"
+#include "Engine/Vfs/game_textures.h"
+#include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
+#include <imgui.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <future>
+#include <mutex>
+#include <optional>
+#include <string_view>
+#include <utility>
+
+namespace dingosdk::overlay {
+namespace {
+namespace ui = addr::ui_textures;
+
+// skate.'s own loading screen (UI/Foundations/Loading/LoadScreen/DingoLoadScreen_Widget) shows this
+// board doing kickflips beside its "Loading..." (found 2026-10-18 in the widget's imports): a
+// RimeFlipbookTextureAsset, flip_Skateboard_Kickflip_256, of 27 frames at 30 a second, 9 across and 3
+// down its atlas (FrameUvs): a RimeTextureAsset whose texture for a 2160 screen is this one (2304 x 768, read at half: it must fit the 2048-wide atlas).
+// Where it is kept: tried in this order.
+constexpr std::string_view kickflip_name = "ui/textures/common/flipbooks/loading/flip_skateboard_kickflip_256_win32_"
+                                           "6143a1fc-cfd7-13ed-c764-164f1af9c663_0_2160_c2cf948c-5744-ac69-b92d-360134ba7b45_input";
+constexpr int kickflip_frames = 27, kickflip_columns = 9, kickflip_rows = 3;
+constexpr double kickflip_rate = 30;
+struct Place {
+    std::string_view toc, bundle;
+};
+constexpr std::array<Place, 3> kickflip_places{{
+    {"Win32/globals.toc", "win32/ui/foundations/loading/loadscreen/dingoloadscreen_widget_bundle"},
+    {ui::root_toc, ui::root_bundle},
+    {ui::bam_toc, ui::bam_bundle},
+}};
+
+constexpr std::size_t picture_count = 4;
+struct Source {
+    const ui::Texture* texture; // the kickflip's is found in kickflip_places
+    std::uint32_t side;
+    bool brightness{}; // white with the texture's brightness as alpha, else its own alpha
+};
+constexpr std::array<Source, picture_count> sources{{
+    {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152},
+}};
+using Images = std::array<std::optional<frostbite::Image>, picture_count>;
+
+struct Reads {
+    std::mutex mutex;
+    bool started{};
+    std::future<Images> pending;
+    Images decoded;
+};
+Reads& reads() {
+    static auto* state = new Reads;
+    return *state;
+}
+
+// White, with its own alpha or its brightness as alpha.
+frostbite::Image whiten(frostbite::Image image, bool brightness) {
+    if (!image.width || !image.height || image.rgba.size() != std::size_t{image.width} * image.height * 4)
+        throw std::runtime_error("the texture is empty");
+    for (std::size_t i = 0; i < image.rgba.size(); i += 4) {
+        auto* p = image.rgba.data() + i;
+        if (brightness) p[3] = std::max({p[0], p[1], p[2]});
+        p[0] = p[1] = p[2] = 255;
+    }
+    return image;
+}
+
+Images decode() {
+    Images result;
+    try {
+        vfs::GameTextures textures(hall_of_meat::game_folder());
+        for (std::size_t index = 0; index < picture_count; ++index) {
+            const auto& source = sources[index];
+            if (!source.texture) {
+                for (const auto& place : kickflip_places) {
+                    try {
+                        // Its own colours: the board is drawn as it is.
+                        auto image = textures.read(place.toc, place.bundle, kickflip_name, source.side);
+                        logging::log(logging::Level::info, logging::Channel::graphics,
+                                     "Animator Studio: the loading board is {} x {}, in {}.", image.width, image.height, place.bundle);
+                        result[index] = std::move(image);
+                        break;
+                    } catch (const std::exception& error) {
+                        logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: the loading board is not in {}: {}.",
+                                     place.bundle, error.what());
+                    }
+                }
+                if (!result[index])
+                    logging::log(logging::Level::warning, logging::Channel::graphics, "Animator Studio: the loading board was not found.");
+                continue;
+            }
+            try {
+                result[index] = whiten(textures.read(source.texture->toc, source.texture->bundle, source.texture->name, source.side),
+                                       source.brightness);
+            } catch (const std::exception& error) {
+                logging::log(logging::Level::warning, logging::Channel::graphics, "Animator Studio picture {} is unavailable: {}.",
+                             source.texture->name, error.what());
+            }
+        }
+    } catch (const std::exception& error) {
+        logging::log(logging::Level::warning, logging::Channel::graphics, "Animator Studio's pictures are unavailable: {}.", error.what());
+    }
+    return result;
+}
+
+// Render thread only.
+struct Loaded {
+    ImFontAtlas* atlas{};
+    bool filled{};
+    std::array<int, picture_count> rects{};
+    std::array<std::pair<std::uint32_t, std::uint32_t>, picture_count> sizes{};
+};
+Loaded& loaded() {
+    static Loaded state;
+    return state;
+}
+struct Found {
+    const ImFontAtlasCustomRect* rect{};
+    ImVec2 uv0, uv1;
+};
+bool find(StudioPicture picture, Found& found) {
+    const auto& l = loaded();
+    const auto index = static_cast<std::size_t>(picture);
+    if (!l.filled || !l.atlas || ImGui::GetIO().Fonts != l.atlas || !l.atlas->TexID || l.rects[index] < 0) return false;
+    found.rect = l.atlas->GetCustomRectByIndex(l.rects[index]);
+    if (!found.rect || !found.rect->IsPacked() || !found.rect->Width || !found.rect->Height) return false;
+    l.atlas->CalcCustomRectUV(found.rect, &found.uv0, &found.uv1);
+    return true;
+}
+} // namespace
+
+void prepare_animation_studio_images() noexcept {
+    try {
+        auto& state = reads();
+        std::lock_guard lock(state.mutex);
+        if (std::exchange(state.started, true)) return;
+        state.pending = std::async(std::launch::async, &decode);
+    } catch (...) {
+        logging::write(logging::Level::warning, logging::Channel::graphics, "Animator Studio's pictures are unavailable: their reading could not start.");
+    }
+}
+
+void reserve_animation_studio_images(ImFontAtlas& atlas, std::chrono::milliseconds wait) noexcept {
+    auto& l = loaded();
+    l = {};
+    l.rects.fill(-1);
+    try {
+        auto& state = reads();
+        std::lock_guard lock(state.mutex);
+        if (state.pending.valid() && state.pending.wait_for(wait) == std::future_status::ready) state.decoded = state.pending.get();
+        for (std::size_t index = 0; index < picture_count; ++index) {
+            const auto& image = state.decoded[index];
+            if (!image) continue;
+            if (!l.atlas) {
+                atlas.TexDesiredWidth = std::max(atlas.TexDesiredWidth, 2048);
+                atlas.Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+                l.atlas = &atlas;
+            }
+            l.rects[index] = atlas.AddCustomRectRegular(static_cast<int>(image->width), static_cast<int>(image->height));
+            l.sizes[index] = {image->width, image->height};
+        }
+    } catch (...) {
+        l = {};
+    }
+}
+
+void fill_animation_studio_images(ImFontAtlas& atlas) noexcept {
+    auto& l = loaded();
+    if (l.atlas != &atlas) return;
+    try {
+        unsigned char* pixels{};
+        int width{}, height{};
+        atlas.GetTexDataAsRGBA32(&pixels, &width, &height);
+        if (!pixels || width <= 0 || height <= 0) {
+            l = {};
+            return;
+        }
+        auto& state = reads();
+        std::lock_guard lock(state.mutex);
+        for (std::size_t index = 0; index < picture_count; ++index) {
+            if (l.rects[index] < 0) continue;
+            const auto& image = *state.decoded[index];
+            const auto* rect = atlas.GetCustomRectByIndex(l.rects[index]);
+            if (!rect || !rect->IsPacked() || rect->X + image.width > static_cast<unsigned>(width) ||
+                rect->Y + image.height > static_cast<unsigned>(height)) {
+                l = {};
+                return;
+            }
+            for (std::uint32_t y = 0; y < image.height; ++y)
+                std::memcpy(pixels + ((static_cast<std::size_t>(rect->Y) + y) * width + rect->X) * 4,
+                            image.rgba.data() + static_cast<std::size_t>(y) * image.width * 4, static_cast<std::size_t>(image.width) * 4);
+        }
+        atlas.TexPixelsUseColors = true;
+        l.filled = true;
+    } catch (...) {
+        l = {};
+    }
+}
+
+bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {
+    Found found;
+    if (!find(picture, found)) return false;
+    draw->AddImage(loaded().atlas->TexID, min, max, found.uv0, found.uv1, tint);
+    return true;
+}
+bool draw_studio_brush(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+    Found found;
+    if (!find(StudioPicture::brush, found)) return false;
+    const auto& body = ui::brush_bar.body;
+    const float width = (max.x - min.x) / (body.right - body.left), height = (max.y - min.y) / (body.bottom - body.top);
+    const ImVec2 at(min.x - body.left * width, min.y - body.top * height);
+    draw->AddImage(loaded().atlas->TexID, at, ImVec2(at.x + width, at.y + height), found.uv0, found.uv1, tint);
+    return true;
+}
+bool draw_studio_tile(ImDrawList* draw, ImVec2 min, ImVec2 max, float edge, ImU32 tint) {
+    Found found;
+    if (!find(StudioPicture::tile, found)) return false;
+    const float slice = ui::rough_tile.slice;
+    const float edge_x = std::clamp(edge, 0.0f, (max.x - min.x) * 0.5f), edge_y = std::clamp(edge, 0.0f, (max.y - min.y) * 0.5f);
+    const float uv_x = slice * (found.uv1.x - found.uv0.x), uv_y = slice * (found.uv1.y - found.uv0.y);
+    const std::array<float, 4> xs{min.x, min.x + edge_x, max.x - edge_x, max.x}, ys{min.y, min.y + edge_y, max.y - edge_y, max.y};
+    const std::array<float, 4> us{found.uv0.x, found.uv0.x + uv_x, found.uv1.x - uv_x, found.uv1.x};
+    const std::array<float, 4> vs{found.uv0.y, found.uv0.y + uv_y, found.uv1.y - uv_y, found.uv1.y};
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t column = 0; column < 3; ++column)
+            draw->AddImage(loaded().atlas->TexID, ImVec2(xs[column], ys[row]), ImVec2(xs[column + 1], ys[row + 1]),
+                           ImVec2(us[column], vs[row]), ImVec2(us[column + 1], vs[row + 1]), tint);
+    return true;
+}
+bool draw_studio_kickflip(ImDrawList* draw, ImVec2 min, ImVec2 max, double seconds, ImU32 tint) {
+    Found found;
+    if (!find(StudioPicture::kickflip, found)) return false;
+    // The frame at `seconds`, from the grid.
+    const int frame = static_cast<int>(std::max(seconds, 0.0) * kickflip_rate) % kickflip_frames;
+    const float column = static_cast<float>(frame % kickflip_columns), row = static_cast<float>(frame / kickflip_columns);
+    const float du = (found.uv1.x - found.uv0.x) / kickflip_columns, dv = (found.uv1.y - found.uv0.y) / kickflip_rows;
+    const ImVec2 uv0(found.uv0.x + column * du, found.uv0.y + row * dv), uv1(uv0.x + du, uv0.y + dv);
+    const auto [w, h] = loaded().sizes[static_cast<std::size_t>(StudioPicture::kickflip)];
+    const float fw = static_cast<float>(w) / kickflip_columns, fh = static_cast<float>(h) / kickflip_rows;
+    const float scale = std::min((max.x - min.x) / fw, (max.y - min.y) / fh);
+    const ImVec2 size(fw * scale, fh * scale);
+    const ImVec2 at(min.x + (max.x - min.x - size.x) * 0.5f, min.y + (max.y - min.y - size.y) * 0.5f);
+    draw->AddImage(loaded().atlas->TexID, at, ImVec2(at.x + size.x, at.y + size.y), uv0, uv1, tint);
+    return true;
+}
+}

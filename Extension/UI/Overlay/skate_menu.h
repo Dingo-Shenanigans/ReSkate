@@ -116,6 +116,7 @@ struct SkateMenu {
     ImFont* bold_large = nullptr;
     ImFont* heading_large = nullptr;
     ImFont* title_large = nullptr;
+    ImFont* logo = nullptr;     // the Animator Studio's loading screen: big lowercase, as the reskate. wordmark
     // Full screen: the page's section rail (its first row of tabs, drawn down the left), indenting
     // what follows it until the page is done.
     float rail_indent = 0;

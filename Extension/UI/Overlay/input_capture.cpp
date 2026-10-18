@@ -2,6 +2,7 @@
 #include "overlay_internal.h"
 #include "input_capture.h"
 #include "held_input.h"
+#include "scripted_pad.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include <hidsdi.h>
 #include <atomic>
@@ -35,6 +36,8 @@ bool block_polled_input() {
     SetLastError(error);
     return capture;
 }
+// Also while the Animator Studio's loading screen shows, so the player cannot change what goes on behind it.
+bool block_input_reads() { return block_polled_input() || (!overlay_input_access && animation_studio_loading_pending()); }
 
 void note_input_record(const RAWINPUT& record) noexcept;
 HeldInput& held_input() { static auto* value = new HeldInput; return *value; }
@@ -96,7 +99,7 @@ void refresh_bluetooth_crc(std::uint8_t* bytes, DWORD size) noexcept {
     std::memcpy(bytes + size - 4, &crc, sizeof(crc));
 }
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
-    if (!block_polled_input() || !read.buffer || size > read.capacity) return;
+    if (!block_input_reads() || !read.buffer || size > read.capacity) return;
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     // USB or Bluetooth decides where the buttons are in a report with id 1. It is the device's
     // report length that tells them apart, and Windows pads every read to that length, so it
@@ -345,7 +348,7 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
 // then, so the capture is in front of it again.
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
-    const bool capture = block_polled_input();
+    const bool capture = block_input_reads();
     const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
@@ -353,6 +356,8 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
+    // Only the game gets the script: ReSkate's own reads (a stop button) get the real pad.
+    if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         output->dwPacketNumber ^= 0x80000000u;
@@ -388,15 +393,15 @@ void keep_xinput_capture_first() {
 }
 SHORT WINAPI captured_async_key(int key) {
     const auto value = original<SHORT(WINAPI*)(int)>(input_hooks().async_key)(key);
-    return block_polled_input() ? 0 : value;
+    return block_input_reads() ? 0 : value;
 }
 SHORT WINAPI captured_key(int key) {
     const auto value = original<SHORT(WINAPI*)(int)>(input_hooks().key)(key);
-    return block_polled_input() ? 0 : value;
+    return block_input_reads() ? 0 : value;
 }
 BOOL WINAPI captured_keyboard(PBYTE keys) {
     const auto result = original<BOOL(WINAPI*)(PBYTE)>(input_hooks().keyboard)(keys);
-    if (result && keys && block_polled_input()) std::memset(keys, 0, 256);
+    if (result && keys && block_input_reads()) std::memset(keys, 0, 256);
     return result;
 }
 UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT size, UINT header_size) {
@@ -414,7 +419,7 @@ UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT 
         const bool mouse = raw->header.dwType == RIM_TYPEMOUSE && result >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
         const bool keyboard =
             raw->header.dwType == RIM_TYPEKEYBOARD && result >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
-        if (!block_polled_input()) {
+        if (!block_input_reads()) {
             if ((mouse || keyboard) && !overlay_input_access) held_input().seen(*raw);
         } else if ((mouse || keyboard) && held_input().release_only(*raw)) {
             // A key or button the game holds still comes up; presses stay blocked.
@@ -502,7 +507,7 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
     // replays when it closes and nothing pressed before it stays stuck.
     const auto result = original<UINT(WINAPI*)(PRAWINPUT, PUINT, UINT)>(
         input_hooks().raw_buffer)(data, size, header_size);
-    const bool capture = result != UINT(-1) && data && block_polled_input();
+    const bool capture = result != UINT(-1) && data && block_input_reads();
     note_prompt_read(prompt_raw);
     if (result != UINT(-1) && data && header_size == sizeof(RAWINPUTHEADER)) {
         // Skate drains its mouse here; read the packets on the way past.
@@ -647,7 +652,7 @@ BOOL WINAPI captured_cursor_position(LPPOINT output) {
 template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
-    const bool capture = block_polled_input();
+    const bool capture = block_input_reads();
     const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
@@ -655,6 +660,8 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    // Only the game gets the script: ReSkate's own reads (a stop button) get the real pad.
+    if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
@@ -669,7 +676,7 @@ template<std::size_t I>
 DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE output) {
     const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, PXINPUT_KEYSTROKE)>(
         input_hooks().xinput_keystroke[I])(user, reserved, output);
-    if (result == ERROR_SUCCESS && output && block_polled_input()) { *output = {}; return ERROR_EMPTY; }
+    if (result == ERROR_SUCCESS && output && block_input_reads()) { *output = {}; return ERROR_EMPTY; }
     return result;
 }
 
@@ -693,7 +700,7 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPVOID)>(
         input_hooks().device_state[I])(device, size, data);
     note_prompt_read(prompt_direct);
-    if (SUCCEEDED(result) && data && block_polled_input()) {
+    if (SUCCEEDED(result) && data && block_input_reads()) {
         std::memset(data, 0, size);
         std::lock_guard lock(input_hooks().formats_mutex);
         const auto found = input_hooks().formats.find(device);
@@ -730,7 +737,7 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
 }
 template<std::size_t I>
 HRESULT STDMETHODCALLTYPE captured_device_data(void* device, DWORD size, LPDIDEVICEOBJECTDATA data, LPDWORD count, DWORD flags) {
-    const bool capture = block_polled_input();
+    const bool capture = block_input_reads();
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD)>(
         input_hooks().device_data[I])(device, size, data, count, capture ? flags & ~DIGDD_PEEK : flags);
     if (SUCCEEDED(result) && capture && count) *count = 0;
@@ -955,6 +962,35 @@ bool install_input_capture() {
 
 }
 
+// TEST ONLY (not for the PR): "ms:buttons,lx,ly,rx,ry,lt,rt/..." played on the scripted pad, RESKATE_TEST_PAD=1.
+extern "C" bool DingoSDKOverlayTestPad(const char* script) {
+    wchar_t flag[4]{};
+    if (GetEnvironmentVariableW(L"RESKATE_TEST_PAD", flag, 4) != 1 || flag[0] != L'1' || !script) return false;
+    std::vector<dingosdk::overlay::PadStep> steps;
+    double at = 0.3;
+    std::string text(script);
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const auto end = std::min(text.find('/', pos), text.size());
+        const auto step = text.substr(pos, end - pos);
+        pos = end + 1;
+        unsigned ms{}, buttons{};
+        int lx{}, ly{}, rx{}, ry{}, lt{}, rt{};
+        if (sscanf_s(step.c_str(), "%u:%x,%d,%d,%d,%d,%d,%d", &ms, &buttons, &lx, &ly, &rx, &ry, &lt, &rt) < 2) return false;
+        const auto axis = [](int v) { return static_cast<SHORT>(std::clamp(v, -100, 100) * 327); };
+        const auto trigger = [](int v) { return static_cast<BYTE>(std::clamp(v, 0, 100) * 255 / 100); };
+        XINPUT_GAMEPAD pad{};
+        pad.wButtons = static_cast<WORD>(buttons);
+        pad.sThumbLX = axis(lx); pad.sThumbLY = axis(ly); pad.sThumbRX = axis(rx); pad.sThumbRY = axis(ry);
+        pad.bLeftTrigger = trigger(lt); pad.bRightTrigger = trigger(rt);
+        steps.push_back({static_cast<std::uint32_t>(at * 60), pad});
+        at += ms / 1000.0;
+    }
+    steps.insert(steps.begin(), {0, XINPUT_GAMEPAD{}});
+    steps.push_back({static_cast<std::uint32_t>(at * 60), XINPUT_GAMEPAD{}});
+    dingosdk::overlay::play_pad(std::move(steps));
+    return true;
+}
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
     dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
 }

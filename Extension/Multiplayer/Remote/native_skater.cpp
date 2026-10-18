@@ -533,6 +533,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 std::lock_guard hidden_lock(hidden.mutex);
                 if (hidden.component == component && hidden.joint < frame.pose.skater.size())
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
+                if (const auto filter = shared().pose_filter.load(std::memory_order_acquire))
+                    filter(component, frame.pose.skater);
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -611,6 +613,9 @@ void set_render_pose_listener(RenderPosePublished listener) noexcept {
 }
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
     shared().evaluated_listener.store(listener, std::memory_order_release);
+}
+void set_local_pose_filter(LocalPoseFilter filter) noexcept {
+    shared().pose_filter.store(filter, std::memory_order_release);
 }
 void set_animation_studio_listener(AnimationEvaluated listener) noexcept {
     shared().studio_listener.store(listener, std::memory_order_release);

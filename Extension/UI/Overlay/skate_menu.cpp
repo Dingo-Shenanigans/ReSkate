@@ -866,6 +866,9 @@ void load_skate_fonts(SkateMenu& menu) {
     menu.bold_large = font(L"FONT_HEADING", "arialbd.ttf", 17 * large_font_ratio);
     menu.heading_large = font(L"FONT_HEADING", "arialbd.ttf", 22 * large_font_ratio);
     menu.title_large = font(L"FONT_BRUSH", "arialbi.ttf", 44 * large_font_ratio, latin);
+    // The loading screen's wordmark: lowercase, the full stop and the space only, at one big size.
+    static const ImWchar logo[]{0x0020, 0x0020, 0x002E, 0x002E, 0x0061, 0x007A, 0};
+    menu.logo = font(L"FONT_HEADING", "arialbd.ttf", 160, logo);
 }
 
 namespace menu {

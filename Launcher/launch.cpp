@@ -465,11 +465,26 @@ RemoteModule inject_dll(HANDLE process, const fs::path& dll) {
 
 namespace dingosdk::launcher_app {
 
+namespace {
+fs::path dev_game_directory() {
+    std::array<wchar_t, 32768> value{};
+    const auto length = GetEnvironmentVariableW(L"RESKATE_DEV_GAME_DIR", value.data(), static_cast<DWORD>(value.size()));
+    return length && length < value.size() ? fs::path(std::wstring(value.data(), length)) : fs::path{};
+}
+} // namespace
+
 Session open_session(const std::string& log_level) {
     Session session;
     session.self = canonical_file(module_path(), L"ReSkateLauncher.exe");
     session.paths = launcher::sibling_paths(session.self);
     session.paths.logs = logging::log_directory(session.paths.directory);
+    // Development only (RESKATE_DEV_GAME_DIR): run a ReSkate.dll built beside this launcher against a
+    // game installed elsewhere, with its own logs, so the installed ReSkate is left as it is.
+    if (const auto game = dev_game_directory(); !game.empty()) {
+        const auto own = session.self.parent_path();
+        session.paths = {game, game / L"Skate.exe", own / L"ReSkate.dll", game / L"steam_api64.dll",
+                         logging::log_directory(own)};
+    }
     logging::Options logging_options;
     logging_options.directory = session.paths.logs;
     logging_options.truncate_file = true;
@@ -722,7 +737,7 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
 
     std::error_code path_error;
     if (!fs::equivalent(paths.game.parent_path(), paths.directory, path_error) || path_error ||
-        !fs::equivalent(paths.dll.parent_path(), paths.directory, path_error) || path_error ||
+        (dev_game_directory().empty() && (!fs::equivalent(paths.dll.parent_path(), paths.directory, path_error) || path_error)) ||
         !fs::equivalent(paths.steam_api.parent_path(), paths.directory, path_error) || path_error)
         throw std::runtime_error(
             "Skate.exe, ReSkate.dll, and the original steam_api64.dll must be beside ReSkateLauncher.exe");
