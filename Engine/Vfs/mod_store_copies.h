@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace dingosdk::frostbite::ebx {
@@ -105,9 +106,19 @@ public:
         std::size_t shared{}, costume_points{};
     };
     [[nodiscard]] Closest closest(const std::vector<std::uint64_t>& points) const;
+    // Both of the above from one pass over the points.
+    struct Judged {
+        std::string original;
+        Closest closest;
+    };
+    [[nodiscard]] Judged judge(const std::vector<std::uint64_t>& points) const;
 
 private:
     static constexpr std::uint32_t nobody = 0xffffffffU;
+    // How many of `points` are only each owner's.
+    [[nodiscard]] std::vector<std::size_t> shared(const std::vector<std::uint64_t>& points) const;
+    [[nodiscard]] std::string original_of(const std::vector<std::size_t>& shared, std::size_t points) const;
+    [[nodiscard]] Closest closest_of(const std::vector<std::size_t>& shared) const;
     struct Owner {
         std::string key;
         bool sold{};
@@ -115,7 +126,9 @@ private:
     };
     std::vector<Owner> owners_;
     std::map<std::string, std::uint32_t, std::less<>> by_key_;
-    std::map<std::uint64_t, std::uint32_t> points_;  // -> its one owner, or nobody
+    // -> its one owner, or nobody. Hashed: the game's costumes have millions of points and a
+    // check looks up every point of every mod's mesh, which in a tree took seconds.
+    std::unordered_map<std::uint64_t, std::uint32_t> points_;
 };
 
 struct StoreCopies {

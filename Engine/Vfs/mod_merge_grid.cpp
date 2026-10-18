@@ -4,8 +4,13 @@
 #include "Engine/Resource/ebx_writer.h"
 #include "Engine/Core/Platform/path_text.h"
 
+#include <Windows.h>
+
+#include <atomic>
 #include <optional>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace dingosdk::mods::detail {
 namespace {
@@ -113,7 +118,8 @@ const grid::SlotMap* GridPlan::remap_for(const std::string& mod, std::string_vie
 
 GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
                             const std::map<const Mod*, RelativeFiles>& modFiles, const CasStore& store,
-                            const fs::path& baseRoot, const fs::path& gameRoot, MergeReport& report) {
+                            const fs::path& baseRoot, const fs::path& gameRoot, MergeReport& report,
+                            std::size_t threads, bool background) {
     GridPlan plan;
     plan.bundle = std::string(gridBundle);
     plan.asset = std::string(liveGrid);
@@ -126,34 +132,69 @@ GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
         fb::ebx::Document document;
     };
     std::vector<Contribution> contributions;
-    // Lowest priority first, the order the merge layers mods in.
-    for (auto at = mods.rbegin(); at != mods.rend(); ++at) {
-        const auto* mod = *at;
-        const auto modName = path_utf8(mod->directory.filename());
-        for (const auto& relative : modFiles.at(mod).tocs) {
-            try {
-                const auto toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
-                for (const auto& bundle : toc.bundles) {
-                    const auto bundleName = lower(bundle.name);
-                    const auto rootBundle = bundleName == gridBundle;
-                    if (!rootBundle && !level_bundle(bundleName)) continue;
-                    if (rootBundle && plan.superbundle.empty()) plan.superbundle = lower(relative);
-                    const auto listing = list_bundle(store, mod->directory, baseRoot, bundle, gameRoot);
-                    if (!listing) continue;
-                    for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index) {
-                        const auto& asset = listing->manifest.ebx[index];
-                        const auto name = lower(asset.name);
-                        auto owner = grid_owner(name);
-                        if (!owner) continue;
-                        auto document = fb::ebx::read_document(
-                            read_asset(store, mod->directory, baseRoot, *listing, index, gameRoot));
-                        if (document.rootType != "MaterialGridData") continue;
-                        contributions.push_back({mod, std::move(*owner), name, asset.sha1, std::move(document)});
+    {
+        // What one mod's TOCs hold: its grids, the superbundle its root bundle is in, and what
+        // could not be read. The mods are read several at a time (they only read), then taken
+        // lowest priority first, the order the merge layers mods in.
+        struct Read {
+            std::vector<Contribution> contributions;
+            std::string superbundle;
+            std::vector<std::string> notes;
+        };
+        std::vector<const Mod*> ordered(mods.rbegin(), mods.rend());
+        std::vector<Read> reads(ordered.size());
+        const auto read_mod = [&](std::size_t slot) {
+            const auto* mod = ordered[slot];
+            auto& read = reads[slot];
+            const auto modName = path_utf8(mod->directory.filename());
+            for (const auto& relative : modFiles.at(mod).tocs) {
+                try {
+                    const auto toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
+                    for (const auto& bundle : toc.bundles) {
+                        const auto bundleName = lower(bundle.name);
+                        const auto rootBundle = bundleName == gridBundle;
+                        if (!rootBundle && !level_bundle(bundleName)) continue;
+                        if (rootBundle && read.superbundle.empty()) read.superbundle = lower(relative);
+                        const auto listing = list_bundle(store, mod->directory, baseRoot, bundle, gameRoot);
+                        if (!listing) continue;
+                        for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index) {
+                            const auto& asset = listing->manifest.ebx[index];
+                            const auto name = lower(asset.name);
+                            auto owner = grid_owner(name);
+                            if (!owner) continue;
+                            auto document = fb::ebx::read_document(
+                                read_asset(store, mod->directory, baseRoot, *listing, index, gameRoot));
+                            if (document.rootType != "MaterialGridData") continue;
+                            read.contributions.push_back({mod, std::move(*owner), name, asset.sha1, std::move(document)});
+                        }
                     }
+                } catch (const std::exception& failure) {
+                    read.notes.push_back(modName + ": its material grid could not be read (" + failure.what() + ")");
                 }
-            } catch (const std::exception& failure) {
-                report.notes.push_back(modName + ": its material grid could not be read (" + failure.what() + ")");
             }
+        };
+        std::atomic<std::size_t> next{0};
+        const auto work = [&] {
+            for (auto mine = next.fetch_add(1); mine < ordered.size(); mine = next.fetch_add(1)) read_mod(mine);
+        };
+        {
+            // Threads of their own, not the system's pool (see mod_merge.cpp); joined at the brace.
+            std::vector<std::jthread> workers;
+            try {
+                for (std::size_t index = 0; index < threads && index + 1 < ordered.size(); ++index)
+                    workers.emplace_back([&] {
+                        if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                        work();
+                    });
+            } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
+            work();
+        }
+        for (auto& read : reads) {
+            if (plan.superbundle.empty()) plan.superbundle = std::move(read.superbundle);
+            report.notes.insert(report.notes.end(), std::make_move_iterator(read.notes.begin()),
+                                std::make_move_iterator(read.notes.end()));
+            contributions.insert(contributions.end(), std::make_move_iterator(read.contributions.begin()),
+                                 std::make_move_iterator(read.contributions.end()));
         }
     }
     if (contributions.empty() || plan.superbundle.empty()) return plan;

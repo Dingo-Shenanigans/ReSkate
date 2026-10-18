@@ -61,10 +61,24 @@ bool store_copy_problems(const Catalog& all, MergeReport& report, const std::vec
     }
     const Catalog& catalog = fewer ? *fewer : all;
     std::optional<content_cache::Catalogs> store;
-    const auto found = check_store_copies(catalog, [&store](const std::string& key) {
-        if (!store) store = content_cache::read_catalogs(content_cache::directory());
+    std::mutex storeRead;   // asked from the check's reading threads
+    std::chrono::steady_clock::duration readingStore{};
+    const auto started = std::chrono::steady_clock::now();
+    const auto found = check_store_copies(catalog, [&](const std::string& key) {
+        std::lock_guard lock(storeRead);
+        if (!store) {
+            const auto reading = std::chrono::steady_clock::now();
+            store = content_cache::read_catalogs(content_cache::directory());
+            readingStore = std::chrono::steady_clock::now() - reading;
+        }
         return store->reserved(key);
     }, &report.notes, threads, background);
+    const auto tenths = [](std::chrono::steady_clock::duration elapsed) {
+        const auto count = (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() + 50) / 100;
+        return std::to_string(count / 10) + "." + std::to_string(count % 10) + " s";
+    };
+    report.notes.push_back("Store copies check: " + tenths(std::chrono::steady_clock::now() - started) +
+                           ", of which reading the store's catalogue " + tenths(readingStore));
     // (No mod to read is a check that ran and found no items.)
     if (found.read || std::none_of(catalog.mods.begin(), catalog.mods.end(), [](const Mod& mod) { return mod.provides_layout; }))
         added = std::move(found.added);
@@ -96,6 +110,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // enabled or added later loads without a restart.
         std::map<const Mod*, RelativeFiles> modFiles;
         for (const auto* mod : mods) modFiles[mod] = scan(mod->directory);
+        lap("listing the mods' files");
 
         // What the store sells comes from the content cache, which the launcher installs.
         const bool storeKnown = content_cache::installed();
@@ -103,6 +118,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         auto fingerprint = merge_fingerprint(catalog, mods, modFiles, storeKnown);
         for (const auto& mod : catalog.inactive)
             fingerprint += " inactive " + mod.name + " " + mod_fingerprint(mod.directory);
+        lap("fingerprinting");
         if (options.live) {
             fs::remove(output / stamp_file, error);
         } else if (auto previous = previous_merge(output, fingerprint);
@@ -110,6 +126,8 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             // (A patch from before items were traced to their mods is built again, once.)
             return std::move(*previous);
         }
+        // (Not for a patch that is reused: nothing is checked then.)
+        read_checked_ebx(output / checked_ebx_file);
         // A mod that adds copies of store items is not loaded at all. Found before
         // anything is built: the caller merges again without it, as it does for a
         // mod that cannot be merged, and the patch on disk stays for that merge to
@@ -122,6 +140,24 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         const auto checking = [&](std::string step) {
             if (observe) try { observe({0, 1, mods.size(), std::move(step)}); } catch (...) {}
         };
+        // The asset overrides read only the enabled mods and the game, so at launch they are
+        // collected beside the store check, the linking and the material grid, on threads of
+        // their own with a store and a report of their own (the report is taken in where they
+        // used to be collected, so the notes keep their order). A merge while the game runs
+        // keeps to one step at a time: the game is using the other threads.
+        const auto baseRoot = catalog.data_root / L"Data";
+        const auto gameRoot = catalog.data_root;
+        auto parsedLayout = vfs::read_layout(baseRoot / L"layout.toc");
+        std::optional<AssetOverrides> earlyOverrides;
+        MergeReport overridesReport;
+        std::jthread overridesThread;
+        if (!options.live) {
+            overridesThread = std::jthread([&, files = modFiles] {
+                const CasStore reading(baseRoot, output, parsedLayout.root);
+                earlyOverrides = collect_asset_overrides(mods, files, reading, baseRoot, gameRoot, overridesReport,
+                                                         readers - 1, false);
+            });
+        }
         std::optional<std::vector<StoreCopies::Added>> itemsRead;
         if (storeKnown) checking("Checking the mods");
         if (storeKnown && store_copy_problems(catalog, report, options.live ? options.checked : std::vector<std::string>{},
@@ -159,8 +195,9 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 if (!source.keys.empty()) itemSources->push_back(std::move(source));
             }
         }
-        if (!options.live) fs::remove_all(output, error);
         lap("checking the mods");
+        if (!options.live) fs::remove_all(output, error);
+        lap("clearing the old patch");
 
         // Progress: each mod's archives, the material grid, a live merge's load
         // screens, the asset overrides, each superbundle, then the layout.
@@ -193,12 +230,9 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // earlier game build keep working after an update: a mod's full copy
         // would carry the old build's layout, and the game then waits on the
         // splash for bundles that layout places wrongly.
-        auto parsedLayout = vfs::read_layout(catalog.data_root / L"Data" / L"layout.toc");
         std::vector<const Mod*> layoutSources = mods;
         if (layoutSources.empty() && !catalog.inactive.empty()) layoutSources.push_back(&catalog.inactive.front());
         auto& layout = parsedLayout.root;
-        const auto baseRoot = catalog.data_root / L"Data";
-        const auto gameRoot = catalog.data_root;
         CasStore store(baseRoot, output, layout);
         // Mods are built against archive 1, so that is where the rebuilt
         // manifests go too: an index the engine already knows in every package.
@@ -415,7 +449,8 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // (https://github.com/Dingo-Shenanigans/ReSkate/issues/138).
         advance("Planning the material grid");
         // rootMods belongs to providers; finish using it before erasing its node.
-        const auto grid = plan_material_grid(rootMods, modFiles, store, baseRoot, gameRoot, report);
+        const auto grid = plan_material_grid(rootMods, modFiles, store, baseRoot, gameRoot, report, readers - 1,
+                                             options.live);
         if (rootMods.empty()) {
             providers.erase(std::string(root_level));
             std::erase_if(superbundles, [](const std::string& relative) { return lower(relative) == root_level; });
@@ -427,7 +462,19 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             lap("load screens");
         }
         advance("Collecting asset overrides");
-        auto overrides = collect_asset_overrides(mods, modFiles, store, baseRoot, gameRoot, report, readers - 1, options.live);
+        AssetOverrides overrides;
+        if (overridesThread.joinable()) {
+            overridesThread.join();
+            overrides = std::move(*earlyOverrides);
+            report.notes.insert(report.notes.end(), std::make_move_iterator(overridesReport.notes.begin()),
+                                std::make_move_iterator(overridesReport.notes.end()));
+            for (auto& [mod, problems] : overridesReport.problems) {
+                auto& list = report.problems[mod];
+                list.insert(list.end(), std::make_move_iterator(problems.begin()), std::make_move_iterator(problems.end()));
+            }
+        } else {
+            overrides = collect_asset_overrides(mods, modFiles, store, baseRoot, gameRoot, report, readers - 1, options.live);
+        }
         // Carried chunks point into their mod's archives; move them to where those landed.
         for (auto& [name, chunks] : overrides.chunks)
             for (const auto* mod : mods)
@@ -454,6 +501,12 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             std::vector<std::pair<std::size_t, fb::BundleRegion>> held;
             std::exception_ptr failure;
             bool done{};
+            // How long reading the mods' TOCs, combining and reading back the held bundles took.
+            Clock::duration reading{}, combining{}, holding{};
+            // Once settled (this thread), its TOC is built, checked and written by a worker.
+            bool settled{}, built{};
+            std::exception_ptr buildFailure;
+            Clock::duration settling{}, building{};
         };
         std::vector<Job> jobs;
         jobs.reserve(superbundles.size());
@@ -469,6 +522,12 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         const auto run = [&](Job& job) noexcept {
             try {
                 const auto& relative = job.relative;
+                auto since = Clock::now();
+                const auto took = [&](Clock::duration& into) {
+                    const auto now = Clock::now();
+                    into += now - since;
+                    since = now;
+                };
                 std::vector<Source> sources;
                 for (const auto* mod : providers.at(lower(relative))) {
                     Source source;
@@ -482,8 +541,11 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     }
                     sources.push_back(std::move(source));
                 }
+                took(job.reading);
                 job.merged = combine(baseRoot / fs::path(relative), baseRoot, sources, job.report,
-                                     relative, job.used, *job.store, manifestArchive, gameRoot, grid, overrides);
+                                     relative, job.used, *job.store, manifestArchive, gameRoot, grid, overrides,
+                                     readers - 1);
+                took(job.combining);
                 if (job.store->holding())
                     for (std::size_t index = 0; index < job.merged.bundles.size(); ++index) {
                         auto region = fb::read_bundle_region(job.merged.bundles[index].region);
@@ -491,21 +553,53 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                                 return CasStore::placeholder(file.location); }))
                             job.held.emplace_back(index, std::move(region));
                     }
+                took(job.holding);
             } catch (...) {
                 job.failure = std::current_exception();
             }
         };
+        // A settled superbundle's TOC: built, read back and checked, written. It needs nothing
+        // of the others once what it points at has its place, so the workers build them while
+        // this thread settles the next (building them in turn here took seconds).
+        const auto build = [&](Job& job) noexcept {
+            const auto started = Clock::now();
+            try {
+                auto bytes = fb::write_patch_toc(job.merged.bundles, job.merged.chunks, job.merged.flags);
+                // Read the result back before publishing it: a TOC whose perfect
+                // hash does not resolve would take the game down at load time.
+                const auto check = fb::read_toc(bytes);
+                fb::verify_toc(check);
+                if (check.bundles.size() != job.merged.bundles.size() ||
+                    check.chunks.size() != job.merged.chunks.size())
+                    throw std::runtime_error("Merged TOC did not round-trip: " + job.relative);
+                write_file(output / fs::path(job.relative), bytes);
+            } catch (...) {
+                job.buildFailure = std::current_exception();
+            }
+            // Done with: a big merge would otherwise hold every superbundle's until the end.
+            job.merged = {};
+            job.held = {};
+            job.building = Clock::now() - started;
+        };
         std::mutex jobsMutex;
         std::condition_variable jobDone;
-        std::atomic<std::size_t> nextJob{0};
+        std::atomic<std::size_t> nextJob{0}, nextBuild{0};
         std::atomic<bool> stopJobs{false};
         std::vector<std::jthread> workers;
         // Declared after the workers, so it goes first: a merge that fails stops them
         // taking more, and they are joined before anything they use goes.
         struct Stop {
             std::atomic<bool>& flag;
-            ~Stop() { flag = true; }
-        } stopOnExit{stopJobs};
+            std::mutex& mutex;
+            std::condition_variable& changed;
+            ~Stop() {
+                {
+                    std::lock_guard lock(mutex);
+                    flag = true;
+                }
+                changed.notify_all();
+            }
+        } stopOnExit{stopJobs, jobsMutex, jobDone};
         const std::size_t wantedWorkers = jobs.size() < 2 ? 0
             : std::min<std::size_t>({jobs.size(), options.live ? std::max(1U, cores / 2) : cores, options.live ? 6U : 8U});
         try {
@@ -517,7 +611,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     if (options.live) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                     for (;;) {
                         const auto mine = nextJob.fetch_add(1);
-                        if (mine >= jobs.size() || stopJobs) return;
+                        if (mine >= jobs.size() || stopJobs) break;
                         run(jobs[mine]);
                         {
                             std::lock_guard lock(jobsMutex);
@@ -525,9 +619,30 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                         }
                         jobDone.notify_all();
                     }
+                    // Then the TOCs, each as soon as this thread has settled its superbundle.
+                    for (;;) {
+                        const auto mine = nextBuild.fetch_add(1);
+                        if (mine >= jobs.size()) return;
+                        {
+                            std::unique_lock lock(jobsMutex);
+                            jobDone.wait(lock, [&] { return jobs[mine].settled || stopJobs; });
+                            if (!jobs[mine].settled) return;
+                        }
+                        build(jobs[mine]);
+                        {
+                            std::lock_guard lock(jobsMutex);
+                            jobs[mine].built = true;
+                        }
+                        jobDone.notify_all();
+                    }
                 });
         } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
         std::size_t settledJobs{};
+        // Where this thread's part of the superbundles goes: waiting for a job, putting what it
+        // wrote into the patch's archives, building and checking its TOC, writing the TOC.
+        struct {
+            Clock::duration waited{}, settled{}, built{};
+        } settleTimes;
         for (const auto& relative : superbundles) {
             if (keepRoot && lower(relative) == root_level) {
                 advance("Keeping the root level as the game has it");
@@ -540,6 +655,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     (shippedBy.empty() ? std::string(" (the game's own)")
                      : shippedBy.size() > 1 ? " from " + std::to_string(shippedBy.size()) + " mods"
                                             : " from " + shippedBy.front()->name));
+            const auto waiting = Clock::now();
             if (workers.empty()) {
                 run(job);
             } else {
@@ -547,6 +663,8 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 jobDone.wait(lock, [&] { return job.done; });
             }
             if (job.failure) std::rethrow_exception(job.failure);
+            auto settling = Clock::now();
+            settleTimes.waited += settling - waiting;
             // What it wrote goes into the patch's archives now, and what points at it follows.
             store.settle(*job.store);
             for (auto& [index, region] : job.held) {
@@ -572,20 +690,40 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 if (same != report.conflicts.end()) same->assets += row.assets;
                 else report.conflicts.push_back(std::move(row));
             }
-            auto bytes = fb::write_patch_toc(job.merged.bundles, job.merged.chunks, job.merged.flags);
-            // Read the result back before publishing it: a TOC whose perfect
-            // hash does not resolve would take the game down at load time.
-            const auto check = fb::read_toc(bytes);
-            fb::verify_toc(check);
-            if (check.bundles.size() != job.merged.bundles.size() ||
-                check.chunks.size() != job.merged.chunks.size())
-                throw std::runtime_error("Merged TOC did not round-trip: " + relative);
-            write_file(output / fs::path(relative), bytes);
-            ++report.superbundles;
-            // Done with: a big merge would otherwise hold every superbundle's until the end.
-            job.merged = {};
-            job.held = {};
+            settleTimes.settled += Clock::now() - settling;
+            job.settling = Clock::now() - settling;
             job.store.reset();
+            if (workers.empty()) {
+                build(job);
+                job.built = true;
+            } else {
+                {
+                    std::lock_guard lock(jobsMutex);
+                    job.settled = true;
+                }
+                jobDone.notify_all();
+            }
+            ++report.superbundles;
+        }
+        // Every TOC built, in their order for what went wrong.
+        {
+            const auto waiting = Clock::now();
+            std::unique_lock lock(jobsMutex);
+            jobDone.wait(lock, [&] { return std::ranges::all_of(jobs, [](const Job& job) { return job.built; }); });
+            settleTimes.built = Clock::now() - waiting;
+        }
+        for (const auto& job : jobs)
+            if (job.buildFailure) std::rethrow_exception(job.buildFailure);
+        for (const auto& job : jobs) {
+            // (For the superbundles many mods ship, beside combine's own note on them.)
+            if (providers.at(lower(job.relative)).size() < 10) continue;
+            const auto tenths = [](Clock::duration elapsed) {
+                const auto count = (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() + 50) / 100;
+                return std::to_string(count / 10) + "." + std::to_string(count % 10) + " s";
+            };
+            report.notes.push_back(job.relative + ": job times: reading the mods' TOCs " + tenths(job.reading) +
+                ", combining " + tenths(job.combining) + ", reading back held bundles " + tenths(job.holding) +
+                ", settling " + tenths(job.settling) + ", building, checking and writing the TOC " + tenths(job.building));
         }
 
         // A live merge takes out the TOCs of superbundles no enabled mod ships
@@ -600,6 +738,23 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             record.tocs = superbundles;
             write_placements(placementsPath, record);
             write_map_meshes(output / map_meshes_file, report.map_meshes);
+        }
+        {
+            const auto tenths = [](Clock::duration elapsed) {
+                const auto count = (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() + 50) / 100;
+                return std::to_string(count / 10) + "." + std::to_string(count % 10) + " s";
+            };
+            Clock::duration combining{}, slowest{};
+            std::string slowestName;
+            for (const auto& job : jobs) {
+                combining += job.reading + job.combining + job.holding;
+                if (job.combining > slowest) slowest = job.combining, slowestName = job.relative;
+            }
+            report.notes.push_back("Superbundles: " + std::to_string(jobs.size()) + " merged in " + tenths(combining) +
+                " summed over the threads, the longest " + slowestName + " (" + tenths(slowest) + ")");
+            report.notes.push_back("Superbundles, in turn: waiting for them " + tenths(settleTimes.waited) +
+                ", taking what they wrote into the patch " + tenths(settleTimes.settled) +
+                ", then waiting for the last of their TOCs " + tenths(settleTimes.built));
         }
         lap("superbundles");
 
@@ -769,6 +924,9 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                                        failure.what());
             }
         }
+        try {
+            write_checked_ebx(output / checked_ebx_file, !options.live);
+        } catch (const std::exception&) {}   // (the next merge checks them again)
         lap("layout");
         // After the stamp, which keeps the notes: a patch that is reused must not
         // report the times of the merge that built it.

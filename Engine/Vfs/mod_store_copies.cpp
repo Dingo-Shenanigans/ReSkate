@@ -600,29 +600,44 @@ void StoreMeshes::add(std::string_view key, bool sold, const std::vector<std::ui
     }
 }
 
-std::string StoreMeshes::original(const std::vector<std::uint64_t>& points) const {
-    if (points.size() < shared_least) return {};
-    std::vector<std::size_t> shared(owners_.size());
+std::vector<std::size_t> StoreMeshes::shared(const std::vector<std::uint64_t>& points) const {
+    std::vector<std::size_t> counts(owners_.size());
     for (const auto point : points)
-        if (const auto found = points_.find(point); found != points_.end() && found->second != nobody) ++shared[found->second];
+        if (const auto found = points_.find(point); found != points_.end() && found->second != nobody) ++counts[found->second];
+    return counts;
+}
+
+std::string StoreMeshes::original_of(const std::vector<std::size_t>& shared, std::size_t points) const {
+    if (points < shared_least) return {};
     const std::string* most{};
     std::size_t count{};
     for (std::size_t owner = 0; owner < owners_.size(); ++owner) {
         const auto& costume = owners_[owner];
         if (!costume.sold || shared[owner] < shared_least || shared[owner] <= count) continue;
-        if (shared[owner] * 10 >= costume.largest || shared[owner] * 10 >= points.size() * 3) most = &costume.key, count = shared[owner];
+        if (shared[owner] * 10 >= costume.largest || shared[owner] * 10 >= points * 3) most = &costume.key, count = shared[owner];
     }
     return most ? *most : std::string();
 }
 
-StoreMeshes::Closest StoreMeshes::closest(const std::vector<std::uint64_t>& points) const {
-    std::vector<std::size_t> shared(owners_.size());
-    for (const auto point : points)
-        if (const auto found = points_.find(point); found != points_.end() && found->second != nobody) ++shared[found->second];
+StoreMeshes::Closest StoreMeshes::closest_of(const std::vector<std::size_t>& shared) const {
     Closest most;
     for (std::size_t owner = 0; owner < owners_.size(); ++owner)
         if (owners_[owner].sold && shared[owner] > most.shared) most = {owners_[owner].key, shared[owner], owners_[owner].largest};
     return most;
+}
+
+std::string StoreMeshes::original(const std::vector<std::uint64_t>& points) const {
+    if (points.size() < shared_least) return {};
+    return original_of(shared(points), points.size());
+}
+
+StoreMeshes::Closest StoreMeshes::closest(const std::vector<std::uint64_t>& points) const {
+    return closest_of(shared(points));
+}
+
+StoreMeshes::Judged StoreMeshes::judge(const std::vector<std::uint64_t>& points) const {
+    const auto counts = shared(points);
+    return {original_of(counts, points.size()), closest_of(counts)};
 }
 
 StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, std::vector<std::string>* notes,
@@ -696,8 +711,8 @@ StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, st
         for (const auto& [mod, items, meshes] : added) {
             StoreCopies::Source source{mod->name};
             for (const auto& mesh : meshes) {
-                result.meshes_seen.push_back({mod->name, mesh.name, mesh.points.size(), costumes.closest(mesh.points)});
-                const auto original = costumes.original(mesh.points);
+                auto [original, closest] = costumes.judge(mesh.points);
+                result.meshes_seen.push_back({mod->name, mesh.name, mesh.points.size(), std::move(closest)});
                 if (original.empty()) continue;
                 if (!source.count++) {
                     source.example = mesh.name;

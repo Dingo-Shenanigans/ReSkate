@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <unordered_map>
 #include <span>
 #include <string>
 #include <string_view>
@@ -85,6 +86,14 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes);
 // asset's sha1 and size follow it. How many came out; with none, or a payload that does not
 // decode, both stay as they were.
 std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot);
+// The EBX repair_ebx_payload found need nothing, so a later merge does not read them again:
+// read before the patch folder is cleared, written once the patch is built. A file that is
+// missing, or from another version of the check, is as if nothing had been checked. `prune`
+// (a merge of every mod) leaves out what that merge did not ask about.
+[[nodiscard]] bool ebx_checked(const fb::Sha1& sha1);   // by the sha1 its listing gives
+void read_checked_ebx(const fs::path& file);
+void write_checked_ebx(const fs::path& file, bool prune);
+inline constexpr wchar_t checked_ebx_file[] = L"reskate-ebx-checked.bin";
 
 // Where the launch's merge put every installed mod's archives, and which
 // superbundle TOCs the patch holds: Mods/.reskate/reskate-placements.json.
@@ -137,23 +146,38 @@ public:
     // offset within what it holds for that file. When every superbundle before its
     // own has been settled, settle() appends what it holds to the real archives, and
     // settled() then moves a placement that points into it to where that went.
+    // Bytes an archive already holds are not appended again: the placement points at them.
+    // Every map carries its own copy of the game's core bundles, and each copy is given the
+    // same changes other mods make (a mod's gestures, a soundtrack's songs); written once
+    // per map, those filled the patch's 4 GB archive, two thirds of it the same bytes again.
     static constexpr std::uint16_t waiting_archive = 0xFFFF;
-    // A carried payload, by its index in the waiting store's list: settle() writes it once per install chunk.
+    // Reserved for 2.1.0's carried placements: no store hands it out (carry() shares by
+    // content like any write), but a mod's archive numbered so is still renumbered.
     static constexpr std::uint16_t carried_archive = 0xFFFE;
     [[nodiscard]] CasStore waiting() const;
-    [[nodiscard]] bool holding() const noexcept { return !held_.empty() || !carried_.empty(); }
+    [[nodiscard]] bool holding() const noexcept { return !held_.empty(); }
+    [[nodiscard]] bool is_waiting() const noexcept { return waiting_; }
+    [[nodiscard]] static bool waits(const fb::CasIdentifier& location) noexcept {
+        return location.patch && location.archive == waiting_archive;
+    }
     [[nodiscard]] static bool placeholder(std::uint16_t archive) noexcept {
         return archive == waiting_archive || archive == carried_archive;
     }
     [[nodiscard]] static bool placeholder(const fb::CasIdentifier& location) noexcept {
         return location.patch && placeholder(location.archive);
     }
-    // A waiting store only. The bytes must stay valid until settle().
+    // A waiting store only: a payload many bundles carry, held once (write() shares by content).
     [[nodiscard]] fb::BundleFileInfo carry(std::uint32_t installChunk, std::uint16_t archive,
                                            std::span<const std::byte> encoded);
     void settle(CasStore& waiting);
     // True when the placement was one of this waiting store's; it now names the archive.
     bool settled(fb::CasIdentifier& location, std::uint32_t& offset) const;
+    // A waiting store taking another's, after what it holds: the bundles of one superbundle
+    // are merged on several threads, each into a waiting copy of the superbundle's waiting
+    // store, and taken back in bundle order. taken() then moves a placement that pointed
+    // into `part` to where its bytes are in this one; it still waits.
+    void take(CasStore& part);
+    bool taken(fb::CasIdentifier& location, std::uint32_t& offset) const;
 
     void shift(fb::CasIdentifier& location, std::uint32_t& offset,
                const ArchivePlacement* placement) const;
@@ -165,24 +189,33 @@ private:
 
     fs::path output_;
     std::map<std::wstring, std::uint64_t> offsets_;
-    // A waiting store: what it holds for each archive file, the one archive index it
-    // was asked to write to, and where each file's bytes went once settled.
+    // What this store appended to each archive file, by content, to point at again (settle).
+    struct Content {
+        fb::Sha1 sha1;
+        std::uint32_t size{};
+        bool operator==(const Content&) const = default;
+    };
+    struct ContentHash {
+        std::size_t operator()(const Content& content) const noexcept;
+    };
+    std::map<std::wstring, std::unordered_map<Content, std::uint64_t, ContentHash>> appended_;
+    // A waiting store: what it holds for each archive file, each write in it (where it
+    // starts among the held bytes, its content, and where it went once settled), the one
+    // archive index it was asked to write to, and where the file's bytes went once taken.
+    struct Piece {
+        std::uint64_t offset{};
+        Content content;
+        std::uint64_t settled{};
+    };
     struct Held {
         std::vector<std::byte> bytes;
+        std::vector<Piece> pieces;   // by offset
         std::uint64_t at{};
+        std::unordered_map<Content, std::uint64_t, ContentHash> within;   // a piece's content, where it starts
     };
     bool waiting_{};
     std::optional<std::uint16_t> archive_;
     std::map<std::wstring, Held> held_;
-    // Carried payloads (waiting store) and where each landed (settling store).
-    struct Carried {
-        std::uint32_t installChunk{};
-        fb::Sha1 sha1;
-        std::span<const std::byte> bytes;
-        fb::BundleFileInfo at;
-    };
-    std::vector<Carried> carried_;
-    std::map<std::pair<std::uint32_t, fb::Sha1>, fb::BundleFileInfo> carriedAt_;
 };
 
 using ArchiveUse = std::set<std::pair<std::uint32_t, std::uint16_t>>;
@@ -252,7 +285,8 @@ struct GridPlan {
 // Never throws for one bad mod: its surfaces fall back to the default one.
 GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
                             const std::map<const Mod*, RelativeFiles>& modFiles, const CasStore& store,
-                            const fs::path& baseRoot, const fs::path& gameRoot, MergeReport& report);
+                            const fs::path& baseRoot, const fs::path& gameRoot, MergeReport& report,
+                            std::size_t threads = 0, bool background = false);
 
 // An EBX asset a mod changed from the game's own copy. Maps carry the game's
 // copies of what their levels need (a level's camera framing, for one), and
@@ -369,6 +403,6 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         std::vector<Source>& sources, MergeReport& report,
                         const std::string& relative, ArchiveUse& used, CasStore& store,
                         std::uint16_t manifestArchive, const fs::path& gameRoot, const GridPlan& grid,
-                        const AssetOverrides& overrides);
+                        const AssetOverrides& overrides, std::size_t threads = 0);
 
 } // namespace dingosdk::mods::detail

@@ -1,6 +1,8 @@
 #include "mod_merge_internal.h"
 #include "Engine/Core/Platform/path_text.h"
 
+#include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -21,6 +23,12 @@ bool unshift(const ArchivePlacement& placement, std::string_view directory, std:
     archive = origin;
     offset = static_cast<std::uint32_t>(offset - block->offset);
     return true;
+}
+
+std::size_t CasStore::ContentHash::operator()(const Content& content) const noexcept {
+    std::size_t value{};
+    std::memcpy(&value, content.sha1.bytes.data(), sizeof(value));
+    return value ^ content.size;
 }
 
 CasStore::CasStore(fs::path baseRoot, fs::path output, const native_db::Node& layout)
@@ -64,12 +72,19 @@ fb::BundleFileInfo CasStore::write(std::uint32_t installChunk, std::uint16_t arc
         if (placeholder(archive) || (archive_ && *archive_ != archive))
             throw std::logic_error("A waiting store writes to one archive index");
         archive_ = archive;
-        auto& held = held_[path.wstring()].bytes;
+        auto& file = held_[path.wstring()];
+        auto& held = file.bytes;
+        // Hashed here, on the thread merging this superbundle, for settle to match against.
+        const Content content{sha1_of(encoded), static_cast<std::uint32_t>(encoded.size())};
+        if (const auto there = file.within.find(content); there != file.within.end())
+            return {{true, installChunk, waiting_archive}, static_cast<std::uint32_t>(there->second), content.size};
         if (held.size() + encoded.size() > std::numeric_limits<std::uint32_t>::max())
             throw std::runtime_error("The merged patch's own archive " + path_utf8(path) +
                                      " is full (4 GB); restart Skate so it is built again");
         const fb::BundleFileInfo info{{true, installChunk, waiting_archive}, static_cast<std::uint32_t>(held.size()),
-                                      static_cast<std::uint32_t>(encoded.size())};
+                                      content.size};
+        file.pieces.push_back({held.size(), content, 0});
+        file.within.emplace(content, held.size());
         held.insert(held.end(), encoded.begin(), encoded.end());
         return info;
     }
@@ -83,56 +98,93 @@ CasStore CasStore::waiting() const {
     copy.archive_.reset();
     copy.held_.clear();
     copy.offsets_.clear();
-    copy.carried_.clear();
-    copy.carriedAt_.clear();
     return copy;
 }
 
 fb::BundleFileInfo CasStore::carry(std::uint32_t installChunk, std::uint16_t archive, std::span<const std::byte> encoded) {
     if (!waiting_) throw std::logic_error("Only a waiting store carries payloads");
-    if (placeholder(archive) || (archive_ && *archive_ != archive))
-        throw std::logic_error("A waiting store writes to one archive index");
-    // An install chunk no package names fails here, for this payload alone.
-    (void)directory(installChunk);
-    archive_ = archive;
-    carried_.push_back({installChunk, sha1_of(encoded), encoded, {}});
-    return {{true, installChunk, carried_archive}, static_cast<std::uint32_t>(carried_.size() - 1),
-            static_cast<std::uint32_t>(encoded.size())};
+    return write(installChunk, archive, encoded);
 }
 
 void CasStore::settle(CasStore& waiting) {
     // In path order: which file comes first makes no difference to where anything lands.
     for (auto& [path, held] : waiting.held_) {
-        held.at = append(fs::path(path), held.bytes);
+        // What the archive already holds is pointed at; the rest goes on its end in one append.
+        auto& known = appended_[path];
+        std::vector<std::byte> fresh;
+        std::vector<std::pair<Piece*, std::uint64_t>> placed;   // a piece going on the end, where in `fresh`
+        std::unordered_map<Content, std::uint64_t, ContentHash> pending;   // in `fresh` already
+        for (auto& piece : held.pieces) {
+            if (const auto there = known.find(piece.content); there != known.end()) {
+                piece.settled = there->second;
+                continue;
+            }
+            const auto [at, first] = pending.try_emplace(piece.content, fresh.size());
+            if (first) {
+                const auto* from = held.bytes.data() + piece.offset;
+                fresh.insert(fresh.end(), from, from + piece.content.size);
+            }
+            placed.emplace_back(&piece, at->second);
+        }
+        if (!fresh.empty()) {
+            const auto start = append(fs::path(path), fresh);
+            for (auto& [piece, within] : placed) {
+                piece->settled = start + within;
+                known.try_emplace(piece->content, piece->settled);
+            }
+        }
         held.bytes = {};
-    }
-    // Then the carried assets, each written once per install chunk.
-    for (auto& carried : waiting.carried_) {
-        const std::pair key{carried.installChunk, carried.sha1};
-        auto found = carriedAt_.find(key);
-        if (found == carriedAt_.end())
-            found = carriedAt_.emplace(key, write(carried.installChunk, *waiting.archive_, carried.bytes)).first;
-        carried.at = found->second;
     }
 }
 
 bool CasStore::settled(fb::CasIdentifier& location, std::uint32_t& offset) const {
     if (!placeholder(location)) return false;
-    if (location.archive == carried_archive) {
-        if (offset >= carried_.size()) throw std::logic_error("A carried placement names no asset its store holds");
-        const auto& at = carried_[offset].at;
-        location = at.location;
-        offset = at.offset;
-        return true;
-    }
+    if (location.archive == carried_archive) throw std::logic_error("A placement names the reserved carried archive");
     const auto found = archive_ ? held_.find(archive_path(location.installChunk, *archive_).wstring()) : held_.end();
     if (found == held_.end()) throw std::logic_error("A placement waits in a store that holds nothing for it");
-    const auto moved = found->second.at + offset;
-    if (moved > std::numeric_limits<std::uint32_t>::max())
+    // The piece the placement starts in (always at its start: a placement is one write).
+    const auto& pieces = found->second.pieces;
+    const auto after = std::upper_bound(pieces.begin(), pieces.end(), std::uint64_t{offset},
+                                        [](std::uint64_t at, const Piece& piece) { return at < piece.offset; });
+    if (after == pieces.begin()) throw std::logic_error("A placement waits before anything its store holds");
+    const auto& piece = *std::prev(after);
+    const auto moved = piece.settled + (offset - piece.offset);
+    if (moved + piece.content.size > std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error("The merged patch's own archive " + path_utf8(fs::path(found->first)) +
                                  " is full (4 GB); restart Skate so it is built again");
     location.archive = *archive_;
     offset = static_cast<std::uint32_t>(moved);
+    return true;
+}
+
+void CasStore::take(CasStore& part) {
+    if (!waiting_ || !part.waiting_) throw std::logic_error("Only a waiting store takes another");
+    if (part.archive_) {
+        if (archive_ && *archive_ != *part.archive_) throw std::logic_error("A waiting store writes to one archive index");
+        archive_ = part.archive_;
+    }
+    for (auto& [path, held] : part.held_) {
+        auto& mine = held_[path].bytes;
+        if (mine.size() + held.bytes.size() > std::numeric_limits<std::uint32_t>::max())
+            throw std::runtime_error("The merged patch's own archive " + path_utf8(fs::path(path)) +
+                                     " is full (4 GB); restart Skate so it is built again");
+        held.at = mine.size();
+        auto& pieces = held_[path].pieces;
+        auto& within = held_[path].within;
+        for (const auto& piece : held.pieces) {
+            pieces.push_back({piece.offset + held.at, piece.content, 0});
+            within.try_emplace(piece.content, piece.offset + held.at);
+        }
+        mine.insert(mine.end(), held.bytes.begin(), held.bytes.end());
+        held.bytes = {};
+    }
+}
+
+bool CasStore::taken(fb::CasIdentifier& location, std::uint32_t& offset) const {
+    if (!waits(location)) return false;
+    const auto found = archive_ ? held_.find(archive_path(location.installChunk, *archive_).wstring()) : held_.end();
+    if (found == held_.end()) throw std::logic_error("A placement waits in a store that holds nothing for it");
+    offset = static_cast<std::uint32_t>(found->second.at + offset);   // (take checked it fits)
     return true;
 }
 

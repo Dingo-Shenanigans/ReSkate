@@ -68,7 +68,13 @@ void GameArchives::forget(const fs::path&) const {}
 void GameArchives::keep_open() { if (!open_) open_ = std::make_shared<Open>(); }
 
 
-GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_(std::move(root)) {
+struct GameArchives::Sizes {
+    std::mutex mutex;
+    std::map<std::wstring, std::optional<std::uint64_t>> known;
+};
+
+GameArchives::GameArchives(fs::path root, const native_db::Node& layout)
+    : root_(std::move(root)), sizes_(std::make_shared<Sizes>()) {
     std::map<std::set<std::uint16_t>, std::vector<std::string>> byArchives;
     std::error_code error;
     const auto win32 = root_ / "Win32";
@@ -184,16 +190,20 @@ std::string GameArchives::describe(const fb::CasIdentifier& location) const {
         archive_file(location.archive);
 }
 
-std::optional<std::uint64_t> GameArchives::archive_size(const fs::path& root, const fb::CasIdentifier& location) {
+std::optional<std::uint64_t> GameArchives::archive_size(const fs::path& root, const fb::CasIdentifier& location) const {
     const auto* directory = find_directory(location.installChunk);
     if (!directory) return std::nullopt;
     const auto path = root / "Win32" / fs::path(*directory) / fs::path(archive_file(location.archive));
-    const auto known = sizes_.find(path.wstring());
-    if (known != sizes_.end()) return known->second;
+    auto key = path.wstring();
+    {
+        std::lock_guard lock(sizes_->mutex);
+        if (const auto known = sizes_->known.find(key); known != sizes_->known.end()) return known->second;
+    }
     std::error_code error;
     const auto size = fs::file_size(path, error);
     const auto result = error ? std::optional<std::uint64_t>{} : std::optional<std::uint64_t>{size};
-    sizes_.emplace(path.wstring(), result);
+    std::lock_guard lock(sizes_->mutex);
+    sizes_->known.emplace(std::move(key), result);
     return result;
 }
 

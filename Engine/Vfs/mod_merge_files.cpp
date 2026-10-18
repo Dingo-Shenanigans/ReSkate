@@ -8,12 +8,34 @@
 #include <bcrypt.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
+#include <atomic>
+#include <unordered_map>
 
 namespace dingosdk::mods::detail {
 namespace {
 constexpr std::size_t maximumTocBytes = 64 * 1024 * 1024;
+
+// The mods' EBX already found to need no repair (repair_ebx_payload), by the sha1 of their
+// stored bytes: checking means decoding every EBX every mod ships, tens of thousands for a map,
+// which made a merge take minutes. Kept for the process and in the patch folder between launches.
+struct CheckedHash {
+    std::size_t operator()(const fb::Sha1& sha1) const noexcept {
+        std::size_t value{};
+        std::memcpy(&value, sha1.bytes.data(), sizeof(value));
+        return value;
+    }
+};
+std::shared_mutex checkedLock;
+// Each with whether this merge asked for it: what no merge asks for any more is not kept.
+std::unordered_map<fb::Sha1, std::atomic<bool>, CheckedHash> checkedEbx;
+std::atomic<bool> checkedChanged{};
+// Changed when what repair_type_fixups takes out changes, so every EBX is checked again.
+constexpr char checkedMagic[8] = {'R', 'S', 'E', 'B', 'X', 'O', 'K', '1'};
 } // namespace
 
 std::string lower(std::string_view text) {
@@ -144,10 +166,27 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes) {
     return digest;
 }
 
+bool ebx_checked(const fb::Sha1& sha1) {
+    std::shared_lock lock(checkedLock);
+    const auto found = checkedEbx.find(sha1);
+    if (found == checkedEbx.end()) return false;
+    found->second.store(true, std::memory_order_relaxed);
+    return true;
+}
+
 std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+    if (ebx_checked(asset.sha1)) return 0;
     std::optional<fb::ebx::FixupRepair> repaired;
     try {
         repaired = fb::ebx::repair_type_fixups(fb::decode_cas(encoded, {gameRoot}));
+        // Recorded by the stored bytes' own sha1, which is what a bundle lists for them: a
+        // listing whose sha1 is wrong is checked each time.
+        if (!repaired) {
+            const auto sha1 = sha1_of(encoded);
+            std::unique_lock lock(checkedLock);
+            if (const auto [entry, added] = checkedEbx.try_emplace(sha1, true); added) checkedChanged = true;
+            else entry->second = true;
+        }
     } catch (const std::exception&) {
         return 0;
     }
@@ -156,6 +195,36 @@ std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset&
     asset.sha1 = sha1_of(repaired->bytes);
     asset.originalSize = repaired->bytes.size();
     return repaired->removed;
+}
+
+void read_checked_ebx(const fs::path& file) {
+    std::unique_lock lock(checkedLock);
+    for (auto& [sha1, asked] : checkedEbx) asked = false;
+    checkedChanged = false;
+    if (!checkedEbx.empty()) return;   // (read already: this process wrote it)
+    std::ifstream input(file, std::ios::binary);
+    char magic[sizeof(checkedMagic)]{};
+    if (!input.read(magic, sizeof(magic)) || std::memcmp(magic, checkedMagic, sizeof(magic)) != 0) return;
+    fb::Sha1 sha1;
+    while (input.read(reinterpret_cast<char*>(sha1.bytes.data()), static_cast<std::streamsize>(sha1.bytes.size())))
+        checkedEbx.try_emplace(sha1, false);
+}
+
+void write_checked_ebx(const fs::path& file, bool prune) {
+    std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(checkedMagic),
+                                 reinterpret_cast<const std::byte*>(checkedMagic) + sizeof(checkedMagic));
+    {
+        std::unique_lock lock(checkedLock);
+        if (prune) std::erase_if(checkedEbx, [](const auto& entry) {
+            if (entry.second) return false;
+            checkedChanged = true;
+            return true;
+        });
+        if (!checkedChanged && fs::exists(file)) return;
+        bytes.reserve(bytes.size() + checkedEbx.size() * sizeof(fb::Sha1));
+        for (const auto& [sha1, asked] : checkedEbx) bytes.insert(bytes.end(), sha1.bytes.begin(), sha1.bytes.end());
+    }
+    write_file(file, bytes);
 }
 
 PlacementRecord read_placements(const fs::path& file) {

@@ -9,13 +9,23 @@
 #include "Engine/Resource/shader_lookup.h"
 #include "Engine/Core/Platform/path_text.h"
 
+#include <Windows.h>
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
 #include <functional>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 
 namespace dingosdk::mods::detail {
@@ -45,29 +55,34 @@ struct Asset {
     // For a chunk: where its record is in the chunk metadata of the copy this version
     // of it came in, and where the game's copy lists the chunk (merge_chunk_metadata).
     ChunkRecord record;
+    // A mod's copy of one of the game's EBX or resources, byte for byte (BundleState::shippedBySha).
+    bool unchanged{};
 };
 
 // Where one contributor's copy of an asset lives, so conflicting copies can be
 // fetched and combined later.
 struct Contribution {
-    const fs::path* root{};    // the source's folder, in `sources` or baseRoot: neither moves while combine runs
+    // The mod's folder (a Source's root, or the game's): with hundreds of cosmetic mods each
+    // carrying the game's thousands of assets, a path of its own for each was most of the index.
+    const fs::path* root{};
     fb::BundleFileInfo file;   // still pointing at the archive it came from
     fb::Sha1 sha1;
     std::vector<std::byte> resourceMeta;
     bool base{};
 };
 
-// Region files run parallel to the manifest's ebx, then resources, then chunks.
-std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundle& manifest,
+// Region files run parallel to the manifest's ebx, then resources, then chunks. The assets are
+// moved out of `manifest`: its lists keep their lengths and each asset its guid, nothing else.
+std::vector<Asset> flatten(const fb::BundleRegion& region, fb::BinaryBundle& manifest,
                            std::size_t first = 0) {
     std::vector<Asset> result;
     result.reserve(manifest.ebx.size() + manifest.resources.size() + manifest.chunks.size());
-    const auto take = [&](const std::vector<fb::BundleAsset>& list) {
-        for (const auto& asset : list) {
+    const auto take = [&](std::vector<fb::BundleAsset>& list) {
+        for (auto& asset : list) {
             const auto index = first + result.size();
             if (index >= region.files.size())
                 throw std::runtime_error("Bundle region has fewer files than its manifest lists");
-            result.push_back({asset, region.files[index]});
+            result.push_back({std::move(asset), region.files[index]});
         }
     };
     take(manifest.ebx);
@@ -77,8 +92,15 @@ std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundl
 }
 
 std::string asset_key(const fb::BundleAsset& asset) {
-    return std::to_string(static_cast<int>(asset.kind)) + ':' +
-        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : lower(asset.name));
+    if (asset.kind == fb::AssetKind::chunk) return std::to_string(static_cast<int>(asset.kind)) + ':' + asset.guid.string();
+    // Made for every asset of every copy, millions in a merge of a few hundred cosmetic mods:
+    // one allocation, not one for the lower-case name and another for the key.
+    std::string key;
+    key.reserve(asset.name.size() + 2);
+    key += static_cast<char>('0' + static_cast<int>(asset.kind));
+    key += ':';
+    for (const char c : asset.name) key += c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : c;
+    return key;
 }
 
 // The game's item lists (items/itemmastercollection, a season's
@@ -90,6 +112,15 @@ bool item_list_name(std::string_view name) {
     return text.starts_with("items/") && text.find("collection") != std::string::npos;
 }
 constexpr std::string_view item_list_type = "delmaritemcollectionasset";
+
+// A sha1 as a hash key: it is one already.
+struct Sha1Hash {
+    std::size_t operator()(const fb::Sha1& sha1) const noexcept {
+        std::size_t value{};
+        std::memcpy(&value, sha1.bytes.data(), sizeof(value));
+        return value;
+    }
+};
 
 // Some bundles carry no inline manifest: their region only lists placements,
 // so their assets cannot be named and the bundle can only be passed through
@@ -104,6 +135,8 @@ struct BundleState {
     std::uint32_t manifestChunk{};
     std::vector<Asset> assets;
     std::vector<fb::BundleFileInfo> files;
+    // The asset list of a copy taken whole that has one in its region (Prep::whole).
+    std::vector<std::byte> opaqueManifest;
     // Each copy's chunk metadata; copies that carry the same list share an entry.
     // Every chunk remembers its record in one of these (Asset::record), and the
     // list is written again when the manifest is rebuilt (merge_chunk_metadata).
@@ -129,6 +162,16 @@ struct BundleState {
         std::vector<std::string> mods;
     };
     std::unordered_map<std::string, OwnChange> ownChange;
+    // The game's EBX and resources by sha1: the kind and name_hash of the asset with it, or
+    // ambiguous when two assets share one. A mod's copy that matches is the game's own asset,
+    // unchanged, and is passed over without its key being made: every cosmetic mod carries the
+    // game's thousands, and making their keys was most of the item superbundle's merge.
+    struct Shipped {
+        fb::AssetKind kind{};
+        std::uint64_t name{};
+        bool ambiguous{};
+    };
+    std::unordered_map<fb::Sha1, Shipped, Sha1Hash> shippedBySha;
     // Assets a mod added that a higher-priority mod's different asset of the
     // same name then replaced: the key, and the sha1 of the copy that went.
     std::vector<std::pair<std::string, fb::Sha1>> displaced;
@@ -147,12 +190,25 @@ struct BundleState {
 class HeldAssets final {
 public:
     using Decode = std::function<std::vector<std::byte>(const Contribution&)>;
-    HeldAssets(const BundleState& state, Decode decode) : state_(state), decode_(std::move(decode)) {}
+    // The additions the overrides pass collected for this bundle with a given document guid.
+    using Named = std::function<std::vector<const AssetAddition*>(const fb::Guid&)>;
+    using Clock = std::chrono::steady_clock;
+    // `spent` collects the time the reads take, for the superbundle's timing note.
+    HeldAssets(const BundleState& state, Decode decode, Named named = {}, Clock::duration* spent = nullptr)
+        : state_(state), decode_(std::move(decode)), named_(std::move(named)), spent_(spent) {}
 
     [[nodiscard]] bool holds(const fb::Guid& guid) {
-        if (!added_) { read(false); added_ = true; }
         if (guids_.contains(guid)) return true;
-        if (!shipped_ && !unsure_) { read(true); shipped_ = true; }
+        // What a list names is nearly always an asset its own mod added, which the overrides
+        // pass read already: the bundle keeps that document when it kept a copy with the same
+        // sha1 under that name, and otherwise the one copy it did keep is the one to read.
+        // Reading every added asset (below) was most of the item superbundle's merge.
+        if (named_)
+            for (const auto* addition : named_(guid))
+                if (kept(*addition, guid)) return true;
+        if (!added_) { timed([&] { read(false); }); added_ = true; }
+        if (guids_.contains(guid)) return true;
+        if (!shipped_ && !unsure_) { timed([&] { read(true); }); shipped_ = true; }
         // A copy that could not be read may be the very one asked about.
         return unsure_ || guids_.contains(guid);
     }
@@ -162,6 +218,12 @@ public:
     [[nodiscard]] const Asset* replacement(const fb::Guid& guid) {
         if (!displacedRead_) {
             displacedRead_ = true;
+            const auto started = Clock::now();
+            struct Done {
+                Clock::time_point started;
+                Clock::duration* spent;
+                ~Done() { if (spent) *spent += Clock::now() - started; }
+            } done{started, spent_};
             for (const auto& [key, sha1] : state_.displaced) {
                 const auto copies = state_.history.find(key);
                 const auto at = state_.seen.find(key);
@@ -202,9 +264,43 @@ private:
         }
     }
 
+    template <typename Work> void timed(const Work& work) {
+        const auto started = Clock::now();
+        work();
+        if (spent_) *spent_ += Clock::now() - started;
+    }
+
+    // Whether the bundle holds the document `guid` under the addition's name: yes when the
+    // copy it keeps there is the addition's own; otherwise that copy is read, once, and asked.
+    [[nodiscard]] bool kept(const AssetAddition& addition, const fb::Guid& guid) {
+        if (addition.asset.kind != fb::AssetKind::ebx) return false;
+        const auto key = asset_key(addition.asset);
+        const auto at = state_.seen.find(key);
+        if (at == state_.seen.end()) return false;
+        const auto& asset = state_.assets[at->second];
+        if (asset.asset.kind != fb::AssetKind::ebx) return false;
+        if (asset.asset.sha1 == addition.asset.sha1) { guids_.insert(guid); return true; }
+        if (!readNamed_.insert(key).second) return guids_.contains(guid);
+        const auto copies = state_.history.find(key);
+        if (copies == state_.history.end()) return false;
+        const Contribution* copy{};
+        for (const auto& candidate : copies->second) {
+            if (candidate.sha1 == asset.asset.sha1) { copy = &candidate; break; }
+            if (candidate.base) copy = &candidate;
+        }
+        if (!copy) return false;
+        try {
+            timed([&] { guids_.insert(fb::ebx::read_file_guid(decode_(*copy))); });
+        } catch (const std::exception&) {}
+        return guids_.contains(guid);
+    }
+
     const BundleState& state_;
     Decode decode_;
+    Named named_;
+    Clock::duration* spent_;
     std::set<fb::Guid> guids_;
+    std::set<std::string> readNamed_;   // the asset keys `kept` read the bundle's copy of
     std::map<fb::Guid, const Asset*> displaced_;
     bool added_{}, shipped_{}, unsure_{}, displacedRead_{};
 };
@@ -351,12 +447,39 @@ std::vector<std::byte> merge_chunk_metadata(std::span<const std::vector<std::byt
 // patch archives the result actually references, keyed by install chunk, so the
 // layout declares those and only those.
 fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
-                        std::vector<Source>& sources, MergeReport& report,
-                        const std::string& relative, ArchiveUse& used, CasStore& store,
+                        std::vector<Source>& sources, MergeReport& jobReport,
+                        const std::string& relative, ArchiveUse& jobUsed, CasStore& jobStore,
                         std::uint16_t manifestArchive, const fs::path& gameRoot, const GridPlan& grid,
-                        const AssetOverrides& overrides) {
+                        const AssetOverrides& overrides, std::size_t threads) {
     fb::TocDocument merged;
     merged.flags = 3;
+
+    // Where the time goes, for a superbundle many mods ship (the item superbundle, with
+    // every cosmetic mod in it, is the one a merge waits on): a note at the end says.
+    using Clock = std::chrono::steady_clock;
+    struct Laps {
+        Clock::duration absorbBase{}, absorbMods{};
+        // Inside absorb: reading the region and checking the archives, reading a cas-backed
+        // manifest, taking other mods' changes and additions, indexing the assets.
+        Clock::duration regions{}, manifests{}, propagate{}, flatten{}, index{};
+        // Combining: decoding the copies, reading what the bundle holds, merging them.
+        Clock::duration decode{}, held{}, merge{};
+        Clock::duration metadata{}, write{}, chunks{};
+        Laps& operator+=(const Laps& other) {
+            for (auto [mine, theirs] : {std::pair{&absorbBase, &other.absorbBase}, {&absorbMods, &other.absorbMods},
+                                        {&regions, &other.regions}, {&manifests, &other.manifests},
+                                        {&propagate, &other.propagate}, {&flatten, &other.flatten}, {&index, &other.index},
+                                        {&decode, &other.decode}, {&held, &other.held}, {&merge, &other.merge},
+                                        {&metadata, &other.metadata}, {&write, &other.write}, {&chunks, &other.chunks}})
+                *mine += *theirs;
+            return *this;
+        }
+    };
+    const auto lap = [](Clock::duration& into, Clock::time_point& from) {
+        const auto now = Clock::now();
+        into += now - from;
+        from = now;
+    };
 
     std::map<std::string, fb::TocDocument, std::less<>> baseHolder;
     const fb::TocDocument* base{};
@@ -372,20 +495,13 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     for (const auto& source : sources)
         for (const auto& bundle : source.toc.bundles) ++providers[lower(bundle.name)];
 
-    // Bundle order follows the base, then anything a mod introduces.
-    std::vector<std::string> order;
-    std::map<std::string, BundleState, std::less<>> states;
-
     // Per mod: bundles whose payloads lie outside the archives the mod ships.
     struct ArchiveFault {
         std::size_t bundles{}, missing{}, overrun{};
         std::string example;
     };
-    std::map<std::string, ArchiveFault> archiveFaults;
-    // Mods whose added assets went into a copy here: their added chunks come too.
-    std::set<std::string> addedFrom;
-    // The mods absorbed so far, so each asset can say whose copy it is.
-    std::set<std::string> owners;
+    std::map<std::string, const Source*, std::less<>> sourceOf;
+    for (const auto& source : sources) sourceOf.emplace(path_utf8(source.root.filename()), &source);
     // Every EBX a mod added to one of the game's bundles, by its document's guid
     // and with the bundle it was added to: what a changed list names is looked
     // up here, whichever bundle the mod put it in.
@@ -399,19 +515,119 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             else if (addition.asset.kind == fb::AssetKind::resource)
                 companions.emplace(std::tuple{bundleName, addition.mod, lower(addition.asset.name)}, &addition);
         }
-    // The map meshes already counted (reskate-map-meshes.json), by where they lie in a mod's folder.
+    // The map meshes already counted (reskate-map-meshes.json), by where they lie in a mod's
+    // folder. Copies are made ready on several threads, so it is shared under a lock.
     std::set<std::tuple<std::string, std::uint32_t, std::uint16_t, std::uint32_t>> countedMeshes;
-    // The carried place each addition got in this superbundle, by install chunk.
-    std::map<std::pair<std::uint32_t, const AssetAddition*>, fb::BundleFileInfo> carriedAt;
-    // The names any mod changed, to rule the rest out without a copy of each (name_hash).
+    std::mutex countedMeshesLock;
+    // The names any mod changed, to rule the rest out without a copy of each (name_hash), and
+    // before that the sha1s of the game's copies the changes replace, cheaper still: every map
+    // bundle's every asset is looked at, and hashing each name was seconds of a merge.
     std::unordered_set<std::uint64_t> changedNames, scriptNames;
-    for (const auto& [name, versions] : overrides.changed) changedNames.insert(name_hash(name));
-    for (const auto& [name, versions] : overrides.scripts) scriptNames.insert(name_hash(name));
+    std::unordered_set<fb::Sha1, Sha1Hash> changedShas, scriptShas;
+    for (const auto& [name, versions] : overrides.changed) {
+        changedNames.insert(name_hash(name));
+        for (const auto& [sha1, change] : versions) changedShas.insert(sha1);
+    }
+    for (const auto& [name, versions] : overrides.scripts) {
+        scriptNames.insert(name_hash(name));
+        for (const auto& [sha1, change] : versions) scriptShas.insert(sha1);
+    }
 
-    // `tocChunks`: the chunks the copy's own TOC lists, which a texture streams its mips from.
-    const auto absorb = [&](const fb::TocBundle& bundle, const ArchivePlacement* placement,
-                            bool isBase, const fs::path& root, const std::set<fb::Guid>* tocChunks) {
+    // Where a bundle or one copy of it writes: a waiting copy of the superbundle's store, made
+    // on the first write. Reads go to the superbundle's own store, which any thread may read;
+    // copying it for every bundle and every copy (its tables of the game's package directories)
+    // cost more than merging most bundles.
+    struct Writer {
+        const CasStore& from;
+        std::optional<CasStore>& into;
+        fb::BundleFileInfo write(std::uint32_t installChunk, std::uint16_t archive, std::span<const std::byte> encoded) {
+            if (!into) into.emplace(from.waiting());
+            return into->write(installChunk, archive, encoded);
+        }
+    };
+
+    // One bundle of the merged superbundle, made from every copy of it: the game's, then the
+    // mods' lowest priority first. Each is merged by itself, several at a time for a superbundle
+    // many mods ship (the item superbundle: thousands of bundles, every cosmetic mod in each),
+    // and what each wrote and said is taken in bundle order, whatever order they finished in.
+    struct Part {
+        std::string name;   // as the first copy spells it
+        struct Copy {
+            const fb::TocBundle* bundle{};
+            const ArchivePlacement* placement{};
+            bool base{};
+            const fs::path* root{};
+            const std::set<fb::Guid>* tocChunks{};   // the chunks the copy's own TOC lists; none for the game's
+        };
+        std::vector<Copy> copies;
+        BundleState state;
+        bool started{};
+        MergeReport report;
+        ArchiveUse used;
+        std::optional<CasStore> store;   // a waiting copy of the superbundle's
+        // Per mod: copies whose payloads lie outside the archives the mod ships.
+        std::map<std::string, ArchiveFault> archiveFaults;
+        // Mods whose added assets went into this bundle: their added chunks come too.
+        std::set<std::string> addedFrom;
+        // The mods absorbed so far, so each asset can say whose copy it is.
+        std::set<std::string> owners;
+        // Each chunk the bundle holds, and the mod whose copy it was kept from (null for the
+        // game's). The TOC's entry for the chunk has to be that mod's too (below).
+        std::map<fb::Guid, const std::string*> chunkKeptFrom;
+        Laps laps;
+        std::vector<std::byte> region;   // the merged bundle
+        std::exception_ptr failure;
+    };
+    // One copy of a bundle made ready to be taken into it: read, checked, given other mods'
+    // changes and additions, its assets listed and those that are the game's own marked. That
+    // is most of the work and needs nothing of the copies before it, so for a bundle many mods
+    // copy (every cosmetic mod copies the game's shared customization bundle whole, thousands
+    // of assets each) the copies are made ready several at a time, a few ahead of the one
+    // being taken in; taking them in stays in order. What a copy writes waits in a store of
+    // its own until it is taken in.
+    struct Prep {
+        std::string modName;
+        fb::BundleRegion region;
+        bool casBacked{};
+        std::string manifestFailure;
+        std::optional<fb::BinaryBundle> manifest;   // when the copy can be read
+        std::vector<Asset> flat;
+        std::vector<bool> inPatch;
+        // Taken whole: the one copy of a bundle the game does not have, with its asset list in
+        // its region, given nothing by other mods. Rebuilt it would come out as it is.
+        bool whole{};
+        std::optional<CasStore> store;
+        MergeReport report;
+        ArchiveUse used;
+        std::map<std::string, ArchiveFault> archiveFaults;
+        std::set<std::string> addedFrom;
+        // The mod's EBX repaired for the merged patch (by region file): where its own copy
+        // lies in its folder and that copy's sha1, which is what it changed.
+        std::map<std::size_t, std::pair<fb::BundleFileInfo, fb::Sha1>> repairedFrom;
+        // Where an addition's payload already went in this copy, by install chunk.
+        std::map<std::pair<std::uint32_t, const AssetAddition*>, fb::BundleFileInfo> carriedAt;
+        Laps laps;
+        std::exception_ptr failure;
+    };
+
+    // Reads only: the copies before it and the bundle's state are left alone, but for the
+    // game's assets (shippedBySha), which the game's copy has given before any mod's is prepared.
+    const auto prepare = [&](Prep& prep, const Part& part, const Part::Copy& copy) {
+        const auto& bundle = *copy.bundle;
+        const auto* placement = copy.placement;
+        const bool isBase = copy.base;
+        const auto& root = *copy.root;
+        const auto* tocChunks = copy.tocChunks;
+        auto& report = prep.report;
+        auto& used = prep.used;
+        const CasStore& store = jobStore;
+        Writer writer{jobStore, prep.store};
+        auto& laps = prep.laps;
+        auto& archiveFaults = prep.archiveFaults;
+        auto& addedFrom = prep.addedFrom;
+        auto& carriedAt = prep.carriedAt;
         const auto key = lower(bundle.name);
+        auto since = Clock::now();
         auto region = fb::read_bundle_region(bundle.region);
         const auto provider = providers.find(key);
         const auto shared = provider != providers.end() && provider->second > 1;
@@ -456,6 +672,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 if (fault.example.empty()) fault.example = bundle.name + ": " + example;
             }
         }
+        lap(laps.regions, since);
 
         // Read a cas-backed manifest before shifting, while the placement still
         // points at the archive it came from.
@@ -519,6 +736,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 report.notes.push_back(modName + ": " + bundle.name + ": " + manifestFailure);
             }
         }
+        lap(laps.manifests, since);
 
         // Collision renumbered for the combined material grid goes into the
         // merged patch now, while the placements still point into the mod's
@@ -538,7 +756,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     auto payload = fb::decode_cas(store.read(file.location.patch ? root : baseRoot, file.location,
                                                              file.offset, file.size), {gameRoot});
                     if (!fb::material_grid::remap_physics(payload, *slots)) continue;
-                    renumbered[first + index] = store.write(file.location.installChunk, manifestArchive,
+                    renumbered[first + index] = writer.write(file.location.installChunk, manifestArchive,
                                                             fb::encode_cas(payload, {gameRoot}));
                     asset.sha1 = sha1_of(payload);
                     asset.originalSize = payload.size();
@@ -563,10 +781,11 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             std::string example;
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
             const auto replace = [&](std::vector<fb::BundleAsset>& assets, const auto& changes,
-                                     const std::unordered_set<std::uint64_t>& names, std::size_t first) {
+                                     const std::unordered_set<std::uint64_t>& names,
+                                     const std::unordered_set<fb::Sha1, Sha1Hash>& shas, std::size_t first) {
                 for (std::size_t index = 0; index < assets.size(); ++index) {
                     auto& asset = assets[index];
-                    if (!names.contains(name_hash(asset.name))) continue;
+                    if (!shas.contains(asset.sha1) || !names.contains(name_hash(asset.name))) continue;
                     const auto named = changes.find(lower(asset.name));
                     if (named == changes.end()) continue;
                     const auto change = named->second.find(asset.sha1);
@@ -578,7 +797,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         (!resource || resource->resourceType != asset.resourceType || resource->resourceId != asset.resourceId))
                         continue;
                     try {
-                        overridden[at] = store.write(region.files[at].location.installChunk, manifestArchive,
+                        overridden[at] = writer.write(region.files[at].location.installChunk, manifestArchive,
                                                      change->second.encoded);
                         asset.sha1 = change->second.sha1;
                         asset.originalSize = change->second.originalSize;
@@ -591,8 +810,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     }
                 }
             };
-            replace(manifest.ebx, overrides.changed, changedNames, 0);
-            replace(manifest.resources, overrides.scripts, scriptNames, manifest.ebx.size());
+            replace(manifest.ebx, overrides.changed, changedNames, changedShas, 0);
+            replace(manifest.resources, overrides.scripts, scriptNames, scriptShas, manifest.ebx.size());
             if (casBacked) casManifest = std::move(manifest);
             else if (!overridden.empty()) region.inlineManifest = fb::write_binary_bundle(manifest);
             if (!overridden.empty())
@@ -604,7 +823,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // the merged patch. The one in the mod's folder, by where it lies there and its sha1, is
         // still what a combine reads and compares.
         std::map<std::size_t, fb::BundleFileInfo> repaired;
-        std::map<std::size_t, std::pair<fb::BundleFileInfo, fb::Sha1>> repairedFrom;
+        auto& repairedFrom = prep.repairedFrom;
         if (!isBase && (casBacked || !region.inlineManifest.empty())) {
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
             std::size_t removed{};
@@ -615,12 +834,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 const auto& file = region.files[at];
                 if (!file.location.patch) continue;   // the game's own copy
                 auto& asset = manifest.ebx[index];
+                // A copy of one of the game's own EBX, byte for byte, is as the game ships it.
+                if (const auto known = part.state.shippedBySha.find(asset.sha1);
+                    known != part.state.shippedBySha.end() && known->second.kind == fb::AssetKind::ebx) continue;
+                if (ebx_checked(asset.sha1)) continue;   // (found to need nothing, without reading it again)
                 try {
                     auto encoded = store.read(root, file.location, file.offset, file.size);
                     const auto before = asset.sha1;
                     const auto count = repair_ebx_payload(encoded, asset, gameRoot);
                     if (!count) continue;
-                    repaired[at] = store.write(file.location.installChunk, manifestArchive, encoded);
+                    repaired[at] = writer.write(file.location.installChunk, manifestArchive, encoded);
                     repairedFrom.emplace(at, std::pair{file, before});
                     removed += count;
                     if (example.empty()) example = asset.name;
@@ -639,9 +862,12 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 for (std::size_t index = 0; index < manifest.resources.size(); ++index) {
                     if (manifest.resources[index].resourceType != mesh_set_type || resourcesAt + index >= region.files.size()) continue;
                     const auto& file = region.files[resourcesAt + index];
-                    if (!file.location.patch ||
-                        !countedMeshes.emplace(root.string(), file.location.installChunk, file.location.archive, file.offset).second)
-                        continue;
+                    if (!file.location.patch) continue;
+                    {
+                        std::lock_guard lock(countedMeshesLock);
+                        if (!countedMeshes.emplace(root.string(), file.location.installChunk, file.location.archive, file.offset).second)
+                            continue;
+                    }
                     try {
                         const auto payload = fb::decode_cas(store.read(root, file.location, file.offset, file.size), {gameRoot});
                         std::size_t lods{};
@@ -661,7 +887,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             if (tocChunks && key.starts_with("win32/levels/game/dingolevel_reskate_")) {
                 auto streamed = stream_resident_textures(store, root, manifest, region.files, casBacked ? 1 : 0, *tocChunks, gameRoot);
                 for (auto& [at, encoded] : streamed.headers)
-                    repaired[at] = store.write(region.files[at].location.installChunk, manifestArchive, encoded);
+                    repaired[at] = writer.write(region.files[at].location.installChunk, manifestArchive, encoded);
                 if (!streamed.headers.empty())
                     report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(streamed.headers.size()) +
                         " texture(s) kept every mip loaded; they stream now, " + std::to_string(streamed.bytes >> 20) +
@@ -721,7 +947,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         auto placed = carriedAt.find({installChunk, addition});
                         if (placed == carriedAt.end())
                             placed = carriedAt.emplace(std::pair{installChunk, addition},
-                                store.carry(installChunk, manifestArchive, addition->encoded)).first;
+                                writer.write(installChunk, manifestArchive, addition->encoded)).first;
                         additions.push_back({addition->asset, placed->second});
                         addedFrom.insert(addition->mod);
                     } catch (const std::exception& error) {
@@ -734,10 +960,15 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         " asset(s) added by other mods, e.g. " + additions.front().asset.name);
             }
         }
+        lap(laps.propagate, since);
         // Nothing moved in this bundle: it passes through whole, as before.
-        if (casBacked && !shared && !gridBundle && renumbered.empty() && overridden.empty() && repaired.empty() &&
-            additions.empty())
-            casBacked = false;
+        const bool untouched = !shared && !gridBundle && renumbered.empty() && overridden.empty() &&
+                               repaired.empty() && additions.empty();
+        if (casBacked && untouched) casBacked = false;
+        // So does the one copy of a bundle the game does not have whose asset list is in its
+        // region: listing every asset of every map's bundles to write the same lists again
+        // was most of merging the maps.
+        prep.whole = untouched && !region.inlineManifest.empty() && !isBase && part.copies.size() == 1;
 
         for (auto& file : region.files) {
             store.shift(file.location, file.offset, placement);
@@ -765,10 +996,85 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             inPatch.insert(inPatch.begin() + at, true);
             used.emplace(addition.file.location.installChunk, addition.file.location.archive);
         }
-        const auto fresh = !states.contains(key);
-        if (fresh) { order.push_back(bundle.name); states.emplace(key, BundleState{}); }
-        auto& state = states.at(key);
+        if (!prep.whole && (!region.inlineManifest.empty() || casBacked)) {
+            prep.manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
+            prep.flat = flatten(region, *prep.manifest, casBacked ? 1 : 0);
+            // The game's own assets, unchanged: they neither replace the game's copy nor a mod's
+            // change to it (taken in below), and are no edit to read back.
+            const std::size_t firstFile = casBacked ? 1 : 0;
+            if (!isBase && !part.state.shippedBySha.empty())
+                for (std::size_t position = 0; position < prep.flat.size(); ++position) {
+                    auto& entry = prep.flat[position];
+                    if (entry.asset.kind != fb::AssetKind::ebx && entry.asset.kind != fb::AssetKind::resource) continue;
+                    if (firstFile + position < inPatch.size() && inPatch[firstFile + position]) continue;
+                    const auto known = part.state.shippedBySha.find(entry.asset.sha1);
+                    entry.unchanged = known != part.state.shippedBySha.end() && !known->second.ambiguous &&
+                                      known->second.kind == entry.asset.kind &&
+                                      known->second.name == name_hash(entry.asset.name);
+                }
+        }
+        lap(laps.flatten, since);
+        prep.modName = modName;
+        prep.region = std::move(region);
+        prep.casBacked = casBacked;
+        prep.manifestFailure = std::move(manifestFailure);
+        prep.inPatch = std::move(inPatch);
+    };
 
+    // Takes a prepared copy into its bundle: in order, the game's copy first and then the mods'
+    // lowest priority first.
+    const auto apply = [&](Part& part, Prep& prep, const Part::Copy& from) {
+        if (prep.failure) std::rethrow_exception(prep.failure);
+        const auto& bundle = *from.bundle;
+        const auto* placement = from.placement;
+        const bool isBase = from.base;
+        const auto& root = *from.root;
+        auto& report = part.report;
+        auto& laps = part.laps;
+        auto& owners = part.owners;
+        auto& chunkKeptFrom = part.chunkKeptFrom;
+        const CasStore& store = jobStore;
+        // What the copy wrote goes after what the copies before it wrote.
+        if (prep.store && prep.store->holding()) {
+            if (!part.store) part.store.emplace(jobStore.waiting());
+            part.store->take(*prep.store);
+            for (auto& file : prep.region.files) prep.store->taken(file.location, file.offset);
+            for (auto& entry : prep.flat) prep.store->taken(entry.file.location, entry.file.offset);
+        }
+        report.notes.insert(report.notes.end(), std::make_move_iterator(prep.report.notes.begin()),
+                            std::make_move_iterator(prep.report.notes.end()));
+        for (auto& [mod, problems] : prep.report.problems) {
+            auto& list = report.problems[mod];
+            list.insert(list.end(), std::make_move_iterator(problems.begin()), std::make_move_iterator(problems.end()));
+        }
+        for (const auto& [level, bytes] : prep.report.map_meshes) report.map_meshes[level] += bytes;
+        part.used.insert(prep.used.begin(), prep.used.end());
+        part.addedFrom.insert(prep.addedFrom.begin(), prep.addedFrom.end());
+        for (const auto& [mod, fault] : prep.archiveFaults) {
+            auto& all = part.archiveFaults[mod];
+            all.bundles += fault.bundles;
+            all.missing += fault.missing;
+            all.overrun += fault.overrun;
+            if (all.example.empty()) all.example = fault.example;
+        }
+        laps += prep.laps;
+        auto since = Clock::now();
+        const auto& modName = prep.modName;
+        auto& region = prep.region;
+        const bool casBacked = prep.casBacked;
+        const auto& manifestFailure = prep.manifestFailure;
+        const auto& inPatch = prep.inPatch;
+        const auto& repairedFrom = prep.repairedFrom;
+        const auto fresh = !part.started;
+        part.started = true;
+        auto& state = part.state;
+
+        if (prep.whole) {
+            state.opaque = true;
+            state.files = std::move(region.files);
+            state.opaqueManifest = std::move(region.inlineManifest);
+            return;
+        }
         if (region.inlineManifest.empty() && !casBacked) {
             // A copy whose contents cannot be read can only be passed through whole.
             // Once other providers have merged into this bundle, taking it whole
@@ -793,14 +1099,15 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 state.opaqueBy = isBase ? std::string{} : modName;
                 state.opaqueWhy = manifestFailure;
                 state.files = std::move(region.files);
+                state.opaqueManifest.clear();
                 state.assets.clear(); state.seen.clear();
                 state.metadata.clear(); state.shippedChunks.clear();
                 state.gameMetadata = ChunkRecord::none;
             }
             return;
         }
-        const auto manifest = casBacked ? casManifest : fb::read_binary_bundle(region.inlineManifest);
-        auto flat = flatten(region, manifest, casBacked ? 1 : 0);
+        auto& manifest = *prep.manifest;
+        auto& flat = prep.flat;
         if (state.opaque) {
             // A named copy is more useful than an opaque one, so it takes over.
             if (isBase) return;
@@ -812,6 +1119,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             state.opaqueBy.clear();
             state.opaqueWhy.clear();
             state.files.clear();
+            state.opaqueManifest.clear();
         }
         if (casBacked) state.casBacked = true;
         if (!region.files.empty()) state.manifestChunk = region.files.front().location.installChunk;
@@ -862,8 +1170,21 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             for (const auto& lost : last.mods) conflict(report, modName, lost, asset.asset.name);
             last = {asset.asset.sha1, {modName}};
         };
+        // By the mod whose chunks this copy's differ from: how many, and one of them.
+        std::map<std::string, std::pair<std::size_t, std::string>> contested;
         for (std::size_t position = 0; position < flat.size(); ++position) {
             auto& entry = flat[position];
+            const bool named = entry.asset.kind == fb::AssetKind::ebx || entry.asset.kind == fb::AssetKind::resource;
+            const bool rewritten = firstFile + position < inPatch.size() && inPatch[firstFile + position];
+            if (named && isBase) {
+                const auto [known, first] = state.shippedBySha.try_emplace(
+                    entry.asset.sha1, BundleState::Shipped{entry.asset.kind, name_hash(entry.asset.name)});
+                if (!first && (known->second.kind != entry.asset.kind || known->second.name != name_hash(entry.asset.name)))
+                    known->second.ambiguous = true;
+            } else if (entry.unchanged) {
+                ++report.unchangedCopies;
+                continue;   // (prepare marked it: the game's own asset, unchanged)
+            }
             entry.base = isBase;
             entry.mod = owner;
             auto id = asset_key(entry.asset);
@@ -874,29 +1195,35 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             // offset, the read failed, and the assets that really had two edits
             // (the item collections every cosmetic mod adds its items to) fell back
             // to one mod's copy.
-            const bool rewritten = firstFile + position < inPatch.size() && inPatch[firstFile + position];
-            // A mod's copy that is the game's adds nothing: the game's copy is recorded, first.
-            const bool combinable = !rewritten && (entry.asset.kind == fb::AssetKind::ebx || entry.asset.kind == fb::AssetKind::resource);
             if (const auto original = repairedFrom.find(firstFile + position); original != repairedFrom.end()) {
-                // Repaired above: what this mod changed is its copy as it ships it.
+                // Repaired in prepare: what this mod changed is its copy as it ships it.
                 state.history[id].push_back({&root, original->second.first, original->second.second,
                                              entry.asset.resourceMeta, isBase});
-            } else if (combinable && !isBase && state.matches_game_copy(id, entry.asset.sha1)) {
-                ++report.unchangedCopies;
-            } else if (combinable) {
-                // The contributor's own copy still sits at its original offset in
-                // its own folder, which is where a later merge reads it from.
-                auto unshifted = entry.file;
-                if (placement && unshifted.location.patch)
-                    if (const auto* directory = store.find_directory(unshifted.location.installChunk))
-                        unshift(*placement, *directory, unshifted.location.archive, unshifted.offset);
-                state.history[id].push_back(
-                    {&root, unshifted, entry.asset.sha1, entry.asset.resourceMeta, isBase});
+            } else if (!rewritten && named) {
+                // A mod's copy that is the game's own, byte for byte, is not an edit and is
+                // never read back: cosmetic mods rebuild the whole bundle, so nearly all of
+                // each copy's thousands of assets are such, and listing them took most of
+                // the item superbundle's merge.
+                const auto shipped = isBase ? state.baseSha.end() : state.baseSha.find(id);
+                if (shipped == state.baseSha.end() || shipped->second != entry.asset.sha1) {
+                    // The contributor's own copy still sits at its original offset in
+                    // its own folder, which is where a later merge reads it from.
+                    auto unshifted = entry.file;
+                    if (placement && unshifted.location.patch)
+                        if (const auto* directory = store.find_directory(unshifted.location.installChunk))
+                            unshift(*placement, *directory, unshifted.location.archive, unshifted.offset);
+                    state.history[id].push_back(
+                        {&root, unshifted, entry.asset.sha1, entry.asset.resourceMeta, isBase});
+                } else {
+                    ++report.unchangedCopies;
+                }
             }
             if (isBase) state.baseSha.insert_or_assign(id, entry.asset.sha1);
+            const auto chunk = entry.asset.kind == fb::AssetKind::chunk;
             const auto at = state.seen.find(id);
             own_change(id, entry, rewritten);
             if (at == state.seen.end()) {
+                if (chunk) chunkKeptFrom[entry.asset.guid] = owner;
                 state.seen.emplace(std::move(id), state.assets.size());
                 state.assets.push_back(std::move(entry));
                 continue;
@@ -915,10 +1242,13 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     continue;
                 // Two mods rewriting one non-EBX asset cannot both be honoured;
                 // say so, because the loser silently loses whatever it shipped.
+                // Named by mod and bundle below: a chunk is a mesh or a texture,
+                // and a mod's item wearing another mod's is what a stretched or
+                // wrongly textured outfit is.
                 if (entry.asset.kind == fb::AssetKind::chunk && !previous.base &&
                     previous.asset.sha1 != entry.asset.sha1) {
-                    report.notes.push_back("contested chunk " + entry.asset.name +
-                        ": kept the highest-priority copy");
+                    auto& [count, example] = contested[previous.mod ? *previous.mod : std::string("another mod")];
+                    if (!count++) example = entry.asset.name;
                 }
                 // Two mods each adding a different asset under one name: a bundle
                 // holds one asset per name, so the lower-priority mod's is gone,
@@ -933,6 +1263,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 }
                 // Whichever version is kept, it is still the chunk the game lists there.
                 entry.record.shipped = previous.record.shipped;
+                if (chunk) chunkKeptFrom[entry.asset.guid] = owner;
                 state.assets[at->second] = std::move(entry);
             }
         }
@@ -940,24 +1271,49 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             report.notes.push_back(other + ": " + bundle.name + ": " + std::to_string(clash.first) +
                 " added asset(s) share a name with ones " + modName + " adds, e.g. " + clash.second +
                 "; the merged bundle keeps " + modName + "'s");
+        for (const auto& [other, clash] : contested)
+            report.notes.push_back(other + ": " + bundle.name + ": " + std::to_string(clash.first) +
+                " chunk(s) differ from " + modName + "'s copies of the same chunks, e.g. " + clash.second +
+                "; the merged bundle keeps " + modName + "'s, and this mod's items may show them");
+        lap(laps.index, since);
     };
 
-    if (base) for (const auto& bundle : base->bundles) absorb(bundle, nullptr, true, baseRoot, nullptr);
-    const auto baseBundles = order.size();
-    // Lowest priority first, so the highest-priority mod overwrites the rest.
-    for (auto source = sources.rbegin(); source != sources.rend(); ++source) {
-        std::set<fb::Guid> tocChunks;
-        for (const auto& chunk : source->toc.chunks)
-            if (!chunk.removed) tocChunks.insert(chunk.guid);
-        for (const auto& bundle : source->toc.bundles)
-            absorb(bundle, source->placement, false, source->root, &tocChunks);
+    // Bundle order follows the base, then anything a mod introduces.
+    std::vector<Part> parts;
+    std::size_t baseBundles{};
+    // Each source's chunks its own TOC lists, which a texture streams its mips from.
+    std::vector<std::set<fb::Guid>> tocChunks(sources.size());
+    {
+        std::unordered_map<std::string, std::size_t> partOf;
+        const auto copy = [&](const fb::TocBundle& bundle, const ArchivePlacement* placement, bool isBase,
+                              const fs::path& root, const std::set<fb::Guid>* chunks) {
+            const auto [at, fresh] = partOf.try_emplace(lower(bundle.name), parts.size());
+            if (fresh) parts.emplace_back().name = bundle.name;
+            parts[at->second].copies.push_back({&bundle, placement, isBase, &root, chunks});
+        };
+        if (base) for (const auto& bundle : base->bundles) copy(bundle, nullptr, true, baseRoot, nullptr);
+        baseBundles = parts.size();
+        // Lowest priority first, so the highest-priority mod overwrites the rest.
+        for (auto source = sources.rbegin(); source != sources.rend(); ++source) {
+            auto& chunks = tocChunks[static_cast<std::size_t>(source - sources.rbegin())];
+            for (const auto& chunk : source->toc.chunks)
+                if (!chunk.removed) chunks.insert(chunk.guid);
+            for (const auto& bundle : source->toc.bundles) copy(bundle, source->placement, false, source->root, &chunks);
+        }
     }
 
-    for (const auto& name : order) {
-        auto& state = states.at(lower(name));
-        std::vector<std::byte> region;
+    const auto finish = [&](Part& part) {
+        const auto& name = part.name;
+        auto& state = part.state;
+        auto& region = part.region;
+        auto& report = part.report;
+        auto& used = part.used;
+        const CasStore& store = jobStore;
+        auto& laps = part.laps;
+        Writer writer{jobStore, part.store};
+        auto since = Clock::now();
         if (state.opaque) {
-            region = fb::write_bundle_region(state.files, {});
+            region = fb::write_bundle_region(state.files, state.opaqueManifest);
         } else {
             // A placement that is not a patch one still lives in the
             // base install, whichever mod's copy referenced it.
@@ -967,7 +1323,17 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                                from.file.location, from.file.offset, from.file.size),
                     {gameRoot});
             };
-            HeldAssets held(state, decode);
+            // The additions the overrides pass read for this bundle, by document guid: it
+            // already decoded each, so what a list names is answered without reading it again.
+            const auto key = lower(name);
+            const auto additionsNamed = [&](const fb::Guid& guid) {
+                std::vector<const AssetAddition*> found;
+                const auto [first, last] = addedByGuid.equal_range(guid);
+                for (auto at = first; at != last; ++at)
+                    if (*at->second.first == key) found.push_back(at->second.second);
+                return found;
+            };
+            HeldAssets held(state, decode, additionsNamed, &laps.held);
             // Two mods rewriting one EBX asset is the case layering can never
             // answer: whichever copy wins, the other mod's additions are gone.
             // Combining the documents is the only shape that keeps both.
@@ -998,9 +1364,18 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 const auto named = entry.asset.kind == fb::AssetKind::ebx && item_list_name(entry.asset.name);
                 if (edits.size() < 2 && !(named && edits.size() == 1)) continue;
                 try {
+                    auto decoding = Clock::now();
                     const auto baseBytes = decode(*baseCopy);
                     std::vector<std::vector<std::byte>> editBytes;
                     for (const auto* edit : edits) editBytes.push_back(decode(*edit));
+                    lap(laps.decode, decoding);
+                    // What follows is merging, less the reads HeldAssets counts for itself.
+                    struct Merging {
+                        Laps& laps;
+                        Clock::time_point from;
+                        Clock::duration heldBefore;
+                        ~Merging() { laps.merge += Clock::now() - from - (laps.held - heldBefore); }
+                    } merging{laps, decoding, laps.held};
 
                     std::vector<std::byte> rebuilt;
                     std::string what;
@@ -1157,8 +1532,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                             report.notes.push_back(entry.asset.name + ": " + std::to_string(repaired->removed) +
                                 " type reference(s) on another fixup's slot taken out of the merged copy");
                         }
-                    const auto placement = store.write(state.manifestChunk, manifestArchive,
-                                                       fb::encode_cas(rebuilt, {gameRoot}));
+                    const auto placement = writer.write(state.manifestChunk, manifestArchive,
+                                                        fb::encode_cas(rebuilt, {gameRoot}));
                     entry.file = placement;
                     entry.asset.sha1 = sha1_of(rebuilt);
                     entry.asset.originalSize = rebuilt.size();
@@ -1185,7 +1560,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         "; the combined grid was not published");
                 } else {
                     auto& entry = state.assets[found->second];
-                    entry.file = store.write(state.manifestChunk, manifestArchive,
+                    entry.file = writer.write(state.manifestChunk, manifestArchive,
                                              fb::encode_cas(grid.payload, {gameRoot}));
                     entry.asset.sha1 = sha1_of(grid.payload);
                     entry.asset.originalSize = grid.payload.size();
@@ -1202,6 +1577,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             // of costumes built on one game costume never stream in.
             std::vector<std::byte> metadata;
             {
+                since = Clock::now();
                 std::vector<ChunkRecord> records;
                 std::size_t fromMods{};
                 for (const auto& entry : state.assets) {
@@ -1220,6 +1596,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     report.notes.push_back(name + ": the copies' chunk metadata could not be put together (" + failure.what() +
                         "); kept the first copy's, so chunks mods add to this bundle may not load");
                 }
+                lap(laps.metadata, since);
             }
             fb::BinaryBundle manifest;
             std::vector<fb::BundleFileInfo> files;
@@ -1230,17 +1607,209 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 // The merged manifest goes back into the patch's own archive,
                 // stored raw like the ones it replaces, and becomes the region's
                 // first placement again.
-                const auto placement = store.write(state.manifestChunk, manifestArchive,
-                                                   fb::write_binary_bundle(manifest));
+                const auto placement = writer.write(state.manifestChunk, manifestArchive,
+                                                    fb::write_binary_bundle(manifest));
                 used.emplace(placement.location.installChunk, placement.location.archive);
                 files.insert(files.begin(), placement);
                 region = fb::write_bundle_region(files, {});
                 ++report.mergedBundles;
             }
+            lap(laps.write, since);
         }
-        merged.bundles.push_back({name, std::move(region), 1});
+    };
+
+    // Several threads make a bundle's copies ready only where many mods copy it: elsewhere a
+    // copy or two is quicker made ready in place.
+    constexpr std::size_t copiedWidely = 16;
+    const auto take_in = [&](Part& part) {
+        const auto& copies = part.copies;
+        std::size_t first = 0;
+        const auto one = [&](const Part::Copy& copy) {
+            auto since = Clock::now();
+            Prep prep;
+            try {
+                prepare(prep, part, copy);
+            } catch (...) {
+                prep.failure = std::current_exception();
+            }
+            apply(part, prep, copy);
+            lap(copy.base ? part.laps.absorbBase : part.laps.absorbMods, since);
+        };
+        // The game's copy by itself: the mods' copies are judged against it.
+        for (; first < copies.size() && copies[first].base; ++first) one(copies[first]);
+        const auto count = copies.size() - first;
+        const auto helpers = count >= copiedWidely ? std::min(threads, count - 1) : 0;
+        if (!helpers) {
+            for (; first < copies.size(); ++first) one(copies[first]);
+            return;
+        }
+        // Made ready no further ahead than this, so that a few hundred copies of a bundle of
+        // thousands of assets are never all held at once.
+        const auto ahead = 2 * (helpers + 1);
+        std::vector<std::optional<Prep>> ready(count);
+        std::vector<char> done(count);
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::size_t taken{};
+        bool stop{};
+        std::atomic<std::size_t> next{0};
+        const auto make_ready = [&] {
+            for (auto mine = next.fetch_add(1); mine < count; mine = next.fetch_add(1)) {
+                {
+                    std::unique_lock lock(mutex);
+                    changed.wait(lock, [&] { return stop || mine < taken + ahead; });
+                    if (stop) return;
+                }
+                auto& prep = ready[mine].emplace();
+                try {
+                    prepare(prep, part, copies[first + mine]);
+                } catch (...) {
+                    prep.failure = std::current_exception();
+                }
+                {
+                    std::lock_guard lock(mutex);
+                    done[mine] = 1;
+                }
+                changed.notify_all();
+            }
+        };
+        const auto priority = GetThreadPriority(GetCurrentThread());
+        std::vector<std::jthread> workers;
+        // Stops the helpers if taking a copy in fails; joined (workers) before what they use goes.
+        struct Stop {
+            std::mutex& mutex;
+            std::condition_variable& changed;
+            bool& stop;
+            ~Stop() {
+                {
+                    std::lock_guard lock(mutex);
+                    stop = true;
+                }
+                changed.notify_all();
+            }
+        };
+        try {
+            for (std::size_t index = 0; index < helpers; ++index)
+                workers.emplace_back([&] {
+                    SetThreadPriority(GetCurrentThread(), priority);
+                    make_ready();
+                });
+        } catch (const std::system_error&) {} // fewer threads, or none: the copies wait for this one
+        const Stop stopping{mutex, changed, stop};
+        const bool alone = workers.empty();
+        for (std::size_t at = 0; at < count; ++at) {
+            auto since = Clock::now();
+            if (alone) {
+                auto& prep = ready[at].emplace();
+                try {
+                    prepare(prep, part, copies[first + at]);
+                } catch (...) {
+                    prep.failure = std::current_exception();
+                }
+            } else {
+                std::unique_lock lock(mutex);
+                changed.wait(lock, [&] { return done[at] != 0; });
+            }
+            apply(part, *ready[at], copies[first + at]);
+            ready[at].reset();
+            {
+                std::lock_guard lock(mutex);
+                ++taken;
+            }
+            changed.notify_all();
+            lap(part.laps.absorbMods, since);
+        }
+    };
+
+    const auto work = [&](Part& part) noexcept {
+        try {
+            take_in(part);
+            finish(part);
+        } catch (...) {
+            part.failure = std::current_exception();
+        }
+    };
+    // Several threads only for a superbundle many mods ship: the others are merged beside each
+    // other already (mod_merge.cpp), and are quick. They run at the caller's priority, which
+    // is under the game's during a merge while it runs.
+    const auto spread = sources.size() >= 10 && parts.size() > 1 ? std::min(threads, parts.size() - 1) : 0;
+    const auto bundlesStarted = Clock::now();
+    if (!spread) {
+        for (auto& part : parts) work(part);
+    } else {
+        std::atomic<std::size_t> next{0};
+        const auto drain = [&] {
+            for (auto mine = next.fetch_add(1); mine < parts.size(); mine = next.fetch_add(1)) work(parts[mine]);
+        };
+        const auto priority = GetThreadPriority(GetCurrentThread());
+        // Threads of their own, not the system's pool (see mod_merge.cpp); joined at the brace.
+        std::vector<std::jthread> workers;
+        try {
+            for (std::size_t index = 0; index < spread; ++index)
+                workers.emplace_back([&] {
+                    SetThreadPriority(GetCurrentThread(), priority);
+                    drain();
+                });
+        } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
+        drain();
+    }
+    const auto bundlesTook = Clock::now() - bundlesStarted;
+
+    // In bundle order: what each wrote goes after what the ones before it wrote, and the
+    // placements that point at it follow.
+    Laps laps;
+    std::map<std::string, ArchiveFault> archiveFaults;
+    std::set<std::string> addedFrom;
+    std::map<fb::Guid, const std::string*> chunkKeptFrom;
+    for (auto& part : parts) {
+        if (part.failure) std::rethrow_exception(part.failure);
+        auto region = std::move(part.region);
+        if (part.store && part.store->holding()) {
+            const bool waiting = jobStore.is_waiting();
+            if (waiting) jobStore.take(*part.store);
+            else jobStore.settle(*part.store);
+            auto listed = fb::read_bundle_region(region);
+            bool moved{};
+            for (auto& file : listed.files)
+                moved |= waiting ? part.store->taken(file.location, file.offset)
+                                 : part.store->settled(file.location, file.offset);
+            if (moved) region = fb::write_bundle_region(listed.files, listed.inlineManifest);
+        }
+        merged.bundles.push_back({part.name, std::move(region), 1});
+        jobReport.notes.insert(jobReport.notes.end(), std::make_move_iterator(part.report.notes.begin()),
+                               std::make_move_iterator(part.report.notes.end()));
+        for (auto& [mod, problems] : part.report.problems) {
+            auto& list = jobReport.problems[mod];
+            list.insert(list.end(), std::make_move_iterator(problems.begin()), std::make_move_iterator(problems.end()));
+        }
+        jobReport.mergedBundles += part.report.mergedBundles;
+        jobReport.mergedAssets += part.report.mergedAssets;
+        jobReport.unchangedCopies += part.report.unchangedCopies;
+        for (const auto& [level, bytes] : part.report.map_meshes) jobReport.map_meshes[level] += bytes;
+        for (auto& row : part.report.conflicts) {
+            const auto same = std::ranges::find_if(jobReport.conflicts, [&](const MergeReport::Conflict& held) {
+                return held.kept == row.kept && held.lost == row.lost; });
+            if (same != jobReport.conflicts.end()) same->assets += row.assets;
+            else jobReport.conflicts.push_back(std::move(row));
+        }
+        jobUsed.insert(part.used.begin(), part.used.end());
+        for (const auto& [mod, fault] : part.archiveFaults) {
+            auto& all = archiveFaults[mod];
+            all.bundles += fault.bundles;
+            all.missing += fault.missing;
+            all.overrun += fault.overrun;
+            if (all.example.empty()) all.example = fault.example;
+        }
+        addedFrom.insert(part.addedFrom.begin(), part.addedFrom.end());
+        for (const auto& [guid, mod] : part.chunkKeptFrom) chunkKeptFrom.insert_or_assign(guid, mod);
+        laps += part.laps;
     }
 
+    // The superbundle's own part: its chunks, taken in order on this thread.
+    auto& report = jobReport;
+    auto& used = jobUsed;
+    auto& store = jobStore;
+    auto since = Clock::now();
     std::map<fb::Guid, std::size_t> chunkAt;
     // A chunk entry identical to the base's is a mod carrying it unchanged.
     std::map<fb::Guid, fb::TocChunk> baseChunk;
@@ -1269,6 +1838,41 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             merged.chunks.push_back(chunk);
         }
     }
+    // A chunk a merged bundle holds from one mod's copy streams through this TOC's entry for
+    // it, so that entry has to be the same mod's, whatever the rules above chose for it. Two
+    // retextures of one game shoe each ship the shoe's mesh with its geometry chunks under
+    // the game's guids; a MeshSet over another mesh's vertices is a skater stretched across
+    // the map, so the mesh, its chunks and their TOC entries are kept from the one copy.
+    {
+        std::map<const Source*, std::map<fb::Guid, const fb::TocChunk*>> listed;
+        std::size_t followed{};
+        for (const auto& [guid, mod] : chunkKeptFrom) {
+            if (!mod) continue;
+            const auto source = sourceOf.find(*mod);
+            if (source == sourceOf.end()) continue;
+            auto& own = listed[source->second];
+            if (own.empty())
+                for (const auto& chunk : source->second->toc.chunks) own.emplace(chunk.guid, &chunk);
+            const auto found = own.find(guid);
+            if (found == own.end()) continue;
+            auto chunk = *found->second;
+            store.shift(chunk.location, chunk.offset, source->second->placement);
+            const auto at = chunkAt.find(guid);
+            if (at != chunkAt.end() && same(merged.chunks[at->second], chunk)) continue;
+            if (chunk.location.patch && !chunk.removed)
+                used.emplace(chunk.location.installChunk, chunk.location.archive);
+            if (at == chunkAt.end()) {
+                chunkAt.emplace(guid, merged.chunks.size());
+                merged.chunks.push_back(chunk);
+            } else {
+                merged.chunks[at->second] = chunk;
+            }
+            ++followed;
+        }
+        if (followed)
+            report.notes.push_back(relative + ": " + std::to_string(followed) +
+                " chunk entr(y/ies) follow the mod whose copy of the bundle holds the chunk");
+    }
     // This superbundle resolves chunks from its own TOC: the audio of a song another
     // mod added to a bundle copied here has to be listed here as well.
     for (const auto& name : addedFrom) {
@@ -1284,9 +1888,39 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         if (listed) report.notes.push_back(relative + ": " + std::to_string(listed) + " chunk(s) from " + name);
     }
 
+    lap(laps.chunks, since);
+
     if (sources.size() > 1) {
         report.notes.push_back(relative + ": combined " + std::to_string(sources.size()) +
             " mods over " + std::to_string(baseBundles) + " base bundle(s)");
+    }
+    // (For the superbundles many mods ship: a merge of three hundred cosmetic mods waits on
+    // the item superbundle alone, and the log says which part of it.)
+    if (sources.size() >= 10) {
+        const auto seconds = [](Clock::duration elapsed) {
+            const auto tenths = (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() + 50) / 100;
+            return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " s";
+        };
+        // The bundle that took longest: one that every mod copies whole holds back the rest.
+        std::string slowest;
+        {
+            const Part* longest{};
+            Clock::duration most{};
+            for (const auto& part : parts) {
+                const auto took = part.laps.absorbBase + part.laps.absorbMods + part.laps.decode + part.laps.held +
+                                  part.laps.merge + part.laps.metadata + part.laps.write;
+                if (took > most) most = took, longest = &part;
+            }
+            if (longest) slowest = longest->name + " (" + std::to_string(longest->copies.size()) + " copies, " + seconds(most) + ")";
+        }
+        report.notes.push_back(relative + ": times: " + std::to_string(parts.size()) + " bundle(s) in " +
+            seconds(bundlesTook) + " on " + std::to_string(spread + 1) +
+            " thread(s), the longest " + slowest + "; summed over them, absorbing the game's copy " + seconds(laps.absorbBase) +
+            ", the mods' " + seconds(laps.absorbMods) + " (regions " + seconds(laps.regions) + ", manifests " +
+            seconds(laps.manifests) + ", other mods' changes " + seconds(laps.propagate) + ", copying the asset lists " + seconds(laps.flatten) + ", indexing " +
+            seconds(laps.index) + "), combining: decoding " + seconds(laps.decode) + ", reading what the bundle holds " +
+            seconds(laps.held) + ", merging " + seconds(laps.merge) + "; chunk metadata " + seconds(laps.metadata) +
+            ", writing " + seconds(laps.write) + ", chunks " + seconds(laps.chunks));
     }
     for (const auto& [modName, fault] : archiveFaults) {
         std::string text = relative + ": " + std::to_string(fault.bundles) + " bundle(s) point outside the "

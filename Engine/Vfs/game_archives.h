@@ -54,9 +54,10 @@ public:
     // "<package>/cas_NN.cas" for a log line; never throws for an unknown chunk.
     [[nodiscard]] std::string describe(const frostbite::CasIdentifier& location) const;
     // The archive's size on disk under `root`, remembered per file; nullopt
-    // when the file is not there or its package directory is unknown.
+    // when the file is not there or its package directory is unknown. Safe from
+    // any thread; copies of this object share what is remembered.
     [[nodiscard]] std::optional<std::uint64_t> archive_size(const std::filesystem::path& root,
-                                                            const frostbite::CasIdentifier& location);
+                                                            const frostbite::CasIdentifier& location) const;
     [[nodiscard]] const std::string* find_directory(std::uint32_t installChunk) const;
     [[nodiscard]] const std::string& directory(std::uint32_t installChunk) const;
     // Every install chunk whose archives live in `directory`.
@@ -78,6 +79,7 @@ private:
     std::filesystem::path root_;
     std::map<std::string, std::set<std::uint16_t>> directories_;
     std::map<std::uint32_t, std::string> chunkDirectory_;
-    std::map<std::wstring, std::optional<std::uint64_t>> sizes_;
+    struct Sizes; // archive_size's answers, behind a lock
+    std::shared_ptr<Sizes> sizes_;
 };
 }
