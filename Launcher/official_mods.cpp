@@ -38,6 +38,7 @@ struct Shared {
     std::condition_variable done;
     State state;
     bool started{};
+    int installs{};                 // install() downloads running; Play waits for them
     std::atomic<bool> cancel{};
 };
 Shared& shared() {
@@ -151,6 +152,12 @@ void download(const fs::path& root, const Mod& mod, const std::atomic<bool>& can
     write_stamp(target, mod.version);
 }
 
+std::string status_of(const Mod& mod) {
+    if (mod.installed.empty()) return "Not installed";
+    if (!mod.version.empty() && mod.installed != mod.version) return "Update available";
+    return "Up to date";
+}
+
 void sync(const fs::path& mods_root) {
     auto& s = shared();
     const auto root = official_root(mods_root);
@@ -186,33 +193,19 @@ void sync(const fs::path& mods_root) {
     log(logging::Level::info, std::format("Official mods: {} from {}", list.size(), source));
 
     for (const auto& line : adopt_and_retire(mods_root, list)) log(logging::Level::info, "Official mods: " + line);
+    // Nothing is downloaded here: the player installs and updates them on the OFFICIAL tab
+    // (install()). Only what the latest version is, for that tab.
     for (auto& mod : list) {
         if (s.cancel) break;
         mod.installed = stamp_of(root / wide(mod.full_name));
-        update(mod.full_name, [&](Mod& shown) { shown.installed = mod.installed; shown.working = true; });
-        std::string status;
         try {
             if (mod.version.empty() || mod.download_url.empty()) ask_thunderstore(mod);
-            if (mod.installed != mod.version) {
-                update(mod.full_name, [&](Mod& shown) {
-                    shown.version = mod.version;
-                    shown.status = mod.installed.empty() ? "Downloading v" + mod.version : "Updating to v" + mod.version;
-                });
-                download(root, mod, s.cancel);
-                log(logging::Level::info, std::format("Official mods: {} v{} {}", mod.full_name, mod.version,
-                                                      mod.installed.empty() ? "installed" : "updated from v" + mod.installed));
-                mod.installed = mod.version;
-            }
-            status = "Up to date";
         } catch (const std::exception& failure) {
-            log(logging::Level::warning, std::format("Official mods: {} could not be brought up to date: {}", mod.full_name, failure.what()));
-            status = mod.installed.empty() ? "Not downloaded yet: " + std::string(failure.what())
-                                           : "Could not check for an update; v" + mod.installed + " stays";
+            log(logging::Level::warning, std::format("Official mods: the latest version of {} is not known: {}", mod.full_name, failure.what()));
         }
         update(mod.full_name, [&](Mod& shown) {
             shown = mod;
-            shown.status = status;
-            shown.working = false;
+            shown.status = status_of(mod);
         });
     }
     // An official mod the list no longer names goes (it came from ReSkate, not the player).
@@ -348,7 +341,88 @@ void start(const fs::path& mods_root) {
 bool wait(std::chrono::milliseconds timeout) {
     auto& s = shared();
     std::unique_lock lock(s.mutex);
-    return s.done.wait_for(lock, timeout, [&] { return s.state.synced; });
+    return s.done.wait_for(lock, timeout, [&] { return s.state.synced && !s.installs; });
+}
+
+void install(const fs::path& mods_root, const std::string& full_name) {
+    auto& s = shared();
+    Mod mod;
+    {
+        std::lock_guard lock(s.mutex);
+        const auto found = std::find_if(s.state.mods.begin(), s.state.mods.end(), [&](const Mod& m) { return m.full_name == full_name; });
+        if (found == s.state.mods.end() || found->working || s.state.syncing) return;
+        found->working = true;
+        found->status = found->installed.empty() ? "Downloading" : "Updating";
+        mod = *found;
+        ++s.installs;
+    }
+    std::thread([mods_root, mod]() mutable {
+        auto& s = shared();
+        std::string status;
+        try {
+            if (mod.version.empty() || mod.download_url.empty()) ask_thunderstore(mod);
+            const auto was = mod.installed;
+            download(official_root(mods_root), mod, s.cancel);
+            mod.installed = mod.version;
+            log(logging::Level::info, std::format("Official mods: {} v{} {}", mod.full_name, mod.version,
+                                                  was.empty() ? "installed" : "updated from v" + was));
+            status = status_of(mod);
+        } catch (const std::exception& failure) {
+            log(logging::Level::warning, std::format("Official mods: {} could not be {}: {}", mod.full_name,
+                                                     mod.installed.empty() ? "installed" : "updated", failure.what()));
+            status = std::string(mod.installed.empty() ? "Install failed: " : "Update failed: ") + failure.what();
+        }
+        update(mod.full_name, [&](Mod& shown) {
+            shown = mod;
+            shown.status = status;
+            shown.working = false;
+        });
+        {
+            std::lock_guard lock(s.mutex);
+            --s.installs;
+        }
+        s.done.notify_all();
+    }).detach();
+}
+
+void uninstall(const fs::path& mods_root, const std::string& full_name) {
+    auto& s = shared();
+    {
+        std::lock_guard lock(s.mutex);
+        const auto found = std::find_if(s.state.mods.begin(), s.state.mods.end(), [&](const Mod& m) { return m.full_name == full_name; });
+        if (found == s.state.mods.end() || found->working || found->installed.empty() || s.state.syncing) return;
+        found->working = true;
+        found->status = "Removing";
+        ++s.installs;
+    }
+    std::thread([mods_root, full_name] {
+        auto& s = shared();
+        const auto folder = official_root(mods_root) / wide(full_name);
+        std::error_code error;
+        // The stamp first: a folder without it is no mod to the game, whatever is left of it.
+        fs::remove(folder / std::string(mods::official_stamp), error);
+        const bool gone = !error;
+        if (gone) {
+            fs::remove_all(folder, error);
+            if (error)
+                log(logging::Level::warning, std::format("Official mods: some of {} could not be deleted ({}); it is uninstalled all the same",
+                                                         full_name, error.message()));
+            (void)mods::set_official_off(mods_root, full_name, false);
+            log(logging::Level::info, "Official mods: " + full_name + " uninstalled");
+        } else {
+            log(logging::Level::warning, std::format("Official mods: {} could not be uninstalled: {}", full_name, error.message()));
+        }
+        update(full_name, [&](Mod& shown) {
+            if (gone) shown.installed.clear();
+            shown.status = gone ? status_of(shown) : "Uninstall failed: " + error.message() + " (is Skate still running?)";
+            shown.working = false;
+        });
+        {
+            std::lock_guard lock(s.mutex);
+            --s.installs;
+        }
+        s.done.notify_all();
+    }).detach();
 }
 
 State snapshot() {

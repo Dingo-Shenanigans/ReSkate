@@ -159,7 +159,7 @@ inline constexpr KnobInfo knob_info[] = {
     {"collide", "Hit the ground, walls and ramps (1), or fly through everything (0)", 0.0f, 1.0f, 1.0f},
     {"radius", "How big the drone is for collisions, in metres: how close it gets to things", 0.05f, 3.0f, 0.3f},
     {"osd", "Show the goggle display: battery, timer, throttle, altitude, speed and signal. The range warnings show either way", 0.0f, 1.0f, 1.0f},
-    {"volume", "Motor sound volume (0 = silent)", 0.0f, 1.0f, 0.5f},
+    {"volume", "Motor sound volume (0 = silent)", 0.0f, 1.0f, 0.09f},
     {"osdscale", "Size of the goggle display's text (1 = normal, 2 = double)", 0.4f, 5.0f, 1.5f},
     {"osdcolor", "Goggle display colour: 0 white, 1 green, 2 yellow, 3 cyan, 4 orange, 5 pink", 0.0f, 5.0f, 0.0f},
     {"osdfont", "Goggle display font: 0 = pixel, like real goggles; 1 = smooth", 0.0f, 1.0f, 0.0f},

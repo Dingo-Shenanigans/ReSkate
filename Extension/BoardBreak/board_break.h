@@ -46,6 +46,8 @@ void on_render_pose(std::uintptr_t animation_interface) noexcept;
 
 // Any thread.
 bool available() noexcept;
+// Its official mod is turned off in the launcher (Engine/Vfs/builtin_packs.h): it did not start.
+bool turned_off() noexcept;
 bool enabled() noexcept; // off: boards hold; one that is broken stays so until it is picked up
 void set_enabled(bool enabled) noexcept;
 // The name of the deck in the game ("standard", "wide" and so on), empty when none of Board Break's

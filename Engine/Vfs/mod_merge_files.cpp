@@ -216,3 +216,34 @@ void write_placements(const fs::path& file, const PlacementRecord& record) {
 }
 
 } // namespace dingosdk::mods::detail
+
+namespace dingosdk::mods {
+
+std::map<std::string, std::uint64_t> read_map_meshes(const std::filesystem::path& file) {
+    std::map<std::string, std::uint64_t> meshes;
+    try {
+        std::ifstream input(file, std::ios::binary);
+        if (!input) return meshes;
+        const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        const auto root = Json::parse(text);
+        if (!root.contains("maps")) return meshes;
+        for (const auto& [level, bytes] : root.at("maps").items()) meshes[level] = bytes.get<std::uint64_t>();
+    } catch (const std::exception&) {
+        meshes.clear();
+    }
+    return meshes;
+}
+
+void write_map_meshes(const std::filesystem::path& file, const std::map<std::string, std::uint64_t>& meshes) {
+    auto all = read_map_meshes(file);
+    for (const auto& [level, bytes] : meshes) all[level] = bytes;
+    auto root = Json::object();
+    root["schema"] = 1u;
+    auto maps = Json::object();
+    for (const auto& [level, bytes] : all) maps[level] = bytes;
+    root["maps"] = std::move(maps);
+    const auto text = root.dump(2);
+    detail::write_file(file, std::as_bytes(std::span(text)));
+}
+
+} // namespace dingosdk::mods

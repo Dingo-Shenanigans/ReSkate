@@ -6,16 +6,18 @@
 #include <string_view>
 #include <vector>
 
-// Official mods: Thunderstore packages every player has, always on, at their latest version. The
-// ReSkate backend names them (GET /api/v1/official-mods, beside the verified mods), so one is
-// added or dropped without a release; the launcher keeps the last list it read, and has one of its
-// own for a first launch with no network. They live in Mods/.reskate-official/<Namespace-Name>
+// Official mods: Thunderstore packages made for ReSkate's own features, listed on the launcher's
+// OFFICIAL tab, where the player installs, updates and turns them off. The ReSkate backend names
+// them (GET /api/v1/official-mods, beside the verified mods), so one is added or dropped without a
+// release; the launcher keeps the last list it read, and has one of its own for a first launch with
+// no network. Installed, they live in Mods/.reskate-official/<Namespace-Name>
 // (Engine/Vfs/builtin_packs.h), which the game merges after every installed mod.
 //
-// As the launcher starts it reads the list and, on a thread of its own, puts each mod in place: a
-// copy the player installed from Thunderstore is moved over rather than downloaded again, a newer
-// version is downloaded, and copies left in the Mods folder (and mods retired with an official
-// one) go to the Recycle Bin and out of mods.json. Play waits for it.
+// As the launcher starts it reads the list and, on a thread of its own, looks up each one's latest
+// version: a copy the player installed from Thunderstore is moved over, and copies left in the
+// Mods folder (and mods retired with an official one) go to the Recycle Bin and out of mods.json.
+// Nothing is downloaded until the player asks (install()). Play waits for that and for downloads
+// under way.
 namespace dingosdk::official_mods {
 struct Mod {
     std::string full_name;   // Namespace-Name
@@ -34,8 +36,16 @@ struct State {
 
 // Puts the official mods in place under `mods_root`, once a launch (later calls do nothing).
 void start(const std::filesystem::path& mods_root);
-// Waits for that, at most `timeout`. False while it still runs (or never started).
+// Waits for that and any install() under way, at most `timeout`. False while one still runs (or it
+// never started).
 bool wait(std::chrono::milliseconds timeout);
+// Downloads the latest version of the official mod `full_name` and puts it in place under
+// `mods_root`, on a thread of its own; snapshot() shows how it goes. Does nothing while the list is
+// still being read or the mod is already being downloaded.
+void install(const std::filesystem::path& mods_root, const std::string& full_name);
+// Takes the installed official mod `full_name` away (its folder, and whether it was turned off), on
+// a thread of its own; it can be installed again. Does nothing while it is being downloaded.
+void uninstall(const std::filesystem::path& mods_root, const std::string& full_name);
 State snapshot();
 // Whether the Thunderstore package `full_name` is official (or retired with one): the browser
 // neither lists nor installs it.

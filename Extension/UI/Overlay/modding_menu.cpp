@@ -357,8 +357,8 @@ void draw_installed_mods(SkateMenu& menu) {
         tile(index++, title, line, effect ? "OFFICIAL" : set_by_deck ? "SET ASIDE" : "APPLY TO LOAD",
              effect ? skate_theme::good : set_by_deck ? skate_theme::tile_light : skate_theme::danger,
              known ? mod_contents(*known) : "",
-             "An official mod: ReSkate keeps it for every player at its latest version, always on. "
-             "The launcher installs and updates it, so it cannot be disabled here.", nullptr);
+             "An official mod, made for one of ReSkate's own features. It is installed, updated and turned off "
+             "on the launcher's OFFICIAL tab, not here.", nullptr);
     }
     for (const auto& name : removed)
         tile(index++, name, "Folder deleted", "APPLY TO UNLOAD", skate_theme::danger, "",

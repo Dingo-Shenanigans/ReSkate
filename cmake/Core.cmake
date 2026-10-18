@@ -102,6 +102,8 @@ if(WIN32)
         Engine/Vfs/mod_merge_cas_store.cpp
         Engine/Vfs/mod_merge_combine.cpp
         Engine/Vfs/mod_merge_overrides.cpp
+        Engine/Vfs/mod_merge_conflicts.cpp
+        Engine/Vfs/mod_merge_textures.cpp
         Engine/Vfs/mod_merge_grid.cpp
         Engine/Vfs/mod_merge_load_screens.cpp
         Engine/Vfs/mod_music.cpp

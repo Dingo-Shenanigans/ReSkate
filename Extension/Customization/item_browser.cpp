@@ -53,10 +53,13 @@ constexpr std::uint32_t rarity_icon = 0xd4f0f044;
 // (ui/features/mystuff/cas/actions/casgriditem_onfocus_inventorymanager) gives it a warning sign
 // (IconOverride: ui/textures/icons/generic/img_generic_warning_128) each time an item is
 // focused. A mod item's description is only room for the overlay's mod card
-// (item_origins::reserved_description), so that notice loses the sign again.
+// (item_origins::reserved_description), so that notice shows the game's info sign instead. Never
+// none: the game resolves the override again later, and an empty one crashed it there
+// (Skate.exe+0x3e897fb, a lookup that finds nothing; 2.1.0, 2026-10-18).
 constexpr std::uint32_t notice_view = 0x7290e514;  // ui/foundations/components/notices/NoticeViewModel
 constexpr std::uint32_t notice_message = 0x94703efc, label_text = 0x4d8e01b9; // .Message (a label) .Text
 constexpr std::uint32_t notice_icon = 0x3514a765;  // NoticeViewModel.IconOverride
+constexpr char notice_info_texture[] = "ui/textures/icons/generic/img_generic_info_64";
 // The game's own star (UI/Textures/Common/Shapes/Bespoke), as its asset is named.
 constexpr char star_texture[] = "UI/Textures/comMon/Shapes/Bespoke/img_Star_Fill_64";
 
@@ -156,7 +159,9 @@ struct State {
     ULONGLONG next_sync{}, next_scan{}, last_open{};
     std::uint64_t active_list{};  // the grid list that had the focus at the last full pass
     std::vector<std::uint64_t> notices;  // the game's notice models, as of the last scan
-    bool notice_cleared_logged{}, notice_failed_logged{};
+    std::uint64_t notice_info{};         // the info sign's texture, as last put on a notice
+    ULONGLONG notice_info_retry{};       // not loaded: when to look for it again
+    bool notice_cleared_logged{}, notice_failed_logged{}, notice_kept_logged{};
     std::uint64_t serial{};
     bool open{};
     std::string last_error;
@@ -599,12 +604,13 @@ void before_level_transition(unsigned next, std::uintptr_t base) noexcept {
             s.restyled.clear();
             s.layout = {};
             s.open = false;
+            s.notice_info = 0; // (its texture may go with the level)
         });
     } catch (...) {}
 }
 
-// A notice showing a mod item's reserved description loses its warning sign (see notice_view).
-// Every tick while a grid is open: the game puts the sign back on each focus.
+// A notice showing a mod item's reserved description has the info sign for the warning sign (see
+// notice_view). Every tick while a grid is open: the game puts the warning back on each focus.
 void quiet_notices(State& s, const md::Context& context) {
     for (const auto handle : s.notices) {
         try {
@@ -620,11 +626,21 @@ void quiet_notices(State& s, const md::Context& context) {
                 std::string_view(start.data(), reserved.size()) != reserved)
                 continue;
             const auto icon = context.field(notice, notice_icon);
-            std::vector<std::byte> now(md::size(icon.type)), none(now.size());
-            if (now.empty() || !memory::peek_bytes(context.address(icon), now.data(), now.size()) || now == none) continue;
-            context.publish(icon, none.data());
+            std::uint64_t now{};
+            md::require(md::size(icon.type) == sizeof(now), "Native notice icon field differs.");
+            if (!memory::peek(context.address(icon), now) || !now || now == s.notice_info) continue;
+            // A texture the game has loaded, or the warning stays: never an empty override.
+            if (GetTickCount64() < s.notice_info_retry) continue;
+            if (!md::publish_texture(context, icon, notice_info_texture)) {
+                s.notice_info_retry = GetTickCount64() + 2000;
+                if (!std::exchange(s.notice_kept_logged, true))
+                    logging::log(Level::info, Channel::customization, "Item browser: the info sign is not loaded; a mod item's card keeps the warning sign.");
+                continue;
+            }
+            std::uint64_t info{};
+            if (memory::peek(context.address(icon), info)) s.notice_info = info;
             if (!std::exchange(s.notice_cleared_logged, true))
-                logging::log(Level::info, Channel::customization, "Item browser: a mod item's card shows no warning sign ({} byte icon cleared).", now.size());
+                logging::log(Level::info, Channel::customization, "Item browser: a mod item's card shows the info sign for the warning sign.");
         } catch (const std::exception& error) {
             if (!std::exchange(s.notice_failed_logged, true))
                 logging::log(Level::warning, Channel::customization, "Item browser: a notice could not be checked for a mod item's warning sign: {}", error.what());

@@ -206,8 +206,8 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
 
 // ---------------------------------------------------------------- MY MODS
 
-constexpr std::array<const char*, 7> filter_names{"All mods", "Enabled", "Disabled", "Maps", "Game data", "Updates",
-                                                  "Problems"};
+constexpr std::array<const char*, 8> filter_names{"All mods", "Enabled", "Disabled", "Maps", "Game data", "Updates",
+                                                  "Problems", "Conflicts"};
 constexpr std::array<const char*, 3> order_names{"Load order", "Name", "Largest first"};
 
 // Something the page was asked to do to one mod or to all the ticked ones.
@@ -229,6 +229,22 @@ bool update_waiting(const ModsPanel& panel, const thunderstore::Installed& insta
     return package && thunderstore::update_available(*package, installed);
 }
 
+// Left out because it conflicts with a mod higher in the load order (mod_catalog.cpp): that
+// mod's folder name, else empty.
+std::string conflict_winner(const ModsPanel& panel, const std::string& name) {
+    constexpr std::string_view prefix = "conflicts with ";
+    const auto found = panel.list.excluded.find(name);
+    if (found == panel.list.excluded.end() || found->second.empty() || !found->second.front().starts_with(prefix)) return {};
+    const auto& problem = found->second.front();
+    return problem.substr(prefix.size(), problem.find(':') - prefix.size());
+}
+// A mod's title, by its folder name.
+std::string title_of(const ModsPanel& panel, const std::string& name) {
+    for (const auto& entry : panel.list.entries)
+        if (entry.mod.name == name) return entry.mod.title.empty() ? name : entry.mod.title;
+    return name;
+}
+
 // The rows the list shows, as places in the load order: what the search and the
 // filter leave, in the order asked for.
 std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Installed& installed) {
@@ -245,7 +261,8 @@ std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Instal
         case 3: keep = !mod.levels.empty(); break;
         case 4: keep = mod.levels.empty() && mod.provides_layout; break;
         case 5: keep = update_waiting(panel, installed, mod.name); break;
-        case 6: keep = !mod.outdated.empty() || panel.list.excluded.contains(mod.name); break;
+        case 6: keep = !mod.outdated.empty() || (panel.list.excluded.contains(mod.name) && conflict_winner(panel, mod.name).empty()); break;
+        case 7: keep = mod.outdated.empty() && !conflict_winner(panel, mod.name).empty(); break;
         default: break;
         }
         if (keep && !query.empty())
@@ -379,6 +396,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     }
     const float right = start.x + width;
     const bool left_out = panel.list.excluded.contains(mod.name);
+    const bool conflicted = left_out && !conflict_winner(panel, mod.name).empty();
     const auto* package = package_for(panel.store, mod.name);
     const bool update = package && thunderstore::update_available(*package, installed);
 
@@ -436,6 +454,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
         next -= S(12);
     };
     if (!mod.outdated.empty()) pill("OUTDATED", color::warning);
+    else if (conflicted) pill("CONFLICT", color::warning);
     else if (left_out) pill("NOT LOADED", color::danger);
 
     // The same icon the store shows, so a mod looks like itself on both pages.
@@ -498,9 +517,13 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     const float top = ImGui::GetCursorPosY();
     {
         const auto enabled = std::count_if(entries.begin(), entries.end(), [](const auto& entry) { return entry.enabled; });
+        // A mod left out for a conflict is no fault of its own: counted apart from the problems.
+        const auto conflicts = std::count_if(entries.begin(), entries.end(), [&](const auto& entry) {
+            return entry.enabled && entry.mod.outdated.empty() && !conflict_winner(panel, entry.mod.name).empty();
+        });
         const auto problems = std::count_if(entries.begin(), entries.end(), [&](const auto& entry) {
             return !entry.mod.outdated.empty() || (entry.enabled && panel.list.excluded.contains(entry.mod.name));
-        });
+        }) - conflicts;
         const auto waiting = std::count_if(entries.begin(), entries.end(),
             [&](const auto& entry) { return update_waiting(panel, installed, entry.mod.name); });
         std::uint64_t bytes{};
@@ -511,9 +534,11 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
             "Your installed mods. They load top to bottom: where two change the same thing, the higher one wins. "
             "Changes apply the next time Skate starts.",
             problems ? std::format("{} {}", problems, problems == 1 ? "PROBLEM" : "PROBLEMS")
+                : conflicts ? std::format("{} {}", conflicts, conflicts == 1 ? "CONFLICT" : "CONFLICTS")
                 : waiting ? std::format("{} {} WAITING", waiting, waiting == 1 ? "UPDATE" : "UPDATES")
                 : entries.empty() ? std::string("NONE YET") : std::string("ALL GOOD"),
-            problems ? color::danger : waiting ? color::blue : entries.empty() ? color::tile_grey : color::good, caption);
+            problems ? color::danger : conflicts ? color::warning : waiting ? color::blue
+                : entries.empty() ? color::tile_grey : color::good, caption);
     }
 
     // ------------------------------------------------ search, filter, order, refresh
@@ -621,10 +646,29 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
             "mods.json could not be read (%s), so the game loads no mods. Any change here rewrites it.",
             panel.list.issue.c_str());
-    std::vector<std::string> dropped;
-    for (const auto& entry : entries)
-        if (entry.enabled && panel.list.excluded.contains(entry.mod.name) && entry.mod.outdated.empty())
+    std::vector<std::string> dropped, conflicted;
+    std::string winner;   // with one conflicted mod: the mod it lost to
+    for (const auto& entry : entries) {
+        if (!entry.enabled || !panel.list.excluded.contains(entry.mod.name) || !entry.mod.outdated.empty()) continue;
+        if (auto other = conflict_winner(panel, entry.mod.name); !other.empty()) {
+            conflicted.push_back(entry.mod.title);
+            winner = title_of(panel, other);
+        } else {
             dropped.push_back(entry.mod.title);
+        }
+    }
+    if (!conflicted.empty()) {
+        std::string names;
+        for (const auto& title : conflicted) names += (names.empty() ? "" : ", ") + title;
+        if (conflicted.size() == 1)
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+                "%s did not load: it conflicts with %s, which is higher in the load order, so only that one loads. "
+                "Open it to see more.", names.c_str(), winner.c_str());
+        else
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+                "%s did not load: each conflicts with a mod higher in the load order, so only that one loads. "
+                "Open one to see which.", names.c_str());
+    }
     if (!dropped.empty()) {
         std::string names;
         for (const auto& title : dropped) names += (names.empty() ? "" : ", ") + title;
@@ -760,7 +804,15 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
             "Outdated: this mod does not load. It was made for another version of Skate (%s). Get an updated "
             "version, or rebuild it with the latest ReSkate Studio.", mod.outdated.c_str());
-    if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end()) {
+    if (const auto other = conflict_winner(panel, mod.name); !other.empty()) {
+        const auto winner = title_of(panel, other);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+            "Not loaded: this mod changes the same parts of the game as %s, which is higher in the load order, in a "
+            "way the two cannot share, so only %s loads. To use this mod instead, move it above %s, or switch one "
+            "of them off.", winner.c_str(), winner.c_str(), winner.c_str());
+        if (const auto& problems = panel.list.excluded.at(mod.name); !problems.empty())
+            ImGui::TextDisabled("%s", problems.front().c_str());
+    } else if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end()) {
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
             "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
             "mod folder, or rebuild it with a current ReSkate Studio.");
@@ -943,16 +995,25 @@ void start_install(ModsPanel& panel, const fs::path& source, bool replace) {
 void mods_broken_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel,
                         const std::vector<ModProblem>& problems) {
     const bool one = problems.size() == 1;
+    // A conflict is two mods changing the same game files: only the one higher in the load order loads.
+    const bool conflicts = std::all_of(problems.begin(), problems.end(), [](const ModProblem& problem) { return problem.conflict; });
     const float rows = static_cast<float>(problems.size()) * S(52);
     const auto frame = begin_panel("##mods_broken_panel", size,
         ImVec2(S(620), std::min(size.y - S(80), S(300) + rows)));
-    panel_title(fonts, one ? "A MOD COULD NOT BE MERGED" : "MODS COULD NOT BE MERGED");
+    panel_title(fonts, conflicts ? (one ? "MOD CONFLICT" : "MOD CONFLICTS") : one ? "A MOD COULD NOT BE MERGED" : "MODS COULD NOT BE MERGED");
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled(one
-        ? "This mod cannot be combined with the game's files, so none of its content would load. Skate would "
-          "start without it and never say why."
-        : "These mods cannot be combined with the game's files, so none of their content would load. Skate would "
-          "start without them and never say why.");
+    if (conflicts)
+        ImGui::TextDisabled(one
+            ? "This mod changes the same parts of the game as a mod above it in your load order, in a way the two "
+              "cannot share. Only the higher one loads, so this one is left out."
+            : "These mods change the same parts of the game as mods above them in your load order, in ways they "
+              "cannot share. Only the higher ones load, so these are left out.");
+    else
+        ImGui::TextDisabled(one
+            ? "This mod cannot be combined with the game's files, so none of its content would load. Skate would "
+              "start without it and never say why."
+            : "These mods cannot be combined with the game's files, so none of their content would load. Skate would "
+              "start without them and never say why.");
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
 
@@ -961,7 +1022,7 @@ void mods_broken_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui&
         ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     for (const auto& problem : problems) {
         ImGui::PushFont(fonts.bold);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color::danger));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(problem.conflict ? color::warning : color::danger));
         ImGui::TextUnformatted(problem.title.c_str());
         ImGui::PopStyleColor();
         ImGui::PopFont();
@@ -973,7 +1034,9 @@ void mods_broken_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui&
     ImGui::EndChild();
     ImGui::Spacing();
     ImGui::PushFont(fonts.caption);
-    ImGui::TextDisabled("Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.");
+    ImGui::TextDisabled("%s", conflicts
+        ? "To use a left-out mod instead, move it above the other in the Mod Manager, or switch one of them off."
+        : "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.");
     ImGui::PopFont();
 
     ImGui::SetCursorPosY(frame.y - S(24) - ImGui::GetFrameHeight());

@@ -478,7 +478,7 @@ Session open_session(const std::string& log_level) {
         logging::Channel::launcher, "File logging is unavailable; debugger output remains active.");
     logging::write(logging::Level::info, logging::Channel::launcher, L"ReSkate launcher starting");
     logging::write(logging::Level::info, logging::Channel::launcher, L"Current launch log: " + (session.paths.logs / L"ReSkate.log").wstring());
-    // The official mods, put in place on a thread of their own while the launcher opens (Play waits).
+    // The official mods list, read on a thread of its own while the launcher opens (Play waits).
     official_mods::start(launcher_mods::mods_root(session.paths.directory));
     return session;
 }

@@ -512,6 +512,16 @@ int main() {
                   read(adopted / L"layout.toc") == "toc",
               "A second copy of an official mod goes, the official one stays");
         check(official_mods::adopt_and_retire(store, official).empty(), "Nothing is done twice");
+        // Turned off in the launcher: still in place, but the game takes it in no more.
+        check(!mods::official_off(store, "Fourth_Studio-Road_Rash") && mods::set_official_off(store, "Fourth_Studio-Road_Rash", true) &&
+                  mods::official_off(store, "fourth_studio-road_rash") && mods::official_packs(store).empty() &&
+                  mods::official_packs(store, true).size() == 1 && fs::exists(adopted / L"layout.toc"),
+              "An official mod turned off stays in place and is left out");
+        check(mods::set_official_off(store, "Fourth_Studio-Road_Rash", true) && mods::set_official_off(store, "Fourth_Studio-Road_Rash", false) &&
+                  !mods::official_off(store, "Fourth_Studio-Road_Rash") && mods::official_packs(store).size() == 1 &&
+                  read(store / L".reskate-official" / L"official-off.txt").empty(),
+              "Turned on again, it is taken in again");
+        check(!mods::set_official_off(store, "a/b", true) && !mods::set_official_off(store, "", true), "Only a folder name is written");
     }
     // Live (RESKATE_OFFICIAL_LIVE=1): the whole of it, against ReSkate and Thunderstore, into a
     // scratch Mods folder: the list, each mod's latest version downloaded and put in place.
@@ -519,7 +529,10 @@ int main() {
         const auto store = root / L"live" / L"Mods";
         fs::create_directories(store);
         official_mods::start(store);
-        check(official_mods::wait(std::chrono::minutes(5)), "The official mods were put in place in time");
+        check(official_mods::wait(std::chrono::minutes(1)), "The list was read in time");
+        check(mods::official_packs(store).empty(), "Nothing is downloaded until asked");
+        for (const auto& mod : official_mods::snapshot().mods) official_mods::install(store, mod.full_name);
+        check(official_mods::wait(std::chrono::minutes(5)), "The official mods were installed in time");
         const auto state = official_mods::snapshot();
         std::cout << "  official mods from " << state.source << ":\n";
         for (const auto& mod : state.mods)

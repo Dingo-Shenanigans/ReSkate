@@ -702,7 +702,7 @@ bool list_row(SkateMenu& menu, const char* id, const std::string& text, const st
     return clicked && enabled;
 }
 
-void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const char*> tabs, const char* id) {
+void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> tabs, const char* id) {
     // A row of tiles like skate.'s tab bar: the selected tab is blue with black text.
     selected = std::clamp(selected, 0, static_cast<int>(tabs.size()) - 1);
     // LT / RT on a controller step the page's first row of tabs (the one drawn first each frame),
@@ -1072,7 +1072,9 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             int rows = 0, groups = 0;
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(menu, model, i)) continue;
-                rows += i == page_addons ? addon_count - 1 : 1;
+                if (i != page_addons) ++rows;
+                else
+                    for (int a = addon_drone; a < addon_count; ++a) rows += !addon_hidden(model, a);
                 if (group_of(i)) ++groups;
             }
             const float spacing = ImGui::GetStyle().ItemSpacing.y;
@@ -1109,6 +1111,7 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             ImGui::PushID(i);
             if (i == page_addons) {
                 for (int a = addon_drone; a < addon_count; ++a) {
+                    if (addon_hidden(model, a)) continue;
                     ImGui::PushID(a);
                     if (row("##addon", addon_names[static_cast<std::size_t>(a)], menu.page == page_addons && menu.addon == a, row_height, 0,
                             menu.bold, px(16)))

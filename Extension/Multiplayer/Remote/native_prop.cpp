@@ -253,6 +253,8 @@ void test_move(std::uintptr_t base) {
 // a received one would, so the models (tick_drone_models) and the markers show it with no second
 // player. It goes round a 4 m circle every 8 s, in front of where the skater was.
 constexpr std::uint64_t fake_remote_id = 1;
+// Whether real players' drones get a model (tick_drone_models): off until their crash is found.
+constexpr bool players_drone_models = false;
 void fake_remote_start(std::uintptr_t base, std::uintptr_t client) {
     auto &t = test();
     const auto local = capture_local(base, client, false);
@@ -294,10 +296,18 @@ void tick_drone_models(std::uintptr_t base, std::uintptr_t client, bool show) no
         std::lock_guard lock(registry().mutex);
         // The engine took some away (a map change takes them all).
         std::erase_if(m.list, [](const DroneModel &model) { return !tracked(model.prop.entity); });
-        const auto drones = show ? drone::beacon::snapshot() : std::vector<drone::beacon::Remote>{};
+        auto drones = show ? drone::beacon::snapshot() : std::vector<drone::beacon::Remote>{};
+        // Real players' drones are markers only for now: a model made for one crashed the game a
+        // few seconds later in the per-frame update of its shader sections (Skate.exe+0x505b04b,
+        // 2.1.0, 2026-10-18). The pretend one (dronemodeltest remote) still gets its model, to find why.
+        const auto players = drones.size();
+        if (!players_drone_models)
+            std::erase_if(drones, [](const drone::beacon::Remote &d) { return d.id != fake_remote_id; });
         if (drones.empty() && m.list.empty()) {
             m.waiting_since = 0;
-            set_models_status(show ? "No other player is flying a drone." : "Other players' drones are hidden.", false);
+            set_models_status(!show ? "Other players' drones are hidden."
+                              : players ? std::format("{} other player(s) flying; shown as markers only.", players)
+                                        : std::string("No other player is flying a drone."), false);
             return;
         }
         const auto now = GetTickCount64();

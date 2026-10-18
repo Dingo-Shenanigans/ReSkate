@@ -67,6 +67,10 @@ struct Exclusion {
     std::string fingerprint;           // mod_fingerprint() when it was left out
     std::string sdk;                   // the ReSkate.dll that left it out; a new one retries
     std::vector<std::string> problems; // why, most important first
+    // Left out for a conflict with this mod, higher in the load order, as its files were then
+    // (its mod_fingerprint()). It stays out only while that mod still loads above it unchanged.
+    std::string conflictWith;
+    std::string conflictFingerprint;
 };
 // Names, sizes and write times of every file in the mod folder.
 std::string mod_fingerprint(const std::filesystem::path& directory);

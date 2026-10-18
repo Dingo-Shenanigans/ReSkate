@@ -1212,12 +1212,17 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
         if (list.setting("Hall of Meat", on_off(m.hall_of_meat.enabled), m.hall_of_meat.available && console)) act("hall-of-meat");
-        if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
-        if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
-        if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
-        if (list.setting("Board Break", on_off(m.board_break.enabled), m.board_break.available && console)) act("board-break");
-        if (list.setting("Board Break deck", m.board_break.deck, m.board_break.available && m.board_break.has_deck && console))
-            act("board-break-deck");
+        // (Not listed when its official mod is turned off in the launcher.)
+        if (!m.road_rash.off) {
+            if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
+            if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
+            if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
+        }
+        if (!m.board_break.off) {
+            if (list.setting("Board Break", on_off(m.board_break.enabled), m.board_break.available && console)) act("board-break");
+            if (list.setting("Board Break deck", m.board_break.deck, m.board_break.available && m.board_break.has_deck && console))
+                act("board-break-deck");
+        }
         const auto &grind = m.grind_exit;
         if (list.setting("Grind exit triggers", on_off(grind.enabled), grind.available && console)) act("grind-exits");
         if (list.setting("Input Mode", grind.toe_heel ? "Toe / Heel" : "Left / Right", grind.available && console)) act("grind-exit-sides");

@@ -34,6 +34,8 @@ void on_client_tick(std::uintptr_t client) noexcept;
 
 // The switches, any thread; a change applies at the next tick and is saved with the profile.
 bool available() noexcept;
+// Its official mod is turned off in the launcher (Engine/Vfs/builtin_packs.h): it did not start.
+bool turned_off() noexcept;
 bool enabled() noexcept;        // off: the marks come off and no bail is counted
 bool blood() noexcept;          // off: the worst wounds are dry, with scabs
 bool covers_tattoos() noexcept; // on: wounds take the place of the player's own tattoos and moles

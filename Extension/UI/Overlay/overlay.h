@@ -224,16 +224,19 @@ struct HallOfMeatModel {
 };
 
 // Road Rash's switches (Extension/RoadRash/road_rash.h): started, switched on, and whether its
-// worst wounds bleed.
+// worst wounds bleed. `off`: its official mod is turned off in the launcher, and no menu lists it.
 struct RoadRashModel {
     bool available = false, enabled = false, blood = false;
+    bool off = false;
 };
 
 // Board Break's switch (Extension/BoardBreak/board_break.h): started, switched on, and which of
-// its decks is the one in the game (none: no deck pack loads, and no board can break).
+// its decks is the one in the game (none: no deck pack loads, and no board can break). `off`: its
+// official mod is turned off in the launcher, and no menu lists it.
 struct BoardBreakModel {
     bool available = false, enabled = false, has_deck = false;
     std::string deck = "None";
+    bool off = false;
     // Its settings (Extension/BoardBreak/board_break_feel.h) and how worn the board is (0 to 1, and
     // its word).
     bool always = false, rails = true, wear = true, crack_sounds = true, body_sounds = true;

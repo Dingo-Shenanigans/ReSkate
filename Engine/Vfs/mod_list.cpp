@@ -261,6 +261,8 @@ std::map<std::string, Exclusion, std::less<>> read_exclusions(const std::filesys
             Exclusion exclusion;
             exclusion.fingerprint = row.value("fingerprint", std::string{});
             exclusion.sdk = row.value("sdk", std::string{});
+            exclusion.conflictWith = row.value("conflict_with", std::string{});
+            exclusion.conflictFingerprint = row.value("conflict_fingerprint", std::string{});
             if (row.contains("problems") && row.at("problems").is_array())
                 for (const auto& problem : row.at("problems"))
                     if (problem.is_string() && exclusion.problems.size() < 16)
@@ -282,6 +284,10 @@ void write_exclusions(const std::filesystem::path& mods_root,
             auto row = Json::object();
             row["fingerprint"] = exclusion.fingerprint;
             row["sdk"] = exclusion.sdk;
+            if (!exclusion.conflictWith.empty()) {
+                row["conflict_with"] = exclusion.conflictWith;
+                row["conflict_fingerprint"] = exclusion.conflictFingerprint;
+            }
             auto problems = Json::array();
             for (std::size_t i = 0; i < exclusion.problems.size() && i < 16; ++i)
                 problems.push_back(exclusion.problems[i].substr(0, 600));

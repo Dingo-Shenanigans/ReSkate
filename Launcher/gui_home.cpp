@@ -407,6 +407,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // MODS tile can say when installed mods have updates.
     collect_listing(mods_panel);
     refresh_listing(mods_panel, time);
+    // Whether the privacy policy or terms changed since the player agreed (looked up once).
+    check_legal_versions(ui, launcher.settings());
     // A mod dropped on the window opens the Mods panel and installs it.
     {
         std::lock_guard lock(g_dropped_mutex);
@@ -429,7 +431,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
             ui.steam_offline = !launcher.settings().offline && !launcher_app::steam_signed_in();
         }
     }
-    const bool modal = ui.settings || ui.changelog || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
+    const bool modal = ui.settings || ui.changelog || ui.legal.open >= 0 || ui.legal.agreement || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
         ui.steam_offline || state.phase == Phase::mods_broken || ui.mods_update_prompt;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -563,6 +565,9 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     if (state.prompt) prompt_window(launcher, fonts, size, *state.prompt, ui);
     else if (qr_open) qr_window(launcher, fonts, size, state.qr);
     else if (ui.sign_in) sign_in_window(launcher, fonts, size, ui);
+    // Opened from Settings or the agreement, and back to it when closed.
+    else if (ui.legal.open >= 0) legal_window(fonts, size, ui);
+    else if (ui.legal.agreement) legal_agreement_window(launcher, fonts, size, ui, window);
     else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
     else if (ui.changelog) {
         ui.notes.prereleases = launcher.settings().prereleases;

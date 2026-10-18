@@ -218,7 +218,7 @@ std::vector<const ts::Package*> visible_packages(const Store& store, const ts::I
         // or a category of that name. A deprecated one only shows once installed.
         if (nsfw(package)) continue;
         if (package.deprecated && !have) continue;
-        // Every player has the official mods already (official_mods.h).
+        // The official mods are installed from their own tab (official_mods.h).
         if (official_mods::official(package.full_name)) continue;
         if (!store.category.empty() && !package.in_category(store.category)) continue;
         if (!query.empty() && lower(package.title()).find(query) == std::string::npos &&
@@ -467,10 +467,13 @@ struct Standing {
     bool trouble;
 };
 Standing standing_of(const official_mods::Mod& mod) {
-    if (mod.working) return {mod.status.empty() ? "CHECKING" : mod.installed.empty() ? "DOWNLOADING" : "UPDATING", color::blue, false};
-    if (mod.status == "Up to date") return {"UP TO DATE", color::good, false};
-    if (mod.status.empty()) return {"WAITING", color::tile_grey, false};
-    return {mod.installed.empty() ? "NOT DOWNLOADED" : "UPDATE FAILED", mod.installed.empty() ? color::danger : color::warning, true};
+    if (mod.working) return {mod.status == "Removing" ? "UNINSTALLING" : mod.installed.empty() ? "DOWNLOADING" : "UPDATING", color::blue, false};
+    if (mod.status.empty()) return {"CHECKING", color::tile_grey, false};
+    if (mod.status == "Up to date") return {"INSTALLED", color::good, false};
+    if (mod.status == "Not installed") return {"NOT INSTALLED", color::tile_grey, false};
+    if (mod.status == "Update available") return {"UPDATE AVAILABLE", color::blue, false};
+    if (mod.status.starts_with("Uninstall failed")) return {"UNINSTALL FAILED", color::warning, true};
+    return {mod.installed.empty() ? "INSTALL FAILED" : "UPDATE FAILED", mod.installed.empty() ? color::danger : color::warning, true};
 }
 std::string source_text(const official_mods::State& state) {
     if (state.source == "ReSkate") return "List from ReSkate's server";
@@ -487,11 +490,23 @@ void official_page(const Fonts& fonts, ModsPanel& panel, float height) {
     const float top_y = ImGui::GetCursorPosY();
 
     const bool trouble = std::any_of(state.mods.begin(), state.mods.end(), [](const auto& mod) { return standing_of(mod).trouble; });
-    page_banner(fonts, "OFFICIAL MODS", "ALWAYS ON",
-        "Mods made for ReSkate's own features. Every player has them, kept at their latest version from Thunderstore: "
-        "they load after your mods and are always on.",
-        state.syncing ? "CHECKING FOR UPDATES" : trouble ? "NEEDS ATTENTION" : state.mods.empty() ? "NONE RIGHT NOW" : "ALL UP TO DATE",
-        state.syncing ? color::blue : trouble ? color::warning : state.mods.empty() ? color::tile_grey : color::good,
+    // Which are turned off (Engine/Vfs/builtin_packs.h), read again now and then rather than every frame.
+    static std::vector<std::string> off;
+    static double off_read = -1e9;
+    const auto read_off = [&] {
+        off.clear();
+        for (const auto& mod : state.mods)
+            if (mods::official_off(panel.root, mod.full_name)) off.push_back(mod.full_name);
+        off_read = ImGui::GetTime();
+    };
+    if (ImGui::GetTime() - off_read > 2.0) read_off();
+    const auto have = std::count_if(state.mods.begin(), state.mods.end(), [](const auto& mod) { return !mod.installed.empty(); });
+    page_banner(fonts, "OFFICIAL MODS", nullptr,
+        "Mods made for ReSkate's own features, from Thunderstore. Install the ones you want here; they load after your mods. "
+        "One that is not installed, or turned off, leaves its feature out of the game. Changes apply the next time you play.",
+        state.syncing ? "CHECKING" : trouble ? "NEEDS ATTENTION" : state.mods.empty() ? "NONE RIGHT NOW"
+                                   : std::format("{} OF {} INSTALLED", have, state.mods.size()),
+        state.syncing ? color::blue : trouble ? color::warning : have ? color::good : color::tile_grey,
         source_text(state));
 
     // ------------------------------------------------ the mods, a card each
@@ -508,6 +523,7 @@ void official_page(const Fonts& fonts, ModsPanel& panel, float height) {
         ImGui::PushID(mod.full_name.c_str());
         const auto* package = ts::find_package(panel.store.packages, mod.full_name);
         const auto standing = standing_of(mod);
+        bool on = std::find(off.begin(), off.end(), mod.full_name) == off.end();
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const float across = ImGui::GetContentRegionAvail().x;
         const float text_x = start.x + pad + icon + S(18);
@@ -541,7 +557,14 @@ void official_page(const Fonts& fonts, ModsPanel& panel, float height) {
         if (!facts.empty()) y += fonts.caption->FontSize + S(6);
         const float problem_y = y;
         if (const float tall = text_height(fonts.caption, wrap, problem)) y += tall + S(6);
-        const float tall = std::max(y - start.y + pad - S(6), icon + pad * 2);
+        // As tall as its text, its icon, or the buttons at its right (install or update, Thunderstore,
+        // and once installed, its folder and uninstall).
+        const bool installed = !mod.installed.empty();
+        const bool update = installed && !mod.version.empty() && mod.installed != mod.version;
+        const bool removing = mod.working && mod.status == "Removing";
+        const bool action = (!installed || update || mod.working) && !removing;
+        const int buttons = (action ? 1 : 0) + 1 + (installed ? 2 : 0);
+        const float tall = std::max({y - start.y + pad - S(6), icon + pad * 2, pad * 2 + buttons * S(40) - S(8)});
 
         card(draw, start, ImVec2(across, tall));
         mod_icon(panel, package, ImVec2(start.x + pad, start.y + pad), icon);
@@ -551,9 +574,16 @@ void official_page(const Fonts& fonts, ModsPanel& panel, float height) {
         draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x + title_width + S(8), title_y + S(2)), color::muted,
             ("by " + author).c_str());
         float pill_x = text_x;
+        if (installed && !on) {
+            badge(draw, fonts, ImVec2(pill_x, pills_y), "OFF", color::tile_grey, color::text);
+            pill_x += badge_width(fonts, "OFF") + S(8);
+        }
         badge(draw, fonts, ImVec2(pill_x, pills_y), standing.word, standing.fill, color::ink);
         pill_x += badge_width(fonts, standing.word) + S(8);
-        if (!version.empty()) badge(draw, fonts, ImVec2(pill_x, pills_y), "v" + version, color::tile_grey, color::text);
+        if (!version.empty()) {
+            badge(draw, fonts, ImVec2(pill_x, pills_y), "v" + version, color::tile_grey, color::text);
+            pill_x += badge_width(fonts, "v" + version) + S(8);
+        }
         if (!description.empty())
             draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, description_y), color::text, description.c_str(), nullptr, wrap);
         if (!facts.empty())
@@ -561,8 +591,42 @@ void official_page(const Fonts& fonts, ModsPanel& panel, float height) {
         if (!problem.empty())
             draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(text_x, problem_y), standing.fill, problem.c_str(), nullptr, wrap);
 
-        // ------------------------------------------- at the right
-        ImGui::SetCursorScreenPos(ImVec2(buttons_x, start.y + pad));
+        // On or off, once installed, beside its pills: off, nothing merges it and the game neither
+        // starts nor lists its feature.
+        if (installed) {
+            const float switch_x = pill_x + S(8), switch_y = pills_y + (fonts.caption->FontSize + S(8) - S(22)) * 0.5f;
+            ImGui::SetCursorScreenPos(ImVec2(switch_x, switch_y));
+            if (toggle("##on", &on)) {
+                if (mods::set_official_off(panel.root, mod.full_name, !on))
+                    log(logging::Level::info, std::format("Official mods: {} turned {}", mod.full_name, on ? "on" : "off"));
+                else
+                    log(logging::Level::warning, std::format("Official mods: {} could not be turned {}", mod.full_name, on ? "on" : "off"));
+                read_off();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", on ? "On. Turn it off to leave it and its feature out of the game, from the next time you play."
+                                           : "Off: not loaded, and its feature is not in the game. Turn it on for the next time you play.");
+            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(switch_x + S(50), switch_y + (S(22) - fonts.body->FontSize) * 0.5f),
+                on ? color::text : color::muted, on ? "On" : "Off");
+        }
+
+        // ------------------------------------------- at the right: install or update, then its page and folder
+        float button_y = start.y + pad;
+        if (action) {
+            ImGui::SetCursorScreenPos(ImVec2(buttons_x, button_y));
+            ImGui::BeginDisabled(mod.working || state.syncing);
+            push_primary_button();
+            const auto label = mod.working ? std::string(installed ? "UPDATING..." : "DOWNLOADING...")
+                             : update ? "UPDATE TO v" + mod.version : std::string("INSTALL");
+            if (ImGui::Button(label.c_str(), ImVec2(button, S(32)))) official_mods::install(panel.root, mod.full_name);
+            pop_primary_button();
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", installed ? "Download its latest version from Thunderstore"
+                                                  : "Download it from Thunderstore. Its feature is in the game from the next time you play.");
+            button_y += S(40);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(buttons_x, button_y));
         if (ImGui::Button("THUNDERSTORE", ImVec2(button, S(32)))) {
             const auto dash = mod.full_name.find('-');
             open_url(package ? package->package_url
@@ -570,13 +634,19 @@ void official_page(const Fonts& fonts, ModsPanel& panel, float height) {
                                    mod.full_name.substr(dash + 1)));
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its page on Thunderstore");
-        const auto folder = panel.root / std::string(mods::official_folder) / wide(mod.full_name);
-        ImGui::SetCursorScreenPos(ImVec2(buttons_x, start.y + pad + S(40)));
-        ImGui::BeginDisabled(mod.installed.empty());
-        if (ImGui::Button("OPEN FOLDER", ImVec2(button, S(32)))) open_path(folder);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", mod.installed.empty() ? "Not downloaded yet" : "Where ReSkate keeps it");
+        if (installed) {
+            const auto folder = panel.root / std::string(mods::official_folder) / wide(mod.full_name);
+            ImGui::SetCursorScreenPos(ImVec2(buttons_x, button_y + S(40)));
+            if (ImGui::Button("OPEN FOLDER", ImVec2(button, S(32)))) open_path(folder);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where ReSkate keeps it");
+            ImGui::SetCursorScreenPos(ImVec2(buttons_x, button_y + S(80)));
+            ImGui::BeginDisabled(mod.working || state.syncing);
+            if (ImGui::Button(removing ? "UNINSTALLING..." : "UNINSTALL", ImVec2(button, S(32))))
+                official_mods::uninstall(panel.root, mod.full_name);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Delete it. Its feature is gone from the game from the next time you play; Install brings it back.");
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + tall + S(12)));
         ImGui::Dummy(ImVec2(across, 0));
@@ -596,7 +666,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
             [&](const ts::Package& package) { return installed.contains(ts::folder_for(package.full_name)); });
         page_banner(fonts, "GET MODS", nullptr,
             "Mods for ReSkate from Thunderstore. Open one to read about it, or tick several and install them together. "
-            "Official mods are kept for you, so they are not listed here.",
+            "Official mods are installed from the OFFICIAL tab, so they are not listed here.",
             !store.loaded ? (store.loading || store.error.empty() ? "LOADING" : "OFFLINE")
                 : waiting ? std::format("{} {} WAITING", waiting, waiting == 1 ? "UPDATE" : "UPDATES")
                           : std::format("{} INSTALLED", have),

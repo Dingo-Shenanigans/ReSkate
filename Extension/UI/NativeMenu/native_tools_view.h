@@ -331,18 +331,23 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
         toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
-        toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
-        toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
-            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-        button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
-            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-        toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
-        button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
-            m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
-        toggle(p.main, "board-break-always", "Board Break: always break", m.board_break.always,
-            m.board_break.available && m.board_break.enabled && cb.queue_console_command);
-        toggle(p.main, "board-break-wear", "Board Break: wear and tear", m.board_break.wear,
-            m.board_break.available && m.board_break.enabled && cb.queue_console_command);
+        // (Not listed when its official mod is turned off in the launcher.)
+        if (!m.road_rash.off) {
+            toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
+            toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
+                m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+            button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
+                m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+        }
+        if (!m.board_break.off) {
+            toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
+            button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
+                m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
+            toggle(p.main, "board-break-always", "Board Break: always break", m.board_break.always,
+                m.board_break.available && m.board_break.enabled && cb.queue_console_command);
+            toggle(p.main, "board-break-wear", "Board Break: wear and tear", m.board_break.wear,
+                m.board_break.available && m.board_break.enabled && cb.queue_console_command);
+        }
         const auto& grind = m.grind_exit;
         const bool grind_console = grind.available && cb.queue_console_command;
         toggle(p.main, "grind-exits", "Grind exit triggers", grind.enabled, grind_console);
