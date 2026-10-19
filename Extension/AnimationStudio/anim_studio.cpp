@@ -1784,6 +1784,23 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
     changed_locked(s);
 }
 
+void move_bracket(int which, float seconds) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.clip || s.clip->empty()) return;
+    const float duration = s.clip->duration();
+    const float t = std::clamp(seconds, 0.0f, duration);
+    if (which == 1) {
+        const float end = s.edits.end < 0 ? duration : s.edits.end;
+        const float start = std::min(t, end - 1.0f / 30);
+        shift_keys(s.edits, start - s.edits.start);
+        s.edits.start = start;
+    } else if (which == 2) {
+        s.edits.end = std::max(t, s.edits.start + 1.0f / 30);
+    } else return;
+    changed_locked(s);
+}
+
 void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
