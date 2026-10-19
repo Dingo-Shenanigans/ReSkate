@@ -1167,6 +1167,25 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // The studio's loading screen stays up while the game loads. During a recording's clean start the level
     // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
     const bool in_play = state == 13 || state == 21;
+    // RESKATE_RECORD_ALL=1: the batch starts by itself once the level is in and the skater can be driven, so a
+    // whole run can be started from a shortcut without touching the menus. It fires once per launch.
+    {
+        static const bool wanted = GetEnvironmentVariableW(L"RESKATE_RECORD_ALL", nullptr, 0) != 0;
+        static bool fired = false;
+        static ULONGLONG ready_since = 0;
+        if (wanted && !fired) {
+            if (!in_play) ready_since = 0;
+            else {
+                if (!ready_since) ready_since = GetTickCount64();
+                else if (GetTickCount64() - ready_since > 6000) {
+                    fired = true;
+                    dingosdk::anim_studio::request_record_all();
+                    dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::skater,
+                        "Animation Studio: Record all tricks started by RESKATE_RECORD_ALL.");
+                }
+            }
+        }
+    }
     dingosdk::anim_studio::game_loading_state(requests_loading || (clean_loading && !in_play));
     const bool world_changed = manifests_applied || requests_loading || (state != 13 && state != 21) ||
         state != r.previous_state || description.level != r.last_level || description.lm_level != r.catalog_level;
