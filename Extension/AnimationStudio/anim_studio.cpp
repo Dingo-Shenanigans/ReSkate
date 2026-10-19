@@ -1496,7 +1496,7 @@ void set_in_room(bool on) noexcept { in_room_flag.store(on, std::memory_order_re
 bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std::memory_order_acquire) < 0.5; }
 // The game's own load is still going: the loading screen stays until the game has been quiet for a second.
 std::atomic<bool> loading_held{};
-std::atomic<double> game_quiet_since{0}; // 0: nothing is loading
+std::atomic<double> game_quiet_since{-1}; // -1: taken to be loading until a tick says otherwise
 void game_loading_state(bool game_loading) noexcept {
     if (game_loading) game_quiet_since.store(-1, std::memory_order_release);
     else if (game_quiet_since.load() < 0) game_quiet_since.store(now_seconds(), std::memory_order_release);
@@ -1505,6 +1505,9 @@ void set_loading(Loading what, float seconds) noexcept {
     const double now = now_seconds();
     if (what != Loading::none) {
         loading_held.store(true);
+        // Taken to be loading from here: the first tick that finds the game quiet starts the countdown, so the
+        // screen is never lifted before the client tick has even seen the load begin.
+        game_quiet_since.store(-1, std::memory_order_release);
         // A screen that is still showing stays up (no fade in again).
         if (loading_what.exchange(what, std::memory_order_acq_rel) == Loading::none || now > loading_until.load()) loading_since.store(now);
         loading_until.store(now + seconds);
