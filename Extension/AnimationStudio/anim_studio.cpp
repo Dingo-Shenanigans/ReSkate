@@ -229,7 +229,13 @@ struct Live {
     // this, so a board that rides fakie or switch keeps its own way round.
     Joint board_at_takeoff{};
     bool board_at_takeoff_ok{};
-    bool lead_right{}; // which foot led at the takeoff
+    // The clip's own time, carried along instead of worked out afresh each frame: a pop that turns out
+    // shorter or longer than guessed then only changes the speed from there on, never jumps the pose.
+    float game_t{-1};
+    double game_t_at{};
+    double game_trick_at{}; // when the trick was picked: the blend in starts there, not at the takeoff
+    bool lead_right{};  // which foot led at the takeoff
+    bool pop_known{};   // the pop has just been worked out: the pick may be bettered once
 
     std::shared_ptr<const CustomTricks> game_tricks;
     std::string recorded_trick; // the game's name of the trick being recorded
@@ -456,7 +462,8 @@ bool right_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept;
 // of the animation, keyed on all limbs at once.
 void key_all_at(Animation& animation, float seconds) {
     for (const auto& joint : editable_joints()) {
-        if (joint.index == board_joint) continue;
+        // The board as well: an empty offset turns and moves it by nothing, so the key holds it where the
+        // trick already has it (board_edited) and the brackets anchor the board like any limb.
         const auto* track = animation.track(joint.index);
         bool has = false;
         if (track)
@@ -464,9 +471,17 @@ void key_all_at(Animation& animation, float seconds) {
         if (!has) set_key(animation, joint.index, seconds, Offset{});
     }
 }
+// The brackets at the ends of the clip, with their keys on every joint: whenever a clip arrives, by a
+// recording or from the game's own library.
+void reset_brackets_locked(State& s) {
+    if (!s.clip || s.clip->empty()) return;
+    s.edits.start = 0;
+    s.edits.end = -1;
+    key_all_at(s.edits, 0);
+    key_all_at(s.edits, s.clip->duration());
+}
 void unkey_all_at(Animation& animation, float seconds) {
-    for (const auto& joint : editable_joints())
-        if (joint.index != board_joint) remove_key(animation, joint.index, seconds);
+    for (const auto& joint : editable_joints()) remove_key(animation, joint.index, seconds);
 }
 void finish_recording(Live& l) {
     auto clip = std::make_shared<Clip>();
@@ -507,10 +522,7 @@ void finish_recording(Live& l) {
     s.edits.stance = right_foot_leads(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire)) ? "goofy" : "regular";
     // A new trick starts clean: the old keys and brackets go, the recording is the only thing there is.
     s.edits.tracks.clear();
-    s.edits.start = 0;
-    s.edits.end = -1;
-    key_all_at(s.edits, 0);
-    key_all_at(s.edits, s.clip->duration()); // s.clip, not clip: the clip was moved into the state above
+    reset_brackets_locked(s);
     if (!l.recorded_trick.empty()) {
         // Named after the trick the game says it was: saving it makes it play on that trick.
         s.edits.trick = l.recorded_trick;
@@ -1065,6 +1077,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.game_tricks = snap->tricks;
                     l.predicted_air = 0;
                     l.lead_right = right_foot_leads(base, component);
+                    l.game_t = -1;
+                    l.pop_known = false;
                     l.board_at_takeoff_ok = false;
                     if (l.board_ok) {
                         const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
@@ -1083,10 +1097,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     const auto vy = board_up_speed(base, component);
                     l.predicted_air = vy && *vy > 0.3f
                                           ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
-                    l.game_trick = nullptr; // chosen again now that the pop is known
+                    l.pop_known = true; // the pop is known: the pick below may better it once
                 }
                 // The game names the trick within a few frames of the takeoff; a flip added late counts too.
-                if (at - l.game_takeoff < 0.25 && l.game_tricks) {
+                if ((!l.game_trick || l.pop_known) && at - l.game_takeoff < 0.35 && l.game_tricks) {
                     const auto name = current_trick(component);
                     const auto pop = pop_of(l.predicted_air);
                     // The animation made for this pop; failing that the one made for any pop; failing that
@@ -1099,8 +1113,13 @@ void on_animation(std::uintptr_t component) noexcept {
                         else if (!other) other = &t;
                     }
                     const CustomTrick* found = exact ? exact : any_pop ? any_pop : other;
-                    if (found != l.game_trick) {
+                    // Only ever traded up: a trick already playing is never dropped because the game's name
+                    // failed to read for a frame, which used to snap the body back with no fade.
+                    if (l.pop_known) l.pop_known = false;
+                    if (found && found != l.game_trick) {
                         l.game_trick = found;
+                        l.game_trick_at = at;
+                        l.game_t = -1;
                         if (found)
                             logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop, {:.2f} s in the air), playing your {}.", name,
                                          pop.empty() ? "unknown" : pop, l.predicted_air, found->name);
@@ -1124,19 +1143,27 @@ void on_animation(std::uintptr_t component) noexcept {
                     // The recording's air stretched to this one's, so its keys meet this pop and landing.
                     float rate = speed;
                     if (l.predicted_air > 0 && clip.landing > clip.takeoff) rate *= (clip.landing - clip.takeoff) / l.predicted_air;
-                    t = clip.takeoff + static_cast<float>(at - l.game_takeoff) * rate;
-                    weight = std::clamp(static_cast<float>(at - l.game_takeoff) / 0.08f, 0.0f, 1.0f);
+                    if (l.game_t < 0) {
+                        l.game_t = clip.takeoff;
+                        l.game_t_at = at;
+                    }
+                    l.game_t += static_cast<float>((std::max)(0.0, (std::min)(at - l.game_t_at, 0.25))) * rate;
+                    l.game_t_at = at;
+                    t = l.game_t;
+                    weight = std::clamp(static_cast<float>(at - l.game_trick_at) / 0.08f, 0.0f, 1.0f);
                     // In the air longer than the recording: the last frame before its landing holds.
-                    if (clip.landing > clip.takeoff) t = std::min(t, clip.landing);
+                    if (clip.landing > clip.takeoff) t = (std::min)(t, clip.landing);
                 } else if (l.game_landing > 0 && clip.landing >= 0) {
                     const float after = static_cast<float>(at - l.game_landing) * speed;
+                    const float from = l.game_t >= 0 ? l.game_t : clip.landing;
                     // The trick settles into the game's pose over 0.6 s (its own landing plays out meanwhile), eased
                     // at both ends, so the back foot comes down on the board instead of snapping there.
                     const float span = std::max(0.05f, std::min(0.6f, clip.duration() - clip.landing));
                     const float x = std::clamp(after / span, 0.0f, 1.0f);
-                    t = std::min(clip.landing + after, clip.duration());
+                    t = (std::min)(from + after, clip.duration());
                     weight = 1 - x * x * (3 - 2 * x);
                     if (weight <= 0) {
+                        l.game_t = -1;
                         l.game_trick = nullptr;
                         l.game_landing = -1;
                         t = -1;
@@ -2136,9 +2163,8 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         // The game's clips are authored for a regular stance: saying so lets playback mirror them for goofy,
         // switch and fakie instead of taking the blank for regular by luck.
         s.edits.stance = "regular";
-        s.edits.start = 0;
-        s.edits.end = -1;
         s.clip = std::move(clip);
+        reset_brackets_locked(s);
         s.saved_as.clear();
         s.undo.clear();
         s.redo.clear();
