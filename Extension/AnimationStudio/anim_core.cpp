@@ -189,6 +189,32 @@ bool Clip::sample_board(float seconds, Joint& out) const noexcept {
     return true;
 }
 
+namespace {
+Quat quat_log(const Quat& q) noexcept { // a unit rotation as its half turn, a pure quaternion
+    const float s = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+    if (s < 1e-6f) return {q[0], q[1], q[2], 0};
+    const float k = std::atan2(s, q[3]) / s;
+    return {q[0] * k, q[1] * k, q[2] * k, 0};
+}
+Quat quat_exp(const Quat& p) noexcept {
+    const float s = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    if (s < 1e-6f) return normalised({p[0], p[1], p[2], 1});
+    const float k = std::sin(s) / s;
+    return {p[0] * k, p[1] * k, p[2] * k, std::cos(s)};
+}
+// The same turn as q, on the side of the sphere that is nearest to `ref` (the shorter way round).
+Quat nearest(const Quat& q, const Quat& ref) noexcept {
+    const float d = q[0] * ref[0] + q[1] * ref[1] + q[2] * ref[2] + q[3] * ref[3];
+    return d < 0 ? Quat{-q[0], -q[1], -q[2], -q[3]} : q;
+}
+// The turn through a key that keeps its speed: the key's tangent from the keys either side of it.
+Quat tangent(const Quat& prev, const Quat& q, const Quat& next) noexcept {
+    const Quat inverse = conjugate(q);
+    const Quat a = quat_log(multiply(inverse, nearest(prev, q))), b = quat_log(multiply(inverse, nearest(next, q)));
+    return normalised(multiply(q, quat_exp({-(a[0] + b[0]) / 4, -(a[1] + b[1]) / 4, -(a[2] + b[2]) / 4, 0})));
+}
+} // namespace
+
 Offset evaluate(const Track& track, float seconds) noexcept {
     const auto& keys = track.keys;
     if (keys.empty()) return {};
@@ -207,10 +233,15 @@ Offset evaluate(const Track& track, float seconds) noexcept {
         return {slerp(a.rotation, b.rotation, u), lerp(a.offset, b.offset, u)};
     case Ease::smooth:
     default: {
-        const float eased = u * u * (3 - 2 * u);
+        // A spline through the keys (squad): the turn keeps its speed through each key, where a plain
+        // ease would stop at every key and start again, which shows as a stutter in playback.
         const auto& before = i > 0 ? keys[i - 1].offset : a.offset;
         const auto& after = i + 2 < keys.size() ? keys[i + 2].offset : b.offset;
-        return {slerp(a.rotation, b.rotation, eased), hermite(before, a.offset, b.offset, after, u)};
+        const Quat prev = i > 0 ? keys[i - 1].rotation : a.rotation, next = i + 2 < keys.size() ? keys[i + 2].rotation : b.rotation;
+        const Quat b_rotation = nearest(b.rotation, a.rotation);
+        const Quat ta = tangent(prev, a.rotation, b_rotation), tb = tangent(a.rotation, b_rotation, next);
+        const Quat moved = slerp(slerp(a.rotation, b_rotation, u), slerp(ta, tb, u), 2 * u * (1 - u));
+        return {normalised(moved), hermite(before, a.offset, b.offset, after, u)};
     }
     }
 }

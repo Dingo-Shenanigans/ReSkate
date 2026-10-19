@@ -32,6 +32,24 @@ void slerp_meets_both_ends() {
     check(same_turn(slerp(a, b, 0.5f), from_euler({0, 45, 0})), "and halfway is half the turn");
 }
 
+// A turn through keys keeps its speed at each key (no stop-and-go in playback).
+void turn_keeps_its_speed_through_a_key() {
+    Animation animation;
+    animation.clip.times = {0, 2};
+    set_key(animation, 343, 0.0f, {from_euler({0, 0, 0}), {}});
+    set_key(animation, 343, 1.0f, {from_euler({90, 0, 0}), {}});
+    set_key(animation, 343, 2.0f, {from_euler({180, 0, 0}), {}});
+    const auto* track = animation.track(343);
+    const auto angle = [&](float a, float b) {
+        const auto qa = evaluate(*track, a).rotation, qb = evaluate(*track, b).rotation;
+        return 2 * std::acos(std::min(1.0f, std::abs(qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3])));
+    };
+    const float speed_before = angle(0.95f, 1.0f) / 0.05f, speed_after = angle(1.0f, 1.05f) / 0.05f;
+    check(speed_after > 0.5f * (angle(0.0f, 1.0f) / 1.0f) && speed_before > 0.5f * (angle(0.0f, 1.0f) / 1.0f),
+          "A turn keeps its speed through a key");
+    check(near(speed_before, speed_after, 0.2f * speed_after), "The speed on either side of a key is the same");
+}
+
 void keys_hold_outside_and_blend_between() {
     Animation animation;
     animation.clip.times = {0, 1};
@@ -198,6 +216,7 @@ int main() {
         euler_numbers_read_back();
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
+        turn_keeps_its_speed_through_a_key();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
         keys_can_be_dragged_in_time();

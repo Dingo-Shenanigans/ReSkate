@@ -62,7 +62,7 @@ struct Ui {
     ImVec2 drag_start{};
     int axis{-1}; // -1 free, 0 X, 1 Y, 2 Z
     bool local_axes{true}, move_mode{};
-    bool limb_drag{}; // the mouse drags the selected limb to where it is pointed (I toggles it)
+    bool limb_holding{}; // a joint is held and dragged: the limb above it follows the mouse
     std::array<char, 64> name{}, trick{};
     std::uint64_t names_for{};
     std::string message;
@@ -1328,12 +1328,21 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));
         const char* axis = u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "FREE";
         text(d, f.body, 12 * k, ImVec2(x, y + 42 * k), IM_COL32(120, 190, 255, 150),
-             std::format("{}  axis {}  ({})", u.limb_drag ? "LIMB DRAG (I)" : u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world"));
+             std::format("{}  axis {}  ({})", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world"));
     }
     if (u.menu_open || (!inside && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
     auto& io = ImGui::GetIO();
     if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered()) {
-        if (hovered && *hovered != u.selected) u.selected = *hovered;
+        // Press and hold a joint: it is grabbed, and the limb above it follows the mouse. Shift turns the
+        // selected joint with the gizmo instead.
+        if (hovered && !io.KeyShift && v.has_clip) {
+            u.selected = *hovered;
+            const auto* track = track_view(v, u.selected);
+            if (!(track && track->locked)) {
+                u.limb_holding = true;
+                begin_turn(v);
+            }
+        } else if (hovered && *hovered != u.selected) u.selected = *hovered;
         else if (sel && v.has_clip) {
             const auto* track = track_view(v, u.selected);
             if (!(track && track->locked)) {
@@ -1343,9 +1352,12 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             }
         }
     }
+    if (u.limb_holding) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.limb_holding = false;
+        else drag_limb_to(v, project, mouse);
+    }
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
-        else if (u.limb_drag) drag_limb_to(v, project, mouse);
         else if (project.valid) apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
     }
     auto orbit = v.orbit;
@@ -1398,7 +1410,6 @@ void keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_End)) studio::set_time(v.duration);
     if (ctrl && pressed(ImGuiKey_Z, true)) studio::undo();
     if (ctrl && pressed(ImGuiKey_Y, true)) studio::redo();
-    if (!ctrl && pressed(ImGuiKey_I)) ui().limb_drag = !ui().limb_drag;
     if (ctrl && pressed(ImGuiKey_C)) studio::copy_pose();
     if (ctrl && pressed(ImGuiKey_V)) {
         studio::begin_change();
