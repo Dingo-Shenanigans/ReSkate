@@ -1164,6 +1164,12 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     u.timeline_scroll = std::clamp(u.timeline_scroll, 0.0f, std::max(0.0f, duration * seconds_w - (ruler_w - 2 * pad)));
     const auto x_of = [&](float t) { return ruler_left + pad + t * seconds_w - u.timeline_scroll; };
     const auto t_of = [&](float x) { return std::clamp((x - ruler_left - pad + u.timeline_scroll) / seconds_w, 0.0f, v.duration); };
+    // The keys a bracket puts on every joint are not shown: they work, but the brackets stand for them.
+    const auto bracket_key = [&](float time) {
+        if (!v.has_clip) return false;
+        const float be = v.bracket_end < 0 ? v.duration : v.bracket_end;
+        return std::abs(time - v.bracket_start) < 0.5f / fps || std::abs(time - be) < 0.5f / fps;
+    };
     const float lanes_right = at.x + size.x;
     // The ruler: frame numbers.
     d->PushClipRect(ImVec2(ruler_left, at.y), ImVec2(ruler_right, at.y + size.y), true);
@@ -1187,27 +1193,6 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         d->AddLine(ImVec2(x, at.y + header_h), ImVec2(x, at.y + size.y), IM_COL32(1, 131, 255, 80), 1.5f * k);
         text(d, f.bold, 12 * k, ImVec2(x + 4 * k, at.y + 8 * k), blue_light, name);
     }
-    // The brackets: the window the animation works in. Dragging the start moves every key with it; the end only
-    // sets the window's end. Blue, in the ruler; the window is shaded.
-    if (v.has_clip) {
-        const float bs = v.bracket_start, be = v.bracket_end < 0 ? v.duration : v.bracket_end;
-        const float xs = x_of(bs), xe = x_of(be);
-        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 22));
-        for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
-            const float tick = 7 * k, dir = open_right ? 1.0f : -1.0f;
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-        }
-        auto& io = ImGui::GetIO();
-        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h && io.MousePos.x >= ruler_left && io.MousePos.x <= ruler_right;
-        if (in_ruler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (std::abs(io.MousePos.x - xs) < 9 * k) u.bracket_drag = 1;
-            else if (std::abs(io.MousePos.x - xe) < 9 * k) u.bracket_drag = 2;
-        }
-        if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
-        if (u.bracket_drag) studio::move_bracket(u.bracket_drag, std::round(t_of(io.MousePos.x) * fps) / fps);
-    }
     d->PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(ruler_left, at.y));
     ImGui::InvisibleButton("##ruler", ImVec2(ruler_w, header_h));
@@ -1226,7 +1211,8 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     text(d, f.heading, 15 * k, ImVec2(at.x + 22 * k, summary_y + 6 * k), soft, "ALL KEYS");
     d->PushClipRect(ImVec2(ruler_left, summary_y), ImVec2(ruler_right, summary_y + summary_h), true);
     for (const auto& t : v.tracks)
-        for (const auto& key : t.keys) diamond(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft);
+        for (const auto& key : t.keys)
+            if (!bracket_key(key.time)) diamond(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft);
     d->PopClipRect();
     // Rows, one per joint.
     const auto joints = studio::editable_joints();
@@ -1269,6 +1255,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         if (track) {
             d->PushClipRect(ImVec2(ruler_left, rows_top), ImVec2(ruler_right, at.y + size.y), true);
             for (const auto& key : track->keys) {
+                if (bracket_key(key.time)) continue;
                 const bool dragged_with = u.key_joint && is_picked(joint.index, key.time) && is_picked(*u.key_joint, u.key_from);
                 const float shown = u.key_joint == joint.index && std::abs(key.time - u.key_from) < 1e-4f ? u.key_to
                                     : dragged_with ? key.time + (u.key_to - u.key_from) : key.time;
@@ -1325,6 +1312,27 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             }
             u.key_joint.reset();
         }
+    }
+    // The brackets: the window the animation works in, drawn over the rows. Dragging the start moves every key
+    // with it; the end only sets the window's end. Blue, with the window shaded.
+    if (v.has_clip) {
+        const float bs = v.bracket_start, be = v.bracket_end < 0 ? v.duration : v.bracket_end;
+        const float xs = x_of(bs), xe = x_of(be);
+        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 22));
+        for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
+            const float tick = 7 * k, dir = open_right ? 1.0f : -1.0f;
+            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+        }
+        auto& io = ImGui::GetIO();
+        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h && io.MousePos.x >= ruler_left && io.MousePos.x <= ruler_right;
+        if (in_ruler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (std::abs(io.MousePos.x - xs) < 9 * k) u.bracket_drag = 1;
+            else if (std::abs(io.MousePos.x - xe) < 9 * k) u.bracket_drag = 2;
+        }
+        if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
+        if (u.bracket_drag) studio::move_bracket(u.bracket_drag, std::round(t_of(io.MousePos.x) * fps) / fps);
     }
     if (v.has_clip) {
         const float x = x_of(v.time);
@@ -1736,7 +1744,7 @@ void draw_animation_studio_loading() {
     // this fades. Only the content fades.
     d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(19, 19, 19, 255));
     // The backdrop, when the studio has one, under a dark veil so the wordmark reads on it.
-    const bool backdrop_drawn = draw_studio_picture(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
+    const bool backdrop_drawn = draw_studio_picture_cover(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
     if (backdrop_drawn)
         d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(8, 8, 10, 90)));
     else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))

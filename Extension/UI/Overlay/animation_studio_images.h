@@ -21,6 +21,9 @@ void fill_animation_studio_images(ImFontAtlas& atlas) noexcept;
 enum class StudioPicture { grain, tile, brush, kickflip, backdrop };
 // Stretched onto the box. False when the picture is not there.
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
+// Filled over the box with its own shape kept: what does not fit is cropped off, evenly on both sides (a 21:9
+// backdrop on a 16:9 screen loses its sides rather than being squeezed). False when the picture is not there.
+bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
 // The brush bar's body on the box, its splatter around it.
 bool draw_studio_brush(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint);
 // The rough tile nine-sliced onto the box, `edge` pixels of rough edge.
