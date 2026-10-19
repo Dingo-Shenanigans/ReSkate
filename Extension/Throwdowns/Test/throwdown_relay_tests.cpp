@@ -5,6 +5,7 @@
 #include "Extension/Throwdowns/throwdown_wire.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Throwdowns/grouped_number.h"
+#include "Extension/Skater/skate_detector.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Settings/named_settings.h"
 #include <Windows.h>
@@ -15,6 +16,7 @@
 #include <map>
 #include <stdexcept>
 
+namespace dingosdk::trick_logger {void detected_attempt(Json) noexcept {} void observe_setup_menu(std::uint8_t,std::uint8_t) noexcept {}}
 namespace {
 struct Call {
     std::string what, series;
@@ -66,6 +68,9 @@ bool queue_throwdown_row(std::uint32_t player, std::uint8_t board, bool add, std
     calls.push_back({add ? "row add" : "row set", {}, player, board, value});
     return true;
 }
+bool queue_throwdown_settings(std::uint32_t host,std::uint32_t mmid,const std::vector<std::uint8_t>&) noexcept {
+    calls.push_back({"configure","",host,mmid});return true;
+}
 bool queue_throwdown_attempt(std::uint32_t player, bool landed, const std::array<std::uint8_t, 28> &trick) noexcept {
     if (!leaderboard_live) return false;
     calls.push_back({landed ? "landed" : "missed", {}, player, trick[0]});
@@ -106,7 +111,7 @@ using namespace dingosdk::multiplayer;
 namespace {
 using Kind = ThrowdownMessage::Kind;
 using Local = ThrowdownLocalAction::Kind;
-constexpr std::uint64_t me = 76561198000000010ULL, leader = 76561198000000011ULL, other = 76561198000000012ULL;
+constexpr std::uint64_t me = 76561198000000010ULL, leader = 76561198000000011ULL, other_peer = 76561198000000012ULL;
 void check(bool value, const char *why) {
     if (value) return;
     for (const auto &c : calls)
@@ -123,7 +128,10 @@ std::vector<ThrowdownMessage> tick(const ThrowdownRelayInput &input) {
     return out;
 }
 void receive(std::uint64_t sender, const ThrowdownMessage &m) {
-    const auto bytes = encode_throwdown(m);
+    auto sent=m;
+    // The S.K.A.T.E. leaders here start with the setup they offered.
+    if((m.id==0x30 || m.id==0x50) && m.kind==Kind::start){sent.rules_mask=0x6f;sent.settings={4};}
+    const auto bytes = encode_throwdown(sent);
     receive_throwdown_relay(sender, bytes);
 }
 ThrowdownMessage make(Kind kind, std::uint64_t owner, std::uint32_t id) {
@@ -133,6 +141,7 @@ ThrowdownMessage make(Kind kind, std::uint64_t owner, std::uint32_t id) {
 ThrowdownMessage offer(std::uint64_t owner, std::uint32_t id, const char *series = "JamSession") {
     auto m = make(Kind::offer, owner, id);
     m.series = series; m.placement = {1, 2, 3}; m.settings = {4};
+    if(m.series=="ThrowdownSkate")m.rules_mask=0x6f;
     return m;
 }
 const Call *find(const char *what) {
@@ -158,7 +167,7 @@ void end_session() {
 
 // Another player's drop: shown, joined natively, started by its leader, scored.
 void guest_flow() {
-    const ThrowdownRelayInput in{me, {{leader, 3}, {other, 5}}, true, 77};
+    const ThrowdownRelayInput in{me, {{leader, 3}, {other_peer, 5}}, true, 77};
     check(tick(in).empty(), "An idle relay sent something");
     check(settings_changed["DingoThrowdowns.QueueStartTimer"] == "36000", "Queues kept their own start timer with players in the session");
     check(settings_changed["DingoThrowdowns.EnableForceStartThrowdown"] == "1", "Force start stayed off with players in the session");
@@ -171,7 +180,7 @@ void guest_flow() {
     tick(in);
     check(count("spawn") == 1, "A resent offer spawned a second copy");
     throwdown_relay_spawned(last_token, 0x5555, 4);
-    receive(other, make(Kind::join, leader, 0x1234));
+    receive(other_peer, make(Kind::join, leader, 0x1234));
     tick(in);
     const auto *add = find("add");
     check(add && add->id == 0x305 && add->mmid == 0x5555, "Another player's join was not replayed into the local copy");
@@ -180,7 +189,7 @@ void guest_flow() {
     check(out.size() == 1 && out[0].kind == Kind::join && out[0].leader == leader && out[0].id == 0x1234,
           "Joining the local copy was not reported against the leader's drop");
     auto start = make(Kind::start, leader, 0x1234);
-    start.order = {leader, other, me};
+    start.order = {leader, other_peer, me};
     receive(leader, start);
     tick(in);
     const auto *started = find("start");
@@ -191,7 +200,7 @@ void guest_flow() {
     tick(in);
     auto score = make(Kind::score, leader, 0x1234);
     score.value = 500;
-    receive(other, score);
+    receive(other_peer, score);
     tick(in);
     const auto *row = find("score");
     check(row && row->id == 0x305 && row->value == 500, "A remote score did not become that player's row");
@@ -204,7 +213,7 @@ void guest_flow() {
     local(Local::ended);
     tick(in);
     score.value = 900;
-    receive(other, score);
+    receive(other_peer, score);
     tick(in);
     check(count("score") == 1, "A score after the end was still written");
     end_session();
@@ -212,7 +221,7 @@ void guest_flow() {
 
 // The local player's own drop: offered, joined by others, force-started, scored.
 void leader_flow() {
-    const ThrowdownRelayInput in{me, {{other, 4}}, true, 78};
+    const ThrowdownRelayInput in{me, {{other_peer, 4}}, true, 78};
     tick(in);
     ThrowdownLocalAction exited{Local::exited};
     exited.series = "JamSession"; exited.mmid = 0x42; exited.placement = {9}; exited.settings = {8};
@@ -221,16 +230,16 @@ void leader_flow() {
     check(out.size() == 1 && out[0].kind == Kind::offer && out[0].leader == me && out[0].id == 0x42 &&
               out[0].placement == std::vector<std::uint8_t>{9} && out[0].settings == std::vector<std::uint8_t>{8},
           "A configured drop was not offered to the other players");
-    receive(other, make(Kind::join, me, 0x42));
+    receive(other_peer, make(Kind::join, me, 0x42));
     tick(in);
     const auto *add = find("add");
     check(add && add->id == 0x304 && add->mmid == 0x42, "A remote join did not enter the local player's queue");
-    receive(other, make(Kind::join, me, 0x42));
+    receive(other_peer, make(Kind::join, me, 0x42));
     tick(in);
     check(count("add") == 1, "A repeated join was added twice");
     local(Local::force_started, 0x42);
     out = tick(in);
-    check(out.size() == 1 && out[0].kind == Kind::start && out[0].order == std::vector<std::uint64_t>{me, other},
+    check(out.size() == 1 && out[0].kind == Kind::start && out[0].order == std::vector<std::uint64_t>{me, other_peer},
           "Force start was not relayed with the queue's players");
     ThrowdownLocalAction entered{Local::entered};
     entered.participants = {2, 0x304};
@@ -239,7 +248,7 @@ void leader_flow() {
     check(out.empty(), "Entering the event sent a second start");
     auto score = make(Kind::score, me, 0x42);
     score.value = 700;
-    receive(other, score);
+    receive(other_peer, score);
     tick(in);
     const auto *row = find("score");
     check(row && row->id == 0x304 && row->value == 700, "A guest's score did not reach the leader's leaderboard");
@@ -266,13 +275,13 @@ void leader_flow() {
 
 // Copies that must go: full, started without us, closed, leader gone, session over.
 void removal_flow() {
-    ThrowdownRelayInput in{me, {{leader, 3}, {other, 5}}, true, 79};
+    ThrowdownRelayInput in{me, {{leader, 3}, {other_peer, 5}}, true, 79};
     tick(in);
     receive(leader, offer(leader, 7));
     tick(in);
     throwdown_relay_spawned(last_token, 0x70, 2);
     tick(in);
-    receive(other, make(Kind::join, leader, 7));
+    receive(other_peer, make(Kind::join, leader, 7));
     tick(in);
     check(count("destroy") == 1 && find("destroy")->mmid == 0x70, "A full copy the local player had not joined stayed");
     calls.clear();
@@ -282,7 +291,7 @@ void removal_flow() {
     throwdown_relay_spawned(last_token, 0x80, 4);
     tick(in);
     auto start = make(Kind::start, leader, 8);
-    start.order = {leader, other};
+    start.order = {leader, other_peer};
     receive(leader, start);
     tick(in);
     check(count("destroy") == 1 && !find("start"), "A copy the local player had not joined was started");
@@ -303,18 +312,18 @@ void removal_flow() {
     tick(in);
     throwdown_relay_spawned(last_token, 0xa0, 4);
     tick(in);
-    in.peers = {{other, 5}}; // the leader left the session
+    in.peers = {{other_peer, 5}}; // the leader left the session
     tick(in);
     check(count("destroy") == 1 && find("destroy")->mmid == 0xa0, "A departed leader's copy stayed");
     calls.clear();
 
-    in.peers = {{leader, 3}, {other, 5}};
+    in.peers = {{leader, 3}, {other_peer, 5}};
     receive(leader, offer(leader, 11));
     tick(in);
     throwdown_relay_spawned(last_token, 0xb0, 4);
     tick(in);
     // Offers from someone who is not the leader, or from outside the session, are ignored.
-    receive(other, offer(leader, 12));
+    receive(other_peer, offer(leader, 12));
     receive(76561198000000099ULL, offer(76561198000000099ULL, 13));
     tick(in);
     check(count("spawn") == 1, "A forged or foreign offer spawned a copy");
@@ -325,7 +334,7 @@ void removal_flow() {
 }
 // Spot Battle: one turn order everywhere, both leaderboards and turn ends relayed in order.
 void spot_battle_flow() {
-    const ThrowdownRelayInput in{me, {{leader, 3}, {other, 5}}, true, 81};
+    const ThrowdownRelayInput in{me, {{leader, 3}, {other_peer, 5}}, true, 81};
     tick(in);
     std::vector<std::uint32_t> ids{2, 0x305, 0x303};
     check(!throwdown_relay_order(ids), "Participants were reordered outside a linked queue");
@@ -333,7 +342,7 @@ void spot_battle_flow() {
     tick(in);
     check(find("spawn") && find("spawn")->series == "SpotBattle", "A Spot Battle was not shown to the other players");
     throwdown_relay_spawned(last_token, 0x600, 4);
-    receive(other, make(Kind::join, leader, 0x20));
+    receive(other_peer, make(Kind::join, leader, 0x20));
     tick(in);
     local(Local::joined, 0x600);
     tick(in);
@@ -343,7 +352,7 @@ void spot_battle_flow() {
     check(throwdown_relay_order(stranger) && stranger == std::vector<std::uint32_t>{0x303, 2, 0x399},
           "An unknown participant did not keep its place after the known players");
     auto start = make(Kind::start, leader, 0x20);
-    start.order = {leader, me, other};
+    start.order = {leader, me, other_peer};
     receive(leader, start);
     tick(in);
     ThrowdownLocalAction entered{Local::entered};
@@ -377,10 +386,10 @@ void spot_battle_flow() {
     calls.clear();
     auto remote_row = make(Kind::row, leader, 0x20);
     remote_row.board = 0; remote_row.add = false; remote_row.value = 400;
-    receive(other, remote_row);
+    receive(other_peer, remote_row);
     auto their_end = make(Kind::turn_end, leader, 0x20);
     their_end.value = 1;
-    receive(other, their_end);
+    receive(other_peer, their_end);
     tick(in);
     check(calls.empty(), "A remote row went out before the leaderboard existed");
     leaderboard_live = true;
@@ -400,18 +409,18 @@ void spot_battle_flow() {
 }
 // S.K.A.T.E.: each attempt replayed once, in the owner's same turn.
 void skate_flow() {
-    const ThrowdownRelayInput in{me, {{leader, 3}, {other, 5}}, true, 82};
+    const ThrowdownRelayInput in{me, {{leader, 3}, {other_peer, 5}}, true, 82};
     tick(in);
     receive(leader, offer(leader, 0x30, "ThrowdownSkate"));
     tick(in);
     check(find("spawn") && find("spawn")->series == "ThrowdownSkate", "A S.K.A.T.E. throwdown was not shown to the other players");
     throwdown_relay_spawned(last_token, 0x700, 4);
-    receive(other, make(Kind::join, leader, 0x30));
+    receive(other_peer, make(Kind::join, leader, 0x30));
     tick(in);
     local(Local::joined, 0x700);
     tick(in);
     auto start = make(Kind::start, leader, 0x30);
-    start.order = {leader, me, other};
+    start.order = {leader, me, other_peer};
     receive(leader, start);
     tick(in);
     ThrowdownLocalAction entered{Local::entered};
@@ -424,7 +433,10 @@ void skate_flow() {
         throwdown_relay_local(std::move(a));
     };
     const auto remote_attempt = [](std::uint64_t from, int turn, bool landed, std::uint8_t mark) {
-        auto m = make(Kind::attempt, leader, 0x30);
+        auto m = make(Kind::attempt, leader, 0x30);m.rules_mask=0x6f;
+        auto j=dingosdk::Json::object();j["id"]=turn;j["landed"]=landed;j["violation"]=0;j["display"]="Kickflip";
+        auto tokens=dingosdk::Json::array();if(landed)tokens.push_back("test signature");j["signature"]=tokens;
+        const auto text=j.dump();m.detected={text.begin(),text.end()};
         m.value = turn; m.add = landed; m.trick[0] = mark;
         receive(from, m);
     };
@@ -436,10 +448,10 @@ void skate_flow() {
     tick(in);
     check(calls.size() == 1 && calls[0].what == "landed" && calls[0].id == 0x303 && calls[0].mmid == 0xa1,
           "The leader's attempt was not replayed as theirs in their turn");
-    check(throwdown_relay_hides(other) && !throwdown_relay_hides(leader) && !throwdown_relay_hides(76561198000000099ULL),
+    check(throwdown_relay_hides(other_peer) && !throwdown_relay_hides(leader) && !throwdown_relay_hides(76561198000000099ULL),
           "Only the player who is up should be shown (and nobody outside the throwdown hidden)");
     // Another player's attempt that arrives before their turn starts here waits for it.
-    remote_attempt(other, 1, false, 0xb1);
+    remote_attempt(other_peer, 1, false, 0xb1);
     tick(in);
     check(calls.size() == 1, "An attempt was replayed before its turn started here");
     turn_started(2);
@@ -447,8 +459,7 @@ void skate_flow() {
     mine.player = 2; mine.add = true; mine.trick[0] = 0xc1;
     throwdown_relay_local(std::move(mine));
     auto out = tick(in);
-    check(out.size() == 1 && out[0].kind == Kind::attempt && out[0].value == 1 && out[0].add && out[0].trick[0] == 0xc1,
-          "The local attempt was not relayed with its turn number");
+    check(out.empty(),"A native S.K.A.T.E. attempt was relayed without the trick detector's result");
     ThrowdownLocalAction skate_end{Local::turn_ended};
     skate_end.player = 2;
     throwdown_relay_local(std::move(skate_end));
@@ -468,20 +479,21 @@ void skate_flow() {
     timeout.player = 2;
     throwdown_relay_local(std::move(timeout));
     out = tick(in);
-    check(out.size() == 1 && out[0].kind == Kind::attempt && out[0].value == 2 && !out[0].add,
-          "A local timeout was not relayed as a miss");
+    check(out.size() == 1 && out[0].kind == Kind::attempt && out[0].value == 2 && !out[0].add &&
+              out[0].rules_mask == 0x6f && !out[0].detected.empty(),
+          "A local timeout was not relayed once, as a detected miss");
     // This machine's timer failed the other player's turn first: their late attempt is dropped.
     turn_started(0x305);
     ThrowdownLocalAction local_timer{Local::timer_failed};
     local_timer.player = 0x305;
     throwdown_relay_local(std::move(local_timer));
     tick(in);
-    remote_attempt(other, 2, true, 0xb2);
+    remote_attempt(other_peer, 2, true, 0xb2);
     remote_attempt(leader, 1, true, 0xa9); // for a turn that is over here
     tick(in);
     check(calls.size() == 2, "An attempt was replayed after this machine had already decided that turn");
     // The other player quits: their turns resolve as misses here, without them.
-    receive(other, make(Kind::leave, leader, 0x30));
+    receive(other_peer, make(Kind::leave, leader, 0x30));
     tick(in);
     turn_started(0x305);
     tick(in);
@@ -493,27 +505,63 @@ void skate_flow() {
     check(calls.size() == 4 && calls[3].what == "destroy event" && (calls[3].id == 0x303 || calls[3].id == 0x305),
           "The event left behind on the local server was not ended");
     calls.pop_back();
-    check(!throwdown_relay_hides(other), "Players stayed hidden after the local player quit");
+    check(!throwdown_relay_hides(other_peer), "Players stayed hidden after the local player quit");
     turn_started(0x305);
     tick(in);
     check(calls.size() == 3, "Turns were still resolved after the local player quit");
     local(Local::ended);
     tick(in);
-    check(!throwdown_relay_hides(other), "Players stayed hidden after the throwdown");
+    check(!throwdown_relay_hides(other_peer), "Players stayed hidden after the throwdown");
     end_session();
 }
-// A running S.K.A.T.E. throwdown with the leader (and `other`, if `third`), joined by the local player.
+// The local player's S.K.A.T.E. drop: every player in the session sees it, joins it and starts
+// with the host's setup; nobody is turned away for the client they run.
+void skate_leader_flow() {
+    const ThrowdownRelayInput in{me, {{other_peer, 4}}, true, 83};
+    tick(in);
+    take_throwdown_relay_notices();
+    ThrowdownLocalAction exited{Local::exited};
+    exited.series = "ThrowdownSkate"; exited.mmid = 0x60; exited.placement = {9}; exited.settings = {8};
+    exited.rules_mask = 0x6f; exited.rules_verified = true;
+    throwdown_relay_local(std::move(exited));
+    auto out = tick(in);
+    check(out.size() == 1 && out[0].kind == Kind::offer && out[0].series == "ThrowdownSkate" && out[0].rules_mask == 0x6f &&
+              out[0].settings == std::vector<std::uint8_t>{8},
+          "A S.K.A.T.E. drop was not offered once, with its setup");
+    receive(other_peer, make(Kind::join, me, 0x60));
+    tick(in);
+    check(count("add") == 1 && find("add")->id == 0x304 && find("add")->mmid == 0x60,
+          "A player's join was not let into the local S.K.A.T.E. drop");
+    check(take_throwdown_relay_notices().empty(), "Opening or joining a S.K.A.T.E. drop raised a notice");
+    local(Local::force_started, 0x60);
+    out = tick(in);
+    check(out.size() == 1 && out[0].kind == Kind::start && out[0].order == std::vector<std::uint64_t>{me, other_peer} &&
+              out[0].rules_mask == 0x6f && out[0].settings == std::vector<std::uint8_t>{8},
+          "A S.K.A.T.E. start was not relayed once, with the host's setup");
+    end_session();
+
+    // Setup rules that could not be read keep the drop local: it is never offered half-configured.
+    tick(in);
+    take_throwdown_relay_notices();
+    exited = {Local::exited};
+    exited.series = "ThrowdownSkate"; exited.mmid = 0x61; exited.placement = {9}; exited.settings = {8};
+    throwdown_relay_local(std::move(exited));
+    check(tick(in).empty(), "A S.K.A.T.E. drop with unverified setup rules was offered");
+    end_session();
+    take_throwdown_relay_notices();
+}
+// A running S.K.A.T.E. throwdown with the leader (and `other_peer`, if `third`), joined by the local player.
 void join_running_skate(const ThrowdownRelayInput &in, bool third) {
     tick(in);
     receive(leader, offer(leader, 0x50, "ThrowdownSkate"));
     tick(in);
     throwdown_relay_spawned(last_token, 0x900, 4);
-    if (third) receive(other, make(Kind::join, leader, 0x50));
+    if (third) receive(other_peer, make(Kind::join, leader, 0x50));
     tick(in);
     local(Local::joined, 0x900);
     tick(in);
     auto start = make(Kind::start, leader, 0x50);
-    start.order = third ? std::vector<std::uint64_t>{leader, me, other} : std::vector<std::uint64_t>{leader, me};
+    start.order = third ? std::vector<std::uint64_t>{leader, me, other_peer} : std::vector<std::uint64_t>{leader, me};
     receive(leader, start);
     tick(in);
     ThrowdownLocalAction entered{Local::entered};
@@ -548,7 +596,7 @@ void alone_flow() {
     end_session();
 
     // With three, one leaving the session is a quit: their turn resolves, the others play on.
-    const ThrowdownRelayInput three{me, {{leader, 3}, {other, 5}}, true, 91};
+    const ThrowdownRelayInput three{me, {{leader, 3}, {other_peer, 5}}, true, 91};
     join_running_skate(three, true);
     ThrowdownLocalAction up{Local::turn_started};
     up.player = 0x305;
@@ -567,7 +615,7 @@ void alone_flow() {
 // Coop challenges: a start near other players invites them; attempts and leaves are replayed.
 void challenge_flow() {
     // The local player leads: another player 20 m away, a third far off.
-    ThrowdownRelayInput in{me, {{leader, 3, "Lead", true, true}, {other, 5, "Far", false, true}}, true, 77};
+    ThrowdownRelayInput in{me, {{leader, 3, "Lead", true, true}, {other_peer, 5, "Far", false, true}}, true, 77};
     tick(in);
     take_throwdown_relay_notices();
     const auto players = throwdown_relay_challenge_players("OTS", "Plot-014-OTS-03");
@@ -596,7 +644,7 @@ void challenge_flow() {
     check(count("challenge attempt") == 1 && find("challenge attempt")->id == 0x303 &&
               count("challenge slam") == 1 && find("challenge slam")->value == 9,
           "A remote attempt or slam hit was not replayed as that player");
-    receive(other, remote); // not a participant
+    receive(other_peer, remote); // not a participant
     tick(in);
     check(count("challenge attempt") == 1, "A non-participant's attempt was replayed");
     // The celebration: the other player stands at Player2 with the local skater's lift over its spot
@@ -620,7 +668,7 @@ void challenge_flow() {
         const auto away = throwdown_relay_celebration_offset(leader, {100.f, 20.f, 30.f});
         check(away && same(100.f + (*away)[0], 5.5f) && same(20.f + (*away)[1], -869.f) && same(30.f + (*away)[2], 77.f),
               "A player elsewhere was not stood at their spot at the local skater's height");
-        check(!throwdown_relay_celebration_offset(other, {0.f, 0.f, 0.f}), "A non-participant was placed in the celebration");
+        check(!throwdown_relay_celebration_offset(other_peer, {0.f, 0.f, 0.f}), "A non-participant was placed in the celebration");
     }
     receive(leader, make(Kind::challenge_leave, me, key));
     tick(in);
@@ -636,7 +684,7 @@ void challenge_flow() {
     set_challenge_invites(true);
 
     // Outside the party: a nearby player is not invited, and their challenge doesn't pull us in.
-    const ThrowdownRelayInput strangers{me, {{leader, 3, "Lead", true, false}, {other, 5, "Far", false, true}}, true, 77};
+    const ThrowdownRelayInput strangers{me, {{leader, 3, "Lead", true, false}, {other_peer, 5, "Far", false, true}}, true, 77};
     tick(strangers);
     check(!throwdown_relay_challenge_players("OTS", "Plot-2"), "A start invited a nearby player outside the party");
     auto foreign = make(Kind::challenge_start, leader, 20);
@@ -668,7 +716,7 @@ void challenge_flow() {
     check(count("challenge attempt") == 1 && find("challenge attempt")->id == 0x303,
           "An attempt that arrived before the copy started was not replayed once it did");
     // The leader drops out of the session: the copy lets them go.
-    const ThrowdownRelayInput alone{me, {{other, 5, "Far", false, true}}, true, 77};
+    const ThrowdownRelayInput alone{me, {{other_peer, 5, "Far", false, true}}, true, 77};
     tick(alone);
     check(count("challenge leave") == 1 && find("challenge leave")->id == 0x303, "A departed player stayed in the copy");
     throwdown_relay_local({Local::challenge_ended});
@@ -696,7 +744,7 @@ void challenge_flow() {
     }
 
     // Busy (another challenge running here): the invite is declined.
-    receive(other, start); // not the leader
+    receive(other_peer, start); // not the leader
     auto busy = start; busy.id = 12;
     set_challenge_invites(false);
     receive(leader, busy);
@@ -708,7 +756,7 @@ void challenge_flow() {
 // Party beacons: the local one is relayed; another player's is shown here as theirs and goes
 // when they remove it or leave.
 void beacon_flow() {
-    const ThrowdownRelayInput in{me, {{leader, 3, "Lead", true, true}, {other, 5, "Far", false, false}}, true, 90};
+    const ThrowdownRelayInput in{me, {{leader, 3, "Lead", true, true}, {other_peer, 5, "Far", false, false}}, true, 90};
     tick(in);
     calls.clear();
     ThrowdownLocalAction placed{Local::beacon_placed};
@@ -740,7 +788,7 @@ void beacon_flow() {
     receive(leader, theirs);
     tick(in);
     check(count("beacon move") == 2 && calls.back().value == 8, "A moved beacon was not moved here");
-    auto spoof = theirs; spoof.leader = other;
+    auto spoof = theirs; spoof.leader = other_peer;
     receive(leader, spoof);
     tick(in);
     check(count("beacon move") == 2, "A beacon was shown for someone other than its sender");
@@ -752,7 +800,7 @@ void beacon_flow() {
     theirs.id = 4;
     receive(leader, theirs);
     tick(in);
-    const ThrowdownRelayInput gone{me, {{other, 5, "Far", false, false}}, true, 90};
+    const ThrowdownRelayInput gone{me, {{other_peer, 5, "Far", false, false}}, true, 90};
     tick(gone);
     check(count("beacon remove") == 2, "A departed player's beacon stayed");
     // The local beacon removed.
@@ -801,19 +849,22 @@ void grouped_number_checks() {
     if (!(same("99999999999", INT_MAX, false) && same("-99999999999", INT_MIN, false) && same("999,999,999,999", INT_MAX, true)))
         throw std::runtime_error("A number out of range did not saturate");
 }
+void native_event_delivery_checks();
 int main() {
     try {
+        native_event_delivery_checks();
         guest_flow();
         leader_flow();
         removal_flow();
         spot_battle_flow();
         grouped_number_checks();
         skate_flow();
+        skate_leader_flow();
         alone_flow();
         challenge_flow();
         beacon_flow();
         level_change_flow();
-        std::cout << "Throwdown relay: guest, leader, removal, Spot Battle, S.K.A.T.E., last-player, coop challenge, party beacon and level change flows passed.\n";
+        std::cout << "Throwdown relay: guest, leader, removal, Spot Battle, S.K.A.T.E. guest and host, last-player, coop challenge, party beacon and level change flows passed.\n";
         return 0;
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
