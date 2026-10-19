@@ -7,7 +7,6 @@
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/grind_exit_control.h"
-#include "Extension/UI/Overlay/scripted_pad.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -310,10 +309,6 @@ std::atomic<Loading> loading_what{Loading::none};
 // spawns clean (not half in the ground where the last respawn left him). The client tick takes the request,
 // reloads, and says when the load is in; no trick is recorded meanwhile.
 std::atomic<bool> clean_request{}, clean_hold{};
-// After a clean start the game puts the skater down on foot, holding his board. This asks for one tap of the
-// game's own walk key, so he steps back onto the deck and the recording starts from a board, not a walk.
-std::atomic<bool> clean_mount{};
-std::atomic<double> clean_mount_until{};
 std::atomic<double> clean_until{};
 std::atomic<double> loading_since{}, loading_until{};
 Live& live() {
@@ -900,17 +895,6 @@ void on_animation(std::uintptr_t component) noexcept {
         const double at = now_seconds();
         const auto air = in_the_air(base, component);
         if (clean_hold.load(std::memory_order_acquire) && now_seconds() > clean_until.load(std::memory_order_relaxed)) clean_hold.store(false, std::memory_order_release);
-        // The clean start is in: if he is standing on foot, step him back onto his board (the walk key), once.
-        if (clean_mount.load(std::memory_order_acquire) && !clean_hold.load(std::memory_order_acquire)) {
-            const auto physics = physics_state(base, component);
-            if (now_seconds() > clean_mount_until.load(std::memory_order_relaxed)) clean_mount.store(false, std::memory_order_release);
-            else if (physics && *physics >= 500 && *physics < 600) {
-                XINPUT_GAMEPAD walk{};
-                walk.wButtons = XINPUT_GAMEPAD_Y;
-                overlay::play_pad({{0, walk}, {12, XINPUT_GAMEPAD{}}});
-                clean_mount.store(false, std::memory_order_release);
-            } else if (physics && *physics < 500) clean_mount.store(false, std::memory_order_release);
-        }
         if (snap->armed && !snap->open && air && !clean_hold.load(std::memory_order_acquire))
             record(l, at, *air, *air ? current_trick(component) : std::string{});
         else if (!snap->armed) reset_recording(l);
@@ -1733,8 +1717,6 @@ void record_next_trick() {
     s.open_requested = false;
     // The level loads again first, behind the loading screen, so the skater starts clean.
     clean_until.store(now_seconds() + 30.0, std::memory_order_relaxed);
-    clean_mount_until.store(now_seconds() + 45.0, std::memory_order_relaxed);
-    clean_mount.store(true, std::memory_order_release);
     clean_hold.store(true, std::memory_order_release);
     clean_request.store(true, std::memory_order_release);
     set_loading(Loading::opening, 4.0f);
@@ -1746,7 +1728,6 @@ void cancel_recording() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     clean_hold.store(false, std::memory_order_release);
-    clean_mount.store(false, std::memory_order_release);
     s.recording = Recording::off;
     s.status = "Recording cancelled.";
     publish_locked(s);
