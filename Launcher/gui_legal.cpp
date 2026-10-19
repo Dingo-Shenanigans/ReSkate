@@ -13,7 +13,7 @@
 namespace dingosdk::launcher_gui::detail {
 namespace {
 constexpr const char* kinds[Legal::count]{"privacy", "terms"};
-constexpr const char* names[Legal::count]{"PRIVACY POLICY", "TERMS OF SERVICE"};
+constexpr const char* names[Legal::count]{translatable("PRIVACY POLICY"), translatable("TERMS OF SERVICE")};
 constexpr std::uint64_t answer_limit = 256 * 1024;
 constexpr int timeout_ms = 15000;
 
@@ -71,22 +71,22 @@ void legal_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
     if (!slot.loaded && !slot.loading && slot.error.empty()) start_fetch(legal, kind);
 
     const auto panel = begin_panel("##legal_panel", size, ImVec2(S(880), S(680)));
-    panel_title(fonts, names[kind]);
+    panel_title(fonts, tr(names[kind]));
     const float footer = ImGui::GetFrameHeight() + S(24) + S(12);
     ImGui::BeginChild("##legal_body", ImVec2(0, panel.y - ImGui::GetCursorPosY() - footer), ImGuiChildFlags_NavFlattened);
     if (slot.loading && !slot.loaded) {
-        ImGui::TextDisabled("Loading...");
+        ImGui::TextDisabled("%s", tr("Loading..."));
     } else if (!slot.loaded) {
         ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("Could not load it: %s", slot.error.c_str());
+        ImGui::TextDisabled("%s", trf("Could not load it: {}", slot.error).c_str());
         ImGui::PopTextWrapPos();
-        if (ImGui::Button("Try again", ImVec2(S(120), 0))) start_fetch(legal, kind);
+        if (ImGui::Button(tr("Try again"), ImVec2(S(120), 0))) start_fetch(legal, kind);
     } else {
         const auto& document = slot.document;
         ImGui::PushFont(fonts.heading);
         ImGui::TextUnformatted(document.title.c_str());
         ImGui::PopFont();
-        ImGui::TextDisabled("Version %llu, updated %s", static_cast<unsigned long long>(document.version), document.updated.c_str());
+        ImGui::TextDisabled("%s", trf("Version {}, updated {}", document.version, document.updated).c_str());
         ImGui::Dummy(ImVec2(0, S(6)));
         draw_readme(fonts, slot.text);
     }
@@ -94,10 +94,10 @@ void legal_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
 
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
     const int other = kind == Legal::privacy ? Legal::terms : Legal::privacy;
-    if (ImGui::Button(kind == Legal::privacy ? "Terms of Service" : "Privacy Policy", ImVec2(S(180), 0))) legal.open = other;
+    if (ImGui::Button(kind == Legal::privacy ? tr("Terms of Service") : tr("Privacy Policy"), ImVec2(S(180), 0))) legal.open = other;
     ImGui::SameLine();
     ImGui::SetCursorPosX(panel.x - S(28) - S(110));
-    const bool close = ImGui::Button("CLOSE", ImVec2(S(110), 0));
+    const bool close = ImGui::Button(tr("CLOSE"), ImVec2(S(110), 0));
     default_focus();
     if (close || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) legal.open = -1;
     ImGui::End();
@@ -147,41 +147,44 @@ void legal_agreement_window(Launcher& launcher, const Fonts& fonts, ImVec2 size,
     auto& settings = launcher.settings();
     const bool first = !settings.accepted_privacy && !settings.accepted_terms;
     const auto panel = begin_panel("##legal_agreement", size, ImVec2(S(640), S(470)));
-    panel_title(fonts, first ? "BEFORE YOU PLAY" : "UPDATED TERMS");
+    panel_title(fonts, first ? tr("BEFORE YOU PLAY") : tr("UPDATED TERMS"));
     ImGui::PushTextWrapPos(0);
     if (first) {
-        ImGui::TextUnformatted("ReSkate has terms of service and a privacy policy. Read them, and agree to keep using ReSkate.");
+        ImGui::TextUnformatted(tr("ReSkate has terms of service and a privacy policy. Read them, and agree to keep using "
+                                  "ReSkate."));
     } else {
-        std::string changed;
-        if (legal.current[Legal::terms] > settings.accepted_terms) changed = "terms of service";
-        if (legal.current[Legal::privacy] > settings.accepted_privacy)
-            changed += changed.empty() ? "privacy policy" : " and the privacy policy";
-        ImGui::TextUnformatted(std::format("The {} changed since you last agreed. Read what changed, and agree to keep using "
-                                           "ReSkate.", changed).c_str());
+        const bool terms = legal.current[Legal::terms] > settings.accepted_terms;
+        const bool privacy = legal.current[Legal::privacy] > settings.accepted_privacy;
+        ImGui::TextUnformatted(terms && privacy ? tr("The terms of service and the privacy policy changed since you last "
+                                                     "agreed. Read what changed, and agree to keep using ReSkate.")
+                               : terms ? tr("The terms of service changed since you last agreed. Read what changed, and "
+                                            "agree to keep using ReSkate.")
+                                       : tr("The privacy policy changed since you last agreed. Read what changed, and "
+                                            "agree to keep using ReSkate."));
     }
     ImGui::Dummy(ImVec2(0, S(8)));
-    ImGui::TextDisabled("In short:");
+    ImGui::TextDisabled("%s", tr("In short:"));
     // (BulletText does not wrap: a bullet, then wrapped text beside it.)
-    for (const char* line : {"Play fair online and respect other players.",
-                             "Don't unlock or copy cosmetics that skate sells.",
-                             "Crash reports go to the ReSkate team unless you turn them off in Settings. Nothing in them is "
-                             "meant to identify you.",
-                             "ReSkate is a free fan project, not made by EA, and comes with no warranty."}) {
+    for (const char* line : {translatable("Play fair online and respect other players."),
+                             translatable("Don't unlock or copy cosmetics that skate sells."),
+                             translatable("Crash reports go to the ReSkate team unless you turn them off in Settings. "
+                                          "Nothing in them is meant to identify you."),
+                             translatable("ReSkate is a free fan project, not made by EA, and comes with no warranty.")}) {
         ImGui::Bullet();
-        ImGui::TextWrapped("%s", line);
+        ImGui::TextWrapped("%s", tr(line));
     }
     ImGui::PopTextWrapPos();
     ImGui::Dummy(ImVec2(0, S(10)));
-    if (ImGui::Button("Read the Terms of Service", ImVec2(S(260), 0))) legal.open = Legal::terms;
+    if (ImGui::Button(tr("Read the Terms of Service"), ImVec2(S(260), 0))) legal.open = Legal::terms;
     ImGui::SameLine();
-    if (ImGui::Button("Read the Privacy Policy", ImVec2(S(260), 0))) legal.open = Legal::privacy;
+    if (ImGui::Button(tr("Read the Privacy Policy"), ImVec2(S(260), 0))) legal.open = Legal::privacy;
 
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
-    if (ImGui::Button("QUIT", ImVec2(S(110), 0))) PostMessageW(window, WM_CLOSE, 0, 0);
+    if (ImGui::Button(tr("QUIT"), ImVec2(S(110), 0))) PostMessageW(window, WM_CLOSE, 0, 0);
     ImGui::SameLine();
     ImGui::SetCursorPosX(panel.x - S(28) - S(160));
     push_primary_button();
-    const bool agree = ImGui::Button("I AGREE", ImVec2(S(160), 0));
+    const bool agree = ImGui::Button(tr("I AGREE"), ImVec2(S(160), 0));
     pop_primary_button();
     default_focus();
     if (agree) {

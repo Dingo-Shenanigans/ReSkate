@@ -5,6 +5,7 @@
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/content_cache_install.h"
 #include "Engine/Vfs/world_layer_scan.h"
+#include "language.h"
 #include "launch.h"
 #include "mod_manager.h"
 #include "text_encoding.h"
@@ -551,7 +552,7 @@ std::string game_data_build(const launcher::SiblingPaths& paths) {
         return {};
     }
 }
-std::string memory_advice() {
+std::string memory_advice(bool translated) {
     MEMORYSTATUSEX status{sizeof(status)};
     if (!GlobalMemoryStatusEx(&status)) return {};
     // skate. commits about 9 GB with no mods and 11 to 12 GB with many. 2.1.1's out-of-memory exits
@@ -560,9 +561,12 @@ std::string memory_advice() {
     // (The game's 12 GB and Windows' own few.)
     constexpr std::uint64_t gigabyte = 1ull << 30, enough_ram = 12 * gigabyte, enough_commit = 18 * gigabyte;
     if (status.ullTotalPhys >= enough_ram && status.ullTotalPageFile >= enough_commit) return {};
-    return std::format("This PC has {} GB of RAM and room for {} GB with its page file; skate. needs about 12 GB with mods "
-                       "and may close when it runs out. Close other apps, let Windows manage the page file size, and use fewer mods.",
-                       (status.ullTotalPhys + gigabyte / 2) / gigabyte, (status.ullTotalPageFile + gigabyte / 2) / gigabyte);
+    constexpr const char* advice = launcher_language::translatable(
+        "This PC has {} GB of RAM and room for {} GB with its page file; skate. needs about 12 GB with mods "
+        "and may close when it runs out. Close other apps, let Windows manage the page file size, and use fewer mods.");
+    const auto ram = (status.ullTotalPhys + gigabyte / 2) / gigabyte, room = (status.ullTotalPageFile + gigabyte / 2) / gigabyte;
+    return translated ? launcher_language::vformat(advice, std::make_format_args(ram, room))
+                      : std::vformat(advice, std::make_format_args(ram, room));
 }
 std::string game_data_damage(const launcher::SiblingPaths& paths) {
     // A file OneDrive (or another cloud folder) keeps only online: the game's read of it fails or
