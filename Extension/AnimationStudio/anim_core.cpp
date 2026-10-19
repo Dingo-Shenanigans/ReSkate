@@ -269,6 +269,11 @@ void apply_edits(const Animation& animation, float seconds, std::span<Joint> pos
         for (std::size_t i = 0; i < 3; ++i) joint.position[i] += edit.offset[i];
     }
 }
+void shift_keys(Animation& animation, float delta) noexcept {
+    for (auto& track : animation.tracks)
+        for (auto& key : track.keys) key.time = std::max(0.0f, key.time + delta);
+    animation.start = std::max(0.0f, animation.start + delta);
+}
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge) {
     auto* track = animation.track(joint);
     if (!track) {
@@ -336,6 +341,8 @@ std::string to_json(const Animation& animation) {
     root["loop"] = animation.loop;
     root["pop"] = animation.pop;
     if (!animation.stance.empty()) root["stance"] = animation.stance;
+    root["start"] = animation.start;
+    root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
     root["takeoff"] = animation.clip.takeoff;
     root["landing"] = animation.clip.landing;
@@ -374,6 +381,8 @@ Animation from_json(std::string_view text) {
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
+    result.start = root.value("start", 0.0f);
+    result.end = root.value("end", -1.0f);
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
     require(duration >= 0 && duration < 120, "bad duration");

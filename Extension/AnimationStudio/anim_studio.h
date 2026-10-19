@@ -58,6 +58,7 @@ struct View {
     std::vector<TrackView> tracks;
     std::vector<std::string> library; // saved animations, by name
     Recording recording{};
+    float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
     bool can_undo{}, can_redo{};
     Orbit orbit;
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
@@ -111,6 +112,8 @@ void set_offset(std::uint16_t joint, const Offset& value); // keys it at the cur
 // Drags a limb: the joint goes to `target` (the skater's frame, as JointView::position is), the limb above it
 // bends, and the bend is keyed at the current time. Call begin_change once when the drag starts.
 void drag_limb(std::uint16_t joint, const Vec3& target);
+// Which bracket: 1 start (moves every key with it), 2 end (the window's end only). `seconds` is where it goes.
+void move_bracket(int which, float seconds);
 // A hand's or a foot's place, as the position fields show it: how far it is from its rest place, in the view's
 // axes. Setting it moves the joint there with the limb above it bent to reach (the knee and hip follow, the
 // bones keep their lengths); a point out of reach is brought to full stretch, never past it.

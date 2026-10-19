@@ -48,6 +48,8 @@ struct Ui {
     std::uint16_t selected{studio::hips_joint};
     bool library_open{true}, inspector_open{true};
     float timeline_zoom{1}, timeline_scroll{}, rows_scroll{};
+    bool bracket_view{};   // zoom to the brackets on the next frame
+    int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
@@ -1133,6 +1135,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     // Zoom: - FIT + at the header's right; the time under them.
     {
         float zx = at.x + size.x - 16 * k - 3 * 34 * k;
+        if (button(d, f, "##brackets", ImVec2(zx - 96 * k, at.y + 6 * k), ImVec2(86 * k, 24 * k), "BRACKETS", false, v.has_clip)) u.bracket_view = true;
         if (button(d, f, "##zoomout", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "-", false, u.timeline_zoom > 1)) zoom_timeline(1 / 1.5f);
         zx += 34 * k;
         if (button(d, f, "##fit", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "FIT", u.timeline_zoom <= 1.001f)) u.timeline_zoom = 1;
@@ -1144,6 +1147,14 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     }
     const float ruler_left = lane.x, ruler_right = at.x + size.x - 130 * k;
     const float ruler_w = ruler_right - ruler_left;
+    if (u.bracket_view && v.has_clip) {
+        // Zoomed to the window between the brackets, its start at the left.
+        u.bracket_view = false;
+        const float s0 = v.bracket_start, e0 = v.bracket_end < 0 ? duration : v.bracket_end;
+        u.timeline_zoom = std::clamp(duration / std::max(e0 - s0, 1.0f / fps), 1.0f, 16.0f);
+        u.timeline_scroll = s0 * (ruler_w - 2 * pad) / duration * u.timeline_zoom;
+        u.zoom_to_playhead = false;
+    }
     const float seconds_w = (ruler_w - 2 * pad) / duration * u.timeline_zoom;
     if (u.zoom_to_playhead || u.timeline_zoom <= 1.001f) {
         u.timeline_scroll = v.time * seconds_w - (ruler_w - 2 * pad) * 0.5f;
@@ -1175,6 +1186,27 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const float x = x_of(t);
         d->AddLine(ImVec2(x, at.y + header_h), ImVec2(x, at.y + size.y), IM_COL32(1, 131, 255, 80), 1.5f * k);
         text(d, f.bold, 12 * k, ImVec2(x + 4 * k, at.y + 8 * k), blue_light, name);
+    }
+    // The brackets: the window the animation works in. Dragging the start moves every key with it; the end only
+    // sets the window's end. Blue, in the ruler; the window is shaded.
+    if (v.has_clip) {
+        const float bs = v.bracket_start, be = v.bracket_end < 0 ? v.duration : v.bracket_end;
+        const float xs = x_of(bs), xe = x_of(be);
+        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 22));
+        for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
+            const float tick = 7 * k, dir = open_right ? 1.0f : -1.0f;
+            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+        }
+        auto& io = ImGui::GetIO();
+        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h && io.MousePos.x >= ruler_left && io.MousePos.x <= ruler_right;
+        if (in_ruler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (std::abs(io.MousePos.x - xs) < 9 * k) u.bracket_drag = 1;
+            else if (std::abs(io.MousePos.x - xe) < 9 * k) u.bracket_drag = 2;
+        }
+        if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
+        if (u.bracket_drag) studio::move_bracket(u.bracket_drag, std::round(t_of(io.MousePos.x) * fps) / fps);
     }
     d->PopClipRect();
     ImGui::SetCursorScreenPos(ImVec2(ruler_left, at.y));

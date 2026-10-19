@@ -104,6 +104,10 @@ struct Animation {
     std::string pop;
     // The stance the trick was recorded in: "regular" or "goofy" ("" for a file from before stances: regular).
     std::string stance;
+    // The brackets on the timeline: the window the animation works in, from `start` to `end` (end < 0: to the
+    // clip's end). Moving the start bracket moves every key with it (shift_keys); the end only sets the window.
+    float start{0};
+    float end{-1};
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;
@@ -112,6 +116,8 @@ struct Animation {
 void apply_edits(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
 // Sets (adds or replaces) the key of `joint` at `seconds`; keys closer than `merge` are one key.
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge = 1.0f / 120);
+// Moves every key of every track by `delta` seconds (the start bracket moves with them); keys never go before 0.
+void shift_keys(Animation& animation, float delta) noexcept;
 bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float merge = 1.0f / 120);
 // Moves a key to `to` (clamped to the clip), keeping the track in time order. Returns its new index.
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept;

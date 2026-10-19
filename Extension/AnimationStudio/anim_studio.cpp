@@ -478,6 +478,10 @@ void finish_recording(Live& l) {
     s.playing = false;
     s.recording = Recording::off;
     s.edits.stance = goofy_stance() ? "goofy" : "regular";
+    // A new trick starts clean: the old keys and brackets go, the recording is the only thing there is.
+    s.edits.tracks.clear();
+    s.edits.start = 0;
+    s.edits.end = -1;
     if (!l.recorded_trick.empty()) {
         // Named after the trick the game says it was: saving it makes it play on that trick.
         s.edits.trick = l.recorded_trick;
@@ -1524,6 +1528,8 @@ View view() {
     }
     v.library = s.library;
     v.recording = s.recording;
+    v.bracket_start = s.edits.start;
+    v.bracket_end = s.edits.end;
     v.can_undo = !s.undo.empty();
     v.can_redo = !s.redo.empty();
     v.orbit = s.orbit;
@@ -1780,6 +1786,23 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
     Offset held{};
     if (const auto* t = s.edits.track(joint)) held.rotation = evaluate(*t, at).rotation;
     set_key(s.edits, joint, at, held);
+    changed_locked(s);
+}
+
+void move_bracket(int which, float seconds) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.clip || s.clip->empty()) return;
+    const float duration = s.clip->duration();
+    const float t = std::clamp(seconds, 0.0f, duration);
+    if (which == 1) {
+        const float end = s.edits.end < 0 ? duration : s.edits.end;
+        const float start = std::min(t, end - 1.0f / 30);
+        shift_keys(s.edits, start - s.edits.start);
+        s.edits.start = start;
+    } else if (which == 2) {
+        s.edits.end = std::max(t, s.edits.start + 1.0f / 30);
+    } else return;
     changed_locked(s);
 }
 
