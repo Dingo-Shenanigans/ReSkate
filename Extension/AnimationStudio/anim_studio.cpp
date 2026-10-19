@@ -499,7 +499,7 @@ void finish_recording(Live& l) {
     s.edits.start = 0;
     s.edits.end = -1;
     key_all_at(s.edits, 0);
-    key_all_at(s.edits, clip->duration());
+    key_all_at(s.edits, s.clip->duration()); // s.clip, not clip: the clip was moved into the state above
     if (!l.recorded_trick.empty()) {
         // Named after the trick the game says it was: saving it makes it play on that trick.
         s.edits.trick = l.recorded_trick;
