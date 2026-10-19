@@ -1732,9 +1732,11 @@ void draw_animation_studio_loading() {
     constexpr ImU32 paper = IM_COL32(236, 233, 226, 255), ink = IM_COL32(17, 18, 21, 255);
     auto* d = ImGui::GetForegroundDrawList();
     // Concrete: near black, skate.'s grain and scratches over it, darker at the edges.
-    d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(19, 19, 19, 255)));
+    // The background is always opaque: the game's own loading art underneath must not show through while
+    // this fades. Only the content fades.
+    d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(19, 19, 19, 255));
     // The backdrop, when the studio has one, under a dark veil so the wordmark reads on it.
-    if (draw_studio_picture(d, StudioPicture::backdrop, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 255))))
+    if (draw_studio_picture(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255)))
         d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(8, 8, 10, 90)));
     else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
         for (unsigned i = 0; i < 2600; ++i) {

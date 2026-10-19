@@ -83,6 +83,9 @@ struct LoadingView {
     float seconds{}; // since it came up
 };
 LoadingView loading() noexcept;
+// The client tick says whether the game is still loading (a level, a console load): the loading screen stays up
+// until the game has been quiet for a second.
+void game_loading_state(bool game_loading) noexcept;
 
 // ---- commands from the overlay -------------------------------------------------------------------
 void request_open(bool open);         // asks the client tick to open or close the studio
