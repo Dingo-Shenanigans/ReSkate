@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 namespace dingosdk::anim_studio {
 namespace {
@@ -1701,6 +1702,25 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     if (!editable(joint)->moves) clean.offset = {};
     for (auto& v : clean.offset) v = std::clamp(v, -2.0f, 2.0f);
     set_key(s.edits, joint, frame_time(s.time), clean);
+    changed_locked(s);
+}
+void drag_limb(std::uint16_t joint, const Vec3& target) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.clip || s.clip->empty() || !editable(joint)) return;
+    if (const auto* t = s.edits.track(joint); t && t->locked) {
+        s.status = "That track is locked.";
+        return;
+    }
+    const float at = frame_time(s.time);
+    std::vector<Joint> native(s.clip->joints);
+    s.clip->sample(at, native);
+    try {
+        anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
+    } catch (const std::exception& e) {
+        s.status = e.what();
+        return;
+    }
     changed_locked(s);
 }
 void delete_key(std::uint16_t joint, float time) {

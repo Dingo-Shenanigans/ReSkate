@@ -531,3 +531,90 @@ Animation mirror_animation(const Animation& animation) {
     return out;
 }
 } // namespace dingosdk::anim_studio
+
+namespace dingosdk::anim_studio {
+namespace {
+Vec3 sub3(const Vec3& a, const Vec3& b) noexcept { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+Vec3 add3(const Vec3& a, const Vec3& b) noexcept { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
+Vec3 scale3(const Vec3& a, float k) noexcept { return {a[0] * k, a[1] * k, a[2] * k}; }
+float length3(const Vec3& a) noexcept { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
+Vec3 unit3(const Vec3& a) noexcept {
+    const float n = length3(a);
+    return n > 1e-9f ? scale3(a, 1.0f / n) : Vec3{0, 1, 0};
+}
+// The turn that takes direction `from` onto direction `to` (both unit).
+Quat turn_between(const Vec3& from, const Vec3& to) noexcept {
+    const float d = std::clamp(from[0] * to[0] + from[1] * to[1] + from[2] * to[2], -1.0f, 1.0f);
+    Vec3 axis{from[1] * to[2] - from[2] * to[1], from[2] * to[0] - from[0] * to[2], from[0] * to[1] - from[1] * to[0]};
+    if (length3(axis) < 1e-6f) {
+        if (d > 0) return {0, 0, 0, 1};
+        axis = std::abs(from[0]) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+        axis = unit3(sub3(axis, scale3(from, from[0] * axis[0] + from[1] * axis[1] + from[2] * axis[2])));
+        return {axis[0], axis[1], axis[2], 0};
+    }
+    return normalised(axis_angle(unit3(axis), std::acos(d)));
+}
+}
+
+Chain chain_above(std::uint16_t end, std::size_t length) noexcept {
+    Chain chain;
+    std::array<std::uint16_t, 8> from_end{};
+    std::size_t count = 0;
+    for (int at = end; at >= 0 && count < std::min<std::size_t>(length, from_end.size()); at = parent(static_cast<std::uint16_t>(at)))
+        from_end[count++] = static_cast<std::uint16_t>(at);
+    for (std::size_t i = 0; i < count; ++i) chain.joints[i] = from_end[count - 1 - i];
+    chain.count = count;
+    return chain;
+}
+
+void solve_chain(std::span<const Joint> pose, const Chain& chain, const Vec3& target, std::span<Quat> rotations) noexcept {
+    const std::size_t n = chain.count;
+    if (n < 2 || rotations.size() < n) return;
+    // Current world joints and turns, then the lengths between them.
+    std::array<Vec3, 8> cur{}, pos{};
+    std::array<Quat, 8> turn{};
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto w = world(pose, chain.joints[i]);
+        cur[i] = pos[i] = w.position;
+        turn[i] = w.rotation;
+    }
+    std::array<float, 8> len{};
+    for (std::size_t i = 0; i + 1 < n; ++i) len[i] = length3(sub3(cur[i + 1], cur[i]));
+    // FABRIK: from the end to the target, then from the top back to its place, until the end is there.
+    const Vec3 root = cur[0];
+    for (int iteration = 0; iteration < 40; ++iteration) {
+        pos[n - 1] = target;
+        for (std::size_t i = n - 1; i-- > 0;) pos[i] = add3(pos[i + 1], scale3(unit3(sub3(pos[i], pos[i + 1])), len[i]));
+        pos[0] = root;
+        for (std::size_t i = 0; i + 1 < n; ++i) pos[i + 1] = add3(pos[i], scale3(unit3(sub3(pos[i + 1], pos[i])), len[i]));
+        if (length3(sub3(pos[n - 1], target)) < 1e-4f) break;
+    }
+    // The bend: each joint turns so its bone points where the solved chain has it, from the top down.
+    Quat parent_turn = world(pose, parent(chain.joints[0])).rotation;
+    if (parent(chain.joints[0]) < 0) parent_turn = {0, 0, 0, 1};
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const Vec3 was = unit3(sub3(cur[i + 1], cur[i])), now = unit3(sub3(pos[i + 1], pos[i]));
+        const Quat world_turn = normalised(multiply(turn_between(was, now), turn[i]));
+        rotations[i] = normalised(multiply(conjugate(parent_turn), world_turn));
+        parent_turn = world_turn;
+    }
+}
+
+void drag_joint(Animation& animation, std::span<const Joint> native, float seconds, std::uint16_t end, const Vec3& target, std::size_t length) {
+    if (end >= native.size()) throw std::runtime_error("the joint is not on the skater");
+    const Chain chain = chain_above(end, length);
+    if (chain.count < 2) throw std::runtime_error("the joint has no limb above it to bend");
+    std::vector<Joint> pose(native.begin(), native.end());
+    apply_edits(animation, seconds, pose);
+    std::array<Quat, 8> bent{};
+    solve_chain(pose, chain, target, bent);
+    // The top and the middle bend; the end is carried by them and keeps its own turn.
+    for (std::size_t i = 0; i + 1 < chain.count; ++i) {
+        const auto joint = chain.joints[i];
+        const Quat delta = normalised(multiply(conjugate(native[joint].rotation), bent[i]));
+        Vec3 offset{};
+        if (const auto* track = animation.track(joint)) offset = evaluate(*track, seconds).offset;
+        set_key(animation, joint, seconds, {delta, offset});
+    }
+}
+} // namespace dingosdk::anim_studio

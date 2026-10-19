@@ -62,6 +62,7 @@ struct Ui {
     ImVec2 drag_start{};
     int axis{-1}; // -1 free, 0 X, 1 Y, 2 Z
     bool local_axes{true}, move_mode{};
+    bool limb_drag{}; // the mouse drags the selected limb to where it is pointed (I toggles it)
     std::array<char, 64> name{}, trick{};
     std::uint64_t names_for{};
     std::string message;
@@ -382,6 +383,18 @@ void begin_turn(const studio::View& v) {
     u.drag_parent_scale = sel->parent_scale;
     studio::begin_change();
     studio::set_playing(false);
+}
+// Drags the selected limb: the point under the mouse, on the camera's plane through the joint, is where it goes.
+void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
+    const auto* sel = joint_view(v, ui().selected);
+    if (!sel || !p.valid) return;
+    const studio::Vec3 d{sel->position[0] - p.origin[0], sel->position[1] - p.origin[1], sel->position[2] - p.origin[2]};
+    const float depth = -(d[0] * p.back[0] + d[1] * p.back[1] + d[2] * p.back[2]);
+    if (depth < 0.05f || p.focal <= 0) return;
+    const float side = (mouse.x - p.cx) * depth / p.focal, height = -(mouse.y - p.cy) * depth / p.focal;
+    studio::Vec3 target{};
+    for (int i = 0; i < 3; ++i) target[i] = p.origin[i] - p.back[i] * depth + p.right[i] * side + p.up[i] * height;
+    studio::drag_limb(ui().selected, target);
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
 void apply_turn(const Projector& p, float dx, float dy, bool move) {
@@ -1315,7 +1328,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));
         const char* axis = u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "FREE";
         text(d, f.body, 12 * k, ImVec2(x, y + 42 * k), IM_COL32(120, 190, 255, 150),
-             std::format("{}  axis {}  ({})", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world"));
+             std::format("{}  axis {}  ({})", u.limb_drag ? "LIMB DRAG (I)" : u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world"));
     }
     if (u.menu_open || (!inside && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
     auto& io = ImGui::GetIO();
@@ -1332,6 +1345,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     }
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
+        else if (u.limb_drag) drag_limb_to(v, project, mouse);
         else if (project.valid) apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
     }
     auto orbit = v.orbit;
@@ -1384,6 +1398,7 @@ void keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_End)) studio::set_time(v.duration);
     if (ctrl && pressed(ImGuiKey_Z, true)) studio::undo();
     if (ctrl && pressed(ImGuiKey_Y, true)) studio::redo();
+    if (!ctrl && pressed(ImGuiKey_I)) ui().limb_drag = !ui().limb_drag;
     if (ctrl && pressed(ImGuiKey_C)) studio::copy_pose();
     if (ctrl && pressed(ImGuiKey_V)) {
         studio::begin_change();

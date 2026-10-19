@@ -108,6 +108,9 @@ void set_room(bool on);               // the studio opens in its room, or where 
 void begin_change();
 Offset offset_of(std::uint16_t joint); // the joint's edit at the current time
 void set_offset(std::uint16_t joint, const Offset& value); // keys it at the current time
+// Drags a limb: the joint goes to `target` (the skater's frame, as JointView::position is), the limb above it
+// bends, and the bend is keyed at the current time. Call begin_change once when the drag starts.
+void drag_limb(std::uint16_t joint, const Vec3& target);
 void delete_key(std::uint16_t joint, float time);
 void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);

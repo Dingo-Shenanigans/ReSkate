@@ -4,6 +4,7 @@
 #include "Extension/AnimationStudio/skater_mirror.h"
 #include <cmath>
 #include <iostream>
+#include <vector>
 #include <stdexcept>
 
 using namespace dingosdk::anim_studio;
@@ -158,10 +159,45 @@ void mirror_pairs_and_comes_back() {
     check(track && near(track->keys[0].offset[0], -0.2f), "A key on the right moves to the left, mirrored");
 }
 
+
+Vec3 sub3_test(const Vec3& a, const Vec3& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+float length3_test(const Vec3& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
+
+// Dragging a foot: the leg bends so the foot reaches the drag, the bones keep their lengths, and a drag to
+// where the foot already is changes nothing. Works on the skater's own joints (Hips 7, RightUpLeg 8,
+// RightLeg 9, RightFoot 10).
+void dragged_foot_reaches_the_drag() {
+    std::vector<Joint> native(skeleton_joints);
+    native[8].position = {0.1f, -0.05f, 0};
+    native[9].position = {0, -0.4f, 0};
+    native[10].position = {0, -0.4f, 0};
+    const auto before_thigh = world(native, 8).position, before_shin = world(native, 9).position, before_foot = world(native, 10).position;
+    const float shin = length3_test(sub3_test(world(native, 10).position, world(native, 9).position));
+    const Vec3 target = {before_foot[0] + 0.1f, before_foot[1] + 0.25f, before_foot[2] + 0.12f};
+    Animation animation;
+    animation.clip.joints = skeleton_joints;
+    drag_joint(animation, native, 0.5f, 10, target);
+    std::vector<Joint> posed(native);
+    apply_edits(animation, 0.5f, posed);
+    const auto foot = world(posed, 10).position;
+    check(length3_test(sub3_test(foot, target)) < 2e-3f, "The dragged foot reaches the drag");
+    const auto thigh = world(posed, 8).position, knee = world(posed, 9).position;
+    check(near(length3_test(sub3_test(knee, thigh)), length3_test(sub3_test(before_shin, before_thigh)), 2e-3f), "The thigh keeps its length");
+    check(near(length3_test(sub3_test(foot, knee)), shin, 2e-3f), "The shin keeps its length");
+    check(near(thigh[0], before_thigh[0], 1e-4f) && near(thigh[1], before_thigh[1], 1e-4f), "The hip end of the chain stays where it is");
+    Animation still;
+    still.clip.joints = skeleton_joints;
+    drag_joint(still, native, 0.5f, 10, before_foot);
+    std::vector<Joint> rest(native);
+    apply_edits(still, 0.5f, rest);
+    check(length3_test(sub3_test(world(rest, 10).position, before_foot)) < 2e-3f, "A drag to where the foot is holds it there");
+}
+
 int main() {
     try {
         euler_numbers_read_back();
         mirror_pairs_and_comes_back();
+        dragged_foot_reaches_the_drag();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
         keys_can_be_dragged_in_time();

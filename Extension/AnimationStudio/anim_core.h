@@ -122,6 +122,20 @@ std::size_t move_key(Track& track, std::size_t index, float to, float duration) 
 Joint world(std::span<const Joint> local, std::uint16_t joint) noexcept;
 std::int16_t parent(std::uint16_t joint) noexcept;
 
+// ---- dragging a limb (inverse kinematics) ---------------------------------------------------------
+// Moves the joint `end` to `target` (in the frame world() gives) by bending the chain of `length` joints above
+// it: the top of the chain stays where it is, the joints between bend, and the end is put where the drag is.
+// `drag_joint` writes the bend as keys at `seconds`: the native pose is the clip's, the rest of the animation
+// stays as it is. The end joint's own turn is not changed.
+struct Chain {
+    std::array<std::uint16_t, 8> joints{}; // from the top of the chain (joints[0]) down to the end
+    std::size_t count{};
+};
+Chain chain_above(std::uint16_t end, std::size_t length) noexcept;
+// The chain's new local rotations for the pose `pose` (which already has the animation's edits applied).
+void solve_chain(std::span<const Joint> pose, const Chain& chain, const Vec3& target, std::span<Quat> rotations) noexcept;
+void drag_joint(Animation& animation, std::span<const Joint> native, float seconds, std::uint16_t end, const Vec3& target, std::size_t length = 3);
+
 // ---- goofy ----------------------------------------------------------------------------------------
 // The other side of the body (a regular trick played goofy, and back): the skater mirrored across its
 // middle, the X of its root. A rotation keeps its X and negates its Y and Z; a position or offset
