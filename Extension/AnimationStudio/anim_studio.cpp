@@ -1640,7 +1640,10 @@ LoadingView loading() noexcept {
     // quiet for a moment, so the level, its title card and its streaming are all done behind it.
     if (loading_held.load() && loading_what.load() != Loading::none) {
         const double quiet = game_quiet_since.load();
-        if ((quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
+        // A clean start holds it all the way: the walk out of the room, the level loading behind it and the
+        // skater arriving are one screen, instead of ours ending and the game's own coming up after it.
+        const bool clean = clean_hold.load(std::memory_order_acquire);
+        if ((!clean && quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
             loading_held.store(false);
             loading_until.store(now);
         } else if (loading_until.load() < now + 0.2) {
