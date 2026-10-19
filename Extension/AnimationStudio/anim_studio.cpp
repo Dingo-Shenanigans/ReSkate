@@ -223,10 +223,7 @@ struct Live {
     double game_takeoff{}, game_landing{-1};
     int game_ground{};
     const CustomTrick* game_trick{}; // the saved trick playing now, from snapshot `game_tricks`
-    // The skater's turn when the trick left the ground: the trick plays facing that way, so a turn in the air
-    // (the right stick) does not turn the board, the legs or the pelvis.
-    Quat facing_at_takeoff{0, 0, 0, 1};
-    bool facing_held{};
+
     std::shared_ptr<const CustomTricks> game_tricks;
     std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
@@ -582,7 +579,7 @@ void reset_recording(Live& l) {
 
 // The local skater's physics state (no_bail.cpp's selector): component +0x70 the core, core +0x3c0 its
 // context, context +0x1414 the state. In the air on the board: 200, 201.
-std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) noexcept {
+std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = read<std::uintptr_t>(component + 0x70);
     if (!core || !*core) return std::nullopt;
     const auto type = read<std::uintptr_t>(*core);
@@ -591,8 +588,18 @@ std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) no
     if (!context || !*context) return std::nullopt;
     const auto value = read<std::uint32_t>(*context + addr::skater_state::physics_state_offset);
     if (!value) return std::nullopt;
+    return *value;
+}
+std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto value = physics_state(base, component);
+    if (!value) return std::nullopt;
     return std::find(addr::skater_state::board_air_states.begin(), addr::skater_state::board_air_states.end(), *value) !=
            addr::skater_state::board_air_states.end();
+}
+// Grinds are physics states 400 to 499 (no_bail.cpp's selector): on a rail the trick goes on with the rail.
+bool grinding(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto value = physics_state(base, component);
+    return value && *value >= 400 && *value < 500;
 }
 
 // The game's name for the trick the skater is doing ("ollie", "kickflip", "heelflip"): the animation
@@ -990,15 +997,16 @@ void on_animation(std::uintptr_t component) noexcept {
             apply_edits(*snap->edits, 0, l.pose);
             first = in_room ? placement_joint : 2;
             last = layout.count;
-        } else if (snap->play_in_game && !snap->armed && snap->tricks && !snap->tricks->empty() && air) {
+        } else if (snap->play_in_game && !snap->armed && snap->tricks && !snap->tricks->empty() && (air.has_value() || grinding(base, component))) {
             // In game: when the game does a trick there is a saved animation for, that animation plays on
-            // the body in place of the game's own, from the takeoff, blended in and out.
-            if (*air) {
+            // the body in place of the game's own, from the takeoff, blended in and out. A grind counts as
+            // the air: the trick holds its landing while the skater grinds, and the board stays with the
+            // game's own, so it follows the rail; it settles once the grind is over.
+            const bool on_rail = grinding(base, component);
+            if (air.value_or(false) || on_rail) {
                 if (!l.game_air) {
                     l.game_air = true;
                     l.game_takeoff = at;
-                    l.facing_at_takeoff = l.pose[placement_joint].rotation;
-                    l.facing_held = true;
                     l.game_landing = -1;
                     l.game_trick = nullptr;
                     l.game_tricks = snap->tricks;
@@ -1063,23 +1071,15 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (weight <= 0) {
                         l.game_trick = nullptr;
                         l.game_landing = -1;
-                        l.facing_held = false;
                         t = -1;
                     }
                 }
                 if (t >= 0 && weight > 0) {
-                    // Held facing: the skater's own turn is the one it had when the trick left the ground,
-                    // easing back to the game's as the trick is done.
-                    if (l.facing_held && placement_joint < l.pose.size()) {
-                        auto& turned = l.pose[placement_joint];
-                        turned.rotation = normalised(slerp(turned.rotation, l.facing_at_takeoff, weight));
-                        live_placement = world(l.pose, placement_joint);
-                    }
                     l.custom.resize(layout.count);
                     std::copy(l.pose.begin(), l.pose.end(), l.custom.begin());
                     clip.sample(t, l.custom);
                     apply_edits(played, t, l.custom);
-                    if (Joint rel; clip.sample_board(t, rel)) {
+                    if (Joint rel; !on_rail && clip.sample_board(t, rel)) {
                         board_target = board_edited(compose(live_placement, rel), played, t, start_frame(clip, live_placement, 0).rotation);
                         board_weight = weight;
                     }
