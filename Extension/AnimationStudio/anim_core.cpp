@@ -51,7 +51,7 @@ constexpr std::array<EditableJoint, 25> joints{{
     {42, "Lower back", false},
     {44, "Chest", false},
     {101, "Neck", false},
-    {103, "Head", true},
+    {103, "Head", false},
     {275, "Left shoulder", false},
     {276, "Left arm", false},
     {277, "Left elbow", false},

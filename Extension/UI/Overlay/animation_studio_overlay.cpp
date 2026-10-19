@@ -992,7 +992,9 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         y += 40 * k;
         const auto offset = studio::offset_of(u.selected);
         auto euler = studio::to_euler(offset.rotation);
-        auto position = offset.offset;
+        // A hand or a foot: its position fields are where it is from its rest (the limb above it bends to reach).
+        const bool limb_end = u.selected == 10 || u.selected == 343 || u.selected == 49 || u.selected == 278;
+        auto position = limb_end ? studio::limb_position(u.selected) : offset.offset;
         // The board: where it is and how it is turned, from where it starts on the ground (its keys added to the trick's own).
         const bool board_fields = u.selected == studio::board_joint && v.board_base_valid;
         if (board_fields) {
@@ -1045,6 +1047,9 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 for (std::size_t i = 0; i < 3; ++i) next.offset[i] = position[i] - v.board_base.position[i];
                 next.rotation = studio::normalised(studio::multiply(studio::from_euler(euler), studio::conjugate(v.board_base.rotation)));
                 studio::set_offset(u.selected, next);
+            } else if (limb_end) {
+                if (moved) studio::set_limb_position(u.selected, position);
+                if (turned) studio::set_offset(u.selected, {studio::from_euler(euler), {0, 0, 0}});
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
         }
         if (tab == Tab::keys) {

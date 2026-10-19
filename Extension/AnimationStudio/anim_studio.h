@@ -111,6 +111,11 @@ void set_offset(std::uint16_t joint, const Offset& value); // keys it at the cur
 // Drags a limb: the joint goes to `target` (the skater's frame, as JointView::position is), the limb above it
 // bends, and the bend is keyed at the current time. Call begin_change once when the drag starts.
 void drag_limb(std::uint16_t joint, const Vec3& target);
+// A hand's or a foot's place, as the position fields show it: how far it is from its rest place, in the view's
+// axes. Setting it moves the joint there with the limb above it bent to reach (the knee and hip follow, the
+// bones keep their lengths); a point out of reach is brought to full stretch, never past it.
+Vec3 limb_position(std::uint16_t joint);
+void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);
 void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);

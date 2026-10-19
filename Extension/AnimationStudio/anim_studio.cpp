@@ -1724,6 +1724,65 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     set_key(s.edits, joint, frame_time(s.time), clean);
     changed_locked(s);
 }
+namespace {
+// The view's frame and the clip's, through the placement joint: a point or a direction is moved between them.
+Vec3 to_clip(const Joint& view_place, const Joint& clip_place, const Vec3& p) {
+    const Vec3 local = rotate(conjugate(view_place.rotation), {p[0] - view_place.position[0], p[1] - view_place.position[1], p[2] - view_place.position[2]});
+    const Vec3 moved = rotate(clip_place.rotation, local);
+    return {moved[0] + clip_place.position[0], moved[1] + clip_place.position[1], moved[2] + clip_place.position[2]};
+}
+Vec3 to_view(const Joint& view_place, const Joint& clip_place, const Vec3& p) {
+    const Vec3 local = rotate(conjugate(clip_place.rotation), {p[0] - clip_place.position[0], p[1] - clip_place.position[1], p[2] - clip_place.position[2]});
+    const Vec3 moved = rotate(view_place.rotation, local);
+    return {moved[0] + view_place.position[0], moved[1] + view_place.position[1], moved[2] + view_place.position[2]};
+}
+} // namespace
+
+Vec3 limb_position(std::uint16_t joint) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.clip || s.clip->empty() || !editable(joint)) return {};
+    const float at = frame_time(s.time);
+    std::vector<Joint> native(s.clip->joints);
+    s.clip->sample(at, native);
+    std::vector<Joint> posed(native);
+    apply_edits(s.edits, at, posed);
+    const Joint clip_place = world(posed, placement_joint);
+    const auto* now = [&]() -> const JointView* { for (const auto& j : s.joints) if (j.joint == joint) return &j; return nullptr; }();
+    if (!now) return {};
+    const Vec3 rest = to_view(s.joints_placement, clip_place, world(native, joint).position);
+    return {now->position[0] - rest[0], now->position[1] - rest[1], now->position[2] - rest[2]};
+}
+
+void set_limb_position(std::uint16_t joint, const Vec3& offset) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.clip || s.clip->empty() || !editable(joint)) return;
+    if (const auto* t = s.edits.track(joint); t && t->locked) {
+        s.status = "That track is locked.";
+        return;
+    }
+    const float at = frame_time(s.time);
+    std::vector<Joint> native(s.clip->joints);
+    s.clip->sample(at, native);
+    std::vector<Joint> posed(native);
+    apply_edits(s.edits, at, posed);
+    const Joint clip_place = world(posed, placement_joint);
+    const Vec3 rest = to_view(s.joints_placement, clip_place, world(native, joint).position);
+    const Vec3 target_view{rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]};
+    try {
+        anim_studio::drag_joint(s.edits, native, at, joint, to_clip(s.joints_placement, clip_place, target_view), 3);
+    } catch (const std::exception& e) {
+        s.status = e.what();
+        return;
+    }
+    // The limb's end carries no offset of its own: the bend places it, so it cannot stretch the bone.
+    Offset held{};
+    if (const auto* t = s.edits.track(joint)) held.rotation = evaluate(*t, at).rotation;
+    set_key(s.edits, joint, at, held);
+    changed_locked(s);
+}
+
 void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
