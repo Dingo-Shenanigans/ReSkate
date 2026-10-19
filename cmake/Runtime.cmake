@@ -139,6 +139,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/loading_screen.cpp
     Extension/Customization/preset_lookup_guard.cpp
     Extension/Boot/exit_watch.cpp
+    Extension/Boot/local_crash_note.cpp
     Extension/Boot/discord_presence.cpp
     Extension/Customization/developer_hoodie.cpp
     Extension/Customization/developer_board.cpp

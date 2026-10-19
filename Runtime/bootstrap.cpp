@@ -1,3 +1,4 @@
+#include "Extension/Boot/local_crash_note.h"
 #include "bootstrap.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -50,6 +51,7 @@ bool initialize_bootstrap(std::uintptr_t base) {
     // suspended and before the pools below are enlarged, so it sees who makes all of them.
     console::start_memory_trace_from_environment();
     // (Not needed for the game to run: a mismatch leaves crash reports at what the game writes.)
+    start_local_crash_note();
     error.clear(); ready = start_game_fatal_dump(base, error);
     (void)stage(Channel::runtime, "Crash dumps from the game's own fatal handlers", ready, error);
     error.clear(); ready = start_native_patch_support(base, error);
