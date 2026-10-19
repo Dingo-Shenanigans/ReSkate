@@ -49,6 +49,7 @@ struct Ui {
     std::uint16_t selected{studio::hips_joint};
     bool library_open{true}, inspector_open{true};
     float timeline_zoom{1}, timeline_scroll{}, rows_scroll{};
+    bool rows_bar_held{};  // the joint list's scroll bar is being dragged
     bool bracket_view{};   // zoom to the brackets on the next frame
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
@@ -1316,6 +1317,25 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             studio::set_playing(false);
         }
         ImGui::PopID();
+    }
+    // The joint list's scroll bar, down the left edge: it shows how far down the list is and can be dragged.
+    if (content_h > rows_h + 1.0f) {
+        const float bar_w = 7 * k, bar_x = at.x + 2 * k;
+        const float shown = rows_h / content_h;
+        const float thumb_h = (std::max)(rows_h * shown, 28 * k);
+        const float travel = rows_h - thumb_h;
+        const float where = u.rows_scroll / (std::max)(1.0f, content_h - rows_h);
+        const float thumb_y = rows_top + travel * std::clamp(where, 0.0f, 1.0f);
+        d->AddRectFilled(ImVec2(bar_x, rows_top), ImVec2(bar_x + bar_w, rows_top + rows_h), IM_COL32(255, 255, 255, 20), bar_w * 0.5f);
+        auto& io = ImGui::GetIO();
+        const bool over = io.MousePos.x >= bar_x - 4 * k && io.MousePos.x <= bar_x + bar_w + 4 * k && io.MousePos.y >= rows_top &&
+                          io.MousePos.y <= rows_top + rows_h;
+        if (over && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.rows_bar_held = true;
+        if (u.rows_bar_held && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.rows_bar_held = false;
+        if (u.rows_bar_held && travel > 0)
+            u.rows_scroll = std::clamp((io.MousePos.y - rows_top - thumb_h * 0.5f) / travel, 0.0f, 1.0f) * (content_h - rows_h);
+        d->AddRectFilled(ImVec2(bar_x, thumb_y), ImVec2(bar_x + bar_w, thumb_y + thumb_h),
+                         u.rows_bar_held || over ? blue : IM_COL32(255, 255, 255, 110), bar_w * 0.5f);
     }
     d->PopClipRect();
     if (u.key_joint) {
