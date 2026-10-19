@@ -99,6 +99,10 @@ struct State {
     // The casual stance shown until a trick is picked: the end of the game's mid ollie, standing on the board.
     std::shared_ptr<const Clip> idle_clip;
     bool idle_read{};
+    // Record all tricks (trick_batch.h): the next landed trick is saved to the recorded tricks and the studio stays closed.
+    bool batch{};
+    std::optional<BatchTake> batch_take;
+    bool record_all_requested{};
     Animation edits;
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
@@ -452,6 +456,15 @@ std::array<float, 16> orbit_matrix(const Vec3& centre, const Orbit& orbit, float
     return m;
 }
 
+// ---- recorded tricks -----------------------------------------------------------------------------
+// Record all tricks keeps each take as <folder>/recorded/<trick>__<pop>.clip.
+std::atomic<std::uint64_t> tricks_revision{1};
+std::string recorded_file_name(const std::string& trick, const std::string& pop) {
+    std::string safe;
+    for (const char c : trick) safe += std::isalnum(static_cast<unsigned char>(c)) ? static_cast<char>(std::tolower(static_cast<unsigned char>(c))) : '_';
+    return safe + "__" + (pop.empty() ? std::string("mid") : pop) + ".clip";
+}
+
 // ---- recording ---------------------------------------------------------------------------------
 constexpr double before_takeoff = 0.7, after_landing = 0.7, ring_seconds = 2.5;
 constexpr double shortest_air = 0.25, longest_air = 8.0;
@@ -502,7 +515,11 @@ void finish_recording(Live& l) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.status = "The recording was too short. Try again.";
-        s.recording = Recording::waiting;
+        if (s.batch) {
+            s.batch_take = BatchTake{false, {}, {}, "the recording was too short", 0};
+            s.recording = Recording::off;
+            s.batch = false;
+        } else s.recording = Recording::waiting;
         return;
     }
     hold_effector_positions(*clip);
@@ -510,6 +527,34 @@ void finish_recording(Live& l) {
     clip->landing = static_cast<float>(std::max(0.0, l.landing_at - first));
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (s.batch) {
+        // Record all tricks: saved as the trick and the pop it was, the studio stays closed.
+        s.batch = false;
+        s.recording = Recording::off;
+        const float air = clip->landing - clip->takeoff;
+        // Its pop, as pop_of has it: low under 0.45 s in the air, high from 0.65 s.
+        BatchTake take{false, l.recorded_trick, air < 0.45f ? "low" : air < 0.65f ? "mid" : "high", {}, air};
+        if (take.trick.empty()) take.message = "the game did not name the trick";
+        else if (clip->board.empty()) take.message = "the board was not recorded";
+        else {
+            try {
+                const auto folder = library_folder() / L"recorded";
+                std::filesystem::create_directories(folder);
+                const auto bytes = clip_bytes(*clip);
+                std::ofstream out(folder / std::filesystem::path(recorded_file_name(take.trick, take.pop)), std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                take.ok = static_cast<bool>(out);
+                if (!take.ok) take.message = "the clip could not be written";
+                tricks_revision.fetch_add(1, std::memory_order_acq_rel);
+            } catch (const std::exception& e) {
+                take.message = e.what();
+            }
+        }
+        logging::log(Level::info, Channel::skater, "Animation Studio: recorded {} ({} pop, {:.2f} s in the air){}{}", take.trick.empty() ? "a trick" : take.trick,
+                     take.pop, air, take.ok ? "" : ": not kept, ", take.message);
+        s.batch_take = std::move(take);
+        return;
+    }
     s.clip = std::move(clip);
     // Keys from an earlier clip stay, held inside the new one.
     for (auto& track : s.edits.tracks)
@@ -594,6 +639,11 @@ void record(Live& l, double at, bool air, const std::string& trick) {
                 std::lock_guard lock(s.mutex);
                 s.recording = Recording::waiting;
                 s.status = "That was not a trick (too long in the air). Waiting for the next one.";
+                if (s.batch) {
+                    s.batch_take = BatchTake{false, {}, {}, "too long in the air", 0};
+                    s.recording = Recording::off;
+                    s.batch = false;
+                }
             }
             return;
         }
@@ -603,6 +653,11 @@ void record(Live& l, double at, bool air, const std::string& trick) {
             std::lock_guard lock(s.mutex);
             s.recording = Recording::waiting;
             s.status = "Too short a hop. Waiting for a trick.";
+            if (s.batch) {
+                s.batch_take = BatchTake{false, {}, {}, "too short a hop", 0};
+                s.recording = Recording::off;
+                s.batch = false;
+            }
             return;
         }
         l.landing_at = at;
@@ -625,19 +680,8 @@ void reset_recording(Live& l) {
     l.ring.clear();
 }
 
-// The local skater's physics state (no_bail.cpp's selector): component +0x70 the core, core +0x3c0 its
-// context, context +0x1414 the state. In the air on the board: 200, 201.
-std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept {
-    const auto core = read<std::uintptr_t>(component + 0x70);
-    if (!core || !*core) return std::nullopt;
-    const auto type = read<std::uintptr_t>(*core);
-    if (!type || *type != base + addr::no_bail::bail_core_vtable) return std::nullopt;
-    const auto context = read<std::uintptr_t>(*core + 0x3c0);
-    if (!context || !*context) return std::nullopt;
-    const auto value = read<std::uint32_t>(*context + addr::skater_state::physics_state_offset);
-    if (!value) return std::nullopt;
-    return *value;
-}
+// The local skater's physics state is the one the header declares (defined further down): in the air on the
+// board it is 200 or 201, on foot 500 to 599, grinding 400 to 499.
 std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto value = physics_state(base, component);
     if (!value) return std::nullopt;
@@ -1784,6 +1828,46 @@ void set_speed(float speed) {
 }
 bool take_clean_start() noexcept { return clean_request.exchange(false, std::memory_order_acq_rel); }
 void clean_start_done() noexcept { clean_hold.store(false, std::memory_order_release); }
+void arm_batch_take() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.batch = true;
+    s.batch_take.reset();
+    s.recording = Recording::waiting;
+    publish_locked(s);
+}
+void cancel_batch_take() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.batch) return;
+    s.batch = false;
+    s.recording = Recording::off;
+    publish_locked(s);
+}
+std::optional<BatchTake> take_batch_result() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return std::exchange(s.batch_take, std::nullopt);
+}
+void request_record_all() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.record_all_requested = true;
+}
+bool take_record_all_request() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return std::exchange(s.record_all_requested, false);
+}
+std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto core = component ? read<std::uintptr_t>(component + 0x70) : std::nullopt;
+    if (!core || !*core) return std::nullopt;
+    const auto type = read<std::uintptr_t>(*core);
+    if (!type || *type != base + addr::no_bail::bail_core_vtable) return std::nullopt;
+    const auto context = read<std::uintptr_t>(*core + 0x3c0);
+    if (!context || !*context) return std::nullopt;
+    return read<std::uint32_t>(*context + addr::skater_state::physics_state_offset);
+}
 void record_next_trick() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2133,15 +2217,62 @@ std::vector<GameTrick> read_catalog() {
     }
     return out;
 }
+// The tricks Record all tricks kept: by category (flip, nollie), each trick's pops low, mid, high.
+std::vector<GameTrick> read_recorded() {
+    std::vector<GameTrick> out;
+    std::error_code error;
+    const auto folder = library_folder() / L"recorded";
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (!entry.is_regular_file(error) || entry.path().extension() != L".clip") continue;
+        const auto stem = entry.path().stem().string();
+        const auto split = stem.rfind("__");
+        if (split == std::string::npos) continue;
+        GameTrick t;
+        t.trick = stem.substr(0, split);
+        t.pop = stem.substr(split + 2);
+        if (t.trick.empty() || (t.pop != "low" && t.pop != "mid" && t.pop != "high")) continue;
+        for (auto& c : t.trick) if (c == '_') c = ' ';
+        t.label = t.trick;
+        bool start = true;
+        for (auto& c : t.label) {
+            if (start) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            start = c == ' ';
+        }
+        t.category = t.trick.rfind("nollie", 0) == 0 ? "Nollie tricks" : "Flip tricks";
+        t.file = "../recorded/" + entry.path().filename().string();
+        out.push_back(std::move(t));
+    }
+    const auto pop_rank = [](const std::string& pop) { return pop == "low" ? 0 : pop == "mid" ? 1 : 2; };
+    std::ranges::sort(out, [&](const GameTrick& x, const GameTrick& y) {
+        if (x.category != y.category) return x.category < y.category;
+        const bool xo = x.trick == "ollie" || x.trick == "nollie", yo = y.trick == "ollie" || y.trick == "nollie";
+        if (xo != yo) return xo;
+        if (x.trick != y.trick) return x.trick < y.trick;
+        return pop_rank(x.pop) < pop_rank(y.pop);
+    });
+    return out;
+}
 } // namespace
 std::shared_ptr<const std::vector<GameTrick>> game_tricks() {
-    // Read once.
-    static const auto list = [] {
-        auto out = std::make_shared<const std::vector<GameTrick>>(read_catalog());
-        logging::log(Level::info, Channel::skater, "Animation Studio: {} game tricks in the library.", out->size());
-        return out;
-    }();
+    // Your recorded tricks when there are any (the board as the game had it); else the game's own clips.
+    static std::mutex mutex;
+    static std::shared_ptr<const std::vector<GameTrick>> list;
+    static std::uint64_t read_at = 0;
+    std::lock_guard lock(mutex);
+    if (const auto now = tricks_revision.load(std::memory_order_acquire); !list || now != read_at) {
+        read_at = now;
+        auto recorded = read_recorded();
+        auto next = std::make_shared<std::vector<GameTrick>>(recorded.empty() ? read_catalog() : std::move(recorded));
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} tricks in the list.", next->size());
+        list = std::move(next);
+    }
     return list;
+}
+bool recorded_tricks() {
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(library_folder() / L"recorded", error))
+        if (entry.path().extension() == L".clip") return true;
+    return false;
 }
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     std::ifstream in(library_folder() / L"library" / std::filesystem::path(trick.file), std::ios::binary);

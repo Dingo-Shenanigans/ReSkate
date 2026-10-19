@@ -962,6 +962,35 @@ bool install_input_capture() {
 
 }
 
+// TEST ONLY (not for the PR): "ms:buttons,lx,ly,rx,ry,lt,rt/..." played on the scripted pad, RESKATE_TEST_PAD=1.
+extern "C" bool DingoSDKOverlayTestPad(const char* script) {
+    wchar_t flag[4]{};
+    if (GetEnvironmentVariableW(L"RESKATE_TEST_PAD", flag, 4) != 1 || flag[0] != L'1' || !script) return false;
+    std::vector<dingosdk::overlay::PadStep> steps;
+    double at = 0.3;
+    std::string text(script);
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const auto end = std::min(text.find('/', pos), text.size());
+        const auto step = text.substr(pos, end - pos);
+        pos = end + 1;
+        unsigned ms{}, buttons{};
+        int lx{}, ly{}, rx{}, ry{}, lt{}, rt{};
+        if (sscanf_s(step.c_str(), "%u:%x,%d,%d,%d,%d,%d,%d", &ms, &buttons, &lx, &ly, &rx, &ry, &lt, &rt) < 2) return false;
+        const auto axis = [](int v) { return static_cast<SHORT>(std::clamp(v, -100, 100) * 327); };
+        const auto trigger = [](int v) { return static_cast<BYTE>(std::clamp(v, 0, 100) * 255 / 100); };
+        XINPUT_GAMEPAD pad{};
+        pad.wButtons = static_cast<WORD>(buttons);
+        pad.sThumbLX = axis(lx); pad.sThumbLY = axis(ly); pad.sThumbRX = axis(rx); pad.sThumbRY = axis(ry);
+        pad.bLeftTrigger = trigger(lt); pad.bRightTrigger = trigger(rt);
+        steps.push_back({static_cast<std::uint32_t>(at * 60), pad});
+        at += ms / 1000.0;
+    }
+    steps.insert(steps.begin(), {0, XINPUT_GAMEPAD{}});
+    steps.push_back({static_cast<std::uint32_t>(at * 60), XINPUT_GAMEPAD{}});
+    dingosdk::overlay::play_pad(std::move(steps));
+    return true;
+}
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
     dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
 }

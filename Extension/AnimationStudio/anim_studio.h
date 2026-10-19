@@ -105,6 +105,19 @@ void record_next_trick();             // closes the studio until the next trick 
 // until then.
 bool take_clean_start() noexcept;
 void clean_start_done() noexcept;
+// Record all tricks (trick_batch.h): the next landed trick is saved as recorded/<trick>__<pop>.clip.
+struct BatchTake {
+    bool ok{};
+    std::string trick, pop, message;
+    float air{};
+};
+void arm_batch_take();
+void cancel_batch_take();
+std::optional<BatchTake> take_batch_result();
+void request_record_all();      // from the studio's TRICKS
+bool take_record_all_request(); // the client tick takes it once
+// The skater's physics state (100 riding on the ground, 504 on foot), or nothing.
+std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept;
 void cancel_recording();
 void set_play_in_game(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
@@ -140,7 +153,10 @@ bool load(const std::string& name, std::string& message);
 struct GameTrick {
     std::string category, label, trick, pop, file;
 };
-std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // read once
+// Your recorded tricks (Record all tricks) when there are any, else the game's own clips. Read again
+// when a take is saved.
+std::shared_ptr<const std::vector<GameTrick>> game_tricks();
+bool recorded_tricks(); // Record all tricks has kept some
 bool load_game_trick(const GameTrick& trick, std::string& message);
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);

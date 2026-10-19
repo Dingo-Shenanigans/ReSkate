@@ -2,6 +2,7 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/AnimationStudio/trick_batch.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -517,6 +518,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     std::vector<Row> rows;
     switch (tab) {
     case Tab::tricks: {
+        static constexpr const char* record_all_about =
+            "Your skater goes to a practice stage and does every flip trick with a low, mid and high pop, recorded "
+            "with the board as the game has it. About 8 minutes; Esc stops after the trick under way.";
         static constexpr const char* record_about =
             "Skate and land the trick you want: you are back in the studio with it, the board where the game had it. Esc: back without one.";
         // The game's tricks by category, each once; choosing one shows its pops (low, mid, high).
@@ -525,6 +529,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         if (list.empty()) {
             rows.push_back({"RECORD", "", "", {}, false});
             rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
+            rows.push_back({"Record all tricks", "", record_all_about, [] {
+                                studio::request_record_all();
+                                studio::request_close();
+                            }});
             break;
         }
         if (!u.open_trick.empty()) {
@@ -555,6 +563,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
         rows.push_back({"RECORD", "", "", {}, false});
         rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
+        rows.push_back({"Record all tricks", "", record_all_about, [] {
+                            studio::request_record_all();
+                            studio::request_close();
+                        }});
         // Then the game's own tricks, by kind. One of these is the usual way in: the trick is already the
         // game's own, so it fits every stance and only has to be changed, not performed.
         std::string category, trick;
@@ -575,6 +587,17 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             row.on = v.trick == t.trick;
             rows.push_back(std::move(row));
         }
+        // Or your own: a trick you do, with your board as it really went.
+        rows.push_back({"RECORD", "", "", {}, false});
+        rows.push_back({"Record all tricks", studio::recorded_tricks() ? "again" : "",
+                        "Your skater goes to a practice stage and does every flip trick with a low, mid and high pop, recorded with the board as the game has it. About 8 minutes; Esc stops after the trick under way. The list then shows them.",
+                        [] {
+                            studio::request_record_all();
+                            studio::request_close();
+                        }});
+        rows.push_back({"Record a trick", v.recording != studio::Recording::off ? "waiting" : "",
+                        "The studio closes. Skate and land the trick you want: the studio comes back with it, your board as it went.",
+                        [] { studio::record_next_trick(); }});
         break;
     }
     case Tab::animations:
@@ -1653,6 +1676,28 @@ void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
 }
 } // namespace
 
+// While Record all tricks runs: a strip across the top, as skate.'s own banners, with how far it is.
+void draw_animation_studio_batch() {
+    const auto p = studio::batch::progress();
+    if (!p.active || studio::loading().alpha > 0.99f) return;
+    auto& s = state();
+    const auto display = ImGui::GetIO().DisplaySize;
+    ImFont* heading = s.menu.heading ? s.menu.heading : ImGui::GetFont();
+    ImFont* bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    const float H = display.y;
+    auto* d = ImGui::GetForegroundDrawList();
+    const ImVec2 a(0, 0), b(display.x, 0.085f * H);
+    d->AddRectFilled(a, b, IM_COL32(12, 12, 13, 225));
+    d->AddRectFilled(ImVec2(0, b.y - 0.004f * H), ImVec2(display.x * (p.total ? static_cast<float>(p.place) / static_cast<float>(p.total) : 0.0f), b.y),
+                     skate_theme::blue);
+    const std::string title = p.total ? std::format("RECORDING YOUR TRICKS  {} OF {}", std::min(p.place + 1, p.total), p.total) : std::string("RECORDING YOUR TRICKS");
+    text(d, heading, 0.026f * H, ImVec2(0.034f * display.x, 0.014f * H), skate_theme::white, title);
+    text(d, bold, 0.019f * H, ImVec2(0.034f * display.x, 0.048f * H), IM_COL32(200, 200, 204, 255), p.status);
+    const char* hint = p.stopping ? "STOPPING AFTER THIS TRICK" : "ESC / BACK: STOP AFTER THIS TRICK";
+    const auto hw = text_size(heading, 0.019f * H, hint);
+    text(d, heading, 0.019f * H, ImVec2(display.x - 0.034f * display.x - hw.x, 0.03f * H), p.stopping ? skate_theme::warning : skate_theme::white, hint);
+}
+
 bool animation_studio_open() { return studio::is_open(); }
 
 // Closed, the studio still listens for L3 + R3 held on a controller, which opens it.
@@ -1683,7 +1728,7 @@ void poll_animation_studio_controller() {
 // Over the walk to the studio's room and back: dark grainy concrete, the reskate. wordmark with
 // animator studio on a strip of blue tape, who built it on a paper strip, a tip with a bar, and
 // skate.'s own "Loading..." box with its kickflipping board (animation_studio_images.h).
-bool animation_studio_loading_pending() { return studio::loading().alpha > 0; }
+bool animation_studio_loading_pending() { return studio::loading().alpha > 0 || studio::batch::active(); }
 // While a trick is being recorded (the studio steps out so you can skate): a strip across the top in the
 // studio's look, and Esc (Back on a controller) goes back to the studio without one.
 bool animation_studio_recording_pending() {

@@ -831,6 +831,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_animation_studio();
     draw_animation_studio_loading();
     draw_animation_studio_recording();
+    draw_animation_studio_batch();
     draw_chat();
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message

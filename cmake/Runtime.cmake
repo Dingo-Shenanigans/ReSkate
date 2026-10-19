@@ -201,6 +201,9 @@ add_library(dingosdk_runtime SHARED
     Extension/AnimationStudio/anim_core.cpp
     Extension/AnimationStudio/anim_studio.cpp
     Extension/AnimationStudio/studio_room.cpp
+    Extension/AnimationStudio/trick_batch.cpp
+    Extension/AnimationStudio/trick_gestures.cpp
+    Extension/AnimationStudio/trick_stage.cpp
     Extension/Progression/local_entitlement_trigger_runtime.cpp
     Extension/Progression/local_neighborhood_runtime.cpp
     Extension/Customization/local_player_card_runtime.cpp

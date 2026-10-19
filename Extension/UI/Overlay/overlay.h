@@ -622,6 +622,8 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys();
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* input, bool allow_menu = false);
 // Installs (or, with nullptr, removes) the one gamepad filter. Any thread.
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter);
+// TEST ONLY (not for the PR): plays a script on the scripted pad, RESKATE_TEST_PAD=1 (input_capture.cpp).
+extern "C" bool DingoSDKOverlayTestPad(const char* script);
 
 // Optional direct integration for a host that already knows its exact pair.
 struct IDXGISwapChain;

@@ -79,7 +79,10 @@ bool start_steam_restart_guard(std::string& error) noexcept {
                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                 reinterpret_cast<LPCWSTR>(&module_anchor), &self))
             throw std::runtime_error("Cannot locate ReSkate.dll");
-        const auto expected = module_path(self).parent_path() / L"steam_api64.dll";
+        // Development only (RESKATE_DEV_GAME_DIR): this DLL was built outside the game folder, so its
+        // sibling files are the game's own.
+        const auto expected = (GetEnvironmentVariableW(L"RESKATE_DEV_GAME_DIR", nullptr, 0)
+            ? module_path(nullptr) : module_path(self)).parent_path() / L"steam_api64.dll";
         launcher::validate_steam_api_file(expected);
 
         HMODULE steam = GetModuleHandleW(L"steam_api64.dll");

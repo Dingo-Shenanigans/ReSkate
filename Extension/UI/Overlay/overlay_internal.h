@@ -352,6 +352,7 @@ void draw_animation_studio_loading();
 // While a trick is recorded: the strip across the top (it takes no input from the game).
 bool animation_studio_recording_pending();
 void draw_animation_studio_recording();
+void draw_animation_studio_batch(); // Record all tricks' strip across the top
 bool animation_studio_open();
 // Every presented frame, the studio shut: L3 + R3 held on a controller opens it.
 void poll_animation_studio_controller();

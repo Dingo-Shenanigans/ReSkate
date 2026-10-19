@@ -378,6 +378,22 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::set_up_velocity_speed, false, 20.0f);
     };
     registry.add(std::move(up_speed));
+    // TEST ONLY (not for the PR): a virtual controller, RESKATE_TEST_PAD=1.
+    auto test_pad = action("testpad", "Test builds: play a script on the virtual controller", Group::movement,
+                           {argument("script", Type::text)});
+    test_pad.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    test_pad.run = [](const Model &, const Values &args, const Output &out) {
+        out(DingoSDKOverlayTestPad(std::get<std::string>(args[0]).c_str()) ? "Test pad: playing." : "Test pad: off.");
+    };
+    registry.add(std::move(test_pad));
+    // TEST ONLY (not for the PR): starts Record all tricks.
+    auto anim_record_all = action("animrecordall", "Test builds: Record all tricks", Group::movement);
+    anim_record_all.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    anim_record_all.run = [](const Model &, const Values &, const Output &out) {
+        anim_studio::request_record_all();
+        out("Record all tricks asked for.");
+    };
+    registry.add(std::move(anim_record_all));
     auto anim_save = action("animsave", "Animator Studio: save the animation under a name", Group::movement, {argument("name", Type::text)});
     anim_save.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     anim_save.run = [](const Model &, const Values &args, const Output &out) {

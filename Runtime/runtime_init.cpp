@@ -159,7 +159,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         }
 #pragma warning(pop)
         wchar_t self_path[32768]{};
-        const auto self_length = GetModuleFileNameW(self, self_path, 32768);
+        // Development only (RESKATE_DEV_GAME_DIR): a DLL built outside the game folder takes the game's
+        // own folder for its sibling files.
+        const auto self_length = GetModuleFileNameW(
+            GetEnvironmentVariableW(L"RESKATE_DEV_GAME_DIR", nullptr, 0) ? nullptr : self, self_path, 32768);
         if (!self_length || self_length >= 32768) {
             dingosdk::logging::log(dingosdk::logging::Level::error, dingosdk::logging::Channel::runtime,
                 "Cannot resolve the runtime path (Windows error {}).", GetLastError());
