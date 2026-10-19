@@ -2,6 +2,9 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Extension/Skater/drone_beacon.h"
 #include "Engine/Core/Debug/trace.h"
+#include "Extension/Skater/trick_logger.h"
+#include "Extension/Skater/skate_detector.h"
+#include "Extension/Skater/trick_names.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
@@ -903,6 +906,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
     }
     profile_runtime::install_script_error_log(base);
     profile_runtime::install_board_wear_hold(base);
+    trick_names::tick(base, ready && !map_name.empty());
     s.gameplay_ready = ready;
     s.available_map = map_name;
     set_multiplayer_session_active(s.mode == Mode::host || s.mode == Mode::join);
@@ -938,6 +942,16 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             erase_password(s.lobby_password);
         expire_remote_collision(base, now_us());
         if (s.mode == Mode::off) {
+            if (trick_logger::full_capture()) {
+                NativeFrame diagnostic;
+                if (ready && !map_name.empty()) {
+                    try {
+                        diagnostic = capture_local(base, client, false);
+                        if (diagnostic.ready) watch_physics_state(client, diagnostic.entity);
+                    } catch (...) {}
+                }
+                trick_logger::sample(diagnostic, map_name);
+            }
             physics_tuning::release(base); // the player's own tuning again after a session
             set_session_tuning_enforced(false);
             relay_throwdowns(s, ready);
@@ -1017,6 +1031,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             local = capture_local(base, client, capture_pose);
         else
             local.detail = s.awaiting_map ? "Waiting for the host's map and local skater." : "Load a map to skate.";
+        if ((trick_logger::full_capture() || skate::active()) && local.ready) watch_physics_state(client, local.entity);
+        trick_logger::sample(local, map_name);
         const auto captured_at = capture_pose ? now_us() : 0;
         if (local.ready) note_local_skater(local.pose.root);
         if (capture_pose && local.ready) {

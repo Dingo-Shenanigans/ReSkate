@@ -1,5 +1,6 @@
 #include "native_skater_internal.h"
 #include "native_prop.h"
+#include "Extension/Skater/trick_logger.h"
 #include "native_pose_layout.h"
 #include "puppet_cost.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
@@ -484,7 +485,7 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
         require(ptr(client) == base + addr::engine::client_vtable && read<std::uint32_t>(client, 0xc0) == 1,
                 "Load a local Hosted map first.");
         frame.context = ptr(client, 8);
-        if (!capture_pose && cache.base == base && cache.client == client && cache.context == frame.context &&
+        if (!capture_pose && !trick_logger::full_capture() && cache.base == base && cache.client == client && cache.context == frame.context &&
             cache.entity && ptr(cache.entity, 0xf8) == cache.player && ptr(cache.entity, 0x20) == frame.context) {
             frame.entity = cache.entity;
             frame.parent = cache.parent;
@@ -534,6 +535,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
         try {
             const auto board = read_native_board(readable, base, frame.entity);
             frame.board_entity = board.entity;
+            if (trick_logger::full_capture() && board.entity)
+                frame.board_root = from_matrix(root_matrix(board.entity));
             if (capture_pose && board.entity) {
                 frame.pose.board.push_back(from_matrix(root_matrix(board.entity)));
                 const auto bones = capture_skeleton(base, board.holder, max_board_bones - 1);

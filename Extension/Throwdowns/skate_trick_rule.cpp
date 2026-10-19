@@ -1,4 +1,5 @@
 #include "skate_trick_rule.h"
+#include "Extension/Skater/skate_detector.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
@@ -131,10 +132,20 @@ std::uintptr_t index_of(const void *array, const void *value, const void *type, 
     const auto result = state().original.load(std::memory_order_acquire)(array, value, type, out);
     try {
         std::int32_t index{-1};
-        if (out && memory::peek(reinterpret_cast<Address>(out), index) && index == 0) {
+        if (out && memory::peek(reinterpret_cast<Address>(out), index)) {
             const auto frame = frame_of(profile_runtime::executing_expression);
-            // The branch after this call reads WasSuccessful from the local: a miss now.
-            if (judge(frame) == Set::repeat) poke(frame.locals + landed_local, 0);
+            if(skate::active() && frame.locals) {
+                auto record=read<std::array<std::uint8_t,28>>(frame.locals+trick_local);
+                bool landed=read<std::uint8_t>(frame.locals+landed_local)!=0;
+                if(skate::judge_native(read<std::uint32_t>(frame.locals+active_local),index==0,record,landed)) {
+                    std::memcpy(reinterpret_cast<void*>(frame.locals+trick_local),record.data(),record.size());
+                    poke(frame.locals+landed_local,landed?1:0);
+                    logging::log(logging::Level::info,logging::Channel::progression,
+                        "S.K.A.T.E. detector: native player {:#x}, {}, {}; target: {}",
+                        read<std::uint32_t>(frame.locals+active_local),index==0?"setter":"follower",
+                        landed?"accepted":"failed",skate::target_text());
+                }
+            } else if(index==0 && judge(frame)==Set::repeat)poke(frame.locals+landed_local,0);
         }
     } catch (...) {
     }
@@ -177,10 +188,37 @@ void patch(Address base, Address resource) {
 }
 } // namespace
 
+bool skate_attempt_prepare(Address base,Address vm) noexcept {
+    if(!skate::active())return true;
+    try {
+        const auto resource=vm?read<Address>(vm+0x38):0;
+        if(!resource || read<std::uint32_t>(resource+0x10)!=graph_hash)return true;
+        auto& s=state();std::lock_guard lock(s.mutex);
+        if(s.patched.contains(resource)) {
+            if(read<Address>(resource+code_offset+index_of_pc+4)==reinterpret_cast<Address>(&index_of))return true;
+            s.patched.erase(resource); // a world reload can reuse a resource address
+        }
+        patch(base,resource);s.patched.insert(resource);return true;
+    }catch(...){skate::bridge_error();return false;}
+}
+
 void skate_attempt_ran(Address base, Address vm) noexcept {
     try {
         const auto resource = vm ? read<Address>(vm + 0x38) : 0;
         if (!resource || read<std::uint32_t>(resource + 0x10) != graph_hash) return;
+        if(skate::active()) {
+            const auto frame=frame_of(vm);
+            if(frame.locals) {
+                const auto player=read<std::uint32_t>(frame.locals+active_local);
+                if(skate::native_pending(0)) {
+                    logging::log(logging::Level::warning,logging::Channel::progression,
+                        "S.K.A.T.E. detector: native attempt was not consumed (player {:#x}, guard {}); leaving to avoid a stuck turn.",
+                        player,read<std::uint8_t>(frame.locals+guard_local));
+                    skate::bridge_error();
+                }
+            }
+            return;
+        }
         auto &s = state();
         {
             std::lock_guard lock(s.mutex);

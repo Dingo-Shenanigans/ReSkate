@@ -1,6 +1,7 @@
 #include "throwdown_debug_text.h"
 #include "throwdown_relay.h"
 #include "skate_trick_rule.h"
+#include "Extension/Skater/skate_detector.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/native_throwdowns.h"
@@ -298,6 +299,10 @@ void skate_debug_text_ran(Address base, Address vm) noexcept {
             s.shown.swap(s.drawing);
             s.drawing.clear();
             s.hud = read_hud(s.shown);
+            if(const auto target=skate::target_text();!target.empty())
+                for(std::size_t i=1;i<s.hud.messages.size();++i)
+                    if(s.hud.messages[i].kind==overlay::SkateHudMessage::Kind::trick &&
+                       std::ranges::find(set_headers,std::string_view(s.hud.messages[i-1].text))!=set_headers.end())s.hud.messages[i].text=target;
             // Every set trick is shown under one of the set headers at some point.
             for (std::size_t i = 1; i < s.hud.messages.size(); ++i) {
                 const auto& trick = s.hud.messages[i];

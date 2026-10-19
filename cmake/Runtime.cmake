@@ -14,6 +14,10 @@ add_library(dingosdk_runtime SHARED
     Extension/Console/memory_ledger.cpp
     Extension/Skater/console_commands.cpp
     Extension/Skater/drone_outfit.cpp
+    Extension/Skater/native_skate_filter.cpp
+    Extension/Skater/skate_detector.cpp
+    Extension/Skater/trick_logger.cpp
+    Extension/Skater/trick_names.cpp
     Extension/Multiplayer/console_commands.cpp
     Extension/Customization/console_commands.cpp
     Extension/Multiplayer/Session/session.cpp

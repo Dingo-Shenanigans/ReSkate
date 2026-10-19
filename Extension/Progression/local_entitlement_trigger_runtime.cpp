@@ -3,6 +3,9 @@
 #include "Extension/Profile/runtime_internal.h"
 #include "local_challenge_runtime.h"
 #include "local_entitlement_trigger_runtime.h"
+#include "Extension/Skater/trick_logger.h"
+#include "Extension/Skater/native_skate_filter.h"
+#include "Extension/Throwdowns/skate_trick_rule.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include <algorithm>
@@ -34,6 +37,9 @@ void execute_expression_hook(std::uintptr_t vm, std::uint32_t pc) {
     // The setup helper only prepares registers. Native calls actually execute
     // in 1416d0b90 / 1416d1a10, including direct ECS interpreter entry paths.
     // Keep the exact cursor and profiler context when entering either runner.
+    if(!multiplayer::skate_attempt_prepare(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)),vm))return;
+    if(!skate::prepare_native_filter(vm))return;
+    trick_logger::scoring_expression(vm, pc, false);
     ExpressionExecutionScope scope(vm);
     initialize_starter_from_expression(vm, pc);
     multiplayer::execute_native_party_expression(vm, pc, 0,
@@ -42,14 +48,21 @@ void execute_expression_hook(std::uintptr_t vm, std::uint32_t pc) {
         });
     deliver_local_challenge_completion(vm, pc);
     multiplayer::complete_native_throwdown_parameters(vm);
+    trick_logger::scoring_expression(vm, pc, true);
+    skate::native_filter_completed(vm,pc);
 }
 
 void execute_profiled_expression_hook(std::uintptr_t vm, std::uint32_t pc, std::uintptr_t profiler) {
+    if(!multiplayer::skate_attempt_prepare(reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)),vm))return;
+    if(!skate::prepare_native_filter(vm))return;
+    trick_logger::scoring_expression(vm, pc, false);
     ExpressionExecutionScope scope(vm);
     initialize_starter_from_expression(vm, pc);
     multiplayer::execute_native_party_expression(vm, pc, profiler, local_runtime().execute_profiled_expression);
     deliver_local_challenge_completion(vm, pc);
     multiplayer::complete_native_throwdown_parameters(vm);
+    trick_logger::scoring_expression(vm, pc, true);
+    skate::native_filter_completed(vm,pc);
 }
 
 unsigned local_entitlement_trigger_graph() {

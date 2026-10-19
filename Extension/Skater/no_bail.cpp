@@ -1,4 +1,5 @@
 #include "no_bail.h"
+#include "trick_logger.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
@@ -243,6 +244,7 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     auto& w = state_watch();
     if (selector == w.selector.load(std::memory_order_acquire) && GetTickCount64() < w.until.load(std::memory_order_acquire)) {
         if (const auto before = w.state.exchange(chosen, std::memory_order_acq_rel); before != chosen) {
+            trick_logger::physics_transition(before, chosen);
             LARGE_INTEGER now{};
             QueryPerformanceCounter(&now);
             w.previous.store(before, std::memory_order_relaxed);
@@ -263,7 +265,7 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
     const auto observer = protection().step_observer.load(std::memory_order_acquire);
     std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
-    bool any = observer != nullptr;
+    bool any = observer != nullptr || trick_logger::gameplay_capture();
     for (std::size_t i = 0; i < listeners.size(); ++i) {
         listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
         any = any || listeners[i];
@@ -272,6 +274,7 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
         LastError error;
         NoBailSkater skater;
         if (published_skater(rig, skater)) {
+            trick_logger::physics_step(skater.entity, seconds, wipeout);
             if (observer) observer(skater, seconds, wipeout);
             for (const auto listener : listeners)
                 if (listener) listener(skater, seconds, wipeout);
