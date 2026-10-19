@@ -2,6 +2,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/grind_exit.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
@@ -224,6 +225,11 @@ struct Live {
     double game_takeoff{}, game_landing{-1};
     int game_ground{};
     const CustomTrick* game_trick{}; // the saved trick playing now, from snapshot `game_tricks`
+    // The board as it stood when the trick left the ground, under the skater: the trick's own turn is put on
+    // this, so a board that rides fakie or switch keeps its own way round.
+    Joint board_at_takeoff{};
+    bool board_at_takeoff_ok{};
+    bool lead_right{}; // which foot led at the takeoff
 
     std::shared_ptr<const CustomTricks> game_tricks;
     std::string recorded_trick; // the game's name of the trick being recorded
@@ -443,6 +449,9 @@ std::array<float, 16> orbit_matrix(const Vec3& centre, const Orbit& orbit, float
 // ---- recording ---------------------------------------------------------------------------------
 constexpr double before_takeoff = 0.7, after_landing = 0.7, ring_seconds = 2.5;
 constexpr double shortest_air = 0.25, longest_air = 8.0;
+// Which foot is at the nose (defined with the other skater reads, below).
+bool right_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept;
+
 // A bracket is a key on every body joint at its time, with no turn or move of its own: the start and the end
 // of the animation, keyed on all limbs at once.
 void key_all_at(Animation& animation, float seconds) {
@@ -493,7 +502,9 @@ void finish_recording(Live& l) {
     s.time = 0; // at its start: on the board, on the ground
     s.playing = false;
     s.recording = Recording::off;
-    s.edits.stance = goofy_stance() ? "goofy" : "regular";
+    // Which foot led when it was recorded: a trick is mirrored on playback only when the other foot leads,
+    // so one recording covers regular, goofy, switch and fakie.
+    s.edits.stance = right_foot_leads(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire)) ? "goofy" : "regular";
     // A new trick starts clean: the old keys and brackets go, the recording is the only thing there is.
     s.edits.tracks.clear();
     s.edits.start = 0;
@@ -620,6 +631,22 @@ std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) no
     if (!value) return std::nullopt;
     return std::find(addr::skater_state::board_air_states.begin(), addr::skater_state::board_air_states.end(), *value) !=
            addr::skater_state::board_air_states.end();
+}
+// Riding switch: the game's stance flag on the skater's context (the other foot at the nose).
+bool riding_switch(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto core = read<std::uintptr_t>(component + 0x70);
+    if (!core || !*core) return false;
+    const auto type = read<std::uintptr_t>(*core);
+    if (!type || *type != base + addr::no_bail::bail_core_vtable) return false;
+    const auto context = read<std::uintptr_t>(*core + 0x3c0);
+    if (!context || !*context) return false;
+    const auto flags = read<std::uint8_t>(*context + addr::grind_exit::stance_flags_offset);
+    return flags && (*flags & addr::grind_exit::stance_switch_mask) != 0;
+}
+// Which foot is at the nose: goofy or switch turns it round, both together turn it back. A trick is recorded
+// and played by this alone, so it fits regular, goofy, switch and fakie without a copy for each.
+bool right_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept {
+    return goofy_stance() != riding_switch(base, component);
 }
 // Grinds are physics states 400 to 499 (no_bail.cpp's selector): on a rail the trick goes on with the rail.
 bool grinding(std::uintptr_t base, std::uintptr_t component) noexcept {
@@ -1037,6 +1064,15 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.game_trick = nullptr;
                     l.game_tricks = snap->tricks;
                     l.predicted_air = 0;
+                    l.lead_right = right_foot_leads(base, component);
+                    l.board_at_takeoff_ok = false;
+                    if (l.board_ok) {
+                        const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                        if (finite(mount)) {
+                            l.board_at_takeoff = relative(world(l.pose, placement_joint), mount);
+                            l.board_at_takeoff_ok = finite(l.board_at_takeoff);
+                        }
+                    }
                 }
                 l.game_ground = 0;
                 // How high the pop is: the rise in the first 0.05 s gives the upward speed, and from it the
@@ -1053,10 +1089,16 @@ void on_animation(std::uintptr_t component) noexcept {
                 if (at - l.game_takeoff < 0.25 && l.game_tricks) {
                     const auto name = current_trick(component);
                     const auto pop = pop_of(l.predicted_air);
-                    const CustomTrick* found = nullptr;
-                    // The animation made for this pop, else the one for any pop.
-                    for (const auto& t : *l.game_tricks)
-                        if (t.trick == name && (t.edits->pop == pop || (t.edits->pop.empty() && !found))) found = &t;
+                    // The animation made for this pop; failing that the one made for any pop; failing that
+                    // whichever one there is, so a trick saved for one pop still plays on the others.
+                    const CustomTrick *exact = nullptr, *any_pop = nullptr, *other = nullptr;
+                    for (const auto& t : *l.game_tricks) {
+                        if (t.trick != name) continue;
+                        if (!pop.empty() && t.edits->pop == pop) exact = &t;
+                        else if (t.edits->pop.empty()) { if (!any_pop) any_pop = &t; }
+                        else if (!other) other = &t;
+                    }
+                    const CustomTrick* found = exact ? exact : any_pop ? any_pop : other;
                     if (found != l.game_trick) {
                         l.game_trick = found;
                         if (found)
@@ -1073,7 +1115,7 @@ void on_animation(std::uintptr_t component) noexcept {
             }
             if (const auto* trick = l.game_trick) {
                 // Played on the side the skater stands on: the other side's copy when the stances differ.
-                const bool flip = trick->other && trick->other_clip && trick->goofy != goofy_stance();
+                const bool flip = trick->other && trick->other_clip && trick->goofy != l.lead_right;
                 const Animation& played = flip ? *trick->other : *trick->edits;
                 const Clip& clip = flip ? *trick->other_clip : *trick->clip;
                 const float speed = std::max(played.speed, 0.1f);
@@ -1106,6 +1148,12 @@ void on_animation(std::uintptr_t component) noexcept {
                     clip.sample(t, l.custom);
                     apply_edits(played, t, l.custom);
                     if (Joint rel; !on_rail && clip.sample_board(t, rel)) {
+                        // The recording's board turn, counted from its own takeoff and put on the board as it
+                        // stood at this takeoff: the trick turns the board it is given, rather than forcing the
+                        // board the recording had (nose forward, one stance).
+                        Joint rel0{};
+                        if (l.board_at_takeoff_ok && clip.sample_board((std::max)(clip.takeoff, 0.0f), rel0) && finite(rel0))
+                            rel.rotation = normalised(multiply(l.board_at_takeoff.rotation, multiply(conjugate(rel0.rotation), rel.rotation)));
                         board_target = board_edited(compose(live_placement, rel), played, t, start_frame(clip, live_placement, 0).rotation);
                         board_weight = weight;
                     }
