@@ -50,6 +50,7 @@ struct Ui {
     bool library_open{true}, inspector_open{true};
     float timeline_zoom{1}, timeline_scroll{}, rows_scroll{};
     bool rows_bar_held{};  // the joint list's scroll bar is being dragged
+    bool list_bar_held{};  // the menu list's scroll bar is being dragged
     std::uint16_t rows_followed{0xffff}; // the joint the list last scrolled to
     bool bracket_view{};   // zoom to the brackets on the next frame
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
@@ -520,9 +521,6 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     std::vector<Row> rows;
     switch (tab) {
     case Tab::tricks: {
-        static constexpr const char* record_all_about =
-            "Your skater goes to a practice stage and does every flip trick with a low, mid and high pop, recorded "
-            "with the board as the game has it. About 8 minutes; Esc stops after the trick under way.";
         static constexpr const char* record_about =
             "Skate and land the trick you want: you are back in the studio with it, the board where the game had it. Esc: back without one.";
         // The game's tricks by category, each once; choosing one shows its pops (low, mid, high).
@@ -531,10 +529,6 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         if (list.empty()) {
             rows.push_back({"RECORD", "", "", {}, false});
             rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
-            rows.push_back({"Record all tricks", "", record_all_about, [] {
-                                studio::request_record_all();
-                                studio::request_close();
-                            }});
             break;
         }
         if (!u.open_trick.empty()) {
@@ -565,10 +559,6 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
         rows.push_back({"RECORD", "", "", {}, false});
         rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
-        rows.push_back({"Record all tricks", "", record_all_about, [] {
-                            studio::request_record_all();
-                            studio::request_close();
-                        }});
         // Then the game's own tricks, by kind. One of these is the usual way in: the trick is already the
         // game's own, so it fits every stance and only has to be changed, not performed.
         std::string category, trick;
@@ -589,17 +579,6 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             row.on = v.trick == t.trick;
             rows.push_back(std::move(row));
         }
-        // Or your own: a trick you do, with your board as it really went.
-        rows.push_back({"RECORD", "", "", {}, false});
-        rows.push_back({"Record all tricks", studio::recorded_tricks() ? "again" : "",
-                        "Your skater goes to a practice stage and does every flip trick with a low, mid and high pop, recorded with the board as the game has it. About 8 minutes; Esc stops after the trick under way. The list then shows them.",
-                        [] {
-                            studio::request_record_all();
-                            studio::request_close();
-                        }});
-        rows.push_back({"Record a trick", v.recording != studio::Recording::off ? "waiting" : "",
-                        "The studio closes. Skate and land the trick you want: the studio comes back with it, your board as it went.",
-                        [] { studio::record_next_trick(); }});
         break;
     }
     case Tab::animations:
@@ -993,9 +972,19 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
     const float bar_x = at.x + size.x - 8 * k;
     d->AddRectFilled(ImVec2(bar_x, at.y), ImVec2(bar_x + 3 * k, at.y + size.y), IM_COL32(220, 220, 225, 120));
     if (content > size.y) {
-        const float h = std::max(30 * k, size.y * size.y / content);
-        const float y = at.y + (size.y - h) * scroll / (content - size.y);
-        d->AddRectFilled(ImVec2(bar_x - 4 * k, y), ImVec2(bar_x + 7 * k, y + h), IM_COL32(235, 235, 240, 255), 2 * k);
+        const float h = (std::max)(30 * k, size.y * size.y / content);
+        const float travel = size.y - h;
+        // It can be dragged, as well as showing where the list is.
+        auto& io = ImGui::GetIO();
+        const bool over = io.MousePos.x >= bar_x - 10 * k && io.MousePos.x <= bar_x + 13 * k && io.MousePos.y >= at.y &&
+                          io.MousePos.y <= at.y + size.y;
+        if (over && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.list_bar_held = true;
+        if (u.list_bar_held && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.list_bar_held = false;
+        if (u.list_bar_held && travel > 0)
+            scroll = std::clamp((io.MousePos.y - at.y - h * 0.5f) / travel, 0.0f, 1.0f) * (content - size.y);
+        const float y = at.y + travel * std::clamp(scroll / (content - size.y), 0.0f, 1.0f);
+        d->AddRectFilled(ImVec2(bar_x - 4 * k, y), ImVec2(bar_x + 7 * k, y + h),
+                         u.list_bar_held || over ? IM_COL32(255, 255, 255, 255) : IM_COL32(235, 235, 240, 255), 2 * k);
     }
 }
 // The white card under the list, as the game's trick description: the chosen joint's numbers, or what
