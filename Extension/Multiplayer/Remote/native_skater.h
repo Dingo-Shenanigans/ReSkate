@@ -6,6 +6,7 @@ struct NativeFrame {
     bool ready{};
     std::uintptr_t context{}, parent{}, entity{}, board_entity{};
     Pose pose;
+    std::optional<Transform> board_root;
     std::string detail;
 };
 struct NativeAnimationStats {

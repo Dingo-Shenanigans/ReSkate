@@ -17,6 +17,7 @@
 namespace dingosdk::multiplayer {
 // Called by the expression pump after the handler graph has run (server realm): patches
 // each loaded copy once, recording the set its first unpatched run made.
+bool skate_attempt_prepare(std::uintptr_t base,std::uintptr_t vm) noexcept;
 void skate_attempt_ran(std::uintptr_t base, std::uintptr_t vm) noexcept;
 // The last set refused as a repeat, for the HUD: whose it was and when.
 struct SkateRepeat {

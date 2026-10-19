@@ -5,6 +5,7 @@
 #include "Extension/Multiplayer/Remote/remote_collision.h"
 #include "Extension/Multiplayer/Remote/native_vfx.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
+#include "Extension/Skater/trick_logger.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
@@ -14,6 +15,14 @@
 
 namespace dingosdk::console {
 void register_multiplayer_commands(Commands &registry) {
+    auto log_args = argument("on|on full|off|status|mark <label>", Type::text, true);
+    log_args.rest = true;
+    auto trick_log = action("trick-log", "Record trick attempts and movement to logs/tricks (diagnostic)",
+        Group::console, {std::move(log_args)});
+    trick_log.run = [](const Model &, const Values &values, const Output &out) {
+        out(trick_logger::command(values.empty() ? std::string{} : std::get<std::string>(values[0])));
+    };
+    registry.add(std::move(trick_log));
     struct Command {
         const char *name;
         const char *description;

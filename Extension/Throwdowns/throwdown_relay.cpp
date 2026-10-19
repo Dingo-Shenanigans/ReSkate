@@ -2,6 +2,8 @@
 #include "throwdown_lab.h"
 #include "throwdown_wire.h"
 #include "native_throwdowns.h"
+#include "Extension/Skater/skate_detector.h"
+#include "Extension/Skater/trick_logger.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
@@ -94,6 +96,7 @@ struct ChallengePlan {
 
 // The local player's own drop.
 struct Hosted {
+    skate::Rules rules;
     std::uint32_t id{}; // its MMID
     std::string series;
     std::vector<std::uint8_t> placement, settings;
@@ -103,6 +106,8 @@ struct Hosted {
 };
 // Another player's drop, spawned on the local server hosted by the leader's virtual id.
 struct Mirror {
+    skate::Rules rules;
+    std::vector<std::uint8_t> pending_settings;
     enum class State { waiting, spawning, open, started, gone } state = State::waiting;
     std::string series;
     std::vector<std::uint8_t> placement, settings;
@@ -134,6 +139,7 @@ struct Remote {
     bool add{};
     std::int32_t value{}; // row: the value; attempt: the owner's turn number
     std::array<std::uint8_t, 28> trick{};
+    std::optional<skate::DetectedAttempt> detected;
 };
 // What the participant-order hook needs, published by the tick for the server thread.
 struct Order {
@@ -159,6 +165,8 @@ struct Relay {
     std::map<Key, Mirror> mirrors;
     std::optional<Key> running;
     std::string running_series;
+    skate::Rules rules;
+    std::set<std::pair<std::uint64_t,std::int32_t>> detector_submitted,detector_applied;
     std::map<std::uint64_t, Score> scores;                          // remote totals in `running`
     std::map<Key, std::map<std::uint64_t, std::int32_t>> early;      // totals for an event not running here yet
     std::deque<Remote> remote;                                      // rows, turn ends, attempts in `running`, in order
@@ -265,9 +273,36 @@ ThrowdownMessage message(Kind kind, std::uint64_t leader, std::uint32_t id) {
 
 // ---------------------------------------------------------------------------
 // The local player's own drop.
+std::vector<std::uint8_t> detected_bytes(const skate::DetectedAttempt& result) {
+    if(!result.id || result.display.size()>1000 || result.signature.size()>64 ||
+       (result.landed && result.signature.empty()))throw std::invalid_argument("Invalid detector result shape");
+    for(const auto& token:result.signature)if(token.size()>1000)throw std::invalid_argument("Detector token too large");
+    auto j=Json::object();j["id"]=result.id;j["landed"]=result.landed;
+    j["violation"]=static_cast<unsigned>(result.violation);j["display"]=result.display;j["evidence"]=result.evidence;
+    auto tokens=Json::array();for(const auto& token:result.signature)tokens.push_back(token);j["signature"]=tokens;
+    const auto text=j.dump();if(text.size()>3500)throw std::invalid_argument("Detected trick exceeds packet budget");
+    return {text.begin(),text.end()};
+}
+std::optional<skate::DetectedAttempt> read_detected(const ThrowdownMessage& message) {
+    try {
+        const auto j=Json::parse(message.detected.begin(),message.detected.end());
+        if(!j.at("landed").is_boolean())return {};
+        skate::DetectedAttempt result;result.id=j.at("id").get<std::uint64_t>();result.landed=j.at("landed").get<bool>();
+        const auto violation=j.at("violation").get<unsigned>();
+        if(!result.id || violation>static_cast<unsigned>(skate::Category::grounded_rotation) || (result.landed && violation))return {};
+        if(j.contains("evidence")){if(!j.at("evidence").is_object())return {};result.evidence=j.at("evidence");}
+        result.violation=static_cast<skate::Category>(violation);result.display=j.at("display").get<std::string>();
+        if(result.display.size()>1000 || !j.at("signature").is_array() || j.at("signature").size()>64)return {};
+        for(const auto& token:j.at("signature")){if(!token.is_string() || token.string().size()>1000)return {};result.signature.push_back(token.string());}
+        if(result.landed && result.signature.empty())return {};
+        if(result.landed!=message.add)return {};result.native=message.trick;return result;
+    }catch(...){return {};}
+}
 void send_offer(Relay &r, std::uint64_t now) {
     auto &h = *r.hosted;
+    if(h.series==skate_mode && !h.rules.verified)return;
     auto m = message(Kind::offer, r.local, h.id);
+    if(h.series==skate_mode)m.rules_mask=h.rules.values;
     m.series = h.series; m.placement = h.placement; m.settings = h.settings; m.order = h.members;
     const auto before = r.outgoing.size();
     send(r, m);
@@ -295,6 +330,7 @@ void send_start(Relay &r, std::vector<std::uint64_t> order) {
     }
     if (order.size() > max_throwdown_order) order.resize(max_throwdown_order);
     auto m = message(Kind::start, r.local, h.id);
+    if(h.series==skate_mode){if(!h.rules.verified)return;m.rules_mask=h.rules.values;m.settings=h.settings;}
     m.order = order;
     send(r, m);
     h.start_sent = true;
@@ -327,6 +363,10 @@ void add_to_mirror(Relay &r, Mirror &m) {
             if (const auto id = virtual_id(r, player); id && queue_throwdown_add(id, m.series, m.mmid)) m.added.push_back(player);
 }
 void start_mirror(Relay &r, const Key &key, Mirror &m, const std::vector<std::uint64_t> &order) {
+    if(!m.pending_settings.empty()) {
+        if(!queue_throwdown_settings(virtual_id(r,key.leader),m.mmid,m.pending_settings)){m.start=order;return;}
+        m.settings=std::move(m.pending_settings);m.pending_settings.clear();
+    }
     for (const auto player : order)
         if (player != r.local && player != key.leader && !contains(m.members, player)) m.members.push_back(player);
     add_to_mirror(r, m);
@@ -371,6 +411,7 @@ void resolve_quit_turn(Relay &r, std::uint64_t player) {
 
 // The running throwdown is over for the local player (it ended, or they quit or were let go).
 void end_running(Relay &r) {
+    skate::end();trick_logger::observe_setup_menu(0,0);r.rules={};r.detector_submitted.clear();r.detector_applied.clear();
     r.running.reset();
     r.shown = 0;
     r.scores.clear();
@@ -413,6 +454,12 @@ bool end_alone(Relay &r) {
 void set_running(Relay &r, const Key &key, const std::string &series) {
     r.running = key;
     r.running_series = series;
+    r.rules={};r.detector_submitted.clear();r.detector_applied.clear();
+    if(series==skate_mode) {
+        if(key.leader==r.local && r.hosted)r.rules=r.hosted->rules;
+        else if(const auto it=r.mirrors.find(key);it!=r.mirrors.end())r.rules=it->second.rules;
+        skate::begin(r.rules);trick_logger::observe_setup_menu(r.rules.values,r.rules.verified?0xff:0);
+    } else skate::end();
     r.scores.clear();
     r.remote.clear();
     r.turns.clear();
@@ -468,6 +515,8 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
         auto &h = *r.hosted;
         h.placement = std::move(a.placement);
         h.settings = std::move(a.settings);
+        h.rules={a.rules_mask,a.rules_verified};
+        if(h.series==skate_mode && !h.rules.verified)r.notices.push_back("S.K.A.T.E. setup rules could not be verified; this drop cannot link.");
         if (h.relayed && !h.started) send_offer(r, now);
         break;
     }
@@ -569,6 +618,7 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
             const auto player = player_of(r, a.player);
             r.active = player.value_or(0);
             if (player) ++r.turns[*player];
+            if(r.rules.verified)skate::turn(player && *player==r.local);
             if (player && r.quit.contains(*player)) resolve_quit_turn(r, *player);
         }
         break;
@@ -592,6 +642,7 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
         }
         break;
     case Local::attempt:
+        if(r.rules.verified)break;
         // Only an attempt made on the local player's own turn counts (its server rejects the
         // rest, e.g. a wipeout while watching); each one is replayed in that same turn.
         if (r.running && r.running_series == skate_mode && a.player && a.player == local_native_player_id() &&
@@ -610,6 +661,11 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
                     // Out of time with nothing submitted: the others fail this turn the same way.
                     auto m = message(Kind::attempt, r.running->leader, r.running->id);
                     m.value = turn; m.add = false;
+                    if(r.rules.verified) {
+                        if(!r.detector_submitted.insert({r.local,turn}).second)break;
+                        m.rules_mask=r.rules.values;
+                        skate::DetectedAttempt miss;miss.id=static_cast<std::uint64_t>(turn);m.detected=detected_bytes(miss);
+                    }
                     send(r, m);
                     note("own S.K.A.T.E. turn {} ran out of time; sent as a miss.", turn);
                 } else if (*player != r.local) {
@@ -635,6 +691,10 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
         if (mirror != r.mirrors.end()) {
             // A copy removed here (full, or left) stays removed while the leader keeps offering it.
             if (mirror->second.state == Mirror::State::gone) mirror->second.gone_at = now;
+            if(mirror->second.series==skate_mode && mirror->second.state!=Mirror::State::started) {
+                mirror->second.rules={m.rules_mask,true};
+                if(mirror->second.state==Mirror::State::waiting)mirror->second.settings=m.settings;
+            }
             for (const auto player : m.order) mirror_member(r, mirror->second, player, now);
             return;
         }
@@ -644,6 +704,8 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
         for (auto &[other, copy] : r.mirrors)
             if (other.leader == m.leader) destroy_mirror(r, copy, now);
         Mirror copy;
+        // A S.K.A.T.E. leader offers its drop only once its setup rules are verified.
+        copy.rules={m.rules_mask,m.series==skate_mode};
         copy.series = m.series; copy.placement = m.placement; copy.settings = m.settings;
         for (const auto player : m.order)
             if (player != r.local && player != m.leader && !contains(copy.members, player)) copy.members.push_back(player);
@@ -693,6 +755,11 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
     case Kind::start: {
         if (m.leader != sender || mirror == r.mirrors.end()) return;
         auto &copy = mirror->second;
+        if(copy.series==skate_mode) {
+            if(!copy.rules.verified || m.settings.empty())return;
+            copy.rules={m.rules_mask,true};
+            if(copy.settings!=m.settings)copy.pending_settings=m.settings;
+        }
         if (!copy.joined) { destroy_mirror(r, copy, now); return; }
         if (copy.state == Mirror::State::open) start_mirror(r, key, copy, m.order);
         else if (copy.state == Mirror::State::waiting || copy.state == Mirror::State::spawning) copy.start = m.order;
@@ -704,6 +771,22 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
         Remote entry{m.kind == Kind::row ? Remote::What::row : m.kind == Kind::turn_end ? Remote::What::turn_end
                                                                                          : Remote::What::attempt,
                      sender, m.board, m.add, m.value, m.trick};
+        // A S.K.A.T.E. attempt is judged by the sender's trick detector and carries its result.
+        const bool skate_event=(mirror!=r.mirrors.end() && mirror->second.series==skate_mode) ||
+            (m.leader==r.local && r.hosted && r.hosted->id==m.id && r.hosted->series==skate_mode) ||
+            (r.running && *r.running==key && r.running_series==skate_mode);
+        if(m.kind==Kind::attempt && (skate_event || !m.detected.empty())) {
+            if(!r.running || *r.running!=key) {
+                const auto expected=mirror!=r.mirrors.end()?mirror->second.rules:
+                    (m.leader==r.local && r.hosted && r.hosted->id==m.id?r.hosted->rules:skate::Rules{});
+                if(!expected.verified || expected.values!=m.rules_mask)return;
+            }
+            entry.detected=read_detected(m);if(!entry.detected)return;
+            if(r.running && *r.running==key) {
+                if(!r.rules.verified || m.rules_mask!=r.rules.values || !contains(r.players,sender))return;
+                if(!r.detector_submitted.insert({sender,m.value}).second)return;
+            }
+        }
         if (r.running && *r.running == key) {
             // Only a participant has turns and rows in it.
             if (contains(r.players, sender) && r.remote.size() < 512) r.remote.push_back(entry);
@@ -1258,9 +1341,9 @@ void maintain(Relay &r, std::uint64_t now) {
             // so far, or an attempt whose turn has not started here) holds the rest.
             while (!r.remote.empty()) {
                 const auto &entry = r.remote.front();
-                const auto id = virtual_id(r, entry.player);
-                bool done = !id; // its player left the session
-                if (id) switch (entry.what) {
+                const auto id = entry.detected && entry.player==r.local?local_native_player_id():virtual_id(r, entry.player);
+                bool done = !id || (entry.detected && r.detector_applied.contains({entry.player,entry.value})); // gone or already applied
+                if (id && !done) switch (entry.what) {
                 case Remote::What::row: done = queue_throwdown_row(id, entry.board, entry.add, entry.value); break;
                 case Remote::What::turn_end:
                 case Remote::What::attempt: {
@@ -1274,6 +1357,11 @@ void maintain(Relay &r, std::uint64_t now) {
                         note("player {:#x}'s {} for turn {} arrived after this machine moved on.", entry.player, what, entry.value);
                         done = true;
                     } else if (turn == entry.value) {
+                        if(entry.detected) {
+                            if(entry.detected->violation!=skate::Category::none)
+                                r.notices.push_back(skate::forbidden(entry.detected->violation));
+                            skate::prepare_native(id,*entry.detected);
+                        }
                         done = entry.what == Remote::What::attempt ? queue_throwdown_attempt(id, entry.add, entry.trick)
                                                                    : queue_throwdown_end_turn(id);
                     } else if (r.remote_held_since && now - r.remote_held_since > attempt_wait_ms) {
@@ -1287,6 +1375,7 @@ void maintain(Relay &r, std::uint64_t now) {
                     if (!r.remote_held_since) r.remote_held_since = now;
                     break;
                 }
+                if(entry.detected)r.detector_applied.insert({entry.player,entry.value});
                 r.remote.pop_front();
                 r.remote_held_since = 0;
             }
@@ -1402,6 +1491,33 @@ std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base,
         for (const auto &[sender, bytes] : inbox) {
             if (const auto m = decode_throwdown(bytes)) on_message(r, sender, *m, now);
             else logging::write(logging::Level::warning, logging::Channel::progression, "Throwdowns: unreadable message from another player dropped.");
+        }
+        if(r.running && r.rules.verified && r.active==r.local && r.turns[r.local]>0) {
+            if(auto result=skate::take()) {
+                const auto turn=r.turns[r.local];
+                if(r.detector_submitted.insert({r.local,turn}).second) {
+                    auto m=message(Kind::attempt,r.running->leader,r.running->id);
+                    m.rules_mask=r.rules.values;m.value=turn;m.add=result->landed;m.trick=result->native;
+                    try {m.detected=detected_bytes(*result);}catch(...) {
+                        result->landed=false;result->signature.clear();result->display.clear();m.add=false;m.detected=detected_bytes(*result);
+                        r.notices.push_back("Detected trick exceeds the network limit; attempt failed.");
+                    }
+                    auto evidence=Json::object();evidence["rule_version"]=skate::rules_version;evidence["turn"]=turn;
+                    evidence["attempt_id"]=result->id;evidence["landed"]=result->landed;evidence["display"]=result->display;
+                    evidence["violation"]=static_cast<unsigned>(result->violation);evidence["signature"]=result->signature;
+                    trick_logger::detected_attempt(std::move(evidence));
+                    logging::log(logging::Level::info,logging::Channel::progression,"S.K.A.T.E. detector outcome: turn {}, landed {}, result '{}'",turn,result->landed,result->display);
+                    send(r,m);Remote entry{Remote::What::attempt,r.local,0,m.add,turn,m.trick};entry.detected=*result;r.remote.push_front(std::move(entry));
+                }
+            }
+        }
+        for(const auto& diagnostic:skate::take_diagnostics())
+            logging::log(logging::Level::info,logging::Channel::progression,
+                "S.K.A.T.E. detector: turn {}, active {:#x}: {}",r.turns[r.local],r.active,diagnostic);
+        if(skate::take_bridge_error()) {
+            r.notices.push_back("S.K.A.T.E. detector could not apply a native result; leaving the match.");
+            if(r.running)send(r,message(Kind::leave,r.running->leader,r.running->id));
+            queue_throwdown_destroy_event(local_native_player_id());end_running(r);
         }
         maintain(r, now);
         if (alone(r)) end_alone(r);
