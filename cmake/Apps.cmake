@@ -4,7 +4,7 @@ if(WIN32)
         Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp
         Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/gui_legal.cpp Launcher/game_settings.cpp
         Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp Launcher/official_mods.cpp
-        Launcher/problem.h)
+        Launcher/language.cpp Launcher/problem.h)
     target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
         dingosdk_mod_list dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui dingosdk_playstation_input winhttp shell32 dwmapi windowscodecs ole32)
     set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
@@ -164,6 +164,17 @@ if(WIN32)
             string(TOUPPER "${tile_icon}" tile_icon_name)
             list(APPEND launcher_resources "LAUNCHER_ICON_${tile_icon_name} RCDATA \"${tile_icon_path}\"\n")
             set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${tile_icon_path}")
+        endif()
+    endforeach()
+    # The launcher's languages (Launcher/languages/<code>.json, language.h), so a release needs no
+    # file beside the exe for them. The template only lists the English.
+    file(GLOB launcher_languages CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/Launcher/languages/*.json")
+    foreach(language_path ${launcher_languages})
+        get_filename_component(language_code "${language_path}" NAME_WE)
+        if(NOT language_code MATCHES "template")
+            string(TOUPPER "${language_code}" language_name)
+            string(REPLACE "-" "_" language_name "${language_name}")
+            list(APPEND launcher_resources "LANGUAGE_${language_name} RCDATA \"${language_path}\"\n")
         endif()
     endforeach()
     # Icon resource 1: the exe's icon in Explorer and the window's icon.

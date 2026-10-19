@@ -201,7 +201,7 @@ bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2
     rough_rect(draw, position, end, color::tile, 3);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
     draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), position.y + (size.y - fonts.tile->FontSize) * 0.5f),
-        color::text, "SETTINGS");
+        color::text, tr("SETTINGS"));
     // Large faded wheel in the corner, like the icons on the HUB's tiles.
     const ImVec2 centre(end.x - S(44), position.y + size.y * 0.5f);
     if (tile_icon(draw, g_icon_settings, centre, S(58), hovered)) return pressed;
@@ -223,7 +223,7 @@ bool changelog_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, hovered ? color::tile_grey : color::tile, 9);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
-    const char* label = "CHANGELOGS";
+    const char* label = tr("CHANGELOGS");
     const auto extent = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, 0, label);
     draw->AddText(fonts.heading, fonts.heading->FontSize,
         ImVec2(position.x + (size.x - extent.x) * 0.5f, position.y + (size.y - extent.y) * 0.5f), color::text, label);
@@ -241,7 +241,7 @@ bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 siz
     // Title and detail centred as one block, so the tile's height can change.
     const float block = fonts.tile->FontSize + (detail.empty() ? 0 : fonts.body->FontSize + S(6));
     const float text_y = position.y + (size.y - block) * 0.5f;
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), text_y), color::text, "MOD MANAGER");
+    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), text_y), color::text, tr("MOD MANAGER"));
     if (!detail.empty()) {
         const float detail_y = text_y + fonts.tile->FontSize + S(6);
         float room = end.x - S(86);        // the faded icon owns the rest
@@ -284,14 +284,14 @@ float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float
 
     Icon icon = Icon::busy;
     ImU32 accent = color::blue;
-    const char* pill = "WORKING";
+    const char* pill = tr("WORKING");
     switch (state.phase) {
-    case Phase::ready: icon = Icon::check; accent = color::good; pill = "READY"; break;
-    case Phase::failed: icon = Icon::fail; accent = color::danger; pill = "PROBLEM"; break;
+    case Phase::ready: icon = Icon::check; accent = color::good; pill = tr("READY"); break;
+    case Phase::failed: icon = Icon::fail; accent = color::danger; pill = tr("PROBLEM"); break;
     case Phase::update_available:
     case Phase::game_missing:
     case Phase::game_outdated:
-    case Phase::mods_broken: icon = Icon::warning; accent = color::warning; pill = "ACTION NEEDED"; break;
+    case Phase::mods_broken: icon = Icon::warning; accent = color::warning; pill = tr("ACTION NEEDED"); break;
     default: break;
     }
 
@@ -303,7 +303,7 @@ float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float
                                                                : state.config->game.build_id;
         const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated &&
                              state.phase != Phase::downloading;
-        facts.push_back({game_ok ? Icon::check : Icon::warning, "skate. build " + build});
+        facts.push_back({game_ok ? Icon::check : Icon::warning, trf("skate. build {}", build)});
         if (update::binary_updates_enabled())
             facts.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
                 "ReSkate " + state.config->runtime.version});
@@ -327,7 +327,7 @@ float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float
     rough_rect(draw, position, end, color::tile, 5);
     // The state is readable before a word of it is: a coloured edge and a pill.
     draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), accent);
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + pad, position.y + S(14)), color::text, "STATUS");
+    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + pad, position.y + S(14)), color::text, tr("STATUS"));
     badge(draw, fonts, ImVec2(end.x - pad - badge_width(fonts, pill),
         position.y + S(14) + (fonts.tile->FontSize - fonts.caption->FontSize - S(8)) * 0.5f), pill, accent, color::ink);
 
@@ -346,9 +346,13 @@ float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float
         y += S(12);
         ImGui::BeginDisabled(modal);
         ImGui::SetCursorScreenPos(ImVec2(text_x, y));
-        if (ImGui::Button("Open logs", ImVec2(S(104), S(30)))) open_path(logs);
+        // At least as wide as in English, wider for a longer translation.
+        const auto wide_enough = [](const char* text, float least) {
+            return std::max(least, ImGui::CalcTextSize(text).x + ImGui::GetStyle().FramePadding.x * 2);
+        };
+        if (ImGui::Button(tr("Open logs"), ImVec2(wide_enough(tr("Open logs"), S(104)), S(30)))) open_path(logs);
         ImGui::SameLine(0, S(8));
-        if (ImGui::Button("Copy details", ImVec2(S(116), S(30)))) {
+        if (ImGui::Button(tr("Copy details"), ImVec2(wide_enough(tr("Copy details"), S(116)), S(30)))) {
             // The raw message, not the friendly one: this is for the Discord.
             std::string report = "ReSkate launcher\n" + state.status + "\n";
             for (const auto& fact : facts) report += fact.text + "\n";
@@ -407,7 +411,7 @@ void refresh_announcement(Announcement& news, double time) {
                 message.link = entry.value("link", std::string());
                 if (!message.link.starts_with("https://")) message.link.clear();
                 message.link_label = entry.value("link_label", std::string());
-                if (message.link_label.empty()) message.link_label = "Learn more";
+                if (message.link_label.empty()) message.link_label = tr("Learn more");
                 if (!message.title.empty()) found = std::move(message);
             }
             read = true;
@@ -446,13 +450,14 @@ void announcement_card(Launcher& launcher, const Fonts& fonts, Ui& ui, ImVec2 po
     draw->ChannelsSetCurrent(1);
     const ImU32 accent = message.important ? color::warning : color::blue;
     draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(text_x, position.y + S(14)), color::text,
-                  message.important ? "IMPORTANT" : "NEWS");
-    ImGui::SetCursorScreenPos(ImVec2(position.x + width - pad - S(64), position.y + S(12)));
-    if (ImGui::Button("HIDE##announcement", ImVec2(S(64), 0))) {
+                  message.important ? tr("IMPORTANT") : tr("NEWS"));
+    const float hide = std::max(S(64), ImGui::CalcTextSize(tr("HIDE")).x + ImGui::GetStyle().FramePadding.x * 2);
+    ImGui::SetCursorScreenPos(ImVec2(position.x + width - pad - hide, position.y + S(12)));
+    if (ImGui::Button((std::string(tr("HIDE")) + "##announcement").c_str(), ImVec2(hide, 0))) {
         launcher.settings().announcement_hidden = message.version;
         launcher.save();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide this announcement. The next one shows when it is posted.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Hide this announcement. The next one shows when it is posted."));
     draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, title_y), color::text, message.title.c_str(), nullptr, text_width);
     float end = title_y + title_height;
     if (!news.text.lines.empty()) {
@@ -555,11 +560,11 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     auto* draw = ImGui::GetWindowDrawList();
     if (g_background.id) draw_photo(draw, size, time);
     else draw_background(draw, size, time);
-    std::string version = "Development build";
+    std::string version = tr("Development build");
     if (update::binary_updates_enabled() && state.config && !state.config->launcher.version.empty())
-        version = "Launcher " + state.config->launcher.version;
+        version = trf("Launcher {}", state.config->launcher.version);
     const bool greet = !launcher.settings().offline && !ui.steam_name.empty();
-    draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? "Welcome, " + ui.steam_name : std::string("ReSkate"), version,
+    draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? trf("Welcome, {}", ui.steam_name) : std::string("ReSkate"), version,
         launcher.settings().offline ? ImTextureID{} : ui.steam_avatar);
     page_title(draw, fonts, ImVec2(S(52), S(88)), "RESKATE");
 
@@ -574,32 +579,32 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     const ImVec2 mods_size(column, S(116));
     const ImVec2 mods_position(primary.x, primary.y - S(14) - mods_size.y);
     const ImVec2 settings(primary.x, mods_position.y - S(14) - S(84));
-    const char* label = "PLAY";
+    const char* label = tr("PLAY");
     std::string detail;
     bool enabled = !launcher.busy();
     bool secondary = false;
     switch (state.phase) {
-    case Phase::checking: label = "CHECKING"; enabled = false; break;
-    case Phase::update_available: label = "UPDATE"; detail = "New ReSkate files are ready"; break;
-    case Phase::updating: label = "UPDATING"; enabled = false; break;
-    case Phase::game_missing: label = "INSTALL"; detail = "Download skate. from Steam"; break;
-    case Phase::game_outdated: label = "DOWNLOAD"; detail = "Get the supported build from Steam"; break;
+    case Phase::checking: label = tr("CHECKING"); enabled = false; break;
+    case Phase::update_available: label = tr("UPDATE"); detail = tr("New ReSkate files are ready"); break;
+    case Phase::updating: label = tr("UPDATING"); enabled = false; break;
+    case Phase::game_missing: label = tr("INSTALL"); detail = tr("Download skate. from Steam"); break;
+    case Phase::game_outdated: label = tr("DOWNLOAD"); detail = tr("Get the supported build from Steam"); break;
     case Phase::downloading:
-        label = "CANCEL"; enabled = true; secondary = true;
-        detail = state.progress >= 0 ? std::format("Downloading  {:.0f}%", state.progress * 100) : "Downloading";
+        label = tr("CANCEL"); enabled = true; secondary = true;
+        detail = state.progress >= 0 ? trf("Downloading  {:.0f}%", state.progress * 100) : tr("Downloading");
         break;
-    case Phase::merging: label = "MODS"; enabled = false; detail = "Merging your mods before Skate starts"; break;
-    case Phase::mods_broken: label = "PLAY"; enabled = false; detail = "Waiting on an answer about your mods"; break;
+    case Phase::merging: label = tr("MODS"); enabled = false; detail = tr("Merging your mods before Skate starts"); break;
+    case Phase::mods_broken: label = tr("PLAY"); enabled = false; detail = tr("Waiting on an answer about your mods"); break;
     case Phase::ready:
-        label = "PLAY";
+        label = tr("PLAY");
         // Release builds install the configured runtime before PLAY appears.
-        detail = !state.config ? std::string("Offline")
-               : !update::binary_updates_enabled() ? std::string("ReSkate development build")
+        detail = !state.config ? std::string(tr("Offline"))
+               : !update::binary_updates_enabled() ? std::string(tr("ReSkate development build"))
                : state.config->runtime.version.empty() ? std::string("ReSkate")
                : "ReSkate " + state.config->runtime.version;
         break;
-    case Phase::launching: label = "LAUNCHING"; enabled = false; break;
-    case Phase::failed: label = "RETRY"; break;
+    case Phase::launching: label = tr("LAUNCHING"); enabled = false; break;
+    case Phase::failed: label = tr("RETRY"); break;
     }
     const auto act = [&] {
         switch (state.phase) {
@@ -618,7 +623,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         }
     };
     const auto play_mark = state.phase == Phase::ready && ui.mods_pending
-        ? (ui.mods_pending == 1 ? std::string("1 MOD UPDATE") : std::format("{} MOD UPDATES", ui.mods_pending))
+        ? (ui.mods_pending == 1 ? std::string(tr("1 MOD UPDATE")) : trf("{} MOD UPDATES", ui.mods_pending))
         : std::string();
     if (action_tile(draw, fonts, primary, primary_size, label, detail, enabled && !modal, secondary, play_mark)) act();
     // A controller starts on PLAY.
@@ -645,14 +650,14 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         const auto pending = updates(mods_panel.store, installed_versions(list, true)).size();
         ui.mods_pending = pending;
         ui.mods_mark_bad = !dropped.empty();
-        ui.mods_mark = !dropped.empty() ? std::string("NOT LOADED")
-                     : pending == 1 ? std::string("1 UPDATE")
-                     : pending ? std::format("{} UPDATES", pending)
+        ui.mods_mark = !dropped.empty() ? std::string(tr("NOT LOADED"))
+                     : pending == 1 ? std::string(tr("1 UPDATE"))
+                     : pending ? trf("{} UPDATES", pending)
                      : std::string();
-        ui.mods_detail = dropped.size() == 1 ? dropped.front() + " did not load"
-                       : !dropped.empty() ? std::format("{} mods did not load", dropped.size())
-                       : installed ? std::format("{} of {} enabled", enabled_mods, installed)
-                       : std::string("Browse and install from Thunderstore");
+        ui.mods_detail = dropped.size() == 1 ? trf("{} did not load", dropped.front())
+                       : !dropped.empty() ? trf("{} mods did not load", dropped.size())
+                       : installed ? trf("{} of {} enabled", enabled_mods, installed)
+                       : std::string(tr("Browse and install from Thunderstore"));
         ui.mods_checked = time;
     }
     if (mods_tile(draw, fonts, mods_position, mods_size, !modal, ui.mods_detail, ui.mods_mark, ui.mods_mark_bad)) {

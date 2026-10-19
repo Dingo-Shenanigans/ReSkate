@@ -2,6 +2,7 @@
 
 #include "gamepad_input.h"
 #include "game_settings.h"
+#include "language.h"
 #include "launch.h"
 #include "text_encoding.h"
 #include "mod_profiles.h"
@@ -94,6 +95,10 @@ inline Background g_icon_mods, g_icon_settings, g_icon_thunderstore;
 
 using launcher_text::utf8;
 using launcher_text::wide;
+// Shown text goes through these (language.h); logs, keys and file names stay as they are.
+using launcher_language::tr;
+using launcher_language::trf;
+using launcher_language::translatable;
 
 class Renderer;
 // The window's renderer, for textures made after startup (package icons).
@@ -215,6 +220,8 @@ struct Settings {
     std::uint64_t accepted_privacy{}, accepted_terms{};
     // The version of the home screen's announcement the player hid (0: none): one newer shows.
     std::uint64_t announcement_hidden{};
+    // The launcher's language (language.h); empty: the one Windows shows, when there is one.
+    std::string language;
 };
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};

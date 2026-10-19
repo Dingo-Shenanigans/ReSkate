@@ -54,7 +54,7 @@ std::string named(const std::vector<std::string>& names) {
     constexpr std::size_t shown = 3;
     std::string text;
     for (std::size_t i = 0; i < names.size() && i < shown; ++i) text += (i ? ", " : "") + names[i];
-    if (names.size() > shown) text += std::format(" and {} more", names.size() - shown);
+    if (names.size() > shown) text += " " + trf("and {} more", names.size() - shown);
     return text;
 }
 
@@ -91,11 +91,11 @@ void load_profile(ModsPanel& panel, const profiles::Profile& profile) {
     log(logging::Level::info, std::format("Mod profile loaded: {} ({} mods, {} to download)", profile.name,
         profile.mods.size(), missing.size()));
     if (missing.empty()) {
-        say(panel, "Loaded \"" + profile.name + "\". Changes apply the next time Skate starts.");
+        say(panel, trf("Loaded \"{}\". Changes apply the next time Skate starts.", profile.name));
         return;
     }
     if (!panel.store.loaded) {
-        say(panel, std::format("Loaded \"{}\", but {} of its mods are not installed and the Thunderstore listing has not "
+        say(panel, trf("Loaded \"{}\", but {} of its mods are not installed and the Thunderstore listing has not "
             "arrived yet. Load it again in a moment to download them.", profile.name, missing.size()), true);
         return;
     }
@@ -104,7 +104,7 @@ void load_profile(ModsPanel& panel, const profiles::Profile& profile) {
         if (const auto* package = package_for(panel.store, mod.name))
             packages.push_back(package->at_version(mod.version));
     if (packages.empty()) {
-        say(panel, std::format("Loaded \"{}\". {} of its mods are not installed and are not on Thunderstore: {}.",
+        say(panel, trf("Loaded \"{}\". {} of its mods are not installed and are not on Thunderstore: {}.",
             profile.name, missing.size(), named(unobtainable(panel, missing))), true);
         return;
     }
@@ -116,7 +116,7 @@ void load_profile(ModsPanel& panel, const profiles::Profile& profile) {
 
 void add_profile(ModsPanel& panel, profiles::Profile profile, std::string_view verb) {
     if (panel.profiles.list.size() >= profiles::max_profiles) {
-        say(panel, std::format("There is room for {} profiles. Delete one first.", profiles::max_profiles), true);
+        say(panel, trf("There is room for {} profiles. Delete one first.", profiles::max_profiles), true);
         return;
     }
     profile.name = panel.profiles.free_name(profiles::clean_profile_name(profile.name));
@@ -129,9 +129,16 @@ void add_profile(ModsPanel& panel, profiles::Profile profile, std::string_view v
         return;
     }
     log(logging::Level::info, std::format("Mod profile {}: {} ({} mods)", verb, name, count));
-    say(panel, missing ? std::format("{} \"{}\" ({} mods). LOAD it to switch to it; {} of its mods will be downloaded.",
-                                     verb, name, count, missing)
-                       : std::format("{} \"{}\" ({} mods). LOAD it to switch to it.", verb, name, count));
+    // (A whole sentence for each verb, so a translation can put the verb where its language does.)
+    const bool saved = verb == "Saved";
+    if (missing)
+        say(panel, saved ? trf("Saved \"{}\" ({} mods). LOAD it to switch to it; {} of its mods will be downloaded.",
+                               name, count, missing)
+                         : trf("Imported \"{}\" ({} mods). LOAD it to switch to it; {} of its mods will be downloaded.",
+                               name, count, missing));
+    else
+        say(panel, saved ? trf("Saved \"{}\" ({} mods). LOAD it to switch to it.", name, count)
+                         : trf("Imported \"{}\" ({} mods). LOAD it to switch to it.", name, count));
 }
 
 std::string read_file(const fs::path& path) {
@@ -178,10 +185,10 @@ void export_code(ModsPanel& panel, const profiles::Profile& profile) {
             profiles::code_payload(profile), 64 * 1024, code_timeout_ms);
         ModsPanel::ProfileResult result;
         result.clipboard = profiles::parse_created_code(answer);
-        result.message = "The code for \"" + profile.name + "\" is on the clipboard: " + result.clipboard +
-            ". Thunderstore keeps codes for a limited time.";
+        result.message = trf("The code for \"{}\" is on the clipboard: {}. Thunderstore keeps codes for a limited time.",
+            profile.name, result.clipboard);
         if (missing_from_store)
-            result.message += std::format(" {} of its mods are not on Thunderstore, so whoever imports it will not get those.",
+            result.message += " " + trf("{} of its mods are not on Thunderstore, so whoever imports it will not get those.",
                 missing_from_store);
         log(logging::Level::info, "Mod profile exported as a code: " + profile.name);
         return result;
@@ -200,7 +207,7 @@ void import_code(ModsPanel& panel, std::string code) {
 }
 
 void export_file(ModsPanel& panel, const profiles::Profile& profile, HWND window) {
-    const auto folder = pick_path(window, true, L"Choose where to save the profile file", nullptr, nullptr);
+    const auto folder = pick_path(window, true, wide(tr("Choose where to save the profile file")).c_str(), nullptr, nullptr);
     if (folder.empty()) return;
     try {
         auto target = folder / (wide(profile.name) + L".r2z");
@@ -211,14 +218,15 @@ void export_file(ModsPanel& panel, const profiles::Profile& profile, HWND window
         output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         if (!output.flush()) throw std::runtime_error("Could not write " + utf8(target.wstring()));
         log(logging::Level::info, "Mod profile exported as a file: " + profile.name);
-        say(panel, "Saved " + utf8(target.wstring()) + ". Anyone can import it here or in r2modman.");
+        say(panel, trf("Saved {}. Anyone can import it here or in r2modman.", utf8(target.wstring())));
     } catch (const std::exception& failure) {
         say(panel, failure.what(), true);
     }
 }
 
 void import_file(ModsPanel& panel, HWND window) {
-    const auto path = pick_path(window, false, L"Choose a profile file to import", L"Mod profile (*.r2z; *.r2x)", L"*.r2z;*.r2x");
+    const auto path = pick_path(window, false, wide(tr("Choose a profile file to import")).c_str(),
+                                wide(tr("Mod profile (*.r2z; *.r2x)")).c_str(), L"*.r2z;*.r2x");
     if (path.empty()) return;
     try {
         add_profile(panel, profiles::parse_archive(read_file(path)), "Imported");
@@ -260,11 +268,11 @@ void settle_profile(ModsPanel& panel) {
     const auto failure = panel.message_error ? panel.message : std::string();
     std::vector<profiles::ProfileMod> missing;
     if (!write_order(panel, *profile, missing)) return;
-    if (!failure.empty()) say(panel, "Loaded \"" + name + "\", but not all of it: " + failure, true);
+    if (!failure.empty()) say(panel, trf("Loaded \"{}\", but not all of it: {}", name, failure), true);
     else if (!missing.empty())
-        say(panel, std::format("Loaded \"{}\". {} of its mods are not installed and are not on Thunderstore: {}.", name,
+        say(panel, trf("Loaded \"{}\". {} of its mods are not installed and are not on Thunderstore: {}.", name,
             missing.size(), named(unobtainable(panel, missing))), true);
-    else say(panel, "Loaded \"" + name + "\" and downloaded what it needed. Changes apply the next time Skate starts.");
+    else say(panel, trf("Loaded \"{}\" and downloaded what it needed. Changes apply the next time Skate starts.", name));
 }
 
 namespace {
@@ -320,11 +328,12 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
     const profiles::Profile* using_now = nullptr;
     for (const auto& profile : panel.profiles.list)
         if (!using_now && profiles::in_use(profile, panel.list)) using_now = &profile;
-    page_banner(fonts, "PROFILES", nullptr,
-        "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
-        "profile switches the rest off. Share one as a code or a file, with ReSkate or r2modman.",
-        using_now ? "IN USE: " + using_now->name : "NO PROFILE IN USE", using_now ? color::good : color::tile_grey,
-        std::format("{} of {} saved", panel.profiles.list.size(), profiles::max_profiles));
+    page_banner(fonts, tr("PROFILES"), nullptr,
+        tr("A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
+           "profile switches the rest off. Share one as a code or a file, with ReSkate or r2modman."),
+        using_now ? trf("IN USE: {}", using_now->name) : std::string(tr("NO PROFILE IN USE")),
+        using_now ? color::good : color::tile_grey,
+        trf("{} of {} saved", panel.profiles.list.size(), profiles::max_profiles));
 
     // ------------------------------------------------ new, and the two ways in, a card each
     {
@@ -338,27 +347,27 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
         const ImVec2 left = start, right(start.x + across + gap, start.y);
         card(draw, left, ImVec2(across, tall));
         card(draw, right, ImVec2(across, tall));
-        card_heading(fonts, ImVec2(left.x + pad, left.y + pad), "NEW PROFILE", "Saves what MY MODS shows now");
-        card_heading(fonts, ImVec2(right.x + pad, right.y + pad), "IMPORT",
-            panel.profile_busy ? "Talking to Thunderstore..." : "A code or a .r2z file, from ReSkate or r2modman");
+        card_heading(fonts, ImVec2(left.x + pad, left.y + pad), tr("NEW PROFILE"), tr("Saves what MY MODS shows now"));
+        card_heading(fonts, ImVec2(right.x + pad, right.y + pad), tr("IMPORT"),
+            panel.profile_busy ? tr("Talking to Thunderstore...") : tr("A code or a .r2z file, from ReSkate or r2modman"));
         const float inner = across - pad * 2;
         const float row = start.y + pad + heading;
 
         ImGui::BeginDisabled(busy);
         ImGui::SetCursorScreenPos(ImVec2(left.x + pad, row));
         ImGui::SetNextItemWidth(inner);
-        const bool entered_name = ImGui::InputTextWithHint("##profile_name", "Name for a new profile", panel.profile_name.data(),
+        const bool entered_name = ImGui::InputTextWithHint("##profile_name", tr("Name for a new profile"), panel.profile_name.data(),
             panel.profile_name.size(), ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SetCursorScreenPos(ImVec2(left.x + pad, row + frame + S(8)));
         push_primary_button();
-        const bool create = ImGui::Button("SAVE CURRENT MODS", ImVec2(inner, 0)) || entered_name;
+        const bool create = ImGui::Button(tr("SAVE CURRENT MODS"), ImVec2(inner, 0)) || entered_name;
         pop_primary_button();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save what MY MODS shows now as a new profile");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Save what MY MODS shows now as a new profile"));
         if (create) {
             const auto name = trimmed(panel.profile_name.data());
             if (!profiles::valid_profile_name(name))
-                say(panel, "Give the profile a name first (up to 48 characters, none of < > : \" / \\ | ? *).", true);
-            else if (panel.profiles.find(name)) say(panel, "A profile named \"" + name + "\" already exists.", true);
+                say(panel, tr("Give the profile a name first (up to 48 characters, none of < > : \" / \\ | ? *)."), true);
+            else if (panel.profiles.find(name)) say(panel, trf("A profile named \"{}\" already exists.", name), true);
             else {
                 const auto before = panel.profiles.list.size();
                 add_profile(panel, profiles::capture(name, panel.list), "Saved");
@@ -372,21 +381,21 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
 
         ImGui::SetCursorScreenPos(ImVec2(right.x + pad, row));
         ImGui::SetNextItemWidth(inner);
-        const bool entered_code = ImGui::InputTextWithHint("##profile_code", "Paste a profile code", panel.profile_code.data(),
+        const bool entered_code = ImGui::InputTextWithHint("##profile_code", tr("Paste a profile code"), panel.profile_code.data(),
             panel.profile_code.size(), ImGuiInputTextFlags_EnterReturnsTrue);
         const float half = (inner - S(8)) * 0.5f;
         ImGui::SetCursorScreenPos(ImVec2(right.x + pad, row + frame + S(8)));
-        if (ImGui::Button("IMPORT CODE", ImVec2(half, 0)) || entered_code) {
+        if (ImGui::Button(tr("IMPORT CODE"), ImVec2(half, 0)) || entered_code) {
             const auto code = trimmed(panel.profile_code.data());
-            if (!profiles::valid_code(code)) say(panel, "That is not a profile code. Paste the whole code you were given.", true);
+            if (!profiles::valid_code(code)) say(panel, tr("That is not a profile code. Paste the whole code you were given."), true);
             else {
                 import_code(panel, code);
                 panel.profile_code.fill(0);
             }
         }
         ImGui::SameLine(0, S(8));
-        if (ImGui::Button("IMPORT FILE", ImVec2(half, 0))) import_file(panel, window);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick a .r2z or .r2x file");
+        if (ImGui::Button(tr("IMPORT FILE"), ImVec2(half, 0))) import_file(panel, window);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Pick a .r2z or .r2x file"));
         ImGui::EndDisabled();
 
         ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + tall + S(12)));
@@ -398,7 +407,7 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
     auto* draw = ImGui::GetWindowDrawList();
     if (panel.profiles.list.empty()) {
         ImGui::Dummy(ImVec2(0, S(8)));
-        ImGui::TextDisabled("No profiles yet. Set up MY MODS the way you like, name it above and save it.");
+        ImGui::TextDisabled("%s", tr("No profiles yet. Set up MY MODS the way you like, name it above and save it."));
     }
     // What a card asked for, carried out after the list is drawn: most of it changes the list.
     enum class Ask { none, load, update, code, file, rename, remove } ask{Ask::none};
@@ -435,13 +444,13 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
             badge(draw, fonts, ImVec2(pill_x, y), word, fill, ink);
             pill_x += badge_width(fonts, word) + S(8);
         };
-        if (current) pill("IN USE", color::good, color::ink);
-        else if (last) pill("CHANGED SINCE LOADED", color::warning, color::ink);
-        pill(std::format("{} MODS", profile.mods.size()), color::tile_grey, color::text);
-        pill(std::format("{} ON", on), color::tile_grey, color::text);
-        if (missing) pill(std::format("{} TO DOWNLOAD", missing), color::blue, color::ink);
+        if (current) pill(tr("IN USE"), color::good, color::ink);
+        else if (last) pill(tr("CHANGED SINCE LOADED"), color::warning, color::ink);
+        pill(trf("{} MODS", profile.mods.size()), color::tile_grey, color::text);
+        pill(trf("{} ON", on), color::tile_grey, color::text);
+        if (missing) pill(trf("{} TO DOWNLOAD", missing), color::blue, color::ink);
         y += fonts.caption->FontSize + S(8) + S(10);
-        const auto list = names.empty() ? std::string("Every mod off") : named(names);
+        const auto list = names.empty() ? std::string(tr("Every mod off")) : named(names);
         draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, list.c_str(), nullptr, 0, &clip);
 
         // ------------------------------------------- at the right
@@ -450,44 +459,44 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
         ImGui::SetCursorScreenPos(ImVec2(load_x, button_y));
         ImGui::BeginDisabled(current);
         push_primary_button();
-        if (ImGui::Button(current ? "LOADED" : "LOAD", ImVec2(button, S(34)))) {
+        if (ImGui::Button(current ? tr("LOADED") : tr("LOAD"), ImVec2(button, S(34)))) {
             ask = Ask::load;
             asked = index;
         }
         pop_primary_button();
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", current ? "MY MODS already matches this profile"
-                                            : missing ? "Switch MY MODS to this profile, downloading what is missing"
-                                                      : "Switch MY MODS to this profile");
+            ImGui::SetTooltip("%s", current ? tr("MY MODS already matches this profile")
+                                            : missing ? tr("Switch MY MODS to this profile, downloading what is missing")
+                                                      : tr("Switch MY MODS to this profile"));
         ImGui::SetCursorScreenPos(ImVec2(update_x, button_y));
         ImGui::BeginDisabled(current);
-        if (ImGui::Button("UPDATE", ImVec2(button, S(34)))) {
+        if (ImGui::Button(tr("UPDATE"), ImVec2(button, S(34)))) {
             ask = Ask::update;
             asked = index;
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", current ? "It already matches MY MODS" : "Overwrite this profile with what MY MODS shows now");
+            ImGui::SetTooltip("%s", current ? tr("It already matches MY MODS") : tr("Overwrite this profile with what MY MODS shows now"));
         ImGui::SetCursorScreenPos(ImVec2(more_x, start.y + (tall - more) * 0.5f));
         if (more_button("##more", more)) ImGui::OpenPopup("##profile_menu");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Share, rename or delete");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Share, rename or delete"));
         ImGui::EndDisabled();
         if (ImGui::BeginPopup("##profile_menu")) {
             const auto item = [&](const char* label, Ask what) {
-                if (ImGui::MenuItem(label)) {
+                if (ImGui::MenuItem(tr(label))) {
                     ask = what;
                     asked = index;
                 }
             };
-            item("Copy code", Ask::code);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Upload this profile to Thunderstore and copy its code");
-            item("Save as file", Ask::file);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save this profile as a .r2z file to send to someone");
+            item(translatable("Copy code"), Ask::code);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Upload this profile to Thunderstore and copy its code"));
+            item(translatable("Save as file"), Ask::file);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Save this profile as a .r2z file to send to someone"));
             ImGui::Separator();
-            item("Rename", Ask::rename);
-            item("Delete", Ask::remove);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete this profile. No mod is uninstalled.");
+            item(translatable("Rename"), Ask::rename);
+            item(translatable("Delete"), Ask::remove);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Delete this profile. No mod is uninstalled."));
             ImGui::EndPopup();
         }
 
@@ -504,7 +513,7 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
         case Ask::update: {
             panel.profiles.list[asked] = profiles::capture(profile.name, panel.list);
             panel.profiles.active = profile.name;
-            if (store(panel)) say(panel, "Updated \"" + profile.name + "\" to what MY MODS shows now.");
+            if (store(panel)) say(panel, trf("Updated \"{}\" to what MY MODS shows now.", profile.name));
             else panel.profiles.list[asked] = profile;
             break;
         }
@@ -523,11 +532,14 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
 }
 
 void profile_popups(ModsPanel& panel) {
-    if (!panel.profile_rename.empty() && !ImGui::IsPopupOpen("Rename profile")) ImGui::OpenPopup("Rename profile");
-    if (!panel.profile_delete.empty() && !ImGui::IsPopupOpen("Delete profile")) ImGui::OpenPopup("Delete profile");
+    // Titled in the chosen language; the ### part is the popups' id in any.
+    const auto rename_title = std::string(tr("Rename profile")) + "###rename_profile";
+    const auto delete_title = std::string(tr("Delete profile")) + "###delete_profile";
+    if (!panel.profile_rename.empty() && !ImGui::IsPopupOpen(rename_title.c_str())) ImGui::OpenPopup(rename_title.c_str());
+    if (!panel.profile_delete.empty() && !ImGui::IsPopupOpen(delete_title.c_str())) ImGui::OpenPopup(delete_title.c_str());
     ImGui::SetNextWindowSize(ImVec2(S(440), 0));
-    if (ImGui::BeginPopupModal("Rename profile", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
-        ImGui::Text("New name for \"%s\":", panel.profile_rename.c_str());
+    if (ImGui::BeginPopupModal(rename_title.c_str(), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextUnformatted(trf("New name for \"{}\":", panel.profile_rename).c_str());
         ImGui::SetNextItemWidth(-1);
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         const bool entered = ImGui::InputText("##renamed", panel.profile_renamed.data(), panel.profile_renamed.size(),
@@ -538,20 +550,20 @@ void profile_popups(ModsPanel& panel) {
         const bool usable = profile && profiles::valid_profile_name(name) && (!other || other == profile);
         if (!usable && !name.empty())
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "%s",
-                other && other != profile ? "Another profile has that name." : "That name cannot be used.");
+                other && other != profile ? tr("Another profile has that name.") : tr("That name cannot be used."));
         ImGui::Spacing();
-        if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (ImGui::Button(tr("Cancel"), ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             panel.profile_rename.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!usable);
         push_primary_button();
-        if (ImGui::Button("RENAME", ImVec2(S(110), 0)) || (entered && usable)) {
+        if (ImGui::Button(tr("RENAME"), ImVec2(S(110), 0)) || (entered && usable)) {
             const auto old = profile->name;
             profile->name = name;
             if (panel.profiles.active == old) panel.profiles.active = name;
-            if (store(panel)) say(panel, "Renamed \"" + old + "\" to \"" + name + "\".");
+            if (store(panel)) say(panel, trf("Renamed \"{}\" to \"{}\".", old, name));
             else {
                 profile->name = old;
                 if (panel.profiles.active == name) panel.profiles.active = old;
@@ -564,25 +576,25 @@ void profile_popups(ModsPanel& panel) {
         ImGui::EndPopup();
     }
     ImGui::SetNextWindowSize(ImVec2(S(440), 0));
-    if (ImGui::BeginPopupModal("Delete profile", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+    if (ImGui::BeginPopupModal(delete_title.c_str(), nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
         ImGui::PushTextWrapPos(0);
-        ImGui::Text("Delete the profile \"%s\"? Your mods stay installed and stay as they are now.",
-            panel.profile_delete.c_str());
+        ImGui::TextUnformatted(trf("Delete the profile \"{}\"? Your mods stay installed and stay as they are now.",
+            panel.profile_delete).c_str());
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
         // Escape (and a controller's B) answers Cancel, never the destructive choice.
-        if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (ImGui::Button(tr("Cancel"), ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             panel.profile_delete.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         push_primary_button();
-        if (ImGui::Button("DELETE", ImVec2(S(110), 0))) {
+        if (ImGui::Button(tr("DELETE"), ImVec2(S(110), 0))) {
             const auto before = panel.profiles;
             const auto name = panel.profile_delete;
             std::erase_if(panel.profiles.list, [&](const auto& profile) { return profile.name == name; });
             if (panel.profiles.active == name) panel.profiles.active.clear();
-            if (store(panel)) say(panel, "Deleted the profile \"" + name + "\". No mod was uninstalled.");
+            if (store(panel)) say(panel, trf("Deleted the profile \"{}\". No mod was uninstalled.", name));
             else panel.profiles = before;
             panel.profile_delete.clear();
             ImGui::CloseCurrentPopup();

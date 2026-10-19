@@ -74,6 +74,7 @@ Settings load_settings(const fs::path& path) {
         settings.accepted_privacy = json.value("accepted_privacy_version", settings.accepted_privacy);
         settings.accepted_terms = json.value("accepted_terms_version", settings.accepted_terms);
         settings.announcement_hidden = json.value("announcement_hidden", settings.announcement_hidden);
+        settings.language = json.value("language", std::string());
     } catch (const std::exception& exception) {
         logging::log(logging::Level::warning, logging::Channel::launcher, "Ignoring launcher settings: {}", exception.what());
     }
@@ -104,6 +105,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["accepted_privacy_version"] = settings.accepted_privacy;
     json["announcement_hidden"] = settings.announcement_hidden;
     json["accepted_terms_version"] = settings.accepted_terms;
+    json["language"] = settings.language;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << json.dump(2) << '\n';
 }
@@ -140,6 +142,7 @@ Launcher::Launcher(const launcher_app::Session& session, std::vector<std::wstrin
     : session_(session), arguments_(std::move(arguments)), settings_(load_settings(settings_path(session))) {
     relaunched_ = std::find(arguments_.begin(), arguments_.end(), L"--reskate-updated") != arguments_.end();
     binaries_ = std::find(arguments_.begin(), arguments_.end(), L"--no-update") == arguments_.end();
+    launcher_language::choose(settings_.language.empty() ? launcher_language::system_language() : settings_.language);
 }
 
 Launcher::~Launcher() {
@@ -280,8 +283,8 @@ void Launcher::dismiss_mod_problems() {
     std::lock_guard lock(mutex_);
     if (state_.phase != Phase::mods_broken) return;
     state_.phase = Phase::ready;
-    state_.status = "Ready to skate";
-    state_.detail = "Some mods are switched off or will not load.";
+    state_.status = tr("Ready to skate");
+    state_.detail = tr("Some mods are switched off or will not load.");
     state_.mod_problems.clear();
 }
 
@@ -316,7 +319,7 @@ std::optional<update::Config> Launcher::config() {
 
 update::Progress Launcher::progress_for(std::string label) {
     return [this, label](std::uint64_t received, std::uint64_t total) {
-        set_progress(std::format("{}  {} of {}", label, format_bytes(received), format_bytes(total)),
+        set_progress(trf("{}  {} of {}", label, format_bytes(received), format_bytes(total)),
             total ? static_cast<float>(static_cast<double>(received) / static_cast<double>(total)) : -1.0f);
     };
 }
@@ -332,7 +335,7 @@ bool Launcher::runtime_outdated(const update::Config& config) const {
 void Launcher::run_check() {
     checked_updates_ = settings_.updates;
     checked_prereleases_ = settings_.prereleases;
-    set(Phase::checking, "Checking for updates");
+    set(Phase::checking, tr("Checking for updates"));
     update::remove_previous_launcher(session_.self);
     auto config = update::fetch_config(settings_.prereleases);
     {
@@ -343,12 +346,13 @@ void Launcher::run_check() {
     if (config) prerelease_available_ = config->prerelease_available;
     const bool newer = config && (launcher_outdated(*config) || runtime_outdated(*config));
     if (newer && update::binary_updates_enabled() && binaries_ && settings_.updates) {
-        set(Phase::update_available, "A ReSkate update is ready",
-            std::format("{} {} will be downloaded and installed.", config->prerelease ? "Pre-release" : "Version",
-                config->runtime.version.empty() ? config->launcher.version : config->runtime.version));
+        const auto& version = config->runtime.version.empty() ? config->launcher.version : config->runtime.version;
+        set(Phase::update_available, tr("A ReSkate update is ready"),
+            config->prerelease ? trf("Pre-release {} will be downloaded and installed.", version)
+                               : trf("Version {} will be downloaded and installed.", version));
         return;
     }
-    set(Phase::checking, "Checking game files");
+    set(Phase::checking, tr("Checking game files"));
     if (!launcher_app::game_files_supported(session_.paths)) {
         std::error_code error;
         const bool installed = fs::is_regular_file(session_.paths.game, error);
@@ -364,13 +368,13 @@ void Launcher::run_check() {
         // (Data of another build under a Skate.exe that may itself be right: every file is
         // checked, which download() sees to.)
         if (installed && launcher_app::game_data_mismatched(session_.paths))
-            set(Phase::game_outdated, "Game files need verifying",
-                "Some of the game's files are from another version of skate. (Steam updated it, or a download did not finish). "
-                "Press DOWNLOAD: every file is checked and only the wrong ones are downloaded.");
-        else if (installed) set(Phase::game_outdated, "Steam updated Skate",
-            "ReSkate needs the build below. Only the files that differ are downloaded.");
-        else set(Phase::game_missing, "Skate is not installed here",
-            "Download the build below from Steam, about 14 GB, with an account that owns skate.");
+            set(Phase::game_outdated, tr("Game files need verifying"),
+                tr("Some of the game's files are from another version of skate. (Steam updated it, or a download did not "
+                   "finish). Press DOWNLOAD: every file is checked and only the wrong ones are downloaded."));
+        else if (installed) set(Phase::game_outdated, tr("Steam updated Skate"),
+            tr("ReSkate needs the build below. Only the files that differ are downloaded."));
+        else set(Phase::game_missing, tr("Skate is not installed here"),
+            tr("Download the build below from Steam, about 14 GB, with an account that owns skate."));
         return;
     }
     std::error_code error;
@@ -378,19 +382,19 @@ void Launcher::run_check() {
         fail("ReSkate.dll is missing from the game folder.");
         return;
     }
-    set(Phase::ready, "Ready to skate", !config ? "Offline: update check skipped."
-        : !settings_.updates ? (newer ? "ReSkate updates are off; keeping your ReSkate files." : "ReSkate updates are off.")
-        : "Up to date.");
+    set(Phase::ready, tr("Ready to skate"), !config ? tr("Offline: update check skipped.")
+        : !settings_.updates ? (newer ? tr("ReSkate updates are off; keeping your ReSkate files.") : tr("ReSkate updates are off."))
+        : tr("Up to date."));
 }
 
 void Launcher::run_updates() {
     const auto config = this->config();
     if (!config) return run_check();
-    set(Phase::updating, "Updating ReSkate");
+    set(Phase::updating, tr("Updating ReSkate"));
     if (runtime_outdated(*config))
         update::replace_file(session_.paths.dll, config->runtime, progress_for("ReSkate.dll"));
     if (launcher_outdated(*config)) {
-        update::replace_running_launcher(session_.self, config->launcher, progress_for("Launcher"));
+        update::replace_running_launcher(session_.self, config->launcher, progress_for(tr("Launcher")));
         logging::flush();
         restart_ = true;
         return;
@@ -403,10 +407,10 @@ void Launcher::run_download(bool validate) {
     if (!config) return run_check();
     trace::Scope timing("launcher.game_download", "task");
     timing.tag("mode", validate ? "verify" : "download");
-    set(Phase::downloading, "Preparing Steam download", {}, 0);
+    set(Phase::downloading, tr("Preparing Steam download"), {}, 0);
     const auto depot_downloader = update::ensure_depot_downloader(config->depot_downloader,
         progress_for("DepotDownloader"));
-    set(Phase::downloading, "Connecting to Steam");
+    set(Phase::downloading, tr("Connecting to Steam"));
     DepotOutput output;
     // DepotDownloader's last lines, for the log when the download fails: they say why (the
     // account does not own the game, Steam refused the sign-in, the disk is full), and are
@@ -420,7 +424,7 @@ void Launcher::run_download(bool validate) {
         std::lock_guard lock(mutex_);
         if (qr_login_) login.username.clear();
     }
-    if (!login.username.empty()) set(Phase::downloading, "Signing in to Steam", login.username);
+    if (!login.username.empty()) set(Phase::downloading, tr("Signing in to Steam"), login.username);
     const auto code = update::run_depot_downloader(depot_downloader, config->game,
         session_.paths.directory, validate, login, [&](std::string_view line) {
             // DepotDownloader names the account it signs in ("Logging 'name' into Steam3"); the log
@@ -438,16 +442,16 @@ void Launcher::run_download(bool validate) {
             output.feed(line);
             std::lock_guard lock(mutex_);
             if (line.find("Use the Steam Mobile App to confirm") != std::string_view::npos) {
-                state_.status = "Approve the sign-in in the Steam app";
-                state_.detail = "Open Steam on your phone and confirm. Waiting...";
+                state_.status = tr("Approve the sign-in in the Steam app");
+                state_.detail = tr("Open Steam on your phone and confirm. Waiting...");
                 return;
             }
             if (output.qr_update) {
                 state_.qr = *output.qr_update;
-                if (state_.qr.empty()) state_.status = "Signed in to Steam";
+                if (state_.qr.empty()) state_.status = tr("Signed in to Steam");
             }
             if (output.percent) {
-                state_.status = validate ? "Verifying Skate" : "Downloading Skate";
+                state_.status = validate ? tr("Verifying Skate") : tr("Downloading Skate");
                 state_.detail = std::format("{:.1f}%  {}", *output.percent, output.file);
                 state_.progress = *output.percent / 100.0f;
             } else if (state_.qr.empty() && !output.message.empty() && output.message != state_.detail) {
@@ -464,11 +468,11 @@ void Launcher::run_download(bool validate) {
         timing.tag("cancelled", "true");
         run_check();
         std::lock_guard lock(mutex_);
-        state_.detail = "Download cancelled. It will resume where it stopped.";
+        state_.detail = tr("Download cancelled. It will resume where it stopped.");
         return;
     }
     if (launcher_app::game_files_supported(session_.paths)) {
-        set(Phase::ready, "Ready to skate", "Skate build installed.");
+        set(Phase::ready, tr("Ready to skate"), tr("Skate build installed."));
         return;
     }
     timing.fail();
@@ -484,7 +488,7 @@ bool Launcher::run_mod_merge() {
     const auto root = mods_data_root();
     std::error_code error;
     if (!fs::is_directory(root / mods::mods_folder, error)) return true;
-    set(Phase::merging, "Preparing mods", "Merging what is installed", 0);
+    set(Phase::merging, tr("Preparing mods"), tr("Merging what is installed"), 0);
     trace::Scope timing("launcher.mod_merge", "task");
     auto catalog = mods::load_catalog(root, [this](const mods::MergeProgress& progress) {
         set_progress(progress.step, progress.total
@@ -500,20 +504,21 @@ bool Launcher::run_mod_merge() {
 
     std::vector<ModProblem> problems;
     if (!catalog.issue.empty())
-        problems.push_back({{}, "The Mods folder", catalog.issue});
+        problems.push_back({{}, tr("The Mods folder"), catalog.issue});
     for (const auto& mod : catalog.excluded) {
         // Mods built for another game version say so for themselves, in game and in the mod
         // manager, and a mod left out for a conflict is shown there with the mod it lost to and
         // what to do about it: neither holds up a launch.
         if (!mod.outdated.empty()) continue;
-        const auto reason = mod.problems.empty() ? std::string("it could not be merged cleanly") : mod.problems.front();
+        const auto reason = mod.problems.empty() ? std::string(tr("it could not be merged cleanly")) : mod.problems.front();
         if (reason.starts_with("conflicts with ")) continue;
         problems.push_back({mod.name, mod.title.empty() ? mod.name : mod.title, reason});
     }
     if (problems.empty()) return true;
     std::lock_guard lock(mutex_);
     state_.phase = Phase::mods_broken;
-    state_.status = problems.size() == 1 ? "A mod could not be merged" : std::format("{} mods could not be merged", problems.size());
+    state_.status = problems.size() == 1 ? std::string(tr("A mod could not be merged"))
+                                         : trf("{} mods could not be merged", problems.size());
     state_.detail.clear();
     state_.progress = -1;
     state_.mod_problems = std::move(problems);
@@ -523,13 +528,13 @@ bool Launcher::run_mod_merge() {
 void Launcher::run_play() {
     // The official mods first (official_mods.h): the merge takes them in.
     if (!official_mods::wait(std::chrono::milliseconds(0))) {
-        set(Phase::merging, "Official mods", "Finishing the official mods being installed", -1.0f);
+        set(Phase::merging, tr("Official mods"), tr("Finishing the official mods being installed"), -1.0f);
         if (!official_mods::wait(std::chrono::minutes(3)))
             logging::write(logging::Level::warning, logging::Channel::launcher, "Official mods were still being installed; Skate starts without them");
     }
     if (!ignore_mod_problems_ && !run_mod_merge()) return;
     ignore_mod_problems_ = false;
-    set(Phase::launching, "Starting Skate");
+    set(Phase::launching, tr("Starting Skate"));
     save();
     auto options = launch_options(settings_);
     // The launcher's own command line can request offline mode too.
@@ -542,10 +547,10 @@ void Launcher::run_play() {
     launched_ = false;
     launcher_app::start_game(session_, options, [this](DWORD id) { game_ = id; });
     launched_ = true;
-    set(Phase::launching, "Skate is starting", options.offline || !launcher_app::steam_signed_in() ?
-        "Offline mode: playing without Steam as Unknown Player; multiplayer is hidden." :
-        settings_.keep_open_after_launch ? "The launcher hides while you play and returns when Skate closes." :
-        "The launcher closes now; Skate keeps starting on its own.");
+    set(Phase::launching, tr("Skate is starting"), options.offline || !launcher_app::steam_signed_in() ?
+        tr("Offline mode: playing without Steam as Unknown Player; multiplayer is hidden.") :
+        settings_.keep_open_after_launch ? tr("The launcher hides while you play and returns when Skate closes.") :
+        tr("The launcher closes now; Skate keeps starting on its own."));
 }
 
 } // namespace dingosdk::launcher_gui::detail
@@ -560,13 +565,24 @@ bool prereleases_enabled(const launcher_app::Session& session) {
 launcher::LaunchOptions saved_launch_options(const launcher_app::Session& session) {
     return detail::launch_options(detail::load_settings(detail::settings_path(session)));
 }
+namespace {
+detail::Settings saved_settings() {
+    std::wstring path(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (!length || length >= path.size()) return {};
+    path.resize(length);
+    return detail::load_settings(std::filesystem::path(path).parent_path() / L"ReSkateLauncher.settings.json");
+}
+} // namespace
+void apply_language_setting() noexcept {
+    try {
+        const auto settings = saved_settings();
+        launcher_language::choose(settings.language.empty() ? launcher_language::system_language() : settings.language);
+    } catch (...) {}
+}
 void apply_crash_report_setting() noexcept {
     try {
-        std::wstring path(32768, L'\0');
-        const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-        if (!length || length >= path.size()) return;
-        path.resize(length);
-        const auto settings = detail::load_settings(std::filesystem::path(path).parent_path() / L"ReSkateLauncher.settings.json");
+        const auto settings = saved_settings();
         if (!settings.crash_reports) SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"0");
         // A RESKATE_TRACING already set (to test with, or to refuse) is left alone.
         if (settings.performance_timings && !GetEnvironmentVariableW(L"RESKATE_TRACING", nullptr, 0))
