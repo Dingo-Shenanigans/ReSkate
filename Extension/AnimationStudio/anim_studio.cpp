@@ -2133,6 +2133,11 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.edits.trick = trick.trick;
         s.edits.pop = trick.pop;
         s.edits.name = trick.label + " " + trick.pop;
+        // The game's clips are authored for a regular stance: saying so lets playback mirror them for goofy,
+        // switch and fakie instead of taking the blank for regular by luck.
+        s.edits.stance = "regular";
+        s.edits.start = 0;
+        s.edits.end = -1;
         s.clip = std::move(clip);
         s.saved_as.clear();
         s.undo.clear();

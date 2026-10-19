@@ -536,8 +536,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                 ui_state.row = ui_state.trick_row;
                             }});
             rows.push_back({upper(label), "", "", {}, false});
+            for (const char* want : {"high", "mid", "low"})
             for (const auto& t : list) {
-                if (t.trick != u.open_trick) continue;
+                if (t.trick != u.open_trick || t.pop != want) continue;
                 const std::string pop = t.pop == "low" ? "Low pop" : t.pop == "mid" ? "Mid pop" : "High pop";
                 Row row{pop, "", "Opens the game's " + t.label + " with a " + t.pop + " pop to change it. Save it and it plays on your " + t.label + "s.",
                         [t] {
@@ -554,10 +555,8 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
         rows.push_back({"RECORD", "", "", {}, false});
         rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
-        // The game's own clips stay in the build but are not listed for now: their board is not where the
-        // game draws it in a flip (the game places it with its physics), so a recording is the way in.
-        constexpr bool show_game_clips = false;
-        if (!show_game_clips) break;
+        // Then the game's own tricks, by kind. One of these is the usual way in: the trick is already the
+        // game's own, so it fits every stance and only has to be changed, not performed.
         std::string category, trick;
         for (const auto& t : list) {
             if (t.category != category) {
