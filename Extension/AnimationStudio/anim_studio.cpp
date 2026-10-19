@@ -1496,7 +1496,7 @@ void set_in_room(bool on) noexcept { in_room_flag.store(on, std::memory_order_re
 bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std::memory_order_acquire) < 0.5; }
 // The game's own load is still going: the loading screen stays until the game has been quiet for a second.
 std::atomic<bool> loading_held{};
-std::atomic<double> game_quiet_since{-1};
+std::atomic<double> game_quiet_since{0}; // 0: nothing is loading
 void game_loading_state(bool game_loading) noexcept {
     if (game_loading) game_quiet_since.store(-1, std::memory_order_release);
     else if (game_quiet_since.load() < 0) game_quiet_since.store(now_seconds(), std::memory_order_release);
@@ -1512,17 +1512,21 @@ void set_loading(Loading what, float seconds) noexcept {
 }
 LoadingView loading() noexcept {
     constexpr double fade = 0.35;
-    const double now = now_seconds(), since = loading_since.load(), until = loading_until.load();
-    LoadingView v;
-    // The level's title card and its streaming come after the game's requests are done: the screen stays until the
-    // game has been quiet (loading done and in play) for a moment.
-    if (loading_held.load() && loading_what.load() != Loading::none && now >= until) {
+    constexpr double longest = 60.0; // never held longer than this, whatever the game is doing
+    const double now = now_seconds(), since = loading_since.load();
+    // Held while the game loads: the screen stays up (its own time is pushed along) until the game has been
+    // quiet for a moment, so the level, its title card and its streaming are all done behind it.
+    if (loading_held.load() && loading_what.load() != Loading::none) {
         const double quiet = game_quiet_since.load();
-        if (quiet >= 0 && now - quiet > 1.5) {
+        if ((quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
             loading_held.store(false);
             loading_until.store(now);
+        } else if (loading_until.load() < now + 0.2) {
+            loading_until.store(now + 0.2);
         }
     }
+    const double until = loading_until.load();
+    LoadingView v;
     v.what = loading_what.load(std::memory_order_acquire);
     if (v.what == Loading::none || now > until + fade) return {};
     const double in = std::clamp((now - since) / fade, 0.0, 1.0), out = now < until ? 1.0 : 1.0 - (now - until) / fade;
@@ -1827,19 +1831,21 @@ void move_bracket(int which, float seconds) {
     if (!s.clip || s.clip->empty()) return;
     const float duration = s.clip->duration();
     const float t = std::clamp(seconds, 0.0f, duration);
-    if (which == 1) {
-        const float end = s.edits.end < 0 ? duration : s.edits.end;
-        const float start = std::min(t, end - 1.0f / 30);
-        shift_keys(s.edits, start - s.edits.start);
-        s.edits.start = start;
-        key_all_at(s.edits, start);
-    } else if (which == 2) {
-        const float old_end = s.edits.end < 0 ? duration : s.edits.end;
-        const float end = std::max(t, s.edits.start + 1.0f / 30);
-        unkey_all_at(s.edits, old_end);
-        s.edits.end = end;
-        key_all_at(s.edits, end);
-    } else return;
+    const float was_start = s.edits.start, was_end = s.edits.end < 0 ? duration : s.edits.end;
+    float start = was_start, end = was_end;
+    if (which == 1) start = std::clamp(t, 0.0f, was_end - 1.0f / 30);
+    else if (which == 2) end = std::clamp(t, was_start + 1.0f / 30, duration);
+    else return;
+    // The animation lives between the brackets: every key keeps its place in the window, so moving a bracket
+    // takes the keys with it (the trick starts earlier or later, or runs longer or shorter) instead of leaving
+    // them behind.
+    const float was = (std::max)(was_end - was_start, 1.0f / 1000), now = end - start;
+    for (auto& track : s.edits.tracks)
+        for (auto& key : track.keys) key.time = std::clamp(start + (key.time - was_start) * now / was, 0.0f, duration);
+    s.edits.start = start;
+    s.edits.end = end;
+    key_all_at(s.edits, start);
+    key_all_at(s.edits, end);
     changed_locked(s);
 }
 
