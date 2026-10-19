@@ -135,6 +135,7 @@ accepts `park random` from its console or an admin.
 | Profile (skater, progress, parks) | `%LOCALAPPDATA%\ReSkate\profiles\offline\` |
 | The game's own settings and saves | `%LOCALAPPDATA%\ReSkate\Game\` (kept apart from the normal game) |
 | Launcher settings | `ReSkateLauncher.settings.json` beside the launcher |
+| Your own text overrides | `%LOCALAPPDATA%\ReSkate\reskate-strings.json` |
 
 ## Mods
 
@@ -173,6 +174,9 @@ accepts `park random` from its console or an admin.
   ReSkate serves registered image bytes through a process-local HTTP endpoint bound only to `127.0.0.1`
   on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
   routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
+- A mod can translate or change the game's text with a `reskate-strings.json` in its folder, one JSON
+  object of `{"ID_SOME_STRING": "text"}` (or `"#hash"` keys). Edits show in game within a few seconds.
+  See [contrib/text-overrides.md](contrib/text-overrides.md), which also covers dumping every string.
 
 Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
 switched off in this version: nothing in that folder is read or run.

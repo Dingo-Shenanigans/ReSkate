@@ -55,6 +55,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Throwdowns/skate_trick_rule.cpp
     Extension/Throwdowns/graph_throttle.cpp
     Extension/Throwdowns/throwdown_wire.cpp
+    Extension/Localization/text_overrides.cpp
     Extension/Multiplayer/Hud/native_indicators.cpp
     Extension/Multiplayer/Steam/steam_transport.cpp
     Extension/Multiplayer/Steam/steam_social.cpp

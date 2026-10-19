@@ -1,6 +1,7 @@
 #include "local_buildkit_labels.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "Extension/Progression/local_challenge_runtime.h"
+#include "Extension/Localization/text_overrides.h"
 
 namespace dingosdk::profile_runtime {
 // Missing labels in the installed Build Kit assets. Existing translations win.
@@ -30,7 +31,10 @@ std::uintptr_t buildkit_text_exists(const char* key) {
 std::uintptr_t buildkit_text_translate(const char* key, char* output, std::uint32_t capacity) {
     const auto result = buildkit_text_functions().translate(key, output, capacity);
     PreserveError preserve;
-    if (result & 0xff) return result;
+    if (result & 0xff) {
+        text_overrides::observe_translation(key, output, capacity);
+        return result;
+    }
     const auto fallback = buildkit_fallback(key);
     if (fallback.empty() || capacity <= fallback.size()) return result;
     SIZE_T written{};
