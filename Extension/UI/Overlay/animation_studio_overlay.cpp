@@ -50,6 +50,7 @@ struct Ui {
     bool library_open{true}, inspector_open{true};
     float timeline_zoom{1}, timeline_scroll{}, rows_scroll{};
     bool rows_bar_held{};  // the joint list's scroll bar is being dragged
+    std::uint16_t rows_followed{0xffff}; // the joint the list last scrolled to
     bool bracket_view{};   // zoom to the brackets on the next frame
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
@@ -1230,7 +1231,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     }
     // Every key of every joint, in one row: the whole animation at a glance.
     const float summary_y = at.y + header_h + 4 * k;
-    skate_theme::rough_rect(d, ImVec2(at.x + 8 * k, summary_y), ImVec2(lanes_right - 8 * k, summary_y + summary_h), IM_COL32(30, 31, 34, 240), 83, k * 0.6f);
+    // The bar lives in this strip; the rows start after it.
+    const float rows_left = 22 * k;
+    skate_theme::rough_rect(d, ImVec2(at.x + rows_left, summary_y), ImVec2(lanes_right - 8 * k, summary_y + summary_h), IM_COL32(30, 31, 34, 240), 83, k * 0.6f);
     text(d, f.heading, 15 * k, ImVec2(at.x + 22 * k, summary_y + 6 * k), soft, "ALL KEYS");
     d->PushClipRect(ImVec2(ruler_left, summary_y), ImVec2(ruler_right, summary_y + summary_h), true);
     for (const auto& t : v.tracks)
@@ -1242,12 +1245,17 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     const float rows_top = summary_y + summary_h + 6 * k;
     const float rows_h = at.y + size.y - rows_top;
     const float content_h = joints.size() * (row_h + gap);
-    for (std::size_t r = 0; r < joints.size(); ++r)
-        if (joints[r].index == u.selected) {
-            const float top = r * (row_h + gap), bottom = top + row_h;
-            if (top < u.rows_scroll) u.rows_scroll = top;
-            if (bottom > u.rows_scroll + rows_h) u.rows_scroll = bottom - rows_h;
-        }
+    // The list follows the chosen joint only when the choice has just changed: otherwise it would pull the
+    // view back every frame and the list could not be scrolled past it.
+    if (u.selected != u.rows_followed) {
+        u.rows_followed = u.selected;
+        for (std::size_t r = 0; r < joints.size(); ++r)
+            if (joints[r].index == u.selected) {
+                const float top = r * (row_h + gap), bottom = top + row_h;
+                if (top < u.rows_scroll) u.rows_scroll = top;
+                if (bottom > u.rows_scroll + rows_h) u.rows_scroll = bottom - rows_h;
+            }
+    }
     u.rows_scroll = std::clamp(u.rows_scroll, 0.0f, std::max(0.0f, content_h - rows_h));
     d->PushClipRect(ImVec2(at.x, rows_top), ImVec2(lanes_right, at.y + size.y), true);
     for (std::size_t r = 0; r < joints.size(); ++r) {
@@ -1256,7 +1264,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         if (y + row_h < rows_top || y > at.y + size.y) continue;
         const bool chosen = joint.index == u.selected;
         const auto* track = track_view(v, joint.index);
-        const ImVec2 a(at.x + 8 * k, y), b(lanes_right - 8 * k, y + row_h);
+        const ImVec2 a(at.x + rows_left, y), b(lanes_right - 8 * k, y + row_h);
         if (chosen) {
             skate_theme::rough_rect(d, a, ImVec2(a.x + label_w - 12 * k, b.y), blue, seed_of(a), k);
             theme::halftone(d, ImVec2(a.x + label_w - 70 * k, a.y + 6 * k), 8, 4, IM_COL32(255, 255, 255, 46));
@@ -1320,7 +1328,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     }
     // The joint list's scroll bar, down the left edge: it shows how far down the list is and can be dragged.
     if (content_h > rows_h + 1.0f) {
-        const float bar_w = 7 * k, bar_x = at.x + 2 * k;
+        const float bar_w = 10 * k, bar_x = at.x + 5 * k;
         const float shown = rows_h / content_h;
         const float thumb_h = (std::max)(rows_h * shown, 28 * k);
         const float travel = rows_h - thumb_h;
