@@ -443,6 +443,22 @@ std::array<float, 16> orbit_matrix(const Vec3& centre, const Orbit& orbit, float
 // ---- recording ---------------------------------------------------------------------------------
 constexpr double before_takeoff = 0.7, after_landing = 0.7, ring_seconds = 2.5;
 constexpr double shortest_air = 0.25, longest_air = 8.0;
+// A bracket is a key on every body joint at its time, with no turn or move of its own: the start and the end
+// of the animation, keyed on all limbs at once.
+void key_all_at(Animation& animation, float seconds) {
+    for (const auto& joint : editable_joints()) {
+        if (joint.index == board_joint) continue;
+        const auto* track = animation.track(joint.index);
+        bool has = false;
+        if (track)
+            for (const auto& key : track->keys) has |= std::abs(key.time - seconds) <= 1.0f / 120;
+        if (!has) set_key(animation, joint.index, seconds, Offset{});
+    }
+}
+void unkey_all_at(Animation& animation, float seconds) {
+    for (const auto& joint : editable_joints())
+        if (joint.index != board_joint) remove_key(animation, joint.index, seconds);
+}
 void finish_recording(Live& l) {
     auto clip = std::make_shared<Clip>();
     clip->joints = skeleton_joints;
@@ -482,6 +498,8 @@ void finish_recording(Live& l) {
     s.edits.tracks.clear();
     s.edits.start = 0;
     s.edits.end = -1;
+    key_all_at(s.edits, 0);
+    key_all_at(s.edits, clip->duration());
     if (!l.recorded_trick.empty()) {
         // Named after the trick the game says it was: saving it makes it play on that trick.
         s.edits.trick = l.recorded_trick;
@@ -1812,8 +1830,13 @@ void move_bracket(int which, float seconds) {
         const float start = std::min(t, end - 1.0f / 30);
         shift_keys(s.edits, start - s.edits.start);
         s.edits.start = start;
+        key_all_at(s.edits, start);
     } else if (which == 2) {
-        s.edits.end = std::max(t, s.edits.start + 1.0f / 30);
+        const float old_end = s.edits.end < 0 ? duration : s.edits.end;
+        const float end = std::max(t, s.edits.start + 1.0f / 30);
+        unkey_all_at(s.edits, old_end);
+        s.edits.end = end;
+        key_all_at(s.edits, end);
     } else return;
     changed_locked(s);
 }
