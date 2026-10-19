@@ -114,6 +114,7 @@ struct State {
     std::string status, failure;
     // Published by the animation thread.
     std::vector<JointView> joints;
+    Joint joints_placement{}; // the placement the joints were measured from (the view's frame)
     // The board without its keys, now, from its start (start_frame): what the board's fields add to.
     Joint board_base;
     bool board_base_valid{};
@@ -667,6 +668,7 @@ void publish_joints(std::span<const Joint> pose, const Joint& placement, const s
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.joints = std::move(views);
+    s.joints_placement = placement;
     // The orbit centres where the skater stands, at the height of the hips as drawn, so a trick's rise
     // stays in the picture (camera() eases towards it).
     s.centre = {placement.position[0], hips.position[1] + 0.05f, placement.position[2]};
@@ -1722,7 +1724,7 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     set_key(s.edits, joint, frame_time(s.time), clean);
     changed_locked(s);
 }
-void drag_limb(std::uint16_t joint, const Vec3& target) {
+void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (!s.clip || s.clip->empty() || !editable(joint)) return;
@@ -1733,6 +1735,15 @@ void drag_limb(std::uint16_t joint, const Vec3& target) {
     const float at = frame_time(s.time);
     std::vector<Joint> native(s.clip->joints);
     s.clip->sample(at, native);
+    // The target is in the view's frame (the joints' frame); the solver works in the clip's. Both frames have
+    // the placement joint in them: a point is moved from the view's placement to the clip's.
+    std::vector<Joint> posed(native);
+    apply_edits(s.edits, at, posed);
+    const Joint clip_place = world(posed, placement_joint), view_place = s.joints_placement;
+    const Vec3 offset{target_view[0] - view_place.position[0], target_view[1] - view_place.position[1], target_view[2] - view_place.position[2]};
+    const Vec3 local = rotate(conjugate(view_place.rotation), offset);
+    const Vec3 moved = rotate(clip_place.rotation, local);
+    const Vec3 target{moved[0] + clip_place.position[0], moved[1] + clip_place.position[1], moved[2] + clip_place.position[2]};
     try {
         anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
     } catch (const std::exception& e) {
