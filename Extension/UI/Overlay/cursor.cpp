@@ -2,12 +2,96 @@
 #include "cursor.h"
 #include "input_capture.h"
 #include "Engine/Core/Log/logging.h"
+#include <array>
+#include <cfloat>
+#include <climits>
+#include <cmath>
+#include <atomic>
+#include <cstdint>
 
 namespace dingosdk::overlay::detail {
-bool game_window_foreground(HWND window) {
+namespace {
+bool query_foreground(HWND window) {
     if (!window || !IsWindow(window)) return false;
     const auto root = GetAncestor(window, GA_ROOT);
     return GetForegroundWindow() == (root ? root : window) && !IsIconic(root ? root : window);
+}
+
+// Whether the game's window is in front, and which keys are held, as Windows said a few
+// milliseconds ago, asked on a thread of its own. Those calls (GetAncestor, GetForegroundWindow,
+// GetAsyncKeyState) wait on a lock Windows shares among every program's windows, and another
+// program holding it held up the game's own frame with them: 40 to 50 ms at a time inside
+// GetAncestor, from the client tick's controller reads (a player's profile, 2026-10-15). The
+// readers, the client tick among them, take the answer from here instead.
+struct DesktopSample {
+    std::atomic<HWND> window{};
+    std::atomic<bool> foreground{};
+    std::array<std::atomic<std::uint64_t>, 4> keys{};
+    std::atomic<ULONGLONG> at{};     // GetTickCount64 when the last sample was complete
+    std::atomic<ULONGLONG> wanted{}; // the last time a reader asked for it
+    std::atomic<bool> started{};
+};
+DesktopSample& desktop() {
+    static auto* sample = new DesktopSample; // process lifetime, as its thread
+    return *sample;
+}
+// A sample is used however old it is once there is one: one that is late means the sampler is
+// waiting on Windows, and asking Windows from the game's thread then would wait as well. Before
+// the first, the caller asks itself.
+constexpr ULONGLONG idle_ms = 2000;
+constexpr LONGLONG period_100ns = 4 * 10000; // 4 ms: 250 samples a second while read
+
+DWORD WINAPI sample_desktop(void*) noexcept {
+    auto& d = desktop();
+    const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    for (;;) {
+        // (Nothing asking, as when the game is minimised or closing: no polling.)
+        if (GetTickCount64() - d.wanted.load(std::memory_order_relaxed) > idle_ms) {
+            Sleep(50);
+            continue;
+        }
+        const auto window = state().window.load();
+        const bool front = query_foreground(window);
+        std::array<std::uint64_t, 4> keys{};
+        if (front) {
+            OverlayInputAccess access; // the real keyboard, whatever the menus hold from the game
+            for (int key = 1; key < 255; ++key)
+                if (GetAsyncKeyState(key) & 0x8000) keys[key / 64] |= std::uint64_t{1} << (key % 64);
+        }
+        d.window.store(window, std::memory_order_relaxed);
+        d.foreground.store(front, std::memory_order_relaxed);
+        for (std::size_t i = 0; i < keys.size(); ++i) d.keys[i].store(keys[i], std::memory_order_relaxed);
+        d.at.store(GetTickCount64(), std::memory_order_release);
+        LARGE_INTEGER due{};
+        due.QuadPart = -period_100ns;
+        if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+        else Sleep(4);
+    }
+}
+// The sample of this window, when there is a recent one; starts the sampler the first time.
+bool recent_sample(HWND window) noexcept {
+    auto& d = desktop();
+    const auto now = GetTickCount64();
+    d.wanted.store(now, std::memory_order_relaxed);
+    if (!d.started.load(std::memory_order_relaxed) && !d.started.exchange(true)) {
+        if (const auto thread = CreateThread(nullptr, 0, sample_desktop, nullptr, 0, nullptr)) CloseHandle(thread);
+        else d.started.store(false);
+    }
+    return d.at.load(std::memory_order_acquire) && d.window.load(std::memory_order_relaxed) == window;
+}
+} // namespace
+
+bool game_window_foreground(HWND window) {
+    if (recent_sample(window)) return desktop().foreground.load(std::memory_order_relaxed);
+    return query_foreground(window); // (before the first sample, or with the sampler stopped)
+}
+
+bool sampled_keys(HWND window, std::array<std::uint64_t, 4>& held) {
+    if (!recent_sample(window)) return false;
+    auto& d = desktop();
+    if (!d.foreground.load(std::memory_order_relaxed)) return false;
+    for (std::size_t i = 0; i < held.size(); ++i) held[i] = d.keys[i].load(std::memory_order_relaxed);
+    return true;
 }
 
 bool owns_menu_cursor(const State& s) {
@@ -38,9 +122,16 @@ void sync_menu_cursor(bool release) {
         const bool own = !release && owns_menu_cursor(s);
         changed = own != s.cursor_released;
         if (own) {
-            if (!s.cursor_released) s.cursor_clip_pending = GetClipCursor(&s.cursor_clip) != FALSE;
-            s.cursor_released = true;
-            clip(nullptr);
+            // Freed when the menu takes the pointer, then again at most twice a second: this runs
+            // each frame the hub is drawn, and ClipCursor takes Windows' input lock for itself.
+            static ULONGLONG freed_at{};
+            const auto now = GetTickCount64();
+            if (!s.cursor_released || now - freed_at >= 500) {
+                if (!s.cursor_released) s.cursor_clip_pending = GetClipCursor(&s.cursor_clip) != FALSE;
+                s.cursor_released = true;
+                freed_at = now;
+                clip(nullptr);
+            }
         } else if (s.cursor_released) {
             s.cursor_released = false;
             // Do not restore a game's clip over another foreground application.
@@ -142,7 +233,23 @@ void update_menu_pointer() {
     const bool watching = !active && s.hub_pointer.load() && s.input_attached && !s.stop && !s.failed &&
                           game_window_foreground(s.window);
     io.AddFocusEvent(active || watching);
-    io.MouseDrawCursor = active;
+    // The controller in charge of the full screen menu: no pointer until the mouse moves or a button
+    // of it is pressed.
+    // (The real pointer and buttons: these reads are the game's, faked, outside OverlayInputAccess.)
+    static POINT last{LONG_MIN, LONG_MIN};
+    POINT now{};
+    bool have_now{}, clicked{};
+    {
+        OverlayInputAccess real;
+        have_now = GetCursorPos(&now) != 0;
+        clicked = ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON) | GetAsyncKeyState(VK_MBUTTON)) & 0x8000) != 0;
+    }
+    const bool mouse_moved = have_now && last.x != LONG_MIN && (std::abs(now.x - last.x) > 2 || std::abs(now.y - last.y) > 2);
+    if (have_now) last = now;
+    auto& pad_in_charge = dingosdk::overlay::menu_pad_in_charge();
+    if (mouse_moved || clicked || !dingosdk::overlay::menu_fullscreen_shown().load()) pad_in_charge.store(false);
+    const bool hidden = active && pad_in_charge.load();
+    io.MouseDrawCursor = active && !hidden;
     if (!active && !watching) {
         io.ClearInputKeys(); io.ClearInputMouse();
         s.raw_mouse_buttons.store(0);
@@ -153,7 +260,8 @@ void update_menu_pointer() {
     POINT point{};
     // The Win32 backend only polls when it thinks WM_MOUSEMOVE tracking ended.
     // Skate can stop legacy messages during gameplay without WM_MOUSELEAVE.
-    if (GetCursorPos(&point) && ScreenToClient(s.window.load(), &point))
+    if (hidden) io.AddMousePosEvent(-FLT_MAX, -FLT_MAX); // (pointing at nothing: no tile lights up under it)
+    else if (GetCursorPos(&point) && ScreenToClient(s.window.load(), &point))
         io.AddMousePosEvent(static_cast<float>(point.x), static_cast<float>(point.y));
     const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
     const std::array keys{swapped ? VK_RBUTTON : VK_LBUTTON, swapped ? VK_LBUTTON : VK_RBUTTON,

@@ -6,7 +6,6 @@
 #include <imgui.h>
 #include <optional>
 #include <map>
-struct ImGuiWindow;
 
 namespace dingosdk::overlay {
 struct AtmosphereEdit {
@@ -69,13 +68,16 @@ struct SkateMenu {
     ControllerComboCapture bind_capture;
     double bind_capture_until = 0;
     int last_menu_frame = -1;
-    ImGuiWindow* navigation_sidebar{};
-    ImGuiWindow* navigation_content{};
     // Live while the scale slider is held; the saved value is authoritative otherwise.
     float scale = default_menu_scale;
     bool scale_editing{};
-    // Selected tab on each page; see the Page list in skate_menu.cpp.
-    int map_tab = 0, world_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
+    // Selected tab on each page; see the Page list in skate_menu_internal.h.
+    int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
+    int addon = 0; // the ADDONS page's addon (menu::Addon)
+    // Window or full screen, as just chosen, until the saved setting comes back through the model.
+    std::optional<bool> fullscreen_pending;
+    double fullscreen_until = 0;
+    bool fullscreen_drawn = false; // the last frame was drawn full screen
     bool loose_files_settings_loaded{}, loose_files_saved{true};
     bool custom_scripts_scanned{};
     std::vector<custom_scripts::Script> custom_script_rows;
@@ -86,6 +88,7 @@ struct SkateMenu {
     int world_layer_category = 0;
     std::array<char, 128> world_layer_search{};
     int progression_tab = 0;
+    int drone_tab = 0; // the DRONE page (drone_page.cpp)
     int bus_stop_map = 0;
     int challenge_type = 0;
     std::array<char, 128> challenge_search{};
@@ -107,7 +110,17 @@ struct SkateMenu {
     ImFont* title = nullptr;    // brushed page titles
     ImFont* heading = nullptr;  // tile and section headers
     ImFont* mono = nullptr;
+    // The same faces drawn larger (large_font_ratio times), swapped in while the menu is full
+    // screen, where everything is scaled up: text stays sharp instead of stretched.
+    ImFont* body_large = nullptr;
+    ImFont* bold_large = nullptr;
+    ImFont* heading_large = nullptr;
+    ImFont* title_large = nullptr;
+    // Full screen: the page's section rail (its first row of tabs, drawn down the left), indenting
+    // what follows it until the page is done.
+    float rail_indent = 0;
 };
+inline constexpr float large_font_ratio = 30.0f / 17.0f;
 void load_skate_fonts(SkateMenu& menu);
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible);

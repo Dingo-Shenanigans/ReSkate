@@ -1,6 +1,10 @@
 // Launcher mod manager: install from .zip and folders, the Mods list and mods.json.
 #include "Launcher/mod_manager.h"
+#include "Launcher/official_mods.h"
 
+#include "Engine/Vfs/builtin_pack_format.h"
+#include "Engine/Vfs/builtin_packs.h"
+#include <zstd.h>
 #include "Engine/Vfs/mod_list.h"
 
 #include <Windows.h>
@@ -117,8 +121,41 @@ int main() {
     }
     check(conflict, "Installing over an installed mod asks first");
     make_zip(sources / L"v2.zip", {{"Cool Park/layout.toc", "toc v2"}});
+    // A file of the installed copy held open: the replacement is refused and the copy stays whole.
+    {
+        const auto held = CreateFileW((mods / L"Cool Park" / L"layout.toc").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        bool refused = false;
+        try { install(mods, sources / L"v2.zip", true); } catch (const std::exception&) { refused = true; }
+        CloseHandle(held);
+        check(refused && read(mods / L"Cool Park" / L"layout.toc") == "toc" && !fs::exists(mods / L".reskate-install"),
+              "A copy in use is not replaced, and stays as it was");
+    }
     check(install(mods, sources / L"v2.zip", true) == "Cool Park" && read(mods / L"Cool Park" / L"layout.toc") == "toc v2",
           "Replacing installs the new copy");
+    check(!fs::exists(mods / L".reskate-install"), "The replaced copy is deleted, not left beside the mods");
+    {
+        std::atomic<bool> cancel{};
+        unsigned callbacks{};
+        make_zip(sources / L"cancelled.zip", {{"Cool Park/layout.toc", "must not replace"}});
+        const auto issue = error_of([&] {
+            launcher_mods::install(mods, sources / L"cancelled.zip", true,
+                [&](float) { if (++callbacks == 2) cancel.store(true); }, cancel);
+        });
+        check(issue == "Install cancelled." && callbacks == 2,
+              "Cancellation at the final safe installation boundary was ignored");
+        check(read(mods / L"Cool Park" / L"layout.toc") == "toc v2" &&
+                  !fs::exists(mods / L".reskate-install"),
+              "Cancelled replacement damaged the existing mod or left staging files");
+        write(sources / L"cancelled folder" / L"Cool Park" / L"layout.toc", "must not replace");
+        cancel.store(false);
+        callbacks = 0;
+        check(error_of([&] {
+            launcher_mods::install(mods, sources / L"cancelled folder", true,
+                [&](float) { if (++callbacks == 2) cancel.store(true); }, cancel);
+        }) == "Install cancelled." && read(mods / L"Cool Park" / L"layout.toc") == "toc v2",
+              "Cancelled folder replacement did not preserve the installed mod");
+    }
 
     // Hostile or unrelated archives.
     make_zip(sources / L"evil.zip", {{"../evil.txt", "x"}, {"layout.toc", "toc"}});
@@ -135,6 +172,53 @@ int main() {
     write(sources / L"Loose" / L"My Folder Mod" / L"layout.toc", "toc");
     check(install(mods, sources / L"Loose") == "My Folder Mod", "Folders install like zips");
     check(fs::exists(sources / L"Loose" / L"My Folder Mod" / L"layout.toc"), "Installing a folder copies it");
+
+    // Links in a mod folder (issue #265): one inside it refuses the install and nothing outside is
+    // written; links on the way to the folder or to the Mods folder are fine. Junctions need no
+    // rights to make; a file symbolic link needs Developer Mode, so that case is skipped without it.
+    {
+        const auto place = root / L"links";
+        const auto junction = [](const fs::path& link, const fs::path& target) {
+            fs::create_directories(target);
+            return _wsystem((L"mklink /J \"" + link.wstring() + L"\" \"" + target.wstring() + L"\" >nul").c_str()) == 0;
+        };
+        const auto real_game = place / L"real game";
+        fs::create_directories(real_game);
+        const bool made = junction(place / L"linked game", real_game);
+        const auto linked_mods = launcher_mods::mods_root(place / L"linked game");
+        write(place / L"outside" / L"sentinel.txt", "untouched");
+
+        write(place / L"Junction Mod" / L"layout.toc", "toc");
+        const bool inner = junction(place / L"Junction Mod" / L"stuff", place / L"outside");
+        check(made && inner, "links: junctions could be made for the checks");
+        const auto refused = error_of([&] { install(linked_mods, place / L"Junction Mod"); });
+        check(refused.find("holds a link (stuff)") != std::string::npos && !fs::exists(linked_mods / L"Junction Mod") &&
+                  read(place / L"outside" / L"sentinel.txt") == "untouched",
+              ("A junction inside a mod folder refuses the install: " + refused).c_str());
+        check(!fs::exists(linked_mods / L".reskate-install"), "A refused folder leaves no staging behind");
+
+        write(place / L"Plain Mod" / L"layout.toc", "toc");
+        check(install(linked_mods, place / L"Plain Mod") == "Plain Mod" && read(real_game / L"Mods" / L"Plain Mod" / L"layout.toc") == "toc",
+              "A Mods folder reached through a junction still installs");
+        junction(place / L"picked", place / L"Picked Mod");
+        write(place / L"Picked Mod" / L"layout.toc", "toc");
+        check(install(linked_mods, place / L"picked") == "picked", "A mod folder picked through a junction still installs");
+
+        write(place / L"File Link Mod" / L"layout.toc", "toc");
+        const auto link = place / L"File Link Mod" / L"linked.txt";
+        if (CreateSymbolicLinkW(link.c_str(), (place / L"outside" / L"sentinel.txt").c_str(),
+                                SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+            const auto file_refused = error_of([&] { install(linked_mods, place / L"File Link Mod"); });
+            check(file_refused.find("holds a link (linked.txt)") != std::string::npos &&
+                      read(place / L"outside" / L"sentinel.txt") == "untouched" && !fs::exists(linked_mods / L"File Link Mod"),
+                  ("A file link inside a mod folder refuses the install: " + file_refused).c_str());
+        } else {
+            std::cout << "SKIP: file symbolic link (Windows error " << GetLastError() << "; needs Developer Mode)\n";
+        }
+        // Junctions first, so nothing below follows one.
+        for (const auto* name : {L"linked game", L"picked", L"Junction Mod\\stuff"})
+            RemoveDirectoryW((place / name).c_str());
+    }
 
     // The list: unlisted folders load after listed ones, by name.
     auto list = mods::scan_mods(game);
@@ -320,6 +404,176 @@ int main() {
                   !fs::exists(store / L"Team-Empty"),
               "Thunderstore installs refuse a package with nothing to load");
         check(install(store, sources / L"empty.zip") == "empty", "A plain install still takes a description-only mod");
+    }
+
+    // A built-in pack in ReSkate's own format unpacks to exactly its files (a name with spaces
+    // included), and one with a path that leaves its folder unpacks nothing.
+    {
+        const auto pack = [](const std::vector<std::pair<std::string, std::string>>& files) {
+            std::string plain(mods::builtin_pack::magic.begin(), mods::builtin_pack::magic.end());
+            const auto put = [&](auto value) { plain.append(reinterpret_cast<const char*>(&value), sizeof(value)); };
+            put(static_cast<std::uint32_t>(files.size()));
+            for (const auto& [name, bytes] : files) {
+                put(static_cast<std::uint16_t>(name.size()));
+                plain += name;
+                put(static_cast<std::uint64_t>(bytes.size()));
+            }
+            for (const auto& file : files) plain += file.second;
+            std::vector<unsigned char> packed(ZSTD_compressBound(plain.size()));
+            packed.resize(ZSTD_compress(packed.data(), packed.size(), plain.data(), plain.size(), 19));
+            return packed;
+        };
+        const auto target = root / L"builtin" / L"good";
+        std::string issue;
+        const auto good = pack({{"layout.toc", "toc"}, {"sounds/body/Body Impact 1.wav", "RIFF"}, {"decks/wide/layout.toc", "deck"}});
+        check(mods::unpack_builtin_pack(good, target, issue) && issue.empty() && read(target / L"layout.toc") == "toc" &&
+                  read(target / L"sounds" / L"body" / L"Body Impact 1.wav") == "RIFF" && read(target / L"decks" / L"wide" / L"layout.toc") == "deck",
+              "A built-in pack unpacks to its files");
+        const auto bad_target = root / L"builtin" / L"bad";
+        check(!mods::unpack_builtin_pack(pack({{"../escape.txt", "x"}}), bad_target, issue) && !issue.empty() &&
+                  !fs::exists(root / L"builtin" / L"escape.txt"),
+              "A built-in pack may not write outside its folder");
+        auto cut = good;
+        cut.resize(cut.size() / 2);
+        check(!mods::unpack_builtin_pack(cut, root / L"builtin" / L"cut", issue), "A cut-short built-in pack is refused");
+        // The packs this build made (RESKATE_BUILTIN_PACKS: their folder), each unpacked whole.
+        std::wstring built(32768, L'\0');
+        built.resize(GetEnvironmentVariableW(L"RESKATE_BUILTIN_PACKS", built.data(), static_cast<DWORD>(built.size())));
+        if (!built.empty()) {
+            for (const auto& file : fs::directory_iterator(fs::path(built))) {
+                if (file.path().extension() != L".rskpack") continue;
+                std::ifstream in(file.path(), std::ios::binary);
+                const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+                const auto out = root / L"builtin" / file.path().stem();
+                std::size_t count{};
+                std::uintmax_t size{};
+                const bool ok = mods::unpack_builtin_pack(bytes, out, issue);
+                for (const auto& entry : fs::recursive_directory_iterator(out))
+                    if (entry.is_regular_file()) { ++count; size += entry.file_size(); }
+                std::cout << "  " << file.path().filename().string() << ": " << (ok ? "unpacked " : "FAILED ") << count << " files, "
+                          << size << " bytes" << (ok ? "" : " (" + issue + ")") << '\n';
+                check(ok, "A built-in pack this build made unpacks");
+            }
+        }
+    }
+
+    // Official mods (Launcher/official_mods.h): the backend's list, read strictly.
+    {
+        const auto parsed = official_mods::parse_list(R"({"community":"reskate","mods":[
+            {"full_name":"Fourth_Studio-Board_Break_Pack","owner":"Fourth_Studio","name":"Board_Break_Pack","title":"Board Break Pack",
+             "description":"Decks","icon":"https://gcdn.thunderstore.io/live/icon.png","version":"2.3.0",
+             "download_url":"https://thunderstore.io/package/download/Fourth_Studio/Board_Break_Pack/2.3.0/","file_size":1},
+            {"full_name":"Fourth_Studio-Road_Rash","owner":"Fourth_Studio","name":"Road_Rash"},
+            {"full_name":"Evil-Mod","version":"1.0.0","download_url":"https://example.com/evil.zip"},
+            {"full_name":"../escape"}, {"full_name":"Fourth_Studio-Road_Rash"}, 7]})");
+        check(parsed.size() == 3 && parsed[0].full_name == "Fourth_Studio-Board_Break_Pack" && parsed[0].version == "2.3.0" &&
+                  parsed[0].title == "Board Break Pack" && parsed[0].icon.starts_with("https://gcdn.thunderstore.io/") &&
+                  parsed[1].full_name == "Fourth_Studio-Road_Rash" && parsed[1].version.empty() && parsed[1].title == "Road Rash" &&
+                  parsed[2].full_name == "Evil-Mod" && parsed[2].version.empty() && parsed[2].download_url.empty(),
+              "The official list keeps what it should: no odd names, no duplicates, no downloads from elsewhere");
+        check(official_mods::parse_list("<html>go away</html>").empty() && official_mods::parse_list(R"({"lobbies":3})").empty(),
+              "Anything else is no list");
+        const auto fallback = official_mods::fallback_list();
+        check(fallback.size() == 2 && fallback[0].full_name == "Fourth_Studio-Board_Break_Pack" && fallback[1].full_name == "Fourth_Studio-Road_Rash",
+              "ReSkate's own list is Board Break and Road Rash");
+    }
+    // A copy the player installed from Thunderstore counts as the official mod where it is, rather
+    // than downloaded again; the deprecated first Board Break is retired and mods.json forgets it;
+    // every other mod stays as it was.
+    {
+        const auto store = root / L"official" / L"Mods";
+        fs::create_directories(store / L"Fourth_Studio-Road_Rash");
+        fs::create_directories(store / L"Fourth_Studio-Board_Break");
+        fs::create_directories(store / L"Someone-Other_Mod");
+        std::ofstream(store / L"Fourth_Studio-Road_Rash" / L"layout.toc") << "toc";
+        std::ofstream(store / L"Fourth_Studio-Road_Rash" / L"manifest.json") << R"({"name":"Road_Rash","version_number":"1.0.0"})";
+        std::ofstream(store / L"Someone-Other_Mod" / L"layout.toc") << "toc";
+        std::ofstream(store / L"mods.json") << R"({"schema":1,"mods":[{"name":"Fourth_Studio-Road_Rash","enabled":true},)"
+                                               R"({"name":"Fourth_Studio-Board_Break","enabled":true},{"name":"Someone-Other_Mod","enabled":false}]})";
+        const auto official = official_mods::fallback_list();
+        const auto done = official_mods::adopt_and_retire(store, official);
+        const auto adopted = store / L"Fourth_Studio-Road_Rash";
+        check(done.size() == 2 && read(adopted / L"layout.toc") == "toc" && read(adopted / L".official-version").starts_with("1.0.0") &&
+                  mods::official_mod(adopted) && !fs::exists(store / L"Fourth_Studio-Board_Break") &&
+                  fs::exists(store / L"Someone-Other_Mod" / L"layout.toc"),
+              "An installed official mod is stamped where it is, a retired one goes, the others stay");
+        const auto remaining = mods::scan_mods(store.parent_path());
+        check(remaining.issue.empty() && remaining.missing.empty() && remaining.entries.size() == 2 &&
+                  remaining.entries[0].mod.name == "Fourth_Studio-Road_Rash" && remaining.entries[0].enabled &&
+                  remaining.entries[1].mod.name == "Someone-Other_Mod" && !remaining.entries[1].enabled,
+              "mods.json forgets the retired one and keeps the rest as it was, the official one among them");
+        check(!mods::kept_by_reskate(store, "Fourth_Studio-Road_Rash") && mods::kept_by_reskate(store, "fourth_studio-board_break") &&
+                  !mods::kept_by_reskate(store, "Someone-Other_Mod") && !mods::official_mod(store / L"Someone-Other_Mod"),
+              "Only a retired mod is left out; the official one is a mod like any other");
+        check(official_mods::adopt_and_retire(store, official).empty(), "Nothing is done twice");
+        // Switched off: still in place, in mods.json as off, and its feature does not start.
+        check(!mods::official_off(store, "Fourth_Studio-Road_Rash") && mods::official_in_use(store, "Fourth_Studio-Road_Rash") &&
+                  mods::set_official_off(store, "Fourth_Studio-Road_Rash", true) && mods::official_off(store, "fourth_studio-road_rash") &&
+                  !mods::official_in_use(store, "Fourth_Studio-Road_Rash") && fs::exists(adopted / L"layout.toc"),
+              "An official mod switched off stays in place and its feature is off");
+        const auto switched = mods::scan_mods(store.parent_path());
+        check(switched.entries.size() == 2 && switched.entries[0].mod.name == "Fourth_Studio-Road_Rash" && !switched.entries[0].enabled &&
+                  !switched.entries[1].enabled,
+              "It is switched off in mods.json, in its place, and nothing else changed");
+        check(mods::set_official_off(store, "Fourth_Studio-Road_Rash", false) && !mods::official_off(store, "Fourth_Studio-Road_Rash") &&
+                  mods::official_in_use(store, "Fourth_Studio-Road_Rash"),
+              "Switched on again, its feature is on again");
+        check(!mods::set_official_off(store, "a/b", true) && !mods::set_official_off(store, "", true), "Only a folder name is written");
+    }
+    // Official mods kept where they were before they were mods like any other move into the Mods
+    // folder, at the bottom of the load order, switched off when they were turned off there.
+    {
+        const auto store = root / L"moved" / L"Mods";
+        const auto kept = store / L".reskate-official";
+        fs::create_directories(kept / L"Fourth_Studio-Board_Break_Pack");
+        fs::create_directories(kept / L"Fourth_Studio-Road_Rash");
+        fs::create_directories(store / L"Someone-Other_Mod");
+        std::ofstream(kept / L"Fourth_Studio-Board_Break_Pack" / L"layout.toc") << "toc";
+        std::ofstream(kept / L"Fourth_Studio-Board_Break_Pack" / L".official-version") << "2.0.0\n";
+        std::ofstream(kept / L"Fourth_Studio-Road_Rash" / L"layout.toc") << "toc";
+        std::ofstream(kept / L"Fourth_Studio-Road_Rash" / L".official-version") << "1.0.0\n";
+        std::ofstream(kept / L"official-off.txt") << "fourth_studio-road_rash\n";
+        std::ofstream(kept / L"official-mods.json") << R"({"mods":[]})";
+        std::ofstream(store / L"Someone-Other_Mod" / L"layout.toc") << "toc";
+        std::ofstream(store / L"mods.json") << R"({"schema":1,"mods":[{"name":"Someone-Other_Mod","enabled":true}]})";
+        const auto done = mods::move_official_mods(store);
+        const auto moved = mods::scan_mods(store.parent_path());
+        check(done.size() == 2 && mods::official_mod(store / L"Fourth_Studio-Board_Break_Pack") &&
+                  mods::official_mod(store / L"Fourth_Studio-Road_Rash") && !fs::exists(kept / L"Fourth_Studio-Road_Rash") &&
+                  !fs::exists(kept / L"official-off.txt") && fs::exists(kept / L"official-mods.json"),
+              "The official mods move into the Mods folder; the list read last stays where it was");
+        check(moved.issue.empty() && moved.entries.size() == 3 && moved.entries[0].mod.name == "Someone-Other_Mod" &&
+                  moved.entries[1].enabled != moved.entries[2].enabled && mods::official_off(store, "Fourth_Studio-Road_Rash") &&
+                  !mods::official_off(store, "Fourth_Studio-Board_Break_Pack"),
+              "They go below the player's mods, the one turned off switched off");
+        check(mods::move_official_mods(store).empty(), "Nothing is moved twice");
+    }
+    // Live (RESKATE_OFFICIAL_LIVE=1): the whole of it, against ReSkate and Thunderstore, into a
+    // scratch Mods folder: the list, each mod's latest version downloaded and put in place.
+    if (GetEnvironmentVariableW(L"RESKATE_OFFICIAL_LIVE", nullptr, 0)) {
+        const auto store = root / L"live" / L"Mods";
+        fs::create_directories(store);
+        const auto in_place = [&] {
+            std::vector<fs::path> found;
+            for (const auto& entry : fs::directory_iterator(store))
+                if (entry.is_directory() && mods::official_mod(entry.path())) found.push_back(entry.path());
+            return found;
+        };
+        official_mods::start(store);
+        check(official_mods::wait(std::chrono::minutes(1)), "The list was read in time");
+        check(in_place().empty(), "Nothing is downloaded until asked");
+        for (const auto& mod : official_mods::snapshot().mods) official_mods::install(store, mod.full_name);
+        check(official_mods::wait(std::chrono::minutes(5)), "The official mods were installed in time");
+        const auto state = official_mods::snapshot();
+        std::cout << "  official mods from " << state.source << ":\n";
+        for (const auto& mod : state.mods)
+            std::cout << "    " << mod.full_name << " v" << mod.installed << " (latest v" << mod.version << "): " << mod.status << '\n';
+        for (const auto& folder : in_place()) {
+            std::size_t files{};
+            for (const auto& entry : fs::recursive_directory_iterator(folder)) files += entry.is_regular_file();
+            std::cout << "    in place: " << folder.filename().string() << ", " << files << " files\n";
+        }
+        check(!state.mods.empty() && in_place().size() == state.mods.size(), "Every official mod is in place");
     }
 
     std::error_code ignored;

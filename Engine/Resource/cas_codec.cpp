@@ -50,6 +50,10 @@ private:
 
 // Oodle is the game's own module, so it is resolved once and never unloaded.
 #ifdef _WIN32
+// What Oodle does when one of its checks fails on what it is given: its default stops the
+// process at a breakpoint (the launcher's mod scan, "EXCEPTION_BREAKPOINT" in oo2core,
+// 2026-10-15). Not stopping, the call fails and the block is reported as unreadable.
+int __cdecl oodle_assertion(const char*, int, const char*, const char*) { return 0; }
 HMODULE oodle(const std::filesystem::path& gameRoot) {
     static std::mutex mutex;
     static HMODULE handle{};
@@ -74,6 +78,13 @@ HMODULE oodle(const std::filesystem::path& gameRoot) {
                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!handle) throw std::runtime_error("Cannot load " + path_utf8(matches.back()) +
                                           " (Windows error " + std::to_string(GetLastError()) + ")");
+    // (Only for a copy loaded here: the game's own, found above, keeps the game's handler.)
+    using Assertion = int(__cdecl*)(const char*, int, const char*, const char*);
+#pragma warning(push)
+#pragma warning(disable: 4191)
+    if (const auto set = reinterpret_cast<Assertion (__cdecl*)(Assertion)>(GetProcAddress(handle, "OodleCore_Plugins_SetAssertion")))
+#pragma warning(pop)
+        set(&oodle_assertion);
     return handle;
 }
 
@@ -134,12 +145,24 @@ std::vector<std::byte> oodle_decode(std::span<const std::byte> input, std::size_
 #ifdef _WIN32
     using Function = std::int64_t(__cdecl*)(const void*, std::int64_t, void*, std::int64_t, int, int,
                                             int, void*, std::int64_t, void*, void*, void*, std::int64_t, int);
+    using BufferSize = std::int64_t(__cdecl*)(int, std::int64_t, int);
     const auto decode = oodle_function<Function>(gameRoot, "OodleLZ_Decompress");
-    std::vector<std::byte> output(size);
+    // A block can be corrupt, or not a block at all (read_manifest tries a payload as one when
+    // it does not read as a manifest), and its size is only what its header says. Oodle may
+    // then write past that size: the buffer it says such data needs (for any compressor) is
+    // given, and cut to the size afterwards. With exactly the size, it overwrote the heap
+    // (the launcher's mod scan crashing in malloc after an Oodle block, 2026-10-15).
+    constexpr int any_compressor = -1; // OodleLZ_Compressor_Invalid
+    constexpr std::int64_t block = 0x40000; // OODLELZ_BLOCK_LEN
+    const auto needed = oodle_function<BufferSize>(gameRoot, "OodleLZ_GetDecodeBufferSize")(
+        any_compressor, static_cast<std::int64_t>(size), 1);
+    const auto padded = std::max<std::int64_t>(needed, static_cast<std::int64_t>(size) + block);
+    std::vector<std::byte> output(static_cast<std::size_t>(padded));
     if (decode(input.data(), static_cast<std::int64_t>(input.size()), output.data(),
-               static_cast<std::int64_t>(output.size()), 1, 0, 0, nullptr, 0, nullptr, nullptr,
+               static_cast<std::int64_t>(size), 1, 0, 0, nullptr, 0, nullptr, nullptr,
                nullptr, 0, 3) != static_cast<std::int64_t>(size))
         throw std::runtime_error("Oodle CAS block failed to decode");
+    output.resize(size);
     return output;
 #else
     (void)input;

@@ -212,7 +212,12 @@ void apply_changes(sqlite3* db, SaveSchema schema, const Json* before, const Jso
 void configure_writer(sqlite3* db) {
     Statement mode(db, "PRAGMA journal_mode=WAL");
     check(mode.row() && mode.text(0) == "wal" && !mode.row(), "Cannot enable save database WAL");
-    execute(db, "PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=16384;");
+    // NORMAL, not FULL: in WAL mode a commit then no longer waits for the disk. A transaction is
+    // still kept when the game crashes (it is in the operating system's hands); only a power
+    // loss or a crash of Windows itself can take back the last commits, never corrupt the file.
+    // FULL made every commit wait for a flush, on the game's own threads: each play event the
+    // game saves, each option, under locks the game's hooks wait on (2026-10-15).
+    execute(db, "PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=16384;");
 }
 void check_size(const std::filesystem::path& path) { check(std::filesystem::file_size(path) <= max_bytes, "Save database exceeds size limit"); }
 void clear_staging(const std::filesystem::path& path) {

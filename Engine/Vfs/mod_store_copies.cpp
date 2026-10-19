@@ -671,10 +671,16 @@ StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, st
                 work();
             }
             for (std::size_t index = 0; index < asked.size(); ++index) {
+                StoreCopies::Added keys{asked[index]->name, {}};
+                for (const auto& item : reads[index].items) keys.keys.push_back(lower(item.key));
+                std::sort(keys.keys.begin(), keys.keys.end());
+                keys.keys.erase(std::unique(keys.keys.begin(), keys.keys.end()), keys.keys.end());
+                result.added.push_back(std::move(keys));
                 scan.say(said[index]);
                 result.mod_meshes += reads[index].meshes.size();
                 if (!reads[index].items.empty() || !reads[index].meshes.empty()) added.push_back(std::move(reads[index]));
             }
+            result.read = true;
         }
         if (added.empty()) return result;
         // The costumes' meshes are only read when a mod ships a mesh at all.

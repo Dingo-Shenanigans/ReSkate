@@ -164,6 +164,19 @@ void Renderer::render() {
     ++frame_index_;
 }
 
+void Renderer::resize(UINT width, UINT height) {
+    if (!swap_ || !width || !height) return;
+    queue_->Signal(fence_.Get(), ++fence_value_);
+    wait(fence_value_);
+    for (auto& target : targets_) target.resource.Reset();
+    if (FAILED(swap_->ResizeBuffers(frame_count, width, height, DXGI_FORMAT_UNKNOWN,
+            DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)))
+        logging::write(logging::Level::warning, logging::Channel::launcher, "Launcher renderer: the window's buffers could not be resized.");
+    for (UINT index = 0; index < frame_count; ++index)
+        if (SUCCEEDED(swap_->GetBuffer(index, IID_PPV_ARGS(&targets_[index].resource))))
+            device_->CreateRenderTargetView(targets_[index].resource.Get(), nullptr, targets_[index].handle);
+}
+
 ImTextureID Renderer::upload_texture(const std::vector<unsigned char>& pixels, UINT width, UINT height) {
     auto free_slot = std::find(textures_.begin(), textures_.end(), nullptr);
     if (free_slot == textures_.end() && textures_.size() >= max_textures) return {};

@@ -39,10 +39,61 @@ void **lookup(void **out, const char *name, void *table, std::uint8_t flag, void
 using ScriptFunction = int (*)(void *state);
 std::atomic<ScriptFunction> original_add_preset{};
 std::uintptr_t image{};
+// A preset whose parameters the game can apply: every value that is set has a type the game can
+// read, as its type check (Skate.exe+0x3dc07e0) reads it: the TypeInfo, its data, a word at +4. A
+// preset with one that is null or not an address at all crashed the game when the material was
+// next applied, e.g. scrolling shirts onto a mod's (2026-10-17: Yudi-Yuddispack's
+// philippleinshirt_ap, a type of 0x0c07010304040502). Catching that crash in this call is not
+// enough: the preset is already on the material, and the game reads it again on its next update.
+// (Not "a type in the game's image": many of the game's own presets have types built at run time,
+// and leaving those out turned every item white.) `bad` is the key of the first parameter that fails.
+bool preset_parameters_sound(void *preset, std::uint64_t &bad) {
+    const auto at = reinterpret_cast<std::uintptr_t>(preset);
+    std::uintptr_t parameters{};
+    if (!memory::read_bytes(at + native::preset_parameters, &parameters, sizeof(parameters))) return false;
+    if (!parameters) return true;
+    std::uint32_t count{};
+    if (!memory::read_bytes(parameters - 4, &count, sizeof(count))) return false;
+    count &= 0x7fffffff;
+    if (count > 4096) return false;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const auto entry = parameters + i * native::preset_parameter_size;
+        std::array<std::uintptr_t, 2> value{}; // the boxed value: TypeInfo*, data*
+        if (!memory::read_bytes(entry, value.data(), sizeof(value))) return false;
+        if (!value[1]) continue; // the game passes over an entry with no data
+        std::uintptr_t type_data{};
+        std::uint16_t flags{};
+        if (!value[0] || !memory::read_bytes(value[0], &type_data, sizeof(type_data)) || !type_data ||
+            !memory::read_bytes(type_data + 4, &flags, sizeof(flags))) {
+            memory::read_bytes(entry + native::preset_parameter_key, &bad, sizeof(bad));
+            return false;
+        }
+    }
+    return true;
+}
+std::string preset_name(void *preset) {
+    std::uintptr_t text{};
+    if (!memory::read_bytes(reinterpret_cast<std::uintptr_t>(preset) + 0x18, &text, sizeof(text)) || !text) return {};
+    char buffer[200]{};
+    return memory::peek_cstring(text, buffer, sizeof(buffer) - 1) > 0 ? std::string(buffer) : std::string{};
+}
 int add_preset(void *state) {
     const auto reference = reinterpret_cast<void *(*)(void *, int)>(image + native::script_preset_reference)(state, 3);
-    if (reference && reinterpret_cast<void *(*)(void *, int)>(image + native::referenced_preset)(reference, 0))
-        return original_add_preset.load()(state);
+    if (const auto preset = reference ? reinterpret_cast<void *(*)(void *, int)>(image + native::referenced_preset)(reference, 0) : nullptr) {
+        std::uint64_t bad{};
+        if (preset_parameters_sound(preset, bad)) return original_add_preset.load()(state);
+        // Left out, as a preset that is not there: the item shows without it.
+        static std::mutex refused_mutex;
+        static std::set<std::string> refused;
+        const auto name = preset_name(preset);
+        std::lock_guard lock(refused_mutex);
+        if (refused.size() < 64 && refused.insert(name).second)
+            logging::log(logging::Level::warning, logging::Channel::customization,
+                         "The shader preset {} is left out: its parameter 0x{:016x} has a type the game cannot read "
+                         "(a mod's preset that is broken or made for another build). The item is shown without it.",
+                         name.empty() ? "(unnamed)" : name, bad);
+        return 0;
+    }
     static std::atomic<unsigned> seen{};
     const auto count = seen.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 5 || count % 500 == 0)

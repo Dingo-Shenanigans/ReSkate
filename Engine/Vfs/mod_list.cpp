@@ -261,6 +261,8 @@ std::map<std::string, Exclusion, std::less<>> read_exclusions(const std::filesys
             Exclusion exclusion;
             exclusion.fingerprint = row.value("fingerprint", std::string{});
             exclusion.sdk = row.value("sdk", std::string{});
+            exclusion.conflictWith = row.value("conflict_with", std::string{});
+            exclusion.conflictFingerprint = row.value("conflict_fingerprint", std::string{});
             if (row.contains("problems") && row.at("problems").is_array())
                 for (const auto& problem : row.at("problems"))
                     if (problem.is_string() && exclusion.problems.size() < 16)
@@ -282,6 +284,10 @@ void write_exclusions(const std::filesystem::path& mods_root,
             auto row = Json::object();
             row["fingerprint"] = exclusion.fingerprint;
             row["sdk"] = exclusion.sdk;
+            if (!exclusion.conflictWith.empty()) {
+                row["conflict_with"] = exclusion.conflictWith;
+                row["conflict_fingerprint"] = exclusion.conflictFingerprint;
+            }
             auto problems = Json::array();
             for (std::size_t i = 0; i < exclusion.problems.size() && i < 16; ++i)
                 problems.push_back(exclusion.problems[i].substr(0, 600));
@@ -321,6 +327,28 @@ bool valid_mod_name(std::string_view name) {
         return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
             (ch >= '0' && ch <= '9') || value == '_' || value == '-' || value == '.' || value == ' ';
     });
+}
+
+Mod describe_mod(const std::filesystem::path& directory, std::string name, std::vector<std::string>& notes) {
+    std::error_code error;
+    Mod mod;
+    mod.name = std::move(name);
+    mod.title = mod.name;
+    mod.directory = directory;
+    mod.provides_layout = fs::is_regular_file(mod.directory / layout_name, error);
+    mod.provides_levels = fs::is_regular_file(mod.directory / levels_name, error);
+    for (fs::directory_iterator it(mod.directory / "parks", error), end; !error && it != end; it.increment(error)) {
+        auto file = ascii_path(it->path().filename());
+        if (!file.ends_with(".park.json") || mod.park_maps.size() >= 16) continue;
+        file.resize(file.size() - 10);
+        mod.park_maps.push_back(std::move(file));
+    }
+    std::sort(mod.park_maps.begin(), mod.park_maps.end());
+    read_build_info(mod, notes);
+    read_mod_info(mod, notes);
+    read_levels(mod);
+    read_studio_marker(mod);
+    return mod;
 }
 
 ModList scan_mods(const std::filesystem::path& data_root) noexcept {
@@ -364,24 +392,7 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
             }
             ModEntry entry;
             entry.enabled = enabled;
-            auto& mod = entry.mod;
-            mod.name = found->second;
-            mod.title = mod.name;
-            mod.directory = result.root / mod.name;
-            mod.provides_layout = fs::is_regular_file(mod.directory / layout_name, error);
-            mod.provides_levels = fs::is_regular_file(mod.directory / levels_name, error);
-            for (fs::directory_iterator it(mod.directory / "parks", error), end; !error && it != end; it.increment(error)) {
-                auto file = ascii_path(it->path().filename());
-                if (!file.ends_with(".park.json") || mod.park_maps.size() >= 16) continue;
-                file.resize(file.size() - 10);
-                mod.park_maps.push_back(std::move(file));
-            }
-            error.clear();
-            std::sort(mod.park_maps.begin(), mod.park_maps.end());
-            read_build_info(mod, result.notes);
-            read_mod_info(mod, result.notes);
-            read_levels(mod);
-            read_studio_marker(mod);
+            entry.mod = describe_mod(result.root / found->second, found->second, result.notes);
             result.entries.push_back(std::move(entry));
         }
         // Only mods named in the exclusions file are fingerprinted.
@@ -395,6 +406,40 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
         if (result.issue.empty()) result.issue = "The Mods folder could not be read";
     }
     return result;
+}
+
+bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept {
+    try {
+        std::error_code error;
+        const auto path = mods_root / order_file;
+        if (!fs::is_regular_file(path, error)) return false;
+        for (const auto& [listed, enabled] : read_order(path))
+            if (lower(listed) == lower(name)) return !enabled;
+    } catch (...) {}
+    return false;
+}
+
+bool set_mod_enabled(const std::filesystem::path& mods_root, std::string_view name, bool enabled) noexcept {
+    try {
+        if (!valid_mod_name(name)) return false;
+        std::error_code error;
+        const auto path = mods_root / order_file;
+        auto order = fs::is_regular_file(path, error) ? read_order(path) : std::vector<std::pair<std::string, bool>>{};
+        const auto found = std::ranges::find_if(order, [&](const auto& row) { return lower(row.first) == lower(name); });
+        if (found != order.end()) found->second = enabled;
+        else order.emplace_back(std::string(name), enabled);
+        std::vector<ModEntry> entries;
+        for (const auto& [listed, on] : order) {
+            ModEntry entry;
+            entry.mod.name = listed;
+            entry.enabled = on;
+            entries.push_back(std::move(entry));
+        }
+        save_mod_order(mods_root, entries);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 void save_mod_order(const std::filesystem::path& mods_root, const std::vector<ModEntry>& entries) {

@@ -306,6 +306,9 @@ void music_ui_initialize_hook(std::uint64_t all, std::uint64_t hidden, std::uint
 void update_music_catalog() {
     auto& s = local_runtime(); auto& ui = music_ui_runtime();
     if (!s.active.load(std::memory_order_acquire) || ui.updating || cosmetic_runtime().update_thread != GetCurrentThreadId()) return;
+    // (The mods' playlists are read in the background from the first tick on: ready by the time
+    // the music shelf or page is first opened, as a rule.)
+    try { prepare_mod_music_playlists(); } catch (...) {}
     PreserveError preserve; std::lock_guard lock(s.native_mutex);
     if (!ui.pending) return;
     if (ui.pending->thread != GetCurrentThreadId() || !music_ui_current(*ui.pending)) { ui.pending.reset(); return; }

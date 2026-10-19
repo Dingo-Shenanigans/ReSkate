@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine/Vfs/mod_music.h"
 #include "Extension/Profile/runtime_internal.h"
+#include <memory>
 
 namespace dingosdk::profile_runtime {
 struct MusicSong {
@@ -29,8 +30,12 @@ MusicAssetFunctions& music_asset_functions();
 
 bool music_asset_type(std::uintptr_t asset, std::uintptr_t vtable_rva);
 
-// Playlists the enabled mods declare in reskate-music.json (see Engine/Vfs/mod_music.h).
-std::vector<mods::MusicPlaylist> mod_music_playlists();
+// Playlists the enabled mods declare in reskate-music.json (see Engine/Vfs/mod_music.h), with
+// their covers' URLs, as last read. The files are read on a thread of their own, and again when
+// one has changed: null until the first read is done. Never waits on the disk.
+std::shared_ptr<const std::vector<mods::MusicPlaylist>> mod_music_playlists();
+// Starts the first read of them, if it has not been started.
+void prepare_mod_music_playlists();
 
 bool read_music_catalog(MusicCatalog& result);
 }

@@ -92,6 +92,7 @@ void set_map_download_icon(const std::string& png) noexcept {
 } // namespace dingosdk::overlay
 
 namespace dingosdk::overlay::detail {
+bool decode_picture(const std::string& png, CardPixels& out, UINT side) { return decode(png, out, side); }
 bool take_card_pixels(CardPixels& out) {
     std::lock_guard lock(image_mutex);
     if (!waiting) return false;

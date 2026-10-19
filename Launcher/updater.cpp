@@ -325,7 +325,55 @@ Config parse_config(std::string_view text) {
     return config;
 }
 
-std::optional<Config> fetch_config() {
+namespace {
+// The release the launcher updates from: GitHub's latest full release, or with `prereleases`
+// the newest one that is not a draft and carries a launcher.json, pre-release or not (GitHub
+// lists them newest first). Either way the one list is read, which also says whether a
+// pre-release newer than the latest release is there to test. Only these lookups use GitHub's
+// rate-limited API.
+struct Chosen {
+    Json release;
+    bool prerelease_available{};
+};
+Chosen release_to_use(bool prereleases) {
+    const auto repo = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo;
+    std::string text;
+    http_get(repo + L"/releases?per_page=10", 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+    auto releases = Json::parse(text);
+    if (!releases.is_array()) fail("GitHub's list of releases is not a list");
+    const auto usable = [](const Json& release) {
+        if (!release.is_object() || release.value("draft", false) || !release.contains("assets")) return false;
+        for (const auto& asset : release.at("assets"))
+            if (asset.value("name", "") == "launcher.json") return true;
+        return false;
+    };
+    const Json* newest{};
+    const Json* full{};
+    bool prerelease_first{};
+    for (const auto& release : releases) {
+        if (!usable(release)) continue;
+        if (!newest) {
+            newest = &release;
+            prerelease_first = release.value("prerelease", false);
+        }
+        if (!release.value("prerelease", false)) {
+            full = &release;
+            break;
+        }
+    }
+    if (prereleases) {
+        if (!newest) fail("None of the newest releases has a launcher.json asset");
+        return {*newest, prerelease_first};
+    }
+    if (full) return {*full, prerelease_first};
+    // No full release among the newest ten: GitHub's latest, as before.
+    text.clear();
+    http_get(repo + L"/releases/latest", 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+    return {Json::parse(text), prerelease_first};
+}
+} // namespace
+
+std::optional<Config> fetch_config(bool prereleases) {
     std::array<wchar_t, 32768> local{};
     const auto local_length = GetEnvironmentVariableW(L"RESKATE_LAUNCHER_CONFIG_FILE", local.data(), static_cast<DWORD>(local.size()));
     if (local_length && local_length < local.size()) {
@@ -346,28 +394,31 @@ std::optional<Config> fetch_config() {
         // Public releases: the newest release carries launcher.json and the files it pins. Only
         // this lookup uses GitHub's rate-limited API; the files come from the release's download links.
         trace::Scope timing("launcher.update_check", "http.client");
-        const auto latest = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo + L"/releases/latest";
-        logging::write(logging::Level::info, logging::Channel::launcher, L"Checking GitHub releases: " + std::wstring(launcher_release_repo));
-        std::string text;
-        http_get(latest, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
-        const auto release = Json::parse(text);
+        logging::write(logging::Level::info, logging::Channel::launcher, L"Checking GitHub releases: " + std::wstring(launcher_release_repo) +
+            (prereleases ? L" (pre-releases included)" : L""));
+        const auto chosen = release_to_use(prereleases);
+        const auto& release = chosen.release;
         std::map<std::string, std::wstring, std::less<>> assets;
         if (release.contains("assets"))
             for (const auto& asset : release.at("assets"))
                 assets[asset.value("name", "")] = widen(asset.value("browser_download_url", ""));
         const auto manifest = assets.find("launcher.json");
-        if (manifest == assets.end()) fail("The latest release has no launcher.json asset");
+        if (manifest == assets.end()) fail("The release has no launcher.json asset");
         std::string json;
         http_get(manifest->second, max_config_bytes, 8000, [&](const char* data, DWORD count) { json.append(data, count); });
         auto config = parse_config(json);
         for (auto* file : {&config.launcher, &config.runtime, &config.depot_downloader, &config.server}) {
             if (!file->url.starts_with(L"asset:")) continue;
             const auto found = assets.find(utf8(std::wstring_view(file->url).substr(6)));
-            if (found == assets.end()) fail("The latest release is missing asset " + utf8(file->url.substr(6)));
+            if (found == assets.end()) fail("The release is missing asset " + utf8(file->url.substr(6)));
             file->url = found->second;
         }
+        config.tag = release.value("tag_name", "");
+        config.prerelease = release.value("prerelease", false);
+        config.prerelease_available = chosen.prerelease_available;
         logging::log(logging::Level::info, logging::Channel::launcher,
-            "Release {}: launcher {}, runtime {}, game depot {} manifest {}.", release.value("tag_name", "?"),
+            "{} {}: launcher {}, runtime {}, game depot {} manifest {}.", config.prerelease ? "Pre-release" : "Release",
+            config.tag.empty() ? "?" : config.tag,
             config.launcher.version.empty() ? "-" : config.launcher.version,
             config.runtime.version.empty() ? "-" : config.runtime.version,
             config.game.depot_id, config.game.manifest_id);
@@ -480,18 +531,16 @@ std::vector<ReleaseNote> parse_release_feed(std::string_view feed) {
     return notes;
 }
 
-ReleaseNote fetch_release_note() {
+ReleaseNote fetch_release_note(bool prereleases) {
     // The description as it was written, markdown, from GitHub's API.
     try {
-        const auto url = std::wstring(L"https://api.github.com/repos/") + launcher_release_repo + L"/releases/latest";
-        std::string text;
-        http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
-        const auto release = Json::parse(text);
+        const auto release = release_to_use(prereleases).release;
         // (A release made without a title or a description has null there.)
         const auto field = [&](std::string_view key) {
             return release.contains(key) && release.at(key).is_string() ? release.at(key).string() : std::string();
         };
-        ReleaseNote note{field("tag_name"), field("name"), field("published_at").substr(0, 10), field("body")};
+        ReleaseNote note{field("tag_name"), field("name"), field("published_at").substr(0, 10), field("body"),
+                         release.value("prerelease", false)};
         if (!note.tag.empty() && note.notes.find_first_not_of(" \t\r\n") != std::string::npos) return note;
     } catch (const std::exception& exception) {
         logging::log(logging::Level::info, logging::Channel::launcher,

@@ -171,8 +171,9 @@ bool ensure_seasonal_state(std::uintptr_t entity, bool wanted, std::uint64_t now
     }
     if (reached(wanted)) return true;
     // An engine-initiated auto-load is still in flight. Wait for it rather than
-    // claiming success from a non-null request handle or repeatedly reloading.
-    if (wanted && state.requested) { status = "Loading..."; return false; }
+    // claiming success from a non-null request handle, repeatedly reloading, or
+    // unloading it midway (the engine ignores that unload and finishes the load).
+    if (state.requested && !state.loaded) { status = "Loading..."; return false; }
     node.pending = wanted; node.requested_at = now;
     const auto slot = node.slot;
     SeasonalEvent event{local_runtime().base + addr::world_layers::subworld_event_vtable, wanted ? 0xd27bc17eu : 0x21f3f677u};
@@ -309,6 +310,10 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
     std::vector<bool> done(targets.size()), inactive(targets.size());
     std::vector<std::string> status(targets.size(), "Waiting for layer");
     bool issued{};
+    const auto fully_off = [&](std::size_t at) {
+        SeasonalState live;
+        return !targets[at] || (seasonal_state(r.nodes.at(targets[at]), live) && !live.requested && !live.loaded);
+    };
     for (unsigned slot = 0; slot < targets.size(); ++slot) {
         if (world_layer_nodes()[slot].map != map) continue;
         const auto parent = world_parent(static_cast<int>(slot));
@@ -323,7 +328,12 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
         if (!targets[slot]) continue;
         SeasonalState state;
         if (!seasonal_state(r.nodes.at(targets[slot]), state)) continue;
-        if (!desired[slot]) {
+        // Two times of day loaded at once can overflow the engine's light tables: the old one goes first.
+        const auto old = desired[slot] == true && !state.requested ? world_layer_old_time_of_day(slot, desired, fully_off) : targets.size();
+        if (old < targets.size()) {
+            status[slot] = "Waiting for the old time of day";
+            (void)ensure_seasonal_state(targets[old], false, now, issued, status[old]);
+        } else if (!desired[slot]) {
             done[slot] = state.requested == state.loaded;
             inactive[slot] = done[slot] && !state.loaded;
             status[slot] = done[slot] ? "Default" : "Loading...";

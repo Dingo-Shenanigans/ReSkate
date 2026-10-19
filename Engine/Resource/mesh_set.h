@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace dingosdk::frostbite {
@@ -28,6 +29,15 @@ struct MeshLod {
 [[nodiscard]] std::vector<std::array<float, 3>> read_mesh_positions(std::span<const std::byte> resource, std::size_t lod,
                                                                     std::span<const std::byte> geometry);
 
+// A level of detail's geometry chunk and buffer sizes, of either layout check_mesh_lod reads (the
+// skinned one, and world meshes' static one); `lods` gets how many levels there are.
+[[nodiscard]] MeshLod any_mesh_lod_geometry(std::span<const std::byte> resource, std::size_t lod, std::size_t* lods = nullptr);
+// What is wrong with a level of detail's geometry as the GPU would read it, a skinned or a static
+// MeshSet: a section whose vertices or indices run past their buffer, or a triangle that
+// names a vertex outside its section. Empty when it is sound. `index_format` gets the level's
+// index format (33: 16-bit; anything else is read as 32-bit). Throws for another layout.
+[[nodiscard]] std::vector<std::string> check_mesh_lod(std::span<const std::byte> resource, std::size_t lod,
+                                                      std::span<const std::byte> geometry, std::uint32_t* index_format = nullptr);
 struct SkinnedVertex {
     std::array<float, 3> position{};       // model space
     std::array<std::uint16_t, 8> bones{};  // skeleton bones

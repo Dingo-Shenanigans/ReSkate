@@ -47,6 +47,13 @@ inline constexpr std::array<unsigned char, 16> add_shader_preset_prefix{
 inline constexpr std::uintptr_t script_preset_reference = 0x336f060;
 inline constexpr std::array<unsigned char, 8> script_preset_reference_prefix{0x4c,0x8d,0x05,0x81,0xa2,0x0d,0x03,0xe9};
 inline constexpr std::uintptr_t referenced_preset = 0x16fe9c0;
+// An AppearanceShaderExpressionPreset as loaded (its EBX layout): ParamInfo, the array of its
+// AppearanceExpressionParamInfo at +0x20, 40 bytes each: the value's boxed {TypeInfo*, data*} at
+// +0, its Parameter at +0x10, its ParamKey at +0x18. Applying a preset to a material (0x141314340,
+// under 0x141330210) type-checks every entry whose data is set, reading the TypeInfo unchecked.
+inline constexpr std::size_t preset_parameters = 0x20;
+inline constexpr std::size_t preset_parameter_size = 40;
+inline constexpr std::size_t preset_parameter_key = 0x18;
 inline constexpr std::array<unsigned char, 17> referenced_preset_prefix{
     0x48,0x8b,0x09,0x48,0x85,0xc9,0x74,0x07,0x48,0x8b,0x01,0x48,0xff,0x60,0x18,0x33,0xc0};
 }

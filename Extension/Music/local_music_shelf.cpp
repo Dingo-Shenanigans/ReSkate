@@ -307,8 +307,9 @@ std::uint64_t music_model_construct_hook(std::uintptr_t manager, std::uint8_t mo
         // The Mods row only when an enabled mod actually declares a playlist with songs, rather
         // than an empty one; the Spotify row always (it has the Spotify playlist at the least).
         bool has_mod_playlists = false;
-        for (const auto& playlist : mod_music_playlists())
-            if (!playlist.songs.empty()) { has_mod_playlists = true; break; }
+        if (const auto mod_lists = mod_music_playlists())
+            for (const auto& playlist : *mod_lists)
+                if (!playlist.songs.empty()) { has_mod_playlists = true; break; }
         const auto report = music_shelf_append_one(local_runtime().base, manager, handle, {spotify_station::spotify_used(), youtube_music::has(youtube_music::Kind::youtube), youtube_music::has(youtube_music::Kind::files), youtube_music::has(youtube_music::Kind::radio),
             !external_audio::app().empty(), has_mod_playlists});
         dingosdk::logging::event(dingosdk::logging::Channel::music,

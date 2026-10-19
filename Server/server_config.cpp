@@ -130,7 +130,12 @@ Layout layout(const ServerConfig &c) {
     players.set("object_limit", c.object_limit);
     players.set("allow_object_scaling", c.object_scaling);
     players.set("sync_effects", c.sync_effects);
+    players.set("sync_drones", c.sync_drones);
     players.set("announce_throwdowns", c.announce_throwdowns);
+    auto locks = Json::array();
+    for (const auto bit : {lock_noclip, lock_nobail, lock_boosts, lock_tuning})
+        if (c.throwdown_locks & bit) locks.push_back(lock_tools_text(bit));
+    players.set("throwdown_locks", std::move(locks));
 
     auto &anti_cheat = root.section("anti_cheat");
     anti_cheat.set("speed_hack", c.speed_check);
@@ -379,7 +384,12 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.object_limit = get("players", "object_limit", c.object_limit);
     c.object_scaling = get("players", "allow_object_scaling", c.object_scaling);
     c.sync_effects = get("players", "sync_effects", c.sync_effects);
+    c.sync_drones = get("players", "sync_drones", c.sync_drones);
     c.announce_throwdowns = get("players", "announce_throwdowns", c.announce_throwdowns);
+    if (const auto *locks = find("players", "throwdown_locks", {}); locks && locks->is_array())
+        for (const auto &value : *locks)
+            if (value.is_string())
+                if (const auto tools = parse_lock_tools(value.string())) c.throwdown_locks |= *tools;
 
     c.speed_check = get("anti_cheat", "speed_hack", c.speed_check, {"speed_check"});
     if (c.speed_check != "off" && c.speed_check != "warn" && c.speed_check != "kick") c.speed_check = "warn";
@@ -693,6 +703,34 @@ std::optional<std::uint64_t> parse_scoring(std::string_view text) {
     if (!value) return std::nullopt;
     return value;
 }
+std::optional<std::uint8_t> parse_lock_tools(std::string_view text) {
+    std::uint8_t tools{};
+    for (bool more = true; more;) {
+        const auto comma = text.find(',');
+        more = comma != std::string_view::npos;
+        auto name = text.substr(0, comma);
+        text = more ? text.substr(comma + 1) : std::string_view{};
+        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.remove_prefix(1);
+        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.remove_suffix(1);
+        std::string lower(name);
+        for (auto &c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lower == "noclip" || lower == "teleport") tools |= lock_noclip;
+        else if (lower == "nobail") tools |= lock_nobail;
+        else if (lower == "boosts") tools |= lock_boosts;
+        else if (lower == "tuning") tools |= lock_tuning;
+        else if (lower == "all") tools |= lock_all;
+        else return std::nullopt;
+    }
+    if (!tools) return std::nullopt;
+    return tools;
+}
+std::string lock_tools_text(std::uint8_t tools) {
+    std::string text;
+    for (const auto &[bit, name] : {std::pair{lock_noclip, "noclip"}, std::pair{lock_nobail, "nobail"},
+                                    std::pair{lock_boosts, "boosts"}, std::pair{lock_tuning, "tuning"}})
+        if (tools & bit) text += (text.empty() ? "" : ", ") + std::string(name);
+    return text.empty() ? "none" : text;
+}
 std::size_t extra_slots(const ServerConfig &config) noexcept {
     // (A player with such a role who is also listed has one slot, not two.)
     std::size_t slots = config.reserved.size();
@@ -762,7 +800,7 @@ bool custom_command_name_free(std::string_view name) noexcept {
          {"help", "party", "p", "w", "whisper", "tell", "poll", "vote", "yes", "y", "no", "n", "tp",
           "activity-log", "admin", "admins", "afk-kick", "kick-time", "role", "roles", "announce", "announce-throwdowns", "announce-to", "announcements",
           "ban", "bans", "board-check", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
-          "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
+          "distances", "drones", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
           "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
           "object-placement", "object-scaling", "objects", "park", "park-mod", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "teleport",

@@ -29,6 +29,7 @@ add_library(dingosdk_local_profile STATIC
     Extension/Objects/placements_store.cpp
     Extension/Objects/ParkEditor/park_document.cpp
     Extension/Objects/ParkEditor/park_mods.cpp
+    Extension/Objects/ParkEditor/park_object_sets.cpp
 )
 target_link_libraries(dingosdk_local_profile PUBLIC dingosdk_fast_travel_unlock dingosdk_content_cache dingosdk_json dingosdk_storage dingosdk_mod_list)
 

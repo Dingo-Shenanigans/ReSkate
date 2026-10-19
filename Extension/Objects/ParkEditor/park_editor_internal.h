@@ -61,6 +61,9 @@ struct EditorRuntime {
     std::vector<std::string> legacy_parks;
     std::string project;
     std::uint64_t next_park_scan{};
+    // Saved object sets (park_object_sets.h): read at startup and again after every change.
+    std::filesystem::path sets_directory;
+    std::shared_ptr<const std::vector<EditorObjectSet>> object_sets;
     std::deque<Change> undo, redo;
     std::optional<Transaction> transaction;
     bool failed{}, native_ready{};
@@ -88,6 +91,7 @@ EditorRuntime &editor_state();
 bool same_layout(const profile::ObjectLayout &a, const profile::ObjectLayout &b);
 const profile::PlacedObject *find_object(const profile::ObjectLayout &objects, std::uint64_t id);
 void refresh_park_mods();
+void refresh_object_sets();
 bool is_lobby_guest();
 bool idle();
 void fail(std::string reason);

@@ -1,4 +1,5 @@
 #include "external_player.h"
+#include "plex_web.h"
 #include "spotify_device.h"
 #include "youtube_music.h"
 #include <Windows.h>
@@ -68,11 +69,53 @@ std::vector<std::uint8_t> read_artwork(const streams::IRandomAccessStreamReferen
     reader.ReadBytes(bytes);
     return bytes;
 }
+// What Plex's own server says, laid over what Windows gives: the server's title, artist, album
+// and cover are the ones the player's library has, which a player's media session often shortens
+// or leaves without a cover. Used for Plex's own apps, and for any other that is playing the song
+// the server says an account of the player is.
+bool plex_is(const std::string& app) {
+    std::string lower(app);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lower.find("plex") != std::string::npos;
+}
+bool same_text(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
+}
+void lay_plex(Track& track, const Track& before, bool force) {
+    const auto plex = plex_web::now_playing();
+    if (!plex.valid || plex.title.empty()) return;
+    if (!force && !same_text(plex.title, track.title)) return;
+    track.title = plex.title;
+    track.artist = plex.artist;
+    track.album = plex.album;
+    track.playing = plex.playing;
+    if (!plex.art.empty()) {
+        track.artwork = plex.art;
+        track.artwork_revision = plex.art == before.artwork ? before.artwork_revision : before.artwork_revision + 1;
+    }
+}
 // One look at the player: the track, with its cover read again only when the song changed.
 Track look(const control::GlobalSystemMediaTransportControlsSessionManager& manager, const Track& before) {
     Track track;
     const auto session = pick(manager);
-    if (!session) return track;
+    if (!session) {
+        // Plex's player has no media session of its own to read (a Plex app on another device):
+        // the server's word is all there is, and its transport is the server's.
+        bool plex_wanted{};
+        {
+            std::lock_guard lock(app_mutex);
+            plex_wanted = wanted_app.find("plex") != std::string::npos;
+        }
+        if (plex_wanted) {
+            track.app = "plex";
+            lay_plex(track, before, true);
+            if (!track.title.empty()) {
+                track.available = true;
+                track.can_next = track.can_previous = track.can_pause = track.can_play = true;
+            }
+        }
+        return track;
+    }
     track.available = true;
     track.app = winrt::to_string(session.SourceAppUserModelId());
     track.spotify = spotify_app(track.app);
@@ -101,6 +144,7 @@ Track look(const control::GlobalSystemMediaTransportControlsSessionManager& mana
         } catch (const winrt::hresult_error&) {}
         track.artwork_revision = track.artwork == before.artwork ? before.artwork_revision : before.artwork_revision + 1;
     }
+    if (!track.spotify) lay_plex(track, before, plex_is(track.app));
     return track;
 }
 bool same(const Track& a, const Track& b) {
@@ -110,7 +154,20 @@ bool same(const Track& a, const Track& b) {
 }
 void run_command(const control::GlobalSystemMediaTransportControlsSessionManager& manager, Command command, const std::string& app) {
     const auto session = pick(manager, &app);
-    if (!session) return;
+    if (!session) {
+        // No media session for a Plex player: the server is asked to drive it.
+        if (app.find("plex") != std::string::npos) {
+            using plex_web::Action;
+            switch (command) {
+            case Command::play: plex_web::control(Action::play); break;
+            case Command::pause: plex_web::control(Action::pause); break;
+            case Command::toggle: plex_web::control(plex_web::now_playing().playing ? Action::pause : Action::play); break;
+            case Command::next: plex_web::control(Action::next); break;
+            case Command::previous: plex_web::control(Action::previous); break;
+            }
+        }
+        return;
+    }
     switch (command) {
     case Command::play: session.TryPlayAsync().get(); break;
     case Command::pause: session.TryPauseAsync().get(); break;

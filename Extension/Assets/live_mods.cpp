@@ -8,6 +8,7 @@
 #include "Engine/Core/Platform/path_text.h"
 #include "Engine/Game/Build/20260929/live_mods.h"
 #include "Engine/Game/Build/addresses.h"
+#include "Engine/Vfs/builtin_packs.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_scoring.h"
 #include "Extension/World/loading_screen.h"
@@ -508,6 +509,8 @@ ApplyEffect preview(const mods::ModList &list) {
         // One of a Board Break deck pack's decks stands for the pack (mod_catalog.h).
         if (const auto pack = mods::board_break_pack_of(name); named(now, pack.empty() ? name : pack)) continue;
         const auto *entry = entry_of(name);
+        // Content ReSkate keeps itself (builtin_packs.h) is in no mod list, and stays.
+        if (!entry && (name.starts_with("reskate-builtin-") || mods::kept_by_reskate(list.root, name))) continue;
         // A folder deleted since: what it held is unknown, so assume the worst.
         if (!entry) {
             reload = true;

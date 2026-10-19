@@ -11,6 +11,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/level_loading.h"
+#include "Extension/Boot/exit_watch.h"
 #include <atomic>
 #include <format>
 #include <mutex>
@@ -106,24 +107,49 @@ std::chrono::milliseconds since_process_start() noexcept {
     const auto ticks = [](const FILETIME& time) { return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime; };
     return std::chrono::milliseconds(ticks(now) > ticks(created) ? (ticks(now) - ticks(created)) / 10000 : 0);
 }
+// The time spent in the level now loaded (GetTickCount64 when it became playable, 0 when none
+// is) and its destination. Under the observer's lock.
+std::uint64_t session_started{};
+std::string session_destination;
+// The frame pacing of the time spent in a level, for Sentry. Short stays say nothing about its
+// frame rate. Called with the observer's lock held.
+void send_level_session(std::uint64_t at) {
+    if (!session_started) return;
+    const auto pacing = trace::take_frame_pacing();
+    const auto lasted = at >= session_started ? at - session_started : 0;
+    if (lasted >= 10000 && pacing.frames && pacing.total_ns)
+        trace::record("game.level_session", "app.session", std::chrono::milliseconds(lasted), true,
+            {{"destination", session_destination}},
+            {{"fps_avg", static_cast<double>(pacing.frames) * 1e9 / static_cast<double>(pacing.total_ns)},
+             {"hitches", static_cast<double>(pacing.hitches)},
+             {"worst_frame", static_cast<double>(pacing.worst_ns) / 1e6, "millisecond"}});
+    session_started = 0;
+}
+// The player closing the game (exit_watch, on a thread of its own): the level they are in is
+// sent now, and given a moment to go out. It used to be sent only when the next level began
+// loading, so a stay that ended with the game closing (the long ones, as often as not) was
+// never sent. A close the game turns down starts the stay afresh.
+void send_level_session_on_close() noexcept {
+    try {
+        auto& o = observer();
+        {
+            std::unique_lock lock(o.mutex, std::defer_lock);
+            for (int tries = 0; tries < 50 && !lock.try_lock(); ++tries) Sleep(10);
+            if (!lock.owns_lock()) return;
+            if (!session_started) return;
+            const auto now = GetTickCount64();
+            send_level_session(now);
+            session_started = now;
+        }
+        trace::flush(std::chrono::seconds(3));
+    } catch (...) {}
+}
 // Timings for Sentry (Engine/Core/Debug/trace.h), from the same observations as the log:
 // each load, the launch up to the first playable level, and the frame pacing of the time
 // spent in a level. Called with the observer's lock held.
 void trace_progress(const level_logging::Progress& progress, bool was_running, std::uint64_t started, std::uint64_t at) {
-    static std::uint64_t session_started{};
-    static std::string session_destination;
-    if (!was_running && progress.running && session_started) {
-        // A new load ends the level before it. Short stays say nothing about its frame rate.
-        const auto pacing = trace::take_frame_pacing();
-        const auto lasted = at >= session_started ? at - session_started : 0;
-        if (lasted >= 10000 && pacing.frames && pacing.total_ns)
-            trace::record("game.level_session", "app.session", std::chrono::milliseconds(lasted), true,
-                {{"destination", session_destination}},
-                {{"fps_avg", static_cast<double>(pacing.frames) * 1e9 / static_cast<double>(pacing.total_ns)},
-                 {"hitches", static_cast<double>(pacing.hitches)},
-                 {"worst_frame", static_cast<double>(pacing.worst_ns) / 1e6, "millisecond"}});
-        session_started = 0;
-    }
+    // A new load ends the level before it.
+    if (!was_running && progress.running) send_level_session(at);
     // A load that just reached a terminal state; "first" is the one behind the splash screen.
     if (!was_running || progress.running || progress.started != started || at < started) return;
     const bool active = progress.state == 13 || progress.state == 21;
@@ -289,6 +315,7 @@ bool start_level_loading_logging(std::uintptr_t base, BeforeLevelTransition befo
         }
         o.base = base;
         o.before_transition = before_transition;
+        exit_watch::when_closing(&send_level_session_on_close);
         auto* target = reinterpret_cast<void*>(base + level_transition_contract.rva);
         void* original{};
         auto status = hook_prepare(target, reinterpret_cast<void*>(&transition), &original);

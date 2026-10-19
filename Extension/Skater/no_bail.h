@@ -45,5 +45,11 @@ void set_no_bail_step_observer(NoBailStepObserver observer) noexcept;
 // false when all slots are taken.
 inline constexpr std::size_t no_bail_step_listener_slots = 4;
 bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept;
+// Any thread: the watched local skater bails at its next physics step, as from a slam of
+// `magnitude` (Board Break: a board that snaps on a rail throws the rider). The cause goes in just
+// before the game's selector picks the next state, the way the game's own contact tests record
+// theirs, so the game makes the wipeout itself; while No Bail protects the skater it is dropped like
+// any other. Expires unused after a quarter of a second.
+void no_bail_request_wipeout(float magnitude) noexcept;
 void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept;
 }

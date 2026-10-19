@@ -58,6 +58,8 @@ void read_model(void*, dingosdk::overlay::Model& output) {
     output.engine_settings = std::move(settings);
     output.console_log.clear();
     output.menu_scale = dingosdk::profile_runtime::local_menu_scale();
+    output.menu_scale_fullscreen = dingosdk::profile_runtime::local_menu_scale(true);
+    output.menu_fullscreen = dingosdk::profile_runtime::local_menu_fullscreen();
     output.steam_offline = dingosdk::launcher::offline_mode();
     output.multiplayer=dingosdk::multiplayer::model();
     if (dingosdk::multiplayer_controls_level(output.multiplayer)) {

@@ -1,3 +1,4 @@
+#include "Engine/Core/Platform/memory.h"
 #include "Engine/Core/Log/logging.h"
 #include "local_customization_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
@@ -5,6 +6,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/local_customization.h"
+#include <array>
 #include <mutex>
 #include <set>
 
@@ -36,16 +38,19 @@ std::uint32_t cosmetic_hash(std::string_view value) {
     return hash;
 }
 
+// A name of up to 255 characters, read in place (memory::peek_cstring). It was read a character
+// at a time through ReadProcessMemory: a system call each, some 100 for a name, for every one of
+// up to 8192 items and their categories when the catalog is walked, which is done on the client
+// thread under native_mutex (2026-10-15).
 bool cosmetic_text(std::uintptr_t p, std::string& value) {
     value.clear();
-    for (std::size_t i = 0; i <= 255; ++i) {
-        unsigned char c{};
-        if (!read(p + i, c)) return false;
-        if (!c) return true;
-        if (c < 32 || c == 127) return false;
-        value += static_cast<char>(c);
-    }
-    return false;
+    std::array<char, 257> text{};
+    const auto length = dingosdk::memory::peek_cstring(p, text.data(), 256);
+    if (length < 0) return false;
+    for (std::ptrdiff_t i = 0; i < length; ++i)
+        if (static_cast<unsigned char>(text[i]) < 32 || text[i] == 127) return false;
+    value.assign(text.data(), static_cast<std::size_t>(length));
+    return true;
 }
 
 bool cosmetic_array(std::uintptr_t p, std::size_t stride, std::size_t limit, std::uint32_t& count) {
@@ -76,6 +81,22 @@ bool reserved_cosmetic_hash(std::uint32_t hash) {
     std::lock_guard lock(reserved_hash_mutex);
     return hash && reserved_hashes.contains(hash);
 }
+bool installed_item_owned(const profile::Snapshot& snapshot, std::string_view key, std::uint32_t hash, bool build_kit) {
+    if (cosmetic_runtime().ownership_unavailable || reserved_cosmetic_hash(hash)) return false;
+    const auto option = snapshot.bool_options.find(build_kit ? profile::unlock_objects_option : profile::unlock_cosmetics_option);
+    if (option != snapshot.bool_options.end() && option->second) return true;
+    const dingosdk::Json* section = &snapshot.customization;
+    if (build_kit) {
+        const auto objects = snapshot.extensions.find("object_dropper");
+        if (objects == snapshot.extensions.end() || !objects->is_object()) return false;
+        section = &*objects;
+    }
+    const auto inventory = section->find("inventory");
+    if (inventory == section->end() || !inventory->is_object()) return false;
+    const auto saved = inventory->find(key);
+    return saved != inventory->end() && saved->is_boolean() && saved->get<bool>();
+}
+
 bool refresh_cosmetic_catalog() {
     auto& s = local_runtime(); auto& c = cosmetic_runtime();
     std::uintptr_t manager{}, vtable{}, buckets{};
@@ -130,30 +151,24 @@ bool refresh_cosmetic_catalog() {
         !read(manager + 0x3c, current_count) || current_count != count) return false;
     const auto& catalogs = content_cache::catalogs();
     c.ownership_unavailable = !catalogs.available;
-    std::vector<std::string> keys, objects, reserved_keys, reserved_objects;
-    for (const auto& [key, info] : items) {
-        std::string folded = key;
-        for (auto& letter : folded) if (letter >= 'A' && letter <= 'Z') letter = static_cast<char>(letter + ('a' - 'A'));
-        const bool held = catalogs.reserved(folded);
-        (info.build_kit ? (held ? reserved_objects : objects) : (held ? reserved_keys : keys)).push_back(key);
-    }
-    if (!c.ownership_unavailable) {
-        s.store->seed_cosmetic_inventory(keys);
-        s.store->seed_object_inventory(objects);
-        s.store->reconcile_inventory(reserved_keys, reserved_objects);
-    }
+    // What is owned is worked out from the items installed (installed_item_owned), not saved item
+    // by item: the rows earlier versions saved go, once.
+    s.store->forget_unlocked_inventory();
+    std::size_t objects{};
     {
         std::set<std::uint32_t> hashes;
-        for (const auto& [key, info] : items)
+        for (const auto& [key, info] : items) {
+            objects += info.build_kit;
             if (reserved_cosmetic(key)) hashes.insert(info.hash);
+        }
         std::lock_guard lock(reserved_hash_mutex);
         reserved_hashes = std::move(hashes);
     }
     c.items = std::move(items); c.item_count = count; c.item_manager = manager;
     ++c.items_generation;
     std::ostringstream event;
-    event << "{\"event\":\"local_cosmetic_catalog\",\"installed\":" << keys.size()
-          << ",\"objects\":" << objects.size() << '}';
+    event << "{\"event\":\"local_cosmetic_catalog\",\"installed\":" << items.size() - objects
+          << ",\"objects\":" << objects << '}';
     dingosdk::logging::event(dingosdk::logging::Channel::customization, event.str().c_str());
     return true;
 }
@@ -384,8 +399,7 @@ bool load_cosmetic_hook(const void* wrapper, void* destination) {
                         held.push_back({i, *slot, expected.items[j].asset});
                         slot = &expected.items[j];
                     } else {
-                        const auto& inventory = snapshot.customization.value("inventory", dingosdk::Json::object());
-                        if (inventory.contains(slot->asset) && !inventory.at(slot->asset).get<bool>())
+                        if (!installed_item_owned(snapshot, slot->asset, found->second.hash, found->second.build_kit))
                             slot = &expected.items[j];
                     }
                 }

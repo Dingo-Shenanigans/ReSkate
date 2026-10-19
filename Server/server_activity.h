@@ -35,6 +35,8 @@ class ActivityLog {
     void clear() { throwdowns_.clear(); }
     // Ends throwdowns that went quiet: a finished one sends nothing more.
     void tick(std::uint64_t now);
+    // The players of the throwdowns running now, but those who quit theirs.
+    std::set<std::uint64_t> playing() const;
 
   private:
     struct Throwdown {

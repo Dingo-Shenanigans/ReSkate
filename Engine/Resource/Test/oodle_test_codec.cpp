@@ -8,3 +8,8 @@ extern "C" __declspec(dllexport) std::int64_t __cdecl OodleLZ_Decompress(
     *static_cast<unsigned char*>(output) = *static_cast<const unsigned char*>(input);
     return 1;
 }
+
+// The buffer a decode into `rawSize` bytes needs: as the real codec, a little more than asked.
+extern "C" __declspec(dllexport) std::int64_t __cdecl OodleLZ_GetDecodeBufferSize(int, std::int64_t rawSize, int) {
+    return rawSize + 16;
+}

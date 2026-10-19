@@ -7,4 +7,8 @@ namespace dingosdk::exit_watch {
 // asked the game to close, this gives it a few seconds and then ends the process.
 // Called from the game window's procedure with each message of that window.
 void note_window_message(HWND window, UINT message, WPARAM wp) noexcept;
+// Called, on the watch's own thread, each time the player asks the game to close, before the
+// close is watched: for what has to be sent before the process goes. It may take a few seconds.
+using CloseNotice = void (*)() noexcept;
+void when_closing(CloseNotice notice) noexcept;
 }

@@ -1,7 +1,12 @@
 #pragma once
 #include "trainer.h"
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace dingosdk::trainer {
@@ -40,4 +45,16 @@ struct PresetDial {
 PresetDial preset_dial(std::string_view name);
 // Presets stack: each applies on top of what is already changed; Stock clears them.
 const std::vector<BuiltinPreset> &builtin_presets();
+
+// The player's own presets: name -> (value id -> value). Names are at most max_preset_name long.
+using UserPresets = std::map<std::string, std::map<std::string, double, std::less<>>, std::less<>>;
+inline constexpr std::size_t max_preset_name = 48;
+// Whether a preset of the player's own may not have this name, in any case: a built-in preset's,
+// or Stock or Map. Apply and remove look at the player's own presets first, so one with such a
+// name would hide the built-in.
+bool reserved_preset_name(std::string_view name);
+// Renames the player's presets that have a reserved name (saved before a built-in preset took
+// it, or written into trainer.json by hand) to "<name> (yours)", numbered when that is taken.
+// Returns each (old name, new name).
+std::vector<std::pair<std::string, std::string>> rename_reserved_presets(UserPresets &user);
 } // namespace dingosdk::trainer

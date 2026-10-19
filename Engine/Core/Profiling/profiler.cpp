@@ -13,10 +13,15 @@ std::atomic<bool> zones_enabled{false};
 namespace detail {
 std::atomic<std::uint32_t> client_thread{0}, present_thread{0};
 std::atomic<bool> sampling{false};
+std::atomic<bool> marking_presents{false};
+std::atomic<std::uint32_t> present_mark_count{0};
+std::array<std::atomic<std::uint64_t>, present_mark_capacity> present_marks{};
 }
 namespace {
 std::atomic<Site*> sites{nullptr};
 std::atomic<bool> hud_visible{false}, window_visible{false}, monitor_running{false};
+std::atomic<bool> zones_kept{false};
+std::atomic<std::uint64_t> own_latest{0}, present_count{0};
 
 // Recent values for the HUD's graphs. One writer each (the client update thread, the present
 // thread); the overlay reads them racily, which at worst shows one value twice.
@@ -241,7 +246,7 @@ void monitor() {
         std::lock_guard lock(summary_mutex);
         latest_summary = std::move(next);
     }
-    zones_enabled.store(false, std::memory_order_relaxed);
+    zones_enabled.store(zones_kept.load(std::memory_order_relaxed), std::memory_order_relaxed);
     monitor_running.store(false, std::memory_order_release);
     // Something may have asked again between the last check and the flag being cleared.
     if (wanted()) detail::wake_monitor();
@@ -270,6 +275,7 @@ Site::Site(const char* site_name) noexcept : name(site_name) {
 void record_client_update(std::uint64_t own_ns) noexcept {
     // Known even while off, so a sample can target it straight away.
     detail::client_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    own_latest.store(own_ns, std::memory_order_relaxed);
     if (!zones_enabled.load(std::memory_order_relaxed)) return;
     static std::uint64_t last{};
     const auto now = now_ns();
@@ -290,6 +296,11 @@ void record_client_frame(std::uint64_t frame_ns) noexcept {
 
 void record_present() noexcept {
     detail::present_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    present_count.fetch_add(1, std::memory_order_relaxed);
+    if (detail::marking_presents.load(std::memory_order_relaxed)) {
+        const auto at = detail::present_mark_count.fetch_add(1, std::memory_order_relaxed);
+        if (at < detail::present_mark_capacity) detail::present_marks[at].store(now_ns(), std::memory_order_relaxed);
+    }
     if (!zones_enabled.load(std::memory_order_relaxed)) return;
     static std::uint64_t last{};
     const auto now = now_ns();
@@ -314,6 +325,51 @@ bool hud() noexcept { return hud_visible.load(std::memory_order_acquire); }
 void set_window(bool visible) noexcept { window_visible.store(visible, std::memory_order_release); detail::wake_monitor(); }
 bool window() noexcept { return window_visible.load(std::memory_order_acquire); }
 bool active() noexcept { return wanted(); }
+
+void keep_zones(bool on) noexcept {
+    zones_kept.store(on, std::memory_order_relaxed);
+    if (on) zones_enabled.store(true, std::memory_order_relaxed);
+    else if (!monitor_running.load(std::memory_order_acquire)) zones_enabled.store(false, std::memory_order_relaxed);
+}
+std::uint64_t last_client_own_ns() noexcept { return own_latest.load(std::memory_order_relaxed); }
+std::uint64_t presents() noexcept { return present_count.load(std::memory_order_relaxed); }
+
+void mark_zones(ZoneMark& mark) noexcept {
+    try {
+        mark.totals.clear();
+        for (const auto* site = sites.load(std::memory_order_acquire); site; site = site->next)
+            mark.totals.emplace_back(site, site->ticks.load(std::memory_order_relaxed));
+        mark.tsc = __rdtsc();
+        mark.ns = now_ns();
+    } catch (...) { mark.totals.clear(); }
+}
+
+std::vector<ZoneTime> zones_since(const ZoneMark& mark, std::size_t most) noexcept {
+    std::vector<ZoneTime> result;
+    try {
+        const auto ns = now_ns(), tsc = __rdtsc();
+        if (ns <= mark.ns || tsc <= mark.tsc) return result;
+        // Ticks to milliseconds over this very stretch.
+        const double ms_per_tick = static_cast<double>(ns - mark.ns) / 1e6 / static_cast<double>(tsc - mark.tsc);
+        for (const auto* site = sites.load(std::memory_order_acquire); site; site = site->next) {
+            const auto now = site->ticks.load(std::memory_order_relaxed);
+            // (Sites only ever join the list's head, so one the mark lacks began at zero; the
+            // profiler window's summary sets them back to zero each second, and a total below
+            // the mark's started again since.)
+            const auto found = std::ranges::find(mark.totals, site, &std::pair<const Site*, std::uint64_t>::first);
+            const auto before = found == mark.totals.end() ? 0 : found->second;
+            const auto ticks = now >= before ? now - before : now;
+            if (!ticks) continue;
+            const auto ms = static_cast<double>(ticks) * ms_per_tick;
+            const auto same = std::ranges::find(result, std::string_view(site->name), &ZoneTime::name);
+            if (same != result.end()) same->milliseconds += ms;
+            else result.push_back({site->name, ms});
+        }
+        std::ranges::sort(result, [](const ZoneTime& a, const ZoneTime& b) { return a.milliseconds > b.milliseconds; });
+        if (result.size() > most) result.resize(most);
+    } catch (...) { result.clear(); }
+    return result;
+}
 
 std::shared_ptr<const Summary> summary() noexcept {
     std::lock_guard lock(summary_mutex);

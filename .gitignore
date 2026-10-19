@@ -29,3 +29,7 @@ analysis/raw/**/*.res
 /analysis/
 /docs/
 /release
+
+# Drone model sources (assets/models/fpv/CREDITS.md): large; only the prepared drone.glb is kept.
+/assets/models/fpv/dji_avata2.glb
+/assets/models/fpv/fpv_drone.glb

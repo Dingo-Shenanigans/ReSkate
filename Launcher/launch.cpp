@@ -5,6 +5,8 @@
 #include "Engine/Vfs/content_cache_install.h"
 #include "Engine/Vfs/world_layer_scan.h"
 #include "launch.h"
+#include "mod_manager.h"
+#include "official_mods.h"
 #include "text_encoding.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/runtime.h"
@@ -232,6 +234,10 @@ constexpr std::uint64_t steam_id_base = 76561197960265728ull;
 // DOS one. Empty on Windows, and when Proton was not started by Steam.
 // Reported, with the cause and the fix, by BenjaminJAnderson in
 // https://github.com/Dingo-Shenanigans/ReSkate/issues/5.
+// Steam for Mac with a Wine-based compatibility tool (NotProton, CrossOver) passes the app
+// bundle's Steam.AppBundle/Steam/Contents/MacOS instead, below the directory that holds config/:
+// the nearest directory up from it that has config/loginusers.vdf is the client's. Found by
+// codejunky (https://github.com/Dingo-Shenanigans/ReSkate/pull/219).
 fs::path proton_steam_directory() {
     std::array<wchar_t, 32768> unix_path{};
     const auto length = GetEnvironmentVariableW(L"STEAM_COMPAT_CLIENT_INSTALL_PATH", unix_path.data(),
@@ -245,6 +251,11 @@ fs::path proton_steam_directory() {
     if (!dos_path) return {};
     fs::path directory(dos_path);
     HeapFree(GetProcessHeap(), 0, dos_path);
+    std::error_code ignored;
+    for (auto candidate = directory; !candidate.empty(); candidate = candidate.parent_path()) {
+        if (fs::exists(candidate / L"config" / L"loginusers.vdf", ignored)) return candidate;
+        if (candidate == candidate.root_path() || !candidate.has_parent_path()) break;
+    }
     return directory;
 }
 
@@ -467,6 +478,8 @@ Session open_session(const std::string& log_level) {
         logging::Channel::launcher, "File logging is unavailable; debugger output remains active.");
     logging::write(logging::Level::info, logging::Channel::launcher, L"ReSkate launcher starting");
     logging::write(logging::Level::info, logging::Channel::launcher, L"Current launch log: " + (session.paths.logs / L"ReSkate.log").wstring());
+    // The official mods list, read on a thread of its own while the launcher opens (Play waits).
+    official_mods::start(launcher_mods::mods_root(session.paths.directory));
     return session;
 }
 
@@ -572,7 +585,17 @@ bool relaunch_without_mangohud(const fs::path& self, const std::vector<std::wstr
     return true;
 }
 
-std::wstring steam_offline_reason() {
+// Steam started this process through a compatibility tool (Proton, or a Wine-based one on macOS):
+// the real client is a native process outside Wine, which the registry's ActiveProcess cannot show.
+bool started_by_native_steam() {
+    if (!under_wine()) return false;
+    wchar_t value[8]{};
+    return GetEnvironmentVariableW(L"STEAM_COMPAT_CLIENT_INSTALL_PATH", nullptr, 0) ||
+           (GetEnvironmentVariableW(L"SteamClientLaunch", value, 8) == 1 && value[0] == L'1');
+}
+
+// Why Steam's own client is not usable, by the registry Windows and Proton's stand-in keep up.
+std::wstring steam_process_reason() {
     const auto pid = registry_dword(steam_process_key, L"pid");
     if (!pid || !*pid) return L"no Steam client is registered as running (ActiveProcess pid is 0)";
     if (!active_steam_id()) return L"Steam reports no signed-in account (ActiveProcess ActiveUser is 0)";
@@ -592,6 +615,15 @@ std::wstring steam_offline_reason() {
     if (_wcsicmp(name.c_str(), L"steam.exe") != 0)
         return std::format(L"the registered Steam process {} is {}, not steam.exe", *pid, name);
     return {};
+}
+
+std::wstring steam_offline_reason() {
+    auto reason = steam_process_reason();
+    // A Wine-based tool on macOS keeps no stand-in Steam process up to date: started by the native
+    // client, its signed-in account (config/loginusers.vdf) is enough. Only where the checks above
+    // fail, so Windows and Proton, where they pass, stay as they were.
+    if (!reason.empty() && started_by_native_steam() && active_steam_id()) reason.clear();
+    return reason;
 }
 
 bool steam_signed_in() {
@@ -633,6 +665,17 @@ std::string steam_persona_name() {
     }
     if (name.empty()) name = utf8(registry_string(steam_key, L"LastGameNameUsed"));
     return name;
+}
+
+std::filesystem::path steam_avatar_path() {
+    if (!steam_signed_in()) return {};
+    const auto user = active_steam_id();
+    const auto steam = steam_directory();
+    if (!user || steam.empty()) return {};
+    // Steam keeps each account's picture it has shown as config/avatarcache/<SteamID64>.png.
+    auto path = steam / L"config" / L"avatarcache" / (std::to_wstring(*user) + L".png");
+    std::error_code error;
+    return fs::is_regular_file(path, error) ? path : std::filesystem::path{};
 }
 
 // Skate.exe hard-imports MiniDumpWriteDump from the Windows API set

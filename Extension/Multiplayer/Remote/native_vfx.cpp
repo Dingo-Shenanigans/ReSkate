@@ -14,6 +14,7 @@
 #include <bit>
 #include <cstring>
 #include <format>
+#include <deque>
 #include <mutex>
 
 // Other players' skaters and skateboards are the game's own entities, and the game gives each
@@ -76,6 +77,7 @@ struct State {
     BuildEffects build_effects{};
     std::mutex mutex;
     std::vector<Impact> captured;       // the local game's, since the last drain
+    std::deque<LocalImpact> recent;     // the local game's, the last few seconds' (recent_local_impacts)
     std::vector<Registered> registered; // every effects component seen registering, newest last
     std::vector<Pair> pairs;
     std::array<bool, max_impact_material + 1> seen{}; // materials this game's own contacts named
@@ -132,6 +134,8 @@ Address impact_hook(Address manager, Address key, const void *native) {
             s.seen[impact.material] = true;
             if (s.captured.size() >= 16) s.captured.erase(s.captured.begin());
             s.captured.push_back(impact);
+            if (s.recent.size() >= 96) s.recent.pop_front();
+            s.recent.push_back({impact, GetTickCount64()});
             ++s.captured_count;
         }
     }
@@ -156,7 +160,25 @@ bool owns(Address component, Address entity) {
         if (const auto q = ptr(component, off); q && (q == entity || ptr(q) == entity)) return true;
     return false;
 }
+// Whether the game's lookup of a joint in this rig would come to an end. It walks the
+// skeleton's map with no bound, and a rig whose memory has been taken for something else can
+// hold a loop: the game's frame then never ends and its watchdog closes it ("GameStall", seen
+// with this frame's thread in call_joint, 2026-10-15). The same walk is made here first, with a
+// bound no real skeleton comes near.
+bool joint_lookup_ends(Address rig, std::uint32_t joint) {
+    auto node = ptr(ptr(rig, vfx::rig_skeleton), vfx::skeleton_joints_root);
+    for (int steps = 0; steps < 64; ++steps) {
+        if (!node) return true;
+        std::uint32_t id{};
+        if (!readable(node + vfx::joint_node_id, &id, sizeof(id))) return false;
+        Address next{};
+        if (!readable(node + (id < joint ? vfx::joint_node_right : vfx::joint_node_left), &next, sizeof(next))) return false;
+        node = next;
+    }
+    return false;
+}
 int call_joint(State &s, Address rig, std::uint32_t joint) noexcept {
+    if (!joint_lookup_ends(rig, joint)) return -1;
     __try {
         return reinterpret_cast<JointIndex>(s.base + vfx::joint_index.rva)(rig, joint, 1);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -192,7 +214,12 @@ Address build_hook(Address manager, std::uint64_t *entity, int id, Address *sett
         if (pair != s.pairs.end()) {
             block.assign(1, 0);
             if (owns(component, pair->skater)) {
-                const auto rig = ptr(ptr(pair->board_component, vfx::component_rig_owner), vfx::rig_owner_rig);
+                // (The skateboard's component as it was when the pair was made: one the game has
+                // since destroyed is no longer an effects component of that skateboard, and its
+                // rig is not looked at. No set then fits.)
+                const bool live = ptr(pair->board_component) == s.base + vfx::component_vtable &&
+                                  owns(pair->board_component, pair->board);
+                const auto rig = live ? ptr(ptr(pair->board_component, vfx::component_rig_owner), vfx::rig_owner_rig) : 0;
                 std::vector<Address> moved;
                 for (std::uint32_t i = 0; i < count; ++i) {
                     const auto element = ptr(data, i * 8ULL);
@@ -357,6 +384,15 @@ std::vector<Impact> drain_impacts() {
     std::lock_guard lock(s.mutex);
     auto out = std::exchange(s.captured, {});
     if (out.size() > max_impacts) out.erase(out.begin(), out.end() - max_impacts);
+    return out;
+}
+std::vector<LocalImpact> recent_local_impacts(std::uint64_t within_ms) {
+    auto &s = state();
+    const auto now = GetTickCount64();
+    std::lock_guard lock(s.mutex);
+    std::vector<LocalImpact> out;
+    for (const auto &one : s.recent)
+        if (now - one.at <= within_ms) out.push_back(one);
     return out;
 }
 void play_impact(const Impact &impact) noexcept {

@@ -19,7 +19,8 @@ the launcher, the runtime that loads into the game, and the dedicated server.
 - **In-game menu and console.**
   - Map and fast travel.
   - World: time of day, population, district levels, rotating parks.
-  - The **Park Editor**: place, move and save objects with freecam, snapping and undo.
+  - The **Park Editor**: place, move and save objects with freecam, snapping and undo. Save a selection as a
+    set and place it again anywhere, on any map.
   - Skater options: first person, movement, boosts, noclip.
   - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
   - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
@@ -80,6 +81,26 @@ beside `Skate.exe`, as it was set up before, ReSkate 1.1.3 was tested with Proto
 CachyOS: the launcher, the server browser, joining a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
 custom map and then join a server on another map, the screen can stay black
 ([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
+
+### macOS (NotProton / CrossOver)
+
+Steam for Mac with a Wine-based compatibility tool works much the same way; see
+[MACOS-SETUP.md](MACOS-SETUP.md) for its launch option.
+
+### Multiplayer map downloads
+
+Missing multiplayer custom maps can be downloaded from Thunderstore after confirmation.
+The confirmation expires after two minutes. A session waits 30 minutes in all for the map to be
+checked, downloaded, installed, applied and joined; dedicated servers and player-hosted lobbies
+enforce the same limit on their own monotonic clocks. Ordinary map loading still gets 180
+seconds; loading after a live installation still gets 30 seconds.
+
+A download that has begun is not cut short when the session stops waiting: a large map on a slow
+connection goes on downloading (up to four hours), installs and is applied, and you are told to
+join the server again. Declining, or cancelling the download, stops it and removes the
+incomplete file. Installation stops before replacing an existing mod when cancellation is
+observed; a filesystem commit or live merge already in progress finishes safely rather than
+being forcibly interrupted. Retry after that work has finished, without restarting ReSkate.
 
 ### Controls
 

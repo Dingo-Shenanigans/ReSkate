@@ -170,6 +170,11 @@ void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
                         "offline mode: you play as Unknown Player and multiplayer is hidden.");
     ImGui::Spacing();
     ImGui::TextDisabled("To play as your own account, start Steam, sign in, and open ReSkate again.");
+    if (launcher_app::under_wine()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("On Linux or macOS, start skate. from your Steam library with ReSkate's launch option "
+                            "(see the README), so the launcher can find Steam's account.");
+    }
     ImGui::PopTextWrapPos();
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
     ImGui::SetCursorPosX(panel.x - S(28) - S(110));

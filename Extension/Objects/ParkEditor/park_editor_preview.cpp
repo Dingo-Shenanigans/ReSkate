@@ -1,4 +1,5 @@
 #include "park_editor_runtime.h"
+#include "park_object_sets.h"
 #include "park_editor_internal.h"
 #include "Extension/Objects/local_placements_runtime.h"
 
@@ -87,6 +88,56 @@ bool queue_local_park_paste(const EditorPasteRequest &request) {
         r.next_id = next_id;
         return true;
     } catch (...) {
+        return false;
+    }
+}
+bool queue_local_park_delete(const EditorDeleteRequest &request) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto &e = editor_state();
+    auto &r = placements_runtime();
+    try {
+        if (!lobby_object_placement_allowed() || !local_runtime().active || !placement_session_ready() || !idle() ||
+            request.generation != e.generation || request.revision != e.revision || request.objects.empty() ||
+            request.objects.size() > 1024)
+            return false;
+        auto target = r.document.maps[r.map];
+        const std::set<std::uint64_t> ids(request.objects.begin(), request.objects.end());
+        const auto before = target.size();
+        std::erase_if(target, [&](const auto &object) { return ids.contains(object.id); });
+        if (before - target.size() != ids.size())
+            return false; // A selected object is gone: the selection is stale.
+        // One validated layout change gives the whole selection one undo step.
+        return begin(std::move(target), 0);
+    } catch (...) {
+        return false;
+    }
+}
+bool queue_local_park_object_set(const EditorObjectSetRequest &request) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto &e = editor_state();
+    auto &r = placements_runtime();
+    // Sets are files beside the profile's parks: the layout in the world is unchanged, and
+    // placing one goes through queue_local_park_paste with its checks and its one undo step.
+    try {
+        if (!local_runtime().active || !idle() || request.generation != e.generation || e.sets_directory.empty())
+            return false;
+        if (request.action == EditorObjectSetAction::save) {
+            profile::ObjectLayout objects;
+            for (const auto &object : request.objects)
+                objects.push_back({object.id ? object.id : 1, object.item, object.position, object.rotation,
+                                   object.scale});
+            editor::save_object_set(e.sets_directory, request.name, r.map, objects);
+            e.status = "Saved the set " + request.name + " (" + std::to_string(objects.size()) + " objects).";
+        } else {
+            editor::remove_object_set(e.sets_directory, request.name);
+            e.status = "Deleted the set " + request.name + ".";
+        }
+        refresh_object_sets();
+        ++e.revision;
+        return true;
+    } catch (const std::exception &error) {
+        e.status = std::string("error: ") + error.what();
+        ++e.revision;
         return false;
     }
 }

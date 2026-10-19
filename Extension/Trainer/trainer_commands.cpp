@@ -12,7 +12,7 @@ void register_trainer_commands(Commands &registry) {
     };
     const Verb verbs[]{
         {"status", "What the trainer is doing", nullptr, false},
-        {"open", "Open the menu on the trainer page", "[tune|presets|practice|map|realistic|fun|everything]", false},
+        {"open", "Open the menu on the Sandbox page", "[tune|presets|practice|map|realistic|fun|everything]", false},
         {"set", "Set a physics tuning value live", "<value id> <number>", true},
         {"freeze", "Keep a value through presets and resets", "<value id> 0|1", true},
         {"reset", "Put a value (or all) back to stock", "<value id>|all", false},

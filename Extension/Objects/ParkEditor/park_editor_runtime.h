@@ -12,6 +12,11 @@ void set_park_mod_list_visible(bool visible) noexcept;
 // on disconnect; existing placed objects remain in the world.
 void set_lobby_object_placement_allowed(bool enabled);
 bool lobby_object_placement_allowed() noexcept;
+// Whether objects may be resized in this session (a dedicated server can turn object scaling off;
+// its roles that may always build are exempt). Off, a saved object's scale is kept in the layout
+// but it is not resized in the world, and the world's 1x is never saved over it. On outside a session.
+void set_lobby_object_scaling_allowed(bool enabled) noexcept;
+bool lobby_object_scaling_allowed() noexcept;
 // The session's limit on this player's objects (object_placement.h), 0 for none: the host's
 // own game and a server admin's are given none. Adding an object is refused at the limit.
 void set_lobby_object_limit(unsigned limit) noexcept;
@@ -24,6 +29,8 @@ bool queue_local_park_surface(const EditorSurfaceRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);
 bool queue_local_park_paste(const EditorPasteRequest &);
+bool queue_local_park_object_set(const EditorObjectSetRequest &);
+bool queue_local_park_delete(const EditorDeleteRequest &);
 void tick_local_park_editor() noexcept;
 // Invoked through the console's verified game-thread dispatcher. `texts`
 // carries a park mod's name, author, version and description (mod-create:
@@ -41,6 +48,9 @@ void update_park_editor();
 void update_park_editor_moves() noexcept;
 void reset_park_editor();
 bool park_editor_owns_placements();
+// The layout the editor's current edit is applying (null without one). Its new objects are saved
+// only when the whole edit completes, but they are live, linked objects before that.
+const profile::ObjectLayout *park_editor_pending_layout();
 bool park_editor_observe(std::uint64_t entity, const profile::PlacedObject &object);
 void park_editor_external_change();
 } // namespace dingosdk::profile_runtime

@@ -201,6 +201,15 @@ void ActivityLog::tick(std::uint64_t now) {
     }
 }
 
+std::set<std::uint64_t> ActivityLog::playing() const {
+    std::set<std::uint64_t> players;
+    for (const auto &[key, t] : throwdowns_)
+        if (t.started)
+            for (const auto player : t.players)
+                if (!t.quit.contains(player)) players.insert(player);
+    return players;
+}
+
 void ActivityLog::left(std::uint64_t player) {
     name(player); // keep the name for results after they left
     for (auto it = throwdowns_.begin(); it != throwdowns_.end();) {

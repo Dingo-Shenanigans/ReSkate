@@ -1,4 +1,6 @@
 #include "item_browser.h"
+#include "item_origins.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "local_customization_runtime.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -47,6 +49,17 @@ constexpr std::uint32_t data_key = 0x7199d8ed, data_title = 0xec725743, data_cat
 constexpr std::array<std::uint32_t, 2> rarity_path{0x35994418, 0x85839b5a};
 constexpr md::Schema rarity_style{0xb6800075, 416};
 constexpr std::uint32_t rarity_icon = 0xd4f0f044;
+// The item card shows an item's description as a notice, and the game's focus script
+// (ui/features/mystuff/cas/actions/casgriditem_onfocus_inventorymanager) gives it a warning sign
+// (IconOverride: ui/textures/icons/generic/img_generic_warning_128) each time an item is
+// focused. A mod item's description is only room for the overlay's mod card
+// (item_origins::reserved_description), so that notice shows the game's info sign instead. Never
+// none: the game resolves the override again later, and an empty one crashed it there
+// (Skate.exe+0x3e897fb, a lookup that finds nothing; 2.1.0, 2026-10-18).
+constexpr std::uint32_t notice_view = 0x7290e514;  // ui/foundations/components/notices/NoticeViewModel
+constexpr std::uint32_t notice_message = 0x94703efc, label_text = 0x4d8e01b9; // .Message (a label) .Text
+constexpr std::uint32_t notice_icon = 0x3514a765;  // NoticeViewModel.IconOverride
+constexpr char notice_info_texture[] = "ui/textures/icons/generic/img_generic_info_64";
 // The game's own star (UI/Textures/Common/Shapes/Bespoke), as its asset is named.
 constexpr char star_texture[] = "UI/Textures/comMon/Shapes/Bespoke/img_Star_Fill_64";
 
@@ -144,6 +157,11 @@ struct State {
     std::string search;
     Filter filter{};
     ULONGLONG next_sync{}, next_scan{}, last_open{};
+    std::uint64_t active_list{};  // the grid list that had the focus at the last full pass
+    std::vector<std::uint64_t> notices;  // the game's notice models, as of the last scan
+    std::uint64_t notice_info{};         // the info sign's texture, as last put on a notice
+    ULONGLONG notice_info_retry{};       // not loaded: when to look for it again
+    bool notice_cleared_logged{}, notice_failed_logged{}, notice_kept_logged{};
     std::uint64_t serial{};
     bool open{};
     std::string last_error;
@@ -507,7 +525,7 @@ void log_roots(State& s, const md::Context& context) {
 void log_status(const State& s) {
     logging::log(Level::info, Channel::customization, "Item browser: {} grid(s), search \"{}\", filter {}, {} favorite(s), file {}.",
         s.grids.size(), s.search, filter_names[static_cast<std::size_t>(s.filter)], s.favorites.keys.size(),
-        s.favorites.file.string());
+        path_utf8(s.favorites.file));
     for (const auto& grid : s.grids) {
         std::string focus = "-";
         if (grid.focused >= 0 && static_cast<std::size_t>(grid.focused) < grid.shown.size())
@@ -544,6 +562,15 @@ const overlay::ItemBrowserHost* overlay_host() noexcept {
             out.shown = current.shown;
             out.total = current.total;
             out.focused_favorite = current.focused_favorite;
+            // The mod the highlighted item is from, for its card (item_origins.h).
+            if (const auto origin = current.focused_key.empty() ? nullptr : item_origins::find(current.focused_key)) {
+                out.mod_title = origin->title;
+                out.mod_author = origin->author;
+                out.mod_version = origin->version;
+                out.mod_icon = path_utf8(origin->icon);
+                out.mod_items = static_cast<unsigned>(origin->items);
+                out.mod_changed = item_origins::game_item(current.focused_key);
+            }
             return out;
         },
         [] { toggle_focused_favorite(); },
@@ -577,8 +604,81 @@ void before_level_transition(unsigned next, std::uintptr_t base) noexcept {
             s.restyled.clear();
             s.layout = {};
             s.open = false;
+            s.notice_info = 0; // (its texture may go with the level)
         });
     } catch (...) {}
+}
+
+// A notice showing a mod item's reserved description has the info sign for the warning sign (see
+// notice_view). Every tick while a grid is open: the game puts the warning back on each focus.
+void quiet_notices(State& s, const md::Context& context) {
+    for (const auto handle : s.notices) {
+        try {
+            const md::Value notice{handle, context.type_of(handle)};
+            if (schema_of(notice.type) != notice_view) continue;
+            // Only as much of its text as tells: the others' notices may say a lot.
+            const auto text = context.path(notice, {notice_message, label_text});
+            md::require(md::kind(text.type) == 7, "Native menu text field differs.");
+            const auto& reserved = item_origins::reserved_description;
+            std::array<char, item_origins::reserved_description.size() + 1> start{};
+            const auto chars = md::read<md::Address>(context.address(text));
+            if (!chars || !memory::peek_bytes(chars, start.data(), start.size()) || start.back() != 0 ||
+                std::string_view(start.data(), reserved.size()) != reserved)
+                continue;
+            const auto icon = context.field(notice, notice_icon);
+            std::uint64_t now{};
+            md::require(md::size(icon.type) == sizeof(now), "Native notice icon field differs.");
+            if (!memory::peek(context.address(icon), now) || !now || now == s.notice_info) continue;
+            // A texture the game has loaded, or the warning stays: never an empty override.
+            if (GetTickCount64() < s.notice_info_retry) continue;
+            if (!md::publish_texture(context, icon, notice_info_texture)) {
+                s.notice_info_retry = GetTickCount64() + 2000;
+                if (!std::exchange(s.notice_kept_logged, true))
+                    logging::log(Level::info, Channel::customization, "Item browser: the info sign is not loaded; a mod item's card keeps the warning sign.");
+                continue;
+            }
+            std::uint64_t info{};
+            if (memory::peek(context.address(icon), info)) s.notice_info = info;
+            if (!std::exchange(s.notice_cleared_logged, true))
+                logging::log(Level::info, Channel::customization, "Item browser: a mod item's card shows the info sign for the warning sign.");
+        } catch (const std::exception& error) {
+            if (!std::exchange(s.notice_failed_logged, true))
+                logging::log(Level::warning, Channel::customization, "Item browser: a notice could not be checked for a mod item's warning sign: {}", error.what());
+        }
+    }
+}
+
+// Between full passes, only the highlight: which tile of the open grid has the focus, and whether
+// its screen is still up. So what the overlay shows of the focused item (its mod's card) follows
+// the player's moves at once instead of trailing the full pass by up to its interval.
+void follow_focus(State& s, Shared& sh, std::uintptr_t base) {
+    const auto grid = std::find_if(s.grids.begin(), s.grids.end(), [&](const Grid& g) { return g.list.handle == s.active_list; });
+    if (grid == s.grids.end() || grid->failed || !s.layout.row_type) return;
+    game::ModelWriteLock lock(s.manager);
+    const md::Context context(base, s.manager);
+    quiet_notices(s, context);
+    View next;
+    {
+        std::lock_guard shared_lock(sh.mutex);
+        next = sh.view;
+    }
+    if (context.type_of(grid->list.handle) != grid->list.type) {
+        // The screen closed: nothing is open now (the next full pass lets the grid go).
+        s.open = false;
+        s.active_list = 0;
+        next = {};
+    } else {
+        const auto rows = read_rows(context, context.field(grid->list, owned_items), s.layout);
+        if (rows.focused < 0 || static_cast<std::size_t>(rows.focused) >= rows.content.size()) return;
+        const auto content = rows.content[static_cast<std::size_t>(rows.focused)];
+        const auto item = std::find_if(grid->native.begin(), grid->native.end(), [&](const Item& i) { return i.content == content; });
+        if (item == grid->native.end() || item->key == next.focused_key) return;
+        next.focused_title = item->title;
+        next.focused_key = item->key;
+        next.focused_favorite = s.favorites.keys.contains(item->key);
+    }
+    std::lock_guard shared_lock(sh.mutex);
+    sh.view = std::move(next);
 }
 
 void update(std::uintptr_t base) noexcept {
@@ -587,7 +687,10 @@ void update(std::uintptr_t base) noexcept {
     try {
         if (s.lifetime.blocked()) return;
         const auto now = GetTickCount64();
-        if (now < s.next_sync) return;
+        if (now < s.next_sync) {
+            if (s.open && s.manager && s.active_list) follow_focus(s, sh, base);
+            return;
+        }
         s.next_sync = now + (s.open ? 40 : 200);
         s.favorites.load();
         const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
@@ -607,6 +710,9 @@ void update(std::uintptr_t base) noexcept {
         if (rescan) {
             s.next_scan = now + 400;
             scan(s, context);
+            s.notices.clear();
+            if (!s.grids.empty())
+                for (const auto& root : context.roots({notice_view})) s.notices.push_back(root.model.handle);
         }
         // Requests.
         std::vector<std::string> pokes;
@@ -625,6 +731,8 @@ void update(std::uintptr_t base) noexcept {
             active = nullptr; focused = nullptr;
             for (const auto& grid : s.grids) {
                 if (grid.focused < 0 || static_cast<std::size_t>(grid.focused) >= grid.shown.size()) continue;
+                // Its screen closed: gone at the next scan, but no longer what the player is in now.
+                if (context.type_of(grid.list.handle) != grid.list.type) continue;
                 active = &grid;
                 for (const auto& item : grid.native)
                     if (item.content == grid.shown[static_cast<std::size_t>(grid.focused)]) focused = &item;
@@ -663,6 +771,8 @@ void update(std::uintptr_t base) noexcept {
         if (!menu_since || now - menu_since < 1000) active = nullptr, focused = nullptr;
         if (active) s.last_open = now;
         s.open = active != nullptr;
+        if (s.open) quiet_notices(s, context);
+        s.active_list = active ? active->list.handle : 0;
         if (!s.open && (s.grids.empty() || now > s.last_open + 8000) && (!s.search.empty() || s.filter != Filter::all)) {
             s.search.clear();
             s.filter = Filter::all;
@@ -679,6 +789,7 @@ void update(std::uintptr_t base) noexcept {
         }
         if (focused) {
             next.focused_title = focused->title;
+            next.focused_key = focused->key;
             next.focused_favorite = s.favorites.keys.contains(focused->key);
         }
         std::lock_guard shared_lock(sh.mutex);

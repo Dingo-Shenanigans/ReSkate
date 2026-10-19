@@ -89,7 +89,8 @@ struct ControllerInput {
 struct ActionBind {
     std::string_view key, name, label, command;
 };
-inline constexpr std::array<ActionBind, 8> action_binds{{
+inline constexpr std::array<ActionBind, 9> action_binds{{
+    {"reskate_menu", "reskatemenu", "Open the ReSkate menu", "menu"},
     {"first_person", "firstperson", "First person", "firstperson toggle"},
     {"hide_hud", "hidehud", "Hide HUD", "hideui toggle"},
     {"voice_chat", "voicechat", "Voice chat on / off", "mp voice-chat toggle"},

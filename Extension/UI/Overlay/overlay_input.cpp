@@ -3,7 +3,6 @@
 #include "Extension/Boot/exit_watch.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
-#include "gamepad_navigation.h"
 #include "playstation_input.h"
 #include "cursor.h"
 
@@ -450,15 +449,24 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
 }
 }
 
-namespace dingosdk::overlay::detail {
-void update_gamepad_navigation(bool enabled) {
-    ControllerSample sample{};
-    if (enabled) sample = read_controller_sample();
-    const auto& pad = sample.pad;
-    feed_gamepad_navigation(ImGui::GetIO(),enabled && sample.device != 0,pad.wButtons,
-                            pad.sThumbLX,pad.sThumbLY,pad.bLeftTrigger,pad.bRightTrigger);
+namespace dingosdk::overlay {
+void begin_input_access() noexcept { ++detail::overlay_input_access; }
+void end_input_access() noexcept { --detail::overlay_input_access; }
+Gamepad read_gamepad() {
+    const auto sample = read_controller_sample();
+    Gamepad out;
+    if (!sample.device) return out;
+    const auto axis = [](std::int16_t v) { return std::clamp(static_cast<float>(v) / 32767.0f, -1.0f, 1.0f); };
+    out.valid = true;
+    out.playstation = sample.device >= 0x100u;
+    out.left_x = axis(sample.pad.sThumbLX); out.left_y = axis(sample.pad.sThumbLY);
+    out.right_x = axis(sample.pad.sThumbRX); out.right_y = axis(sample.pad.sThumbRY);
+    out.left_trigger = static_cast<float>(sample.pad.bLeftTrigger) / 255.0f;
+    out.right_trigger = static_cast<float>(sample.pad.bRightTrigger) / 255.0f;
+    out.buttons = sample.pad.wButtons;
+    return out;
 }
-}
+} // namespace dingosdk::overlay
 
 extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active) {
     const bool previous = state().freecam_controller_active.exchange(active, std::memory_order_relaxed);
@@ -511,9 +519,14 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
     // (Not while a menu, the console or chat has the keyboard; the card itself having the pointer is no reason.)
     const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load();
     if (!window || s.stop.load() || s.failed.load() || typing || !game_window_foreground(window)) return 0;
-    OverlayInputAccess access;
     unsigned keys{};
     constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE};
+    if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
+        for (unsigned bit = 0; bit < 4; ++bit)
+            if (held[wanted[bit] / 64] >> (wanted[bit] % 64) & 1) keys |= 1u << bit;
+        return keys;
+    }
+    OverlayInputAccess access;
     for (unsigned bit = 0; bit < 4; ++bit)
         if (GetAsyncKeyState(wanted[bit]) & 0x8000) keys |= 1u << bit;
     return keys;
@@ -527,8 +540,13 @@ extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* ou
     const HWND window = s.window.load();
     if (!window || s.stop.load() || s.failed.load() || (!allow_menu && interactive_visible(s)) ||
         !game_window_foreground(window)) return;
-    // Read through the overlay's bypass: freecam capture hides keys from the game.
-    {
+    // Read through the overlay's bypass: freecam capture hides keys from the game. (As sampled
+    // off this thread when there is a recent sample, cursor.cpp.)
+    if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
+        for (unsigned key = 0; key < 256; ++key)
+            if (dingosdk::bindable_keyboard_key(key) && (held[key / 64] >> (key % 64) & 1))
+                output->keys[key / 64] |= std::uint64_t{1} << (key % 64);
+    } else {
         OverlayInputAccess access;
         for (unsigned key = 0; key < 256; ++key) {
             if (dingosdk::bindable_keyboard_key(key) && (GetAsyncKeyState(key) & 0x8000)) {
@@ -570,7 +588,13 @@ extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* o
         return;
     }
     OverlayInputAccess editor_access;
-    const auto held = [](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; };
+    // (The keys as sampled off this thread when there is a sample, cursor.cpp: this runs every
+    // client frame while flying.)
+    std::array<std::uint64_t, 4> sampled{};
+    const bool have_sample = sampled_keys(window, sampled);
+    const auto held = [&](int key) {
+        return have_sample ? ((sampled[key / 64] >> (key % 64)) & 1) != 0 : (GetAsyncKeyState(key) & 0x8000) != 0;
+    };
     // Physical right button: the logical one unless the buttons are swapped.
     const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
     const bool raw = raw_mouse_live(s);

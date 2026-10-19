@@ -19,6 +19,10 @@ struct Choice {
     int count;
 };
 inline constexpr std::array choices{
+    Choice{L"ManualCatch", "Manual catch", 0, {0,1}, {"Off","On"},2},
+    Choice{L"GestureSpeed", "Stick-speed rotation", 1, {0,1}, {"Off","On"},2},
+    Choice{L"DpadCameraSide", "D-pad camera sides", 1, {0,1}, {"Off","On"},2},
+    Choice{L"SplitGrindControls", "Foot setup grinds", 1, {0,1}, {"Off","On"},2},
     Choice{L"PopOnRelease", "Pop style", 0, {0,1}, {"Flick","Release"},2},
     Choice{L"OneFootFlips", "One-stick flips", 0, {0,1}, {"Blocked","Allowed"},2},
     Choice{L"StickSteering", "Stick steering", 0, {0,1,2}, {"Off","Front foot","Left stick"},3},
@@ -131,6 +135,7 @@ public:
         for (const auto& c : choices) entries[c.key] = std::to_wstring(number(c.key,c.fallback));
         for (const auto* key : {L"AutoStance",L"StockGrabAir",L"StockTransitionGround"})
             entries[key] = std::to_wstring(number(key, std::wcscmp(key,L"AutoStance") == 0 ? 1 : 0));
+        entries[L"StickSteeringAngleDegrees"] = std::to_wstring(number(L"StickSteeringAngleDegrees",34));
         entries[L"Stance"] = text(L"Stance",L"regular");
         entries[L"SwitchSource"] = std::to_wstring(number(L"SwitchSource",4));
         for (const auto* key : {L"FrontBackFoot",L"SwitchStance",L"XLFootDirections",L"PresetFeetSwapped",L"MirrorFlicks"})
@@ -144,7 +149,7 @@ public:
         // Gameplay only: menu, recording and launch preferences remain global.
         // Merge the supported keys so unrelated tuning and unknown future keys survive.
         for (const auto& c : choices) if (saved.contains(c.key)) current[c.key] = saved[c.key];
-        for (const auto* key : {L"FrontBackFoot",L"SwitchStance",L"XLFootDirections",L"PresetFeetSwapped",L"MirrorFlicks",L"SwitchSource",L"StockGrabAir",L"StockTransitionGround"})
+        for (const auto* key : {L"FrontBackFoot",L"SwitchStance",L"XLFootDirections",L"PresetFeetSwapped",L"MirrorFlicks",L"SwitchSource",L"StockGrabAir",L"StockTransitionGround",L"StickSteeringAngleDegrees"})
             if (saved.contains(key)) current[key] = saved[key];
         return write(current);
     }

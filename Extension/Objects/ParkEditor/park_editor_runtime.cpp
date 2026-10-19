@@ -10,6 +10,7 @@
 #include "Extension/Objects/network_object_runtime.h"
 #include "park_document.h"
 #include "park_mods.h"
+#include "park_object_sets.h"
 #include <chrono>
 #include <future>
 
@@ -65,6 +66,10 @@ void refresh_park_mods() {
     e.next_park_scan = GetTickCount64() + 5000;
     ++park_scans;
     use_park_scan(scan_parks(e.data_root, e.directory));
+}
+void refresh_object_sets() {
+    auto &e = editor_state();
+    e.object_sets = std::make_shared<const std::vector<EditorObjectSet>>(editor::load_object_sets(e.sets_directory));
 }
 void poll_park_mods() {
     auto &e = editor_state();
@@ -166,13 +171,12 @@ void refresh_catalog() {
     if (e.assets && e.catalog_revision == snapshot.revision && e.catalog_manager == c.item_manager)
         return;
     const auto config = snapshot.extensions.value("object_dropper", Json::object());
-    const auto inventory = config.value("inventory", Json::object());
     const auto catalog = config.value("catalog", Json::object());
     const auto &cache = content_cache::catalogs();
     const auto groups = objects::object_groups(cache);
     auto assets = std::make_shared<std::vector<EditorAsset>>();
     for (const auto &[key, item] : c.items) {
-        if (!item.build_kit || !inventory.value(key, false) || assets->size() >= 4096)
+        if (!item.build_kit || !profile_runtime::installed_item_owned(snapshot, key, item.hash, true) || assets->size() >= 4096)
             continue;
         std::string title = key.starts_with("own_") ? key.substr(4) : key;
         std::replace(title.begin(), title.end(), '_', ' ');
@@ -256,6 +260,8 @@ void move_existing(std::uint64_t entity, const profile::PlacedObject &object) {
 void initialize_park_editor(const std::filesystem::path &directory) {
     auto &e = editor_state();
     e.directory = directory / L"parks";
+    e.sets_directory = directory / L"object_sets";
+    refresh_object_sets();
     e.surface_api = editor::surface_api(local_runtime().base);
     e.picking_api = editor::picking_api(local_runtime().base);
     e.highlight_api = editor::highlight_api(local_runtime().base);
@@ -311,6 +317,10 @@ bool park_editor_owns_placements() {
     // ownership swallowed every later native placement acknowledgement and
     // permanently starved the regular place/delete updater.
     return editor_state().transaction.has_value();
+}
+const profile::ObjectLayout *park_editor_pending_layout() {
+    const auto &e = editor_state();
+    return e.transaction ? &e.transaction->change.after : nullptr;
 }
 void park_editor_external_change() {
     auto &e = editor_state();
@@ -557,6 +567,17 @@ void update_park_editor() {
             }
             if (tx.preview && !tx.preview->ending)
                 return; // Live poses remain temporary until mouse release.
+            if (step.kind == Kind::create && step.object.scale != 1.0f && lobby_object_scaling_allowed()) {
+                // The create recipe has no scale, so the object spawned at 1x (a paste, a set, an
+                // undo or a loaded park). Resize it with a move, verified by the server tick's
+                // readback before the object is committed, as a placement preview does. Not where
+                // the session has scaling off: the server would not take it, and the edit would
+                // wait on it; the object stays 1x and keeps its scale in the layout.
+                step = {Kind::move, step.object, step.entity};
+                tx.sent = false;
+                tx.waiting_since = GetTickCount64();
+                return;
+            }
             if (step.kind == Kind::erase) {
                 r.tracked.erase(step.entity);
                 std::erase_if(r.rows, [&](const auto &row) { return row.entity == step.entity; });
@@ -650,6 +671,7 @@ ParkEditorModel local_park_editor() {
     model.project = e.project;
     model.can_load_parks = !is_lobby_guest();
     model.surface = e.surface;
+    model.object_sets = e.object_sets;
     if (e.transaction && e.transaction->preview)
         model.preview_token = e.transaction->preview->token;
     model.status = e.status;

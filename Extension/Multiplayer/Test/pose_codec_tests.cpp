@@ -509,6 +509,86 @@ void sound_checks() {
     }
     std::cout << "Sound codec: chains, refused messages, other worlds and damage handled (" << bytes / messages / 3 << " B a player a message on synthetic sound).\n";
 }
+// A sender that opens a stream under every one of the 65,536 numbers (a reported memory flood:
+// each held 32 poses, and every stream named a player who was there): the receiver keeps one
+// stream for each player, and no more than receiver_streams in all; sound likewise.
+void flood_checks() {
+    using namespace pose_batch;
+    QuantPose pose;
+    pose.skater = 2;
+    pose.bones.resize(3);
+    const auto whole_pose = pose_codec::encode_whole(pose);
+    const auto difference = pose_codec::encode_delta(pose, pose, pose_codec::Fingers::sent);
+    std::unordered_map<std::uint16_t, Stream> streams;
+    const auto flood = [&](auto source_of) {
+        streams.clear();
+        for (unsigned number = 1; number < 0x10000; ++number) {
+            auto message = begin(number, 7, 42);
+            Entry entry;
+            entry.stream = static_cast<std::uint16_t>(number);
+            entry.whole = true;
+            entry.source = source_of(number);
+            entry.epoch = 1;
+            entry.sequence = number * 64 + 1;
+            entry.time_us = 1;
+            entry.pose = whole_pose;
+            add(message, entry);
+            entry.whole = false;
+            entry.reference = static_cast<std::uint16_t>(entry.sequence);
+            entry.ahead = 1;
+            entry.time_step = 16000;
+            entry.pose = difference;
+            for (unsigned k = 0; k < 31; ++k, ++entry.reference) add(message, entry);
+            if (const auto batch = read(message))
+                for (const auto &one : batch->entries) (void)rebuild(streams, one);
+        }
+    };
+    flood([](unsigned) { return std::uint64_t{99}; });
+    check(streams.size() == 1 && streams.begin()->second.held.size() <= receiver_keeps, "One player's flood of streams was all kept");
+    flood([](unsigned number) { return std::uint64_t{number}; });
+    check(streams.size() == receiver_streams, "A flood of streams went past the receiver's limit");
+    // A player of the full table who opens a new stream (a new epoch) still has one.
+    {
+        auto message = begin(1, 7, 42);
+        Entry entry;
+        entry.stream = 0xffff;
+        entry.whole = true;
+        entry.source = 5;
+        entry.epoch = 2;
+        entry.sequence = 1;
+        entry.pose = whole_pose;
+        add(message, entry);
+        const auto batch = read(message);
+        check(batch && rebuild(streams, batch->entries.front()) && streams.contains(0xffff) && !streams.contains(5) &&
+                  streams.size() == receiver_streams,
+              "A player's new stream was refused when the table was full");
+    }
+
+    using namespace sound_codec;
+    std::mt19937 random(5);
+    AudioState state{};
+    const auto sound_flood = [&](auto source_of, auto admit) {
+        sound_codec::Sender sender;
+        std::unordered_map<std::uint16_t, In> heard;
+        for (unsigned round = 1; round < 2000; ++round) {
+            sender.begin(7, 42);
+            const std::vector<AudioSample> samples{sound_sample(random, state, 5000)};
+            // A new epoch each time: the sender opens a new stream for it.
+            sender.add(source_of(round), round, 1, round, samples, round);
+            std::vector<std::uint8_t> message(sender.message().begin(), sender.message().end());
+            sender.sent(true);
+            (void)sound_codec::read(heard, message, 7, 42, admit);
+        }
+        return heard.size();
+    };
+    const auto anyone = [](std::uint64_t) { return true; };
+    check(sound_flood([](unsigned) { return std::uint64_t{99}; }, anyone) == 1, "One player's flood of sound streams was all kept");
+    check(sound_flood([](unsigned round) { return std::uint64_t{round}; }, anyone) == receiver_streams,
+          "A flood of sound streams went past the receiver's limit");
+    check(sound_flood([](unsigned round) { return std::uint64_t{round}; }, [](std::uint64_t source) { return source < 4; }) == 3,
+          "Sound streams were opened for players who were not admitted");
+    std::cout << "Stream floods: one stream a player, at most " << receiver_streams << " in all.\n";
+}
 // Sizes on real play: the sound in a pose-dump recording, sent as a game would send it.
 int sound_bench(const char *path) {
     using namespace sound_codec;
@@ -594,6 +674,7 @@ int main(int argc, char **argv) {
     hostile_checks();
     link_checks();
     sound_checks();
+    flood_checks();
     if (failures) return 1;
     std::cout << "Pose codec tests passed.\n";
     return 0;

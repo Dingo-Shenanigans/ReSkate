@@ -1,6 +1,7 @@
 #include "gui_internal.h"
 
 #include "depot_output.h"
+#include "official_mods.h"
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -66,9 +67,13 @@ Settings load_settings(const fs::path& path) {
         settings.updates = json.value("updates", settings.updates);
         settings.crash_reports = json.value("crash_reports", settings.crash_reports);
         settings.performance_timings = json.value("performance_timings", settings.performance_timings);
+        settings.prereleases = json.value("prereleases", settings.prereleases);
         settings.steam_username = json.value("steam_username", std::string());
         settings.steam_remember = json.value("steam_remember", settings.steam_remember);
         settings.steam_prefer_code = json.value("steam_prefer_code", settings.steam_prefer_code);
+        settings.accepted_privacy = json.value("accepted_privacy_version", settings.accepted_privacy);
+        settings.accepted_terms = json.value("accepted_terms_version", settings.accepted_terms);
+        settings.announcement_hidden = json.value("announcement_hidden", settings.announcement_hidden);
     } catch (const std::exception& exception) {
         logging::log(logging::Level::warning, logging::Channel::launcher, "Ignoring launcher settings: {}", exception.what());
     }
@@ -92,9 +97,13 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["updates"] = settings.updates;
     json["crash_reports"] = settings.crash_reports;
     json["performance_timings"] = settings.performance_timings;
+    json["prereleases"] = settings.prereleases;
     json["steam_username"] = settings.steam_username;
     json["steam_remember"] = settings.steam_remember;
     json["steam_prefer_code"] = settings.steam_prefer_code;
+    json["accepted_privacy_version"] = settings.accepted_privacy;
+    json["announcement_hidden"] = settings.announcement_hidden;
+    json["accepted_terms_version"] = settings.accepted_terms;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << json.dump(2) << '\n';
 }
@@ -157,6 +166,19 @@ void Launcher::save() {
     // launcher's own crash reporting follows the setting from its next start.
     SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", settings_.crash_reports ? nullptr : L"0");
     SetEnvironmentVariableW(L"RESKATE_TRACING", settings_.performance_timings ? L"1" : L"0");
+}
+
+void Launcher::check_again_if_update_choices_changed() {
+    // "Install ReSkate updates" or "Test pre-releases" changed: the update check runs again now,
+    // so the release that applies (or keeping the files there are) is offered without a restart.
+    // Not while a download, an update or a launch is under way, the game runs, or a merge waits
+    // on an answer about mods: the next check or start picks it up then.
+    if (settings_.updates == checked_updates_.load() && settings_.prereleases == checked_prereleases_.load()) return;
+    if (busy_ || launched_) return;
+    const auto phase = snapshot().phase;
+    if (phase == Phase::ready || phase == Phase::update_available || phase == Phase::game_missing ||
+        phase == Phase::game_outdated || phase == Phase::failed)
+        check();
 }
 
 template<class Task> void Launcher::start(Task task) {
@@ -308,17 +330,21 @@ bool Launcher::runtime_outdated(const update::Config& config) const {
 }
 
 void Launcher::run_check() {
+    checked_updates_ = settings_.updates;
+    checked_prereleases_ = settings_.prereleases;
     set(Phase::checking, "Checking for updates");
     update::remove_previous_launcher(session_.self);
-    auto config = update::fetch_config();
+    auto config = update::fetch_config(settings_.prereleases);
     {
         std::lock_guard lock(mutex_);
         state_.config = config;
     }
+    // (Unreachable GitHub: what the last check found stands.)
+    if (config) prerelease_available_ = config->prerelease_available;
     const bool newer = config && (launcher_outdated(*config) || runtime_outdated(*config));
     if (newer && update::binary_updates_enabled() && binaries_ && settings_.updates) {
         set(Phase::update_available, "A ReSkate update is ready",
-            std::format("Version {} will be downloaded and installed.",
+            std::format("{} {} will be downloaded and installed.", config->prerelease ? "Pre-release" : "Version",
                 config->runtime.version.empty() ? config->launcher.version : config->runtime.version));
         return;
     }
@@ -476,17 +502,18 @@ bool Launcher::run_mod_merge() {
     if (!catalog.issue.empty())
         problems.push_back({{}, "The Mods folder", catalog.issue});
     for (const auto& mod : catalog.excluded) {
-        // Mods built for another game version say so for themselves, in game
-        // and in the mod manager; they do not hold up a launch.
+        // Mods built for another game version say so for themselves, in game and in the mod
+        // manager, and a mod left out for a conflict is shown there with the mod it lost to and
+        // what to do about it: neither holds up a launch.
         if (!mod.outdated.empty()) continue;
-        problems.push_back({mod.name, mod.title.empty() ? mod.name : mod.title,
-            mod.problems.empty() ? std::string("it could not be merged cleanly") : mod.problems.front()});
+        const auto reason = mod.problems.empty() ? std::string("it could not be merged cleanly") : mod.problems.front();
+        if (reason.starts_with("conflicts with ")) continue;
+        problems.push_back({mod.name, mod.title.empty() ? mod.name : mod.title, reason});
     }
     if (problems.empty()) return true;
     std::lock_guard lock(mutex_);
     state_.phase = Phase::mods_broken;
-    state_.status = problems.size() == 1 ? "A mod could not be merged"
-                                         : std::format("{} mods could not be merged", problems.size());
+    state_.status = problems.size() == 1 ? "A mod could not be merged" : std::format("{} mods could not be merged", problems.size());
     state_.detail.clear();
     state_.progress = -1;
     state_.mod_problems = std::move(problems);
@@ -494,6 +521,12 @@ bool Launcher::run_mod_merge() {
 }
 
 void Launcher::run_play() {
+    // The official mods first (official_mods.h): the merge takes them in.
+    if (!official_mods::wait(std::chrono::milliseconds(0))) {
+        set(Phase::merging, "Official mods", "Finishing the official mods being installed", -1.0f);
+        if (!official_mods::wait(std::chrono::minutes(3)))
+            logging::write(logging::Level::warning, logging::Channel::launcher, "Official mods were still being installed; Skate starts without them");
+    }
     if (!ignore_mod_problems_ && !run_mod_merge()) return;
     ignore_mod_problems_ = false;
     set(Phase::launching, "Starting Skate");
@@ -520,6 +553,9 @@ void Launcher::run_play() {
 namespace dingosdk::launcher_gui {
 bool updates_enabled(const launcher_app::Session& session) {
     return detail::load_settings(detail::settings_path(session)).updates;
+}
+bool prereleases_enabled(const launcher_app::Session& session) {
+    return detail::load_settings(detail::settings_path(session)).prereleases;
 }
 launcher::LaunchOptions saved_launch_options(const launcher_app::Session& session) {
     return detail::launch_options(detail::load_settings(detail::settings_path(session)));

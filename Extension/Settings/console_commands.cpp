@@ -121,5 +121,40 @@ void register_settings_commands(Commands &registry) {
         out("Menu scale reset.");
     };
     registry.add(std::move(menu));
+
+    auto full_scale = argument("scale", Type::number);
+    full_scale.minimum = min_menu_scale;
+    full_scale.maximum = max_menu_scale;
+    auto menu_full = variable("ui scalefull", "Scale the full screen ReSkate menu and its text", Group::console, std::move(full_scale));
+    menu_full.execution = Execution::local;
+    menu_full.inspect = [](const Model &m) {
+        return State{true, std::format("{:.2f}", m.menu_scale_fullscreen), {}, "Saved with your profile.", false};
+    };
+    menu_full.run = [](const Model &, const Values &args, const Output &out) {
+        const auto value = static_cast<float>(std::get<double>(args[0]));
+        out(profile_runtime::set_local_menu_scale(value, true)
+                ? std::format("Full screen menu scale set to {:.2f}.", value)
+                : std::format("error: Choose a scale from {:.2f} to {:.2f}.", min_menu_scale, max_menu_scale));
+    };
+    menu_full.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_scale(default_menu_scale, true);
+        out("Full screen menu scale reset.");
+    };
+    registry.add(std::move(menu_full));
+
+    auto fullscreen = variable("ui fullscreen", "Show the ReSkate menu full screen, made for a controller (0: a window)",
+                               Group::console, argument("0|1", Type::boolean));
+    fullscreen.execution = Execution::local;
+    fullscreen.inspect = [](const Model &m) { return boolean_state(true, m.menu_fullscreen, {}); };
+    fullscreen.run = [](const Model &, const Values &args, const Output &out) {
+        const bool on = std::get<bool>(args[0]);
+        profile_runtime::set_local_menu_fullscreen(on);
+        out(on ? "The ReSkate menu fills the screen." : "The ReSkate menu is a window.");
+    };
+    fullscreen.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_fullscreen(false);
+        out("The ReSkate menu is a window.");
+    };
+    registry.add(std::move(fullscreen));
 }
 } // namespace dingosdk::console

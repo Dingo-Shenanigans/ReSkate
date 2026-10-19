@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace dingosdk {
@@ -193,13 +194,26 @@ HookStatus WINAPI hook_prepare(void* target, void* replacement, void** original)
         return HookOk;
     });
 }
+namespace {
+thread_local unsigned batch_depth{}, batch_queued{};
+}
 HookStatus WINAPI hook_enable(void* target) {
     return locked([&](Registry& r) {
         if (!r.initialized) return HookNotInitialized;
         auto* hook = find(r, target); if (!hook) return HookNotFound;
         if (hook->attached) return HookOk;
+        if (batch_depth) {
+            hook->queued = true;
+            ++batch_queued;
+            return HookOk;
+        }
         return transact({{hook, true}});
     });
+}
+HookBatch::HookBatch() noexcept { ++batch_depth; }
+HookBatch::~HookBatch() {
+    if (--batch_depth || !std::exchange(batch_queued, 0)) return;
+    (void)hook_apply_queued();
 }
 HookStatus WINAPI hook_disable(void* target) {
     return locked([&](Registry& r) {

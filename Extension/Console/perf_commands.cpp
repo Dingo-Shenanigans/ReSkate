@@ -1,5 +1,6 @@
 #include "Extension/Console/commands.h"
 #include "Engine/Core/Profiling/profiler.h"
+#include "Extension/Console/memory_ledger.h"
 #include "Extension/Settings/engine_tweaks.h"
 #include "Extension/Settings/job_spin.h"
 #include "Extension/UI/Overlay/overlay.h"
@@ -139,127 +140,10 @@ void print_by_size(const std::vector<std::uint64_t>& sizes, const Output& out, s
         out(std::format("  {} x {} = {}", order[i].second.first, megabytes(order[i].first), megabytes(order[i].second.second)));
 }
 
-// `perf memory trace`: who asks Windows for the middle-sized blocks (2 to 64 MB) while it is on,
-// by the code that called for each: where a block of a size `perf memory` showed many of comes
-// from. Every commit of memory in the process passes the hook while it is on, so it is a
-// research aid and off until asked for.
-namespace trace {
-constexpr std::size_t callers = 8192, depth = 14;
-struct Caller {
-    std::uint64_t hash{}, count{}, bytes{}, size{}, largest{}; // size: the smallest such block; largest: the largest
-    std::array<void*, depth> frames{};
-    unsigned frame_count{};
-};
-std::mutex mutex;
-std::vector<Caller> table(callers); // found by hash: a commit of any size can be traced
-std::atomic<bool> on{};
-// The sizes traced: 2 to 64 MB from the console; the largest blocks alone from the start of
-// the game (RESKATE_MEMORY_TRACE), where nearly everything is being allocated.
-std::atomic<std::uint64_t> least{2ull << 20}, most{64ull << 20};
-bool prepared{};
-using Allocate = LONG (NTAPI*)(HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG);
-Allocate original{};
-
-// The newer call for the same (VirtualAlloc2, which graphics drivers and the D3D12 runtime use).
-using AllocateEx = LONG (NTAPI*)(HANDLE, PVOID*, PSIZE_T, ULONG, ULONG, void*, ULONG);
-AllocateEx original_ex{};
-void note(HANDLE process, SIZE_T asked, ULONG type) noexcept;
-
-LONG NTAPI hooked(HANDLE process, PVOID* base, ULONG_PTR zero_bits, PSIZE_T size, ULONG type, ULONG protect) {
-    const auto asked = size ? *size : 0;
-    const auto status = original(process, base, zero_bits, size, type, protect);
-    if (status >= 0) note(process, asked, type);
-    return status;
-}
-LONG NTAPI hooked_ex(HANDLE process, PVOID* base, PSIZE_T size, ULONG type, ULONG protect, void* parameters, ULONG parameter_count) {
-    const auto asked = size ? *size : 0;
-    const auto status = original_ex(process, base, size, type, protect, parameters, parameter_count);
-    if (status >= 0) note(process, asked, type);
-    return status;
-}
-void note(HANDLE process, SIZE_T asked, ULONG type) noexcept {
-    if (!on.load(std::memory_order_relaxed) || !(type & (MEM_COMMIT | MEM_RESERVE)) || process != GetCurrentProcess() ||
-        asked < least.load(std::memory_order_relaxed) || asked > most.load(std::memory_order_relaxed)) return;
-    // (Reservations count too: a block reserved whole and committed a piece at a time is only
-    // this large when it is reserved.)
-    Caller seen;
-    seen.frame_count = CaptureStackBackTrace(2, static_cast<DWORD>(depth), seen.frames.data(), nullptr);
-    // By who asked alone: one caller's blocks of every size add up together.
-    std::uint64_t hash = 1469598103934665603ull;
-    for (unsigned i = 0; i < seen.frame_count; ++i) hash = hash * 1099511628211ull ^ reinterpret_cast<std::uintptr_t>(seen.frames[i]);
-    if (!hash) hash = 1;
-    std::lock_guard lock(mutex);
-    for (std::size_t probe = 0; probe < 128; ++probe) {
-        auto& caller = table[(hash + probe) % callers];
-        if (caller.count && caller.hash != hash) continue;
-        if (!caller.count) { caller = seen; caller.hash = hash; caller.size = asked; }
-        ++caller.count;
-        caller.bytes += asked;
-        caller.size = std::min<std::uint64_t>(caller.size, asked);
-        caller.largest = std::max<std::uint64_t>(caller.largest, asked);
-        break;
-    }
-}
-bool start(std::string& error) {
-    if (!prepared) {
-        const auto target = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemory"));
-        if (!target || hook_prepare(target, reinterpret_cast<void*>(&hooked), reinterpret_cast<void**>(&original)) != HookOk) {
-            error = "the allocation hook could not be prepared";
-            return false;
-        }
-        // (Missing on an older Windows: then only the first is traced.)
-        if (const auto ex = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemoryEx"));
-            ex && hook_prepare(ex, reinterpret_cast<void*>(&hooked_ex), reinterpret_cast<void**>(&original_ex)) != HookOk)
-            original_ex = nullptr;
-        prepared = true;
-    }
-    { std::lock_guard lock(mutex); std::fill(table.begin(), table.end(), Caller{}); }
-    const auto target = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemory"));
-    if (!on.load() && hook_enable(target) != HookOk) { error = "the allocation hook could not be attached"; return false; }
-    if (!on.load() && original_ex) hook_enable(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemoryEx")));
-    on.store(true);
-    return true;
-}
-void stop() {
-    if (!on.exchange(false)) return;
-    hook_disable(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemory")));
-    if (original_ex) hook_disable(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtAllocateVirtualMemoryEx")));
-}
-std::string place(void* address) {
-    HMODULE module{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(address), &module) || !module)
-        return std::format("{:#x}", reinterpret_cast<std::uintptr_t>(address));
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(module, path, MAX_PATH);
-    const wchar_t* name = path;
-    for (const wchar_t* c = path; *c; ++c) if (*c == L'\\') name = c + 1;
-    std::string text;
-    for (; *name; ++name) text += static_cast<char>(*name);
-    return std::format("{}+{:#x}", text, reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(module));
-}
-void report(const Output& out) {
-    std::vector<Caller> seen;
-    {
-        std::lock_guard lock(mutex);
-        for (const auto& caller : table) if (caller.count) seen.push_back(caller);
-    }
-    std::sort(seen.begin(), seen.end(), [](const Caller& a, const Caller& b) { return a.bytes > b.bytes; });
-    out(std::format("Memory asked for while tracing (blocks of {} and up), by who asked ({} callers), the most first:",
-        megabytes(least.load()), seen.size()));
-    for (std::size_t i = 0; i < seen.size() && i < 16; ++i) {
-        out(seen[i].size == seen[i].largest
-                ? std::format("  {} x {} bytes = {}", seen[i].count, seen[i].size, megabytes(seen[i].bytes))
-                : std::format("  {} blocks of {} to {} bytes = {}", seen[i].count, seen[i].size, seen[i].largest, megabytes(seen[i].bytes)));
-        std::string line = "     ";
-        for (unsigned frame = 0; frame < seen[i].frame_count; ++frame) line += " < " + place(seen[i].frames[frame]);
-        out(line);
-    }
-}
-} // namespace trace
-
 // RESKATE_MEMORY_TRACE=<megabytes>: from the start of the game, who asks for each block of at
-// least that size (`perf memory` then lists them). A research aid for what a map's load commits.
+// least that size (`perf memory` then lists them), and the memory ledger from then on, so
+// `perf memory owners` can say who made nearly everything. A research aid for what a map's
+// load commits.
 void start_memory_trace_from_environment() noexcept {
     wchar_t value[16]{};
     const auto length = GetEnvironmentVariableW(L"RESKATE_MEMORY_TRACE", value, 16);
@@ -269,10 +153,8 @@ void start_memory_trace_from_environment() noexcept {
     const auto megabytes_least = std::wcstoul(value, nullptr, 10);
     if (!megabytes_least && !all) return;
     try {
-        trace::least.store(all ? 1 : static_cast<std::uint64_t>(megabytes_least) << 20);
-        trace::most.store(UINT64_MAX);
         std::string error;
-        (void)trace::start(error);
+        (void)memory_ledger::start_asking(all ? 1 : static_cast<std::uint64_t>(megabytes_least) << 20, UINT64_MAX, error);
     } catch (...) {}
 }
 
@@ -352,6 +234,7 @@ void register_perf_commands(Commands& registry) {
 
     // How close the game is to its limit of streamed textures (texture_handle_limit).
     auto textures = action("textures", "Streamed textures in use, and the most the game can hold", Group::console);
+    textures.aliases = {"perf textures"}; // beside the other perf readings, where it is looked for
     textures.execution = Execution::local;
     textures.run = [](const Model&, const Values&, const Output& out) {
         const auto state = texture_handle_limit::use();
@@ -531,15 +414,32 @@ void register_perf_commands(Commands& registry) {
     registry.add(std::move(tweaks));
 
     auto what = argument("mark", Type::text, true);
-    what.complete = [](const Model&, auto) { return std::vector<std::string>{"mark", "trace", "stop", "big"}; };
+    what.complete = [](const Model&, auto) {
+        return std::vector<std::string>{"mark", "trace", "stop", "big", "owners", "heap", "gpu", "report"};
+    };
+    auto heap_mark = argument("mark", Type::text, true);
+    heap_mark.complete = [](const Model&, auto) { return std::vector<std::string>{"mark"}; };
     auto memory = action("perf memory", "The game's memory by allocation; `perf memory mark` remembers it and the next `perf memory` says what was added since; "
-        "`perf memory trace` then also says who asked for the middle-sized blocks, until `perf memory stop`; `perf memory big` lists the largest blocks and how much of each is in use",
-        Group::console, {std::move(what)});
+        "`perf memory trace` then also says who asked for the middle-sized blocks, until `perf memory stop`; `perf memory big` lists the largest blocks and how much of each is in use; "
+        "`perf memory owners` says who made what is held and how much of it is used (it starts the memory ledger, which then also says in the log what keeps growing); "
+        "`perf memory heap [mark]` lists the heaps' blocks by size and what was added since a mark; `perf memory gpu` the video memory; "
+        "`perf memory report` writes all of it to a file beside ReSkate.log",
+        Group::console, {std::move(what), std::move(heap_mark)});
     memory.execution = Execution::local;
     memory.run = [](const Model&, const Values& args, const Output& out) {
         static std::mutex mutex;
         static MemoryMap marked;
         static bool has_mark{};
+        const memory_ledger::Line line = [&](const std::string& text) { out(text); };
+        const auto word = args.empty() ? std::string() : std::get<std::string>(args[0]);
+        if (equal(word, "owners")) return memory_ledger::owners_report(line);
+        if (equal(word, "heap")) return memory_ledger::heap_report(line, args.size() > 1 && equal(std::get<std::string>(args[1]), "mark"));
+        if (equal(word, "gpu")) return memory_ledger::gpu_report(line);
+        if (equal(word, "report")) {
+            const auto path = memory_ledger::write_report();
+            out(path.empty() ? std::string("error: the report could not be written") : "Memory report: " + narrow(path));
+            return;
+        }
         std::lock_guard lock(mutex);
         const auto now = read_memory_map();
         out(std::format("Memory: {} committed in {} allocations, {} of files mapped in, {} of programs.", megabytes(now.committed),
@@ -592,16 +492,15 @@ void register_perf_commands(Commands& registry) {
         }
         const bool tracing = !args.empty() && equal(std::get<std::string>(args[0]), "trace");
         if (!args.empty() && equal(std::get<std::string>(args[0]), "stop")) {
-            trace::stop();
+            // (The memory ledger stays on: what it missed being given back would be wrong.)
+            memory_ledger::stop_asking();
             out("Tracing stopped.");
             return;
         }
         if (tracing) {
             std::string error;
             // Every size: a large block is often set aside whole and filled a page at a time.
-            trace::least.store(1);
-            trace::most.store(UINT64_MAX);
-            if (!trace::start(error)) { out("error: " + error); return; }
+            if (!memory_ledger::start_asking(1, UINT64_MAX, error)) { out("error: " + error); return; }
         }
         if (tracing || (!args.empty() && equal(std::get<std::string>(args[0]), "mark"))) {
             marked = now;
@@ -615,7 +514,7 @@ void register_perf_commands(Commands& registry) {
             for (const auto& [base, size] : now.allocations) sizes.push_back(size);
             out("The allocation sizes that add up to most:");
             print_by_size(sizes, out, 20);
-            if (trace::on.load()) trace::report(out);
+            if (memory_ledger::asking()) memory_ledger::asked_report(line);
             return;
         }
         std::vector<std::uint64_t> added, grown;
@@ -636,7 +535,7 @@ void register_perf_commands(Commands& registry) {
         out(std::format("Growth of allocations that were there: {} in {}. By how much each grew:", megabytes(grown_bytes), grown.size()));
         print_by_size(grown, out, 12);
         out(std::format("Given back: {}.", megabytes(freed_bytes)));
-        if (trace::on.load()) trace::report(out);
+        if (memory_ledger::asking()) memory_ledger::asked_report(line);
     };
     registry.add(std::move(memory));
 

@@ -169,6 +169,29 @@ inline WorldLayerMapSelection select_world_layer_map(
     return result;
 }
 
+// A TOD_<n>_<name> layer (or a lighting tier's <tier>_TOD_<n>_<name>): one time of day among its siblings.
+inline bool world_layer_time_of_day(std::size_t slot) {
+    const auto& bundle = world_layer_nodes()[slot].bundle;
+    auto leaf = bundle.substr(bundle.find_last_of('/') + 1);
+    for (auto& c : leaf) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+    const auto mid = leaf.find("_tod_");
+    const auto at = leaf.starts_with("tod_") ? 4 : mid == std::string::npos ? leaf.size() : mid + 5;
+    return at < leaf.size() && leaf[at] >= '1' && leaf[at] <= '9';
+}
+
+// A sibling time of day that is to be off but not fully unloaded yet, which `slot` must wait for;
+// world_layer_nodes().size() when there is none.
+template <class FullyOff>
+std::size_t world_layer_old_time_of_day(std::size_t slot, const std::vector<std::optional<bool>>& desired, FullyOff&& fully_off) {
+    const auto& nodes = world_layer_nodes();
+    if (!world_layer_time_of_day(slot)) return nodes.size();
+    for (std::size_t at = 0; at < nodes.size(); ++at)
+        if (at != slot && nodes[at].parent == nodes[slot].parent && nodes[at].map == nodes[slot].map &&
+            desired[at] == false && world_layer_time_of_day(at) && !fully_off(at))
+            return at;
+    return nodes.size();
+}
+
 inline bool world_layer_supported(
         std::size_t choice,
         const std::vector<bool>& present) noexcept {

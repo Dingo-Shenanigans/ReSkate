@@ -107,7 +107,7 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     ImGui::InputTextWithHint("##lobby-name", name_hint.c_str(), menu.multiplayer_lobby_name.data(),
                              menu.multiplayer_lobby_name.size());
     field(menu, "Player limit", "Includes you.");
-    ImGui::SliderInt("##player-limit", &capacity, 2, multiplayer_lobby_player_limit, "%d players");
+    ::dingosdk::overlay::menu::slider_int("##player-limit", &capacity, 2, multiplayer_lobby_player_limit, "%d players");
     menu.multiplayer_capacity = capacity;
     field(menu, "Update rate",
           "How often nearby skaters update. Higher is smoother but uses more upload bandwidth.");
@@ -251,7 +251,7 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         field(menu, "Player distance", "How far away other players are still shown as skaters. Past it they keep their nametag "
                                        "or dot. Lower it on a busy server for more frames and less memory; all the way up shows everyone.");
         float shown = menu.player_distance_pending.value_or(mp.player_distance);
-        ImGui::SliderFloat("##player-distance", &shown, player_distance_least, player_distance_unlimited,
+        ::dingosdk::overlay::menu::slider_float("##player-distance", &shown, player_distance_least, player_distance_unlimited,
                            shown >= player_distance_unlimited ? "Everyone" : "%.0f m", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemActive()) menu.player_distance_pending = shown;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -283,7 +283,7 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         field(menu, "Nametag distance", "How far away a player's name still shows. Past it they are a dot.");
         float distance = menu.nametag_distance_pending.value_or(mp.nametag_distance);
-        ImGui::SliderFloat("##nametag-distance", &distance, 10.f, 500.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp);
+        ::dingosdk::overlay::menu::slider_float("##nametag-distance", &distance, 10.f, 500.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemActive()) menu.nametag_distance_pending = distance;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             send_private(menu, "nametag-distance", std::to_string(static_cast<int>(distance)), unused, false);
@@ -338,7 +338,7 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         field(menu, "Bubble distance", "How far away a player can be and still show a chat bubble.");
         float distance = menu.chat_bubbles_distance_pending.value_or(mp.chat_bubbles_distance);
-        ImGui::SliderFloat("##bubble-distance", &distance, 5.f, 200.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp);
+        ::dingosdk::overlay::menu::slider_float("##bubble-distance", &distance, 5.f, 200.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemActive()) menu.chat_bubbles_distance_pending = distance;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             send_private(menu, "chat-bubbles-distance", std::to_string(static_cast<int>(distance)), unused, false);
@@ -350,7 +350,7 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
             menu.chat_bubbles_distance_pending.reset();
         field(menu, "Bubble duration", "How many seconds a chat bubble stays before it fades.");
         float duration = menu.chat_bubbles_duration_pending.value_or(mp.chat_bubbles_duration);
-        ImGui::SliderFloat("##bubble-duration", &duration, 1.f, 30.f, "%.0f s", ImGuiSliderFlags_AlwaysClamp);
+        ::dingosdk::overlay::menu::slider_float("##bubble-duration", &duration, 1.f, 30.f, "%.0f s", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemActive()) menu.chat_bubbles_duration_pending = duration;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             send_private(menu, "chat-bubbles-duration", std::to_string(static_cast<int>(duration)), unused, false);
@@ -362,7 +362,7 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
             menu.chat_bubbles_duration_pending.reset();
         field(menu, "Bubble history", "How many recent messages stack above each skater (1-8).");
         int history = menu.chat_bubbles_history_pending.value_or(mp.chat_bubbles_history);
-        ImGui::SliderInt("##bubble-history", &history, 1, 8, "%d lines", ImGuiSliderFlags_AlwaysClamp);
+        ::dingosdk::overlay::menu::slider_int("##bubble-history", &history, 1, 8, "%d lines", ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemActive()) menu.chat_bubbles_history_pending = history;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             send_private(menu, "chat-bubbles-history", std::to_string(history), unused, false);
@@ -385,7 +385,7 @@ void multiplayer_network_page(SkateMenu &menu, const Model &model, const Callbac
 void special_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     const auto &mp = model.multiplayer;
     std::array<char, 65> unused{};
-    ImGui::BeginChild("special", ImVec2(0, page_body_height(menu)));
+    ImGui::BeginChild("special", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     begin_card(menu, "special-tag", "YOUR TAG");
     {
         // Drawn the way chat and nametags draw it (role_badge.h), and faint while it is off.
@@ -517,11 +517,17 @@ void multiplayer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &ca
     const bool has_session = mp.active || mp.lobby_joining;
     if (has_session && !menu.multiplayer_session_seen) menu.multiplayer_tab = multiplayer_session_tab;
     menu.multiplayer_session_seen = has_session;
-    category_tabs(menu, menu.multiplayer_tab, {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS"},
-                  "multiplayer-categories");
+    // YOUR TAG only for a player the backend lists (it was the SPECIAL page).
+    if (mp.identity_tag.empty())
+        category_tabs(menu, menu.multiplayer_tab, {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS", "PLAYERS AND CHAT"},
+                      "multiplayer-categories");
+    else
+        category_tabs(menu, menu.multiplayer_tab,
+                      {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS", "PLAYERS AND CHAT", "YOUR TAG"},
+                      "multiplayer-categories");
     if (menu.multiplayer_tab != multiplayer_voice_tab) menu.voice_bind_capture = 0;
     ImGui::PushID(menu.multiplayer_tab);
-    ImGui::BeginChild("multiplayer-category", ImVec2(0, page_body_height(menu)));
+    ImGui::BeginChild("multiplayer-category", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     switch (menu.multiplayer_tab) {
     case 0:
         join_page(menu, model, callbacks);
@@ -536,6 +542,12 @@ void multiplayer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &ca
         break;
     case multiplayer_bans_tab:
         bans_page(menu, model);
+        break;
+    case multiplayer_chat_tab:
+        menu::multiplayer_display_settings(menu, model);
+        break;
+    default:
+        menu::special_page(menu, model, callbacks);
         break;
     }
     ImGui::EndChild();

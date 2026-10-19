@@ -79,13 +79,13 @@ void validate_object_dropper(const Snapshot& s) {
     }
     if (section.contains("inventory")) {
         const auto& inventory = object_field(section, "inventory");
-        require(inventory.size() <= 8192, "Object inventory exceeds limit");
+        require(inventory.size() <= saved_item_limit, "Object inventory exceeds limit");
         for (const auto& [key, owned] : inventory.items())
             require(valid_text(key) && owned.is_boolean(), "Invalid object ownership record");
     }
     if (section.contains("catalog")) {
         const auto& catalog = object_field(section, "catalog");
-        require(catalog.size() <= 8192, "Object metadata catalog exceeds limit");
+        require(catalog.size() <= saved_item_limit, "Object metadata catalog exceeds limit");
         for (const auto& [key, metadata] : catalog.items()) {
             require(valid_text(key) && metadata.is_object(), "Invalid object metadata record");
             for (const auto* field : {"title", "description", "rarity_id"})

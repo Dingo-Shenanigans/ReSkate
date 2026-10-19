@@ -183,6 +183,7 @@ class Host {
         OutfitBudget outfit_budget;
         SoundBudget sound_budget;
         EffectBudget effect_budget;
+        EffectBudget drone_budget; // FPV drone markers (drone_beacon.h): a few a second
         // Their poses read this pass, passed on once all of the pass's messages are read
         // (relay_poses), and how many of their effects packets were passed on in it.
         std::vector<Packet> relay_poses;
@@ -398,6 +399,34 @@ class Host {
         return role ? role->rank : -1;
     }
     void send_permissions(Guest &);    // what their role lets them do
+    // Tools taken from single players (lock_*, server_config.h): by an admin or the console
+    // (`manual`), or for a throwdown they play in (`automatic`, config throwdown_locks). In
+    // memory only. A throwdown's end when the player leaves; an admin's are kept for their
+    // SteamID until unlocked or the server restarts, so leaving and joining again does not lift
+    // them. A locked player's roster says the tool is off for them, and while noclip, No Bail or
+    // the boosts are locked their permissions go without "movement", so their role cannot give
+    // the tool back.
+    struct Locks {
+        std::uint8_t manual{}, automatic{};
+        std::uint8_t all() const noexcept { return manual | automatic; }
+    };
+    std::map<std::uint64_t, Locks> locks_;
+    std::set<std::uint64_t> in_throwdown_; // the players throwdown_locks were applied to, while theirs runs
+    std::uint8_t locks_of(std::uint64_t id) const {
+        const auto found = locks_.find(id);
+        return found == locks_.end() ? 0 : found->second.all();
+    }
+    // Who changed a player's locks, which says what they are told: an admin (or the console), a
+    // throwdown starting or ending, or the throwdown-locks setting changing while theirs runs.
+    enum class LockBy { admin, throwdown, setting };
+    // Locks (`lock`) or unlocks (otherwise) `tools` for the player `id` (`guest`, or null when they
+    // are not connected), as `source` ("console", an admin's name, "throwdown"). A throwdown's,
+    // and the setting's, are the automatic ones; an admin's unlock takes back both. Returns the
+    // tools that changed.
+    std::uint8_t change_locks(std::uint64_t id, Guest *guest, std::uint8_t tools, bool lock, LockBy by, const std::string &source);
+    // A player's name for the lock lines: connected, last seen, or their SteamID.
+    std::string lock_name(std::uint64_t id, const Guest *guest) const;
+    void update_throwdown_locks(); // after the throwdowns or the setting change
     void send_words(Guest &);          // the server's own filtered chat words (server_words.h)
     void send_next_maps(Guest &);      // the maps the vote for the next one will offer
     void roles_changed();              // after any change to the roles or who has them
@@ -408,7 +437,9 @@ class Host {
     bool send_packet(Guest &, const Packet &, bool reliable, bool fresh, std::span<const std::uint8_t> raw = {},
                      std::span<const std::uint8_t> wire = {});
     void send_required(Guest &, const std::vector<std::uint8_t> &bytes);
-    void broadcast(const Packet &, bool reliable, bool fresh, std::uint64_t except = 0);
+    // `only`: to these players alone; `skip`: not to these.
+    void broadcast(const Packet &, bool reliable, bool fresh, std::uint64_t except = 0,
+                   const std::set<std::uint64_t> *only = nullptr, const std::set<std::uint64_t> *skip = nullptr);
     void send_roster();
     void send_world_state();
     void send_chat(std::string_view text, Guest *only = nullptr);

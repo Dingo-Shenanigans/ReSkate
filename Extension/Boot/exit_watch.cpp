@@ -10,9 +10,11 @@ namespace {
 constexpr ULONGLONG grace_ms = 8000, watch_ms = 120000;
 std::atomic<bool> watching{};
 std::atomic<ULONGLONG> destroyed_at{};
+std::atomic<CloseNotice> close_notice{};
 
 void watch(HWND window) noexcept {
     const auto asked = GetTickCount64();
+    if (const auto notice = close_notice.load()) notice();
     ULONGLONG stuck_since{};
     for (;;) {
         Sleep(500);
@@ -37,6 +39,7 @@ void watch(HWND window) noexcept {
 }
 } // namespace
 
+void when_closing(CloseNotice notice) noexcept { close_notice = notice; }
 void note_window_message(HWND window, UINT message, WPARAM wp) noexcept {
     const bool closing = message == WM_CLOSE || message == WM_DESTROY || (message == WM_SYSCOMMAND && (wp & 0xfff0) == SC_CLOSE) ||
                          (message == WM_ENDSESSION && wp);

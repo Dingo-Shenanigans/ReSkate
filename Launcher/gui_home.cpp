@@ -1,10 +1,16 @@
 #include "gui_internal.h"
+#include "gui_renderer.h"
 
 #include "mod_manager.h"
 
 #include "problem.h"
 
+#include "Engine/Core/Json/json.h"
+#include "Engine/Core/Log/logging.h"
+
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <format>
 
 // The main screen: background, name plate, tiles and the STATUS tile.
@@ -120,21 +126,47 @@ void progress_bar(ImDrawList* draw, ImVec2 a, ImVec2 b, float fill, float time) 
     skate_theme::striped_bar(draw, a, b, fill, time, g_scale);
 }
 
+// Loads the signed-in account's Steam picture for the plate, or drops it when Steam is closed or
+// signed out. Only re-decoded when the cached file changes.
+void refresh_steam_avatar(Ui& ui) {
+    const auto path = launcher_app::steam_avatar_path();
+    std::error_code error;
+    const auto time = path.empty() ? fs::file_time_type{} : fs::last_write_time(path, error);
+    if (path == ui.steam_avatar_path && time == ui.steam_avatar_time) return;
+    if (ui.steam_avatar && g_renderer) g_renderer->release_texture(ui.steam_avatar);
+    ui.steam_avatar = {};
+    ui.steam_avatar_path = path;
+    ui.steam_avatar_time = time;
+    if (path.empty() || !g_renderer) return;
+    std::ifstream input(path, std::ios::binary);
+    const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    std::vector<unsigned char> pixels;
+    UINT width{}, height{};
+    if (!bytes.empty() && decode_image(bytes, ImVec2(S(46), S(46)), pixels, width, height))
+        ui.steam_avatar = g_renderer->upload_texture(pixels, width, height);
+}
+
 // Name plate in the top-left corner, like the HUB's player card.
-void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& title, const std::string& version) {
+void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& title, const std::string& version,
+                ImTextureID avatar) {
     const float h = S(46);
     const float text = std::max(fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, title.c_str()).x,
                                 fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, version.c_str()).x);
     const float width = std::max(S(300), h + S(28) + text);
     draw->AddRectFilled(ImVec2(position.x + h, position.y + S(3)), ImVec2(position.x + width, position.y + h - S(3)),
         rgba(44, 47, 49, 0.94f));
-    draw->AddRectFilled(position, ImVec2(position.x + h, position.y + h), color::avatar);
-    // A small deck on the avatar tile.
-    const ImVec2 c(position.x + h * 0.5f, position.y + h * 0.5f);
-    const int start = draw->VtxBuffer.Size;
-    draw->AddRectFilled(ImVec2(c.x - S(15), c.y - S(5.5f)), ImVec2(c.x + S(15), c.y + S(5.5f)), color::text, S(5.5f));
-    for (const float x : {-9.0f, 9.0f}) draw->AddCircleFilled(ImVec2(c.x + S(x), c.y), S(1.8f), color::avatar);
-    rotate_since(draw, start, -40.0f, c);
+    if (avatar) {
+        // The player's Steam picture in the tile.
+        draw->AddImage(avatar, position, ImVec2(position.x + h, position.y + h));
+    } else {
+        draw->AddRectFilled(position, ImVec2(position.x + h, position.y + h), color::avatar);
+        // A small deck on the avatar tile.
+        const ImVec2 c(position.x + h * 0.5f, position.y + h * 0.5f);
+        const int start = draw->VtxBuffer.Size;
+        draw->AddRectFilled(ImVec2(c.x - S(15), c.y - S(5.5f)), ImVec2(c.x + S(15), c.y + S(5.5f)), color::text, S(5.5f));
+        for (const float x : {-9.0f, 9.0f}) draw->AddCircleFilled(ImVec2(c.x + S(x), c.y), S(1.8f), color::avatar);
+        rotate_since(draw, start, -40.0f, c);
+    }
     draw->AddCircleFilled(ImVec2(position.x + S(3), position.y + S(3)), S(5), color::good);
     draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(position.x + h + S(12), position.y + S(5)), color::text, title.c_str());
     draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + h + S(12), position.y + S(24)), color::muted, version.c_str());
@@ -241,8 +273,9 @@ bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 siz
 
 // The STATUS tile: what ReSkate is doing, or what went wrong and what to do
 // about it. Laid out like the HUB's BOUNTIES tile, with the state in its edge.
-void status_tile(const Fonts& fonts, const State& state, ImVec2 position, float width, float time,
-                 const fs::path& logs, bool modal) {
+// Returns where the tile ends, so what goes under it starts there.
+float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float width, float time,
+                  const fs::path& logs, bool modal) {
     auto* draw = ImGui::GetWindowDrawList();
     const bool failed = state.phase == Phase::failed;
     const auto problem = failed ? launcher_problem::explain(state.status) : launcher_problem::Problem{};
@@ -339,6 +372,109 @@ void status_tile(const Fonts& fonts, const State& state, ImVec2 position, float 
             y += fonts.body->FontSize + S(12);
         }
     }
+    return end.y;
+}
+
+// Reads the announcement in the background once it is due (as the launcher starts, then every ten
+// minutes), and takes in a read once it is done. A read that fails keeps what is shown.
+void refresh_announcement(Announcement& news, double time) {
+    {
+        std::lock_guard lock(news.mutex);
+        if (news.arrived) {
+            news.arrived = false;
+            news.shown = std::move(news.incoming);
+            news.text = news.shown ? thunderstore::readme_lines(news.shown->markdown, 400) : thunderstore::Readme{};
+        }
+    }
+    if (time < news.next_read || news.loading.exchange(true)) return;
+    news.next_read = time + 600;
+    if (news.worker.joinable()) news.worker.join();
+    news.worker = std::thread([&news] {
+        std::optional<Announcement::Message> found;
+        bool read{};
+        try {
+            std::string body;
+            launcher_update::http_stream(L"https://api.reskate.dev/api/v1/announcement", 64 * 1024, 15000,
+                                         [&](const char* data, DWORD size) { body.append(data, size); });
+            const auto root = Json::parse(body);
+            const auto& entry = root.at("announcement");
+            if (entry.is_object()) {
+                Announcement::Message message;
+                message.version = entry.at("version").get<std::uint64_t>();
+                message.important = entry.value("level", std::string()) == "important";
+                message.title = entry.at("title").string();
+                message.markdown = entry.value("markdown", std::string());
+                message.link = entry.value("link", std::string());
+                if (!message.link.starts_with("https://")) message.link.clear();
+                message.link_label = entry.value("link_label", std::string());
+                if (message.link_label.empty()) message.link_label = "Learn more";
+                if (!message.title.empty()) found = std::move(message);
+            }
+            read = true;
+        } catch (const std::exception& failure) {
+            logging::write(logging::Level::warning, logging::Channel::launcher,
+                           std::string("Could not read the announcement: ") + failure.what());
+        }
+        {
+            std::lock_guard lock(news.mutex);
+            if (read) {
+                news.incoming = std::move(found);
+                news.arrived = true;
+            }
+        }
+        news.loading = false;
+    });
+}
+
+// The announcement, under STATUS and down to `bottom` at most: NEWS (or IMPORTANT, in the warning
+// colour), its title and text, the button to its link, and HIDE, which keeps this version hidden.
+// Its text scrolls when it is longer than the room.
+void announcement_card(Launcher& launcher, const Fonts& fonts, Ui& ui, ImVec2 position, float width, float bottom) {
+    auto& news = ui.announcement;
+    if (!news.shown || news.shown->version <= launcher.settings().announcement_hidden) return;
+    const auto& message = *news.shown;
+    const float pad = S(20);
+    const float text_x = position.x + pad, text_width = width - pad * 2;
+    const float title_y = position.y + S(54);
+    const float title_height = fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, text_width, message.title.c_str()).y;
+    const float link = message.link.empty() ? 0.0f : S(10) + S(32);
+    const float body_room = bottom - (title_y + title_height + S(8)) - link - pad;
+    if (body_room < S(24) && !news.text.lines.empty()) return;   // (no room: a window this small shows none)
+
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->ChannelsSplit(2);
+    draw->ChannelsSetCurrent(1);
+    const ImU32 accent = message.important ? color::warning : color::blue;
+    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(text_x, position.y + S(14)), color::text,
+                  message.important ? "IMPORTANT" : "NEWS");
+    ImGui::SetCursorScreenPos(ImVec2(position.x + width - pad - S(64), position.y + S(12)));
+    if (ImGui::Button("HIDE##announcement", ImVec2(S(64), 0))) {
+        launcher.settings().announcement_hidden = message.version;
+        launcher.save();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide this announcement. The next one shows when it is posted.");
+    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, title_y), color::text, message.title.c_str(), nullptr, text_width);
+    float end = title_y + title_height;
+    if (!news.text.lines.empty()) {
+        ImGui::SetCursorScreenPos(ImVec2(text_x, end + S(8)));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, body_room));
+        ImGui::BeginChild("##announcement_text", ImVec2(text_width, 0), ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoBackground);
+        draw_readme(fonts, news.text);
+        ImGui::EndChild();
+        end = ImGui::GetItemRectMax().y;
+    }
+    if (!message.link.empty()) {
+        ImGui::SetCursorScreenPos(ImVec2(text_x, end + S(10)));
+        push_primary_button();
+        if (ImGui::Button((message.link_label + "##announcement_link").c_str(), ImVec2(0, S(32)))) open_url(message.link);
+        pop_primary_button();
+        end = ImGui::GetItemRectMax().y;
+    }
+    const ImVec2 corner(position.x + width, end + pad);
+    draw->ChannelsSetCurrent(0);
+    rough_rect(draw, position, corner, color::tile, 7);
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), corner.y), accent);
+    draw->ChannelsMerge();
 }
 
 } // namespace
@@ -378,6 +514,11 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // MODS tile can say when installed mods have updates.
     collect_listing(mods_panel);
     refresh_listing(mods_panel, time);
+    prepare_mods(mods_panel, launcher.session());
+    // Whether the privacy policy or terms changed since the player agreed (looked up once).
+    check_legal_versions(ui, launcher.settings());
+    // The team's announcement for the home screen (offline: none is read).
+    if (!launcher.settings().offline) refresh_announcement(ui.announcement, time);
     // A mod dropped on the window opens the Mods panel and installs it.
     {
         std::lock_guard lock(g_dropped_mutex);
@@ -393,13 +534,14 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // from the first Steam check; steam_offline_seen keeps it to one decision.
     if (time - ui.steam_checked > 5) {
         ui.steam_name = launcher_app::steam_persona_name();
+        refresh_steam_avatar(ui);
         ui.steam_checked = time;
         if (!ui.steam_offline_seen) {
             ui.steam_offline_seen = true;
             ui.steam_offline = !launcher.settings().offline && !launcher_app::steam_signed_in();
         }
     }
-    const bool modal = ui.settings || ui.changelog || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
+    const bool modal = ui.settings || ui.changelog || ui.legal.open >= 0 || ui.legal.agreement || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
         ui.steam_offline || state.phase == Phase::mods_broken || ui.mods_update_prompt;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -417,7 +559,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     if (update::binary_updates_enabled() && state.config && !state.config->launcher.version.empty())
         version = "Launcher " + state.config->launcher.version;
     const bool greet = !launcher.settings().offline && !ui.steam_name.empty();
-    draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? "Welcome, " + ui.steam_name : std::string("ReSkate"), version);
+    draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? "Welcome, " + ui.steam_name : std::string("ReSkate"), version,
+        launcher.settings().offline ? ImTextureID{} : ui.steam_avatar);
     page_title(draw, fonts, ImVec2(S(52), S(88)), "RESKATE");
 
     window_buttons(draw, window, size);
@@ -489,11 +632,16 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
             if (entry.enabled) ++enabled_mods;
         }
         // A mod the game threw out of the merge is named here, so nobody has
-        // to wonder which one stopped working.
+        // to wonder which one stopped working. (One left out for a conflict is
+        // no fault of its own: the mod manager shows it with the mod it lost to.)
         std::vector<std::string> dropped;
-        for (const auto& entry : list.entries)
-            if (entry.enabled && (list.excluded.contains(entry.mod.name) || !entry.mod.outdated.empty()))
+        for (const auto& entry : list.entries) {
+            const auto excluded = list.excluded.find(entry.mod.name);
+            const bool conflict = excluded != list.excluded.end() && !excluded->second.empty() &&
+                                  excluded->second.front().starts_with("conflicts with ");
+            if (entry.enabled && ((excluded != list.excluded.end() && !conflict) || !entry.mod.outdated.empty()))
                 dropped.push_back(entry.mod.title);
+        }
         const auto pending = updates(mods_panel.store, installed_versions(list, true)).size();
         ui.mods_pending = pending;
         ui.mods_mark_bad = !dropped.empty();
@@ -521,17 +669,29 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) act();
     ImGui::EndDisabled();
 
-    status_tile(fonts, state, ImVec2(S(60), S(200)), S(430), time, launcher.session().paths.logs, modal);
+    const float status_end = status_tile(fonts, state, ImVec2(S(60), S(200)), S(430), time, launcher.session().paths.logs, modal);
+    // Under it, down to the changelog's top: the announcement.
+    ImGui::BeginDisabled(modal);
+    announcement_card(launcher, fonts, ui, ImVec2(S(60), status_end + S(16)), S(430), size.y - S(56) - changelog_size.y - S(16));
+    ImGui::EndDisabled();
 
     if (modal) draw->AddRectFilled(ImVec2(0, 0), size, rgba(4, 6, 9, 0.72f));
     g_drag_allowed = !modal && !ImGui::IsAnyItemHovered();
     ImGui::End();
 
+    // An update choice flipped while a check was already running is checked as soon as it ends.
+    launcher.check_again_if_update_choices_changed();
     if (state.prompt) prompt_window(launcher, fonts, size, *state.prompt, ui);
     else if (qr_open) qr_window(launcher, fonts, size, state.qr);
     else if (ui.sign_in) sign_in_window(launcher, fonts, size, ui);
+    // Opened from Settings or the agreement, and back to it when closed.
+    else if (ui.legal.open >= 0) legal_window(fonts, size, ui);
+    else if (ui.legal.agreement) legal_agreement_window(launcher, fonts, size, ui, window);
     else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
-    else if (ui.changelog) changelog_window(fonts, size, ui);
+    else if (ui.changelog) {
+        ui.notes.prereleases = launcher.settings().prereleases;
+        changelog_window(fonts, size, ui);
+    }
     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
     else if (state.phase == Phase::mods_broken)
         mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);

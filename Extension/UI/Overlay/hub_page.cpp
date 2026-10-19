@@ -1,5 +1,6 @@
 #include "overlay_internal.h"
 #include "skate_style.h"
+#include "skate_menu_internal.h"
 #include "cursor.h"
 #include "input_capture.h"
 #include "dual_stick_settings.h"
@@ -47,6 +48,9 @@ CallbacksV3 hub_callbacks; // under the mutex
 } // namespace
 void set_hub_page_feed(HubPageFeed feed) noexcept { page_feed.store(feed); }
 void set_ui_sound(UiSound play) noexcept { ui_sound.store(play); }
+void play_ui_sound(std::uint32_t sound) noexcept {
+    if (const auto play = ui_sound.load()) play(sound);
+}
 void set_hub_callbacks(const CallbacksV3 &callbacks) noexcept {
     std::lock_guard lock(hub_callbacks_mutex);
     hub_callbacks = callbacks;
@@ -158,6 +162,8 @@ struct Hub {
     ULONGLONG join_asked{};
     std::string failed, failed_name; // why the last join did not get in, and where to; empty: nothing to say
     ULONGLONG notice_until{};
+    // The frame the ReSkate menu last drew these pages itself (draw_online_embedded).
+    int embedded_frame{-10};
 };
 Hub &hub() {
     static Hub value;
@@ -1057,50 +1063,93 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         changed();
     };
     const auto on_off = [](bool on) { return std::string(on ? "On" : "Off"); };
-    const float list_width = std::min((z.x - a.x) * .56f, 2300 * u), column_width = std::min(z.x - a.x, 2100 * u);
-    // A list of levels: the one pointed at says LOAD, and pressing it travels there.
-    const auto levels = [&](bool custom, const char *title, const char *empty, const char *empty_help) {
+    const float column_width = std::min(z.x - a.x, 2100 * u);
+    // Every map as a grid of cards, each with its picture (an official map's loading screen, a custom
+    // map's mod icon: the same pictures as the ReSkate menu's map grid, menu_map_pictures.cpp) and its
+    // name under it: the game's maps, then the custom ones under their own heading. The one pointed at
+    // says LOAD, and pressing it travels there. (Not Tutorial Island: the game's first-time tutorial.)
+    const auto levels = [&](const char *title) {
         draw->AddText(ui.heading, 52 * u, a, theme::paper, title);
         std::vector<const Level *> listed;
-        for (const auto &entry : m.levels)
-            if (native_tools::listed(entry) && entry.custom == custom) listed.push_back(&entry);
-        std::sort(listed.begin(), listed.end(), [](const auto *x, const auto *y) { return native_tools::level_name(*x) < native_tools::level_name(*y); });
+        for (const bool custom : {false, true}) {
+            const auto first = listed.size();
+            for (const auto &entry : m.levels)
+                if (native_tools::listed(entry) && entry.custom == custom && world_level_name(entry.asset) != "Tutorial Island")
+                    listed.push_back(&entry);
+            std::sort(listed.begin() + static_cast<std::ptrdiff_t>(first), listed.end(),
+                      [](const auto *x, const auto *y) { return native_tools::level_name(*x) < native_tools::level_name(*y); });
+        }
+        {
+            std::vector<MenuMapWanted> wanted;
+            for (const auto *entry : listed) wanted.push_back({entry->asset, native_tools::level_name(*entry)});
+            want_menu_map_pictures(std::move(wanted));
+        }
+        // Why a level cannot be loaded now, or what loading one said: beside the title.
+        const std::string note = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
+                                 : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : h.notice;
+        if (!note.empty()) {
+            const float after = a.x + width_of(ui.heading, 52 * u, title) + 48 * u;
+            label(draw, ui.body, 30 * u, ImVec2(after, a.y + 14 * u), z.x - 20 * u, theme::muted, note);
+        }
         const auto *root = native_tools::level(m, native_tools::root_asset);
         const bool travel = root && root->native_registered && root->can_load && m.can_queue_load && !multiplayer_controls_level(mp) && cb.queue_load;
-        Scroller list(ui, hash(title, 30), ImVec2(a.x, a.y + 96 * u), ImVec2(a.x + list_width, z.y));
-        for (const auto *entry : listed) {
+        const float card_gap = 24 * u, room = z.x - a.x - 16 * u;
+        const int columns = std::max(1, static_cast<int>((room + card_gap) / (540 * u + card_gap)));
+        const float card = (room - card_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        const float picture = card * 0.5625f, name_bar = 86 * u, card_tall = picture + name_bar;
+        Scroller list(ui, hash(title, 30), ImVec2(a.x, a.y + 96 * u), ImVec2(z.x, z.y));
+        float row_top{};
+        bool row_drawn{};
+        std::size_t in_section{};
+        bool any_custom{};
+        for (std::size_t i = 0; i < listed.size(); ++i) {
+            const auto *entry = listed[i];
+            // The custom maps start a new row under their own heading.
+            if (entry->custom && !any_custom) {
+                any_custom = true;
+                in_section = 0;
+                bool heading_drawn{};
+                const float heading_top = list.next(70 * u, 0, heading_drawn);
+                if (heading_drawn) draw->AddText(ui.heading, 40 * u, ImVec2(a.x, heading_top + 18 * u), theme::paper, "CUSTOM MAPS");
+            }
+            const auto column = static_cast<int>(in_section++ % static_cast<std::size_t>(columns));
+            if (!column) row_top = list.next(card_tall, card_gap, row_drawn);
             const auto id = hash("level", hash(entry->asset));
             const bool can = travel && entry->can_load && entry != root;
-            bool drawn{};
-            const float top = list.next(tall, between, drawn);
-            const ImVec2 p(a.x, top), q(a.x + list_width - 20 * u, top + tall);
+            const ImVec2 p(a.x + (card + card_gap) * static_cast<float>(column), row_top), q(p.x + card, row_top + card_tall);
             const Hit hit = item(ui, id, p, q, &list.box);
-            list.reveal(id, top, tall);
+            list.reveal(id, row_top, card_tall);
             if (hit.press && can) h.tools.destination = entry->asset, act("load-level");
-            if (!drawn) continue;
+            if (!row_drawn) continue;
             const bool lit = hit.focus || hit.hover;
             skate_theme::rough_rect(draw, p, q, lit ? theme::blue : skate_theme::tile, id & 0xfff, u * 2);
-            float name_right = q.x - 30 * u;
+            // The picture: the middle band of its square, to the card's shape.
+            const ImVec2 shot_a(p.x + 8 * u, p.y + 8 * u), shot_b(q.x - 8 * u, p.y + picture);
+            ImTextureID texture{};
+            ImVec2 uv0, uv1;
+            if (menu_map_picture(entry->asset, texture, uv0, uv1)) {
+                const float band = (uv1.y - uv0.y) * (1.0f - (shot_b.y - shot_a.y) / (shot_b.x - shot_a.x)) * 0.5f;
+                draw->AddImage(texture, shot_a, shot_b, ImVec2(uv0.x, uv0.y + band), ImVec2(uv1.x, uv1.y - band),
+                               can || lit ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 110));
+            } else {
+                draw->AddRectFilled(shot_a, shot_b, IM_COL32(18, 18, 20, 255));
+            }
+            // The name under it, and on the one pointed at what pressing it does.
+            const float bar_top = p.y + picture, text_y = bar_top + (name_bar - 38 * u) * .5f;
+            float name_right = q.x - 24 * u;
             if (lit) {
                 const char *does = can ? "LOAD" : multiplayer_controls_level(mp) ? "HOST'S CHOICE" : "NOT NOW";
-                const float w = width_of(ui.bold, 30 * u, does) + 40 * u;
-                const ImVec2 c(q.x - w - 24 * u, top + 20 * u), d(q.x - 24 * u, top + tall - 20 * u);
+                const float w = width_of(ui.bold, 28 * u, does) + 36 * u;
+                const ImVec2 c(q.x - w - 18 * u, bar_top + 18 * u), d(q.x - 18 * u, q.y - 18 * u);
                 skate_theme::rough_rect(draw, c, d, can ? sticky : sticky_off, 0x52, u * 2);
-                draw->AddText(ui.bold, 30 * u, ImVec2(c.x + 20 * u, c.y + (d.y - c.y - 30 * u) * .5f), skate_theme::black, does);
-                name_right = c.x - 20 * u;
+                draw->AddText(ui.bold, 28 * u, ImVec2(c.x + 18 * u, c.y + (d.y - c.y - 28 * u) * .5f), skate_theme::black, does);
+                name_right = c.x - 16 * u;
             }
-            label(draw, ui.bold, 42 * u, ImVec2(p.x + 30 * u, top + (tall - 42 * u) * .5f), name_right, can || lit ? theme::paper : theme::muted,
+            label(draw, ui.bold, 38 * u, ImVec2(p.x + 24 * u, text_y), name_right, can || lit ? theme::paper : theme::muted,
                   native_tools::level_name(*entry));
         }
         list.end();
-        if (listed.empty()) {
-            draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, empty);
-            if (*empty_help) draw->AddText(ui.body, 32 * u, ImVec2(a.x, a.y + 164 * u), theme::muted, empty_help);
-        }
-        const std::string note = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
-                                 : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : h.notice;
-        if (!note.empty())
-            draw->AddText(ui.body, 30 * u, ImVec2(a.x + list_width + gap, a.y + 110 * u), theme::muted, note.c_str(), nullptr, std::min(z.x - a.x - list_width - gap, 1500 * u));
+        if (listed.empty()) draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, "Waiting for available levels...");
     };
 
     switch (h.tools_tab) {
@@ -1116,7 +1165,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                            : "Couldn't save session_controls.ini. Check that the file is writable.");
         };
         if (!installed) {
-            list.note("Install the Dual Stick Controls companion mod (v5.133 or later) beside Skate.exe first. This page manages its settings; ReSkate does not include the control translator.");
+            list.note("Install the Dual Stick Controls companion mod beside Skate.exe first (v6.3 recommended). This page manages its settings; ReSkate does not include the control translator.");
             list.end();
             break;
         }
@@ -1158,6 +1207,9 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const std::string label = index < 0 ? "Custom (" + std::to_string(value) + ")" : c.labels[static_cast<std::size_t>(index)];
             if (list.setting(c.label,label,true)) apply(settings.set(c.key,c.values[static_cast<std::size_t>((index + 1) % c.count)]));
         }
+        const int angle = settings.number(L"StickSteeringAngleDegrees",34);
+        if (const int way = list.adjust("Stick steering angle", std::to_string(angle) + " deg", true))
+            apply(settings.set(L"StickSteeringAngleDegrees",std::clamp(std::clamp(angle,5,60) + way,5,60)));
         const int ramp = settings.number(L"StockGrabAir",0) ? settings.number(L"StockTransitionGround",0) ? 2 : 1 : 0;
         if (list.setting("Stock ramp controls", ramp == 0 ? "Off" : ramp == 1 ? "Air only" : "Early on ramp",true)) {
             dual_stick::Section entries;
@@ -1173,13 +1225,14 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (settings.set(L"EnabledAtStart",!settings.number(L"EnabledAtStart",1))) say(h,"Saved for the next launch. Use the companion menu to toggle controls now.");
             else apply(false);
         }
+        list.note("Manual Catch uses L3/R3; some tricks settle at an angle and still need catch timing. Stick-speed rotation also works with Manual Catch off.");
         list.note("The companion menu remains available on its configured hotkey (End by default), including control diagrams and additional tuning.");
         list.note(h.notice);
         list.end();
         break;
     }
-    case official_tab: levels(false, "FIND YOUR SPOT", "Waiting for available levels...", ""); break;
-    case custom_tab: levels(true, "CUSTOM MAPS", "No custom maps installed.", "Custom maps from the Mods folder appear here."); break;
+    case official_tab:
+    case custom_tab: levels("FIND YOUR SPOT"); break; // (custom maps are on the one tab now)
     case world_tab: {
         Column list(ui, hash("world"), a, ImVec2(a.x + column_width, z.y));
         list.heading("THIS WORLD");
@@ -1238,12 +1291,17 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
         if (list.setting("Hall of Meat", on_off(m.hall_of_meat.enabled), m.hall_of_meat.available && console)) act("hall-of-meat");
-        if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
-        if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
-        if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
-        if (list.setting("Board Break", on_off(m.board_break.enabled), m.board_break.available && console)) act("board-break");
-        if (list.setting("Board Break deck", m.board_break.deck, m.board_break.available && m.board_break.has_deck && console))
-            act("board-break-deck");
+        // (Not listed when its official mod is turned off in the launcher.)
+        if (!m.road_rash.off) {
+            if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
+            if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
+            if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
+        }
+        if (!m.board_break.off) {
+            if (list.setting("Board Break", on_off(m.board_break.enabled), m.board_break.available && console)) act("board-break");
+            if (list.setting("Board Break deck", m.board_break.deck, m.board_break.available && m.board_break.has_deck && console))
+                act("board-break-deck");
+        }
         const auto &grind = m.grind_exit;
         if (list.setting("Grind exit triggers", on_off(grind.enabled), grind.available && console)) act("grind-exits");
         if (list.setting("Input Mode", grind.toe_heel ? "Toe / Heel" : "Left / Right", grind.available && console)) act("grind-exit-sides");
@@ -1335,6 +1393,11 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (list.setting(names[i], on_off(on) + (choice < 0 ? " (default)" : ""), m.graphics.available && console)) act("graphics", std::string(graphics_keys[i]));
         }
         if (list.setting("Restore default effects", {}, m.graphics.available && console)) act("graphics-reset");
+        if (list.setting("Keyframe smoothing", on_off(m.keyframe_smoothing.enabled), m.keyframe_smoothing.available && console))
+            act("keyframe-smoothing");
+        if (list.setting("Keyframe smoothness", std::to_string(keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
+                         m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && console))
+            act("keyframe-smoothness");
         if (list.setting("Challenges", m.progression.challenges_hidden ? "Hidden" : "Shown", m.progression.challenges_enabled && console)) act("challenges");
         {
             const bool shuffle = dingosdk::profile_runtime::music_shuffle_enabled();
@@ -1529,22 +1592,14 @@ bool hub_page_pending() {
     return shown;
 }
 
-void draw_hub_page() {
-    auto &h = hub();
-    if (!h.shown) return;
+// One frame of the pages, in `a`..`z` with their tabs at `tabs_y`: in the game's pause menu
+// (draw_hub_page), or on the ReSkate menu's full screen ONLINE page (draw_online_embedded), which
+// keeps B for itself.
+void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs_y, bool input, bool embedded) {
     auto &s = state();
     auto &io = ImGui::GetIO();
-    const auto display = io.DisplaySize;
-    // One unit of the game's menu in pixels, and where its page sits in this window.
-    const float u = std::min(display.x / layout_width, display.y / layout_height);
-    const float across = display.x / u, down = display.y / u, canvas = std::min(across, layout_widest);
-    const float page_left = ((across - canvas) * .5f + side_margin) * u, page_right = ((across + canvas) * .5f - side_margin) * u;
-    const float lower = (down - layout_height) * .05f; // how far a taller window moves the page down
-    const bool others = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
-    Ui ui{h, ImGui::GetBackgroundDrawList(), s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, u, io.MousePos,
-          // (A card that asks something over the page has the input while it asks.)
-          !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()),
-          false, false, false, 0, h.model, {}};
+    Ui ui{h, draw, s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, u, io.MousePos,
+          input, false, false, false, 0, h.model, {}};
     ui.heading = s.menu.heading ? s.menu.heading : ui.bold;
     ui.clicked = ui.input && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     ui.doubled = ui.input && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
@@ -1612,16 +1667,16 @@ void draw_hub_page() {
     int previous_tab{}, next_tab{};
     if (ui.input && !typing_before) {
         // Back closes the game's menu, which takes a moment to say so: this goes at once.
-        if (key_new(7) || (pressed & 0x2000)) h.dismissed = true;
+        if (!embedded && (key_new(7) || (pressed & 0x2000))) h.dismissed = true;
         const std::array<bool, 4> held{keys[0] || (ui.pad.buttons & 1), keys[1] || (ui.pad.buttons & 2), keys[2] || (ui.pad.buttons & 4), keys[3] || (ui.pad.buttons & 8)};
         const std::array<bool, 4> fresh{key_new(0) || (pressed & 1), key_new(1) || (pressed & 2), key_new(2) || (pressed & 4), key_new(3) || (pressed & 8)};
         const auto tick = GetTickCount64();
         int direction = -1;
         for (int i = 0; i < 4; ++i)
-            if (fresh[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 380;
+            if (fresh[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 420 : 380); // (the full screen menu's pace inside it)
         if (direction < 0 && tick >= h.repeat_at)
             for (int i = 0; i < 4; ++i)
-                if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 70;
+                if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 160 : 70);
         if (direction >= 0) {
             // The first press only shows where the focus is.
             if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0);
@@ -1642,16 +1697,15 @@ void draw_hub_page() {
     h.items.clear();
 
     // ---- the page's tabs
-    const ImVec2 a(page_left, (body_top + lower) * u);
-    const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
-    const bool tools = h.page.section == 1;
+    const bool tools = !embedded && h.page.section == 1;
     {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
         int multiplayer_tab = static_cast<int>(h.tab);
         int &open = tools ? h.tools_tab : multiplayer_tab;
         if (tools) {
-            tabs = {{official_tab, "OFFICIAL MAPS"}, {custom_tab, "CUSTOM MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
+            if (h.tools_tab == custom_tab) h.tools_tab = official_tab;
+            tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
                     {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}, {dual_stick_tab, "DUAL STICK"}};
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
@@ -1670,7 +1724,7 @@ void draw_hub_page() {
             h.sound = sound_tab;
             set_typing(h, 0);
         }
-        const float top = (tabs_top + lower) * u, bottom = top + tabs_height * u, size = 44 * u;
+        const float top = tabs_y, bottom = top + tabs_height * u, size = 44 * u;
         float x = a.x;
         const auto cap = [&](std::uint32_t pad_button, const char *key) {
             const auto name = ui.pad.available ? controller_combo_label(pad_button, ui.pad.style) : std::string(key);
@@ -1737,4 +1791,51 @@ void draw_hub_page() {
         if (const auto play = ui_sound.load(); play && (wanted != sound_navigate || tick - h.sound_at >= 45)) play(wanted), h.sound_at = tick;
     }
 }
+
+void draw_hub_page() {
+    auto &h = hub();
+    if (!h.shown) return;
+    // (The ReSkate menu drew these pages over this one this frame: once is enough.)
+    if (h.embedded_frame == ImGui::GetFrameCount()) return;
+    auto &s = state();
+    const auto display = ImGui::GetIO().DisplaySize;
+    // One unit of the game's menu in pixels, and where its page sits in this window.
+    const float u = std::min(display.x / layout_width, display.y / layout_height);
+    const float across = display.x / u, down = display.y / u, canvas = std::min(across, layout_widest);
+    const float page_left = ((across - canvas) * .5f + side_margin) * u, page_right = ((across + canvas) * .5f - side_margin) * u;
+    const float lower = (down - layout_height) * .05f; // how far a taller window moves the page down
+    const bool others = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load();
+    const ImVec2 a(page_left, (body_top + lower) * u);
+    const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
+    // (A card that asks something over the page has the input while it asks.)
+    hub_frame(h, ImGui::GetBackgroundDrawList(), u, a, z, (tabs_top + lower) * u,
+              !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()), false);
+}
+
+void draw_online_embedded(ImDrawList *draw, ImVec2 a, ImVec2 z, const Model &model, const CallbacksV3 &callbacks, bool input) {
+    auto &h = hub();
+    const int frame = ImGui::GetFrameCount();
+    const bool fresh = h.embedded_frame != frame - 1;
+    h.embedded_frame = frame;
+    const auto now = Clock::now();
+    if (fresh) {
+        // What is held as the page comes up is not a press on it.
+        h.last.clear();
+        h.focus = 0;
+        h.searched = false;
+        h.keys_before.fill(true);
+        h.pad_before = ~0U;
+    }
+    if (fresh || now >= h.next_model) {
+        h.next_model = now + 200ms;
+        h.full = model;
+        h.model = model.multiplayer;
+        h.callbacks = callbacks;
+        h.rows_stale = true;
+    }
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float u = std::min(display.x / layout_width, display.y / layout_height);
+    hub_frame(h, draw, u, ImVec2(a.x, a.y + (tabs_height + 64) * u), z, a.y, input, true);
+}
+bool online_embedded_typing() { return hub().typing != 0; }
 } // namespace dingosdk::overlay::detail

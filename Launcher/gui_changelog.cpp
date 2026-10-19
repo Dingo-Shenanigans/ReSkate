@@ -10,11 +10,12 @@ void start_fetch(Changelog& log) {
     if (log.loading.exchange(true)) return;
     if (log.worker.joinable()) log.worker.join();
     log.error.clear();
-    log.worker = std::thread([&log] {
+    log.fetched_prereleases = log.prereleases;
+    log.worker = std::thread([&log, prereleases = log.prereleases] {
         update::ReleaseNote notes;
         std::string error;
         try {
-            notes = update::fetch_release_note();
+            notes = update::fetch_release_note(prereleases);
         } catch (const std::exception& failure) {
             error = failure.what();
             logging::write(logging::Level::warning, logging::Channel::launcher,
@@ -45,6 +46,8 @@ void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
             log.incoming = {};
         }
     }
+    // (The pre-release setting changed since: the notes are fetched again for it.)
+    if (log.loaded && !log.loading && log.fetched_prereleases != log.prereleases) log.loaded = false;
     if (!log.loaded && !log.loading && log.error.empty()) start_fetch(log);
 
     const auto panel = begin_panel("##changelog_panel", size, ImVec2(S(880), S(680)));
@@ -64,7 +67,7 @@ void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
         ImGui::PushFont(fonts.heading);
         ImGui::TextUnformatted(label.c_str());
         ImGui::PopFont();
-        if (!note.date.empty()) ImGui::TextDisabled("Released %s", note.date.c_str());
+        if (!note.date.empty()) ImGui::TextDisabled("%s %s", note.prerelease ? "Pre-release," : "Released", note.date.c_str());
         ImGui::Dummy(ImVec2(0, S(6)));
         if (log.text.lines.empty()) ImGui::TextDisabled("This release has no patch notes.");
         else draw_readme(fonts, log.text);

@@ -59,11 +59,10 @@ std::string object_title(const std::string& key, const dingosdk::Json& overrides
 
 void fill_object_categories(std::uintptr_t result, const profile::Snapshot& snapshot) {
     const auto section = snapshot.extensions.value("object_dropper", dingosdk::Json::object());
-    const auto inventory = section.value("inventory", dingosdk::Json::object());
     const auto catalog = section.value("catalog", dingosdk::Json::object());
     std::vector<objects::InstalledObject> owned;
     for (const auto& [key, info] : cosmetic_runtime().items)
-        if (info.build_kit && inventory.value(key, false))
+        if (info.build_kit && installed_item_owned(snapshot, key, info.hash, true))
             owned.push_back({key, info.category, object_title(key, catalog.value(key, dingosdk::Json::object()))});
     // Titles come from the cache's category records. Their icons are cdn:/ links
     // that cannot load offline, and the browser would draw the link as text.

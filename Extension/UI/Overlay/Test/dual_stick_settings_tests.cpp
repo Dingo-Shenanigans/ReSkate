@@ -15,6 +15,17 @@ int main() {
     Section initial{{L"onefootflips",L"1"},{L"UnknownFutureTuning",L"123"},{L"ShowMenuOnStartup",L"0"},
                     {L"MenuKey",L"F8"},{L"RampDiagnostics",L"2"},{L"AirControls",L"1"}};
     assert(settings.write(initial));
+    assert(WritePrivateProfileStringW(L"Unrelated", L"Keep", L"unchanged", name.data()));
+    for (const auto& c : choices) {
+        if (std::wcscmp(c.key,L"ManualCatch") == 0) assert(c.fallback == 0);
+        if (std::wcscmp(c.key,L"GestureSpeed") == 0 || std::wcscmp(c.key,L"DpadCameraSide") == 0 ||
+            std::wcscmp(c.key,L"SplitGrindControls") == 0) assert(c.fallback == 1);
+    }
+    assert(settings.set(L"ManualCatch",1));
+    assert(settings.set(L"GestureSpeed",0));
+    assert(settings.set(L"DpadCameraSide",0));
+    assert(settings.set(L"SplitGrindControls",1));
+    assert(settings.set(L"StickSteeringAngleDegrees",23));
     assert(settings.preset(false));
     assert(settings.active(false));
     assert(settings.number(L"OneFootFlips",-1) == 0);
@@ -27,6 +38,11 @@ int main() {
     assert(settings.layout() == 2);
     assert(settings.number(L"XLFootDirections",-1) == 1);
     assert(settings.number(L"StickSteering",-1) == 2);
+    assert(settings.number(L"ManualCatch",-1) == 1);
+    assert(settings.number(L"GestureSpeed",-1) == 0);
+    assert(settings.number(L"DpadCameraSide",-1) == 0);
+    assert(settings.number(L"SplitGrindControls",-1) == 1);
+    assert(settings.number(L"StickSteeringAngleDegrees",-1) == 23);
     assert(settings.set_layout(1) && settings.layout() == 1);
     assert(settings.number(L"XLFootDirections",-1) == 0);
     assert(!settings.active(true));
@@ -45,6 +61,11 @@ int main() {
     assert(settings.set(L"StockGrabAir",1));
     assert(settings.set(L"StockTransitionGround",1));
     assert(settings.save(5));
+    assert(settings.set(L"ManualCatch",0));
+    assert(settings.set(L"GestureSpeed",1));
+    assert(settings.set(L"DpadCameraSide",1));
+    assert(settings.set(L"SplitGrindControls",0));
+    assert(settings.set(L"StickSteeringAngleDegrees",55));
     assert(settings.set(L"AirControls",0));
     assert(settings.set(L"RampDiagnostics",0));
     assert(settings.set(L"UnknownFutureTuning",456));
@@ -60,12 +81,23 @@ int main() {
     assert(settings.number(L"PlayStationPads",-1) == 2);
     assert(settings.number(L"EnabledAtStart",-1) == 0);
     assert(settings.number(L"AirControls",-1) == 1);
+    assert(settings.number(L"ManualCatch",-1) == 1);
+    assert(settings.number(L"GestureSpeed",-1) == 0);
+    assert(settings.number(L"DpadCameraSide",-1) == 0);
+    assert(settings.number(L"SplitGrindControls",-1) == 1);
+    assert(settings.number(L"StickSteeringAngleDegrees",-1) == 23);
     assert(settings.number(L"RampDiagnostics",-1) == 0);
     assert(settings.number(L"UnknownFutureTuning",-1) == 456);
     assert(settings.number(L"StockGrabAir",-1) == 0);
     assert(settings.load(5));
     assert(settings.number(L"StockTransitionGround",-1) == 1);
-    assert(!settings.load(2));
+    assert(settings.text(L"Keep",L"missing",L"Unrelated") == L"unchanged");
+    // Older slots must preserve newer options they did not save.
+    assert(settings.write(Section{{L"PresetSaved",L"1"},{L"PopOnRelease",L"0"}},L"CustomPreset2"));
+    assert(settings.set(L"ManualCatch",0) && settings.set(L"GestureSpeed",1));
+    assert(settings.load(2));
+    assert(settings.number(L"ManualCatch",-1) == 0 && settings.number(L"GestureSpeed",-1) == 1);
+    assert(!settings.load(3));
     assert(!settings.save(0) && !settings.save(6));
     Section readback;
     assert(settings.read(readback));

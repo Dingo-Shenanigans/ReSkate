@@ -25,7 +25,7 @@ configure_file(cmake/templates/crash_report_config.h.in generated/crash_report_c
 add_library(dingosdk_crash_report_client STATIC Engine/Core/Debug/client.cpp Engine/Core/Debug/trace.cpp)
 target_link_libraries(dingosdk_crash_report_client PRIVATE dingosdk_json winhttp bcrypt)
 add_library(dingosdk_crash_report_upload STATIC Engine/Core/Debug/upload.cpp
-    Engine/Core/Debug/native_dump.cpp Engine/Core/Debug/multipart.cpp)
+    Engine/Core/Debug/native_dump.cpp Engine/Core/Debug/report_envelope.cpp Engine/Core/Debug/report_details.cpp)
 target_link_libraries(dingosdk_crash_report_upload PRIVATE dingosdk_json winhttp bcrypt)
 target_sources(dingosdk_launcher PRIVATE Launcher/crash_reporter.cpp)
 target_link_libraries(dingosdk_launcher PRIVATE dingosdk_crash_report_upload dingosdk_json dbghelp)

@@ -50,6 +50,12 @@ void set_park_selection_queue(ParkSelectionQueue queue) noexcept {
 void set_park_paste_queue(ParkPasteQueue queue) noexcept {
     paste_queue.store(queue);
 }
+void set_park_object_set_queue(ParkObjectSetQueue queue) noexcept {
+    object_set_queue.store(queue);
+}
+void set_park_delete_queue(ParkDeleteQueue queue) noexcept {
+    delete_queue.store(queue);
+}
 bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &callbacks, bool console_open,
                       bool exit_requested, bool &visible) {
     const auto &state = model.editor;
@@ -59,11 +65,12 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
     bool escape_closes = false;
     if (!console_open && !io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false) &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
-        const bool in_progress = ui.dragging >= 0 || !ui.placing.empty() || ui.preview_token || ui.surface_confirm ||
-                                 ui.inspector_dirty;
+        const bool in_progress = ui.dragging >= 0 || !ui.placing.empty() || !ui.placing_set.empty() ||
+                                 ui.preview_token || ui.surface_confirm || ui.inspector_dirty;
         if (in_progress) {
             cancel_drag(ui, model);
             ui.placing.clear();
+            ui.placing_set.clear();
             ui.dragging = -1;
             ui.inspector_dirty = false;
             ui.draft_revision = 0;
@@ -81,6 +88,10 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
         ui.pick_confirm = ui.asset_drag = false;
         ui.dragging = -1;
         ui.placing.clear();
+        ui.placing_set.clear();
+        ui.set_delete.clear();
+        ui.group_ids.clear();
+        ui.paste_rotation.reset();
         ui.pending = false;
         ui.inspector_dirty = false;
         ui.initialized = false;
@@ -231,11 +242,11 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
     }
     ImGui::PopFont();
     ImGui::SameLine(0, P(14));
-    if (ui.selection.size() > 1) {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("World axes");
-    } else
-        ImGui::Checkbox("Local axes", &ui.local_axes);
+    ImGui::Checkbox("Local axes", &ui.local_axes);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(ui.selection.size() > 1
+                              ? "Move and rotate along the group's own axes: a placed set's, or the last selected object's."
+                              : "Move and rotate along the object's own axes.");
     ImGui::EndDisabled();
 
     // ---- dialogs
@@ -508,6 +519,8 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
                 copy_selection(ui, state);
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false))
                 paste_objects(ui, state);
+            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) && (ui.selected || !ui.selection.empty()))
+                duplicate_selection(ui, state);
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
                 if (!state.project.empty())
                     send(ui, model, callbacks, "mod-save", state.project);
@@ -522,6 +535,8 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
                 send(ui, model, callbacks, "redo");
             if (ui.selected && ui.selection.size() <= 1 && ImGui::IsKeyPressed(ImGuiKey_Delete))
                 send(ui, model, callbacks, "delete");
+            else if (ui.selection.size() > 1 && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+                delete_selection(ui, state);
         }
     }
     ImGui::End();

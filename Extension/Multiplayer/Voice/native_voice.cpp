@@ -81,7 +81,7 @@ struct NativeVoicePlayback::Impl {
     std::mutex mutex;
     std::map<std::uint64_t, Request> requests;
     std::map<std::uint64_t, Sound> sounds;
-    std::uint64_t generation{}, serial{};
+    std::uint64_t generation{}, serial{}, source_tag{};
     std::atomic<bool> ready{};
     Address base{}, manager{}, provider{}, asset{};
     DWORD thread{};
@@ -141,7 +141,7 @@ struct NativeVoicePlayback::Impl {
                 if (!request.pcm.samples()) continue;
                 Sound sound;
                 sound.serial = request.serial;
-                sound.source = 0x52534b5600000000ULL | request.serial;
+                sound.source = source_tag | request.serial;
                 if (!create_sound(base, asset, &sound.handle)) throw std::runtime_error("Native voice sound creation failed");
                 found = sounds.emplace(id, sound).first;
                 if (!set_input(base, &found->second.handle, base + voice::source_input_type, &found->second.source))
@@ -168,7 +168,9 @@ struct NativeVoicePlayback::Impl {
         if (failed) throw std::runtime_error("Native voice cleanup failed");
     }
 };
-NativeVoicePlayback::NativeVoicePlayback() : impl_(std::make_unique<Impl>()) {}
+NativeVoicePlayback::NativeVoicePlayback(std::uint64_t source_tag) : impl_(std::make_unique<Impl>()) {
+    impl_->source_tag = source_tag & 0xffffffff00000000ULL;
+}
 NativeVoicePlayback::~NativeVoicePlayback() = default;
 bool NativeVoicePlayback::available() const noexcept { return impl_->ready.load(); }
 void NativeVoicePlayback::reset(std::uint64_t generation) {

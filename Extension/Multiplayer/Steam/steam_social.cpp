@@ -75,7 +75,9 @@ std::shared_ptr<const SteamSocialSnapshot> steam_social_snapshot() {
         void *friends{};
         SteamSocialSnapshot result;
     } refresh;
-    constexpr int friends_per_tick = 8;
+    // (Two: each is four or five calls into the Steam client, on the client thread, and a call waits
+    // whenever Steam is busy. A pass over a few hundred friends still takes a few seconds.)
+    constexpr int friends_per_tick = 2;
     std::lock_guard lock(mutex);
     const auto now = GetTickCount64();
     const auto publish = [&](SteamSocialSnapshot &result) {

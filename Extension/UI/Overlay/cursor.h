@@ -1,7 +1,14 @@
 #pragma once
 #include <Windows.h>
+#include <array>
+#include <cstdint>
 namespace dingosdk::overlay::detail {
+// Whether the game's window is in front: as last sampled on the overlay's own thread (cursor.cpp),
+// so no game thread waits on Windows for it.
 bool game_window_foreground(HWND window);
+// The keys held (a bit per virtual key) as last sampled, while the window is in front. False when
+// there is no recent sample: the caller then asks Windows itself.
+bool sampled_keys(HWND window, std::array<std::uint64_t, 4>& held);
 void sync_menu_cursor(bool release = false);
 UINT cursor_sync_message();
 void request_window_cursor_sync(HWND window);

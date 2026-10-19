@@ -27,56 +27,123 @@ std::string level_name(const Level& level) {
 }
 
 void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    begin_card(menu, "travel", "FIND YOUR SPOT");
     std::vector<const Level*> destinations;
     const Level* root = nullptr;
-    const Level* selected = nullptr;
     for (const auto& level : model.levels) {
         if (same(level.asset, root_asset)) root = &level;
-        else {
+        // (Not the splash level: it only hosts the startup screen, as the pause menu's map list has it.
+        // Nor Tutorial Island: the game's first-time tutorial, not a place to skate.)
+        else if (dingosdk::native_tools::listed(level) && world_level_name(level.asset) != "Tutorial Island")
             destinations.push_back(&level);
-            if (same(level.asset, menu.destination)) selected = &level;
-        }
     }
     std::sort(destinations.begin(), destinations.end(), [](const auto* a, const auto* b) {
         return level_name(*a) < level_name(*b);
     });
-    field(menu, "Destination");
-    if (ImGui::BeginCombo("##destination", selected ? level_name(*selected).c_str() : "Choose a level")) {
-        for (const auto* level : destinations) {
-            ImGui::PushID(level->asset.c_str());
-            if (ImGui::Selectable(level_name(*level).c_str(), selected == level)) {
-                selected = level;
-                menu.destination = level->asset;
-                menu.feedback.clear();
-            }
-            ImGui::PopID();
-        }
-        if (destinations.empty()) ImGui::TextDisabled("Waiting for levels...");
-        ImGui::EndCombo();
+    {
+        std::vector<MenuMapWanted> wanted;
+        for (const auto* level : destinations) wanted.push_back({level->asset, level_name(*level)});
+        want_menu_map_pictures(std::move(wanted));
     }
-    ImGui::Dummy(ImVec2(0, px(4)));
-    const bool ready = root && selected && root->can_load && selected->can_load && model.can_queue_load && callbacks.queue_load;
-    ImGui::BeginDisabled(!ready);
-    skate_theme::push_primary_button();
-    ImGui::PushFont(menu.heading);
-    if (ImGui::Button("LET'S SKATE", ImVec2(-1, px(46)))) {
+    const bool loading = root && root->can_load && model.can_queue_load && callbacks.queue_load;
+    const auto load = [&](const Level* level) {
         std::array<char, 512> result{};
-        const auto* point = selected->automatic_start_point();
-        const bool queued = callbacks.queue_load(callbacks.user, root->asset.c_str(), "", selected->asset.c_str(),
+        const auto* point = level->automatic_start_point();
+        const bool queued = callbacks.queue_load(callbacks.user, root->asset.c_str(), "", level->asset.c_str(),
             point ? point->c_str() : "", result.data(), result.size());
         result.back() = '\0';
-        feedback(menu, result[0] ? result.data() : (queued ? "Loading level..." : "Load unavailable."));
+        feedback(menu, result[0] ? result.data() : (queued ? ("Loading " + level_name(*level) + "...").c_str() : "Load unavailable."));
+    };
+    if (!loading) {
+        const std::string reason = !root ? "Waiting for levels..." : !root->can_load ? root->load_block_reason : model.load_block_reason;
+        warn(reason.empty() ? "Level loading is unavailable." : reason.c_str());
     }
-    ImGui::PopFont();
-    skate_theme::pop_primary_button();
-    ImGui::EndDisabled();
-    if (!ready) {
-        const std::string reason = !root ? "Waiting for levels..." : !selected ? "Choose a destination." :
-            !root->can_load ? root->load_block_reason : !selected->can_load ? selected->load_block_reason : model.load_block_reason;
-        note(reason.empty() ? "Level loading is unavailable." : reason.c_str());
+
+    // A window has a keyboard: a box to find a map by name. (Full screen shows them all.)
+    const bool console = console_style();
+    if (!console) {
+        static std::array<char, 64> search{};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##map-search", "Search maps...", search.data(), search.size());
+        const auto lower = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return text;
+        };
+        if (const auto words = lower(search.data()); !words.empty()) {
+            std::erase_if(destinations, [&](const Level* level) { return lower(level_name(*level)).find(words) == std::string::npos; });
+            if (destinations.empty()) note("No maps match that search.");
+        }
     }
-    end_card();
+
+    // A card per map with its picture. In a window a LOAD button under each; full screen the card
+    // itself loads (A).
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto grid = [&](const char* heading, bool custom) {
+        std::vector<const Level*> shown;
+        for (const auto* level : destinations)
+            if (level->custom == custom) shown.push_back(level);
+        if (shown.empty()) return;
+        section(menu, heading);
+        const float gap = px(12);
+        const float across = ImGui::GetContentRegionAvail().x;
+        const int columns = std::max(1, static_cast<int>((across + gap) / (px(console ? 260.0f : 210.0f) + gap)));
+        const float width = (across - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        const float picture = width * 0.58f, height = picture + px(42);
+        for (std::size_t i = 0; i < shown.size(); ++i) {
+            const auto* level = shown[i];
+            if (i % static_cast<std::size_t>(columns)) ImGui::SameLine(0, gap);
+            ImGui::PushID(level->asset.c_str());
+            ImGui::BeginGroup();
+            const bool can = loading && level->can_load;
+            const auto at = ImGui::GetCursorScreenPos();
+            bool hovered{}, focused{};
+            if (console) {
+                ImGui::BeginDisabled(!can);
+                if (ImGui::InvisibleButton("##map", ImVec2(width, height), ImGuiButtonFlags_EnableNav) && can) load(level);
+                ImGui::EndDisabled();
+                hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+                focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible;
+            } else {
+                ImGui::Dummy(ImVec2(width, height));
+            }
+            const ImVec2 end(at.x + width, at.y + height);
+            draw->AddRectFilled(at, end, skate_theme::tile);
+            ImTextureID texture{};
+            ImVec2 uv0, uv1;
+            if (menu_map_picture(level->asset, texture, uv0, uv1)) {
+                // The middle band of the square picture, to the card's shape.
+                const float band = (uv1.y - uv0.y) * (1.0f - picture / width) * 0.5f;
+                draw->AddImage(texture, at, ImVec2(end.x, at.y + picture), ImVec2(uv0.x, uv0.y + band), ImVec2(uv1.x, uv1.y - band),
+                               level->can_load ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 90));
+            } else {
+                draw->AddRectFilled(at, ImVec2(end.x, at.y + picture), skate_theme::tile_grey);
+                const char* initial = custom ? "CUSTOM" : "MAP";
+                const auto size = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, initial);
+                draw->AddText(menu.bold, px(13), ImVec2(at.x + (width - size.x) * .5f, at.y + (picture - size.y) * .5f), muted, initial);
+            }
+            draw->AddRectFilled(ImVec2(at.x, at.y + picture), end, focused ? blue : hovered ? skate_theme::tile_light : skate_theme::tile);
+            draw->PushClipRect(at, end, true);
+            draw->AddText(menu.bold, px(15), ImVec2(at.x + px(12), at.y + picture + px(12)),
+                focused ? skate_theme::black : level->can_load ? paper : muted, level_name(*level).c_str());
+            draw->PopClipRect();
+            if (focused) draw->AddRect(ImVec2(at.x - px(3), at.y - px(3)), ImVec2(end.x + px(3), end.y + px(3)), paper, 0, 0, px(3));
+            if (!console) {
+                ImGui::BeginDisabled(!can);
+                skate_theme::push_primary_button();
+                if (ImGui::Button("LOAD", ImVec2(width, px(32)))) load(level);
+                skate_theme::pop_primary_button();
+                ImGui::EndDisabled();
+                if (!level->can_load && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s", level->load_block_reason.c_str());
+            } else if (!level->can_load && (hovered || focused)) {
+                ImGui::SetTooltip("%s", level->load_block_reason.c_str());
+            }
+            ImGui::EndGroup();
+            ImGui::PopID();
+        }
+    };
+    grid("OFFICIAL MAPS", false);
+    grid("CUSTOM MAPS", true);
+    if (destinations.empty()) note("Waiting for levels...");
 }
 
 void park_editor_panel(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
@@ -269,6 +336,20 @@ void population_controls(SkateMenu& menu, const Model& model, const CallbacksV3&
         return queued;
     };
     begin_card(menu, "population", "POPULATION");
+    if (console_style()) {
+        const bool can = controls.population_available && model.world.ready && callbacks.queue_console_command;
+        std::vector<std::string> modes;
+        for (const auto* label : population_labels) modes.emplace_back(label);
+        for (unsigned i = 0; i < 2; ++i) {
+            int chosen = (i == 0 ? c.traffic : c.pedestrians) + 1;
+            const auto nearby = controls.population_ready[i] ? std::to_string(controls.population[i]) + " nearby right now."
+                                                             : std::string("Waiting for the population count.");
+            if (option_row(menu, i == 0 ? "Traffic" : "Pedestrians", nearby.c_str(), chosen, modes, can))
+                send(i == 0 ? "traffic" : "pedestrians", static_cast<float>(chosen - 1));
+        }
+        end_card();
+        return;
+    }
     ImGui::PushID("world-controls");
     ImGui::BeginDisabled(!controls.population_available || !model.world.ready || !callbacks.queue_console_command);
     for (unsigned i = 0; i < 2; ++i) {
@@ -307,6 +388,45 @@ void parks(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
             callbacks.queue_console_command(callbacks.user, command, result.data(), result.size());
             result.back() = '\0'; feedback(menu, result.data());
         };
+        if (console_style()) {
+            // Full screen: a row a slot, left / right to pick its layout and A to load it.
+            const bool locked = !model.parks.available || tools::parks_locked(model) || !callbacks.queue_console_command;
+            if (button_row(menu, "park-random", {{"LOAD RANDOM PARKS", !locked, false, "A random layout in every slot."}}) == 0) {
+                park_command("park random");
+                menu.park_edit = {};
+            }
+            auto random_on_launch = model.parks.randomize_on_launch;
+            if (toggle_row(menu, "Randomize on launch", "A random layout in every slot once each time the game starts. Multiplayer follows the host.",
+                           random_on_launch, model.parks.available && callbacks.queue_console_command))
+                park_command(random_on_launch ? "park random-on-launch 1" : "park random-on-launch 0");
+            for (unsigned lot = 0; lot < park_lots.size(); ++lot) {
+                auto& staged = menu.park_edit[lot];
+                if (staged.empty() || menu.park_seen[lot] != model.parks.choices[lot] || tools::parks_locked(model))
+                    staged = model.parks.choices[lot];
+                menu.park_seen[lot] = model.parks.choices[lot];
+                std::vector<std::string> ids{"empty"}, names{"Empty lot"};
+                for (unsigned family = 0; family < park_families.size(); ++family)
+                    for (unsigned variant = 1; variant <= park_lots[lot].counts[family]; ++variant) {
+                        ids.push_back(park_id(family, variant));
+                        names.push_back(park_label(ids.back()));
+                    }
+                int at = -1;
+                for (std::size_t i = 0; i < ids.size(); ++i)
+                    if (ids[i] == staged) at = static_cast<int>(i);
+                const bool loaded = staged == model.parks.choices[lot];
+                const auto label = std::string(park_lots[lot].label) + (loaded ? "" : "   - A loads it") + "###" + std::string(park_lots[lot].key);
+                bool load = false;
+                if (option_row(menu, label.c_str(), loaded ? "Left / right to pick a layout, then A to load it." : "Not loaded yet: press A to load it.",
+                               at, names, !locked, &load) && at >= 0)
+                    staged = ids[static_cast<std::size_t>(at)];
+                if (load && !staged.empty())
+                    park_command(("park " + std::string(park_lots[lot].key) + " " + staged).c_str());
+            }
+            if (!model.parks.ready) note("Load San Vansterdam to apply park choices.");
+            if (!model.parks.feedback.empty()) note(model.parks.feedback.c_str());
+            end_card();
+            return;
+        }
         ImGui::BeginDisabled(!model.parks.available || tools::parks_locked(model) || !callbacks.queue_console_command);
         if (ImGui::Button("Load Random Parks")) {
             park_command("park random");
@@ -377,6 +497,32 @@ void world_layers_page(SkateMenu& menu, const Model& model, const CallbacksV3& c
         warn("The host is syncing world layers. Your own choices come back when sync ends or you leave.");
     if (model.world.map == WorldMap::none) {
         note("Load a map to see its world layers.");
+        return;
+    }
+    if (console_style()) {
+        // Full screen: which kind, then a switch a layer (no search box: that wants a keyboard).
+        static const std::vector<std::string> kinds{"All categories", "Seasonal", "Activities", "World", "Lighting", "Structure", "Debug", "Parks"};
+        begin_card(menu, "world-layers", "WORLD LAYERS");
+        option_row(menu, "Show", "Left / right for one kind of layer.", menu.world_layer_category, kinds);
+        const bool can = !dingosdk::native_tools::layers_locked(model) && model.world.available && model.world.ready && callbacks.queue_console_command;
+        unsigned shown{};
+        for (unsigned i = 0; i < world_layers().size(); ++i) {
+            const auto& layer = world_layers()[i];
+            if (layer.map != model.world.map || !model.world.supported[i] || world_layer_kept_off(layer.key)) continue;
+            if (menu.world_layer_category && layer.category != kinds[static_cast<std::size_t>(menu.world_layer_category)]) continue;
+            ++shown;
+            const bool follows_game = model.world.choices[i] == "default";
+            bool enabled = follows_game ? model.world.enabled[i].value_or(false) : model.world.choices[i] == "on";
+            ImGui::PushID(layer.key.data());
+            if (toggle_row(menu, world_layer_title(layer.label).c_str(), layer.detail.data(), enabled, can))
+                send_console(menu, callbacks, "world " + std::string(layer.key) + (enabled ? " on" : " off"));
+            ImGui::PopID();
+        }
+        if (!shown) note("No layers of that kind on this map.");
+        if (button_row(menu, "layer-defaults", {{"RESTORE DEFAULTS", can, false, "Every layer on this map back to the game's control."}}) == 0)
+            send_console(menu, callbacks, "world defaults " + std::string(world_map_key(model.world.map)));
+        if (!model.world.feedback.empty()) note(model.world.feedback.c_str());
+        end_card();
         return;
     }
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * .61f);
@@ -462,15 +608,27 @@ void world_layers_page(SkateMenu& menu, const Model& model, const CallbacksV3& c
     if (!model.world.feedback.empty()) note(model.world.feedback.c_str());
 }
 
+void time_of_day_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks);
+
 // One page per sidebar entry; each page's tabs switch between focused panels.
 void map_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.map_tab, {"TRAVEL", "ROTATING PARKS", "WORLD LAYERS"}, "map-tabs");
+    category_tabs(menu, menu.map_tab, {"TRAVEL", "PARKS", "TIME AND WEATHER", "LAYERS AND CROWDS"}, "map-tabs");
     ImGui::PushID(menu.map_tab);
-    ImGui::BeginChild("map-tab", ImVec2(0, page_body_height(menu)));
+    ImGui::BeginChild("map-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    const bool loaded = model.world.map != WorldMap::none;
     switch (menu.map_tab) {
     case 0: level_picker(menu, model, callbacks); break;
     case 1: parks(menu, model, callbacks); break;
-    case 2: world_layers_page(menu, model, callbacks); break;
+    case 2:
+        time_of_day_page(menu, model, callbacks);
+        if (loaded) atmosphere_menu(menu, model, callbacks);
+        else note("Load a map in Map > Travel to change its fog, sky and wind.");
+        break;
+    case 3:
+        world_layers_page(menu, model, callbacks);
+        if (loaded) population_controls(menu, model, callbacks);
+        else note("Load a map in Map > Travel to change its traffic and pedestrians.");
+        break;
     }
     ImGui::EndChild();
     ImGui::PopID();
@@ -518,19 +676,50 @@ void graphics_page(SkateMenu& menu, const Model& model, const CallbacksV3& callb
 
 // The map's seven time-of-day world layers as one choice, like the native menu:
 // forcing one turns the others off; Default hands all seven back to the level.
+// A time of day is seven layer changes the game takes a few frames to make, and until they are
+// all made the layers read as some other time (or none). So the time asked for is kept and shown,
+// and the next step goes on from it, until the layers say it or four seconds pass.
+namespace {
+int tod_asked = -1;
+double tod_asked_until = 0;
+}
+int time_of_day_shown(const Model& model) {
+    const int now = static_cast<int>(dingosdk::native_tools::time_of_day(model));
+    if (tod_asked >= 0 && (now == tod_asked || ImGui::GetTime() > tod_asked_until)) tod_asked = -1;
+    return tod_asked >= 0 ? tod_asked : now;
+}
+void set_time_of_day(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, int next, bool quiet) {
+    tod_asked = std::clamp(next, 0, 7);
+    tod_asked_until = ImGui::GetTime() + 4.0;
+    for (const auto& line : dingosdk::native_tools::time_of_day_commands(model, static_cast<unsigned>(tod_asked))) {
+        if (!quiet) {
+            send_console(menu, callbacks, line);
+        } else if (callbacks.queue_console_command) {
+            std::array<char, 256> reply{};
+            callbacks.queue_console_command(callbacks.user, line.c_str(), reply.data(), reply.size());
+        }
+    }
+}
+
 void time_of_day_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     namespace tod = dingosdk::native_tools;
     begin_card(menu, "time-of-day", "TIME OF DAY");
     const bool available = tod::time_of_day_available(model, callbacks);
-    const int current = static_cast<int>(tod::time_of_day(model));
-    const auto apply = [&](unsigned next) {
-        for (const auto& line : tod::time_of_day_commands(model, next)) send_console(menu, callbacks, line);
-    };
+    const int current = time_of_day_shown(model);
+    const auto apply = [&](unsigned next) { set_time_of_day(menu, model, callbacks, static_cast<int>(next), false); };
+    if (console_style()) {
+        static const std::vector<std::string> times{"Default", "Morning", "Noon", "Afternoon", "Evening", "Night", "Weather day", "Weather night"};
+        int chosen = current;
+        if (option_row(menu, "Time of day", "Left / right to change it. Default follows the level's own time.", chosen, times, available))
+            apply(static_cast<unsigned>(chosen));
+    }
     int top = current < 4 ? current : -1;
+    if (!console_style()) {
     if (choice(menu, "tod-top", top, {"Default", "Morning", "Noon", "Afternoon"}, available)) apply(static_cast<unsigned>(top));
     int bottom = current >= 4 ? current - 4 : -1;
     if (choice(menu, "tod-bottom", bottom, {"Evening", "Night", "Weather day", "Weather night"}, available))
         apply(static_cast<unsigned>(bottom + 4));
+    }
     if (model.world.controlled_by_host && server_can(model.multiplayer, "tod"))
         note("Your role on this server sets the time: the one you pick applies to everyone.");
     else if (model.world.controlled_by_host) warn("The lobby host controls world layers, including time of day.");
@@ -540,30 +729,10 @@ void time_of_day_page(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     end_card();
 }
 
-void world_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.world_tab, {"TIME OF DAY", "ATMOSPHERE", "POPULATION"}, "world-tabs");
-    ImGui::PushID(menu.world_tab);
-    ImGui::BeginChild("world-tab", ImVec2(0, page_body_height(menu)));
-    const bool loaded = model.world.map != WorldMap::none;
-    switch (menu.world_tab) {
-    case 0: time_of_day_page(menu, model, callbacks); break;
-    case 1:
-        if (loaded) atmosphere_menu(menu, model, callbacks);
-        else note("Load a map in Map > Travel to change its fog, sky and wind.");
-        break;
-    case 2:
-        if (loaded) population_controls(menu, model, callbacks);
-        else note("Load a map in Map > Travel to change its traffic and pedestrians.");
-        break;
-    }
-    ImGui::EndChild();
-    ImGui::PopID();
-}
-
 void build_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     category_tabs(menu, menu.build_tab, {"PARK EDITOR", "PARK MODS", "SAVED OBJECTS"}, "build-tabs");
     ImGui::PushID(menu.build_tab);
-    ImGui::BeginChild("build-tab", ImVec2(0, page_body_height(menu)));
+    ImGui::BeginChild("build-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     if (menu.build_tab == 0) park_editor_panel(menu, model, callbacks);
     else if (menu.build_tab == 1) park_mods_panel(menu, model, callbacks);
     else saved_objects(menu, model, callbacks);

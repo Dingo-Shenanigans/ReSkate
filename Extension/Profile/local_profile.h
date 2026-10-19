@@ -178,9 +178,11 @@ public:
     void save_cosmetic_loadout(std::string_view, const CosmeticLoadout&);
     std::optional<CosmeticLoadout> player_card() const;
     void save_player_card(const CosmeticLoadout&);
-    void seed_cosmetic_inventory(const std::vector<std::string>&);
-    void seed_object_inventory(const std::vector<std::string>&);
-    void reconcile_inventory(const std::vector<std::string>& cosmetics, const std::vector<std::string>& objects);
+    // With a kind's unlock option on, what the player owns is a rule, not a list
+    // (profile_runtime::installed_item_owned): every installed item but a paid store copy. The
+    // ownership rows earlier versions saved for every item they saw (every mod's, removed mods'
+    // too) are dropped here, once, for each kind whose option is on.
+    void forget_unlocked_inventory();
     std::uint32_t selected_cosmetic_preset() const;
     void set_selected_cosmetic_preset(std::uint32_t);
     void save_park_choice(unsigned lot, std::string_view id);

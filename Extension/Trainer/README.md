@@ -8,7 +8,7 @@ telemetry HUD. It ships no game data: the list of values is built at run time fr
 
 | Tab | What you get |
 |---|---|
-| **TUNE** | Three lists: REALISTIC, FUN and EVERYTHING. Each opens on the dials: every built-in preset as one slider (Ollie height, Push speed, Body flip and spin speed, Bail resistance, Grind lock-on and friction, on-foot jump and sprint, glide, torpedo), where 1 is the game's own and the preset's button jumps to the preset; then the switches (Auto Push, No Speed Wobble, Smooth Surfaces, Long Wheelbase, Never bail), the trick sliders (flip trick speed, no comply, boneless, hippy and off-board jump height) and the values themselves: a short plainly named list, or under EVERYTHING the whole table (the physics tuning's values, one multiplier per curve and graph, and the 314 values of the game's other tuning classes) with search, groups, "only what I changed", locks, your own saved presets and a preset a map applies every time it loads. Changes apply while you skate. Values the game was never found or seen reading are hidden unless you ask for them. **Reset everything**, above the tabs, puts the game back as it shipped. |
+| **TUNE** | Three lists: REALISTIC, FUN and EVERYTHING. Each opens on the dials: every built-in preset as one slider (Ollie height, Push speed, Body flip and spin speed, Bail resistance, Grind lock-on and friction, on-foot jump and sprint, glide, torpedo), where 1 is the game's own and the preset's button jumps to the preset; then the switches (Realistic and Hardcore, Auto Push, No Speed Wobble, Smooth Surfaces, Long Wheelbase, Never bail), the trick sliders (flip trick speed, no comply, boneless, hippy and off-board jump height) and the values themselves: a short plainly named list, or under EVERYTHING the whole table (the physics tuning's values, one multiplier per curve and graph, and the 314 values of the game's other tuning classes) with search, groups, "only what I changed", locks, your own saved presets and a preset a map applies every time it loads. Changes apply while you skate. Values the game was never found or seen reading are hidden unless you ask for them. **Reset everything**, above the tabs, puts the game back as it shipped. |
 | **PRACTICE** | Game speed and pause, five marker slots per map (save / go / clear), return to the marker after a bail, teleport to coordinates or to the waypoint you placed on the pause map (onto the surface there), copy your position (game or Blender axes). |
 | **MAP & HUD** | Speed and air-time HUD, a read-out after every jump (takeoff speed and angle, height, distance, drop, landing speed, spin and flip), telemetry recording to CSV, and whatever the map's author ships for the trainer. |
 
@@ -91,7 +91,7 @@ ReSkateLauncher.exe --no-gui --no-update
 
 then read the `trainer selftest:` lines in `logs\ReSkate.log`. `dingosdk_trainer_tuning_dump <Skate
 folder>` (CMake option `DINGOSDK_BUILD_TRAINER_TESTS`) lists the tuning values without the game;
-the same option builds the `trainer_session_extras` and `trainer_landing` tests (`ctest -R trainer`).
+the same option builds the `trainer_session_extras`, `trainer_landing` and `trainer_presets` tests (`ctest -R trainer`).
 
 ## Known limits
 

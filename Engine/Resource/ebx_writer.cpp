@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <string_view>
@@ -85,7 +87,8 @@ std::size_t scalar_size(const FieldType type) {
 
 class Builder final {
 public:
-    explicit Builder(const Document& document) : document_(document) {}
+    Builder(const Document& document, const bool refuseNewArrayHashes)
+        : document_(document), refuse_(refuseNewArrayHashes) {}
 
     std::vector<std::byte> run() {
         validate();
@@ -106,6 +109,8 @@ private:
         std::uint32_t slot{};
         const Value::Array* values{};
         std::size_t descriptor{};
+        std::optional<std::uint32_t> hash;
+        std::int32_t holder{-1};   // type of the object holding the field
         bool emitted{};
     };
 
@@ -208,7 +213,8 @@ private:
                 static const Value::Array empty;
                 const auto* array = value ? std::get_if<Value::Array>(&value->data) : nullptr;
                 arraysPending_.push_back({checked_u32(position, "EBX array slot"), array ? array : &empty,
-                                          descriptorIndex});
+                                          descriptorIndex, value ? value->arrayHash : std::nullopt,
+                                          object ? object->descriptor : static_cast<std::int32_t>(typeIndex)});
             } else if (field.type() == FieldType::structure) {
                 if (field.classRef >= document_.types.size()) throw std::runtime_error("EBX struct type is invalid");
                 const auto nestedStart = align_up(position, std::max<std::size_t>(document_.types[field.classRef].alignment, 1));
@@ -352,12 +358,168 @@ private:
         return field.nameHash;
     }
 
+    // A new array takes the hash of an array the document read for the same field of the same type;
+    // failing that it borrows (array_hash), or is refused (see write_document).
+    std::uint32_t new_array_hash(const PendingArray& pending, const FieldDescriptor& field) {
+        if (!knownWalked_) {
+            knownWalked_ = true;
+            for (const auto& instance : document_.instances)
+                if (instance.object) collect_hashes(*instance.object);
+        }
+        const auto found = knownHashes_.find({pending.holder, pending.descriptor});
+        if (refuse_) {
+            if (found == knownHashes_.end())
+                throw std::runtime_error("EBX new array " + std::string(field.name) +
+                                         " has no array of its field to take a hash from");
+            if (document_.hashedReflectionNames &&
+                std::ranges::none_of(document_.reflectionGroups,
+                                     [&](const ReflectionGroup& group) { return group.hash == found->second; }))
+                throw std::runtime_error("EBX array hash of " + std::string(field.name) +
+                                         " is not in the reflection's group table");
+        }
+        return found != knownHashes_.end() ? found->second : array_hash(field);
+    }
+
+    void collect_hashes(const Object& object) {
+        for (const auto& field : object.fields) {
+            if (field.value.arrayHash)
+                knownHashes_.emplace(std::pair{object.descriptor, field.descriptor}, *field.value.arrayHash);
+            collect_value(field.value);
+        }
+    }
+
+    void collect_value(const Value& value) {
+        if (const auto* nested = std::get_if<std::shared_ptr<Object>>(&value.data)) {
+            if (*nested) collect_hashes(**nested);
+        } else if (const auto* array = std::get_if<Value::Array>(&value.data)) {
+            for (const auto& element : *array) collect_value(element);
+        }
+    }
+
     void write_arrays() {
         arraysOffset_ = checked_u32(align_up(payload_.size(), 16), "EBX array section");
         grow(static_cast<std::size_t>(arraysOffset_) + 32);
         emptyArrayTarget_ = arraysOffset_ + 16;
         for (std::size_t index = 0; index < arraysPending_.size(); ++index) {
             if (!arraysPending_[index].emitted) emit_array(index);
+        }
+        carry_boxed_arrays();
+    }
+
+    // What a boxed value points at is not in the document's values: its bytes are carried as they
+    // were, so the arrays and strings its pointers reach are carried with them and the pointers
+    // moved to the new places. Without this a rewrite dropped them (seen on the game's own
+    // level roots: a boxed debug string and about 1 KB of arrays).
+
+    enum class Target { array, string, instance, boxed, empty, unknown };
+
+    std::pair<Target, std::uint32_t> old_target(const std::uint32_t slot) const {
+        const auto& old = document_.payload;
+        std::int32_t displacement{};
+        std::memcpy(&displacement, old.data() + slot, sizeof(displacement));
+        const auto target = static_cast<std::uint32_t>(static_cast<std::int64_t>(slot) + displacement);
+        if (oldArrays_.contains(target)) return {Target::array, target};
+        if (document_.stringsOffset <= target && target < old.size()) return {Target::string, target};
+        if (const auto found = oldInstances_.find(target); found != oldInstances_.end())
+            return {Target::instance, found->second};
+        if (document_.boxedValuesOffset <= target && target < document_.stringsOffset) return {Target::boxed, target};
+        if (target >= 4 && target <= old.size()) {
+            std::uint32_t count{};
+            std::memcpy(&count, old.data() + target - 4, sizeof(count));
+            if (count == 0) return {Target::empty, target};
+        }
+        return {Target::unknown, target};
+    }
+
+    static std::vector<std::uint32_t> old_slots(const std::uint32_t start, const std::size_t length,
+                                                std::vector<std::uint32_t> offsets) {
+        std::ranges::sort(offsets);
+        offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
+        std::vector<std::uint32_t> out;
+        for (const auto value : offsets)
+            if (value >= start && value - start < length) out.push_back(value);
+        return out;
+    }
+
+    void carry_boxed_arrays() {
+        if (document_.payload.empty()) return;
+        for (const auto& record : document_.arrays) oldArrays_.emplace(record.offset, record);
+        for (std::size_t index = 0; index < document_.instances.size(); ++index)
+            oldInstances_.emplace(document_.instances[index].dataOffset, static_cast<std::uint32_t>(index));
+        auto records = document_.boxedValues;
+        std::ranges::sort(records, {}, &BoxedValueRecord::offset);
+        for (const auto& source : records)
+            for (const auto slot : old_slots(source.offset, source.rawBytes.size(), document_.pointerOffsets)) {
+                const auto [kind, key] = old_target(slot);
+                if (kind == Target::array) carry_array(oldArrays_.at(key));
+            }
+    }
+
+    std::pair<std::size_t, std::size_t> array_element(const ArrayRecord& record) const {
+        FieldDescriptor probe;
+        probe.encodedType = static_cast<std::uint16_t>(record.encodedType >> 1);
+        if (probe.type() == FieldType::structure) {
+            const auto slot = record.classRef;
+            if (slot < document_.fixupTypeGuids.size() && slot < document_.fixupTypeSignatures.size())
+                for (const auto& type : document_.types)
+                    if (type.guid == document_.fixupTypeGuids[slot] && type.signature == document_.fixupTypeSignatures[slot])
+                        return {std::max<std::size_t>(type.size, 1), std::max<std::size_t>(type.alignment, 1)};
+            throw std::runtime_error("EBX array record has an unknown struct type");
+        }
+        const auto stride = scalar_size(probe.type());
+        return {stride, std::max<std::size_t>(std::min<std::size_t>(stride, 8), 1)};
+    }
+
+    void carry_array(const ArrayRecord& record) {
+        if (carried_.contains(record.offset)) return;
+        const auto [stride, alignment] = array_element(record);
+        const auto length = stride * record.count;
+        if (record.offset + length > document_.payload.size()) throw std::runtime_error("EBX carried array exceeds EBXD");
+        const auto data = align_up(payload_.size() + 4, alignment);
+        put_number(data - 4, record.count);
+        put(data, std::span(document_.payload).subspan(record.offset, length));
+        const auto placed = checked_u32(data, "EBX array data");
+        carried_[record.offset] = placed;
+        arrays_.push_back({placed, record.count, record.hash, record.encodedType, record.classRef});
+        relocate(record.offset, length, data);
+    }
+
+    void relocate(const std::uint32_t oldStart, const std::size_t length, const std::size_t newStart) {
+        const auto moved = [&](const std::uint32_t old) {
+            return checked_u32(newStart + (old - oldStart), "EBX carried relocation");
+        };
+        for (const auto old : old_slots(oldStart, length, document_.resourceRefOffsets)) resourceOffsets_.push_back(moved(old));
+        for (const auto old : old_slots(oldStart, length, document_.importOffsets)) importOffsets_.push_back(moved(old));
+        for (const auto old : old_slots(oldStart, length, document_.typeInfoOffsets)) typeInfoOffsets_.push_back(moved(old));
+        for (const auto old : old_slots(oldStart, length, document_.pointerOffsets)) {
+            const auto slot = moved(old);
+            pointerOffsets_.push_back(slot);
+            if (document_.payload.empty()) continue;
+            const auto [kind, key] = old_target(old);
+            switch (kind) {
+            case Target::array:
+                carry_array(oldArrays_.at(key));
+                put_number(slot, static_cast<std::uint32_t>(carried_.at(key) - slot));
+                break;
+            case Target::string: {
+                const auto& source = document_.payload;
+                auto end = static_cast<std::size_t>(key);
+                while (end < source.size() && source[end] != std::byte{0}) ++end;
+                stringsPending_.push_back({slot, std::string(reinterpret_cast<const char*>(source.data()) + key, end - key)});
+                break;
+            }
+            case Target::instance:
+                put_number(slot, static_cast<std::uint32_t>(instanceOffsets_.at(key) - slot));
+                break;
+            case Target::empty:
+                put_number(slot, static_cast<std::uint32_t>(emptyArrayTarget_ - slot));
+                break;
+            case Target::boxed:
+                boxedTargets_.emplace_back(slot, key);
+                break;
+            case Target::unknown:
+                break;
+            }
         }
     }
 
@@ -387,8 +549,11 @@ private:
                 write_scalar(field, elementStart, &value);
             }
         }
+        // An array read from a record keeps that record's hash; a new one borrows (array_hash).
+        auto hash = arraysPending_[index].hash;
+        if (!hash) hash = new_array_hash(arraysPending_[index], field);
         arrays_.push_back({checked_u32(data, "EBX array data"), checked_u32(values->size(), "EBX array count"),
-                           array_hash(field), static_cast<std::uint16_t>(field.encodedType << 1),
+                           *hash, static_cast<std::uint16_t>(field.encodedType << 1),
                            field.type() == FieldType::structure
                                ? fixup_slot_for_descriptor(field.classRef)
                                : static_cast<std::uint16_t>(0xFFFF)});
@@ -407,23 +572,14 @@ private:
             if (source.offset < document_.boxedValuesOffset) throw std::runtime_error("EBX boxed record precedes its section");
             const auto offset = static_cast<std::size_t>(boxedOffset_) + source.offset - document_.boxedValuesOffset;
             put(offset, source.rawBytes);
-            const auto relocate = [&](const std::vector<std::uint32_t>& sourceOffsets,
-                                      std::vector<std::uint32_t>& destinationOffsets) {
-                for (const auto old : sourceOffsets) {
-                    if (old < source.offset || old - source.offset >= source.rawBytes.size()) continue;
-                    destinationOffsets.push_back(checked_u32(offset + old - source.offset,
-                                                             "EBX boxed relocation"));
-                }
-            };
-            relocate(document_.pointerOffsets, pointerOffsets_);
-            relocate(document_.resourceRefOffsets, resourceOffsets_);
-            relocate(document_.importOffsets, importOffsets_);
-            relocate(document_.typeInfoOffsets, typeInfoOffsets_);
+            relocate(source.offset, source.rawBytes.size(), offset);
             moved[source.offset] = checked_u32(offset, "EBX boxed value");
             auto authored = source;
             authored.offset = checked_u32(offset, "EBX boxed value");
             boxed_.push_back(std::move(authored));
         }
+        for (const auto& [slot, target] : boxedTargets_)
+            put_number(slot, static_cast<std::uint32_t>(boxedOffset_ + (target - document_.boxedValuesOffset) - slot));
         for (const auto& pending : boxesPending_) {
             put_number(pending.slot, pending.value.encodedType);
             put_number(static_cast<std::size_t>(pending.slot) + 4, std::uint32_t{});
@@ -588,6 +744,13 @@ private:
     std::uint32_t arraysOffset_{};
     std::uint32_t boxedOffset_{};
     std::uint32_t emptyArrayTarget_{};
+    std::unordered_map<std::uint32_t, ArrayRecord> oldArrays_;
+    std::unordered_map<std::uint32_t, std::uint32_t> oldInstances_;
+    std::unordered_map<std::uint32_t, std::uint32_t> carried_;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> boxedTargets_;
+    bool refuse_{};
+    bool knownWalked_{};
+    std::map<std::pair<std::int32_t, std::size_t>, std::uint32_t> knownHashes_;   // (holder, field) -> hash
 };
 
 }
@@ -611,8 +774,8 @@ std::uint16_t ensure_fixup_type(Document& document, const std::int32_t descripto
     return static_cast<std::uint16_t>(count);
 }
 
-std::vector<std::byte> write_document(const Document& document) {
-    return Builder(document).run();
+std::vector<std::byte> write_document(const Document& document, const bool refuseNewArrayHashes) {
+    return Builder(document, refuseNewArrayHashes).run();
 }
 
 }

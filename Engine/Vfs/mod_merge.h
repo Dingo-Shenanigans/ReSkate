@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -17,6 +18,7 @@ struct MergeReport {
     std::size_t superbundles{};         // superbundle TOCs written
     std::size_t mergedBundles{};        // bundles combined from two or more mods
     std::size_t mergedAssets{};         // EBX assets two or more mods had both edited
+    std::size_t unchangedCopies{};      // mods' asset copies equal to the game's, not kept for combining
     std::size_t archives{};             // cas files linked in
     std::string issue;                  // non-empty when nothing was produced
     std::vector<std::string> notes;
@@ -25,6 +27,20 @@ struct MergeReport {
     // be decoded, a copy that had to be left out. Each mod gets a summary line
     // from these, and a level that never finishes loading can name its mod.
     std::map<std::string, std::vector<std::string>> problems;
+    // Two mods changing one asset in ways that cannot both be in the game: the copy of the mod
+    // higher in the load order is kept and the other's changes are not in it. One row per pair of
+    // mods (folder names), with one of the assets and how many. The catalog leaves the losing mod
+    // out whole and merges again, so no mod loads half its changes.
+    struct Conflict {
+        std::string kept;
+        std::string lost;
+        std::string asset;
+        std::size_t assets{};
+        std::vector<std::string> areas;   // what those assets are, in a player's words (asset_area)
+    };
+    std::vector<Conflict> conflicts;
+    // Nothing was built: the check before the merge found `conflicts` (MergeOptions::conflicts_first).
+    bool stopped_for_conflicts{};
     // Every superbundle the merged mods' layouts assign to an install chunk,
     // as (superbundle, install chunk name). A live merge registers the ones
     // the game did not know at launch.
@@ -41,7 +57,17 @@ struct MergeReport {
         std::array<std::byte, 16> widget{}; // WidgetAssetGuid
     };
     std::vector<LoadScreen> load_screens;
+    // Each custom map's own mesh geometry, every level of detail of every mesh in its level
+    // bundles, by level folder (dingolevel_reskate_*). What its mesh streaming pool is sized from.
+    std::map<std::string, std::uint64_t> map_meshes;
 };
+
+// Mods/.reskate/reskate-map-meshes.json: map_meshes as the patch was last built, a level folder to
+// its bytes. A live merge updates the maps it saw and keeps the rest.
+inline constexpr char map_meshes_file[] = "reskate-map-meshes.json";
+// Empty when the file is missing or cannot be read.
+[[nodiscard]] std::map<std::string, std::uint64_t> read_map_meshes(const std::filesystem::path& file);
+void write_map_meshes(const std::filesystem::path& file, const std::map<std::string, std::uint64_t>& meshes);
 
 // How far a merge has got. Only a merge that is really rebuilding reports; an
 // unchanged one is reused without a word.
@@ -67,6 +93,9 @@ struct MergeOptions {
     // the others against it. Reading every mod's items and meshes again is most of what
     // adding one map would otherwise wait on.
     std::vector<std::string> checked;
+    // Look for mods that conflict (ConflictChecker, mod_conflicts.h) before building anything, and when some do,
+    // stop there (MergeReport::stopped_for_conflicts) so the caller merges once without them.
+    bool conflicts_first{};
 };
 
 // Combines every enabled mod into one patch under Mods/.reskate: superbundle

@@ -422,10 +422,11 @@ bool with_texture_assets(const Context& context, const std::array<std::string_vi
     if (!table || !buckets || buckets > 65536 || count > 32768) return false;
     std::array<Address, N> assets{};
     unsigned visited{};
+    // (Ignoring case: assets keep the case they were authored with, which is not always lower.)
     const auto matches = [](Address text, std::string_view name) {
         std::array<char, 256> bytes{};
         return name.size() < bytes.size() && memory::read_bytes(text, bytes.data(), name.size() + 1) &&
-            bytes[name.size()] == '\0' && std::memcmp(bytes.data(), name.data(), name.size()) == 0;
+            bytes[name.size()] == '\0' && _strnicmp(bytes.data(), name.data(), name.size()) == 0;
     };
     const auto complete = [&] { return std::all_of(assets.begin(), assets.end(), [](Address a) { return a != 0; }); };
     for (unsigned i = 0; i < buckets && !complete(); ++i) {

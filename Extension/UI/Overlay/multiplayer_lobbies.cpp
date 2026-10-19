@@ -319,7 +319,7 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
     // The card's real height from the last frame; the estimate only covers the first.
     const float code_space = menu.multiplayer_code_height > 0 ? menu.multiplayer_code_height : direct_join_height() + px(8);
     const float height = std::max(px(120), ImGui::GetContentRegionAvail().y - code_space);
-    ImGui::BeginChild("lobby-list", ImVec2(0, height));
+    ImGui::BeginChild("lobby-list", ImVec2(0, height), ImGuiChildFlags_NavFlattened);
     auto *draw = ImGui::GetWindowDrawList();
     const float tile_height = px(66), pad = px(14), gap = px(6);
     const float join_width = px(110);

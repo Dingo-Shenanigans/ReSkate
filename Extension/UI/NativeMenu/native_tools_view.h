@@ -212,6 +212,10 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         console(m.board_break.enabled ? "boardbreak 0" : "boardbreak 1", m.board_break.available);
     } else if (command == "board-break-deck") {
         console("boardbreak deck next", m.board_break.available && m.board_break.has_deck);
+    } else if (command == "board-break-always") {
+        console(m.board_break.always ? "boardbreak always 0" : "boardbreak always 1", m.board_break.available);
+    } else if (command == "board-break-wear") {
+        console(m.board_break.wear ? "boardbreak wear 0" : "boardbreak wear 1", m.board_break.available);
     } else if (command == "grind-exits") {
         console(m.grind_exit.enabled ? "grindexit exits off" : "grindexit exits on", m.grind_exit.available);
     } else if (command == "grind-exit-sides") {
@@ -224,6 +228,14 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const int strength = m.grind_exit.strength;
         const int next = strength > 75 ? 75 : strength > 50 ? 50 : strength > 25 ? 25 : 100;
         console("grindexit strength " + std::to_string(next), m.grind_exit.available);
+    } else if (command == "keyframe-smoothing") {
+        console(m.keyframe_smoothing.enabled ? "keysmooth off" : "keysmooth on", m.keyframe_smoothing.available);
+    } else if (command == "keyframe-smoothness") {
+        // 100 -> 75 -> 50 -> 25 -> 100 (the ReSkate menu's slider sets any value from 0 to 100).
+        const int percent = overlay::keyframe_smoothness_percent(m.keyframe_smoothing);
+        const int next = percent > 75 ? 75 : percent > 50 ? 50 : percent > 25 ? 25 : 100;
+        console("keysmooth amount " + std::string(next == 100 ? "1" : next == 75 ? "0.75" : next == 50 ? "0.5" : "0.25"),
+                m.keyframe_smoothing.available && m.keyframe_smoothing.enabled);
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -319,14 +331,23 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
         toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
-        toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
-        toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
-            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-        button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
-            m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-        toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
-        button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
-            m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
+        // (Not listed when its official mod is turned off in the launcher.)
+        if (!m.road_rash.off) {
+            toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
+            toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
+                m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+            button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
+                m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
+        }
+        if (!m.board_break.off) {
+            toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
+            button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
+                m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
+            toggle(p.main, "board-break-always", "Board Break: always break", m.board_break.always,
+                m.board_break.available && m.board_break.enabled && cb.queue_console_command);
+            toggle(p.main, "board-break-wear", "Board Break: wear and tear", m.board_break.wear,
+                m.board_break.available && m.board_break.enabled && cb.queue_console_command);
+        }
         const auto& grind = m.grind_exit;
         const bool grind_console = grind.available && cb.queue_console_command;
         toggle(p.main, "grind-exits", "Grind exit triggers", grind.enabled, grind_console);
@@ -364,6 +385,12 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
                 "graphics", m.graphics.available && cb.queue_console_command, graphics_keys[i]);
         }
         button(p.main, "graphics-reset", "Restore default effects", "graphics-reset", m.graphics.available && cb.queue_console_command);
+        text(p.main, "replay-title", "REPLAY EDITOR");
+        toggle(p.main, "keyframe-smoothing", "Keyframe smoothing", m.keyframe_smoothing.enabled,
+            m.keyframe_smoothing.available && cb.queue_console_command);
+        button(p.main, "keyframe-smoothness",
+            "Keyframe smoothness: " + std::to_string(overlay::keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
+            "keyframe-smoothness", m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && cb.queue_console_command);
         text(p.side, "hud-title", "CHALLENGES");
         button(p.side, "challenges", m.progression.challenges_hidden ? "Challenges: Hidden" : "Challenges: Shown", "challenges",
             m.progression.challenges_enabled && cb.queue_console_command);

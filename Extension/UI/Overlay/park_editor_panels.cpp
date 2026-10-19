@@ -58,10 +58,132 @@ std::string card_title(const std::string &title, float width) {
     }
     return result;
 }
+// OBJECTS / SETS: which list the library shows.
+void library_tabs(ParkEditorUI &ui) {
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
+    ImGui::PushFont(font_or(ui.bold_font));
+    for (const bool sets : {false, true}) {
+        if (sets)
+            ImGui::SameLine();
+        const bool on = ui.library_sets == sets;
+        if (on)
+            skate_theme::push_primary_button();
+        if (ImGui::Button(sets ? "SETS" : "OBJECTS", {sets ? -1 : half, 0}))
+            ui.library_sets = sets;
+        if (on)
+            skate_theme::pop_primary_button();
+    }
+    ImGui::PopFont();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Groups of objects you saved, to place again anywhere.");
+}
+void object_sets(ParkEditorUI &ui, const Model &model) {
+    const float k = ui.ui_scale;
+    const auto &state = model.editor;
+    const bool busy = state.busy || state.failed || ui.pending || ui.preview_token || !state.available;
+    const auto &sets = state.object_sets;
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("Select objects (Shift-click adds), name them and save them as a set. "
+                        "Place it again anywhere, on any map.");
+    ImGui::PopTextWrapPos();
+    ImGui::SetNextItemWidth(-1);
+    const bool enter = ImGui::InputTextWithHint("##set-name", "Set name", ui.set_name.data(), ui.set_name.size(),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+    const auto count = ui.selection.size();
+    const bool can_save = !busy && count && ui.set_name[0];
+    ImGui::BeginDisabled(!can_save);
+    skate_theme::push_primary_button();
+    ImGui::PushFont(font_or(ui.bold_font));
+    const auto label = count ? "SAVE " + std::to_string(count) + (count == 1 ? " OBJECT" : " OBJECTS") + " AS SET"
+                             : std::string("SELECT OBJECTS TO SAVE");
+    const bool save = ImGui::Button(label.c_str(), {-1, 34 * k});
+    ImGui::PopFont();
+    skate_theme::pop_primary_button();
+    ImGui::EndDisabled();
+    if ((save || enter) && can_save)
+        save_set(ui, state);
+    const std::string typed = ui.set_name.data();
+    if (sets && !typed.empty() &&
+        std::any_of(sets->begin(), sets->end(), [&](const auto &set) { return set.name == typed; }))
+        ImGui::TextDisabled("Saving replaces the set with this name.");
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##set-search", "Search sets...", ui.search.data(), ui.search.size());
+    std::vector<const EditorObjectSet *> filtered;
+    if (sets)
+        for (const auto &set : *sets)
+            if (matches(set.name + " " + set.map, ui.search.data()))
+                filtered.push_back(&set);
+    ImGui::TextDisabled("%zu sets  /  Place, then click in the world", filtered.size());
+    ImGui::Spacing();
+    ImGui::BeginChild("set-list", {0, 0});
+    if (filtered.empty())
+        ImGui::TextDisabled(sets && !sets->empty() ? "No set matches the search." : "No saved sets yet.");
+    for (std::size_t index = 0; index < filtered.size(); ++index) {
+        const auto &set = *filtered[index];
+        ImGui::PushID(set.name.c_str());
+        auto *draw = ImGui::GetWindowDrawList();
+        const auto top = ImGui::GetCursorScreenPos();
+        const float width = ImGui::GetContentRegionAvail().x;
+        const float height = ImGui::GetTextLineHeight() * 2 + ImGui::GetFrameHeight() + 26 * k;
+        const bool chosen = ui.placing_set == set.name;
+        skate_theme::rough_rect(draw, top, plus(top, {width, height}),
+                                chosen ? skate_theme::tile_light : skate_theme::tile_grey,
+                                static_cast<unsigned>(index + 91), k);
+        if (chosen)
+            draw->AddRect(plus(top, {-1, -1}), plus(top, {width + 1, height + 1}), blue, 0, 0, 3 * k);
+        std::size_t missing = 0;
+        if (state.assets)
+            for (const auto &object : set.objects)
+                missing += std::none_of(state.assets->begin(), state.assets->end(),
+                                        [&](const auto &asset) { return asset.key == object.item; });
+        ImGui::SetCursorScreenPos(plus(top, {10 * k, 8 * k}));
+        ImGui::BeginGroup();
+        ImGui::PushFont(font_or(ui.bold_font));
+        ImGui::TextUnformatted(set.name.c_str());
+        ImGui::PopFont();
+        if (missing)
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(skate_theme::danger), "%zu objects  /  %zu unavailable",
+                               set.objects.size(), missing);
+        else
+            ImGui::TextDisabled("%zu objects  /  saved on %s", set.objects.size(), set.map.c_str());
+        const float buttons = (width - 20 * k - ImGui::GetStyle().ItemSpacing.x) * .5f;
+        ImGui::BeginDisabled(busy || missing);
+        if (ImGui::Button(chosen ? "Placing..." : "Place", {buttons, 0})) {
+            if (chosen)
+                ui.placing_set.clear();
+            else
+                begin_set_placement(ui, model, set.name);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(busy);
+        const bool confirming = ui.set_delete == set.name;
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(skate_theme::danger));
+        if (ImGui::Button(confirming ? "Really delete?" : "Delete", {buttons, 0})) {
+            if (confirming)
+                delete_set(ui, state, set.name);
+            else
+                ui.set_delete = set.name;
+        }
+        ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+        ImGui::EndGroup();
+        ImGui::SetCursorScreenPos(plus(top, {0, height + 6 * k}));
+        ImGui::Dummy({width, 0});
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+}
 } // namespace
 void library(ParkEditorUI &ui, const Model &model) {
     const float k = ui.ui_scale;
     heading(ui, "OBJECT LIBRARY");
+    library_tabs(ui);
+    if (ui.library_sets) {
+        object_sets(ui, model);
+        return;
+    }
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##library-search", "Search objects...", ui.search.data(), ui.search.size());
     const auto &assets = model.editor.assets;
@@ -112,6 +234,7 @@ void library(ParkEditorUI &ui, const Model &model) {
                         if (ui.preview_token)
                             cancel_drag(ui, model);
                         ui.placing = item.key;
+                        ui.placing_set.clear();
                         ui.selected = 0;
                         ui.selection.clear();
                         ui.angles = {};
@@ -173,8 +296,10 @@ void inspector(ParkEditorUI &ui, const Model &model, const CallbacksV3 &callback
     const float k = ui.ui_scale;
     heading(ui, "TRANSFORM");
     const auto *selected = selected_object(ui, model.editor);
-    const bool editable = selected || !ui.placing.empty();
-    if (ui.selection.size() > 1)
+    const bool editable = selected || !ui.placing.empty() || !ui.placing_set.empty();
+    if (!ui.placing_set.empty())
+        ImGui::TextDisabled("Placing the set %s", ui.placing_set.c_str());
+    else if (ui.selection.size() > 1)
         ImGui::TextDisabled("%zu objects / shared pivot", ui.selection.size());
     else if (selected)
         ImGui::TextDisabled("Object %llu", static_cast<unsigned long long>(selected->id));
@@ -203,7 +328,10 @@ void inspector(ParkEditorUI &ui, const Model &model, const CallbacksV3 &callback
     ImGui::BeginDisabled(!selected && ui.surface_mode && !ui.surface_valid && !ui.inspector_dirty);
     skate_theme::push_primary_button();
     ImGui::PushFont(font_or(ui.bold_font));
-    const bool apply = ImGui::Button(selected ? "APPLY TRANSFORM" : "PLACE AT COORDINATES", {-1, 34 * k});
+    const bool apply = ImGui::Button(selected                    ? "APPLY TRANSFORM"
+                                     : !ui.placing_set.empty() ? "PLACE SET AT COORDINATES"
+                                                               : "PLACE AT COORDINATES",
+                                     {-1, 34 * k});
     ImGui::PopFont();
     skate_theme::pop_primary_button();
     if (apply) {
@@ -211,11 +339,15 @@ void inspector(ParkEditorUI &ui, const Model &model, const CallbacksV3 &callback
             if (selected || !ui.surface_mode || ui.inspector_dirty)
                 for (auto &v : ui.position)
                     v = snapped(v, ui.grid);
-            for (auto &v : ui.angles)
-                v = snapped(v, ui.angle_snap);
+            // A group's own rotation is not on the angle grid: snap only a rotation typed for it.
+            if (ui.selection.size() <= 1 || ui.angles != ui.group_angles)
+                for (auto &v : ui.angles)
+                    v = snapped(v, ui.angle_snap);
         }
         bool applied{};
-        if (ui.selection.size() > 1) {
+        if (!ui.placing_set.empty())
+            applied = place_set(ui, model.editor);
+        else if (ui.selection.size() > 1) {
             const auto position = ui.position, angles = ui.angles;
             const auto scale = ui.scale;
             refresh_selection(ui, model.editor);
@@ -233,17 +365,23 @@ void inspector(ParkEditorUI &ui, const Model &model, const CallbacksV3 &callback
             ui.placing.clear();
     }
     ImGui::EndDisabled();
-    if (selected && ui.selection.size() <= 1) {
+    if (selected) {
+        const bool group = ui.selection.size() > 1;
         const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
-        if (ImGui::Button("Duplicate", {half, 0})) {
-            const auto key = selected->item;
-            ui.position[0] += ui.snapping ? ui.grid : 1;
-            send(ui, model, callbacks, "place", key);
-        }
+        if (ImGui::Button(group ? "Duplicate all" : "Duplicate", {half, 0}))
+            duplicate_selection(ui, model.editor);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Copy %s with %s rotation and scale, one grid step along X (Ctrl+D).",
+                              group ? "every selected object" : "the object", group ? "their" : "its");
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(skate_theme::danger));
-        if (ImGui::Button("Delete", {-1, 0}))
-            send(ui, model, callbacks, "delete");
+        const auto label = group ? "Delete " + std::to_string(ui.selection.size()) : std::string("Delete");
+        if (ImGui::Button(label.c_str(), {-1, 0})) {
+            if (group)
+                delete_selection(ui, model.editor);
+            else
+                send(ui, model, callbacks, "delete");
+        }
         ImGui::PopStyleColor();
     }
     ImGui::EndDisabled();

@@ -1,4 +1,5 @@
 #include "native_skater_internal.h"
+#include "native_prop.h"
 #include "native_pose_layout.h"
 #include "puppet_cost.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
@@ -385,6 +386,7 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
     // Other SDK-created actors share this hook; they must forget the entity
     // before the engine frees it.
+    prop_entity_destroyed(entity);
     if (const auto listener = shared().destroyed_listener.load(std::memory_order_acquire))
         listener(entity);
     // The first slot watching it as either skater or board.

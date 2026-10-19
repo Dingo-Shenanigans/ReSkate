@@ -80,7 +80,7 @@ void run_headless(const app::Session& session, std::vector<std::wstring> argumen
     if (!map.empty()) options.map = std::move(map);
     update::remove_previous_launcher(session.self);
     if (updates) {
-        const auto config = update::fetch_config();
+        const auto config = update::fetch_config(dingosdk::launcher_gui::prereleases_enabled(session));
         if (config && apply_headless_updates(session, *config, original, relaunched)) return;
     }
     if (!app::game_files_supported(session.paths))
@@ -101,6 +101,18 @@ bool in_steam_library() {
     for (auto folder = fs::path(self).parent_path(); folder.has_parent_path() && folder != folder.parent_path(); folder = folder.parent_path())
         if (same(folder.filename(), L"common") && same(folder.parent_path().filename(), L"steamapps")) return true;
     return false;
+}
+
+// The launcher's folder (where the game is installed and run from), when its path has a
+// character outside plain ASCII; empty otherwise. skate. reads its own folder in the Windows
+// code page and then decodes it as UTF-8, so a folder with a Cyrillic user name, or a Portuguese
+// or Japanese OneDrive Desktop, comes out wrong: it cannot read its data and crashes in its first
+// second (Skate.exe+0x18df4cf, four players on 2026-10-17, every one in such a folder).
+std::wstring non_ascii_folder() {
+    std::wstring self(32768, L' ');
+    self.resize(GetModuleFileNameW(nullptr, self.data(), static_cast<DWORD>(self.size())));
+    const auto folder = fs::path(self).parent_path().wstring();
+    return std::any_of(folder.begin(), folder.end(), [](wchar_t c) { return c > 0x7e || c < 0x20; }) ? folder : std::wstring{};
 }
 
 } // namespace
@@ -130,6 +142,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             L"ReSkate Launcher", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return 1;
     }
+    if (const auto folder = non_ascii_folder(); !folder.empty() &&
+        MessageBoxW(nullptr,
+            (L"ReSkate is in a folder whose path has letters skate. cannot read:\n\n" + folder +
+             L"\n\nThe game cannot find its own files there (accented, Cyrillic, Japanese and other letters outside "
+             L"A to Z; OneDrive and Desktop folders often have them) and crashes as it starts.\n\n"
+             L"Move ReSkateLauncher.exe and ReSkate.dll, with the game the launcher installed beside them, to a folder "
+             L"with only plain letters, for example C:\\Games\\ReSkate, and run the launcher from there.\n\n"
+             L"Start anyway?").c_str(),
+            L"ReSkate Launcher", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) != IDYES)
+        return 1;
     auto arguments = original;
     const bool headless = take_flag(arguments, L"--no-gui");
 

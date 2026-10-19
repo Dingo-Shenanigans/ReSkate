@@ -26,6 +26,20 @@ inline constexpr std::size_t message_room = 1100;
 // How many poses a receiver keeps of each stream to build on, and how many a server may send
 // past the newest one acked before it sends the stream whole again.
 inline constexpr std::size_t receiver_keeps = 32, sender_runs = 24;
+// The most streams a receiver holds. A server opens one for each other player, and a player's
+// new stream ends their old one; past this a whole pose opening another is refused, so a sender
+// cannot make the receiver keep poses for every one of the 65,536 stream numbers.
+inline constexpr std::size_t receiver_streams = 512;
+// Opens `number` as `source`'s stream when it is not already: their other streams end, and
+// nothing opens past receiver_streams. False when refused.
+template <typename Streams> bool open_stream(Streams &streams, std::uint16_t number, std::uint64_t source) {
+    if (const auto found = streams.find(number); found != streams.end() && found->second.source == source) return true;
+    for (auto it = streams.begin(); it != streams.end();) {
+        if (it->first != number && it->second.source == source) it = streams.erase(it);
+        else ++it;
+    }
+    return streams.contains(number) || streams.size() < receiver_streams;
+}
 
 inline bool is_batch(std::span<const std::uint8_t> bytes) noexcept {
     return bytes.size() >= header_size && std::equal(batch_magic.begin(), batch_magic.end(), bytes.begin());
@@ -251,7 +265,7 @@ template <typename Streams> std::optional<Rebuilt> rebuild(Streams &streams, con
     if (entry.whole) {
         if (!pose_codec::whole(entry.pose)) return {};
         auto pose = pose_codec::decode(entry.pose, nullptr);
-        if (!pose) return {};
+        if (!pose || !open_stream(streams, entry.stream, entry.source)) return {};
         auto &stream = streams[entry.stream];
         if (stream.source != entry.source || stream.epoch != entry.epoch) stream = {entry.source, entry.epoch, {}};
         out.source = entry.source;

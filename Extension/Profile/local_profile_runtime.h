@@ -29,6 +29,9 @@ LocalProfileAccess local_profile_access() noexcept;
 bool local_profile_owns_entitlement(std::string_view id) noexcept;
 // Called on the game-update thread after native item data becomes available.
 void update_local_customization() noexcept;
+// The item grids' favorites, search and focused item (Customization/item_browser.h): every client
+// tick on the same thread, as the grids follow the player's every move.
+void update_local_item_browser() noexcept;
 // Cancel asset-backed service callbacks before native level teardown.
 void local_profile_before_level_transition(unsigned next) noexcept;
 using LocalLocationTravelQueue = bool (*)(const char* map);
@@ -58,6 +61,8 @@ bool queue_local_park_surface(const EditorSurfaceRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);
 bool queue_local_park_paste(const EditorPasteRequest &);
+bool queue_local_park_object_set(const EditorObjectSetRequest &);
+bool queue_local_park_delete(const EditorDeleteRequest &);
 void tick_local_park_editor() noexcept;
 ControllerBindingsModel local_profile_controller_bindings();
 bool set_local_freecam_controller(bool);
@@ -84,6 +89,10 @@ bool teleport_local_skater(const std::array<float, 3>& position);
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.
 std::optional<float> local_ground_height(float x, float z, float top, float bottom);
+// The first collision surface along the line from `from` to `to` (world positions), from the same
+// client physics world. Empty when the line is clear, collision is still streaming, or the query
+// is unavailable. Client update thread.
+std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>& from, const std::array<float, 3>& to);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."
@@ -98,8 +107,12 @@ std::optional<Json> local_value(std::string_view key) noexcept;
 void set_local_values(const std::vector<std::pair<std::string, Json>>& values) noexcept;
 // ReSkate menu scale, clamped to a legible range. Cached so the overlay can
 // read it every frame without touching the database.
-float local_menu_scale() noexcept;
-bool set_local_menu_scale(float value) noexcept;
+// The ReSkate menu's size: the window's, or (`fullscreen`) the full screen menu's.
+float local_menu_scale(bool fullscreen = false) noexcept;
+bool set_local_menu_scale(float value, bool fullscreen = false) noexcept;
+// Whether the ReSkate menu fills the screen (made for a controller) or is a window. Cached likewise.
+bool local_menu_fullscreen() noexcept;
+void set_local_menu_fullscreen(bool fullscreen) noexcept;
 // The game's camera height option (UseHighCam, true is the high camera) as the game writes it,
 // which its camera height button does: the listener returns the height to keep instead. Runs on
 // the thread that writes the option.

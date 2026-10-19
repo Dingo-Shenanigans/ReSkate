@@ -2,6 +2,7 @@
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_document.h"
 #include "Extension/Objects/ParkEditor/park_mods.h"
+#include "Extension/Objects/ParkEditor/park_object_sets.h"
 #include "Extension/Objects/ParkEditor/park_editor_highlight.h"
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
 #include <Windows.h>
@@ -321,6 +322,45 @@ int main(int argc, char **argv) {
                       found->maps == std::vector<std::string>{"bam"} && found->enabled,
                   "Park mod listing lost its details or maps");
             std::filesystem::remove_all(data_root);
+        }
+        {
+            // Saved object sets: anchored at the footprint's middle and lowest origin, kept by name.
+            const auto sets_root = std::filesystem::path(argv[1]) / "object_sets";
+            std::filesystem::remove_all(sets_root);
+            const dingosdk::profile::ObjectLayout picked{
+                {41, "own_bk_ramp", {10, 2, 20}, {0, 0, 0, 1}, 1},
+                {57, "own_bk_rail", {14, 3, 24}, {0, .7071068f, 0, .7071068f}, 2}};
+            const auto anchored = anchored_set(picked);
+            check(anchored.size() == 2 && anchored[0].id == 1 && anchored[1].id == 2, "Set ids are not the set's own");
+            check(close_float(anchored[0].position[0], -2) && close_float(anchored[0].position[1], 0) &&
+                      close_float(anchored[0].position[2], -2) && close_float(anchored[1].position[0], 2) &&
+                      close_float(anchored[1].position[1], 1) && close_float(anchored[1].position[2], 2),
+                  "Set anchor is not the footprint middle at the lowest origin");
+            check(anchored[1].rotation == picked[1].rotation && anchored[1].scale == 2 && anchored[1].item == "own_bk_rail",
+                  "Anchoring changed an object's rotation, scale or item");
+            check(load_object_sets(sets_root).empty(), "A missing set folder lists sets");
+            save_object_set(sets_root, "Ledge Combo", "bam", picked);
+            save_object_set(sets_root, "Alpha", "grom", {picked[0]});
+            auto sets = load_object_sets(sets_root);
+            check(sets.size() == 2 && sets[0].name == "Alpha" && sets[1].name == "Ledge Combo" && sets[1].map == "bam",
+                  "Set listing lost a set, its order or its map");
+            check(sets[1].objects.size() == 2 && sets[1].objects[1].item == "own_bk_rail" &&
+                      close_float(sets[1].objects[1].position[1], 1) && sets[1].objects[1].scale == 2,
+                  "Set round trip differs");
+            save_object_set(sets_root, "Alpha", "bam", picked);
+            sets = load_object_sets(sets_root);
+            check(sets.size() == 2 && sets[0].objects.size() == 2, "Saving under an existing name did not replace it");
+            rejects([&] { save_object_set(sets_root, "../escape", "bam", picked); });
+            rejects([&] { save_object_set(sets_root, "Empty", "bam", {}); });
+            rejects([&] { save_object_set(sets_root, "Bad", "bam", {{1, "not_buildkit", {}, {0, 0, 0, 1}, 1}}); });
+            std::ofstream(sets_root / "Broken.park.json", std::ios::binary) << "{";
+            check(load_object_sets(sets_root).size() == 2, "A damaged set file was listed");
+            remove_object_set(sets_root, "Alpha");
+            sets = load_object_sets(sets_root);
+            check(sets.size() == 1 && sets[0].name == "Ledge Combo", "Deleting a set failed");
+            rejects([&] { remove_object_set(sets_root, "Alpha"); });
+            rejects([&] { remove_object_set(sets_root, ".."); });
+            std::filesystem::remove_all(sets_root);
         }
         std::cout << "Park editor math, validation and atomic save tests passed.\n";
         return 0;

@@ -22,6 +22,8 @@ class Renderer {
 public:
     bool init(HWND window);
     void render();
+    // The swap chain's buffers at the window's new client size, once the GPU is done with the old ones.
+    void resize(UINT width, UINT height);
     // Uploads RGBA pixels into a free SRV slot (slot 0 is the font) and
     // returns its ImGui texture id; empty when the slots are used up.
     ImTextureID upload_texture(const std::vector<unsigned char>& pixels, UINT width, UINT height);

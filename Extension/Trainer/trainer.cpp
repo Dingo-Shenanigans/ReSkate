@@ -19,6 +19,8 @@
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Skater/physics_tuning.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include <mutex>
+#include <thread>
 #include <windows.h>
 #include <shlobj.h>
 #include <algorithm>
@@ -109,7 +111,7 @@ struct State {
     std::string status = "Waiting for the game.", last;
     bool ready{};
     std::map<std::string, Saved, std::less<>> saved;                                    // by key
-    std::map<std::string, std::map<std::string, double, std::less<>>, std::less<>> user; // presets
+    UserPresets user;                                                                   // presets
     std::vector<std::string> active;                                                    // presets applied since Stock
     std::map<std::string, MapData, std::less<>> maps;
     std::string map;
@@ -262,7 +264,7 @@ void load_store() {
                     s.saved[lower(key)] = {row.at("value").get<double>(), row.value("frozen", false)};
         if (json->contains("presets") && json->at("presets").is_object())
             for (const auto &[name, values] : json->at("presets").items()) {
-                if (!values.is_object() || name.empty() || name.size() > 48) continue;
+                if (!values.is_object() || name.empty() || name.size() > max_preset_name) continue;
                 auto &preset = s.user[name];
                 for (const auto &[key, value] : values.items())
                     if (value.is_number()) preset[lower(key)] = value.get<double>();
@@ -281,6 +283,16 @@ void load_store() {
             }
     } catch (...) {
         say(logging::Level::warning, "Trainer: trainer.json is damaged; starting from what could be read.");
+    }
+    // A preset of the player's own saved before a built-in one took its name would hide the
+    // built-in. It keeps its values under a new name, and what named it follows.
+    for (const auto &[from, to] : rename_reserved_presets(s.user)) {
+        for (auto &name : s.active)
+            if (lower(name) == lower(from)) name = to;
+        for (auto &entry : s.maps)
+            if (lower(entry.second.preset) == lower(from)) entry.second.preset = to;
+        s.save_due = true;
+        say(logging::Level::info, std::format("Trainer: your preset \"{}\" is now \"{}\": a built-in preset has that name.", from, to));
     }
 }
 void save_store() {
@@ -332,21 +344,29 @@ void save_store() {
             maps[level] = std::move(row);
         }
         json["maps"] = std::move(maps);
-        const auto directory = data_directory();
-        if (directory.empty()) return;
-        std::error_code error;
-        std::filesystem::create_directories(directory, error);
-        const auto target = directory / L"trainer.json", temporary = directory / L"trainer.json.tmp";
-        {
-            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-            file << json.dump(2);
-            if (!file) return;
-        }
-        std::filesystem::rename(temporary, target, error);
-        if (error) {
-            std::filesystem::remove(target, error);
-            std::filesystem::rename(temporary, target, error);
-        }
+        // Written on a thread of its own (the client tick saves 1.5 s after a change: a folder
+        // lookup, a file written and renamed). The writes are kept in order by their own lock.
+        std::thread([text = json.dump(2)] {
+            static std::mutex writing;
+            std::lock_guard lock(writing);
+            try {
+                const auto directory = data_directory();
+                if (directory.empty()) return;
+                std::error_code error;
+                std::filesystem::create_directories(directory, error);
+                const auto target = directory / L"trainer.json", temporary = directory / L"trainer.json.tmp";
+                {
+                    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+                    file << text;
+                    if (!file) return;
+                }
+                std::filesystem::rename(temporary, target, error);
+                if (error) {
+                    std::filesystem::remove(target, error);
+                    std::filesystem::rename(temporary, target, error);
+                }
+            } catch (...) {}
+        }).detach();
     } catch (...) {
         say(logging::Level::warning, "Trainer: could not save trainer.json.");
     }
@@ -933,10 +953,55 @@ MapFile read_map_file(const std::string &level) {
     }
     return result;
 }
+// The map's file is read on a thread of its own and taken by the tick when it is there: read
+// here, it listed every mod's folder and opened two files in each on the client thread, as the
+// player spawned (2026-10-15).
+struct MapFileRead {
+    std::mutex mutex;
+    std::string level;
+    std::optional<MapFile> file;
+};
+MapFileRead &map_file_read() {
+    static auto *read = new MapFileRead; // process lifetime, as the threads that fill it
+    return *read;
+}
+void start_map_file_read(const std::string &level) {
+    auto &r = map_file_read();
+    {
+        std::lock_guard lock(r.mutex);
+        r.level = level;
+        r.file.reset();
+    }
+    if (level.empty()) return;
+    try {
+        std::thread([level] {
+            MapFile file;
+            try { file = read_map_file(level); } catch (...) {}
+            auto &r = map_file_read();
+            std::lock_guard lock(r.mutex);
+            if (r.level == level) r.file = std::move(file);
+        }).detach();
+    } catch (...) {}
+}
+void take_map_file() {
+    auto &s = state();
+    auto &r = map_file_read();
+    {
+        std::lock_guard lock(r.mutex);
+        if (!r.file || r.level != s.map) return;
+        s.map_file = std::move(*r.file);
+        r.file.reset();
+    }
+    if (!s.map_file.spots.empty() || !s.map_file.preset.empty())
+        say(logging::Level::info, std::format("Trainer: the map ships {} spots and {} preset values.", s.map_file.spots.size(),
+                                                s.map_file.preset.size()));
+    changed(false);
+}
 void enter_map(const std::string &level) {
     auto &s = state();
     s.map = level;
-    s.map_file = level.empty() ? MapFile{} : read_map_file(level);
+    s.map_file = {};
+    start_map_file_read(level);
     s.motion = {};
     s.telemetry.last = {};
     s.telemetry.best = {};
@@ -952,9 +1017,6 @@ void enter_map(const std::string &level) {
     if (!level.empty()) {
         const auto found = s.maps.find(level);
         s.profile_due = found != s.maps.end() && !found->second.preset.empty();
-        if (!s.map_file.spots.empty() || !s.map_file.preset.empty())
-            say(logging::Level::info, std::format("Trainer: the map ships {} spots and {} preset values.", s.map_file.spots.size(),
-                                                    s.map_file.preset.size()));
     }
     changed(false);
 }
@@ -1479,6 +1541,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         sync_session();
         s.boosts = boosts_in_force();
         if (const auto key = lower(playing ? level : std::string{}); key != s.map) enter_map(key);
+        take_map_file();
         if (const auto key = lower(level); !key.empty() && key != s.waypoint_level) {
             s.waypoint_level = key;
             s.waypoint.reset();
@@ -1643,10 +1706,8 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             return apply_preset(name);
         }
         if (action == "save") {
-            if (name.size() > 48) return "error: that name is too long.";
-            for (const auto &preset : builtin_presets())
-                if (lower(preset.name) == lower(name)) return "error: that name belongs to a built-in preset.";
-            if (lower(name) == "stock" || lower(name) == "map") return "error: that name is reserved.";
+            if (name.size() > max_preset_name) return "error: that name is too long.";
+            if (reserved_preset_name(name)) return "error: that name belongs to a built-in preset (or Stock, or Map).";
             std::map<std::string, double, std::less<>> values;
             for (const auto &e : s.entries)
                 if (e.touched) values[e.key] = e.value;

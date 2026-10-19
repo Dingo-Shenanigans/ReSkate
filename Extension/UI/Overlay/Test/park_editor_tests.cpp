@@ -1,5 +1,6 @@
 #include "Engine/Core/Json/json.h"
 #include "Extension/UI/Overlay/park_editor.h"
+#include "Extension/UI/Overlay/park_editor_internal.h"
 #include "Extension/UI/Overlay/park_previews.h"
 #include "Engine/Vfs/content_catalogs.h"
 #include <Windows.h>
@@ -60,8 +61,20 @@ struct Fixture {
     std::vector<EditorPreviewRequest> previews;
     std::vector<EditorSelectionRequest> selections;
     std::vector<EditorPasteRequest> pastes;
+    std::vector<EditorObjectSetRequest> set_requests;
+    std::vector<EditorDeleteRequest> deletes;
     Fixture() {
         active = this;
+        set_park_delete_queue([](const EditorDeleteRequest &request) {
+            active->deletes.push_back(request);
+            active->model.editor.busy = true;
+            ++active->model.editor.revision;
+            return true;
+        });
+        set_park_object_set_queue([](const EditorObjectSetRequest &request) {
+            active->set_requests.push_back(request);
+            return true;
+        });
         set_park_paste_queue([](const EditorPasteRequest &request) {
             active->pastes.push_back(request);
             active->model.editor.busy = true;
@@ -245,7 +258,7 @@ int main(int argc, char **argv) {
         press_mode(ImGuiKey_Y, ParkTransformMode::scale);
         press_mode(ImGuiKey_T, ParkTransformMode::move);
         const auto click_card = [&](float x) {
-            io.AddMousePosEvent(x, 270);
+            io.AddMousePosEvent(x, 320);
             fixture.frame();
             io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
             fixture.frame();
@@ -459,7 +472,7 @@ int main(int argc, char **argv) {
         fixture.frame();
         // Group rotation must orbit the shared pivot as well as rotate each body.
         fixture.ui.mode = ParkTransformMode::rotate;
-        fixture.ui.local_axes = true; // Groups always use world axes.
+        fixture.ui.local_axes = true; // These objects are unrotated: the group's local axes are the world's.
         const editor::Camera camera{fixture.model.debug.camera_transform, 60, 1280, 720};
         const editor::Vec3 pivot{2, 0, 0};
         const float radius =
@@ -513,11 +526,11 @@ int main(int argc, char **argv) {
         // Exercise ImGui's actual source/target delivery while holding the mouse.
         const auto dragdrop_creates = fixture.count(EditorPreviewAction::begin_place);
         // Inside the first library card (below the panel heading, search and filters).
-        io.AddMousePosEvent(100, 300);
+        io.AddMousePosEvent(100, 340);
         fixture.frame();
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
         fixture.frame();
-        io.AddMousePosEvent(130, 305);
+        io.AddMousePosEvent(130, 345);
         fixture.frame();
         check(fixture.ui.asset_drag, "Library row did not start an ImGui drag payload");
         io.AddMousePosEvent(700, 420);
@@ -593,6 +606,184 @@ int main(int argc, char **argv) {
         fixture.model.editor.objects.resize(2);
         fixture.model.editor.objects[0].position = {0, 0, 0};
         fixture.ui.selection.clear();
+        {
+            // The Delete key removes a whole multi-selection in one request (one undo step).
+            fixture.ui.selection = {1, 2};
+            fixture.ui.selected = 2;
+            io.AddMousePosEvent(700, 420);
+            io.AddKeyEvent(ImGuiKey_Delete, true);
+            fixture.frame();
+            io.AddKeyEvent(ImGuiKey_Delete, false);
+            fixture.frame();
+            check(fixture.deletes.size() == 1 && fixture.deletes[0].objects == std::vector<std::uint64_t>{1, 2} &&
+                      fixture.ui.selection.empty(),
+                  "Delete with several objects selected did not delete them all");
+            fixture.model.editor.busy = false;
+            ++fixture.model.editor.revision;
+            fixture.frame();
+        }
+        {
+            // Saved object sets: saving sends the selected objects; placing follows the surface
+            // as wire cubes, turns with the wheel and pastes the whole set once, with no preview.
+            using namespace park_editor_detail;
+            fixture.ui.library_sets = true;
+            fixture.frame();
+            check(!save_set(fixture.ui, fixture.model.editor) && fixture.set_requests.empty(),
+                  "A set was saved with nothing selected");
+            fixture.ui.selection = {1, 2};
+            fixture.ui.selected = 2;
+            check(!save_set(fixture.ui, fixture.model.editor) && fixture.set_requests.empty(),
+                  "A set was saved without a name");
+            const std::string name = "  Combo ";
+            std::copy(name.begin(), name.end(), fixture.ui.set_name.begin());
+            check(save_set(fixture.ui, fixture.model.editor) && fixture.set_requests.size() == 1 &&
+                      fixture.set_requests[0].action == EditorObjectSetAction::save &&
+                      fixture.set_requests[0].name == "Combo" && fixture.set_requests[0].objects.size() == 2 &&
+                      fixture.set_requests[0].objects[1].position == fixture.model.editor.objects[1].position &&
+                      fixture.ui.set_name[0] == 0,
+                  "Saving a set did not send the trimmed name and the selected objects");
+            auto sets = std::make_shared<std::vector<EditorObjectSet>>();
+            sets->push_back({"Combo", "bam",
+                             {{1, "own_bk_Ramps0", {-1, 0, 0}, {0, 0, 0, 1}, true, 1},
+                              {2, "own_bk_Ramps1", {1, .5f, 0}, {0, 0, 0, 1}, true, 2}}});
+            fixture.model.editor.object_sets = sets;
+            fixture.frame();
+            begin_set_placement(fixture.ui, fixture.model, "Combo");
+            check(fixture.ui.placing_set == "Combo" && fixture.ui.selection.empty() && fixture.ui.placing.empty(),
+                  "Placing a set kept the selection or a single-object placement");
+            const auto previews_before = fixture.previews.size();
+            const auto pastes_before = fixture.pastes.size();
+            io.AddMousePosEvent(700, 420);
+            fixture.frame();
+            check(fixture.probe.has_value(), "Set placement did not ask for the surface under the cursor");
+            fixture.model.editor.surface = {fixture.probe->generation, fixture.probe->id, true, true, {10, 2, 5}};
+            fixture.frame();
+            check(fixture.ui.position == editor::Vec3{10, 2, 5}, "Set placement did not follow the surface");
+            io.AddMouseWheelEvent(0, 1);
+            fixture.frame();
+            check(std::abs(fixture.ui.angles[1] - fixture.ui.angle_snap) < .001f,
+                  "The mouse wheel did not turn the set by the angle step");
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+            fixture.frame();
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+            check(fixture.pastes.size() == pastes_before && fixture.ui.surface_confirm,
+                  "Set placement pasted before the clicked surface came back");
+            fixture.model.editor.surface = {fixture.probe->generation, fixture.probe->id, true, true, {10, 2, 5}};
+            fixture.frame();
+            check(fixture.pastes.size() == pastes_before + 1 && fixture.pastes.back().objects.size() == 2 &&
+                      fixture.ui.placing_set.empty(),
+                  "Clicking did not paste the whole set once");
+            check(fixture.previews.size() == previews_before, "Set placement sent a single-object live preview");
+            {
+                // Once the game has the set, it is selected with the move gizmo.
+                fixture.ui.mode = ParkTransformMode::rotate;
+                const auto layout = fixture.model.editor.objects;
+                for (auto object : fixture.pastes.back().objects) {
+                    object.id = 500 + fixture.model.editor.objects.size();
+                    object.spawned = false; // a lost world link must not stop the selection
+                    fixture.model.editor.objects.push_back(object);
+                }
+                fixture.model.editor.busy = false;
+                ++fixture.model.editor.revision;
+                fixture.frame();
+                check(fixture.ui.selection.size() == 2 && fixture.ui.mode == ParkTransformMode::move,
+                      "A placed set was not selected with the move gizmo");
+                // Its own orientation is the rotation it was placed with: the local axes turn with it.
+                check(std::abs(fixture.ui.angles[1] - fixture.ui.angle_snap) < .01f &&
+                          std::abs(fixture.ui.angles[0]) < .01f && std::abs(fixture.ui.angles[2]) < .01f,
+                      "A placed set did not take the rotation it was placed with as its own");
+                // Moving it along its local X: every object goes along the set's turned X axis.
+                fixture.ui.local_axes = true;
+                park_editor_detail::capture_drag(fixture.ui, fixture.model.editor);
+                const auto local_x = editor::rotated({1, 0, 0}, editor::rotation(fixture.ui.angles));
+                const auto before_move = fixture.ui.drag_objects;
+                fixture.ui.position = editor::add(fixture.ui.position, editor::mul(local_x, 2));
+                check(park_editor_detail::preview(fixture.ui, fixture.model, EditorPreviewAction::begin_move),
+                      "The placed set did not start a group move");
+                const auto &moved = fixture.previews.back().transforms;
+                for (std::size_t i = 0; i < moved.size(); ++i)
+                    for (unsigned axis = 0; axis < 3; ++axis)
+                        check(std::abs(moved[i].position[axis] - before_move[i].position[axis] - 2 * local_x[axis]) < .001f &&
+                                  moved[i].rotation == before_move[i].rotation,
+                              "Moving the set along its local axis turned it or went another way");
+                park_editor_detail::preview(fixture.ui, fixture.model, EditorPreviewAction::cancel);
+                fixture.ui.local_axes = false;
+                fixture.model.editor.objects = layout;
+                fixture.ui.selection.clear();
+                fixture.ui.selected = 0;
+                fixture.model.editor.busy = true;
+            }
+            const auto q = editor::rotation({0, fixture.ui.angle_snap, 0});
+            const auto &placed = fixture.pastes.back().objects;
+            for (std::size_t i = 0; i < 2; ++i) {
+                const auto expected = editor::add({10, 2, 5}, editor::rotated((*sets)[0].objects[i].position, q));
+                for (unsigned axis = 0; axis < 3; ++axis)
+                    check(std::abs(placed[i].position[axis] - expected[axis]) < .001f,
+                          "A set object was not placed relative to the set's anchor");
+                check(placed[i].item == (*sets)[0].objects[i].item && placed[i].scale == (*sets)[0].objects[i].scale,
+                      "A set object lost its item or scale");
+            }
+            fixture.model.editor.busy = false;
+            ++fixture.model.editor.revision;
+            fixture.frame();
+            begin_set_placement(fixture.ui, fixture.model, "Combo");
+            check(delete_set(fixture.ui, fixture.model.editor, "Combo") && fixture.ui.placing_set.empty() &&
+                      fixture.set_requests.back().action == EditorObjectSetAction::remove,
+                  "Deleting the set being placed did not stop its placement");
+            {
+                // Duplicate copies every selected object with its rotation and scale, as one paste.
+                auto &objects = fixture.model.editor.objects;
+                objects[0].rotation = editor::rotation({0, 30, 0});
+                objects[1].scale = 3;
+                fixture.ui.selection = {objects[0].id, objects[1].id};
+                fixture.ui.selected = objects[1].id;
+                fixture.frame();
+                const auto pastes = fixture.pastes.size();
+                io.AddKeyEvent(ImGuiMod_Ctrl, true);
+                io.AddKeyEvent(ImGuiKey_D, true);
+                fixture.frame();
+                io.AddKeyEvent(ImGuiKey_D, false);
+                io.AddKeyEvent(ImGuiMod_Ctrl, false);
+                fixture.frame();
+                check(fixture.pastes.size() == pastes + 1 && fixture.pastes.back().objects.size() == 2,
+                      "Ctrl+D did not duplicate every selected object in one paste");
+                for (std::size_t i = 0; i < 2; ++i) {
+                    const auto &copy = fixture.pastes.back().objects[i];
+                    check(copy.item == objects[i].item && copy.rotation == objects[i].rotation &&
+                              copy.scale == objects[i].scale &&
+                              copy.position == editor::add(objects[i].position, {fixture.ui.grid, 0, 0}),
+                          "A duplicate lost its rotation or scale, or was not one grid step along X");
+                }
+                fixture.model.editor.busy = false;
+                ++fixture.model.editor.revision;
+                fixture.ui.paste_expected.clear();
+                fixture.ui.pending = false;
+                fixture.frame();
+                // On a server with object scaling off, the copies are made at normal size.
+                fixture.model.multiplayer.object_scaling = false;
+                fixture.ui.selection = {objects[0].id, objects[1].id};
+                fixture.ui.selected = objects[1].id;
+                fixture.frame();
+                check(park_editor_detail::duplicate_selection(fixture.ui, fixture.model.editor) &&
+                          fixture.pastes.back().objects[1].scale == 1 &&
+                          fixture.pastes.back().objects[0].rotation == objects[0].rotation,
+                      "With scaling off, a duplicate kept its size or lost its rotation");
+                fixture.model.multiplayer.object_scaling = true;
+                fixture.model.editor.busy = false;
+                ++fixture.model.editor.revision;
+                fixture.ui.paste_expected.clear();
+                fixture.ui.pending = false;
+                objects[0].rotation = {0, 0, 0, 1};
+                objects[1].scale = 1;
+                fixture.frame();
+            }
+            fixture.model.editor.object_sets.reset();
+            fixture.ui.library_sets = false;
+            fixture.ui.paste_expected.clear();
+            fixture.ui.selection.clear();
+            fixture.ui.angles = {};
+            fixture.frame();
+        }
         // With the game's thumbnails loaded, show real items, titled from the
         // installed content cache when there is one.
         if (argc > 2 && std::filesystem::exists(argv[2])) {

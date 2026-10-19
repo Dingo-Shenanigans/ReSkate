@@ -223,6 +223,24 @@ void coarse_checks() {
               std::abs(board_held.board[2].scale[0] - 1.f / board_scale_limit) < 1e-5f && board_held.skater[5].scale == std::array<float, 3>{2, 2, 2} &&
               board_free.board[0].scale == std::array<float, 3>{3, 3, 3},
           "A skateboard's scale was not held to its own limit");
+    // Sizes multiply down a chain (Neck 101, Neck1 102, Head 103): each at the limit, they are
+    // held so the head shows at the limit, not at its cube. The whole skater's size counts too
+    // (a bone of it may still shrink to its own limit, 0.5).
+    auto stacked = fixture();
+    for (const std::size_t bone : {101, 102, 103}) stacked.pose.skater[bone].scale = {2, 2, 2};
+    auto chain = stacked.pose, unlimited = stacked.pose;
+    limit_bone_scale(chain, 2.f);
+    limit_bone_scale(unlimited, 0.f);
+    check(chain.skater[101].scale == std::array<float, 3>{2, 2, 2} && chain.skater[102].scale == std::array<float, 3>{1, 1, 1} &&
+              chain.skater[103].scale == std::array<float, 3>{1, 1, 1} && unlimited.skater[103].scale == std::array<float, 3>{2, 2, 2},
+          "A chain of resized bones grew past the limit");
+    auto whole = fixture();
+    whole.pose.root.scale = {2, 2, 2};
+    whole.pose.skater[7].scale = {2, 2, 2};
+    whole.pose.skater[50].scale = {.25f, .25f, .25f};
+    limit_bone_scale(whole.pose, 2.f);
+    check(whole.pose.skater[7].scale == std::array<float, 3>{1, 1, 1} && std::abs(whole.pose.skater[50].scale[0] - .5f) < 1e-5f,
+          "A bone of a resized skater was not held to what the limit leaves it");
     std::cout << "Coarse rotations: valid poses, within a step, small turns unchanged.\n";
 }
 void rate_checks() {

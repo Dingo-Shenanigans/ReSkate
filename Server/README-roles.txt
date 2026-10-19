@@ -92,7 +92,8 @@ Extras:
   unlimited_objects  No limit on placed objects; can build when placement is
                      "admins"; can resize objects when object-scaling is off.
   movement           Can use noclip, teleport, No Bail and the boosts when the
-                     server has turned them off for players.
+                     server has turned them off for players. Not while one of
+                     them is locked for the player (lock, throwdown_locks).
   no_afk_kick        Is never removed for being away (afk-kick).
   vote_kick_immune   Cannot be the target of a kick vote.
   anticheat_alerts   Is told in chat when the anti-cheat finds something (for
@@ -184,6 +185,7 @@ What players may do
   object-scaling       object-scaling on|off: whether players may resize objects.
   clear-objects        Delete every placed object.
   effects              effects on|off: whether players see each other's effects.
+  drones               drones on|off: whether players see each other's FPV drones.
   noclip               noclip on|off. (The menu calls it noclip-allow.)
   nobail               nobail on|off. (The menu calls it nobail-allow.)
   boosts               boosts on|off. (The menu calls it boosts-allow.)
@@ -193,6 +195,12 @@ What players may do
   party-size           party-size <2-8>.
   afk-kick             afk-kick <minutes>|off.
   announce-throwdowns  announce-throwdowns on|off.
+  lock                 lock <player|SteamID64> <tool[,tool...]|all>: take noclip,
+                       nobail, boosts or tuning from one player.
+  unlock               unlock <player|SteamID64> [<tool[,tool...]|all>].
+  locks                The players with locked tools.
+  throwdown-locks      throwdown-locks <tools>|off: what a throwdown locks for
+                       its players.
 
 Votes and polls
   votes                Every vote setting: which votes are on, their percent,

@@ -112,6 +112,8 @@ void Host::send_permissions(Guest &guest) {
         p.role_all_commands = role->granted_all;
         p.role_commands = role->granted_commands;
         p.role_permissions = role->granted;
+        // A lock on noclip, No Bail or the boosts is not lifted by the role (their roster has the rest).
+        if (locks_of(guest.member.id) & lock_movement) p.role_permissions &= ~multiplayer::role_movement;
     }
     if (send_packet(guest, p, true, false)) guest.permissions_sent = roles_revision_;
 }
@@ -211,7 +213,7 @@ void Host::fetching(Guest &guest) {
         guest.fetching_since = now_;
         log_("[map] " + guest_name(guest) + " is downloading the map");
     }
-    if (now_ - guest.fetching_since > map_fetch_limit_us) return;
+    if (map_fetch_policy::host_expired(guest.fetching_since, now_)) return;
     if (!guest.handshaken) guest.connected_at = now_;
     else if (guest.travel_since) guest.travel_since = now_;
 }
@@ -500,7 +502,8 @@ void Host::flush_poses() {
 }
 // A player said which messages of poses they read in full: the poses in those are ones they hold.
 void Host::pose_ack(Guest &g, const pose_batch::Ack &ack) { g.pose_sender.ack(ack); }
-void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint64_t except) {
+void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint64_t except, const std::set<std::uint64_t> *only,
+                     const std::set<std::uint64_t> *skip) {
     // A pose is rounded once and kept (keep_pose); each recipient is then sent its differences
     // from a pose of this player they hold, several players to a message (flush_poses).
     auto *kept = packet.kind == PacketKind::pose ? [&]() -> Guest::KeptPose * {
@@ -518,10 +521,11 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
     std::shared_ptr<const std::vector<AudioSample>> sound; // a skater's samples, shared by everyone sent them
     const bool gameplay = packet.kind == PacketKind::pose || packet.kind == PacketKind::audio ||
                           packet.kind == PacketKind::voice || packet.kind == PacketKind::cosmetics ||
-                          packet.kind == PacketKind::effects;
+                          packet.kind == PacketKind::effects || packet.kind == PacketKind::drone;
     for (auto &[id, guest] : guests_) {
         auto &p = *guest;
         if (!p.handshaken || id == except || (gameplay && !p.world_ready)) continue;
+        if ((only && !only->contains(id)) || (skip && skip->contains(id))) continue;
         if (packet.kind == PacketKind::voice) {
             if (!voice_policy_.accepts(packet.voice)) continue;
             // Each listener fades voices by their own hearing distance; the server
@@ -749,6 +753,7 @@ void Host::send_roster() {
     p.object_limit = config_.object_limit;
     p.object_scaling = config_.object_scaling;
     p.sync_effects = config_.sync_effects;
+    p.sync_drones = config_.sync_drones;
     p.guest_noclip = config_.noclip;
     p.guest_no_bail = config_.no_bail;
     p.guest_boosts = config_.boosts;
@@ -791,17 +796,44 @@ void Host::send_roster() {
         if (m.party && std::none_of(p.members.begin(), p.members.end(),
                                     [&](const Member &o) { return o.party == m.party && o.party_leader; }))
             m.party_leader = true; // the first listed member of a party missing its leader
-    // An announcement for one player: everyone else's roster goes without it.
-    auto *only = announcement_for_ ? find(announcement_for_) : nullptr;
-    if (only && !only->handshaken) only = nullptr;
-    if (announcement_for_) {
-        const auto shown = p.announcement;
-        p.announcement = {};
-        broadcast(p, true, false, announcement_for_);
-        p.announcement = shown;
-        if (only) send_packet(*only, p, true, false);
-    } else {
-        broadcast(p, true, false);
+    // An announcement for one player: everyone else's roster goes without it. And a player with
+    // locked tools is told those are off for them. Everyone else gets the same roster; players
+    // whose roster differs in the same way share one.
+    struct Variant {
+        bool noclip{}, no_bail{}, boosts{}, enforce_tuning{}, announcement{};
+        auto operator<=>(const Variant &) const = default;
+    };
+    const Variant common{config_.noclip, config_.no_bail, config_.boosts, config_.enforce_tuning, !announcement_for_};
+    std::map<Variant, std::set<std::uint64_t>> variants;
+    std::set<std::uint64_t> others;
+    for (const auto &[id, guest] : guests_) {
+        if (!guest->handshaken) continue;
+        auto variant = common;
+        variant.announcement = !announcement_for_ || id == announcement_for_;
+        if (const auto locks = locks_of(id)) {
+            // Without "movement" (send_permissions), the tools their role gives are said here instead.
+            const bool movement = (locks & lock_movement) && has(id, multiplayer::role_movement);
+            if (locks & lock_movement) {
+                variant.noclip = !(locks & lock_noclip) && (config_.noclip || movement);
+                variant.no_bail = !(locks & lock_nobail) && (config_.no_bail || movement);
+                variant.boosts = !(locks & lock_boosts) && (config_.boosts || movement);
+            }
+            variant.enforce_tuning = config_.enforce_tuning || (locks & lock_tuning);
+        }
+        if (variant == common) continue;
+        variants[variant].insert(id);
+        others.insert(id);
+    }
+    const auto shown = p.announcement;
+    if (announcement_for_) p.announcement = {};
+    broadcast(p, true, false, 0, nullptr, others.empty() ? nullptr : &others);
+    for (const auto &[variant, players] : variants) {
+        p.guest_noclip = variant.noclip;
+        p.guest_no_bail = variant.no_bail;
+        p.guest_boosts = variant.boosts;
+        p.enforce_tuning = variant.enforce_tuning;
+        p.announcement = variant.announcement ? shown : multiplayer::ServerAnnouncement{};
+        broadcast(p, true, false, 0, &players);
     }
     roster_dirty_ = false;
     last_roster_ = now_;
@@ -914,6 +946,7 @@ void Host::change_map(std::string_view map) {
     }
     if (++world_ == 0) throw std::runtime_error("Map transition counter exhausted.");
     activity_.clear(); // throwdowns end with the world
+    update_throwdown_locks();
     config_.map = map_setting(map);
     map_ = map_hash(map_destination(config_.map));
     map_since_ = now_;
@@ -931,6 +964,19 @@ void Host::drop(std::uint64_t id, const std::string &reason, const std::string &
     const auto found = guests_.find(id);
     if (found == guests_.end()) return;
     const auto name = guest_name(*found->second);
+    // A throwdown's locks end with the visit; an admin's are kept for when they join again.
+    in_throwdown_.erase(id);
+    if (const auto locks = locks_.find(id); locks != locks_.end()) {
+        const auto ended = static_cast<std::uint8_t>(locks->second.automatic & ~locks->second.manual);
+        locks->second.automatic = 0;
+        if (ended)
+            log_("[lock] " + name + " (" + std::to_string(id) + "): " + lock_tools_text(ended) + " unlocked (left the server)");
+        if (locks->second.manual)
+            log_("[lock] " + name + " (" + std::to_string(id) + "): " + lock_tools_text(locks->second.manual) +
+                 " stay locked if they join again");
+        else
+            locks_.erase(locks);
+    }
     if (found->second->handshaken) {
         roster_dirty_ = true;
         log_(name + " left (" + reason + ")" + (detail.empty() ? std::string{} : " [" + detail + "]"));
@@ -972,6 +1018,8 @@ bool Host::accept_data(Guest &source, const Packet &p) {
         accepted = source.sound_budget.accept(now_, p.audio.size()) && source.audio.push(p, now_);
     else if (p.kind == PacketKind::effects)
         accepted = config_.sync_effects && source.effect_budget.accept(now_);
+    else if (p.kind == PacketKind::drone)
+        accepted = config_.sync_drones && source.drone_budget.accept(now_);
     else if (p.kind == PacketKind::pose)
         accepted = source.poses.push_validated(p, now_);
     // The server never plays anything back: keep only what ordering needs.
@@ -1093,6 +1141,9 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
     if (!decoded || decoded->session != secret_ || decoded->source != peer)
         return drop(peer, "Join code, sender identity, or multiplayer protocol did not match.");
     const auto &p = *decoded;
+    if (link->fetching_since && (!link->handshaken || link->travel_since) &&
+        map_fetch_policy::host_expired(link->fetching_since, now_))
+        return drop(peer, "The server stopped waiting for the map download.");
     link->traffic.total.in[traffic_kind(p.kind)] += bytes.size();
     traffic_.total.in[traffic_kind(p.kind)] += bytes.size();
     switch (p.kind) {
@@ -1203,6 +1254,11 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
             send_roster();
             meet_later(*link);
             if (!config_.welcome.empty()) send_chat(config_.welcome, link);
+            // Locks kept from an earlier visit (their roster and permissions already have them).
+            if (const auto locks = locks_of(peer)) {
+                send_chat("The server locked for you: " + lock_tools_text(locks) + ".", link);
+                log_("[lock] " + guest_name(*link) + " (" + std::to_string(peer) + "): " + lock_tools_text(locks) + " locked again (joined)");
+            }
             log_(guest_name(*link) + " joined (" + std::to_string(peer) + (role_of(peer) ? ", " + role_of(peer)->name : std::string{}) + "), " +
                  std::to_string(players()) + "/" + std::to_string(config_.max_players) + " players" +
                  (link->connected_at && now_ > link->connected_at
@@ -1293,8 +1349,10 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
         // attempts and drops go nowhere, whatever the other players' games would do with them.
         if (link->scoring_flagged) return;
         link->last_packet = now_;
-        if (config_.activity_log || config_.announce_throwdowns)
+        if (config_.activity_log || config_.announce_throwdowns || config_.throwdown_locks) {
             activity_.throwdown(peer, p.throwdown, link->latest_root ? &link->latest_root->position : nullptr, now_);
+            update_throwdown_locks();
+        }
         broadcast(p, true, false, p.source);
         return;
     }
@@ -1790,6 +1848,11 @@ void Host::tick(std::uint64_t now) {
         auto &g = *(it++)->second;
         // Authorized arrivals get time for loading; this deadline is absolute, so
         // requests cannot hold an unused slot indefinitely.
+        if (g.fetching_since && (!g.handshaken || g.travel_since) &&
+            map_fetch_policy::host_expired(g.fetching_since, now_)) {
+            drop(g.member.id, "The server stopped waiting for the map download.");
+            continue;
+        }
         const std::uint64_t handshake_timeout = g.map_authorized ? 180000000 : 8000000;
         if (g.handshaken && g.travel_since) {
             if (now_ - g.travel_since > 180000000) drop(g.member.id, "Could not finish loading the new map.");
@@ -1886,6 +1949,7 @@ void Host::tick(std::uint64_t now) {
     tick_parks();
     sync_objects();
     activity_.tick(now_);
+    update_throwdown_locks();
     if (std::exchange(vote_recount_, false)) check_vote(false);
     if (vote_ && now_ >= vote_->ends) check_vote(true);
     // A finished vote has been shown long enough.

@@ -37,6 +37,8 @@ void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch) {
 std::string network_object_status() { return {}; }
 bool simulated_placement_allowed = true;
 void set_lobby_object_placement_allowed(bool allowed) { simulated_placement_allowed = allowed; }
+bool simulated_scaling_allowed = true;
+void set_lobby_object_scaling_allowed(bool allowed) noexcept { simulated_scaling_allowed = allowed; }
 unsigned simulated_object_limit{};
 void set_lobby_object_limit(unsigned limit) noexcept { simulated_object_limit = limit; }
 unsigned lobby_object_limit() noexcept { return simulated_object_limit; }
@@ -44,6 +46,9 @@ unsigned simulated_guest_wipes{};
 bool clear_lobby_guest_objects() { ++simulated_guest_wipes; return true; }
 }
 namespace dingosdk {
+// (The session groups its hook installs; no hook is installed here.)
+HookBatch::HookBatch() noexcept {}
+HookBatch::~HookBatch() {}
 bool teleport_local_skater(const std::array<float, 3>&) { return true; }
 ControllerBindingsModel local_profile_controller_bindings() { return {}; }
 void update_board_lock(std::uintptr_t, std::uintptr_t, bool) noexcept {}
@@ -1459,6 +1464,85 @@ void map_checks() {
         stop(pair.host, "Host left");
         pair.run(1);
         check(pair.guest.mode == Mode::off, "Host departure left a pending map join active");
+    }
+    {
+        map_package_lookup.store(+[](std::string_view) { return std::string("Team-Map-1.0.0"); });
+        MapPair pair;
+        MapPair::missing = true;
+        pair.run(20);
+        const auto deadline = pair.guest.map_fetch_deadline;
+        check(deadline && pair.guest.map_need && pair.guest.map_need->deadline_us == deadline,
+              "Downloader did not receive the session's authoritative deadline");
+        pair.now += 180000001;
+        auto request = packet(pair.guest, PacketKind::map_request, pair.now);
+        request.map = pair.host.map;
+        request.map_fetching = true;
+        send_required(pair.guest, pair.host.host_id, encode_wire(request));
+        networking(pair.host, pair.host_frame, pair.now);
+        networking(pair.guest, NativeFrame{}, pair.now);
+        check(pair.guest.mode == Mode::join && pair.guest.map_fetch_deadline == deadline,
+              "An active download was disconnected by the ordinary host-link handshake timeout");
+        check(!prepare_join_map(pair.guest, false, pair.current, MapPair::loader, deadline - 1) &&
+                  pair.guest.mode == Mode::join,
+              "Map fetch expired before its deadline");
+        check(!prepare_join_map(pair.guest, false, pair.current, MapPair::loader, deadline) &&
+                  pair.guest.mode == Mode::off,
+              "Map fetch survived its exact deadline");
+        map_package_lookup.store(nullptr);
+    }
+    {
+        map_package_lookup.store(+[](std::string_view) { return std::string("Team-Map-1.0.0"); });
+        MapPair pair;
+        MapPair::missing = true;
+        pair.run(20);
+        const auto deadline = pair.guest.map_fetch_deadline;
+        MapPair::missing = false;
+        pair.current = pair.host.map_name;
+        const auto now = deadline - 1;
+        check(prepare_join_map(pair.guest, true, pair.current, MapPair::loader, now),
+              "Installed map could not finish loading within the deadline");
+        pair.guest.map = map_hash(pair.current);
+        pair.guest.map_name = pair.current;
+        find_peer(pair.guest, pair.host.host_id)->last_packet = now; // ongoing metadata heartbeats
+        check(pair.guest.map_fetch_deadline == deadline,
+              "Native loading completion prematurely discarded the join deadline");
+        networking(pair.guest, pair.host_frame, now);
+        networking(pair.host, pair.host_frame, now);
+        networking(pair.guest, pair.host_frame, now);
+        check(find_peer(pair.guest, pair.host.host_id)->handshaken && !pair.guest.map_fetch_deadline,
+              "Welcome did not retire a successfully completed download deadline");
+        check(prepare_join_map(pair.guest, true, pair.current, MapPair::loader, deadline + 1),
+              "A successfully joined player was disconnected by a retired deadline");
+        map_package_lookup.store(nullptr);
+    }
+    {
+        MapPair pair;
+        pair.run(20);
+        hold_map_load(true, "Team-Unrelated-1.0.0");
+        check(!prepare_join_map(pair.guest, false, pair.current, MapPair::loader, pair.now + 500000) &&
+                  pair.guest.mode == Mode::join && pair.guest.map_load_submitted,
+              "An abandoned download blocked an unrelated ordinary map load");
+        hold_map_load(false, "");
+    }
+    {
+        auto &waiting = session();
+        stop(waiting, "Map cancellation fixture");
+        waiting.mode = Mode::join;
+        waiting.map_fetch_deadline = 100;
+        check(queue_command("stop-map-fetch", "100", ""), "Map cancellation command was not queued");
+        std::unique_ptr<PrivateRequest> cancellation;
+        {
+            std::lock_guard lock(waiting.request_mutex);
+            cancellation = std::move(waiting.requests.back());
+            waiting.requests.pop_back();
+        }
+        // A fresh join executes before the old worker's cancellation is dispatched.
+        waiting.map_fetch_deadline = 200;
+        command(cancellation->action, cancellation->argument, cancellation->password);
+        check(waiting.mode == Mode::join && waiting.map_fetch_deadline == 200,
+              "A queued cancellation stopped a fresh map-fetch attempt");
+        command("stop-map-fetch", "200");
+        check(waiting.mode == Mode::off, "An owned cancellation did not stop its pending join");
     }
     std::cout << "Automatic map joining: codec, same/different maps, password-before-load, slow loading, "
                  "skater readiness, missing maps, cancellation, timeout and host departure passed.\n";

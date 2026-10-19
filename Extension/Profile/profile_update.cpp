@@ -28,6 +28,7 @@ void Store::Update::encode(Json& patch) {
     }
     std::set<std::string> sections, loadouts, challenge_rows, challenge_catalog;
     std::map<std::string, std::set<std::string>> inventory;
+    std::set<std::string> replaced_inventory; // a kind's whole inventory set at once
     bool settings{}, card{}, score{};
     for (const auto& change : json_edits_) {
         auto path = change.path;
@@ -41,6 +42,8 @@ void Store::Update::encode(Json& patch) {
         if (section == "customization" && path[0] == "player_card") card = true;
         if ((section == "customization" || section == "object_dropper") && path[0] == "inventory" && path.size() > 1)
             inventory[section == "customization" ? "cosmetic" : "object"].insert(path[1]);
+        if ((section == "customization" || section == "object_dropper") && path[0] == "inventory" && path.size() == 1)
+            replaced_inventory.insert(section == "customization" ? "cosmetic" : "object");
         if (section == "progress" && path[0] == "rip_score") score = true;
         if (section == "challenges" && path.size() > 1) {
             if (path[0] == "progress") challenge_rows.insert(path[1]);
@@ -88,10 +91,18 @@ void Store::Update::encode(Json& patch) {
         flatten(flatten, residual, "/settings");
         add("profile_extensions", Json::array({"settings", residual.dump()}));
     }
+    for (const auto& kind : replaced_inventory) {
+        // Every row of the kind goes, and the rows of what it holds now come back.
+        remove("inventory", [&](const Json& row) { return row[0] == kind; });
+        const auto& rows = kind == "cosmetic" ? value.customization.at("inventory") :
+            value.extensions.at("object_dropper").at("inventory");
+        detail::require(rows.is_object() && rows.size() <= saved_item_limit, "Inventory exceeds limit");
+        for (const auto& [key, owned] : rows.items()) inventory[kind].insert(key);
+    }
     for (const auto& [kind, keys] : inventory) {
         const auto& rows = kind == "cosmetic" ? value.customization.at("inventory") :
             value.extensions.at("object_dropper").at("inventory");
-        detail::require(rows.is_object() && rows.size() <= 8192, "Inventory exceeds limit");
+        detail::require(rows.is_object() && rows.size() <= saved_item_limit, "Inventory exceeds limit");
         for (const auto& key : keys) {
             detail::require(detail::valid_text(key) && rows.at(key).is_boolean(), "Invalid inventory item");
             add("inventory", Json::array({kind, key, rows.at(key).get<bool>() ? 1 : 0}), 2);

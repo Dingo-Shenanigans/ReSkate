@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Core/Log/types.h"
+#include "Engine/Core/Debug/crash_report.h"
 #include "Engine/Game/World/client_state.h"
 #include <cstdint>
 #include <format>
@@ -63,6 +64,8 @@ struct Progress {
         if (((s.state >= 8 && s.state <= 13) || (s.state >= 16 && s.state <= 21)) &&
             !s.destination.empty() && s.destination != destination) {
             destination = s.destination;
+            // (A crash report from here on is tagged with this level: crash_report.h.)
+            dingosdk::crash_report::set_destination(std::wstring(destination.begin(), destination.end()));
             if (destination_lines++ < 4)
                 emit(Level::info, std::format("Level destination: {}.", destination));
         }

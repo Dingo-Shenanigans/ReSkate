@@ -150,7 +150,7 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         if (config_.parties) text += "/party: your party (invite, accept, leave...; /party help); /p <message>: party chat\n";
         if (const auto *role = role_of(guest.member.id); staff(role))
             text += role->all_commands
-                ? "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins\n"
+                ? "Admins: any server command as /<command>, e.g. /kick, /map, /tpall, /votes, /announce, /announce-to, /msg, /msg-party, /msg-admins, /lock, /unlock, /locks\n"
                 : "Your role (" + role->name + "): these server commands as /<command>: " + joined(role->commands, ", ") + "\n";
         const std::string whisper = "/w <player> <message>: send a private message";
         return reply(guest, (text.empty() ? "This server has no player votes. Type /tp <player> to teleport.\n" : text) + whisper);

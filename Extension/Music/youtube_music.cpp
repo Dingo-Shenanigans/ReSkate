@@ -538,8 +538,8 @@ std::vector<std::uint8_t> picture(Kind kind, const Song& song, const std::string
 #endif
 }
 // Each playlist's tile is its first song's picture (of a folder, the first of its first few
-// files that has one).
-void make_covers() {
+// files that has one). Returns how many tiles got one, and (`missing`) how many still have none.
+std::size_t make_covers(std::size_t* missing = nullptr) {
     struct Wanted {
         std::size_t index;
         Kind kind;
@@ -556,6 +556,7 @@ void make_covers() {
             wanted.push_back({i, playlist.kind, playlist.url, {playlist.songs.begin(), playlist.songs.begin() + static_cast<std::ptrdiff_t>(count)}});
         }
     }
+    std::size_t made{};
     for (const auto& want : wanted)
         for (const auto& song : want.songs) {
             const auto image = picture(want.kind, song, want.icon);
@@ -563,9 +564,14 @@ void make_covers() {
             const auto address = spotify_cover::serve(image, std::string(kind_name(want.kind)) + "-" + song.id + ".png");
             if (address.empty()) continue;
             std::lock_guard lock(mutex);
-            if (want.index < library.size() && !library[want.index].songs.empty() && library[want.index].songs.front().id == want.songs.front().id) library[want.index].artwork = address;
+            if (want.index < library.size() && !library[want.index].songs.empty() && library[want.index].songs.front().id == want.songs.front().id) {
+                library[want.index].artwork = address;
+                ++made;
+            }
             break;
         }
+    if (missing) *missing = wanted.size() - std::min(made, wanted.size());
+    return made;
 }
 
 std::string hex_sha256(const std::filesystem::path& file) {
@@ -654,14 +660,33 @@ void run() noexcept {
             signed_in = have_tools && (have_cookies || !browser_name.empty());
         }
         if (signed_in) fetch_runtime(); // (a sign-in set by a ReSkate that did not fetch one)
-        make_covers();
     } catch (...) {}
+    // Tiles whose picture could not be fetched (YouTube's are fetched from i.ytimg.com) are tried
+    // again, sooner then later: fetched once at start, a game started while the connection was
+    // down kept its YouTube playlists without pictures until a command (2026-10-15).
+    std::size_t missing{};
+    try { make_covers(&missing); } catch (...) {}
+    auto retry_after = std::chrono::seconds(30);
     for (;;) {
         std::string command;
         {
             std::unique_lock lock(mutex);
             is_busy = false;
-            wake.wait(lock, [] { return !commands.empty(); });
+            const bool asked = missing ? wake.wait_for(lock, retry_after, [] { return !commands.empty(); })
+                                       : (wake.wait(lock, [] { return !commands.empty(); }), true);
+            if (!asked) {
+                is_busy = true;
+                lock.unlock();
+                std::size_t made{};
+                try { made = make_covers(&missing); } catch (...) {}
+                if (made) {
+                    profile_runtime::request_music_catalog_refresh();
+                    retry_after = std::chrono::seconds(30);
+                } else {
+                    retry_after = std::min<std::chrono::seconds>(retry_after * 2, std::chrono::minutes(10));
+                }
+                continue;
+            }
             command = std::move(commands.front());
             commands.pop_front();
             is_busy = true;
@@ -678,7 +703,7 @@ void run() noexcept {
                 search_now(command.substr(7));
                 continue; // (nothing of the music screen's has changed)
             }
-            make_covers();
+            make_covers(&missing);
             profile_runtime::request_music_catalog_refresh();
         } catch (...) {}
     }

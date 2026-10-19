@@ -7,6 +7,7 @@
 #include "mod_profiles.h"
 #include "thunderstore.h"
 
+#include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/skate_theme.h"
 
@@ -120,12 +121,22 @@ bool nav_tile(const Fonts& fonts, float width, const char* label, bool selected,
 float badge_width(const Fonts& fonts, const std::string& text);
 void badge(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& text,
            ImU32 fill = color::blue, ImU32 ink = color::ink);
+// How tall `text` is in `font`, wrapped at `wrap` (0: not wrapped); 0 for no text.
+float text_height(ImFont* font, float wrap, const std::string& text);
+// A page's banner, as wide as the page: its heading with a blue pill beside it (`pill` may be
+// empty), a line on what the page is for, and at the right how things stand: a pill in
+// `status_fill`, with `caption` under it (either may be empty). Leaves the cursor under it.
+void page_banner(const Fonts& fonts, const char* heading, const char* pill, const std::string& about,
+                 const std::string& status = {}, ImU32 status_fill = color::good, const std::string& caption = {});
+// A card behind what a page draws on it: lighter edged while hovered, with a blue edge when `marked`.
+void card(ImDrawList* draw, ImVec2 start, ImVec2 size, bool marked = false);
 // A caption over its value: the detail lines of an open list row.
 void field(const Fonts& fonts, const char* name, const std::string& value);
-// One row of a mod list: its background, a hover tint, a rule under it and a
-// blue edge when it is ticked. Returns true when the row itself was clicked,
+// One row of a mod list, `height` tall: a card, lighter edged while hovered, with a blue edge
+// when it is ticked. Leave a gap under it (row_gap). Returns true when the row itself was clicked,
 // which opens the mod's overview; the widgets drawn over it keep their clicks.
 bool list_row(const char* id, float width, float height, bool ticked);
+inline float row_gap() { return S(8); }
 // An on/off switch, blue while on. Returns true when it was flipped.
 bool toggle(const char* id, bool* on);
 // A square button with three dots, for a row's menu.
@@ -194,9 +205,16 @@ struct Settings {
     bool crash_reports{true};
     // On: launches send how long their steps took (RESKATE_TRACING=1 for the launcher and the game).
     bool performance_timings{};
+    // On: update to the newest pre-release on GitHub when there is one newer than the latest
+    // release. Turned off, the next check goes back to the latest release.
+    bool prereleases{};
     std::string steam_username;   // never the password
     bool steam_remember{true};
     bool steam_prefer_code{};
+    // The versions of the privacy policy and the terms of service the player agreed to (0: none).
+    std::uint64_t accepted_privacy{}, accepted_terms{};
+    // The version of the home screen's announcement the player hid (0: none): one newer shows.
+    std::uint64_t announcement_hidden{};
 };
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
@@ -244,6 +262,11 @@ public:
     Settings& settings() { return settings_; }
     const launcher_app::Session& session() const { return session_; }
     void save();
+    // The update check again when an update choice changed since the last one: as either switch
+    // is flipped, and each frame after (a check already running holds the next one until it ends).
+    void check_again_if_update_choices_changed();
+    // Whether the last update check found a pre-release newer than the latest release.
+    bool prerelease_available() const { return prerelease_available_; }
 
     void check();
     // The merge the game would do at startup, run here so its failures can be
@@ -270,6 +293,10 @@ private:
     std::vector<std::wstring> arguments_;
     Settings settings_;
     bool relaunched_{};
+    // The update choices the last check was made with: one changed in settings is checked
+    // again straight away (save()).
+    std::atomic<bool> checked_updates_{true}, checked_prereleases_{};
+    std::atomic<bool> prerelease_available_{};
     bool binaries_{true};
     std::mutex mutex_;
     std::condition_variable answered_;
@@ -318,9 +345,50 @@ struct Changelog {
     std::string error;                               // why the last fetch failed
     update::ReleaseNote note;
     thunderstore::Readme text;
+    // Whether pre-releases are wanted (the setting), and whether `note` was fetched with them.
+    bool prereleases{}, fetched_prereleases{};
 
     ~Changelog() {
         if (worker.joinable()) worker.join();
+    }
+};
+
+// The privacy policy and terms of service, from the ReSkate backend (GET /api/v1/legal/<kind>):
+// each fetched on a worker the first time it is shown and kept while the launcher runs.
+// Everything but the worker's hand-over belongs to the UI thread.
+struct Legal {
+    enum Kind { privacy, terms, count };
+    struct Document {
+        std::string title, updated, markdown;   // updated: YYYY-MM-DD
+        std::uint64_t version{};
+    };
+    struct Slot {
+        std::thread worker;
+        std::atomic<bool> loading{};
+        bool arrived{};                         // worker -> UI, under the mutex
+        Document incoming;
+        std::string incoming_error;
+
+        bool loaded{};
+        std::string error;                      // why the last fetch failed
+        Document document;
+        thunderstore::Readme text;
+    };
+    std::mutex mutex;
+    std::array<Slot, count> slots;
+    int open{-1};                               // the Kind shown, or -1 when the window is closed
+
+    // The versions the backend has now (GET /api/v1/legal), looked up once a launch. One newer
+    // than the player agreed to (Settings::accepted_*) puts up the agreement before anything else.
+    std::thread versions_worker;
+    bool versions_started{}, versions_arrived{};   // arrived: worker -> UI, under the mutex
+    std::array<std::uint64_t, count> current{};
+    bool agreement{};                           // the agreement window is up
+
+    ~Legal() {
+        for (auto& slot : slots)
+            if (slot.worker.joinable()) slot.worker.join();
+        if (versions_worker.joinable()) versions_worker.join();
     }
 };
 
@@ -335,11 +403,35 @@ struct GamePages {
 };
 
 // Panels the main screen can show; one at a time.
+// The announcement the ReSkate backend has for the home screen (GET
+// https://api.reskate.dev/api/v1/announcement), read as the launcher starts and every ten minutes,
+// so it is written in the admin panel and reaches players without a release.
+struct Announcement {
+    struct Message {
+        std::uint64_t version{};
+        bool important{};
+        std::string title, markdown, link, link_label;   // link: empty, or an https URL
+    };
+    std::thread worker;
+    std::atomic<bool> loading{};
+    std::mutex mutex;
+    bool arrived{};                         // worker -> UI, under the mutex
+    std::optional<Message> incoming;
+    std::optional<Message> shown;           // none: there is nothing to show
+    thunderstore::Readme text;
+    double next_read{};                     // ImGui time of the next read
+    ~Announcement() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
 struct Ui {
     bool settings{};
+    Announcement announcement;
     GamePages game;
     bool changelog{};
     Changelog notes;
+    Legal legal;
     int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED, then the game's own pages
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
@@ -367,6 +459,11 @@ struct Ui {
     // Steam display name for the name plate, re-read every few seconds.
     std::string steam_name;
     double steam_checked{-100};
+    // The account's Steam picture on the plate in place of the drawn logo; reloaded
+    // when Steam caches a new one or another account signs in.
+    ImTextureID steam_avatar{};
+    fs::path steam_avatar_path;
+    fs::file_time_type steam_avatar_time{};
     // One-time notice that Skate will start offline because Steam is not
     // running or not signed in. Decided on the first Steam check.
     bool steam_offline{};
@@ -469,6 +566,42 @@ struct ModsPanel {
     int order{};
     std::set<std::string, std::less<>> marked;
     std::string anchor;                  // the last mod ticked: where a Shift-click range starts
+    int place{};                         // typed in a row's "move to position" popup
+    // The installed mods that are official mods (Engine/Vfs/builtin_packs.h), by folder name: found
+    // when the folder is scanned.
+    std::set<std::string, std::less<>> officials;
+    int shown_tab{-1};                   // the tab drawn last, so MY MODS reads the folder again when it is opened
+    // The conflicts the player settled (gui_mods.cpp): of each pair, (the mod that loads, the one left out).
+    std::set<std::pair<std::string, std::string>> conflict_choices;
+    bool resolving{};                    // the Resolve conflicts popup is to open
+    std::vector<std::string> resolve_order;   // the load order as the popup opened: its rows keep it
+    // MY MODS rows as drawn: each mod's height in the list, eased toward its place there, so a row
+    // slides to where it goes rather than jumping (gui_mods.cpp).
+    std::map<std::string, float, std::less<>> row_y;
+    std::string drag_name;               // the row being dragged by its handle
+    float drag_grab{};                   // how far below its top the pointer took hold of it
+    // MY MODS: conflicts between the enabled mods as the list stands (mods::ConflictChecker),
+    // checked off the UI thread a moment after each change. The worker hands its result over
+    // in `pending` (under `mutex`); the UI thread takes it from there, so `rows` and what points
+    // into them (`losses`) only change on the UI thread.
+    struct ConflictCheck {
+        std::unique_ptr<mods::ConflictChecker> checker;   // the worker's alone while it runs
+        std::thread worker;
+        std::atomic<bool> running{};
+        double due{-1};                     // ImGui time the next check starts; -1 when none is asked
+        std::uint64_t asked{}, checked{};   // which change the latest result is for
+        bool ready{};                       // a result is in
+        std::vector<mods::MergeReport::Conflict> rows;
+        std::vector<std::string> order;     // the mods checked, highest priority first
+        std::map<std::string, mods::ConflictLoss, std::less<>> losses;     // the mods that would be left out
+        std::map<std::string, std::vector<std::string>, std::less<>> beats;   // and whom each winner leaves out
+        struct Result {
+            bool ready{};
+            std::uint64_t asked{};
+            std::vector<mods::MergeReport::Conflict> rows;
+            std::vector<std::string> order;
+        } pending;                          // under mutex
+    } conflicts;
     std::string message;
     bool message_error{};
     std::vector<std::string> confirm_remove;   // folders awaiting "Uninstall" confirmation
@@ -513,12 +646,20 @@ struct ModsPanel {
         cancel = true;
         if (worker.joinable()) worker.join();
         if (profile_worker.joinable()) profile_worker.join();
+        if (conflicts.worker.joinable()) conflicts.worker.join();
     }
 };
 
 void scan(ModsPanel& panel, const launcher_app::Session& session);
 // Re-reads the Mods folder and the Thunderstore listing.
 void refresh_mods(Launcher& launcher, ModsPanel& panel);
+// Every frame, from the launcher's start: checks the enabled mods for conflicts in the background
+// before the Mod Manager is first opened, so its list has the answer ready, and takes in checks as
+// they finish. (Opening it reads the folder again; the check then reads only what changed.)
+void prepare_mods(ModsPanel& panel, const launcher_app::Session& session);
+// Waits (at most ten seconds) for a conflict check under way to finish: it may be reading the mod
+// files an install or uninstall is about to replace. Off the UI thread where it can be.
+void wait_for_conflict_check(const ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
 // The Windows file (or folder) picker; empty when cancelled. A file picker shows
 // `filter_pattern` ("*.zip") under `filter_name`.
@@ -558,6 +699,8 @@ void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 pos
 void pump_icons(ModsPanel& panel);
 // The GET MODS page body, under the page header.
 void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float height, bool installing);
+// The official mods (official_mods.h): each to install, update or turn off, and how it is doing.
+void official_page(const Fonts& fonts, ModsPanel& panel, float height);
 // Everything Thunderstore knows about one package, in a popup over the page.
 void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool installing);
 // The README section of an overview: the installed mod's own README.md when it has one, else
@@ -583,6 +726,13 @@ void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::v
 void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui);
 // What the newest release changed: its notes on GitHub.
 void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui);
+// The privacy policy or the terms of service (ui.legal.open), with a switch between them.
+void legal_window(const Fonts& fonts, ImVec2 size, Ui& ui);
+// Each frame: the backend's versions of both, looked up once; a newer one than the player
+// agreed to raises ui.legal.agreement.
+void check_legal_versions(Ui& ui, const Settings& settings);
+// "I agree" to the current versions, or quit.
+void legal_agreement_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window);
 void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, HWND window);
 void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, ModsPanel& panel, HWND window);
 // Shown instead of launching when the merge left mods out.

@@ -82,12 +82,14 @@ constexpr Size break_size(Place place, bool joined, float fold_depth) noexcept {
     if (place == Place::mid) return !joined || fold_depth >= 0.7f ? Size::heavy : Size::medium;
     return joined ? Size::light : Size::medium;
 }
-// How likely a slam of `force` breaks the board: always from `heavy` up, with `light` up to 60% of
-// it, rising evenly in between.
-constexpr float break_chance(float force, float heavy, float light) noexcept {
+// How likely a slam of `force` breaks the board: never up to 60% of `heavy`, always from `heavy` up,
+// rising smoothly in between. A board only breaks from a hit the player can feel was a big one.
+constexpr float break_chance(float force, float heavy) noexcept {
     if (heavy <= 0 || force >= heavy) return 1.0f;
     const auto low = 0.6f * heavy;
-    return force <= low ? light : light + (1.0f - light) * (force - low) / (heavy - low);
+    if (force <= low) return 0.0f;
+    const auto t = (force - low) / (heavy - low);
+    return t * t * (3.0f - 2.0f * t);
 }
 
 // ---- where the parts of a broken board lie ------------------------------------------------------

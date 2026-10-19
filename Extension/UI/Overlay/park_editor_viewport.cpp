@@ -93,6 +93,7 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
                 ImGui::AcceptDragDropPayload("PARK_ASSET", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
             if (payload->DataSize > 0 && payload->DataSize < 1024) {
                 ui.placing = static_cast<const char *>(payload->Data);
+                ui.placing_set.clear();
                 ui.selected = 0;
                 ui.selection.clear();
                 ui.angles = {};
@@ -179,6 +180,75 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
                 ui.placing.clear();
         }
     }
+    if (!ui.placing_set.empty() && !placing_object_set(ui, model.editor))
+        ui.placing_set.clear(); // deleted, or the list was read again without it
+    if (const auto *set = placing_object_set(ui, model.editor)) {
+        // A saved set follows the cursor as wire cubes, one per object, and a click pastes it:
+        // no live preview, since the game previews one object at a time.
+        auto &io = ImGui::GetIO();
+        if (hovered && !ui.flying && io.MouseWheel != 0) {
+            const float step = ui.snapping ? ui.angle_snap : 15;
+            ui.angles[1] = std::fmod(ui.angles[1] + (io.MouseWheel > 0 ? step : -step), 360.0f);
+        }
+        const bool clicked = can_edit && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        bool show = true, commit = false;
+        if (ui.surface_mode) {
+            const auto &hit = model.editor.surface;
+            const bool previous_current =
+                hit.id && hit.id == ui.surface_request.id && hit.generation == model.editor.generation;
+            const float grid = ui.snapping ? ui.grid : 0;
+            const bool changed = ui.surface_request.generation != model.editor.generation ||
+                                 ui.surface_request.origin != camera.origin() ||
+                                 ui.surface_request.direction != ray || ui.surface_request.grid != grid ||
+                                 ui.surface_request.picking;
+            if (mouse_in && !ui.flying && !ui.surface_confirm &&
+                (clicked || !ui.surface_request.id ||
+                 (changed && previous_current && ImGui::GetTime() >= ui.next_surface_request))) {
+                if (const auto queue = surface_queue.load()) {
+                    EditorSurfaceRequest request{model.editor.generation, ui.surface_request.id + 1,
+                                                 camera.origin(), ray, grid};
+                    if (queue(request)) {
+                        ui.surface_request = request;
+                        ui.next_surface_request = ImGui::GetTime() + .016;
+                        if (clicked)
+                            ui.surface_confirm = true;
+                    }
+                }
+            }
+            const bool current =
+                hit.id && hit.id == ui.surface_request.id && hit.generation == model.editor.generation;
+            ui.surface_valid =
+                (current || (previous_current && !ui.surface_confirm)) && hit.available && hit.hit;
+            show = ui.surface_valid;
+            if (ui.surface_valid && (mouse_in || ui.surface_confirm)) {
+                ui.position = hit.position;
+                ui.position[1] += ui.surface_offset;
+            }
+            if (!ui.surface_valid)
+                draw->AddText(plus(start, {16, 38}), muted,
+                              current ? (hit.available ? "No surface hit. Aim at solid ground."
+                                                       : "Game collision query unavailable.")
+                                      : "Finding ground surface...");
+            if (ui.surface_confirm && current) {
+                ui.surface_confirm = false;
+                commit = ui.surface_valid;
+            }
+        } else {
+            if (mouse_in && !ui.flying) {
+                ui.position = plane_hit(camera.origin(), ray, {0, ui.plane_height, 0}, {0, 1, 0})
+                                  .value_or(add(camera.origin(), mul(ray, ui.distance)));
+                if (ui.snapping)
+                    for (auto &value : ui.position)
+                        value = snapped(value, ui.grid);
+            }
+            commit = clicked;
+        }
+        if (show)
+            for (const auto &object : placed_set_objects(ui, *set))
+                wire_preview(draw, camera, screen_origin, object.position, object.rotation, object.scale, accent);
+        if (commit && can_edit)
+            place_set(ui, model.editor);
+    }
     int hover_axis = -1;
     const auto *selected = selected_object(ui, model.editor);
     if (selected && can_edit && !ui.flying) {
@@ -189,7 +259,7 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
         for (unsigned axis = 0; axis < 3; ++axis) {
             Vec3 unit{};
             unit[axis] = 1;
-            if (ui.local_axes && ui.selection.size() <= 1)
+            if (ui.local_axes)
                 unit = rotated(unit, ui.dragging >= 0 ? ui.drag_rotation : q);
             if (ui.mode != ParkTransformMode::rotate) {
                 const auto end = project(camera, screen_origin, add(ui.position, mul(unit, gizmo_size)));
@@ -209,7 +279,7 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
                 u[(axis + 1) % 3] = 1;
                 Vec3 v{};
                 v[(axis + 2) % 3] = 1;
-                if (ui.local_axes && ui.selection.size() <= 1) {
+                if (ui.local_axes) {
                     u = rotated(u, q);
                     v = rotated(v, q);
                 }
@@ -234,7 +304,7 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
             capture_drag(ui, model.editor);
             Vec3 axis{};
             axis[static_cast<unsigned>(hover_axis)] = 1;
-            if (ui.local_axes && ui.selection.size() <= 1)
+            if (ui.local_axes)
                 axis = rotated(axis, q);
             ui.drag_axis = axis;
             ui.drag_start = ui.position;
@@ -319,7 +389,8 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
             }
         }
     }
-    if (ui.placing.empty() && !ui.flying && can_edit && (ui.dragging < 0 || ui.dragging == 3)) {
+    if (ui.placing.empty() && ui.placing_set.empty() && !ui.flying && can_edit &&
+        (ui.dragging < 0 || ui.dragging == 3)) {
         const bool clicked =
             hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hover_axis < 0 && ui.dragging < 0;
         const bool picking = ui.dragging != 3;
@@ -391,8 +462,9 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
         }
     }
     draw->AddText(plus(start, {16, 14}), muted,
-                  ui.placing.empty() ? "T move / R rotate / Y scale  |  Shift-click adds / RMB flies"
-                                     : "Click to place    |    Escape to cancel");
+                  !ui.placing_set.empty() ? "Click to place the set    |    Wheel turns it    |    Escape to cancel"
+                  : ui.placing.empty()    ? "T move / R rotate / Y scale  |  Shift-click adds / RMB flies"
+                                          : "Click to place    |    Escape to cancel");
     if (ui.preview_token && can_edit)
         preview(ui, model, EditorPreviewAction::update);
     draw->PopClipRect();

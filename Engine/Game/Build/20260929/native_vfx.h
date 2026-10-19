@@ -34,6 +34,10 @@ inline constexpr std::size_t component_owner = 0x18;
 // (rig, joint id, 1): the joint's index in the rig's skeleton, or -1. Reads no pose.
 inline constexpr Function joint_index{
     0x12e08b0, {0x48,0x8b,0x89,0x38,0x01,0x00,0x00,0xe9,0x84,0x76,0x5b,0x03,0xcc,0xcc,0xcc,0xcc}};
+// joint_index looks the joint up in the skeleton's map (EASTL: a node's right child at +0, its
+// left at +8, its joint id at +0x20; the root at skeleton +0x68), with no bound on the walk
+// (0x4897f40).
+inline constexpr std::size_t skeleton_joints_root = 0x68, joint_node_right = 0, joint_node_left = 8, joint_node_id = 0x20;
 // An effects component's rig: component -> its rig's owner -> the rig; the rig's skeleton. An
 // effect set's effects (an array of pointers), and the joint each sits on (-1: none).
 inline constexpr std::size_t component_rig_owner = 0x50, rig_owner_rig = 0x78, rig_skeleton = 0x138, set_items = 0x30,

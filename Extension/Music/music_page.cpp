@@ -95,9 +95,15 @@ void player_tab(SkateMenu& menu, Page& p) {
         }
     }
     ImGui::Dummy(ImVec2(0, px(4)));
+    using external_player::Command;
+    if (console_style()) {
+        const int pressed = button_row(menu, "music-buttons", {{"PREVIOUS", p.station}, {p.playing ? "PAUSE" : "PLAY", p.station, true}, {"NEXT", p.station}});
+        if (pressed == 0) external_player::send(Command::previous);
+        if (pressed == 1) external_player::send(Command::toggle), p.read_at = -1;
+        if (pressed == 2) external_player::send(Command::next);
+    } else {
     const float gap = px(6), width = (ImGui::GetContentRegionAvail().x - gap * 2) / 3;
     ImGui::BeginDisabled(!p.station);
-    using external_player::Command;
     if (ImGui::Button("PREVIOUS", ImVec2(width, px(36)))) external_player::send(Command::previous);
     ImGui::SameLine(0, gap);
     skate_theme::push_primary_button();
@@ -109,6 +115,7 @@ void player_tab(SkateMenu& menu, Page& p) {
     ImGui::SameLine(0, gap);
     if (ImGui::Button("NEXT", ImVec2(width, px(36)))) external_player::send(Command::next);
     ImGui::EndDisabled();
+    }
     ImGui::Dummy(ImVec2(0, px(4)));
     bool notices = youtube_music::notices();
     if (toggle_row(menu, "Show \"Loading song\" in the corner", "The notice in the top left while a YouTube song or a radio station is on its way.", notices)) {
@@ -121,11 +128,23 @@ void player_tab(SkateMenu& menu, Page& p) {
     const auto& s = p.streams;
     const bool lined_up = s.playing && s.playing_list < s.playlists.size();
     begin_card(menu, "music-queue", "QUEUE", lined_up ? s.playlists[s.playing_list].name.c_str() : !p.spotify.empty() ? "Up next on Spotify" : nullptr);
-    if (lined_up) {
+    if (lined_up && console_style()) {
+        const auto& songs = s.playlists[s.playing_list].songs;
+        const bool held = s.loading || (p.pressed >= 0 && ImGui::GetTime() - p.pressed < 1.5);
+        for (std::size_t i = 0; i < songs.size(); ++i) {
+            const bool current = i == s.playing_song;
+            if (list_row(menu, std::to_string(i).c_str(), std::format("{:>3}   {}", i + 1, songs[i].title), songs[i].artist, current, !held) && !current) {
+                youtube_music::play_at(s.playing_list, i);
+                p.pressed = ImGui::GetTime();
+                p.read_at = -1;
+            }
+            if (ImGui::IsItemFocused()) set_console_hint(current ? "Playing now." : "A plays this song.");
+        }
+    } else if (lined_up) {
         const auto& songs = s.playlists[s.playing_list].songs;
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputTextWithHint("##music-find", "Find a song or artist", p.find.data(), p.find.size());
-        ImGui::BeginChild("music-songs", ImVec2(0, std::max(px(160), ImGui::GetContentRegionAvail().y - px(330))), ImGuiChildFlags_None);
+        ImGui::BeginChild("music-songs", ImVec2(0, std::max(px(160), ImGui::GetContentRegionAvail().y - px(330))), ImGuiChildFlags_NavFlattened);
         // (One press at a time: a song that is loading is not begun again under more presses.)
         const bool held = s.loading || (p.pressed >= 0 && ImGui::GetTime() - p.pressed < 1.5);
         for (std::size_t i = 0; i < songs.size(); ++i) {
@@ -147,7 +166,7 @@ void player_tab(SkateMenu& menu, Page& p) {
         }
         ImGui::EndChild();
     } else if (!p.spotify.empty()) {
-        ImGui::BeginChild("music-spotify", ImVec2(0, std::max(px(160), ImGui::GetContentRegionAvail().y - px(330))), ImGuiChildFlags_None);
+        ImGui::BeginChild("music-spotify", ImVec2(0, std::max(px(160), ImGui::GetContentRegionAvail().y - px(330))), ImGuiChildFlags_NavFlattened);
         for (std::size_t i = 0; i < p.spotify.size(); ++i) {
             ImGui::PushStyleColor(ImGuiCol_Text, i ? skate_theme::white : skate_theme::blue_hover);
             ImGui::TextUnformatted(std::format("{:>3}   {}", i + 1, p.spotify[i].title).c_str());
@@ -168,7 +187,7 @@ void sound_tab(SkateMenu& menu, Page& p) {
     bool editing{}, changed{};
     begin_card(menu, "music-loudness", "LOUDNESS");
     field(menu, "Music loudness", "How loud the music you play through ReSkate is in the game.");
-    if (ImGui::SliderFloat("##music-gain", &p.gain, 0.0f, 400.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) music_inject::set_gain(p.gain / 100.0f);
+    if (::dingosdk::overlay::menu::slider_float("##music-gain", &p.gain, 0.0f, 400.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) music_inject::set_gain(p.gain / 100.0f);
     editing |= ImGui::IsItemActive();
     changed |= ImGui::IsItemDeactivatedAfterEdit();
     bool levelling = audio_dsp::levelling();
@@ -185,6 +204,38 @@ void sound_tab(SkateMenu& menu, Page& p) {
 
     begin_card(menu, "music-equaliser", "EQUALISER", "Up for more of that part of the sound, down for less.");
     static constexpr std::array<const char*, audio_dsp::bands> names{"BASS", "LOW MID", "MID", "HIGH MID", "TREBLE"}, where{"60 Hz", "250 Hz", "1 kHz", "4 kHz", "12 kHz"};
+    struct Preset {
+        const char* name;
+        std::array<float, audio_dsp::bands> bands;
+    };
+    static constexpr std::array<Preset, 5> presets{{{"FLAT", {0, 0, 0, 0, 0}}, {"BASS BOOST", {6, 3, 0, 0, 0}}, {"LOUD", {5, 2, -1, 2, 4}}, {"VOCAL", {-2, 0, 3, 3, 0}}, {"BRIGHT", {0, 0, 0, 3, 5}}}};
+    if (console_style()) {
+        for (int i = 0; i < audio_dsp::bands; ++i) {
+            const auto at = static_cast<std::size_t>(i);
+            field(menu, std::format("{}  ({})", names[at], where[at]).c_str(), "Left / right a decibel at a time.");
+            ImGui::PushID(i);
+            set_console_step(1.0);
+            if (slider_float("##band", &p.bands[at], -audio_dsp::most_decibels, audio_dsp::most_decibels, "%+.0f dB", ImGuiSliderFlags_AlwaysClamp)) {
+                p.bands[at] = std::round(p.bands[at]);
+                audio_dsp::set_band(i, p.bands[at]);
+            }
+            editing |= ImGui::IsItemActive();
+            changed |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::PopID();
+        }
+        const int pressed = button_row(menu, "eq-presets", {{presets[0].name, true, presets[0].bands == p.bands}, {presets[1].name, true, presets[1].bands == p.bands},
+            {presets[2].name, true, presets[2].bands == p.bands}, {presets[3].name, true, presets[3].bands == p.bands}, {presets[4].name, true, presets[4].bands == p.bands}});
+        if (pressed >= 0) {
+            p.bands = presets[static_cast<std::size_t>(pressed)].bands;
+            for (int band = 0; band < audio_dsp::bands; ++band) audio_dsp::set_band(band, p.bands[static_cast<std::size_t>(band)]);
+            changed = true;
+        }
+        note("The loudness, levelling and equaliser only change music played through ReSkate, not the game's own.");
+        end_card();
+        p.editing = editing;
+        if (changed) spotify_dashboard::save_settings();
+        return;
+    }
     // Each band is a column: how much it is set to, a narrow track with a line where 0 dB is
     // and a filled bar from that line to the handle, then its name and where it sits.
     const float gap = px(10), column = std::min(px(96), (ImGui::GetContentRegionAvail().x - gap * (audio_dsp::bands - 1)) / audio_dsp::bands);
@@ -232,11 +283,6 @@ void sound_tab(SkateMenu& menu, Page& p) {
     ImGui::SetCursorScreenPos(origin);
     ImGui::Dummy(ImVec2((column + gap) * audio_dsp::bands - gap, px(24) + tall + px(46)));
     ImGui::Dummy(ImVec2(0, px(6)));
-    struct Preset {
-        const char* name;
-        std::array<float, audio_dsp::bands> bands;
-    };
-    static constexpr std::array<Preset, 5> presets{{{"FLAT", {0, 0, 0, 0, 0}}, {"BASS BOOST", {6, 3, 0, 0, 0}}, {"LOUD", {5, 2, -1, 2, 4}}, {"VOCAL", {-2, 0, 3, 3, 0}}, {"BRIGHT", {0, 0, 0, 3, 5}}}};
     for (std::size_t i = 0; i < presets.size(); ++i) {
         if (i) ImGui::SameLine(0, px(6));
         const bool on = presets[i].bands == p.bands;
@@ -278,6 +324,16 @@ void sources_tab(SkateMenu& menu, Page& p) {
             const auto& playlist = p.streams.playlists[i];
             if (playlist.kind != Kind::files) continue;
             ImGui::PushID(static_cast<int>(i));
+            if (console_style()) {
+                const auto label = std::format("RESCAN {}  ({} songs)", playlist.name, playlist.songs.size());
+                if (button_row(menu, "rescan", {{label.c_str(), !p.streams.busy}}) == 0) {
+                    youtube_music::add_folder(playlist.url);
+                    feedback(menu, "Reading the folder again.");
+                    p.read_at = -1;
+                }
+                ImGui::PopID();
+                continue;
+            }
             ImGui::BeginDisabled(p.streams.busy);
             if (ImGui::Button("RESCAN")) {
                 youtube_music::add_folder(playlist.url);
@@ -300,8 +356,11 @@ void music_page(SkateMenu& menu, const Model&, const CallbacksV3&) {
     read(p);
     category_tabs(menu, p.tab, {"PLAYER", "SOUND", "SOURCES"}, "music-tabs");
     ImGui::PushID(p.tab);
-    ImGui::BeginChild("music-tab", ImVec2(0, page_body_height(menu)));
-    if (p.tab == 0) player_tab(menu, p);
+    ImGui::BeginChild("music-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    if (p.tab == 0) {
+        player_tab(menu, p);
+        music_playback_card(menu);
+    }
     else if (p.tab == 1) sound_tab(menu, p);
     else sources_tab(menu, p);
     ImGui::EndChild();

@@ -84,9 +84,10 @@ bool read_player_card(std::uintptr_t manager, profile::CosmeticLoadout& result) 
 }
 
 namespace {
-bool player_card_item_owned(const profile::CosmeticSlot& slot, const dingosdk::Json& inventory) {
+bool player_card_item_owned(const profile::CosmeticSlot& slot, const profile::Snapshot& snapshot) {
     const auto it = cosmetic_runtime().items.find(slot.asset);
-    if (it == cosmetic_runtime().items.end() || !inventory.value(slot.asset, false)) return false;
+    if (it == cosmetic_runtime().items.end() || !installed_item_owned(snapshot, slot.asset, it->second.hash, it->second.build_kit))
+        return false;
     // Each card category is also its recipe slot hash in the installed template.
     return std::find(it->second.categories.begin(), it->second.categories.end(), slot.slot) !=
         it->second.categories.end();
@@ -96,9 +97,8 @@ bool player_card_item_owned(const profile::CosmeticSlot& slot, const dingosdk::J
 bool player_card_owned(const profile::CosmeticLoadout& value) {
     const auto snapshot_shared = local_runtime().store->shared_snapshot();
     const auto& snapshot = *snapshot_shared;
-    const auto& inventory = snapshot.customization.at("inventory");
     for (const auto& slot : value.recipes.front().items)
-        if (!player_card_item_owned(slot, inventory)) return false;
+        if (!player_card_item_owned(slot, snapshot)) return false;
     return true;
 }
 
@@ -264,10 +264,9 @@ void update_player_card() {
             // slot. The saved card keeps it until the player changes the card.
             const auto snapshot_shared = s.store->shared_snapshot();
             const auto& snapshot = *snapshot_shared;
-            const auto& inventory = snapshot.customization.at("inventory");
             const auto& defaults = current.recipes.front().items;
             for (auto& slot : restore->recipes.front().items) {
-                if (player_card_item_owned(slot, inventory)) continue;
+                if (player_card_item_owned(slot, snapshot)) continue;
                 const auto fallback = std::find_if(defaults.begin(), defaults.end(),
                     [&](const profile::CosmeticSlot& item) { return item.slot == slot.slot; });
                 if (fallback == defaults.end()) { restore.reset(); break; }

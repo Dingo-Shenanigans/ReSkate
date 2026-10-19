@@ -5,6 +5,8 @@
 #include "Engine/Game/Build/20260929/client_source_spawn.h"
 #include "Engine/Game/Skater/first_person_spring.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/Skater/drone_flight.h"
+#include "Extension/Skater/drone_follow.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -122,6 +124,11 @@ struct InteractiveDebug {
     std::uint8_t ui_original{}, ui_applied{};
     DWORD thread{};
     std::array<float, 16> flight_matrix{};
+    drone::State drone_state; // FPV drone flight state (used while dronemode is on)
+    // Drone follow: shares Freecam's owned camera like first person, and the skater keeps its
+    // controls; each tick the autopilot flies the drone (drone_follow.h) and the view is its camera.
+    bool drone_follow{};
+    drone::follow::Pilot follow_pilot;
     float flight_speed = 15.0f;
     double flight_time{};
     bool flight_ready{}, noclip{}, no_bail{};

@@ -32,6 +32,8 @@ struct CosmeticRuntime {
     // installed); the published catalog is replaced when it falls behind.
     std::uint64_t items_generation{};
     std::uint64_t published_generation{};
+    // Items the last catalog built holds: `items` less any left out of it (make_cosmetic_catalog).
+    std::size_t catalog_items{};
     std::uintptr_t published_manager{};
     std::uintptr_t published_inventory{};
     std::uintptr_t inventory_data_model{};
@@ -56,6 +58,11 @@ bool cosmetic_words(std::uintptr_t p, std::size_t limit, std::vector<std::uint32
 bool refresh_cosmetic_catalog();
 bool reserved_cosmetic(std::string_view asset);
 bool reserved_cosmetic_hash(std::uint32_t hash);
+// Whether the player owns an installed cosmetic or Build object (`build_kit`). A paid store copy
+// never; with the kind's unlock option on (the default) every other one, with nothing per item
+// saved; off, what the profile saved. Nothing while the content cache that names the paid copies
+// is unavailable.
+bool installed_item_owned(const profile::Snapshot& snapshot, std::string_view key, std::uint32_t hash, bool build_kit);
 
 struct CosmeticNativeItem {
     const char* asset{};

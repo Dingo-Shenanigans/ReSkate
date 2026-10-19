@@ -37,6 +37,7 @@ use librespot_connect::{ConnectConfig, LoadContextOptions, LoadRequest, LoadRequ
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
 use librespot_core::config::SessionConfig;
+use librespot_core::error::ErrorKind;
 use librespot_core::session::Session;
 use librespot_discovery::{DeviceType, Discovery};
 use librespot_metadata::audio::UniqueFields;
@@ -131,6 +132,8 @@ async fn run(name: String, cache_folder: Option<PathBuf>, mut asked: mpsc::Unbou
     };
 
     let mut credentials: Option<Credentials> = cache.as_ref().and_then(|cache| cache.credentials());
+    // Tries in a row that could not reach Spotify with the account (the wait grows with them).
+    let mut unreachable: u32 = 0;
     loop {
         // Until there is an account: one kept from before, or one handed over now.
         let account = match credentials.take() {
@@ -160,16 +163,39 @@ async fn run(name: String, cache_folder: Option<PathBuf>, mut asked: mpsc::Unbou
         let player = Player::new(player_config, session.clone(), mixer.get_soft_volume(), || Box::new(GameSink));
         let mut events = player.get_player_event_channel();
         let connect_config = ConnectConfig { name: name.clone(), device_type: DeviceType::Computer, initial_volume: u16::MAX, ..ConnectConfig::default() };
+        let kept = account.clone();
         let (spirc, task) = match Spirc::new(connect_config, session.clone(), account, player.clone(), mixer).await {
             Ok(made) => made,
             Err(error) => {
-                // (An account kept from before that Spotify no longer takes: it is asked for anew.)
                 log::error!("Spotify did not take the account: {error}");
                 tell(&["DISCONNECTED"]);
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                let wait = match error.kind {
+                    // (An account Spotify refuses, or one not Premium: it is asked for anew.)
+                    ErrorKind::Unauthenticated | ErrorKind::PermissionDenied | ErrorKind::InvalidArgument => {
+                        unreachable = 0;
+                        Duration::from_secs(3)
+                    }
+                    // Spotify could not be reached (the connection was down, its service did not
+                    // answer): the same account is tried again, waiting longer each time. It used
+                    // to be dropped here, and the device then waited to be picked in Spotify's
+                    // own app: a game started while the connection was down played no Spotify
+                    // until it was restarted (2026-10-15).
+                    _ => {
+                        credentials = Some(kept);
+                        unreachable = unreachable.saturating_add(1);
+                        let seconds = (3u64 << unreachable.saturating_sub(1).min(5)).min(60);
+                        log::warn!("Spotify could not be reached; trying the account again in {seconds} s");
+                        Duration::from_secs(seconds)
+                    }
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    line = asked.recv() => if matches!(line.as_deref(), Some("quit") | None) { return; },
+                }
                 continue;
             }
         };
+        unreachable = 0;
         // (With the account taken, the device is the player's to use.)
         tell(&["CONNECTED", &session.username()]);
         tokio::pin!(task);
@@ -178,6 +204,15 @@ async fn run(name: String, cache_folder: Option<PathBuf>, mut asked: mpsc::Unbou
             tokio::select! {
                 _ = &mut task => {
                     tell(&["DISCONNECTED"]);
+                    // (The connection to Spotify ended under it: the account is taken up again,
+                    // as kept since it was given, rather than waiting to be picked in Spotify's app.)
+                    if credentials.is_none() {
+                        credentials = cache.as_ref().and_then(|cache| cache.credentials()).or_else(|| Some(kept.clone()));
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                            line = asked.recv() => if matches!(line.as_deref(), Some("quit") | None) { return; },
+                        }
+                    }
                     break;
                 }
                 event = events.recv() => match event {

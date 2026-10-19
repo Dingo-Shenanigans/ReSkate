@@ -18,6 +18,8 @@ using Measurements = std::vector<Measurement>;
 // unless RESKATE_TRACING=1 (the launcher's "Send performance timings" setting),
 // and off whenever crash reporting is (RESKATE_CRASH_REPORTING=0).
 bool start() noexcept;
+// Whether this launch sends timings (start() succeeded).
+bool active() noexcept;
 // Queues one finished operation as a Sentry transaction. Never waits on the
 // network and never throws. A launch's launcher and game share one trace.
 void record(std::string_view name, std::string_view operation, std::chrono::milliseconds duration,

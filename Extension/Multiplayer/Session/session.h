@@ -31,7 +31,8 @@ std::string take_removed_notice();
 // for download instead (Extension/Assets/map_download.h): the session does not end. It tells
 // the host the map is being fetched, which is given much longer than a load, and goes on
 // trying the map, so it loads as soon as it is installed. Once per map; client thread.
-// The downloader ends the session (queue_command "stop") when the player says no or the map
+// The downloader ends its own attempt (queue_command "stop-map-fetch", with its deadline)
+// when the player says no or the map
 // cannot be had. Should the session end meanwhile for another reason,
 // queue_command("rejoin", "", "") goes back to it, with the password it was joined with.
 struct MapNeed {
@@ -42,15 +43,18 @@ struct MapNeed {
     // The version of it installed here, when that is another than the host's: the host's is
     // fetched in its place. Empty: the map is not installed.
     std::string have;
+    // Local steady-clock deadline, shared with the downloader, never transmitted.
+    std::uint64_t deadline_us{};
 };
 std::optional<MapNeed> take_map_need();
 // Whether a session is waiting on a map being fetched right now. Thread-safe.
 bool fetching_map() noexcept;
-// Held while a map is being downloaded, installed or applied: the session does not load the
-// host's map meanwhile, and waits as it does for one that is missing. A map that is being
+std::uint64_t map_fetch_deadline() noexcept;
+// Held for the named package while it is being downloaded, installed or applied: unrelated
+// joins are not held. The session waits as it does for a missing map. A map that is being
 // replaced by another version is one the game already knows, so without this it would load as
 // soon as the new files are in place, before the mods are applied again. Thread-safe.
-void hold_map_load(bool hold) noexcept;
+void hold_map_load(bool hold, std::string_view package) noexcept;
 // How a host learns the package of the map it is on, to tell its guests: the level's asset in,
 // the package (or nothing) out. Called on the client thread, often; it should be quick.
 using MapPackageLookup = std::string (*)(std::string_view asset);

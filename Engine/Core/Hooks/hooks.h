@@ -30,6 +30,19 @@ HookStatus WINAPI hook_disable(void* target);
 HookStatus WINAPI hook_remove(void* target);
 HookStatus WINAPI hook_queue_enable(void* target);
 HookStatus WINAPI hook_apply_queued();
+// While one is alive on a thread, hook_enable on that thread only queues the hook (and answers
+// HookOk); the outermost one, as it ends, attaches all of them in one transaction. Each
+// transaction lists every thread on the system and suspends every one of the game's, a few
+// milliseconds each, so installs made while the game runs are grouped: on the client thread,
+// a frame paid for each of them (2026-10-15). A hook that then fails to attach stays detached,
+// as a failed hook_enable leaves it.
+class HookBatch {
+public:
+    HookBatch() noexcept;
+    ~HookBatch();
+    HookBatch(const HookBatch&) = delete;
+    HookBatch& operator=(const HookBatch&) = delete;
+};
 HookStatus WINAPI hook_shutdown();
 const char* WINAPI hook_status_string(HookStatus status);
 // Captured on the calling thread; formatting/logging happens only after Detours

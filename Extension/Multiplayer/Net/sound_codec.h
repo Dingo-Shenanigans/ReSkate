@@ -214,9 +214,11 @@ struct Heard {
 };
 // What a message holds, or nothing when it is not one or is damaged. A message of another world
 // holds nothing; samples of a stream this side was never told of are passed over. `streams` moves
-// on with what is read.
-template <typename Streams>
-std::optional<std::vector<Heard>> read(Streams &streams, std::span<const std::uint8_t> bytes, std::uint64_t world, std::uint64_t map) noexcept {
+// on with what is read. `admit(source)` says whether a stream may be opened for that player; a
+// player's new stream ends their old one, and no more than pose_batch::receiver_streams are held.
+template <typename Streams, typename Admit>
+std::optional<std::vector<Heard>> read(Streams &streams, std::span<const std::uint8_t> bytes, std::uint64_t world, std::uint64_t map,
+                                       Admit &&admit) noexcept {
     try {
         if (!is_sound(bytes)) return {};
         detail::Reader r{bytes, 4};
@@ -259,6 +261,7 @@ std::optional<std::vector<Heard>> read(Streams &streams, std::span<const std::ui
                 last_age = age;
                 heard.samples.push_back({age, restore(was), event});
             }
+            if (whole && (!admit(in.source) || !pose_batch::open_stream(streams, static_cast<std::uint16_t>(stream), in.source))) known = false;
             if (!known) continue;
             in.state = was;
             streams[static_cast<std::uint16_t>(stream)] = in;
@@ -269,5 +272,9 @@ std::optional<std::vector<Heard>> read(Streams &streams, std::span<const std::ui
     } catch (...) {
         return {};
     }
+}
+template <typename Streams>
+std::optional<std::vector<Heard>> read(Streams &streams, std::span<const std::uint8_t> bytes, std::uint64_t world, std::uint64_t map) noexcept {
+    return read(streams, bytes, world, map, [](std::uint64_t) { return true; });
 }
 } // namespace dingosdk::multiplayer::sound_codec

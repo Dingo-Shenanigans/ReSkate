@@ -15,7 +15,7 @@ struct View {
     std::string search;
     Filter filter{};
     unsigned shown{}, total{}, favorites{}; // of the grid that has the focus
-    std::string focused_title;
+    std::string focused_title, focused_key;
     bool focused_favorite{};
 };
 View view();

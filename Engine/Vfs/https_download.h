@@ -16,6 +16,8 @@ struct Download {
 struct Watch {
     std::atomic<std::uint64_t> received{}, total{};
     std::atomic<bool> cancel{};
+    // Absolute steady_clock epoch microseconds; zero leaves only the GET timeout.
+    std::atomic<std::uint64_t> deadline_us{};
 };
 // Streams an HTTPS GET into `destination`, which must not exist yet. Follows
 // redirects that stay on HTTPS; refuses bodies over `max_bytes` or transfers
@@ -25,5 +27,5 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
 // The body of the same GET, for an answer small enough to hold: nothing when it
 // fails, and `result`, when given, says how.
 std::optional<std::string> get_text(std::wstring_view url, std::uint64_t max_bytes,
-    std::uint32_t timeout_seconds, const wchar_t* agent, Download* result = nullptr);
+    std::uint32_t timeout_seconds, const wchar_t* agent, Download* result = nullptr, Watch* watch = nullptr);
 }

@@ -1,4 +1,5 @@
 #include "session_internal.h"
+#include "Engine/Core/Platform/path_text.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
@@ -30,6 +31,11 @@ void apply_distances(Session &s, const MultiplayerDistances &distances) {
 void apply_object_limit(Session &s, unsigned limit) {
     s.object_limit = limit;
     set_lobby_object_limit(s.mode == Mode::host || (s.role_permissions & role_objects) ? 0 : limit);
+}
+void apply_object_scaling(Session &s, bool allowed) {
+    s.object_scaling = allowed;
+    // As the menus see it (session_view.cpp): the host, and a role that may always build, are exempt.
+    set_lobby_object_scaling_allowed(allowed || s.mode != Mode::join || (s.role_permissions & role_objects));
 }
 void apply_object_placement(Session &s, ObjectPlacement policy) {
     s.object_placement = policy;
@@ -435,11 +441,11 @@ std::string start_pose_dump(Session &s, std::string_view argument) {
     s.pose_dump.close();
     s.pose_dump.clear();
     s.pose_dump.open(file, std::ios::binary | std::ios::trunc);
-    if (!s.pose_dump) return "Could not write " + file.string() + ".";
+    if (!s.pose_dump) return "Could not write " + path_utf8(file) + ".";
     s.pose_dump.write("RSPD1\n", 6);
     s.pose_dump_until = now_us() + static_cast<std::uint64_t>(seconds) * 1000000;
     s.pose_dump_count = 0;
-    return "Recording your poses for " + std::to_string(seconds) + " s to " + file.string() + ". Skate as you normally would.";
+    return "Recording your poses for " + std::to_string(seconds) + " s to " + path_utf8(file) + ". Skate as you normally would.";
 }
 std::string edit_direct_connections(Session &s, std::string_view argument) {
     const auto enabled = parse_switch(argument, s.prefer_direct);
@@ -622,7 +628,7 @@ bool own_mark_command(std::string_view action) {
 } // namespace
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password) {
     if (launcher::offline_mode() && !own_mark_command(action)) return false;
-    if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" &&
+    if ((action != "host" && action != "host-config" && action != "join" && action != "rejoin" && action != "join-lobby" && action != "join-friend-lobby" && action != "stop" && action != "stop-map-fetch" &&
          action != "distances" && action != "object-placement" && action != "object-limit" && action != "kick" && action != "clear-objects" &&
          action != "nametags" && action != "chat-visible" && action != "chat-filter" &&
          action != "nametag-distance" && action != "nametag-dots" && action != "nametags-friends" && action != "player-distance" && action != "direct-connections" && action != "pose-dump" && action != "vote" && action != "voice-chat" &&
@@ -875,7 +881,15 @@ std::string command(std::string_view action, std::string_view argument, std::str
         if (action == "status")
             return s.status + " | Players " + std::to_string(player_count(s)) + "/" +
                    std::to_string(s.capacity);
-        if (action == "stop") {
+        if (action == "stop-map-fetch") {
+            std::uint64_t expected{};
+            const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), expected);
+            // A worker's queued cancellation may execute after a fresh join command.
+            if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() ||
+                !expected || expected != s.map_fetch_deadline)
+                return s.status;
+        }
+        if (action == "stop" || action == "stop-map-fetch") {
             stop(s, "Multiplayer stopped.");
             publish(s);
             return s.status;
@@ -968,6 +982,8 @@ std::string command(std::string_view action, std::string_view argument, std::str
         if (action == "rejoin") {
             rejoin = std::exchange(s.rejoin, std::nullopt);
             if (!rejoin) return "There is no session to go back to.";
+            if (map_fetch_policy::expired(rejoin->deadline_us, now_us()))
+                return "Map download timed out. Please try joining the server again.";
         }
         if (action != "host" && action != "join" && action != "echo" && !rejoin)
             return "Unknown multiplayer action.";
@@ -1113,6 +1129,8 @@ std::string command(std::string_view action, std::string_view argument, std::str
             s.host_id = invitation->steam_id;
             s.awaiting_map = true;
             s.join_started = now_us();
+            s.map_fetch_deadline = rejoin ? rejoin->deadline_us : 0;
+            map_fetch_deadline_flag.store(s.map_fetch_deadline);
             s.status = "Connecting and checking the host's map...";
         }
         set_lobby_park_mode(s.mode == Mode::host || s.mode == Mode::join, s.mode == Mode::join);

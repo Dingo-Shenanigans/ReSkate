@@ -1,36 +1,90 @@
 #include "modding_menu.h"
 #include "skate_menu.h"
 #include "skate_menu_internal.h"
+#include "Engine/Vfs/builtin_packs.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/mod_catalog.h"
+#include "Engine/Vfs/mod_conflicts.h"
 #include "Extension/Assets/live_mods.h"
+#include "Extension/BoardBreak/board_break.h"
 #include "Extension/UI/skate_theme.h"
 #include "Engine/Core/Log/logging.h"
 
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace dingosdk::overlay {
+namespace {
+// What the Mods folder holds, read again on a thread of its own every `period` while a page asks
+// for it; the page draws the last that was read. These pages are drawn on the game's render
+// thread, and reading the folder there (every mod's files, a whole folder's fingerprint for an
+// excluded one) held each frame up for tens of milliseconds to seconds, every 1.5 s (2026-10-15).
+template<class T> class FolderRead {
+public:
+    template<class Read> std::shared_ptr<const T> get(Read read, ULONGLONG period) {
+        const auto now = GetTickCount64();
+        if (now >= next_.load() && !reading_.exchange(true)) {
+            next_ = now + period;
+            try {
+                std::thread([this, read] {
+                    std::shared_ptr<const T> fresh;
+                    try { fresh = std::make_shared<const T>(read()); } catch (...) {}
+                    if (fresh) {
+                        std::lock_guard lock(mutex_);
+                        value_ = std::move(fresh);
+                    }
+                    reading_ = false;
+                }).detach();
+            } catch (...) { reading_ = false; }
+        }
+        std::lock_guard lock(mutex_);
+        return value_;
+    }
+    // What the page itself has just changed, shown until the next read.
+    void set(T value) {
+        std::lock_guard lock(mutex_);
+        value_ = std::make_shared<const T>(std::move(value));
+    }
+    void again() { next_ = 0; }
+private:
+    std::mutex mutex_;
+    std::shared_ptr<const T> value_;
+    std::atomic<bool> reading_{};
+    std::atomic<ULONGLONG> next_{};
+};
+struct DeckScan {
+    std::vector<std::string> installed, titles; // each installed deck's name for people
+    std::string chosen;
+};
+}
 namespace menu {
 // Board Break's decks (Extension/BoardBreak/board_break.h). The game has one deck model and each
 // deck is a mod's copy of it, so picking one applies the mods with that deck first and loads the
 // level again. A button for each deck the feature was made with, greyed out while it is not
 // installed, and for any other deck that is; the Mods folder is read again every 1.5 s while the
-// card shows.
+// card shows. A deck goes by the name its deck.ini gives it (label), else by its folder's.
 void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    static std::vector<std::string> installed;
-    static std::string chosen;
-    static ULONGLONG next_scan{};
-    if (const auto now = GetTickCount64(); now >= next_scan) {
-        installed = mods::installed_board_break_decks();
-        chosen = mods::wanted_board_break_deck();
-        next_scan = now + 1500;
-    }
+    static auto* scans = new FolderRead<DeckScan>; // process lifetime, as the threads that fill it
+    const auto scan = scans->get([] {
+        DeckScan read;
+        read.installed = mods::installed_board_break_decks();
+        read.chosen = mods::wanted_board_break_deck();
+        for (const auto& deck : read.installed) read.titles.push_back(board_break::deck_label(deck));
+        return read;
+    }, 1500);
+    if (!scan) return;
+    const auto& installed = scan->installed;
+    const auto& titles = scan->titles;
+    const auto& chosen = scan->chosen;
     if (!model.board_break.available || installed.empty()) return;
     const auto there = [&](const std::string& deck) { return std::find(installed.begin(), installed.end(), deck) != installed.end(); };
     // The known decks in their own order, then the others that are installed: the numbers are the
@@ -39,12 +93,18 @@ void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV
     for (const auto& deck : installed)
         if (std::find(decks.begin(), decks.end(), deck) == decks.end()) decks.push_back(deck);
     const auto label = [&](const std::string& deck) {
-        auto name = deck;
-        bool start = true;
-        for (auto& c : name) {
-            if (c == '_') c = ' ';
-            else if (start && c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-            start = c == ' ';
+        std::string name;
+        if (const auto at = std::find(installed.begin(), installed.end(), deck);
+            at != installed.end() && static_cast<std::size_t>(at - installed.begin()) < titles.size())
+            name = titles[static_cast<std::size_t>(at - installed.begin())];
+        else {
+            name = deck;
+            bool start = true;
+            for (auto& c : name) {
+                if (c == '_') c = ' ';
+                else if (start && c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+                start = c == ' ';
+            }
         }
         const auto place = std::find(decks.begin(), decks.end(), deck) - decks.begin() + 1;
         return std::to_string(place) + " " + name;
@@ -52,6 +112,28 @@ void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV
     const auto in_play = mods::board_break_in_play();
     begin_card(menu, "board-break-decks", "BOARD BREAK DECK", in_play.empty() ? "none in the game" : label(in_play).c_str());
     const bool busy = live_mods::busy();
+    if (menu::console_style()) {
+        // Full screen: one row, left / right to a deck and A to put it in the game.
+        static int staged = -1;
+        static std::string staged_from;
+        std::vector<std::string> names;
+        int playing = -1;
+        for (std::size_t i = 0; i < decks.size(); ++i) {
+            names.push_back(label(decks[i]) + (there(decks[i]) ? "" : " (not installed)"));
+            if (decks[i] == in_play) playing = static_cast<int>(i);
+        }
+        if (staged < 0 || staged >= static_cast<int>(decks.size()) || staged_from != in_play) staged = playing, staged_from = in_play;
+        bool load = false;
+        const bool waiting = staged >= 0 && decks[static_cast<std::size_t>(staged)] != in_play;
+        menu::option_row(menu, waiting ? "Deck   - A puts it in###deck" : "Deck###deck",
+                         waiting ? "Press A to put this deck in the game (the level loads again)." : "Left / right to pick a deck, then A to put it in the game.",
+                         staged, names, !busy && callbacks.queue_console_command, &load);
+        if (load && staged >= 0) {
+            const auto& deck = decks[static_cast<std::size_t>(staged)];
+            if (!there(deck)) menu::feedback(menu, "That deck is not installed.");
+            else if (deck != in_play) send_console(menu, callbacks, "boardbreak deck " + deck);
+        }
+    } else {
     const float gap = ImGui::GetStyle().ItemSpacing.x;
     const float width = (ImGui::GetContentRegionAvail().x - gap * 3) / 4;
     for (std::size_t i = 0; i < decks.size(); ++i) {
@@ -63,6 +145,7 @@ void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV
             send_console(menu, callbacks, "boardbreak deck " + deck);
         ImGui::EndDisabled();
         ImGui::PopID();
+    }
     }
     if (busy) note("Applying mods...");
     else if (!in_play.empty() && chosen != in_play && there(chosen))
@@ -92,16 +175,23 @@ std::string mod_contents(const mods::Mod& mod) {
 // while the game runs (it takes effect at the next level load), including a
 // mod folder added since launch.
 void draw_installed_mods(SkateMenu& menu) {
-    static mods::ModList list;
-    static ULONGLONG next_scan{};
+    static auto* scans = new FolderRead<mods::ModList>; // process lifetime, as the threads that fill it
     static std::string action_error;
-    const auto now = GetTickCount64();
-    if (now >= next_scan) {
-        list = mods::scan_mods(mods::engine_data_root());
-        next_scan = now + 1500;
+    const auto scanned = scans->get([] { return mods::scan_mods(mods::engine_data_root()); }, 1500);
+    if (!scanned) {
+        menu::note("Reading the Mods folder...");
+        return;
     }
+    const auto& list = *scanned;
     const auto& launch = mods::catalog();
     const auto applied = live_mods::applied_mods();
+    // ReSkate's own packs (builtin_packs.h) live outside the Mods folder's list, always on. Without
+    // this, the ones in effect read as mods whose folder was deleted. (Official mods are mods like
+    // any other, in the list.)
+    const auto kept = [&](const std::string& name) {
+        const auto pack = mods::board_break_pack_of(name);
+        return (pack.empty() ? name : pack).starts_with("reskate-builtin-");
+    };
     // A Board Break deck pack is in effect when one of the decks inside it is (mod_catalog.h).
     const auto in_effect = [&](const std::string& name) {
         return std::ranges::any_of(applied, [&](const std::string& other) {
@@ -110,6 +200,16 @@ void draw_installed_mods(SkateMenu& menu) {
     };
     const auto excluded = [&](const std::string& name) {
         return std::ranges::any_of(launch.excluded, [&](const mods::Mod& mod) { return _stricmp(mod.name.c_str(), name.c_str()) == 0; });
+    };
+    // Left out for a conflict: the mod it lost to (mod_conflicts.h), else empty.
+    const auto lost_to = [&](const std::string& name) {
+        const auto found = std::ranges::find_if(launch.excluded, [&](const mods::Mod& mod) { return _stricmp(mod.name.c_str(), name.c_str()) == 0; });
+        return found == launch.excluded.end() ? std::string{} : mods::conflict_winner(*found);
+    };
+    const auto title_of = [&](const std::string& name) {
+        for (const auto& entry : list.entries)
+            if (_stricmp(entry.mod.name.c_str(), name.c_str()) == 0) return entry.mod.title.empty() ? name : entry.mod.title;
+        return name;
     };
     // Board Break's other decks and other mods that bring a deck model: enabled, not loaded, and
     // nothing about them waits to be applied.
@@ -127,13 +227,16 @@ void draw_installed_mods(SkateMenu& menu) {
     // Mods still in effect whose folder has been deleted: applying unloads them.
     std::vector<std::string> removed;
     for (const auto& name : applied)
-        if (mods::board_break_pack_of(name).empty() &&
+        if (mods::board_break_pack_of(name).empty() && !kept(name) &&
             std::ranges::none_of(list.entries, [&](const mods::ModEntry& entry) { return _stricmp(entry.mod.name.c_str(), name.c_str()) == 0; }))
             removed.push_back(name);
     pending += removed.size();
     loaded += removed.size();
     std::string count = std::to_string(loaded) + " loaded";
-    if (!launch.excluded.empty()) count += ", " + std::to_string(launch.excluded.size()) + " not loaded";
+    const auto conflicted = static_cast<std::size_t>(std::ranges::count_if(launch.excluded, [](const mods::Mod& mod) {
+        return !mods::conflict_winner(mod).empty(); }));
+    if (launch.excluded.size() > conflicted) count += ", " + std::to_string(launch.excluded.size() - conflicted) + " not loaded";
+    if (conflicted) count += ", " + std::to_string(conflicted) + " left out";
     menu::begin_card(menu, "installed-mods", "INSTALLED MODS", count.c_str());
 
     // Unapplied changes first, with the button that applies them.
@@ -219,7 +322,11 @@ void draw_installed_mods(SkateMenu& menu) {
         const char* status = "DISABLED";
         ImU32 colour = skate_theme::tile_light;
         std::string hover = mod.description;
-        if (excluded(mod.name)) {
+        if (const auto winner = lost_to(mod.name); !winner.empty()) {
+            status = "LEFT OUT";
+            hover = "Left out: it changes the same parts of the game as " + title_of(winner) + ", which is higher in "
+                    "the load order, so only that one loads.\n\nChoose which loads in the launcher's Mod Manager.";
+        } else if (excluded(mod.name)) {
             status = "NOT LOADED";
             colour = skate_theme::danger;
             hover = "Not loaded: it could not be merged cleanly, so none of it is used.\n\n"
@@ -250,7 +357,10 @@ void draw_installed_mods(SkateMenu& menu) {
             auto entries = list.entries;
             entries[*toggle].enabled = !entries[*toggle].enabled;
             mods::save_mod_order(list.root, entries);
-            next_scan = 0;
+            auto shown = list;
+            shown.entries = std::move(entries);
+            scans->set(std::move(shown));
+            scans->again();
             action_error.clear();
         } catch (const std::exception& error) { action_error = error.what(); }
     }
@@ -330,7 +440,7 @@ void draw_custom_scripts(SkateMenu& menu) {
     menu::end_card();
 }
 }
-void draw_modding_menu(SkateMenu& menu, int tab, const Model& model, const CallbacksV3& callbacks) {
+void draw_modding_menu(SkateMenu& menu, int tab, const Model&, const CallbacksV3&) {
     // Loose files are switched in the launcher; custom scripts only need to know
     // whether they are on.
     if (!menu.loose_files_settings_loaded) {
@@ -339,9 +449,6 @@ void draw_modding_menu(SkateMenu& menu, int tab, const Model& model, const Callb
         catch (const std::exception&) {}
     }
     if (tab == 1) draw_custom_scripts(menu);
-    else {
-        menu::board_break_deck_card(menu, model, callbacks);
-        draw_installed_mods(menu);
-    }
+    else draw_installed_mods(menu);
 }
 }

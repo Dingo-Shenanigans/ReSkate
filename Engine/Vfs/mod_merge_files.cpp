@@ -1,6 +1,8 @@
 #include "mod_merge_internal.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Resource/cas_codec.h"
+#include "Engine/Resource/ebx_fixup_repair.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -142,6 +144,20 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes) {
     return digest;
 }
 
+std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+    std::optional<fb::ebx::FixupRepair> repaired;
+    try {
+        repaired = fb::ebx::repair_type_fixups(fb::decode_cas(encoded, {gameRoot}));
+    } catch (const std::exception&) {
+        return 0;
+    }
+    if (!repaired) return 0;
+    encoded = fb::encode_cas(repaired->bytes, {gameRoot});
+    asset.sha1 = sha1_of(repaired->bytes);
+    asset.originalSize = repaired->bytes.size();
+    return repaired->removed;
+}
+
 PlacementRecord read_placements(const fs::path& file) {
     PlacementRecord record;
     std::ifstream input(file, std::ios::binary);
@@ -200,3 +216,34 @@ void write_placements(const fs::path& file, const PlacementRecord& record) {
 }
 
 } // namespace dingosdk::mods::detail
+
+namespace dingosdk::mods {
+
+std::map<std::string, std::uint64_t> read_map_meshes(const std::filesystem::path& file) {
+    std::map<std::string, std::uint64_t> meshes;
+    try {
+        std::ifstream input(file, std::ios::binary);
+        if (!input) return meshes;
+        const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        const auto root = Json::parse(text);
+        if (!root.contains("maps")) return meshes;
+        for (const auto& [level, bytes] : root.at("maps").items()) meshes[level] = bytes.get<std::uint64_t>();
+    } catch (const std::exception&) {
+        meshes.clear();
+    }
+    return meshes;
+}
+
+void write_map_meshes(const std::filesystem::path& file, const std::map<std::string, std::uint64_t>& meshes) {
+    auto all = read_map_meshes(file);
+    for (const auto& [level, bytes] : meshes) all[level] = bytes;
+    auto root = Json::object();
+    root["schema"] = 1u;
+    auto maps = Json::object();
+    for (const auto& [level, bytes] : all) maps[level] = bytes;
+    root["maps"] = std::move(maps);
+    const auto text = root.dump(2);
+    detail::write_file(file, std::as_bytes(std::span(text)));
+}
+
+} // namespace dingosdk::mods

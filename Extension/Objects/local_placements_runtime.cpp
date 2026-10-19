@@ -100,7 +100,7 @@ void placement_reset_session() {
     auto& r = placements_runtime();
     r.creation.reset();
     r.creates.clear();
-    r.tracked.clear(); r.restore.clear(); r.late_restores.clear(); r.inflight.reset(); r.rows.clear(); r.teleport_token = 0; r.status.clear();
+    r.tracked.clear(); r.restore.clear(); r.late_restores.clear(); r.resizes.clear(); r.inflight.reset(); r.rows.clear(); r.teleport_token = 0; r.status.clear();
     r.map.clear(); r.map_context = 0; r.next_poll = 0; r.map_since = 0; r.map_generation = 0;
     r.restore_failed = false;
     r.clearing = false; r.clear_entities.clear();
@@ -177,6 +177,11 @@ void reconcile_placement_rows(const std::set<std::uint64_t>& live) {
     std::unordered_map<std::uint64_t, const profile::PlacedObject*> saved_by_id;
     saved_by_id.reserve(objects.size());
     for (const auto& object : objects) saved_by_id.emplace(object.id, &object);
+    // A multi-object edit (a paste, a set, an undo) reconciles after each of its creates, before
+    // its objects are saved: without these, every create unlinked the ones before it, which
+    // could then not be selected, moved or deleted.
+    if (const auto* pending = park_editor_pending_layout())
+        for (const auto& object : *pending) saved_by_id.emplace(object.id, &object);
     for (auto& row : r.rows) {
         if (row.entity && live.contains(row.entity)) {
             row.spawned = true;
@@ -274,6 +279,13 @@ void placement_finish_batch(std::uintptr_t manager, const PlacementBatch& incomi
             }
         } else if (const auto restored = claim_restore()) {
             r.tracked[applied.entity] = *restored;
+            // claim_restore gave the candidate the saved scale; the spawned object is at 1x. Where
+            // the session has scaling off it stays 1x in the world, and its saved scale is kept.
+            if (candidate->scale != 1.0f && lobby_object_scaling_allowed() && r.resizes.size() < 1024) {
+                auto saved = *candidate;
+                saved.id = *restored;
+                r.resizes.push_back({applied.entity, saved});
+            }
             dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "local_placement_restored"}, {"map", r.map},
                 {"id", *restored}, {"item", candidate->item}}.dump().c_str());
         } else if (reject()) {
@@ -446,12 +458,35 @@ void update_placement_creates() {
                       {"applied", batch.applied.size()}}.dump().c_str());
 }
 
+// After the native server tick, under native_mutex, like the editor's own moves.
+void update_placement_resizes() {
+    auto& r = placements_runtime();
+    if (r.resizes.empty() || !network_object_native_ready()) return;
+    const auto live = placement_live_entities(r.manager);
+    if (!live) return;
+    const auto now = GetTickCount64();
+    std::erase_if(r.resizes, [&](auto& pending) {
+        if (!live->contains(pending.entity) || !r.tracked.contains(pending.entity)) return true; // gone
+        if (!pending.settled) {
+            pending.settled = true;
+            return false;
+        }
+        if (!pending.resized_at) {
+            move_network_object(pending.entity, pending.object);
+            pending.resized_at = now;
+            return false;
+        }
+        return now > pending.resized_at + 1500;
+    });
+}
+
 void update_placement_poses() {
     auto& r = placements_runtime();
     if (!placement_session_ready()) return;
     update_placement_creates();
     update_park_editor_moves();
     update_network_object_moves();
+    update_placement_resizes();
     if (!placement_session_ready() || r.clearing || park_editor_owns_placements() || GetTickCount64() < r.next_poll) return;
     r.next_poll = GetTickCount64() + 1000;
     const auto live = placement_live_entities(r.manager);
@@ -460,6 +495,8 @@ void update_placement_poses() {
     auto& objects = r.document.maps[r.map]; bool changed{};
     for (auto& row : r.rows) {
         if (!row.spawned) continue;
+        if (std::any_of(r.resizes.begin(), r.resizes.end(), [&](const auto& x) { return x.entity == row.entity; }))
+            continue; // Its native scale is still 1x, or the resize is not yet read back.
         alignas(16) std::array<std::uint64_t, 2> reference{};
         alignas(16) std::array<std::uint64_t, 3> query{};
         alignas(16) std::array<float, 12> transform{};
@@ -468,7 +505,9 @@ void update_placement_poses() {
         auto next = row.object;
         std::copy_n(transform.data() + 8, 3, next.position.data());
         std::copy_n(transform.data() + 4, 4, next.rotation.data());
-        next.scale = transform[0];
+        // Where the session has scaling off, an object is 1x in the world whatever it was saved at:
+        // the saved scale stays, for when scaling is allowed again.
+        if (lobby_object_scaling_allowed()) next.scale = transform[0];
         if (!profile::valid_placed_object(next)) continue;
         row.object = next;
         if (!r.enabled || !row.saved_id) continue;

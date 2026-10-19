@@ -1,6 +1,7 @@
 // Board Break's rules, apart from the game: what a break leaves of a board, how likely a slam
 // breaks it, and where the parts of a broken board lie.
 #include "Extension/BoardBreak/board_break_model.h"
+#include "Extension/BoardBreak/board_break_feel.h"
 #include <cmath>
 #include <initializer_list>
 #include <iostream>
@@ -35,12 +36,12 @@ void a_break_leaves_two_pieces_or_one_that_hangs_together() {
 }
 
 void a_harder_slam_breaks_a_board_more_often() {
-    check(break_chance(10.0f, 10.0f, 0.25f) == 1.0f && break_chance(30.0f, 10.0f, 0.25f) == 1.0f, "A heavy slam always breaks it");
-    check(break_chance(0.0f, 10.0f, 0.25f) == 0.25f && break_chance(6.0f, 10.0f, 0.25f) == 0.25f, "A light one now and then");
-    check(near(break_chance(8.0f, 10.0f, 0.25f), 0.625f), "and in between it rises evenly");
+    check(break_chance(10.0f, 10.0f) == 1.0f && break_chance(30.0f, 10.0f) == 1.0f, "A heavy slam always breaks it");
+    check(break_chance(0.0f, 10.0f) == 0.0f && break_chance(6.0f, 10.0f) == 0.0f, "A light one never does");
+    check(near(break_chance(8.0f, 10.0f), 0.5f), "and in between it rises smoothly");
     float before{};
     for (float force = 0; force <= 12.0f; force += 0.5f) {
-        const auto chance = break_chance(force, 10.0f, 0.25f);
+        const auto chance = break_chance(force, 10.0f);
         check(chance >= before && chance <= 1.0f, "It never falls with more force");
         before = chance;
     }
@@ -148,6 +149,66 @@ void a_baseplate_stays_on_the_deck_while_its_truck_steers() {
         }
     }
 }
+
+void the_settings_keep_to_their_ranges() {
+    Settings s;
+    check(set_setting_value(s, "sensitivity", 9999) && s.sensitivity == sensitivity_max, "A percent is kept within its range");
+    check(set_setting_value(s, "always", 5) && s.always && setting_value(s, "always") == 1, "a switch is on or off");
+    check(set_setting_value(s, "joined", -3) && s.joined == 0, "and nothing goes below its least");
+    check(!set_setting_value(s, "nonsense", 1) && setting_value(s, "nonsense") == -1, "An unknown name is no setting");
+    for (const auto& info : setting_info) check(setting_value(s, info.name) >= 0, "Every setting has a value");
+}
+
+void a_worn_or_touchy_board_breaks_sooner() {
+    check(slam_chance(heavy_slam, 100, 0.0f) == 1.0f, "A heavy slam always breaks a new board");
+    check(slam_chance(6.0f, 100, 0.0f) < slam_chance(6.0f, 100, 1.0f), "A worn board breaks from less");
+    check(slam_chance(heavy_slam * 0.5f, 200, 0.0f) == 1.0f, "At 200% half the force always breaks it");
+    check(slam_chance(8.0f, 50, 0.0f) < slam_chance(8.0f, 100, 0.0f), "at 50% it takes more");
+    check(slam_chance(2.0f, 100, 0.0f) == 0.0f && slam_chance(2.0f, 100, 0.6f) == 0.0f, "A stumble never breaks a board that is not done");
+    check(slam_chance(0.0f, 400, 1.0f) == 0.0f, "nor does a bail whose force is not known, at any setting");
+}
+
+void every_hit_wears_a_board() {
+    check(landing_wear(3.0f) == 0.0f && landing_wear(5.0f) > 0.0f && landing_wear(9.0f) > landing_wear(5.0f), "Harder landings wear more, light ones none");
+    check(rail_wear(3.0f, true) > rail_wear(3.0f, false), "A slide wears the deck more than a grind on the trucks");
+    check(grind_wear_per_second(true) > grind_wear_per_second(false), "and sliding more than grinding");
+    check(slam_wear(2.0f) == 0.0f && slam_wear(12.0f) > slam_wear(7.0f), "A stumble costs nothing, a hard slam a lot");
+    check(add_wear(0.5f, 0.1f, 0) == 0.5f && near(add_wear(0.5f, 0.1f, 200), 0.7f) && add_wear(0.95f, 1.0f, 100) == 1.0f,
+          "Wear goes at the player's rate, and never past worn out");
+}
+
+void a_worn_board_handles_worse() {
+    check(handling(0.0f) == Handling{} && handling(0.2f) == Handling{}, "A board under a fifth worn handles as new");
+    const auto half = handling(0.6f), done = handling(1.0f);
+    check(half.steering < 1.0f && done.steering < half.steering && done.spring < half.spring && done.twist > half.twist,
+          "The more worn, the lazier the turn and the softer the trucks");
+    check(done.steering > 0.5f && done.spring > 0.2f, "but it can still be ridden");
+    check(!gives_way_on_landing(20.0f, 400, done_wear - 0.01f), "A board that is not done never gives way on a landing");
+    check(!gives_way_on_landing(6.0f, 100, done_wear) && gives_way_on_landing(6.5f, 100, done_wear),
+          "A board just done goes on a big drop");
+    check(!gives_way_on_landing(3.0f, 100, 1.0f) && gives_way_on_landing(3.5f, 100, 1.0f),
+          "one worn right out on any real drop, but not on an ollie on flat ground");
+    check(gives_way_on_landing(4.0f, 200, done_wear) && !gives_way_on_landing(4.0f, 100, done_wear), "Sensitivity makes it touchier");
+}
+
+void a_board_across_its_way_slides() {
+    const Vec level_up{0, 1, 0}, ahead{0, 0, 1}, across{1, 0, 0}, upside_down{0, -1, 0}, going{0, -1, 5};
+    check(contact_of(ahead, level_up, going) == Contact::grind, "Along the rail it grinds on its trucks");
+    check(contact_of(across, level_up, going) == Contact::slide, "Across it, it slides on the deck");
+    check(contact_of(across, upside_down, going) == Contact::darkslide, "On its grip it is a darkslide");
+    check(contact_of(across, level_up, {0, -2, 0.1f}) == Contact::grind, "A board that hardly moves along counts as grinding");
+    check(rail_chance(9.0f, Contact::grind, 100, 0.0f) == 0.0f, "A grind on the trucks never snaps the board");
+    check(rail_chance(2.0f, Contact::slide, 100, 0.0f) == 0.0f && rail_chance(6.0f, Contact::slide, 100, 0.0f) == 1.0f,
+          "A hop onto a rail is safe, a drop onto it snaps the board");
+    check(rail_chance(3.5f, Contact::darkslide, 100, 0.0f) > rail_chance(3.5f, Contact::slide, 100, 0.0f), "a darkslide sooner");
+}
+
+void a_board_breaks_where_it_hit() {
+    check(place_of_break(0.8f, false, 0.1f) == Place::nose && place_of_break(-0.8f, false, 0.1f) == Place::tail, "Nose first at the nose, tail first at the tail");
+    check(place_of_break(0.8f, true, 0.1f) == Place::mid, "Across a rail in the middle");
+    check(place_of_break(0.0f, false, 0.2f) == Place::mid && place_of_break(0.0f, false, 0.9f) == Place::tail, "Flat mostly in the middle");
+    check(body_loudness(2.0f) == 0.0f && body_loudness(body_full) == 1.0f && body_loudness(5.0f) < body_loudness(9.0f), "Harder hits sound louder");
+}
 } // namespace
 
 int main() {
@@ -162,6 +223,12 @@ int main() {
         a_hanging_end_turns_about_the_break();
         a_truck_goes_with_its_piece();
         a_baseplate_stays_on_the_deck_while_its_truck_steers();
+        the_settings_keep_to_their_ranges();
+        a_worn_or_touchy_board_breaks_sooner();
+        every_hit_wears_a_board();
+        a_worn_board_handles_worse();
+        a_board_across_its_way_slides();
+        a_board_breaks_where_it_hit();
         std::cout << "board break tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -1352,12 +1352,15 @@ void remember_player(std::uint32_t id) {
     }
 }
 // Type objects of the injected events; found on the heap and kept until the level is left.
-std::string ensure_types(std::initializer_list<std::uint32_t> hashes) {
+// `worker`: called on a thread of its own, which scans as the party focus's does (background
+// priority, only memory the game has in RAM). The full scan read every committed page and paged
+// the game's memory in while it skated, every few seconds while a type was missing (2026-10-15).
+std::string ensure_types(std::initializer_list<std::uint32_t> hashes, bool worker = false) {
     std::vector<NativeTypeQuery> queries;
     for (const auto hash : hashes) if (!type_of(hash)) queries.push_back({hash, 0});
     if (queries.empty()) return {};
     const auto world = lab().world.load(std::memory_order_acquire);
-    const auto missing = find_native_types(queries);
+    const auto missing = find_native_types(queries, worker);
     std::lock_guard lock(lab().mutex);
     if (lab().world.load(std::memory_order_acquire) != world) return "the level changed while the event types were looked for";
     for (const auto& q : queries) if (q.object) lab().types[q.hash] = q.object;
@@ -1958,7 +1961,7 @@ bool beacon_types_ready() {
         std::thread([] {
             auto& l = lab();
             try {
-                if (!ensure_types({event_beacon_move, event_beacon_despawn}).empty())
+                if (!ensure_types({event_beacon_move, event_beacon_despawn}, true).empty())
                     l.beacon_scan_retry.store(now_ms() + 10000, std::memory_order_release);
             } catch (...) { l.beacon_scan_retry.store(now_ms() + 10000, std::memory_order_release); }
             l.type_scan_running.store(false, std::memory_order_release);
@@ -1995,7 +1998,7 @@ bool prepare_throwdown_injection() noexcept {
                 const auto error = ensure_types({event_debug_spawn, event_add_ai, event_force_start, event_destroy,
                                                  event_remove_participant, event_player_score, event_request_turn_end,
                                                  event_skate_submit, event_force_destroy, event_criteria_attempt,
-                                                 event_slam_hit, event_leave_in_progress, event_onboarding_complete});
+                                                 event_slam_hit, event_leave_in_progress, event_onboarding_complete}, true);
                 if (!error.empty()) {
                     l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release);
                     logging::log(logging::Level::warning, logging::Channel::progression, "Throwdowns: {}", error);

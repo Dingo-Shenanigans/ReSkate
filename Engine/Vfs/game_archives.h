@@ -71,6 +71,9 @@ public:
     void keep_open();
     // Closes an archive kept open, before the file is replaced by another.
     void forget(const std::filesystem::path& file) const;
+    // Closes every archive kept open; a later read opens its file again. For one kept between
+    // jobs, so the files are not held while nothing reads them (a mod could not be updated).
+    void close_all() const;
 
 private:
     struct Open; // the archives kept open (keep_open); null: each read opens its file

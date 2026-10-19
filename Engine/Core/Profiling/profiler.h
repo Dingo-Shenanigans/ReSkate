@@ -71,6 +71,28 @@ enum class Series { client_interval, client_frame, client_own, present_interval 
 // The most recent values in milliseconds, oldest first; returns how many were written.
 std::size_t history(Series series, std::span<float> out) noexcept;
 
+// ---- describing a freeze ----------------------------------------------------------------------
+// Kept on while this launch sends timings (Runtime/frame_timing.cpp): zones then time ReSkate's
+// work whatever the profiler window shows, so a frame that froze can say what of ReSkate's ran in
+// it. Off again leaves them to the window.
+void keep_zones(bool on) noexcept;
+// ReSkate's own share of the latest client update, and how many presents there have been: both
+// counted always (a store and an add).
+std::uint64_t last_client_own_ns() noexcept;
+std::uint64_t presents() noexcept;
+// Every zone's running total at one moment; zones_since then gives the zones that took the most
+// time between that moment and now, longest first. A mark is reused from frame to frame.
+struct ZoneMark {
+    std::vector<std::pair<const Site*, std::uint64_t>> totals;
+    std::uint64_t tsc{}, ns{};
+};
+void mark_zones(ZoneMark& mark) noexcept;
+struct ZoneTime {
+    std::string name;
+    double milliseconds{};
+};
+std::vector<ZoneTime> zones_since(const ZoneMark& mark, std::size_t most) noexcept;
+
 // ---- what is on ------------------------------------------------------------------------------
 // The HUD and window are the overlay's (both start off each launch); turning either on starts
 // the timing and thread monitor.

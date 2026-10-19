@@ -78,7 +78,7 @@ void configure(State& s) {
 }
 // Set by start() and never destroyed: the worker thread may outlive static
 // destruction, and a DLL must not join a thread while the loader lock is held.
-std::atomic<State*> active{};
+std::atomic<State*> started_state{};
 constexpr std::uint64_t hitch_ns = 50ull * 1000 * 1000;
 struct Pacing {
     std::atomic<std::uint64_t> last{}, frames{}, total{}, hitches{}, worst{};
@@ -165,17 +165,18 @@ std::string envelope(const Transaction& transaction) {
 }
 bool start() noexcept {
     try {
-        if (active.load()) return true;
+        if (started_state.load()) return true;
         auto s = std::make_unique<State>();
         configure(*s);
         if (!s->enabled) return false;
         State* expected{};
-        if (active.compare_exchange_strong(expected, s.get())) (void)s.release();
+        if (started_state.compare_exchange_strong(expected, s.get())) (void)s.release();
         return true;
     } catch (...) { return false; }
 }
+bool active() noexcept { return started_state.load(std::memory_order_relaxed) != nullptr; }
 void frame(std::uint64_t now_ns) noexcept {
-    if (!active.load(std::memory_order_relaxed)) return;
+    if (!started_state.load(std::memory_order_relaxed)) return;
     const auto previous = pacing.last.exchange(now_ns, std::memory_order_relaxed);
     if (!previous || now_ns <= previous) return;
     const auto took = now_ns - previous;
@@ -191,7 +192,7 @@ FramePacing take_frame_pacing() noexcept {
 void record(std::string_view name, std::string_view operation, std::chrono::milliseconds duration,
         bool ok, Tags tags, Measurements measurements) noexcept {
     try {
-        auto* const started = active.load();
+        auto* const started = started_state.load();
         if (!started) return;
         auto& s = *started;
         Transaction transaction;
@@ -218,7 +219,7 @@ void record(std::string_view name, std::string_view operation, std::chrono::mill
 }
 void flush(std::chrono::milliseconds timeout) noexcept {
     try {
-        auto* const started = active.load();
+        auto* const started = started_state.load();
         if (!started) return;
         auto& s = *started;
         std::unique_lock lock(s.mutex);

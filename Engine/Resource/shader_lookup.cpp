@@ -1,5 +1,6 @@
 #include "shader_lookup.h"
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <stdexcept>
@@ -79,6 +80,7 @@ TextureRows read_texture_rows(const Table& table) {
 
 MergedTable merge_program_lookup(const Table& base, const std::span<const Table> edits) {
     const auto start = lookup_offset(base);
+    const auto records = read<std::uint32_t>(base.resource, 0); // the base blob's record count
     auto rows = read_program_rows(base);
     const auto baseRows = rows;
 
@@ -86,6 +88,10 @@ MergedTable merge_program_lookup(const Table& base, const std::span<const Table>
     for (const auto& edit : edits) {
         for (const auto& [key, values] : read_program_rows(edit)) {
             if (baseRows.contains(key)) continue;
+            if (std::any_of(values.begin(), values.end(), [&](std::uint32_t index) { return index >= records; })) {
+                ++merged.outside;
+                continue;
+            }
             const auto [row, inserted] = rows.try_emplace(key, values);
             if (inserted) ++merged.added;
             else if (row->second != values) ++merged.conflicts;

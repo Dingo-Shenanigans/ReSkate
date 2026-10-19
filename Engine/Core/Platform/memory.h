@@ -33,6 +33,33 @@ inline bool peek_bytes(std::uintptr_t address, void* destination, std::size_t si
 template<class T> requires std::is_trivially_copyable_v<T>
 bool peek(std::uintptr_t address, T& value) noexcept { return peek_bytes(address, &value, sizeof(value)); }
 
+// Fresh read/write memory within reach of a rel32 jump from an image at base: the first free
+// spot past its end, for a code stub that a patched instruction jumps to. Null when nothing is
+// free within 1.75 GB of the image.
+inline void* allocate_near_image(std::uintptr_t base, std::size_t image_size, std::size_t bytes) noexcept {
+    SYSTEM_INFO information{};
+    GetSystemInfo(&information);
+    const auto granularity = static_cast<std::uintptr_t>(information.dwAllocationGranularity);
+    const auto align_up = [granularity](std::uintptr_t value) { return (value + granularity - 1) & ~(granularity - 1); };
+    auto cursor = align_up(base + image_size);
+    const auto limit = base + 0x70000000ULL;
+    while (cursor < limit) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region))) break;
+        const auto region_base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+        const auto region_end = region_base + region.RegionSize;
+        if (region.State == MEM_FREE) {
+            const auto candidate = align_up(cursor > region_base ? cursor : region_base);
+            if (candidate <= region_end && region_end - candidate >= bytes)
+                if (auto* const result = VirtualAlloc(reinterpret_cast<void*>(candidate), bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE))
+                    return result;
+        }
+        if (region_end <= cursor) break;
+        cursor = align_up(region_end);
+    }
+    return nullptr;
+}
+
 // A NUL-terminated string copied the same way: the length (terminator written at destination[length]),
 // or -1 if it is unreadable or has no terminator within capacity bytes. Reads byte by byte, so it never
 // touches memory past the terminator.

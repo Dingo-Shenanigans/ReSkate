@@ -4,6 +4,18 @@
 
 Changes made when the trainer moved into ReSkate itself.
 
+- **Hardcore preset**, beside Realistic on the REALISTIC list: Realistic with the game's help
+  turned down, for players coming from skating games without it. Everything Realistic changes,
+  at least as far, and grinds that only take a close, lined-up landing (lock-on distance x0.5,
+  landing angle x0.6), grinds and powerslides that lose speed (friction x1.3 and x1.5), slower
+  body flips and spins, and earlier bails (bail limits x0.7, bad landings bail). The amounts are
+  a starting point and were not measured in game.
+  `trainer preset apply hardcore`, or `trainer dial <x> hardcore` for part of it (0.75 is the
+  preset). The `trainer_presets` test checks that it never goes easier than Realistic.
+- **Your presets no longer hide a built-in one.** A preset of yours saved before a built-in
+  preset took its name (yours first, so the built-in's button applied yours) is renamed when the
+  trainer loads, to "Hardcore (yours)" for example, and the maps that apply it follow. The log
+  says so. Saving under a built-in preset's name was already refused.
 - **Nothing happens until you ask.** The jump read-out and the controller shortcuts start off,
   jumps are written to the log only while the read-out or telemetry recording is on, and trick
   launches only when the trainer scaled them.

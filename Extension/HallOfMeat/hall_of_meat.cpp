@@ -1,4 +1,5 @@
 #include "hall_of_meat.h"
+#include "Engine/Core/Hooks/hooks.h"
 #include "hall_of_meat_hud.h"
 #include "hall_of_meat_overlay.h"
 #include "hall_of_meat_render.h"
@@ -129,8 +130,11 @@ void on_client_tick() noexcept {
     if (!on && !s.active) return; // switched off: nothing hooked, nothing to give back
     if (on && !s.active) {
         prepare_skeleton(); // once, in the background
-        (void)hook_render(true);
-        (void)hook_hud(true);
+        {
+            HookBatch batch; // (one pause of the game's threads for both)
+            (void)hook_render(true);
+            (void)hook_hud(true);
+        }
         s.active = true;
     }
     try {

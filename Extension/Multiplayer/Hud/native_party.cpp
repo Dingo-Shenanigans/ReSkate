@@ -1,4 +1,5 @@
 #include "native_party_internal.h"
+#include "Engine/Core/Hooks/hooks.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Customization/local_player_card_runtime.h"
@@ -333,7 +334,10 @@ void update_native_party(std::uintptr_t base, const PartyRoster &roster, unsigne
         const bool active = std::any_of(roster.begin(), roster.end(), [](const auto &p) { return p.id != 0; });
         const auto steam = steam_social_snapshot();
         if (!active && !s.manager && steam->friends.empty()) return;
-        if (!s.attempted) install(base);
+        if (!s.attempted) {
+            HookBatch batch; // (its hooks in one pause of the game's threads)
+            install(base);
+        }
         if (!s.installed.load(std::memory_order_acquire)) return;
         const auto now = GetTickCount64();
         auto previous = s.published.load(std::memory_order_acquire);

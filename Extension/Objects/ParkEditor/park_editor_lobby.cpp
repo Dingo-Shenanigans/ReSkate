@@ -6,10 +6,12 @@
 
 namespace dingosdk {
 namespace {
-std::atomic<bool> placement_allowed{true};
+std::atomic<bool> placement_allowed{true}, scaling_allowed{true};
 std::atomic<unsigned> object_limit{};
 }
 bool lobby_object_placement_allowed() noexcept { return placement_allowed.load(std::memory_order_acquire); }
+void set_lobby_object_scaling_allowed(bool enabled) noexcept { scaling_allowed.store(enabled, std::memory_order_release); }
+bool lobby_object_scaling_allowed() noexcept { return scaling_allowed.load(std::memory_order_acquire); }
 void set_lobby_object_limit(unsigned limit) noexcept { object_limit.store(limit, std::memory_order_release); }
 unsigned lobby_object_limit() noexcept { return object_limit.load(std::memory_order_acquire); }
 using namespace profile_runtime;

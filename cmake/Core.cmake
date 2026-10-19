@@ -63,6 +63,7 @@ add_library(dingosdk_frostbite STATIC
     Engine/Resource/binary_bundle.cpp
     Engine/Resource/cas_codec.cpp
     Engine/Resource/ebx_document.cpp
+    Engine/Resource/ebx_fixup_repair.cpp
     Engine/Resource/ebx_merge.cpp
     Engine/Resource/material_grid.cpp
     Engine/Resource/shader_lookup.cpp
@@ -101,12 +102,17 @@ if(WIN32)
         Engine/Vfs/mod_merge_cas_store.cpp
         Engine/Vfs/mod_merge_combine.cpp
         Engine/Vfs/mod_merge_overrides.cpp
+        Engine/Vfs/mod_merge_conflicts.cpp
+        Engine/Vfs/mod_merge_scan_cache.cpp
+        Engine/Vfs/mod_merge_textures.cpp
         Engine/Vfs/mod_merge_grid.cpp
         Engine/Vfs/mod_merge_load_screens.cpp
         Engine/Vfs/mod_music.cpp
         Engine/Vfs/mod_scoring.cpp
-        Engine/Vfs/mod_store_copies.cpp)
-    target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache shell32 bcrypt)
+        Engine/Vfs/mod_store_copies.cpp
+        Engine/Vfs/mod_item_sources.cpp
+        Engine/Vfs/builtin_packs.cpp)
+    target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
     add_library(dingosdk_custom_scripts STATIC Engine/Scripting/custom_scripts.cpp)
     target_link_libraries(dingosdk_custom_scripts PUBLIC dingosdk_json PRIVATE dingosdk_initfs)

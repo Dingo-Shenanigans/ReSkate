@@ -218,6 +218,22 @@ label.check input{width:18px;height:18px;margin-top:2px;accent-color:var(--blue)
   </div>
 </details>
 
+<!-- PLEX -->
+<details class="card" id="plex">
+  <summary><div class="grow"><h2>Plex</h2><div class="what">Link your Plex account so your music and its album art come through.</div></div><span class="pill" id="plPill">…</span><span class="chev"></span></summary>
+  <div class="body">
+    <ol class="steps">
+      <li id="plStep1"><div class="title">Sign in with Plex</div>
+        <p class="help">A Plex tab opens. Sign in if it asks, press <b>Allow</b>, then come back here. Your password is never shown to ReSkate.</p>
+        <p class="help">Then play music in Plexamp (or any Plex app) and pick it under <b>External Audio</b> below. The game shows the song, artist and album art from your Plex server, and the game’s play, pause and next buttons drive it.</p>
+        <div id="plSignedOut"><div class="row"><button id="plLogin" class="primary">Sign in with Plex</button></div></div>
+        <div id="plSignedIn"><div class="note ok" id="plWho"></div><div class="row"><button id="plLogout" class="quiet">Sign out</button></div></div>
+        <div class="note bad" id="plProblem"></div>
+      </li>
+    </ol>
+  </div>
+</details>
+
 <!-- YOUTUBE -->
 <details class="card" id="youtube">
   <summary><div class="grow"><h2>YouTube Music</h2><div class="what">Paste links to videos or playlists. Nothing to install by hand.</div></div><span class="pill" id="ytPill">…</span><span class="chev"></span></summary>
@@ -375,6 +391,7 @@ const demo = location.protocol === 'file:' || location.search === '?demo' ? {
   now:{artist:'Carter Cook',title:'Movin\'',playing:true,cover:''},station:true,
   device:{connected:true,in_use:true,text:'Spotify device: a Spotify account is on it (zee).'},
   account:{has_client:true,signed_in:true,busy:false,user:'zee',problem:'',client:'',playlists:[{name:'Liked Songs',tracks:49},{name:'Sad Drum and Bass',tracks:50}]},
+  plex:{signed_in:false,busy:false,user:'',problem:''},
   youtube:{available:true,tools:true,busy:false,percent:0,problem:'',browser:'',cookies:false,runtime:'node',playlists:[{index:0,name:'Album - GNX',songs:12}]},
   local:{available:true,busy:false,problem:'',folders:[{index:1,name:'Skate mix',songs:3,path:'C:\\Users\\zee\\Music\\Skate mix'}]},
   radio:{available:true,busy:false,problem:'',searched:'soma',stations:[{index:2,name:'SomaFM Groove Salad',songs:1,address:'https://ice5.somafm.com/groovesalad-128-mp3'}],
@@ -411,6 +428,8 @@ $('saveClient').onclick = () => post('/api/client', {id:$('client').value.trim()
 $('login').onclick = () => post('/api/login');
 $('logout').onclick = () => post('/api/logout');
 $('refresh').onclick = () => post('/api/refresh');
+$('plLogin').onclick = () => post('/api/plex/login');
+$('plLogout').onclick = () => post('/api/plex/logout');
 $('ytTools').onclick = () => post('/api/youtube/tools');
 $('ytAdd').onclick = () => { const link = $('ytLink').value.trim(); if (link) { $('ytLink').value = ''; post('/api/youtube/add', {link}); } };
 $('ytLink').onkeydown = e => { if (e.key === 'Enter') $('ytAdd').click(); };
@@ -529,6 +548,15 @@ function render(s) {
   const pl = $('playlists'); pl.innerHTML = '';
   for (const p of a.playlists) { const li = document.createElement('li'), n = document.createElement('span'), c = document.createElement('small'); n.textContent = p.name; c.textContent = p.tracks + ' tracks'; li.append(n, c); pl.append(li); }
   card('spotify', premium || off ? 'problem' : linked ? 'ready' : 'todo', premium ? 'Needs Premium' : off ? 'Stopped' : linked ? 'Ready' : 'Set up');
+
+  // Plex.
+  const pl2 = s.plex || {};
+  step('plStep1', pl2.signed_in ? 'done' : 'now');
+  show('plSignedOut', !pl2.signed_in); show('plSignedIn', !!pl2.signed_in);
+  $('plLogin').disabled = !!pl2.busy; $('plLogin').textContent = pl2.busy ? 'Waiting for Plex…' : 'Sign in with Plex';
+  $('plWho').textContent = 'Signed in' + (pl2.user ? ' as ' + pl2.user : '') + '.';
+  $('plProblem').textContent = pl2.problem || '';
+  card('plex', pl2.problem ? 'problem' : pl2.signed_in ? 'ready' : 'todo', pl2.problem ? 'Problem' : pl2.signed_in ? 'Linked' : 'Set up');
 
   // YouTube Music.
   const y = s.youtube;

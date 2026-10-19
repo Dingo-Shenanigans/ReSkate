@@ -8,10 +8,14 @@
 #include "Extension/Settings/replay_guard.h"
 #include "Extension/World/load_error_guard.h"
 #include "Extension/World/mesh_unload_guard.h"
+#include "Extension/World/mesh_settings_guard.h"
 #include "Extension/World/shader_permutation_guard.h"
+#include "Extension/World/shader_registry_guard.h"
+#include "Extension/World/light_table_guard.h"
 #include "Extension/World/stack_check_report.h"
 #include "Extension/Music/music_inject.h"
 #include "Extension/Music/spotify_web.h"
+#include "Extension/Music/plex_web.h"
 #include "Extension/Music/spotify_device.h"
 #include "Extension/Music/spotify_dashboard.h"
 #include "Extension/Music/youtube_music.h"
@@ -55,6 +59,7 @@
 #include "Extension/World/loading_screen.h"
 #include "Extension/Customization/preset_lookup_guard.h"
 #include "Extension/Rendering/replay_export.h"
+#include "Extension/ReplayKeyframes/replay_keyframes.h"
 #include "Engine/Vfs/content_catalogs.h"
 #include "Engine/Vfs/world_layer_scan.h"
 #include "Engine/Game/World/world_layer_catalog.h"
@@ -269,6 +274,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::set_park_preview_queue(dingosdk::queue_local_park_preview);
         dingosdk::overlay::set_park_selection_queue(dingosdk::queue_local_park_selection);
         dingosdk::overlay::set_park_paste_queue(dingosdk::queue_local_park_paste);
+        dingosdk::overlay::set_park_object_set_queue(dingosdk::queue_local_park_object_set);
+        dingosdk::overlay::set_park_delete_queue(dingosdk::queue_local_park_delete);
         if (!DingoSDKOverlayStartV3(&callbacks)) {
             dingosdk::logging::write(dingosdk::logging::Level::error, dingosdk::logging::Channel::graphics, "Overlay startup failed.");
             return FALSE;
@@ -328,7 +335,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::engine_tweaks::install(r.base);
         (void)dingosdk::replay_guard::install(r.base);
         (void)dingosdk::mesh_unload_guard::install(r.base);
+        (void)dingosdk::mesh_settings_guard::install(r.base);
         (void)dingosdk::shader_permutation_guard::install(r.base);
+        (void)dingosdk::shader_registry_guard::install(r.base);
+        (void)dingosdk::light_table_guard::install(r.base);
         (void)dingosdk::load_error_guard::install(r.base);
         (void)dingosdk::texture_handle_limit::install(r.base);
         (void)dingosdk::stack_check_report::install(r.base);
@@ -336,9 +346,9 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::spotify_rows::install(r.base);
         dingosdk::spotify_device::start(); // (the game as a device in the player's Spotify app)
         dingosdk::spotify_web::start();
+        dingosdk::plex_web::start();
         dingosdk::youtube_music::start(); // (the player's YouTube playlists, read before the music screen is built)
         dingosdk::spotify_dashboard::start(); // (the page in the browser that sets Spotify up) // (the player's playlists, fetched before the music screen is built)
-        dingosdk::console::start_memory_trace_from_environment();
         const bool fixed_stop_provider = (global_offline_hook && progression_guard_armed) &&
             dingosdk::prepare_fixed_stop_entitlement_provider(r.base);
         record("{\"event\":\"fixed_stop_entitlement_provider_initialized\",\"prepared\":" +
@@ -450,6 +460,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         record("{\"event\":\"preset_lookup_guard_initialized\",\"active\":" + std::string(preset_guard ? "true" : "false") + "}");
         const bool replay_export = dingosdk::replay_export::start(r.base);
         record("{\"event\":\"replay_export_initialized\",\"active\":" + std::string(replay_export ? "true" : "false") + "}");
+        const bool replay_keyframes = dingosdk::replay_keyframes::start(r.base);
+        record("{\"event\":\"replay_keyframes_initialized\",\"active\":" + std::string(replay_keyframes ? "true" : "false") + "}");
         void* original{};
         auto* address = reinterpret_cast<void*>(r.base + rt::client_tick);
         auto hook_status = dingosdk::hook_prepare(address, reinterpret_cast<void*>(&tick), &original);

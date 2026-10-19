@@ -81,12 +81,16 @@ void create(const void *wrapper, std::uint32_t mode, std::uint8_t flag, std::uin
                     !network_object_observe(next_entity, object, source - 1),
                 "An untagged/local placement was claimed by the remote owner");
         object.position[1] += .25f;
-    }
+    } else
+        object.scale = 1; // Like the game: the create recipe carries no scale.
     const auto id = next_entity++;
     world[id] = object;
-    if (editor_state().transaction)
+    if (editor_state().transaction) {
         park_editor_observe(id, object);
-    else
+        // placement_finish_batch reconciles after every create batch.
+        if (const auto live = placement_live_entities(0))
+            reconcile_placement_rows(*live);
+    } else
         require(network_object_observe(id, object, source), "Remote creation escaped its ownership callback");
 }
 void message_destroy(void *) {}
@@ -219,6 +223,10 @@ CosmeticRuntime &cosmetic_runtime() {
     static CosmeticRuntime state;
     return state;
 }
+// (No profile here grants an object: nothing is owned, as with the empty inventory this stood in for.)
+bool installed_item_owned(const profile::Snapshot &, std::string_view, std::uint32_t, bool) {
+    return false;
+}
 bool placement_session_ready() {
     return true;
 }
@@ -252,8 +260,17 @@ std::optional<std::vector<PlacementId>> placement_manager_ids(std::uintptr_t) {
     return objects;
 }
 void reconcile_placement_rows(const std::set<std::uint64_t> &live) {
+    // As the real one: a row whose id is neither saved nor in the editor's pending edit is unlinked.
     auto &r = placements_runtime();
     std::erase_if(r.rows, [&](const auto &row) { return !live.contains(row.entity); });
+    const auto pending = park_editor_pending_layout();
+    for (auto &row : r.rows) {
+        const auto has = [&](const profile::ObjectLayout &layout) {
+            return std::any_of(layout.begin(), layout.end(), [&](const auto &object) { return object.id == row.saved_id; });
+        };
+        if (row.saved_id && !has(r.document.maps[r.map]) && !(pending && has(*pending)))
+            row.saved_id = 0;
+    }
 }
 void observe_placement(std::uint64_t entity, const profile::PlacedObject &object) {
     auto &r = placements_runtime();
@@ -760,6 +777,7 @@ int main() {
         for (const auto &object : group_before)
             paste.objects.push_back(
                 {object.id, object.item, editor::add(object.position, {1, 0, 1}), object.rotation, true});
+        paste.objects[1].scale = 2.5f; // A scaled copy, as a saved set or Ctrl+V of a resized object
         set_lobby_object_placement_allowed(false);
         require(!queue_local_park_paste(paste) && !e.transaction,
                 "Disabled editor accepted a clipboard paste");
@@ -789,9 +807,113 @@ int main() {
                                 [&](const auto &object) {
                                     return object.id >= paste_next_id && object.item == copy.item &&
                                            object.position == copy.position &&
-                                           object.rotation == copy.rotation;
+                                           object.rotation == copy.rotation && object.scale == copy.scale;
                                 }),
                     "Paste lost a copied object's pose or reused its persistent ID");
+        for (const auto &object : r.document.maps[r.map])
+            require(std::any_of(r.rows.begin(), r.rows.end(),
+                                [&](const auto &row) { return row.saved_id == object.id && row.spawned; }),
+                    "A pasted object lost its world link while the rest of the paste was created");
+        for (const auto &copy : paste.objects)
+            require(std::any_of(fixture::world.begin(), fixture::world.end(),
+                                [&](const auto &entry) {
+                                    return !paste_world.contains(entry.first) && entry.second.item == copy.item &&
+                                           entry.second.scale == copy.scale;
+                                }),
+                    "A pasted object spawned in the world without its scale");
+        {
+            // The pasted group moves and turns together right away (the gizmo drag on a placed set).
+            const auto pasted_layout = r.document.maps[r.map];
+            const editor::Quat turn{0, .7071068f, 0, .7071068f};
+            live.token++;
+            live.revision = e.revision;
+            live.transforms.clear();
+            for (const auto &object : pasted_layout)
+                if (object.id >= paste_next_id) {
+                    live.object = object.id;
+                    live.transforms.push_back({object.id, editor::add(object.position, {3, 0, -2}),
+                                               editor::multiplied(turn, object.rotation), object.scale});
+                }
+            require(live.transforms.size() == 2, "The pasted group is not two objects");
+            sample(EditorPreviewAction::begin_move);
+            update_park_editor_moves();
+            sample(EditorPreviewAction::commit);
+            finish();
+            for (const auto &moved : live.transforms) {
+                const auto *saved = find_object(r.document.maps[r.map], moved.id);
+                require(saved && saved->position == moved.position && saved->rotation == moved.rotation &&
+                            saved->scale == moved.scale,
+                        "Moving the pasted group did not save every object's new pose");
+                require(std::any_of(fixture::world.begin(), fixture::world.end(),
+                                    [&](const auto &entry) {
+                                        return entry.second.id == moved.id && entry.second.position == moved.position &&
+                                               entry.second.rotation == moved.rotation;
+                                    }),
+                        "Moving the pasted group left an object behind in the world");
+            }
+            run("undo");
+            finish();
+            require(r.document.maps[r.map] == pasted_layout, "Undo did not put the moved group back");
+            live.transforms.clear();
+            live.object = 0;
+        }
+        {
+            // A session with object scaling off: the scaled copy is made at 1x in the world without
+            // waiting on a resize the server would not take, and the layout keeps its scale.
+            set_lobby_object_scaling_allowed(false);
+            const auto world_before = fixture::world;
+            EditorPasteRequest scaled{e.generation, e.revision};
+            scaled.objects.push_back(paste.objects[1]);
+            scaled.objects[0].position[0] += 10;
+            require(queue_local_park_paste(scaled), "A paste with object scaling off was refused");
+            finish();
+            require(!e.transaction, "A scaled paste with object scaling off did not finish");
+            require(std::any_of(fixture::world.begin(), fixture::world.end(),
+                                [&](const auto &entry) {
+                                    return !world_before.contains(entry.first) && entry.second.item == scaled.objects[0].item &&
+                                           entry.second.scale == 1.0f;
+                                }),
+                    "With object scaling off a pasted object was resized in the world");
+            require(std::any_of(r.document.maps[r.map].begin(), r.document.maps[r.map].end(),
+                                [&](const auto &object) {
+                                    return object.position == scaled.objects[0].position && object.scale == scaled.objects[0].scale;
+                                }),
+                    "With object scaling off a pasted object lost its scale in the layout");
+            run("undo");
+            finish();
+            set_lobby_object_scaling_allowed(true);
+        }
+        {
+            // Deleting a multi-selection: every object leaves the world in one edit and one undo
+            // step, and undo brings them all back at their scale.
+            std::vector<std::uint64_t> pasted_ids;
+            for (const auto &object : r.document.maps[r.map])
+                if (object.id >= paste_next_id)
+                    pasted_ids.push_back(object.id);
+            const auto pasted_layout = r.document.maps[r.map];
+            const auto pasted_live = fixture::world;
+            const auto delete_undo = e.undo.size();
+            EditorDeleteRequest erase{e.generation, e.revision, pasted_ids};
+            auto stale_erase = erase;
+            stale_erase.objects.push_back(999999);
+            require(pasted_ids.size() == 2 && !queue_local_park_delete(stale_erase) && !e.transaction,
+                    "Deleting a selection with a missing object began an edit");
+            stale_erase = erase;
+            --stale_erase.revision;
+            require(!queue_local_park_delete(stale_erase), "A stale_erase selection was deleted");
+            require(queue_local_park_delete(erase) && !queue_local_park_delete(erase),
+                    "Multi-delete was refused, or accepted twice while busy");
+            finish();
+            require(fixture::world == paste_world && r.document.maps[r.map] == group_before &&
+                        e.undo.size() == delete_undo + 1,
+                    "Multi-delete left objects in the world or took more than one undo step");
+            run("undo");
+            finish();
+            require(r.document.maps[r.map] == pasted_layout && fixture::world.size() == pasted_live.size() &&
+                        std::any_of(fixture::world.begin(), fixture::world.end(),
+                                    [](const auto &entry) { return entry.second.scale == 2.5f; }),
+                    "Undoing a multi-delete did not bring every object back at its scale");
+        }
         run("undo");
         finish();
         require(fixture::world == paste_world && r.document.maps[r.map] == group_before,

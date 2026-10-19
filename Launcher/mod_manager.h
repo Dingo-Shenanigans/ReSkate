@@ -5,6 +5,7 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // The launcher's side of the Mods folder: installing mods from a .zip or a
 // folder, and removing them. Order and enabled state live in mods.json
@@ -44,12 +45,13 @@ struct InstallOptions {
 // CHANGELOG.md at the top of a package are copied in when the mod sits one
 // folder deeper. A top-level mod takes the archive's name without a trailing
 // version ("Team-Map-1.0.0.zip" installs as Team-Map). With `replace`, an
-// installed mod of the same name goes to the Recycle Bin first. Throws a
+// installed mod of the same name is deleted for good once the new copy is in. Throws a
 // user-facing message; a failed or cancelled install leaves the Mods folder as it was.
 std::string install(const std::filesystem::path& mods_root, const std::filesystem::path& source, bool replace,
                     const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options = {});
 
 // Moves Mods/<name> to the Recycle Bin. Throws a user-facing message.
 void remove(const std::filesystem::path& mods_root, const std::string& name);
+
 
 } // namespace dingosdk::launcher_mods

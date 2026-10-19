@@ -10,6 +10,7 @@
 #include "spotify_device.h"
 #include "spotify_station.h"
 #include "spotify_web.h"
+#include "plex_web.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Boot/user_data_redirect.h"
@@ -106,6 +107,15 @@ std::string state_json() {
     }
     account["playlists"] = std::move(playlists);
     out["account"] = std::move(account);
+    {
+        const auto plex_state = plex_web::state();
+        Json plex = Json::object();
+        plex["signed_in"] = plex_state.signed_in;
+        plex["busy"] = plex_state.busy;
+        plex["user"] = plex_state.user;
+        plex["problem"] = plex_state.problem;
+        out["plex"] = std::move(plex);
+    }
     {
         const auto tube = youtube_music::state();
         Json youtube = Json::object();
@@ -257,6 +267,10 @@ bool change(const std::string& path, const std::string& body) {
         spotify_web::login();
     } else if (path == "/api/logout") {
         spotify_web::logout();
+    } else if (path == "/api/plex/login") {
+        plex_web::login();
+    } else if (path == "/api/plex/logout") {
+        plex_web::logout();
     } else if (path == "/api/refresh") {
         spotify_web::refresh();
     } else if (path == "/api/youtube/tools") {

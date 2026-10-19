@@ -588,6 +588,10 @@ void object_codec() {
     served.sync_effects = false;
     const auto plain = decode(encode(served));
     check(plain && !plain->sync_effects && listed && listed->sync_effects, "The roster's skater effects rule failed to round-trip");
+    served.sync_drones = false;
+    const auto grounded = decode(encode(served));
+    check(grounded && !grounded->sync_drones && grounded->sync_effects == served.sync_effects && listed && listed->sync_drones,
+          "The roster's drones rule failed to round-trip");
     served.object_scaling = false;
     const auto fixed = decode(encode(served));
     check(fixed && !fixed->object_scaling && listed && listed->object_scaling, "The roster's object scaling rule failed to round-trip");
@@ -981,6 +985,37 @@ void dedicated_server_codec() {
         refused = false;
         try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
         check(refused, "A material past the game's table was encoded");
+    }
+    // A player's FPV drone position, for the marker others see.
+    {
+        Packet d;
+        d.kind = PacketKind::drone; d.session = 9; d.epoch = 10; d.map = 11; d.source = 12;
+        d.drone_active = true; d.drone_position = {594.5f, 199.15f, -1070.1f};
+        d.drone_rotation = {0.f, 0.38268343f, 0.f, 0.92387953f}; // 45 degrees of yaw
+        const auto back = decode(encode(d));
+        check(back && back->kind == PacketKind::drone && back->drone_active && back->drone_position == d.drone_position &&
+                  back->drone_rotation == d.drone_rotation,
+              "A drone position and facing failed to round-trip");
+        auto tilted = d;
+        tilted.drone_rotation = {0.f, 0.f, 0.f, 0.f};
+        bool turned_away{};
+        try { encode(tilted); } catch (const std::invalid_argument &) { turned_away = true; }
+        check(turned_away, "A drone facing that is not a rotation was encoded");
+        tilted.drone_rotation = {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f, 1.f};
+        turned_away = false;
+        try { encode(tilted); } catch (const std::invalid_argument &) { turned_away = true; }
+        check(turned_away, "A non-finite drone facing was encoded");
+        d.drone_active = false;
+        const auto stopped = decode(encode(d));
+        check(stopped && !stopped->drone_active, "A drone stop notice failed to round-trip");
+        d.drone_position = {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f};
+        bool refused{};
+        try { encode(d); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "A non-finite drone position was encoded");
+        d.drone_position = {2.0e6f, 0.f, 0.f};
+        refused = false;
+        try { encode(d); } catch (const std::invalid_argument &) { refused = true; }
+        check(refused, "A drone position outside the world was encoded");
     }
     extras.kind = PacketKind::physics_extras; extras.session = 9; extras.epoch = 10; extras.map = 11; extras.source = player;
     check(decode(encode(extras)) && decode(encode(extras))->kind == PacketKind::physics_extras && decode(encode(extras))->extras.empty(),

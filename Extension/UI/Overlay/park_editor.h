@@ -2,6 +2,7 @@
 #include "Extension/Objects/ParkEditor/editor_math.h"
 #include "overlay.h"
 #include <imgui.h>
+#include <optional>
 
 namespace dingosdk::overlay {
 enum class ParkTransformMode { move, rotate, scale };
@@ -44,6 +45,19 @@ struct ParkEditorUI {
     std::vector<EditorObject> clipboard, paste_expected;
     std::vector<std::uint64_t> paste_before;
     unsigned paste_serial{};
+    // Saved object sets: the library lists them in place of objects. `placing_set` follows the
+    // cursor at ui.position / ui.angles / ui.scale until a click pastes it; `set_delete` is
+    // the set whose Delete was pressed once and waits for the confirming press.
+    bool library_sets{};
+    std::string placing_set, set_delete;
+    // A multi-selection's own orientation, for its local axes and its Rotation field: a placed set
+    // starts at the rotation it was placed with and keeps every turn given to it. Any other group
+    // uses its active (last selected) object's rotation. `group_angles` is what the field showed.
+    std::vector<std::uint64_t> group_ids; // sorted
+    editor::Quat group_rotation{0, 0, 0, 1};
+    std::optional<editor::Quat> paste_rotation; // the set being pasted
+    editor::Vec3 group_angles{};
+    std::array<char, 65> set_name{};
     // Look shared with the ReSkate menu, set by the overlay before drawing.
     // Null fonts fall back to the current font (the UI tests pass none).
     ImFont *title_font{}, *bold_font{}, *heading_font{};

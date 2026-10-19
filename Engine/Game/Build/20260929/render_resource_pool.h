@@ -29,6 +29,9 @@ inline constexpr auto constructor_entry = hex_bytes(
 inline constexpr auto index_table_constructor_entry = hex_bytes(
     "4053555657415641574883ec78c5f9efc033ed488bf948896c2428488d4c2440");
 
+// mov ecx, 0x2daa00 -> mov ecx, 0x11ab080 (the state owner's size, 0x3efd347).
+inline constexpr auto other_renderer_size_before = hex_bytes("b900aa2d00");
+inline constexpr auto other_renderer_size_after  = hex_bytes("b980b01a01");
 inline constexpr auto vector_begin_before = hex_bytes("488d81b0000000");
 inline constexpr auto vector_begin_after  = hex_bytes("488b8190000000");
 inline constexpr auto vector_bytes_before = hex_bytes("480500001e00");
@@ -90,10 +93,22 @@ inline constexpr std::ptrdiff_t resource_state_vector_offset = 0x2da920;
 inline constexpr std::ptrdiff_t relation_mask_vector_offset = 0x114ab60;
 
 inline constexpr std::uintptr_t constructor_rva = 0x03e7f300;
+// The constructor is the base of two renderers. Only the one constructed here
+// (vtable 0x64f2c10, 0x11ab080 bytes) has the resource-state and relation-mask
+// vectors: every read of owner+0x2da920 and owner+0x114ab60 is in its code. The
+// other (constructed at 0x030a0a46, vtable 0x6414168, kept at 0x75f2700) keeps
+// fields of its own at +0x2da920. Both use the metadata: the patched view
+// (0x030e6bff, called from 0x30a7e18 with the other renderer) and append
+// (0x03e94fe6, called from 0x30d8ebb) read its pointers at +0x11aae28/+0x11aae30.
+// The other renderer was allocated 0x2daa00 bytes, which ends before them, so it
+// is allocated the state owner's 0x11ab080 instead (other_renderer_size, above).
+inline constexpr std::uintptr_t state_owner_call_rva = 0x03f33a46;
 inline constexpr std::uintptr_t index_table_constructor_rva = 0x03e7e400;
 inline constexpr std::uintptr_t resource_flags_priority_rva = 0x03f56073;
 inline constexpr std::uintptr_t resource_flags_visibility_rva = 0x03f5789a;
 inline constexpr Patch patches[]{
+    // The other renderer's allocation, large enough for the metadata pointers.
+    {0x030c64cc, other_renderer_size_before, other_renderer_size_after},
     {0x03e7f33c, vector_begin_before, vector_begin_after},
     {0x03e7f351, vector_bytes_before, vector_bytes_after},
     {0x03e94e99, capacity_before, capacity_after},

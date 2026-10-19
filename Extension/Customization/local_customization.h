@@ -1,10 +1,19 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 #include "Engine/Core/Json/json.h"
 
 namespace dingosdk::profile {
+// The most items a saved profile keeps owned or described (cosmetics, and Build objects). The
+// profile keeps every item it has seen, those of mods since switched off or removed too, so a mod
+// comes back owned: a player who has tried many mods passes the game's own 8192 (the most items
+// installed at once) in the profile alone, and at 8192 every save was refused, leaving the game
+// with no catalog at all (no items in the customization menu, no playcard). A bound against a
+// damaged file, not a size a profile should reach.
+inline constexpr std::size_t saved_item_limit = 65536;
+
 // Exact decoded recipe values. Float parameters retain their IEEE-754 bits;
 // resource pointers, allocator state and transient UI flags are never saved.
 struct CosmeticSlot {

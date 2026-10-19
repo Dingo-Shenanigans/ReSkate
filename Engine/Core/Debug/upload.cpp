@@ -3,7 +3,8 @@
 #include <bcrypt.h>
 #include "upload.h"
 #include "protocol.h"
-#include "multipart.h"
+#include "report_envelope.h"
+#include "report_details.h"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -23,14 +24,7 @@ std::string utf8(std::wstring_view value) {
     WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(), size, nullptr, nullptr);
     return result;
 }
-void remove_report(const std::filesystem::path& dump) {
-    std::error_code error;
-    std::filesystem::remove(dump, error);
-    if (!error) {
-        std::filesystem::remove(dump.wstring() + L".json", error);
-        std::filesystem::remove(log_attachment_path(dump), error);
-    }
-}
+void remove_report(const std::filesystem::path& dump) { remove_report_files(dump); }
 void status_file(const std::filesystem::path& directory, const std::string& text) {
     // Overwrite a bounded status file. Never include the endpoint, token, response body, or local paths.
     std::ofstream(directory / L"status.txt", std::ios::trunc) << text << '\n';
@@ -54,10 +48,16 @@ bool parse_endpoint(const std::wstring& url, Endpoint& endpoint) {
 bool accepted_response(DWORD status, std::string_view response, std::string& report_id) {
     report_id.clear();
     if (status < 200 || status >= 300) return false;
-    // Sentry's minidump endpoint answers with the event ID as plain text.
+    // Sentry's envelope endpoint answers {"id":"<event ID>"}; its minidump endpoint the ID as plain text.
     const auto first = response.find_first_not_of(" \t\r\n"), last = response.find_last_not_of(" \t\r\n");
     if (first == std::string_view::npos) return false;
-    const auto id = response.substr(first, last - first + 1);
+    auto id = std::string(response.substr(first, last - first + 1));
+    if (id.starts_with('{')) {
+        try {
+            const auto receipt = Json::parse(id, {4096, 4, 64});
+            id = receipt.is_object() && receipt.contains("id") && receipt.at("id").is_string() ? receipt.at("id").string() : std::string{};
+        } catch (...) { return false; }
+    }
     if (id.size() > 36 || id.find_first_not_of("0123456789abcdefABCDEF-") != std::string_view::npos ||
             std::count_if(id.begin(), id.end(), [](char c) { return c != '-'; }) != 32) return false;
     report_id = id;
@@ -78,8 +78,17 @@ UploadResult upload_report(const std::wstring& url, const std::filesystem::path&
     UploadResult result;
     Endpoint endpoint;
     if (!parse_endpoint(url, endpoint) || !attributes.is_object()) { result.error = ERROR_INVALID_PARAMETER; return result; }
-    const auto boundary = std::format("ReSkate-{:x}-{:x}", GetCurrentProcessId(), GetTickCount64());
-    MultipartReport body(dump, attributes, boundary);
+    // Sent as an envelope (report_envelope.h), to the envelope endpoint beside the minidump one.
+    Endpoint envelope;
+    if (!parse_endpoint(envelope_endpoint(url), envelope)) { result.error = ERROR_INVALID_PARAMETER; return result; }
+    endpoint = envelope;
+    std::array<unsigned char, 16> random{};
+    if (!BCRYPT_SUCCESS(BCryptGenRandom(nullptr, random.data(), static_cast<ULONG>(random.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+        result.error = ERROR_INVALID_DATA; return result;
+    }
+    std::string event_id;
+    for (const auto byte : random) event_id += std::format("{:02x}", byte);
+    ReportEnvelope body(dump, attributes, event_id);
     if (body.error()) { result.error = body.error(); return result; }
     Internet session{WinHttpOpen(L"ReSkate-CrashReporter/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
     if (!session.value) { result.error = GetLastError(); return result; }
@@ -94,8 +103,7 @@ UploadResult upload_report(const std::wstring& url, const std::filesystem::path&
         !WinHttpSetOption(request.value, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon))) {
         result.error = GetLastError(); return result;
     }
-    const std::wstring wide_boundary(boundary.begin(), boundary.end());
-    const auto headers = L"Content-Type: multipart/form-data; boundary=" + wide_boundary + L"\r\n";
+    const std::wstring headers = L"Content-Type: application/x-sentry-envelope\r\n";
     if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(headers.size()), nullptr, 0, body.size(), 0)) {
         result.error = GetLastError(); return result;
     }
@@ -156,7 +164,7 @@ std::size_t upload_pending(const std::wstring& url, const std::filesystem::path&
                 break;
             }
             status_file(directory, "Accepted by Sentry: " + result.report_id);
-            remove_report(entry.path());
+            keep_sent_report(entry.path());
             if (++uploaded == 4) break; // Bound work for a single launch.
         }
         return uploaded;

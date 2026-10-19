@@ -44,6 +44,15 @@ fs::path sdk_module() {
 
 } // namespace
 
+std::string sdk_stamp() {
+    std::error_code error;
+    const auto module = sdk_module();
+    const auto size = fs::file_size(module, error);
+    if (error) return "none";
+    const auto written = fs::last_write_time(module, error);
+    return std::to_string(size) + ' ' + std::to_string(error ? 0 : written.time_since_epoch().count());
+}
+
 std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mod*>& mods,
                               const std::map<const Mod*, RelativeFiles>& modFiles, bool storeKnown) {
     std::string inputs = stamp_header;

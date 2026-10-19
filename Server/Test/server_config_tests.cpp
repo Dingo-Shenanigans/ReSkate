@@ -169,6 +169,25 @@ int run() {
     const auto odd = load_config(file);
     check(odd.score_check == "warn" && odd.score_allow == std::vector<std::uint64_t>{0xabc}, "Bad scoring settings not cleaned");
 
+    // Throwdown locks: off by default, kept by name, unknown names dropped.
+    check(!reloaded.throwdown_locks, "Throwdown locks are not off by default");
+    auto locks = reloaded;
+    locks.throwdown_locks = lock_nobail | lock_tuning;
+    save_config(locks);
+    {
+        std::ifstream in(file, std::ios::binary);
+        const std::string written((std::istreambuf_iterator<char>(in)), {});
+        check(written.find(R"("throwdown_locks": [)") != std::string::npos && written.find(R"("nobail")") != std::string::npos,
+              "Throwdown locks not written as names");
+    }
+    check(load_config(file).throwdown_locks == (lock_nobail | lock_tuning), "Throwdown locks lost");
+    std::ofstream(file, std::ios::binary) << R"({"players": {"throwdown_locks": ["boosts", "jetpack", 3, "teleport"]}})";
+    check(load_config(file).throwdown_locks == (lock_boosts | lock_noclip), "Bad throwdown locks not cleaned");
+    check(parse_lock_tools("all") == lock_all && parse_lock_tools(" NoBail , tuning") == (lock_nobail | lock_tuning) &&
+              !parse_lock_tools("") && !parse_lock_tools("nobail,") && !parse_lock_tools("fly"),
+          "Lock tool names not read");
+    check(lock_tools_text(lock_all) == "noclip, nobail, boosts, tuning" && lock_tools_text(0) == "none", "Lock tool names not written");
+
     // A config from before the sections: every setting is read from where it was, under the name
     // it had, and the file is written back in sections, in reading order, with nothing called new
     // that was only moved.

@@ -3,6 +3,8 @@
 #include "skater_items.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Vfs/builtin_packs.h"
+#include "Engine/Vfs/mod_catalog.h"
 #include "Extension/HallOfMeat/hall_of_meat_skater.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -26,7 +28,7 @@ constexpr std::uint64_t fall_at_most = 3000, fall_at_least = 400; // millisecond
 
 struct State {
     // Any thread.
-    std::atomic<bool> ready{}, on{true}, blood{true}, covers{};
+    std::atomic<bool> ready{}, on{true}, blood{true}, covers{}, turned_off{};
     std::atomic<bool> heal{}, changed{}; // asked for from another thread, done at the next tick
     std::atomic<int> wanted_bails{-1};
     std::atomic<unsigned> bails{};
@@ -223,6 +225,15 @@ void watch_fall(State& s, const NoBailSkater& skater, std::uint64_t now, bool wi
 bool start(std::uintptr_t base) noexcept {
     auto& s = state();
     if (s.ready.load(std::memory_order_acquire)) return true;
+    // Its official mod not installed, or turned off, in the launcher: no Road Rash this launch, and
+    // nothing of it shows.
+    if (const auto mods_root = mods::engine_data_root() / mods::mods_folder; !mods::official_in_use(mods_root, mods::road_rash_official)) {
+        s.turned_off.store(true, std::memory_order_release);
+        logging::write(logging::Level::info, logging::Channel::skater,
+            mods::official_off(mods_root, mods::road_rash_official) ? "Road Rash is off: its official mod is turned off in the launcher."
+                                                    : "Road Rash is off: its official mod is not installed (launcher, Mods, OFFICIAL).");
+        return false;
+    }
     constexpr auto prefix = addr::native_cosmetics::recipe_copy_prefix;
     std::array<unsigned char, prefix.size()> actual{};
     if (!memory::peek(base + addr::native_cosmetics::recipe_copy, actual) || actual != prefix) {
@@ -340,6 +351,7 @@ void on_client_tick(std::uintptr_t client) noexcept {
 }
 
 bool available() noexcept { return state().ready.load(std::memory_order_acquire); }
+bool turned_off() noexcept { return state().turned_off.load(std::memory_order_acquire); }
 bool enabled() noexcept { return available() && state().on.load(std::memory_order_acquire); }
 bool blood() noexcept { return state().blood.load(std::memory_order_acquire); }
 bool covers_tattoos() noexcept { return state().covers.load(std::memory_order_acquire); }

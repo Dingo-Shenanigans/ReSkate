@@ -139,6 +139,15 @@ struct StoreCopies {
         StoreMeshes::Closest closest;
     };
     std::vector<MeshSeen> meshes_seen;
+    // Every item each mod adds or changes (lower-case keys), copies or not, in the catalogue's
+    // order (highest priority first): which mod an item is from (mod_item_sources.h). Empty for
+    // a mod with none; `read` false when the check could not run.
+    struct Added {
+        std::string mod;
+        std::vector<std::string> keys;
+    };
+    std::vector<Added> added;
+    bool read{};
     // How many of the game's own items the mods' were held against; none when no mod adds an item.
     std::size_t game_items{};
     // And how many of the mods' meshes against how many of the game's costumes.

@@ -250,8 +250,22 @@ sync_effects       Let players see each other's skater effects (default true):
                    relays none and players' games show each other without
                    them, which saves a little traffic and drawing on a busy
                    server. Console: effects on|off.
+sync_drones        Let players see each other's FPV drones (default true): the
+                   marker where a player flying ReSkate's drone mode has
+                   their drone. false relays none, and players' games
+                   neither send their drone nor show anyone else's.
+                   Console: drones on|off.
 announce_throwdowns  Tell everyone in chat when a throwdown drop is placed
                    (default true).
+throwdown_locks    Tools locked for the players of a throwdown while it runs,
+                   for fair games on a server that allows them for free
+                   skating (default [], none): any of "noclip" (with
+                   teleporting), "nobail", "boosts", "tuning" (their own
+                   physics tuning). They are locked when the throwdown starts
+                   and unlocked when the player quits it, it ends (the server
+                   hears nothing more of it for a minute or so) or they leave.
+                   Example: ["nobail", "boosts", "tuning"]. Console:
+                   throwdown-locks <tools>|off. See lock below.
 
 "anti_cheat" - What the server checks, and what it does about it.
 speed_hack         Catch players whose game runs faster than normal (Cheat
@@ -513,7 +527,8 @@ A role is:
                  unlimited_objects  no object limit; build and resize when
                                     players may not
                  movement           noclip, No Bail and the boosts when
-                                    players may not
+                                    players may not (not a tool that is
+                                    locked for them: lock)
                  no_afk_kick        never removed for being away
                  vote_kick_immune   cannot be kicked by a vote
                  anticheat_alerts   told in chat what the anti-cheat finds
@@ -590,9 +605,31 @@ or Travel, and voice, distances, placement and kicks from the Multiplayer menu.
   objects <number>|off          How many objects each player may have placed.
   object-scaling on|off         Whether players may resize the objects they place.
   effects on|off                Whether players see each other's skater effects.
+  drones on|off                 Whether players see each other's FPV drones.
   noclip on|off   nobail on|off   boosts on|off
                                 What players may use (admins always can).
   tuning on|off                 Everyone on the game's own physics tuning.
+  lock <player|SteamID64> <tool[,tool...]|all>
+                                Take tools from one player: noclip (with
+                                teleporting), nobail, boosts, tuning (their own
+                                physics tuning), or all. Everyone else keeps what
+                                the server allows, and the player's role cannot
+                                give a locked tool back (movement). Takes effect
+                                at once, and is kept for their SteamID until
+                                unlocked or the server restarts: leaving and
+                                joining again does not lift it. A player who is
+                                not here is locked by their SteamID64. Logged as
+                                "[lock] <name> (<SteamID64>): nobail, boosts
+                                locked by <who>".
+  unlock <player|SteamID64> [<tool[,tool...]|all>]
+                                Give them back (all when none are named), also
+                                to a player who left (by SteamID64 or the name
+                                they had); also ends a throwdown's locks early.
+                                Logged as "[lock] ... unlocked by <who>".
+  locks                         The players with locked tools, also those who
+                                left ("not here").
+  throwdown-locks <tools>|off   What a throwdown locks for its players
+                                (players.throwdown_locks).
   tpall [player]                Everyone to you (admins in game) or to a player.
   tphere <player>               One player to you (admins in game).
   teleport <players> <player|x y z>

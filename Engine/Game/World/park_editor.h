@@ -53,6 +53,24 @@ struct EditorPasteRequest {
     std::uint64_t generation{}, revision{};
     std::vector<EditorObject> objects;
 };
+// Removes several objects in one edit (one undo step), as a paste adds several.
+struct EditorDeleteRequest {
+    std::uint64_t generation{}, revision{};
+    std::vector<std::uint64_t> objects;
+};
+// A saved set of objects (<profile>/object_sets/<name>.park.json), placed again as one paste on any
+// map. Positions are relative to the set's anchor: the middle of its footprint, at its lowest origin.
+struct EditorObjectSet {
+    std::string name, map; // map: where the set was saved, for display only
+    std::vector<EditorObject> objects;
+};
+enum class EditorObjectSetAction { save, remove };
+struct EditorObjectSetRequest {
+    EditorObjectSetAction action{};
+    std::uint64_t generation{};
+    std::string name;
+    std::vector<EditorObject> objects; // save: the objects in world space
+};
 // A mod with a parks/ folder (Mods/<folder>/parks/<map>.park.json).
 struct EditorParkMod {
     std::string folder, title, author, version, description;
@@ -71,5 +89,6 @@ struct ParkEditorModel {
     bool can_load_parks{};                 // false for multiplayer guests: only the host loads parks
     EditorSurfaceHit surface;
     std::uint64_t preview_token{};
+    std::shared_ptr<const std::vector<EditorObjectSet>> object_sets;
 };
 } // namespace dingosdk

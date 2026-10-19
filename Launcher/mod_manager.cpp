@@ -225,16 +225,27 @@ private:
     fs::path path_;
 };
 
-// Moves the finished staging folder into place, replacing only when asked.
+// Moves the finished staging folder into place, replacing only when asked. The copy it
+// replaces (an update, mostly) is deleted for good rather than recycled: it is moved aside
+// into the staging folder first, so a new copy that cannot go in leaves the old one where it was.
 void commit(const fs::path& mods, const Staging& staging, const std::string& name, bool replace) {
     const auto target = mods / from_utf8(name);
     std::error_code error;
+    fs::path aside;
     if (fs::exists(target, error)) {
         if (!replace) throw AlreadyInstalled(name);
-        recycle(target);
+        aside = staging.path().parent_path() / (from_utf8(name).wstring() + L".replaced");
+        fs::remove_all(aside, error);
+        if (!MoveFileExW(target.c_str(), aside.c_str(), MOVEFILE_WRITE_THROUGH))
+            fail("Could not replace " + name + ": close anything using its files (the game, an editor) and try again.");
     }
-    if (!MoveFileExW(staging.path().c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
-        fail("Could not move the mod into the Mods folder (Windows error " + std::to_string(GetLastError()) + ").");
+    if (!MoveFileExW(staging.path().c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        const auto code = GetLastError();
+        if (!aside.empty()) MoveFileExW(aside.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
+        fail("Could not move the mod into the Mods folder (Windows error " + std::to_string(code) + ").");
+    }
+    // (Whatever of it cannot be deleted now goes with the staging folder.)
+    if (!aside.empty()) fs::remove_all(aside, error);
 }
 
 // miniz is built without stdio, so the archive is read through a handle.
@@ -291,6 +302,7 @@ std::string install_zip(const fs::path& mods, const fs::path& source, bool repla
     std::vector<std::string> files;
     const auto count = mz_zip_reader_get_num_files(&zip.archive);
     for (mz_uint index = 0; index < count; ++index) {
+        if (cancel) fail("Install cancelled.");
         mz_zip_archive_file_stat stat{};
         if (!mz_zip_reader_file_stat(&zip.archive, index, &stat)) fail("The .zip file is damaged.");
         const auto name = safe_entry(stat.m_filename);
@@ -328,19 +340,45 @@ std::string install_zip(const fs::path& mods, const fs::path& source, bool repla
         if (!ok) fail("Could not extract " + relative + " from the .zip file.");
     }
     finish(staging.path(), *root, utf8(source.filename().wstring()), options);
+    // Cancellation is safe before replacing the installed folder, not midway through commit.
+    if (progress) progress(1.f);
+    if (cancel) fail("Install cancelled.");
     commit(mods, staging, name, replace);
     return name;
 }
 
+// A symbolic link, junction or mount point: an entry that names a path somewhere else. (Cloud
+// placeholders such as OneDrive's are reparse points too, but name nothing else.)
+bool links_elsewhere(const fs::path& path) {
+    WIN32_FIND_DATAW found{};
+    const auto search = FindFirstFileW(path.c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE) return false;
+    FindClose(search);
+    return (found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IsReparseTagNameSurrogate(found.dwReserved0);
+}
+
+// A folder's files are named by where they sit in it, never by where a link leads, and checked
+// as a zip's entries are. fs::relative followed links: a file link inside the folder to one
+// outside it came out as ../../<file>, which was copied over that file (issue #265, first fixed
+// in PR #267 by Jean-LucTch). So a link inside the folder refuses the install. Links on the way
+// to the folder or to the Mods folder (a library moved to another drive) are the player's own
+// and stay fine.
 std::string install_folder(const fs::path& mods, const fs::path& source, bool replace,
                            const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options) {
     std::vector<std::string> files;
     std::vector<fs::path> paths;
     for (auto it = fs::recursive_directory_iterator(source); it != fs::recursive_directory_iterator(); ++it) {
-        if (!it->is_regular_file()) continue;
+        if (cancel) fail("Install cancelled.");
+        const auto inside = it->path().lexically_relative(source);
+        if (links_elsewhere(it->path()))
+            fail(utf8(source.filename().wstring()) + " holds a link (" + utf8(inside.generic_wstring()) +
+                 "), which a mod folder may not: copy the real files in and try again.");
+        if (!fs::is_regular_file(it->symlink_status())) continue;
+        auto relative = safe_entry(utf8(inside.generic_wstring()));
+        if (!relative) fail("The folder contains an unsafe path (" + utf8(inside.generic_wstring()) + "); it was not installed.");
+        if (relative->empty()) continue;
         paths.push_back(it->path());
-        auto relative = utf8(fs::relative(it->path(), source).generic_wstring());
-        files.push_back(std::move(relative));
+        files.push_back(std::move(*relative));
     }
     const auto root = mod_root(files);
     if (!root) fail(utf8(source.filename().wstring()) + no_mod);
@@ -363,6 +401,8 @@ std::string install_folder(const fs::path& mods, const fs::path& source, bool re
         if (progress && total) progress(static_cast<float>(written) / static_cast<float>(total));
     }
     finish(staging.path(), *root, utf8(source.filename().wstring()), options);
+    if (progress) progress(1.f);
+    if (cancel) fail("Install cancelled.");
     commit(mods, staging, name, replace);
     return name;
 }
