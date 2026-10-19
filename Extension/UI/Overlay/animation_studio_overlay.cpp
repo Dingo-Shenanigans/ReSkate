@@ -393,6 +393,10 @@ studio::Vec3 up_of(const studio::Quat& q) {
 // Drags the selected limb: the mouse's ray meets the plane of the board (through the joint, facing the board's
 // up), so the foot slides over the board as the board moves. Without a board in the view, the camera's plane.
 void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
+    // Only when the mouse has moved: each update rebuilds the keys, so a still mouse costs nothing.
+    static ImVec2 last{-1e9f, -1e9f};
+    if (std::abs(mouse.x - last.x) < 0.5f && std::abs(mouse.y - last.y) < 0.5f) return;
+    last = mouse;
     const auto* sel = joint_view(v, ui().selected);
     if (!sel || !p.valid || p.focal <= 0) return;
     const studio::Vec3 d{sel->position[0] - p.origin[0], sel->position[1] - p.origin[1], sel->position[2] - p.origin[2]};
@@ -1738,7 +1742,7 @@ void draw_animation_studio_loading() {
         }
         return x - track * size;
     };
-    const float word_size = 0.30f * H, word_track = -0.045f;
+    const float word_size = 0.40f * H, word_track = -0.045f;
     const float word_w = tight_width("reskate.", word_size, word_track);
     const ImVec2 word_at(display.x * 0.5f - word_w * 0.5f, H * 0.215f);
     tight("reskate.", word_size, word_track, ImVec2(word_at.x + 5 * k, word_at.y + 7 * k), fade(IM_COL32(0, 0, 0, 140)), true);
@@ -1748,9 +1752,9 @@ void draw_animation_studio_loading() {
                         fade(IM_COL32(30, 28, 25, 230)));
 
     // animator studio on a strip of blue tape under it.
-    const float sub_size = 0.085f * H, sub_track = -0.03f;
+    const float sub_size = 0.115f * H, sub_track = -0.03f;
     const float sub_w = tight_width("animator studio", sub_size, sub_track);
-    const float tape_top = word_at.y + word_size * 0.99f, tape_h = 0.098f * H;
+    const float tape_top = word_at.y + word_size * 0.99f, tape_h = 0.13f * H;
     const ImVec2 tape_a(display.x * 0.5f - sub_w * 0.5f - 0.03f * H, tape_top), tape_b(display.x * 0.5f + sub_w * 0.5f + 0.03f * H, tape_top + tape_h);
     if (!draw_studio_brush(d, tape_a, tape_b, fade(skate_theme::blue))) skate_theme::rough_rect(d, tape_a, tape_b, fade(skate_theme::blue), 7, 2.0f * k);
     const float sub_h = logo->CalcTextSizeA(sub_size, FLT_MAX, 0, "a").y;
