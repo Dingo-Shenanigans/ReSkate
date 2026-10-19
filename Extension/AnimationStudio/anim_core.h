@@ -120,6 +120,19 @@ std::size_t move_key(Track& track, std::size_t index, float to, float duration) 
 Joint world(std::span<const Joint> local, std::uint16_t joint) noexcept;
 std::int16_t parent(std::uint16_t joint) noexcept;
 
+// ---- goofy ----------------------------------------------------------------------------------------
+// The other side of the body (a regular trick played goofy, and back): the skater mirrored across its
+// middle, the X of its root. A rotation keeps its X and negates its Y and Z; a position or offset
+// negates its X. Every joint is replaced by its mirror joint (skater_mirror.h), so a left foot takes the
+// right foot's pose, reflected. Mirroring twice gives the same animation back.
+Quat mirror_rotation(const Quat& q) noexcept;
+Vec3 mirror_vector(const Vec3& v) noexcept;
+Joint mirror_pose(const Joint& joint) noexcept;
+// The clip on the other side: every frame, and the board. Only for a skater clip (joints == 395).
+Clip mirror_clip(const Clip& clip);
+// The animation on the other side: its clip, and every track and key on the mirror joints.
+Animation mirror_animation(const Animation& animation);
+
 // ---- files ----------------------------------------------------------------------------------------
 // The profile: name, trick, settings and keyframes, as versioned JSON. The clip goes beside it in a
 // small binary file. Both throw std::runtime_error on bad input; nothing half-read is returned.

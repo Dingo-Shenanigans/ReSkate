@@ -1,6 +1,7 @@
 // Animation Studio's keyframes apart from the game: turning numbers, blending keys, what a profile
 // and a clip file hold, and that edits never grow a pose.
 #include "Extension/AnimationStudio/anim_core.h"
+#include "Extension/AnimationStudio/skater_mirror.h"
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -131,9 +132,36 @@ void clips_read_back_and_broken_ones_are_refused() {
 }
 } // namespace
 
+
+// Goofy: the mirror pairs the joints on the two sides, is its own inverse, and moves a right key to the left.
+void mirror_pairs_and_comes_back() {
+    for (std::uint16_t joint = 0; joint < skeleton_joints; ++joint) {
+        check(mirror_joint[mirror_joint[joint]] == joint, "Mirroring twice gives the same joint");
+    }
+    check(mirror_joint[7] == 7 && mirror_joint[42] == 42, "The hips and the spine sit on the middle line");
+    check(mirror_joint[8] != 8 && mirror_joint[mirror_joint[8]] == 8, "The right thigh pairs with the left");
+    Joint right;
+    right.rotation = from_euler({20, 30, 40});
+    right.position = {0.3f, 0.1f, -0.2f};
+    const auto back = mirror_pose(mirror_pose(right));
+    check(same_turn(back.rotation, right.rotation) && near(back.position[0], right.position[0]), "A pose mirrored twice is the pose");
+    Animation animation;
+    animation.clip.joints = skeleton_joints;
+    animation.clip.times = {0.0f};
+    animation.clip.frames.assign(skeleton_joints, Joint{});
+    animation.clip.frames[8].position = {0.4f, 0, 0};
+    const auto goofy = mirror_animation(animation);
+    check(goofy.clip.frames[mirror_joint[8]].position[0] == -0.4f, "A right thigh's place goes to the left, on the other side");
+    set_key(animation, 8, 0.5f, {from_euler({10, 0, 0}), {0.2f, 0, 0}});
+    const auto goofy_key = mirror_animation(animation);
+    const auto* track = goofy_key.track(mirror_joint[8]);
+    check(track && near(track->keys[0].offset[0], -0.2f), "A key on the right moves to the left, mirrored");
+}
+
 int main() {
     try {
         euler_numbers_read_back();
+        mirror_pairs_and_comes_back();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
         keys_can_be_dragged_in_time();

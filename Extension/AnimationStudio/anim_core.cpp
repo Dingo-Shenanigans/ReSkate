@@ -1,3 +1,4 @@
+#include "skater_mirror.h"
 #include "anim_core.h"
 #include "Engine/Core/Json/json.h"
 #include "Extension/Multiplayer/Net/skater_bone_parents.h"
@@ -494,5 +495,37 @@ std::string file_safe(std::string_view name) {
     while (!out.empty() && out.back() == ' ') out.pop_back();
     while (!out.empty() && out.front() == ' ') out.erase(out.begin());
     return out.empty() ? std::string("Animation") : out;
+}
+} // namespace dingosdk::anim_studio
+
+namespace dingosdk::anim_studio {
+Quat mirror_rotation(const Quat& q) noexcept { return {q[0], -q[1], -q[2], q[3]}; }
+Vec3 mirror_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
+Joint mirror_pose(const Joint& joint) noexcept {
+    Joint out = joint;
+    out.rotation = mirror_rotation(joint.rotation);
+    out.position = mirror_vector(joint.position);
+    return out;
+}
+Clip mirror_clip(const Clip& clip) {
+    if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
+    Clip out = clip;
+    for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
+        for (std::uint32_t joint = 0; joint < clip.joints; ++joint)
+            out.frames[frame * clip.joints + mirror_joint[joint]] = mirror_pose(clip.frames[frame * clip.joints + joint]);
+    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
+    return out;
+}
+Animation mirror_animation(const Animation& animation) {
+    Animation out = animation;
+    out.clip = mirror_clip(animation.clip);
+    for (auto& track : out.tracks) {
+        if (track.joint < skeleton_joints) track.joint = mirror_joint[track.joint];
+        for (auto& key : track.keys) {
+            key.rotation = mirror_rotation(key.rotation);
+            key.offset = mirror_vector(key.offset);
+        }
+    }
+    return out;
 }
 } // namespace dingosdk::anim_studio
