@@ -1736,7 +1736,8 @@ void draw_animation_studio_loading() {
     // this fades. Only the content fades.
     d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(19, 19, 19, 255));
     // The backdrop, when the studio has one, under a dark veil so the wordmark reads on it.
-    if (draw_studio_picture(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255)))
+    const bool backdrop_drawn = draw_studio_picture(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
+    if (backdrop_drawn)
         d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(8, 8, 10, 90)));
     else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
         for (unsigned i = 0; i < 2600; ++i) {
@@ -1773,6 +1774,7 @@ void draw_animation_studio_loading() {
         }
         return x - track * size;
     };
+    if (!backdrop_drawn) {
     const float word_size = 0.40f * H, word_track = -0.045f;
     const float word_w = tight_width("reskate.", word_size, word_track);
     const ImVec2 word_at(display.x * 0.5f - word_w * 0.5f, H * 0.215f);
@@ -1801,6 +1803,8 @@ void draw_animation_studio_loading() {
         if (!draw_studio_tile(d, pa, pb, 6 * k, fade(paper))) skate_theme::rough_rect(d, pa, pb, fade(paper), 11, 1.2f * k);
         text(d, bold, label_size, ImVec2(pa.x + 0.022f * H, pa.y + (strip_h - sw.y) * 0.5f), fade(IM_COL32(40, 40, 44, 255)), "BUILT BY");
         text(d, heading, names_size, ImVec2(pa.x + 0.038f * H + sw.x, pa.y + (strip_h - nw.y) * 0.5f), fade(ink), names);
+    }
+
     }
 
     // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
