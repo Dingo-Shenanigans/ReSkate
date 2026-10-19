@@ -67,10 +67,6 @@ struct Exclusion {
     std::string fingerprint;           // mod_fingerprint() when it was left out
     std::string sdk;                   // the ReSkate.dll that left it out; a new one retries
     std::vector<std::string> problems; // why, most important first
-    // Left out for a conflict with this mod, higher in the load order, as its files were then
-    // (its mod_fingerprint()). It stays out only while that mod still loads above it unchanged.
-    std::string conflictWith;
-    std::string conflictFingerprint;
 };
 // Names, sizes and write times of every file in the mod folder.
 std::string mod_fingerprint(const std::filesystem::path& directory);
@@ -121,13 +117,5 @@ Mod describe_mod(const std::filesystem::path& directory, std::string name, std::
 // Writes mods.json for `entries` in order, replacing the file atomically.
 // Throws with a readable message on failure.
 void save_mod_order(const std::filesystem::path& mods_root, const std::vector<ModEntry>& entries);
-
-// Whether mods.json lists the mod folder `name` switched off. A folder it does not list loads.
-// Reads mods.json alone, not the mods. Never throws: false when it cannot be read.
-bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept;
-// Switches the mod folder `name` on or off in mods.json, every other row as it was; one it does
-// not list yet is added at its end, the bottom of the load order. False when mods.json could not
-// be read (malformed: left for the player to see) or written. Never throws.
-bool set_mod_enabled(const std::filesystem::path& mods_root, std::string_view name, bool enabled) noexcept;
 
 } // namespace dingosdk::mods

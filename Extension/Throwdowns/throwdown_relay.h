@@ -80,6 +80,8 @@ struct ThrowdownLocalAction {
     std::string series;
     std::uint32_t mmid{};
     bool cancelling{};
+    std::uint8_t rules_mask{};
+    bool rules_verified{};
     std::vector<std::uint8_t> placement, settings; // exited: CreateThrowdownQueueParams streams
     std::vector<std::uint32_t> participants;       // entered
     std::int32_t score{};                          // score, row

@@ -3,7 +3,6 @@
 #include "Extension/UI/Overlay/overlay.h"
 
 #include "Engine/Vfs/mod_catalog.h"
-#include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_scoring.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
@@ -242,12 +241,11 @@ bool start_mod_layers(std::uintptr_t base, std::string& error) {
     }
     // A mod left out of the merge altogether loads none of its content, which
     // is worse, and used to say so only in the log. Name those too; the
-    // outdated ones have their own notice above, and one left out for a
-    // conflict is the player's choice of load order, shown in the launcher.
+    // outdated ones have their own notice above.
     {
         std::vector<const mods::Mod*> dropped;
         for (const auto& mod : catalog.excluded)
-            if (mod.outdated.empty() && mods::conflict_winner(mod).empty()) dropped.push_back(&mod);
+            if (mod.outdated.empty()) dropped.push_back(&mod);
         if (!dropped.empty()) {
             std::string names;
             for (const auto* mod : dropped)

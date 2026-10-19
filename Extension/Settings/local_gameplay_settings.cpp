@@ -2,6 +2,8 @@
 #include "Extension/Profile/runtime_internal.h"
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
 #include "local_gameplay_settings.h"
+#include "Extension/Skater/trick_logger.h"
+#include "Extension/Skater/skate_detector.h"
 #include "local_user_settings.h"
 #include <optional>
 #include <string_view>
@@ -97,8 +99,14 @@ void save_gameplay_setting(const void* reference, const dingosdk::Json& value) {
 }
 
 bool gameplay_get_bool(std::uintptr_t m, const void* a) {
-    if (const auto value = saved_gameplay_setting<bool>(a)) return *value;
-    return gameplay_settings().get_bool(m, a);
+    const auto saved = saved_gameplay_setting<bool>(a);
+    const bool value = saved ? *saved : gameplay_settings().get_bool(m, a);
+    // Remember natural footing even before a match starts. The logger itself
+    // gates diagnostics; cached setting reads here still return the original value.
+    try {PreserveError preserve;std::string key;if(gameplay_setting_key(a,key) &&
+        (key=="DefaultStanceIsGoofy" || trick_logger::full_capture() || skate::active()))
+        trick_logger::gameplay_bool(key,value,"effective_getter");}catch(...){}
+    return value;
 }
 
 float gameplay_get_number(std::uintptr_t m, const void* a) {

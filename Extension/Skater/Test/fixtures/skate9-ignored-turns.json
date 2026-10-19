@@ -1,0 +1,1678 @@
+{
+  "source_rules": 9,
+  "note": "Recorded capture evidence, not proof of native latch values. Native adapter regression and actual RES control-flow replay verify the early exclusion change.",
+  "cases": [
+    {
+      "source": "josh",
+      "events": [
+        {
+          "kind": "ignored_observation",
+          "at": 52474218,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "skate_attempt",
+          "at": 52474734,
+          "landed": false,
+          "scorable_id": 0
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52477640,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52482500,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52482593,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52482921,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52482968,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52483234,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52483281,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52483562,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52483593,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 52483890,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 52491609,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Pop-Shuvit\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"ID_TRICK_BS\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "BS Pop-Shuvit",
+                "first_seen_ms": 52491359,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_POPSHUVIT",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_BS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Pop-Shuvit",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "Clean",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "BS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 844431614148608,
+                "name": "Pop-Shuvit",
+                "name_resolved": true,
+                "observation_id": 38,
+                "parent_stack_handle": 281480080195585,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Pop-Shuvit",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_BS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 3.1540069580078125,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 52495421,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Pop-Shuvit\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"ID_TRICK_BS\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "BS Pop-Shuvit",
+                "first_seen_ms": 52495234,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_POPSHUVIT",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_BS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Pop-Shuvit",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "BS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 2814756445683712,
+                "name": "Pop-Shuvit",
+                "name_resolved": true,
+                "observation_id": 39,
+                "parent_stack_handle": 281480080195585,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Pop-Shuvit",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_BS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 9.136016845703125,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 52498156,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Flip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"360\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "360 Flip",
+                "first_seen_ms": 52497906,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_FLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "360",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Flip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "360",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 2251806496260096,
+                "name": "Flip",
+                "name_resolved": true,
+                "observation_id": 40,
+                "parent_stack_handle": 281480080195585,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Flip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "360",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 0.4836883544921875,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 52499453,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Kickflip",
+                "first_seen_ms": 52499171,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 1688856543166464,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 41,
+                "parent_stack_handle": 281480080195585,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 0.6376380920410156,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 52500484,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Heelflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Heelflip",
+                "first_seen_ms": 52500171,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_HEELFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Heelflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 1407381566783488,
+                "name": "Heelflip",
+                "name_resolved": true,
+                "observation_id": 42,
+                "parent_stack_handle": 281480080195585,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Heelflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 15.816520690917969,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "source": "sam",
+      "events": [
+        {
+          "kind": "ignored_observation",
+          "at": 261156328,
+          "identity": "ID_TRICK_TRICKLESS_AIR"
+        },
+        {
+          "kind": "skate_attempt",
+          "at": 261156500,
+          "landed": true,
+          "scorable_id": 3436034543
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 261156531,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 261156921,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 261161390,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"180\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "180 Kickflip",
+                "first_seen_ms": 261160875,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "Clean",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 1125907342295040,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 38,
+                "parent_stack_handle": 281479616528385,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              },
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Grab\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"180\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"ID_TRICK_FS\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "FS 180 Grab",
+                "first_seen_ms": 261161281,
+                "grounded_only": false,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_GRAB",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_FS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Grab",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "FS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 2251807241404416,
+                "name": "Grab",
+                "name_resolved": true,
+                "observation_id": 39,
+                "parent_stack_handle": 281479616528385,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Grab",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_FS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 180,
+                "direction": "FS",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 202.04863357543945,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 261161890,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 261161953,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 261164812,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Kickflip",
+                "first_seen_ms": 261162750,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 1688857294667776,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 42,
+                "parent_stack_handle": 281479616528385,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              },
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Nose Manual\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"ID_TRICK_FS\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"ID_TRICK_REVERT\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "FS Nose Manual",
+                "first_seen_ms": 261163484,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_NOSEMANUAL",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_FS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "ID_TRICK_REVERT",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Nose Manual",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "FS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "Revert",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "landing_revert_episode": 261163187,
+                "model_handle": 1407382318219264,
+                "name": "Nose Manual",
+                "name_resolved": true,
+                "observation_id": 43,
+                "parent_stack_handle": 281479616528385,
+                "phase_id": 2,
+                "phase_kind": "ground",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Nose Manual",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "ID_TRICK_FS",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "ID_TRICK_REVERT",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              },
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 2,
+                "comparison_key": "{\"base_name\":\"Varial Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"180\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"ID_STANCE_NOLLIE\",\"underflip\":\"\"}",
+                "display_name": "Nollie 180 Varial Kickflip",
+                "first_seen_ms": 261164453,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_VARIALKICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "ID_TRICK_LANDING_SKETCHY",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "ID_STANCE_NOLLIE",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Varial Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "Sketchy",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "Nollie",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 1407382319005696,
+                "name": "Varial Kickflip",
+                "name_resolved": true,
+                "observation_id": 44,
+                "parent_stack_handle": 281479616528385,
+                "phase_id": 3,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Varial Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "ID_TRICK_LANDING_SKETCHY",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "ID_STANCE_NOLLIE",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -65.98713684082031,
+                "starting_stance": "normal"
+              },
+              {
+                "accepted_spin": 180,
+                "direction": "FS",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": 178.35299682617188,
+                "starting_stance": "nollie"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              },
+              {
+                "id": 3,
+                "kind": "air",
+                "segment": 2
+              },
+              {
+                "id": 4,
+                "kind": "ground",
+                "segment": 2
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 261167390,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Boned Ollie\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Boned Ollie",
+                "first_seen_ms": 261166984,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_BONEDOLLIE",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Boned Ollie",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 2533282218115072,
+                "name": "Boned Ollie",
+                "name_resolved": true,
+                "observation_id": 45,
+                "parent_stack_handle": 281479616528385,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Boned Ollie",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -9.803466796875,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "source": "kritter",
+      "events": [
+        {
+          "kind": "skate_attempt",
+          "at": 597630484,
+          "landed": false,
+          "scorable_id": 0
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 597674218,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Kickflip",
+                "first_seen_ms": 597673812,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "Clean",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 844432056516608,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 12,
+                "parent_stack_handle": 281479327186945,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -3.1860809326171875,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597675250,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 597682640,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Kickflip",
+                "first_seen_ms": 597682250,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "Clean",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 562958190706688,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 14,
+                "parent_stack_handle": 281479327186945,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -4.4801788330078125,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 597689984,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "Kickflip",
+                "first_seen_ms": 597689546,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "Clean",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 562958191296512,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 15,
+                "parent_stack_handle": 281479327186945,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 0,
+                "direction": "",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -3.1489334106445312,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 597693375,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"180\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "180 Kickflip",
+                "first_seen_ms": 597692953,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "Clean",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 281483215306752,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 16,
+                "parent_stack_handle": 281479327186945,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "ID_TRICK_LANDING_CLEAN",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 180,
+                "direction": "BS",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -181.96456146240234,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597694609,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "detector_evidence",
+          "at": 597697640,
+          "result": {
+            "landed": true,
+            "rotation_complete": true,
+            "ticker_candidates": [
+              {
+                "body_rotations_raw": 0.0,
+                "candidate_segment_id": 1,
+                "comparison_key": "{\"base_name\":\"Kickflip\",\"body_flip_direction\":\"\",\"body_flip_rotation\":\"\",\"body_rotation\":\"180\",\"dark_catch\":\"\",\"dark_flip\":\"\",\"direction\":\"\",\"held_rotation\":\"\",\"late\":\"\",\"manual_type\":\"\",\"nollie\":\"\",\"stance\":\"\",\"underflip\":\"\"}",
+                "display_name": "180 Kickflip",
+                "first_seen_ms": 597697218,
+                "held_rotations_raw": 0.0,
+                "identity_labels": {
+                  "base_name": "ID_TRICK_KICKFLIP",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "identity_resolved": true,
+                "identity_source": "native_localization_catalog_onboard",
+                "labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "landed": null,
+                "model_handle": 1125907033227264,
+                "name": "Kickflip",
+                "name_resolved": true,
+                "observation_id": 18,
+                "parent_stack_handle": 281479327186945,
+                "phase_id": 1,
+                "phase_kind": "air",
+                "preexisting": false,
+                "raw_labels": {
+                  "base_name": "Kickflip",
+                  "body_flip_direction": "",
+                  "body_flip_rotation": "",
+                  "body_rotation": "180",
+                  "completed_info": "",
+                  "dark_catch": "",
+                  "dark_flip": "",
+                  "direction": "",
+                  "held_rotation": "",
+                  "late": "",
+                  "manual_type": "",
+                  "nollie": "",
+                  "stance": "",
+                  "underflip": ""
+                },
+                "source": "native_trick_history"
+              }
+            ],
+            "spins": [
+              {
+                "accepted_spin": 180,
+                "direction": "BS",
+                "goofy": false,
+                "grind_adjacent": false,
+                "net_degrees": -183.57586669921875,
+                "starting_stance": "normal"
+              }
+            ],
+            "movement_phases": [
+              {
+                "id": 1,
+                "kind": "air",
+                "segment": 1
+              },
+              {
+                "id": 2,
+                "kind": "ground",
+                "segment": 1
+              }
+            ]
+          }
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597699343,
+          "identity": "ID_TRICK_POWERSLIDE"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597699406,
+          "identity": "ID_TRICK_REVERT"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597701406,
+          "identity": "ID_TRICK_TRICKLESS_AIR"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597702484,
+          "identity": "ID_TRICK_TRICKLESS_AIR"
+        },
+        {
+          "kind": "ignored_observation",
+          "at": 597702640,
+          "identity": "ID_TRICK_TRICKLESS_AIR"
+        }
+      ]
+    }
+  ]
+}

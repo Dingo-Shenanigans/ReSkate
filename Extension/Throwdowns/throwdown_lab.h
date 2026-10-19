@@ -21,7 +21,9 @@ void pump_throwdown_lab(std::uintptr_t vm) noexcept;
 // is being left, which are freed with it.
 void throwdown_lab_before_level_transition(unsigned next) noexcept;
 // Called by the SendNetworkedEvent hook for every event the local client sends.
-void observe_throwdown_send(std::uint32_t hash, std::uintptr_t type, std::uintptr_t payload) noexcept;
+bool detector_injection() noexcept;
+// delivered=false retains detector eligibility/diagnostics without reserving a handler sender.
+void observe_throwdown_send(std::uint32_t hash, std::uintptr_t type, std::uintptr_t payload, bool delivered = true) noexcept;
 // True for ids the lab put into a throwdown; the UI player lookups answer them with
 // the local player's record so rows and host lookups resolve.
 bool throwdown_lab_player(std::uint32_t player_id) noexcept;
@@ -54,6 +56,7 @@ bool queue_throwdown_score(std::uint32_t player, std::int32_t score) noexcept;
 bool queue_throwdown_row(std::uint32_t player, std::uint8_t board, bool add, std::int32_t value) noexcept;
 // RequestTurnEnd as `player` (ends that player's turn if it is theirs). False while the
 // running event's handle is unknown.
+bool queue_throwdown_settings(std::uint32_t host,std::uint32_t mmid,const std::vector<std::uint8_t>& settings) noexcept;
 bool queue_throwdown_end_turn(std::uint32_t player) noexcept;
 // ForceDestroyCurrentEvent as `player`: ends the event on the local server that `player` is in
 // (one the local player quit keeps running here with only relayed players otherwise).

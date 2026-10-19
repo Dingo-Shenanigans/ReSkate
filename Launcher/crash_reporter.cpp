@@ -103,7 +103,6 @@ bool publish_dump(HANDLE process, const std::filesystem::path& temporary, const 
     }
     if (const auto gpu = field(report.gpu_name); !gpu.empty()) attributes["gpu.name"] = gpu;
     if (const auto driver = field(report.gpu_driver); !driver.empty()) attributes["gpu.driver"] = driver;
-    attributes["gpu.breadcrumbs"] = report.gpu_breadcrumbs ? "on" : "off";
     const auto log = snapshot_log(std::filesystem::path(report.directory.data()).parent_path() / L"ReSkate.log", dump);
     attributes["attachment.log"] = log == LogSnapshot::complete ? "complete" : log == LogSnapshot::tail ? "tail" : "unavailable";
     // Where it crashed ("Skate.exe+0x3d9ed9d"): Sentry names game code by the nearest export, so a

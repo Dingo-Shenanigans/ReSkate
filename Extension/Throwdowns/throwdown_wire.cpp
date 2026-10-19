@@ -60,10 +60,10 @@ bool valid_throwdown(const ThrowdownMessage &m) noexcept {
                m.settings.size() <= max_throwdown_params && m.order.size() <= max_throwdown_order &&
                std::all_of(m.order.begin(), m.order.end(), individual);
     case ThrowdownMessage::Kind::start:
-        return !m.order.empty() && m.order.size() <= max_throwdown_order &&
+        return !m.order.empty() && m.order.size() <= max_throwdown_order && m.settings.size() <= max_throwdown_params &&
                std::all_of(m.order.begin(), m.order.end(), individual);
     case ThrowdownMessage::Kind::row: return m.board < max_throwdown_boards;
-    case ThrowdownMessage::Kind::attempt:
+    case ThrowdownMessage::Kind::attempt: return m.value > 0 && m.detected.size() <= max_detected_attempt;
     case ThrowdownMessage::Kind::turn_end: return m.value > 0;
     case ThrowdownMessage::Kind::close:
     case ThrowdownMessage::Kind::join:
@@ -103,6 +103,8 @@ std::vector<std::uint8_t> encode_throwdown(const ThrowdownMessage &m) {
     case ThrowdownMessage::Kind::start:
         w.integer(m.order.size(), 1);
         for (const auto id : m.order) w.integer(id, 8);
+        if (m.kind == ThrowdownMessage::Kind::start) w.blob(m.settings, 2);
+        w.integer(m.rules_mask, 1);
         break;
     case ThrowdownMessage::Kind::score:
     case ThrowdownMessage::Kind::turn_end: w.integer(static_cast<std::uint32_t>(m.value), 4); break;
@@ -115,6 +117,8 @@ std::vector<std::uint8_t> encode_throwdown(const ThrowdownMessage &m) {
         w.integer(static_cast<std::uint32_t>(m.value), 4);
         w.integer(m.add ? 1 : 0, 1);
         w.bytes.insert(w.bytes.end(), m.trick.begin(), m.trick.end());
+        w.integer(m.rules_mask, 1);
+        w.blob(m.detected, 2);
         break;
     case ThrowdownMessage::Kind::challenge_start:
         w.integer(m.series.size(), 1);
@@ -137,6 +141,7 @@ std::vector<std::uint8_t> encode_throwdown(const ThrowdownMessage &m) {
         break;
     default: break;
     }
+    if(w.bytes.size()>4096)throw std::invalid_argument("Throwdown exceeds packet budget");
     return std::move(w.bytes);
 }
 
@@ -163,6 +168,8 @@ std::optional<ThrowdownMessage> decode_throwdown(std::span<const std::uint8_t> b
             const auto count = r.integer(1);
             if (!r.ok || count > max_throwdown_order) return {};
             for (std::uint64_t i = 0; i < count; ++i) m.order.push_back(r.integer(8));
+            if (m.kind == ThrowdownMessage::Kind::start) m.settings = r.blob(2, max_throwdown_params);
+            m.rules_mask = static_cast<std::uint8_t>(r.integer(1));
             break;
         }
         case ThrowdownMessage::Kind::score:
@@ -181,6 +188,8 @@ std::optional<ThrowdownMessage> decode_throwdown(std::span<const std::uint8_t> b
             if (landed > 1) return {};
             m.add = landed != 0;
             for (auto &byte : m.trick) byte = static_cast<std::uint8_t>(r.integer(1));
+            m.rules_mask = static_cast<std::uint8_t>(r.integer(1));
+            m.detected = r.blob(2, max_detected_attempt);
             break;
         }
         case ThrowdownMessage::Kind::challenge_start: {

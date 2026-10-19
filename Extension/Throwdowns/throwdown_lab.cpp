@@ -1,4 +1,6 @@
 #include "throwdown_lab.h"
+#include "native_event_delivery.h"
+#include "Extension/Skater/skate_detector.h"
 #include "native_type_scan.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
@@ -15,6 +17,8 @@
 #include "throwdown_relay.h"
 #include "throwdown_debug_text.h"
 #include "skate_trick_rule.h"
+#include "Extension/Skater/trick_logger.h"
+#include "Engine/Core/Json/json.h"
 #include "graph_throttle.h"
 #include "virtual_player_names.h"
 #include <array>
@@ -38,6 +42,9 @@
 // for the experiments they serve; nothing here runs unless a console command asks,
 // except the participant-change log and the GetPlayerName null fix.
 namespace dingosdk::multiplayer {
+thread_local bool detector_injecting{};
+bool detector_injection() noexcept {return detector_injecting;}
+
 namespace {
 using Address = std::uintptr_t;
 namespace engine = addr::engine;
@@ -141,7 +148,7 @@ constexpr std::array<std::uint32_t, 2> throwdown_score_graphs{0xac8e7dbc, 0x80fa
 struct Job {
     enum class Kind { ai, spawn, start, destroy, join, end_turn, score, remove, total, row, attempt, destroy_event,
                       criteria_attempt, onboarding_complete, challenge_start, challenge_slam, challenge_leave,
-                      beacon_move, beacon_remove } kind;
+                      beacon_move, beacon_remove, configure } kind;
     std::uint32_t uid{}, max_players{};
     std::string series;                            // spawn: mode when no placement is recorded
     float score{}; bool flag{true};                // score: value and the native's flag
@@ -157,6 +164,7 @@ struct Job {
     std::array<std::uint8_t, 28> trick{}; // attempt (flag = landed)
 };
 struct Lab {
+    std::uint8_t detector_rules{};bool detector_rules_known{};
     Address base{};
     std::atomic<bool> installed{};
     void (*participants_changed)(Address, const Address*, const Address*){};
@@ -191,9 +199,8 @@ struct Lab {
     std::atomic<bool> setter_missed{};
     int round_letters{}; // letters when the round began (-1: unknown)
     std::array<Address, 4> leaderboards{}; // leaderboards the local client wrote to, newest first
-    struct Sent { std::uint32_t event, sender; std::uint64_t ms; };
     std::mutex sent_mutex;
-    std::deque<Sent> sent; // tracked client events not yet handled, oldest first
+    NativeEventSendQueue sent; // delivered client events not yet handled, oldest first
     std::atomic<bool> any_injected_sent{};
     std::uint32_t event_handle{}; // last EventHandle the local client sent (the running event)
     std::mutex mutex;
@@ -371,6 +378,31 @@ void capture_value(Address object, Address value, std::vector<std::uint8_t>& out
         out.insert(out.end(), bytes.begin(), bytes.begin() + type.size);
     }
     }
+}
+Json diagnostic_value(Address object, Address value, unsigned depth, unsigned& budget) {
+    if(depth>6 || !budget--)throw std::runtime_error("Setup diagnostic bounds");
+    const auto t=view_type(object);auto j=Json::object();j["kind_raw"]=t.kind;j["size"]=t.size;
+    j["schema_hash"]=read<std::uint32_t>(t.record);
+    if(t.kind==kind_struct) {
+        const auto n=read<std::uint16_t>(t.record+0x2a);if(n>96)throw std::runtime_error("Setup field count");
+        const auto fields=read<Address>(t.record+0x60);auto list=Json::array();
+        for(unsigned i=0;i<n;++i) {
+            const auto f=fields+i*0x18;auto field=Json::object();field["name_hash"]=read<std::uint32_t>(f);
+            field["value"]=diagnostic_value(read<Address>(f+0x10),value+read<std::uint16_t>(f+8),depth+1,budget);
+            list.push_back(std::move(field));
+        }j["fields"]=std::move(list);
+    } else if(t.kind==kind_array) {
+        const auto data=read<Address>(value);const auto n=data?read<std::uint32_t>(data-4)&0x7fffffffU:0;
+        if(n>128)throw std::runtime_error("Setup array count");const auto element=read<Address>(t.record+0x30);
+        const auto stride=view_type(element).size;auto list=Json::array();
+        for(unsigned i=0;i<n;++i)list.push_back(diagnostic_value(element,data+std::size_t{i}*stride,depth+1,budget));
+        j["elements"]=std::move(list);
+    } else if(t.kind==kind_string) j["text"]=read_string(value);
+    else if(t.kind!=kind_reference) {
+        if(!t.size || t.size>64)throw std::runtime_error("Setup scalar size");auto bytes=Json::array();
+        for(unsigned i=0;i<t.size;++i)bytes.push_back(read<std::uint8_t>(value+i));j["bytes_raw"]=std::move(bytes);
+    }
+    return j;
 }
 struct StreamReader {
     const std::vector<std::uint8_t>& bytes; std::size_t at{};
@@ -816,41 +848,36 @@ std::uint32_t injected_sender() {
     const auto graph = executing_graph();
     if (!graph) return 0;
     std::lock_guard lock(l.sent_mutex);
-    for (const auto& sent : l.sent) {
+    const auto sent = l.sent.first([graph](const auto& sent) {
         const auto* h = handled(sent.event);
-        if (h && std::ranges::find(h->graphs, graph) != h->graphs.end()) return sent.sender;
-    }
-    return 0;
+        return h && std::ranges::find(h->graphs, graph) != h->graphs.end();
+    });
+    return sent ? sent->sender : 0;
 }
-void note_sent(std::uint32_t event, std::uint32_t sender) {
+void note_sent(std::uint32_t event, std::uint32_t sender, bool delivered = true) {
     if (!handled(event)) return;
     auto& l = lab();
     std::lock_guard lock(l.sent_mutex);
-    const auto now = now_ms();
-    // An event nobody handled within a few seconds (no such activity running) is dropped.
-    while (!l.sent.empty() && now - l.sent.front().ms > 5000) l.sent.pop_front();
-    if (l.sent.size() < 256) l.sent.push_back({event, sender, now});
-    if (sender) l.any_injected_sent.store(true, std::memory_order_release);
+    l.sent.note(event, sender, now_ms(), delivered);
+    l.any_injected_sent.store(l.sent.has_injected(), std::memory_order_release);
 }
 // After a handler graph returns, its event is done.
 void note_handled(std::uint32_t graph) {
     auto& l = lab();
     std::lock_guard lock(l.sent_mutex);
-    for (auto it = l.sent.begin(); it != l.sent.end(); ++it) {
-        const auto* h = handled(it->event);
-        if (!h || std::ranges::find(h->graphs, graph) == h->graphs.end()) continue;
-        if (it->sender) {
+    const auto sent = l.sent.take([graph](const auto& sent) {
+        const auto* h = handled(sent.event);
+        return h && std::ranges::find(h->graphs, graph) != h->graphs.end();
+    });
+    if (sent) {
+        if (sent->sender) {
             static std::atomic<unsigned> logged{};
             if (logged.fetch_add(1) < 32)
                 logging::log(logging::Level::info, logging::Channel::progression,
-                    "Throwdown lab: server graph {:#x} handled event {:#x} as player {:#x}.", graph, it->event, it->sender);
+                    "Throwdown lab: server graph {:#x} handled event {:#x} as player {:#x}.", graph, sent->event, sent->sender);
         }
-        l.sent.erase(it);
-        break;
     }
-    bool injected{};
-    for (const auto& sent : l.sent) injected = injected || sent.sender;
-    if (!injected) l.any_injected_sent.store(false, std::memory_order_release);
+    l.any_injected_sent.store(l.sent.has_injected(), std::memory_order_release);
 }
 std::uint32_t player_id_by_name_hook(const Address* name) {
     {
@@ -893,6 +920,7 @@ void leaderboard_score_hook(Address leaderboard, bool flag, std::uint32_t player
     {
         profile_runtime::PreserveError preserve;
         const auto graph = executing_graph();
+        trick_logger::score(player, flag, score, graph);
         const bool throwdown = std::ranges::find(throwdown_score_graphs, graph) != throwdown_score_graphs.end();
         try {
             const auto local = local_native_player_id();
@@ -1155,6 +1183,14 @@ std::string run_job(const Job& job) {
         e.send(5, job.uid);
         return std::format("RemoveParticipantFromCommunityEvent sent as player {:#x}", job.uid);
     }
+    case Job::Kind::configure: {
+        Instance e(type_of(event_host_set));e.set_u32(field_mmid,job.mmid);
+        const auto params_field=find_field(e.type,field_params);
+        if(!params_field || params_field->kind!=kind_struct)throw std::runtime_error("Native host settings layout differs");
+        StreamReader reader{job.settings};restore_value(params_field->type,e.value+params_field->offset,reader,0);
+        if(reader.at!=job.settings.size())throw std::runtime_error("Native host settings have trailing data");
+        e.send(5,job.uid);return "Final host settings applied before mirrored S.K.A.T.E. start";
+    }
     case Job::Kind::attempt: {
         // That player's own client's Skate_SubmitAttempt, sent as them (ordered attribution
         // answers their id to the handler's GetPlayerIdByName) with this event's handle.
@@ -1166,6 +1202,7 @@ std::string run_job(const Job& job) {
         e.set_u32(field_event_handle, handle);
         *reinterpret_cast<std::uint8_t*>(e.value + attempt_landed_offset) = job.flag ? 1 : 0;
         std::memcpy(reinterpret_cast<void*>(e.value + attempt_trick_offset), job.trick.data(), job.trick.size());
+        struct InjectionScope {InjectionScope(){detector_injecting=true;} ~InjectionScope(){detector_injecting=false;}} scope;
         e.send(5, job.uid);
         return std::format("Skate_SubmitAttempt sent as player {:#x} ({}) for event {:#x}", job.uid,
                            job.flag ? "landed" : "missed", handle);
@@ -1450,10 +1487,12 @@ void initialize_throwdown_lab(Address base) noexcept {
     } catch (...) {}
 }
 
-void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) noexcept {
+void observe_throwdown_send(std::uint32_t hash, Address type, Address payload, bool delivered) noexcept {
     auto& l = lab();
     if (!l.installed.load(std::memory_order_acquire) || injecting || !type || !payload) return;
-    if (handled(hash)) { try { note_sent(hash, 0); } catch (...) {} }
+    if(hash==event_create){std::lock_guard lock(l.mutex);l.detector_rules_known=false;}
+    trick_logger::event(hash);
+    if (handled(hash)) { try { note_sent(hash, 0, delivered); } catch (...) {} }
     if (hash == event_onboarding_complete) {
         // The local player finished the activity's onboarding: the virtual challenge participants
         // (who have no client to send theirs) finish it with them.
@@ -1559,6 +1598,7 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
                 std::lock_guard lock(l.mutex);
                 action.series = l.series; action.mmid = l.hosted_mmid;
                 action.placement = l.params; action.settings = l.host_params;
+                action.rules_mask=l.detector_rules;action.rules_verified=l.detector_rules_known;
             }
             logging::log(logging::Level::info, logging::Channel::progression,
                 "Throwdowns: local host left the details page of {} MMID {:#x}{}.", action.series, action.mmid,
@@ -1574,6 +1614,16 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
                 ThrowdownLocalAction action{ThrowdownLocalAction::Kind::attempt};
                 action.add = read<std::uint8_t>(payload + attempt_landed_offset) != 0;
                 action.trick = read<std::array<std::uint8_t, 28>>(payload + attempt_trick_offset);
+                trick_logger::attempt(action.add, action.trick);
+                if(skate::active()) {
+                    const auto handle=find_field(type,field_event_handle);
+                    const auto local=local_native_player_id();
+                    if(!detector_injection() && handle && handle->size==4 &&
+                       read<std::uint32_t>(payload+handle->offset)==live_event_handle() &&
+                       local && l.server_active.load(std::memory_order_acquire)==local)
+                        skate::native_outcome(action.add,action.trick);
+                    return;
+                }
                 action.player = l.server_active.load(std::memory_order_acquire);
                 throwdown_relay_local(std::move(action));
             } else {
@@ -1639,8 +1689,31 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
         if (const auto f = find_field(type, field_mmid); f && f->size == 4) mmid = read<std::uint32_t>(payload + f->offset);
         if (const auto f = find_field(type, field_series); f && f->kind == kind_string) series = read_string(payload + f->offset);
         if (const auto p = find_field(type, field_params); p && p->kind == kind_struct) {
+            if(hash==event_host_set) {
+                const auto mode=find_field(p->type,field_series);const auto flags=find_field(p->type,0x4f49c7d0);
+                std::uint8_t mask{};bool known{};
+                if(mode && read_string(payload+p->offset+mode->offset)=="ThrowdownSkate" && flags && flags->kind==kind_array) {
+                    const auto data=read<Address>(payload+p->offset+flags->offset);
+                    const auto element=read<Address>(view_type(flags->type).record+0x30);
+                    if(data && (read<std::uint32_t>(data-4)&0x7fffffffU)==8 && view_type(element).kind==10 && view_type(element).size==1) {
+                        known=true;for(unsigned i=0;i<8;++i){const auto v=read<std::uint8_t>(data+i);known&=v<=1;if(v)mask|=static_cast<std::uint8_t>(1u<<i);}
+                    }
+                }
+                {std::lock_guard lock(l.mutex);l.detector_rules=mask;l.detector_rules_known=known;}
+                if(known){auto snapshot=Json::object();snapshot["source"]="native_final_skate_rules";snapshot["mask"]=mask;
+                    auto names=Json::array();const char* labels[]={"ScoreFlips","ScoreGrabs","ScoreGrinds","ScoreGroundTricks","ScoreSlams","AllowOffBoard","AllowSessionMarkers","ForceCannonball"};
+                    for(unsigned i=0;i<8;++i){auto entry=Json::object();entry["index"]=i;entry["name"]=labels[i];entry["enabled"]=(mask&(1u<<i))!=0;names.push_back(entry);}snapshot["toggles"]=names;
+                    trick_logger::setup_snapshot(std::move(snapshot));}
+            }
             capture_value(p->type, payload + p->offset, params, 0);
             note = describe_params(p->type, payload + p->offset);
+            if(trick_logger::full_capture()) {
+                try {unsigned budget=1024;auto snapshot=Json::object();snapshot["event_hash"]=hash;
+                    snapshot["source"]="outgoing_throwdown_setup";
+                    snapshot["parameters"]=diagnostic_value(p->type,payload+p->offset,0,budget);
+                    trick_logger::setup_snapshot(std::move(snapshot));
+                }catch(...){}
+            }
             if (const auto f = find_field(p->type, field_series); f && f->kind == kind_string)
                 series = read_string(payload + p->offset + f->offset);
             std::array<float, 3> spawn{};
@@ -1773,8 +1846,8 @@ void pump_throwdown_lab(Address vm) noexcept {
                 std::uint32_t sender{};
                 {
                     std::lock_guard lock(l.sent_mutex);
-                    for (const auto& sent : l.sent)
-                        if (sent.event == event_criteria_attempt) { sender = sent.sender; break; }
+                    const auto sent = l.sent.first([](const auto& sent) { return sent.event == event_criteria_attempt; });
+                    if (sent) sender = sent->sender;
                 }
                 logging::log(logging::Level::info, logging::Channel::progression,
                     "Coop challenge lab: criteria handler ran ({} realm), attributed to {}.", realm_name(realm()),
@@ -1908,6 +1981,7 @@ void pump_throwdown_lab(Address vm) noexcept {
     // A relay spawn that fails here never reaches the server: the relay is told, so the copy
     // is dropped instead of waiting for an MMID that will not come.
     std::uint64_t spawn_token{};
+    bool detector_job{};
     try {
         if (realm() != client_realm) return;
         Job job{};
@@ -1918,7 +1992,9 @@ void pump_throwdown_lab(Address vm) noexcept {
             if (l.jobs.empty()) l.pending.store(false, std::memory_order_release);
         }
         spawn_token = job.token;
+        detector_job = job.kind==Job::Kind::attempt && skate::active();
         const auto result = run_job(job);
+        detector_job = false;
         spawn_token = 0;
         logging::log(logging::Level::info, logging::Channel::progression, "Throwdown lab: {}.", result);
     } catch (const std::exception& e) {
@@ -1926,6 +2002,7 @@ void pump_throwdown_lab(Address vm) noexcept {
     } catch (...) {
         logging::write(logging::Level::warning, logging::Channel::progression, "Throwdown lab: injection failed.");
     }
+    if(detector_job)skate::bridge_error();
     if (spawn_token) throwdown_relay_spawned(spawn_token, 0, 0);
 }
 
@@ -1933,11 +2010,14 @@ void throwdown_lab_before_level_transition(unsigned next) noexcept {
     // 14, 22 and 3 leave a level or sublevel, 24 shuts down: the level's bundles are unloaded,
     // and the events' types with them.
     if (next != 14 && next != 22 && next != 3 && next != 24) return;
+    skate::reset_native_eligibility();
     try {
         auto& l = lab();
         std::lock_guard lock(l.mutex);
         l.world.fetch_add(1, std::memory_order_acq_rel);
         l.types.clear();
+        std::erase_if(l.jobs,[](const Job& job){return job.kind==Job::Kind::attempt || job.kind==Job::Kind::configure || job.kind==Job::Kind::end_turn;});
+        l.pending.store(!l.jobs.empty(),std::memory_order_release);l.detector_rules_known=false;
     } catch (...) {}
 }
 
@@ -1950,7 +2030,7 @@ bool throwdown_lab_player(std::uint32_t player_id) noexcept {
 namespace {
 constexpr std::array relay_events{event_debug_spawn, event_add_ai, event_force_start, event_destroy,
                                   event_remove_participant, event_player_score, event_request_turn_end,
-                                  event_skate_submit, event_force_destroy};
+                                  event_skate_submit, event_force_destroy, event_host_set};
 // The beacon events' types, looked for in the background in each level (only the local player's
 // own beacon would otherwise show them); retried while the world is still loading them.
 bool beacon_types_ready() {
@@ -2049,6 +2129,11 @@ bool queue_throwdown_row(std::uint32_t player, std::uint8_t board, bool add, std
     job.flag = add;
     job.score = static_cast<float>(value);
     return queue_relay_job(std::move(job), event_player_score);
+}
+bool queue_throwdown_settings(std::uint32_t host,std::uint32_t mmid,const std::vector<std::uint8_t>& settings) noexcept {
+    if(!host || !mmid || settings.empty() || settings.size()>1536)return false;
+    Job job{Job::Kind::configure,host};job.mmid=mmid;job.settings=settings;
+    return queue_relay_job(std::move(job),event_host_set);
 }
 bool queue_throwdown_attempt(std::uint32_t player, bool landed, const std::array<std::uint8_t, 28>& trick) noexcept {
     if (!player || !live_event_handle()) return false;

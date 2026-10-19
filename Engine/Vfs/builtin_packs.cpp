@@ -1,6 +1,5 @@
 #include "builtin_packs.h"
 #include "builtin_pack_format.h"
-#include "mod_list.h"
 #include "Engine/Core/Platform/path_text.h"
 #include <Windows.h>
 #include <miniz.h>
@@ -221,85 +220,21 @@ bool unpack_builtin_pack(std::span<const unsigned char> bytes, const fs::path& t
     }
 }
 
-namespace {
-// The official mods turned off (official_off_file), in small letters.
-std::vector<std::string> official_off_list(const fs::path& mods_root) {
-    std::vector<std::string> names;
-    std::ifstream in(mods_root / std::string(official_folder) / std::string(official_off_file), std::ios::binary);
-    for (std::string line; std::getline(in, line);) {
-        while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
-        const auto first = line.find_first_not_of(" \t");
-        if (first == std::string::npos) continue;
-        auto name = lower_text(std::string_view(line).substr(first));
-        if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(std::move(name));
-    }
-    return names;
-}
-} // namespace
-
-std::vector<std::string> move_official_mods(const fs::path& mods_root) noexcept {
-    std::vector<std::string> done;
+std::vector<BuiltinPack> official_packs(const fs::path& mods_root) noexcept {
+    std::vector<BuiltinPack> packs;
     try {
-        const auto kept = mods_root / std::string(official_folder);
         std::error_code error;
-        if (!fs::is_directory(kept, error)) return done;
-        const auto off = official_off_list(mods_root);
-        bool listed = true;
-        for (fs::directory_iterator at(kept, error), end; !error && at != end; at.increment(error)) {
+        for (fs::directory_iterator at(mods_root / std::string(official_folder), error), end; !error && at != end; at.increment(error)) {
+            if (!at->is_directory(error) || !fs::is_regular_file(at->path() / std::string(official_stamp), error)) continue;
             const auto wide = at->path().filename().wstring();
-            if (!at->is_directory(error) || wide.empty() || wide.front() == L'.' || wide.find(L".new") != std::wstring::npos ||
-                !official_mod(at->path()))
-                continue;
-            const auto name = path_utf8(at->path().filename());
-            const auto target = mods_root / at->path().filename();
-            std::error_code moved;
-            if (fs::exists(target, moved)) {
-                // Moved before, by a launcher that stopped before it was done: this copy is left over.
-                if (official_mod(target)) {
-                    fs::remove_all(at->path(), moved);
-                    continue;
-                }
-                // A copy of the player's own, which the official one replaces as it did from there.
-                fs::remove_all(target, moved);
-                if (moved) {
-                    done.push_back(name + " could not be moved into the Mods folder: a copy there could not be replaced");
-                    continue;
-                }
-            }
-            fs::rename(at->path(), target, moved);
-            if (moved) {
-                done.push_back(name + " could not be moved into the Mods folder (" + moved.message() + ")");
-                continue;
-            }
-            const bool on = std::find(off.begin(), off.end(), lower_text(name)) == off.end();
-            listed = set_mod_enabled(mods_root, name, on) && listed;
-            done.push_back(name + " moved into the Mods folder" + (on ? "" : ", switched off as it was"));
+            if (wide.empty() || wide.front() == L'.' || wide.find(L".new") != std::wstring::npos) continue;
+            std::string name;
+            for (const auto c : wide) name.push_back(c < 0x80 ? static_cast<char>(c) : '_');
+            packs.push_back({std::move(name), at->path()});
         }
-        // The list of those turned off is in mods.json now.
-        if (listed) fs::remove(kept / std::string(official_off_file), error);
+        std::sort(packs.begin(), packs.end(), [](const BuiltinPack& a, const BuiltinPack& b) { return a.name < b.name; });
     } catch (...) {}
-    return done;
-}
-
-bool official_mod(const fs::path& directory) noexcept {
-    std::error_code error;
-    return fs::is_regular_file(directory / std::string(official_stamp), error);
-}
-
-bool official_off(const fs::path& mods_root, std::string_view folder) noexcept {
-    return !folder.empty() && mod_disabled(mods_root, folder);
-}
-
-bool set_official_off(const fs::path& mods_root, std::string_view folder, bool off) noexcept {
-    return set_mod_enabled(mods_root, folder, !off);
-}
-
-bool official_in_use(const fs::path& mods_root, std::string_view folder) noexcept {
-    try {
-        return !folder.empty() && official_mod(mods_root / std::string(folder)) && !official_off(mods_root, folder);
-    } catch (...) {
-        return false;
-    }
+    return packs;
 }
 
 bool retired_mod(std::string_view folder) noexcept {
@@ -310,8 +245,14 @@ bool retired_mod(std::string_view folder) noexcept {
     }
 }
 
-bool kept_by_reskate(const fs::path&, std::string_view folder) noexcept {
-    return !folder.empty() && retired_mod(folder);
+bool kept_by_reskate(const fs::path& mods_root, std::string_view folder) noexcept {
+    try {
+        if (folder.empty() || retired_mod(folder)) return !folder.empty();
+        std::error_code error;
+        return fs::is_regular_file(mods_root / std::string(official_folder) / std::string(folder) / std::string(official_stamp), error);
+    } catch (...) {
+        return false;
+    }
 }
 
 std::vector<BuiltinPack> unpack_builtin_packs(const fs::path& mods_root, std::vector<std::string>& notes) noexcept {

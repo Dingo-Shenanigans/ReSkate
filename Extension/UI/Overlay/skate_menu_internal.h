@@ -1,7 +1,6 @@
 #pragma once
 #include "skate_menu.h"
 #include <initializer_list>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -28,10 +27,7 @@ void section(SkateMenu& menu, const char* text);
 void feedback(SkateMenu& menu, const char* text);
 bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& value,
                 bool available = true, const char* unavailable = "N/A");
-void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> tabs, const char* id);
-inline void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const char*> tabs, const char* id) {
-    category_tabs(menu, selected, std::span<const char* const>(tabs.begin(), tabs.size()), id);
-}
+void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const char*> tabs, const char* id);
 
 // Page layout kit, so every page reads the same way:
 //   begin_card / end_card  a titled tile grouping related controls, sized to its
@@ -147,7 +143,4 @@ enum Page {
 };
 enum Addon { addon_all, addon_drone, addon_board_break, addon_road_rash, addon_hall_of_meat, addon_grind_exits, addon_music, addon_count };
 void open_page(SkateMenu&, int page, int addon = -1);
-// An addon made from an official mod whose feature did not start (the mod is turned off in the
-// launcher, or this game build cannot run it) is listed nowhere in the menu (skate_menu_addons.cpp).
-bool addon_hidden(const Model&, int addon);
 }

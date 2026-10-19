@@ -36,6 +36,7 @@ struct ThrowdownMessage {
     std::uint32_t id{};     // the leader's own number for it
     // offer: mode and the leader's CreateThrowdownQueueParams as recorded from its
     // UpdateThrowdownQueueInfo (placement) and HostSetThrowdownParameters (settings).
+    // start: the leader's final settings (S.K.A.T.E.: the setup frozen for the match; else empty).
     std::string series;
     std::vector<std::uint8_t> placement, settings;
     // offer: the players already in the leader's queue (so a late viewer's copy has them);
@@ -50,11 +51,17 @@ struct ThrowdownMessage {
     std::vector<std::uint8_t> criteria, indexes;
     // beacon: the LinearTransform it stands at (right, up, forward, translation; 4 floats each).
     std::array<float, 16> location{};
+    // offer, start, attempt: the S.K.A.T.E. setup's eight trick-category switches (0 for other modes).
+    std::uint8_t rules_mask{};
+    // attempt: the S.K.A.T.E. trick detector's normalized result as JSON (<= 3500 bytes); empty
+    // when no detector judged the attempt.
+    std::vector<std::uint8_t> detected;
     bool operator==(const ThrowdownMessage &) const = default;
 };
 constexpr std::size_t max_throwdown_series = 48, max_throwdown_params = 1536, max_throwdown_order = 32,
                       max_throwdown_boards = 16, max_challenge_id = 96, max_challenge_criteria = 64,
-                      challenge_criteria_size = 0x14, max_challenge_players = 4;
+                      challenge_criteria_size = 0x14, max_challenge_players = 4,
+                      max_detected_attempt = 3500;
 bool valid_throwdown(const ThrowdownMessage &) noexcept;
 // Throws std::invalid_argument for an invalid message.
 std::vector<std::uint8_t> encode_throwdown(const ThrowdownMessage &);
