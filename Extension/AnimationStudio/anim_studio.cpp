@@ -1744,20 +1744,18 @@ Vec3 to_view(const Joint& view_place, const Joint& clip_place, const Vec3& p) {
 }
 } // namespace
 
+// Both in the clip's own frame: the field is where the joint is now, from where it rests, in the skater's axes.
 Vec3 limb_position(std::uint16_t joint) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (!s.clip || s.clip->empty() || !editable(joint)) return {};
     const float at = frame_time(s.time);
-    std::vector<Joint> native(s.clip->joints);
+    std::vector<Joint> native(skeleton_joints);
     s.clip->sample(at, native);
     std::vector<Joint> posed(native);
     apply_edits(s.edits, at, posed);
-    const Joint clip_place = world(posed, placement_joint);
-    const auto* now = [&]() -> const JointView* { for (const auto& j : s.joints) if (j.joint == joint) return &j; return nullptr; }();
-    if (!now) return {};
-    const Vec3 rest = to_view(s.joints_placement, clip_place, world(native, joint).position);
-    return {now->position[0] - rest[0], now->position[1] - rest[1], now->position[2] - rest[2]};
+    const auto now = world(posed, joint).position, rest = world(native, joint).position;
+    return {now[0] - rest[0], now[1] - rest[1], now[2] - rest[2]};
 }
 
 void set_limb_position(std::uint16_t joint, const Vec3& offset) {
@@ -1769,15 +1767,12 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
         return;
     }
     const float at = frame_time(s.time);
-    std::vector<Joint> native(s.clip->joints);
+    std::vector<Joint> native(skeleton_joints);
     s.clip->sample(at, native);
-    std::vector<Joint> posed(native);
-    apply_edits(s.edits, at, posed);
-    const Joint clip_place = world(posed, placement_joint);
-    const Vec3 rest = to_view(s.joints_placement, clip_place, world(native, joint).position);
-    const Vec3 target_view{rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]};
+    const auto rest = world(native, joint).position;
+    const Vec3 target{rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]};
     try {
-        anim_studio::drag_joint(s.edits, native, at, joint, to_clip(s.joints_placement, clip_place, target_view), 3);
+        anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
     } catch (const std::exception& e) {
         s.status = e.what();
         return;
@@ -1786,23 +1781,6 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
     Offset held{};
     if (const auto* t = s.edits.track(joint)) held.rotation = evaluate(*t, at).rotation;
     set_key(s.edits, joint, at, held);
-    changed_locked(s);
-}
-
-void move_bracket(int which, float seconds) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    if (!s.clip || s.clip->empty()) return;
-    const float duration = s.clip->duration();
-    const float t = std::clamp(seconds, 0.0f, duration);
-    if (which == 1) {
-        const float end = s.edits.end < 0 ? duration : s.edits.end;
-        const float start = std::min(t, end - 1.0f / 30);
-        shift_keys(s.edits, start - s.edits.start);
-        s.edits.start = start;
-    } else if (which == 2) {
-        s.edits.end = std::max(t, s.edits.start + 1.0f / 30);
-    } else return;
     changed_locked(s);
 }
 

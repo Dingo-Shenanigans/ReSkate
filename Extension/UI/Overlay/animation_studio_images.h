@@ -18,7 +18,7 @@ void prepare_animation_studio_images() noexcept;
 void reserve_animation_studio_images(ImFontAtlas& atlas, std::chrono::milliseconds wait) noexcept;
 void fill_animation_studio_images(ImFontAtlas& atlas) noexcept;
 
-enum class StudioPicture { grain, tile, brush, kickflip };
+enum class StudioPicture { grain, tile, brush, kickflip, backdrop };
 // Stretched onto the box. False when the picture is not there.
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
 // The brush bar's body on the box, its splatter around it.

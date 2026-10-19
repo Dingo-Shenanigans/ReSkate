@@ -3,8 +3,16 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/ui_textures.h"
 #include "Engine/Vfs/game_textures.h"
+#include "Engine/Resource/texture.h"
 #include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
 #include <imgui.h>
+#include <windows.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <vector>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -37,14 +45,14 @@ constexpr std::array<Place, 3> kickflip_places{{
     {ui::bam_toc, ui::bam_bundle},
 }};
 
-constexpr std::size_t picture_count = 4;
+constexpr std::size_t picture_count = 5, backdrop_index = 4;
 struct Source {
     const ui::Texture* texture; // the kickflip's is found in kickflip_places
     std::uint32_t side;
     bool brightness{}; // white with the texture's brightness as alpha, else its own alpha
 };
 constexpr std::array<Source, picture_count> sources{{
-    {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152},
+    {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152}, {nullptr, 0},
 }};
 using Images = std::array<std::optional<frostbite::Image>, picture_count>;
 
@@ -71,11 +79,63 @@ frostbite::Image whiten(frostbite::Image image, bool brightness) {
     return image;
 }
 
+// The loading screen's backdrop, a picture the user puts beside the studio's tricks: the RESKATE_STUDIO_BACKDROP
+// file, else backdrop.png in the folder above the tricks (RESKATE_ANIMATION_STUDIO_DIR). Fitted to 1920 x 1080.
+std::filesystem::path backdrop_path() {
+    std::array<wchar_t, 32768> buffer{};
+    if (const auto length = GetEnvironmentVariableW(L"RESKATE_STUDIO_BACKDROP", buffer.data(), static_cast<DWORD>(buffer.size())); length && length < buffer.size())
+        return std::wstring(buffer.data(), length);
+    if (const auto length = GetEnvironmentVariableW(L"RESKATE_ANIMATION_STUDIO_DIR", buffer.data(), static_cast<DWORD>(buffer.size())); length && length < buffer.size())
+        return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path() / L"backdrop.png";
+    return {};
+}
+std::optional<frostbite::Image> read_backdrop() {
+    const auto path = backdrop_path();
+    std::error_code error;
+    if (path.empty() || !std::filesystem::is_regular_file(path, error)) return std::nullopt;
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (bytes.empty() || bytes.size() > (64u << 20)) return std::nullopt;
+    const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+    std::optional<frostbite::Image> out;
+    try {
+        Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+        Microsoft::WRL::ComPtr<IWICStream> stream;
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+        Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+        Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+        UINT width{}, height{};
+        if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+            SUCCEEDED(factory->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromMemory(const_cast<BYTE*>(bytes.data()), static_cast<DWORD>(bytes.size()))) &&
+            SUCCEEDED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) &&
+            SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&width, &height)) && width && height && width <= 8192 && height <= 8192 &&
+            SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+            SUCCEEDED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) {
+            frostbite::Image image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
+            if (SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(image.rgba.size()), image.rgba.data()))) {
+                const float scale = std::min({1.0f, 1920.0f / static_cast<float>(width), 1080.0f / static_cast<float>(height)});
+                out = scale < 1.0f ? frostbite::resize(image, std::max(1u, static_cast<std::uint32_t>(width * scale)), std::max(1u, static_cast<std::uint32_t>(height * scale)))
+                                   : std::move(image);
+            }
+        }
+    } catch (...) {
+        out.reset();
+    }
+    if (com) CoUninitialize();
+    if (out) logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: the loading backdrop is read from {}.", path.string());
+    else logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: no loading backdrop read from {}.", path.string());
+    return out;
+}
+
 Images decode() {
     Images result;
     try {
         vfs::GameTextures textures(hall_of_meat::game_folder());
         for (std::size_t index = 0; index < picture_count; ++index) {
+            if (index == backdrop_index) {
+                result[index] = read_backdrop();
+                continue;
+            }
             const auto& source = sources[index];
             if (!source.texture) {
                 for (const auto& place : kickflip_places) {

@@ -64,7 +64,7 @@ struct Ui {
     ImVec2 drag_start{};
     int axis{-1}; // -1 free, 0 X, 1 Y, 2 Z
     bool local_axes{true}, move_mode{};
-    bool limb_holding{}; // a joint is held and dragged: the limb above it follows the mouse
+
     std::array<char, 64> name{}, trick{};
     std::uint64_t names_for{};
     std::string message;
@@ -1398,14 +1398,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered()) {
         // Press and hold a joint: it is grabbed, and the limb above it follows the mouse. Shift turns the
         // selected joint with the gizmo instead.
-        if (hovered && !io.KeyShift && v.has_clip) {
-            u.selected = *hovered;
-            const auto* track = track_view(v, u.selected);
-            if (!(track && track->locked)) {
-                u.limb_holding = true;
-                begin_turn(v);
-            }
-        } else if (hovered && *hovered != u.selected) u.selected = *hovered;
+        if (hovered && *hovered != u.selected) u.selected = *hovered;
         else if (sel && v.has_clip) {
             const auto* track = track_view(v, u.selected);
             if (!(track && track->locked)) {
@@ -1414,10 +1407,6 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
                 begin_turn(v);
             }
         }
-    }
-    if (u.limb_holding) {
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.limb_holding = false;
-        else drag_limb_to(v, project, mouse);
     }
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
@@ -1744,7 +1733,10 @@ void draw_animation_studio_loading() {
     auto* d = ImGui::GetForegroundDrawList();
     // Concrete: near black, skate.'s grain and scratches over it, darker at the edges.
     d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(19, 19, 19, 255)));
-    if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
+    // The backdrop, when the studio has one, under a dark veil so the wordmark reads on it.
+    if (draw_studio_picture(d, StudioPicture::backdrop, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 255))))
+        d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(8, 8, 10, 90)));
+    else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
         for (unsigned i = 0; i < 2600; ++i) {
             const float x = skate_theme::noise(i * 3 + 1) * display.x, y = skate_theme::noise(i * 3 + 2) * display.y;
             const auto shade = static_cast<int>(26 + skate_theme::noise(i * 3 + 3) * 40);
