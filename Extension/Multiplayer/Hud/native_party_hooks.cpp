@@ -6,6 +6,9 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Engine/Core/Platform/memory.h"
 #include "follow_camera.h"
+#include "Extension/Skater/FirstPerson/integration.h"
+#include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Multiplayer/Session/peer_slots.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
 #include "Extension/Objects/object_prompt.h"
@@ -917,11 +920,24 @@ void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool 
                 }
             }
         }
-        if (!id && !s.camera_owned) return;
+        dingosdk::first_person_party_handoff(base,client,id!=0,ready,camera_phase);
+        if (!id && !s.camera_owned) {
+            std::array<float,16> idle{};float unused{};
+            first_person_integration::spectator_camera(base,client,0,0,0,idle,unused,false);
+            return;
+        }
         std::optional<std::array<float, 16>> camera;
         float fov{};
         // Framed the way the game's own camera frames the local skater (follow_camera.h).
-        if (id && selected) camera = follow_camera(id, selected->position.root, fov);
+        if (id && selected) {
+            camera = follow_camera(id, selected->position.root, fov);
+            const PeerScope peer(selected->record.player.slot);
+            first_person_integration::spectator_camera(base,client,id,selected->record.player.epoch,
+                remote_skater_entity(),*camera,fov,ready && camera_phase);
+        } else {
+            std::array<float,16> idle{};
+            first_person_integration::spectator_camera(base,client,0,0,0,idle,fov,false);
+        }
         std::string detail;
         const bool applied = dingosdk::update_party_camera(base, client, ready, camera_phase, camera ? &*camera : nullptr, detail, fov);
         if (!applied && detail.empty()) detail = "Spectate camera helper is busy or not initialized.";

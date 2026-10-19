@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <span>
 
 namespace dingosdk::runtime {
 struct LoadRequest { std::string asset, start, lm_level, lm_start; };
@@ -78,6 +79,16 @@ public:
             (!restore && count<overlay::DebugRequest>() >= 16)) return false;
         if (restore) clear<overlay::DebugRequest>();
         append(request, thread); return true;
+    }
+    // Admit a profile's related edits together using the same native validation,
+    // limits and FIFO rules. A rejection leaves the original queue untouched.
+    bool enqueue_batch(std::span<const overlay::DebugRequest> requests,
+                       const RequestContext& context, std::uint32_t thread) {
+        auto candidate = *this;
+        for (const auto& request : requests)
+            if (!candidate.enqueue(request, context, thread)) return false;
+        *this = std::move(candidate);
+        return true;
     }
     bool enqueue(overlay::OfflineFeatureRequest request, const RequestContext& context, std::uint32_t thread) {
         const bool restore = request.group == overlay::OfflineFeatureGroup::restore_all;

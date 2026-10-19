@@ -122,11 +122,12 @@ namespace dingosdk {
 using namespace client_source::detail;
 
 bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
-    const std::array<float, 16>* transform, std::string& detail, float fov) noexcept {
+    const std::array<float, 16>* transform, std::string& detail, float fov, bool refine_only) noexcept {
     struct Lease { bool owned{}, uncertain{}; SourceCameraIdentity identity; DWORD thread{}; float saved_fov{}; };
     static Lease lease;
     SourceLastError error;
     auto& s = source_state();
+    if(refine_only && !lease.owned)return false;
     if (!transform && !lease.owned) return true;
     if (!s.initialized.load(std::memory_order_acquire) || s.busy.test_and_set(std::memory_order_acquire)) return false;
     SourceBusyScope busy{s.busy};
@@ -139,6 +140,7 @@ bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready,
         // A destroyed world owns its old camera. Forget that lease without
         // touching freed memory or changing a new world's selected camera.
         if (lease.owned && reader.pointer(client, 8) != lease.identity.context) lease = {};
+        if(refine_only && !lease.owned)return false;
         if (!transform && !lease.owned) return true;
         source_require(phase, "Spectate is waiting for the native camera phase.");
         auto camera = source_camera_snapshot(trial, client);

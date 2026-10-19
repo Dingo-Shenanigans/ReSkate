@@ -76,7 +76,8 @@ bool set_local_freecam_binding(std::uint32_t combo) {
 
 bool set_local_action_binding(std::size_t index, std::uint32_t combo) {
     auto& s = local_runtime(); std::lock_guard lock(s.native_mutex);
-    if (!s.active || !s.store || index >= action_binds.size() || !valid_action_binding(combo)) return false;
+    if (!s.active || !s.store || index >= action_binds.size() || !valid_action_binding(combo) ||
+        (action_binds[index].controller_only && !valid_controller_combo(combo))) return false;
     try {
         const auto& slot = action_binds[index];
         s.store->save_action_binding(slot.key, combo);

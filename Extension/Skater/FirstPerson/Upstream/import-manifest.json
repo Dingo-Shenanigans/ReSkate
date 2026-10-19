@@ -1,0 +1,166 @@
+{
+  "commit": "974e91e05b622c5b4b7ea0b78e09be0f18c8edb3",
+  "files": [
+    {
+      "source": "src/binding_conflicts.h",
+      "upstream_sha256": "1df6254d49227f6bd3d971ac69495bafecf3759b33da10a2b6240b1bfc29b51e",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/board_look.h",
+      "upstream_sha256": "5d2fb0f43d2ef49833120b164a02f281d70508dd22728f0cb2f1dbdcfd15e900",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/config.cpp",
+      "upstream_sha256": "ddd171152a54c11a96317606ad8a2418294849531221e954dfcce0c7f5e4b4e3",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/glance_controls.h",
+      "upstream_sha256": "41159918fd50e9c87ea57e334281d0ce07e07845c14802acb8148098a39581cc",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/look_smoothing.h",
+      "upstream_sha256": "bfa1b18093e5f7fc510eb7b01ddc979baaff1c0ca11bdb524f462fd73864b476",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/marker_glance.h",
+      "upstream_sha256": "defba7a05ed7045d79bf15f2aac5c9b71171eafa78c10702944d1eae66cb3b29",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/mod.h",
+      "upstream_sha256": "2653b7212bb6096100f7a59304ea58862f40e3e6ca5bba24f1f23e02e161fbad",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/native_controls.h",
+      "upstream_sha256": "ceb86e51cb5eebb180d94033319b262e36dc7dcd64ab19c3beec7c94d4086e3b",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/settings.cpp",
+      "upstream_sha256": "e8e91b671f28ff9c7bd6b309ee0da18c8cbc470831f5c7f8c9965ee5b4d170ee",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/settings.h",
+      "upstream_sha256": "820e5e7746f7649b52194cb3e111cac092788549d0d3048e9ca2f9281ae04f5b",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/stick_look.h",
+      "upstream_sha256": "9ba4426d24b473a979c77abdbe025d345dc6a9370eee63f640c26cac77299813",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "vendor/Engine/Game/Input/controller_bindings.h",
+      "upstream_sha256": "5fe88ad26b0a10357438ede13ea5cc876e77c391f2a58e3d7ee8908e1f0a756e",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "vendor/Engine/Game/Skater/first_person_spring.h",
+      "upstream_sha256": "43473ea95b72e666bd1cae3b57ecbed0df25b2bca2b268487a0febf5836b42ec",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/camera_policy.h",
+      "upstream_sha256": "fb92c425f7db3b8db0e1976f81d6454e447309e602e2e0a225413481894360bb",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/player_state_contract.h",
+      "upstream_sha256": "ed715f9b3088e9822230e00b516349d67c5476d93914734ef365255992961565",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/stick_runtime.h",
+      "upstream_sha256": "48d334a1abdce2fc70dd1cb1cc583bbf4180b030c79c880a95af1da4849f3b4e",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/jump_episode.h",
+      "upstream_sha256": "7eec84774fdba956d9ed4a49b1705554a87ecabb9175b5c690ef33ca8dc0ab0e",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/hippy_jump.h",
+      "upstream_sha256": "9e9bc0421972260ccd4e54deb5fd355d0dcec2bc292a0da74b3a24955e6bcd51",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/comfort_policy.h",
+      "upstream_sha256": "c9b01a9d1a3ae047f0670795035248f49e62b0dae66b56c29f4034412890c36f",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/spring_policy.h",
+      "upstream_sha256": "4b9c120f9d2e0ffe240305fbb5e6adcbc739565f8305eceb5564964b798b9733",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/camera_movement.h",
+      "upstream_sha256": "9456adb029ea75058adf1659a1d8faec1ce999af4109ffcaf5c8bf77f58523e2",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/camera_transition.h",
+      "upstream_sha256": "4271911ec8b1d487ec97c758646ebc0b8fd38f9de0a4773d0a6550938332c265",
+      "namespace": "first_person_vendor"
+    },
+    {
+      "source": "src/bail_collision.cpp",
+      "upstream_sha256": "7221341ad968d2227f8d29999b920350f425b61d38256ed424b30a8a8a7b2b91",
+      "adaptation": "Native build; math types isolated where required."
+    },
+    {
+      "source": "src/bail_collision.h",
+      "upstream_sha256": "6a8d844827fd362ea8241e8384db3c21a2933cad888786af6852d54ad4e61951",
+      "adaptation": "Native build; math types isolated where required."
+    },
+    {
+      "source": "src/bail_collision_contract.h",
+      "upstream_sha256": "9c24b83d8850f77aa0807f85d5161146d4762a4c43b189dc7239396967d9e1dd",
+      "adaptation": "Native build; math types isolated where required."
+    },
+    {
+      "source": "src/getup_contract.h",
+      "upstream_sha256": "2fd35d8d4ed0a934d5569d6d0ba24cdfe45ff10151c6ec2080e118f9676ef824",
+      "adaptation": "Native build; math types isolated where required."
+    },
+    {
+      "source": "src/bail_recovery_contract.h",
+      "upstream_sha256": "cb914e2186c6c6ecea5cd7f92f3c9494b3b10c806d12d50489baa4b0d668e200",
+      "adaptation": "Native build; math types isolated where required."
+    }
+  ],
+  "note": "Attributed math/policies and value codec; new native JSON settings/profiles. No data imports, migration paths, DLL bootstrap, companion recorder or stock address bridge.",
+  "test_sources": [
+    {
+      "source": "tests/board_look_tests.cpp",
+      "upstream_sha256": "83f46a6a2f986a0237f87712e697303bce2bd1604bb160bb43898b137e4e0a36"
+    },
+    {
+      "source": "tests/glance_toggle_tests.cpp",
+      "upstream_sha256": "821153c71679d0ff90ce20a13b39fb61966708ff85b26bac0698eb2c5e718a83"
+    },
+    {
+      "source": "tests/look_smoothing_tests.cpp",
+      "upstream_sha256": "ee72991fc3bdb284276a4ce3e8685799ae0e878217f3463ed60d84dc90974409"
+    },
+    {
+      "source": "tests/camera_transition_tests.cpp",
+      "upstream_sha256": "afbb4d5451f2bfa37b0cf2e67f11971a09dc2e925a1eb01daa85f5aa885edb99"
+    }
+  ],
+  "preset": {
+    "source": "presets/recommended.ini",
+    "upstream_sha256": "7e47f1dbefe992b0a7f3478ae62e5c7b3811284fdfb9bfa4f632baf90b7f4026",
+    "native_asset": "recommended.json"
+  },
+  "latest_audited_commit": "c0d2c4788fcbc1f970d4b3dc013a70f46b43bd6f",
+  "latest_checked_date": "2026-10-18"
+}

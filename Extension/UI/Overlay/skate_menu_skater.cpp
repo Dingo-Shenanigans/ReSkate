@@ -1,3 +1,4 @@
+#include "Extension/Skater/FirstPerson/integration.h"
 #include "skate_menu_internal.h"
 
 #include <algorithm>
@@ -14,6 +15,7 @@ float trailing_width(const char* label) {
 }
 void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
+    first_person_integration::observe_bindings(model.bindings);
     begin_card(menu, "freecam", "FREECAM");
     bool flight = debug.free_camera;
     if (toggle_row(menu, "Freecam", "Detach the camera and explore.", flight,
@@ -91,11 +93,23 @@ void first_person_controls(SkateMenu& menu, const Model& model, const CallbacksV
     if (toggle_row(menu, "First person", "See the world through the skater's eyes.", first_person,
             debug.available && debug.camera_available && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_first_person, first_person});
+    first_person_main_controls(menu, model, callbacks);
+    if(ImGui::CollapsingHeader("Advanced")) {
+        if(ImGui::TreeNodeEx("View and stabilization",ImGuiTreeNodeFlags_SpanAvailWidth)) {
+    first_person_view_controls(menu);
     field(menu, "Field of view");
-    int fov = static_cast<int>(std::lround(debug.first_person_fov > 0 ? debug.first_person_fov : debug.camera_fov));
+    const bool custom_fov = debug.first_person_fov > 0;
+    int fov = static_cast<int>(std::lround(custom_fov ? debug.first_person_fov : debug.camera_fov));
+    const float fov_reset_width = trailing_width("Reset");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - fov_reset_width - ImGui::GetStyle().ItemSpacing.x);
     ImGui::BeginDisabled(!debug.first_person || !callbacks.queue_debug);
     if (::dingosdk::overlay::menu::slider_int("##first-person-fov", &fov, 40, 120, "%d degrees", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_first_person_fov, false, static_cast<float>(fov)});
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!custom_fov);
+    if (ImGui::Button("Reset", ImVec2(fov_reset_width, 0)))
+        debug_request(menu, callbacks, {DebugAction::set_first_person_fov, false, 0.0f});
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
     {
         auto settings = debug.first_person_arm;
@@ -104,31 +118,25 @@ void first_person_controls(SkateMenu& menu, const Model& model, const CallbacksV
                 "Keep the horizon level and the view steady; the head's heading is still followed.", settings.stabilize, can_edit))
             debug_request(menu, callbacks, {DebugAction::set_first_person_stabilize, settings.stabilize});
         ImGui::BeginDisabled(!settings.stabilize || !can_edit);
-        const auto percent = [&](const char* label, const char* id, float value, DebugAction action) {
+        const auto percent = [&](const char* label, const char* id, float value, DebugAction action,float reset) {
             field(menu, label);
-            if (::dingosdk::overlay::menu::slider_float(id, &value, 0, dingosdk::first_person::strength_limit, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+            if (first_person_slider(id,value,0,dingosdk::first_person::strength_limit,"%.0f%%",reset))
+
                 debug_request(menu, callbacks, {action, false, value});
         };
-        percent("Smoothing", "##fp-smoothing", settings.smoothing, DebugAction::set_first_person_smoothing);
-        percent("Head nod (up / down)", "##fp-head-pitch", settings.head_pitch, DebugAction::set_first_person_head_pitch);
-        percent("Head tilt (horizon roll)", "##fp-head-roll", settings.head_roll, DebugAction::set_first_person_head_roll);
-        percent("Head bob", "##fp-bob", settings.bob, DebugAction::set_first_person_bob);
+        percent("Smoothing", "##fp-smoothing", settings.smoothing, DebugAction::set_first_person_smoothing,dingosdk::first_person::Settings{}.smoothing);
+        percent("Head nod (up / down)", "##fp-head-pitch", settings.head_pitch, DebugAction::set_first_person_head_pitch,dingosdk::first_person::Settings{}.head_pitch);
+        percent("Head tilt (horizon roll)", "##fp-head-roll", settings.head_roll, DebugAction::set_first_person_head_roll,dingosdk::first_person::Settings{}.head_roll);
+        percent("Head bob", "##fp-bob", settings.bob, DebugAction::set_first_person_bob,dingosdk::first_person::Settings{}.bob);
         if (toggle_row(menu, "Follow flips", "Turn the view with the skater during flips and bails.", settings.follow_flips,
                 can_edit && settings.stabilize))
             debug_request(menu, callbacks, {DebugAction::set_first_person_follow_flips, settings.follow_flips});
         ImGui::EndDisabled();
-        if (toggle_row(menu, "Third person on foot",
-                "Use the game's camera while walking; first person comes back when you get on the board.",
-                settings.board_only, can_edit))
-            debug_request(menu, callbacks, {DebugAction::set_first_person_board_only, settings.board_only});
-        if (toggle_row(menu, "First person in the camera cycle",
-                "Clicking the right stick (R3) on the board goes high camera, low camera, first person, then high again. "
-                "Needs Camera height control on in the game's settings (Gameplay > Advanced Camera).",
-                settings.camera_cycle, can_edit))
-            debug_request(menu, callbacks, {DebugAction::set_first_person_camera_cycle, settings.camera_cycle});
         note("Nod, tilt and bob are the share of the head's own movement kept. Use Spring arm > Pitch to look "
              "further down at the board.");
     }
+        ImGui::TreePop();
+        }
     if (ImGui::TreeNode("Spring arm")) {
         namespace fp = dingosdk::first_person;
         auto settings = debug.first_person_arm;
@@ -139,7 +147,9 @@ void first_person_controls(SkateMenu& menu, const Model& model, const CallbacksV
         const auto slider = [&](const char* label, float value, float low, float high, const char* format, DebugAction action) {
             field(menu, label);
             ImGui::PushID(label);
-            if (::dingosdk::overlay::menu::slider_float("##arm-value", &value, low, high, format, ImGuiSliderFlags_AlwaysClamp))
+            if (first_person_slider("arm-value",value,low,high,format,
+                action>=DebugAction::set_first_person_spring_up && action<=DebugAction::set_first_person_spring_right ? 50.f:0.f))
+
                 debug_request(menu, callbacks, {action, false, value});
             ImGui::PopID();
         };
@@ -161,7 +171,33 @@ void first_person_controls(SkateMenu& menu, const Model& model, const CallbacksV
         ImGui::EndDisabled();
         note("Higher smoothing follows more slowly; 0% follows directly. Offsets work with Spring off. "
              "Depth and roll use the average strength.");
+        first_person_foot_spring_control(menu);
         ImGui::TreePop();
+    }
+        first_person_stick_controls(menu);
+        if(ImGui::TreeNodeEx("Directional glances",ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            first_person_glance_controls(menu);ImGui::TreePop();
+        }
+        if(ImGui::TreeNodeEx("Automatic camera switching",ImGuiTreeNodeFlags_SpanAvailWidth)) {
+    {
+        auto settings = debug.first_person_arm;
+        const bool can_edit = debug.available && callbacks.queue_debug;
+        if (toggle_row(menu, "Third person on foot",
+                "Use the game's camera while walking; first person comes back when you get on the board.",
+                settings.board_only, can_edit))
+            debug_request(menu, callbacks, {DebugAction::set_first_person_board_only, settings.board_only});
+    }
+        {
+            auto settings=debug.first_person_arm;
+            const bool can_edit=debug.available && callbacks.queue_debug;
+        if (toggle_row(menu, "First person in the camera cycle",
+                "Clicking the right stick (R3) on the board goes high camera, low camera, first person, then high again. "
+                "Needs Camera height control on in the game's settings (Gameplay > Advanced Camera).",
+                settings.camera_cycle, can_edit))
+            debug_request(menu, callbacks, {DebugAction::set_first_person_camera_cycle, settings.camera_cycle});
+        }
+        ImGui::TreePop();
+        }
     }
     end_card();
 }

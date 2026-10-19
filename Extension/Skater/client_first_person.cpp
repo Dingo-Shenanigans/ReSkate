@@ -1,3 +1,4 @@
+#include "first_person_camera_host.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
@@ -9,7 +10,7 @@
 
 namespace dingosdk::client_source::detail {
 bool first_person_write_fov(std::uintptr_t camera, float fov) noexcept {
-    if (!std::isfinite(fov) || fov <= 1.0f || fov >= 175.0f || camera < 0x10000 || camera > source_highest - 0x100) return false;
+    if (!first_person::valid_camera_fov(fov) || camera < 0x10000 || camera > source_highest - 0x100) return false;
     __try { *reinterpret_cast<volatile float*>(camera + camera_fov_offset) = fov; return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -36,6 +37,7 @@ FirstPersonArm& first_person_arm() {
     return *arm;
 }
 void first_person_disarm() noexcept {
+    first_person_host::reset_camera();
     auto& arm = first_person_arm();
     arm.thread.store(0, std::memory_order_release);
     arm.watched.store(0, std::memory_order_release);
@@ -188,6 +190,42 @@ first_person::Vec3 first_person_head_matrix(std::uintptr_t base, std::uintptr_t 
     source_require(valid_flight_transform(matrix), "Head camera pose is invalid.");
     return origin;
 }
+namespace {
+struct SpectatorHead {
+    std::uintptr_t base{},component{},holder{},buffer{};
+    std::array<float,3> scale{};
+};
+SpectatorHead spectator_head;
+}
+void first_person_restore_spectator_head() noexcept {
+    const auto saved=spectator_head;spectator_head={};
+    if(!saved.buffer)return;
+    std::uintptr_t holder{};
+    if(!first_person_read(saved.component+0xa0,&holder,sizeof(holder)) || holder!=saved.holder)return;
+    const auto pose=multiplayer::read_native_pose_layout(first_person_read,saved.base,holder,512);
+    if(pose.buffer!=saved.buffer || pose.count!=first_person_skeleton_joints)return;
+    std::array<float,3> scale{};
+    const auto address=saved.buffer+first_person_head_joint*0x30ULL;
+    if(first_person_read(address,scale.data(),sizeof(scale)) && scale[0]==.001f && scale[1]==.001f && scale[2]==.001f)
+        (void)first_person_write(address,saved.scale.data(),sizeof(saved.scale));
+}
+first_person::Vec3 first_person_spectator_head(std::uintptr_t base,std::uintptr_t entity,first_person::Matrix& matrix) {
+    first_person_restore_spectator_head();
+    SourceReader reader;
+    const auto component=reader.pointer(entity,0x628);
+    source_require(reader.pointer(component)==base+addr::engine::skater_component_vtable,"Spectated animation changed.");
+    const auto holder=reader.pointer(component,0xa0);
+    const auto pose=multiplayer::read_native_pose_layout(first_person_read,base,holder,512);
+    source_require(pose.buffer && pose.count==first_person_skeleton_joints,"Spectated skeleton unavailable.");
+    const auto origin=first_person_head_matrix(base,component,matrix);
+    const auto scale=reader.value<std::array<float,3>>(pose.buffer,first_person_head_joint*0x30ULL);
+    for(float value:scale)source_require(std::isfinite(value) && value>=.05f && value<=20,"Spectated head scale invalid.");
+    reader.verify();
+    spectator_head={base,component,holder,pose.buffer,scale};
+    constexpr std::array<float,3> hidden{.001f,.001f,.001f};
+    (void)first_person_write(pose.buffer+first_person_head_joint*0x30ULL,hidden.data(),sizeof(hidden));
+    return origin;
+}
 // Every animation update of the local skater, on whichever thread runs it
 // (usually a worker), captures its head pose; reads only, never the camera.
 // Each frame runs: client tick (camera) -> the local skater's animation, often
@@ -216,8 +254,9 @@ void first_person_on_render(std::uintptr_t animation_interface) noexcept {
         if (have && source_flight_now() - latest.time < 0.02) {
             auto matrix = arm.matrix;
             for (const std::size_t i : {0u, 1u, 2u, 4u, 5u, 6u, 8u, 9u, 10u, 12u, 13u, 14u}) matrix[i] = latest.head[i];
-            matrix = arm.spring.sample(matrix, arm.settings, latest.origin);
+            matrix = first_person_host::sample(arm.spring, matrix, arm.settings, latest.origin);
             source_require(valid_flight_transform(matrix), "First-person spring pose is invalid.");
+            first_person_host::compose(arm.camera, matrix);
             arm.transform(arm.camera, &matrix);
             arm.matrix = matrix;
             if (arm.fov > 0) (void)first_person_write_fov(arm.camera, arm.fov);

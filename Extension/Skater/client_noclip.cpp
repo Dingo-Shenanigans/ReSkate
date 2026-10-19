@@ -1,3 +1,4 @@
+#include "first_person_camera_host.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
@@ -433,7 +434,10 @@ void noclip_skater_motion(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::uint8_t flags) {
     const auto original = source_state().motion_original.load(std::memory_order_acquire);
     alignas(16) std::array<float,16> target{};
-    const auto* motion = noclip_motion_target(rig, context, supplied, target) ? &target : supplied;
+    const bool noclip = noclip_motion_target(rig, context, supplied, target);
+    const auto* motion = noclip ? &target : supplied;
+    if (!noclip && supplied && first_person_host::motion_enabled.load(std::memory_order_acquire) && memory::read(reinterpret_cast<std::uintptr_t>(supplied), target) &&
+        valid_flight_transform(target) && first_person_host::compose_motion(rig, context, target)) motion = &target;
     if (original) original(rig, context, motion, flags);
     if (source_state().offboard_boost_core.load(std::memory_order_acquire)) {
         std::uintptr_t core{};

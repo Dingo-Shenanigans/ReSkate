@@ -5,6 +5,7 @@ target_link_libraries(dingosdk_playstation_input PUBLIC dingosdk_logging PRIVATE
 add_library(dingosdk_overlay STATIC
 
     Extension/UI/Overlay/overlay.cpp
+    Extension/Skater/first_person_settings_host.cpp
     Extension/UI/Overlay/overlay_render.cpp
     Extension/UI/Overlay/overlay_console.cpp
     Extension/UI/Overlay/overlay_input.cpp
@@ -28,6 +29,8 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/skate_menu_addons.cpp
     Extension/UI/Overlay/menu_map_pictures.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
+    Extension/UI/Overlay/first_person_controls.cpp
+    Extension/UI/Overlay/first_person_stick_controls.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp

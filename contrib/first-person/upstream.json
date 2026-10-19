@@ -1,0 +1,401 @@
+{
+  "upstream": "https://github.com/Jish2637/JishsFirstPersonMod",
+  "commit": "974e91e05b622c5b4b7ea0b78e09be0f18c8edb3",
+  "integration_branch": "JishFPMNative",
+  "status": "Official 2.1.0 integration compiled; 14 focused tests passed. Release source prepared from the clean tested integration.",
+  "latest_additions": [
+    "native spectator view",
+    "native bail/get-up switching",
+    "bail head camera and collision",
+    "physical-edge held-stick latch",
+    "native profile catalog"
+  ],
+  "menu_config_paths": [
+    "FontDataOwnedByAtlas",
+    "bail_camera_collision",
+    "board",
+    "board.center_on_modifier",
+    "board.center_on_stick",
+    "board.center_pitch",
+    "board.center_smoothing",
+    "board.continue_auto_center",
+    "board.deadzone",
+    "board.enabled",
+    "board.invert_y",
+    "board.keep_native_input",
+    "board.look_smoothing",
+    "board.modifier",
+    "board.pitch_limit",
+    "board.pitch_speed",
+    "board.yaw_limit",
+    "board.yaw_speed",
+    "cycle_restore_pending",
+    "disable_spring_on_foot",
+    "fov",
+    "link_smoothing",
+    "look[i-1]",
+    "look_only",
+    "look_spring",
+    "look_spring.down",
+    "look_spring.enabled",
+    "look_spring.left",
+    "look_spring.right",
+    "look_spring.up",
+    "menu_key",
+    "native",
+    "native.active",
+    "native.board_only",
+    "native.camera_cycle_available",
+    "on_board_only",
+    "remember_marker_glance",
+    "spectator_first_person",
+    "spring",
+    "spring.down",
+    "spring.enabled",
+    "spring.left",
+    "spring.offset[0]",
+    "spring.offset[1]",
+    "spring.offset[2]",
+    "spring.right",
+    "spring.rotation[0]",
+    "spring.rotation[1]",
+    "spring.rotation[2]",
+    "spring.up",
+    "stick",
+    "stick.deadzone",
+    "stick.dismount_smoothing",
+    "stick.enabled",
+    "stick.invert_y",
+    "stick.mount_smoothing",
+    "stick.pitch_speed",
+    "stick.smooth_transitions",
+    "stick.turn_character",
+    "stick.yaw_speed",
+    "stick_spring",
+    "stick_spring.down",
+    "stick_spring.enabled",
+    "stick_spring.left",
+    "stick_spring.right",
+    "stick_spring.up",
+    "third_person_bailing",
+    "third_person_camera_switching",
+    "third_person_recovery",
+    "toggle",
+    "toggle_glances"
+  ],
+  "source_control_index": [
+    {
+      "line": 52,
+      "source": "bool readable_checkbox(const char* label,bool* value) {"
+    },
+    {
+      "line": 194,
+      "source": "if(readable_checkbox(\"Enable First Person\",&enabled)) { Command command; command.kind=CommandKind::set_enabled; command.enabled=enabled; submit_command(command); }"
+    },
+    {
+      "line": 257,
+      "source": "if(readable_checkbox(\"Compatibility mode (look controls only)\",&config.look_only)) {"
+    },
+    {
+      "line": 268,
+      "source": "if(readable_checkbox(\"Third person while bailing\",&config.third_person_bailing)) comfort_change();"
+    },
+    {
+      "line": 273,
+      "source": "if(readable_checkbox(\"Third person while getting up\",&config.third_person_recovery)) {"
+    },
+    {
+      "line": 287,
+      "source": "if(readable_checkbox(\"Camera collision during bails\",&config.bail_camera_collision)) {"
+    },
+    {
+      "line": 297,
+      "source": "if(readable_checkbox(\"First person on board only\",&config.on_board_only)) comfort_change();"
+    },
+    {
+      "line": 341,
+      "source": "if(ImGui::SliderFloat(\"##angle\",&angle,1,dingosdk::look_angle_limit(i-1),\"%.0f degrees\",ImGuiSliderFlags_AlwaysClamp)) {"
+    },
+    {
+      "line": 363,
+      "source": "if(readable_checkbox(\"Toggle glance controls\",&config.toggle_glances)) {"
+    },
+    {
+      "line": 367,
+      "source": "if(readable_checkbox(\"Remember glance on return to marker\",&config.remember_marker_glance)) {"
+    },
+    {
+      "line": 384,
+      "source": "if(readable_checkbox(\"Link button-glance smoothing to camera Spring\",&config.link_smoothing)) {"
+    },
+    {
+      "line": 393,
+      "source": "if(readable_checkbox(\"Smooth button glances\",&config.look_spring.enabled)) look_change();"
+    },
+    {
+      "line": 396,
+      "source": "if(ImGui::SliderFloat(label,&value,0,100,\"%.0f%%\",ImGuiSliderFlags_AlwaysClamp)) look_change();"
+    },
+    {
+      "line": 398,
+      "source": "strength(\"Look up smoothing\",config.look_spring.up); strength(\"Look down smoothing\",config.look_spring.down);"
+    },
+    {
+      "line": 399,
+      "source": "strength(\"Look left smoothing\",config.look_spring.left); strength(\"Look right smoothing\",config.look_spring.right);"
+    },
+    {
+      "line": 406,
+      "source": "if(readable_checkbox(\"Smooth on-foot right-stick look\",&config.stick_spring.enabled)) stick_smoothing_change();"
+    },
+    {
+      "line": 409,
+      "source": "if(ImGui::SliderFloat(label,&value,0,100,\"%.0f%%\",ImGuiSliderFlags_AlwaysClamp)) stick_smoothing_change();"
+    },
+    {
+      "line": 411,
+      "source": "stick_strength(\"Stick up smoothing\",config.stick_spring.up); stick_strength(\"Stick down smoothing\",config.stick_spring.down);"
+    },
+    {
+      "line": 412,
+      "source": "stick_strength(\"Stick left smoothing\",config.stick_spring.left); stick_strength(\"Stick right smoothing\",config.stick_spring.right);"
+    },
+    {
+      "line": 417,
+      "source": "if(readable_checkbox(\"Use game's default FOV\",&game_fov)) { config.fov=game_fov ? 0.0f:90.0f; settings_change(config); }"
+    },
+    {
+      "line": 421,
+      "source": "if(ImGui::SliderFloat(\"Field of view\",&fov,40,120,\"%.0f degrees\",ImGuiSliderFlags_AlwaysClamp)) { config.fov=fov; settings_change(config); }"
+    },
+    {
+      "line": 424,
+      "source": "if(readable_checkbox(\"Spring\",&config.spring.enabled)) settings_change(config);"
+    },
+    {
+      "line": 426,
+      "source": "if(readable_checkbox(\"Disable Spring on foot\",&config.disable_spring_on_foot)) {"
+    },
+    {
+      "line": 434,
+      "source": "if(ImGui::SliderFloat(label,&value,low,high,format,ImGuiSliderFlags_AlwaysClamp)) settings_change(config);"
+    },
+    {
+      "line": 449,
+      "source": "if(readable_checkbox(\"First-person spectator view\",&config.spectator_first_person)) {"
+    },
+    {
+      "line": 455,
+      "source": "if(readable_checkbox(\"Lock head during on-board body flips\",&config.lock_body_flips)) {"
+    },
+    {
+      "line": 462,
+      "source": "if(readable_checkbox(\"Attach head position during mounting / jumping\",&config.stick.lock_mount_jump)) stick_change();"
+    },
+    {
+      "line": 464,
+      "source": "if(readable_checkbox(\"Attach head position during hippy jumps\",&config.stick.lock_hippy_jump)) stick_change();"
+    },
+    {
+      "line": 467,
+      "source": "if(readable_checkbox(\"Smooth foot/board transitions\",&config.stick.smooth_transitions)) stick_change();"
+    },
+    {
+      "line": 471,
+      "source": "if(ImGui::SliderFloat(\"Getting on board smoothing\",&config.stick.mount_smoothing,0,100,\"%.0f%%\",ImGuiSliderFlags_AlwaysClamp)) stick_change();"
+    },
+    {
+      "line": 473,
+      "source": "if(ImGui::SliderFloat(\"Getting off board smoothing\",&config.stick.dismount_smoothing,0,100,\"%.0f%%\",ImGuiSliderFlags_AlwaysClamp)) stick_change();"
+    },
+    {
+      "line": 481,
+      "source": "if(readable_checkbox(\"Right-stick look on foot\",&config.stick.enabled)) stick_change();"
+    },
+    {
+      "line": 495,
+      "source": "if(ImGui::SliderFloat(\"Horizontal sensitivity\",&config.stick.yaw_speed,1,720,\"%.0f deg/s\",ImGuiSliderFlags_AlwaysClamp)) stick_change();"
+    },
+    {
+      "line": 497,
+      "source": "if(ImGui::SliderFloat(\"Vertical sensitivity\",&config.stick.pitch_speed,1,720,\"%.0f deg/s\",ImGuiSliderFlags_AlwaysClamp)) stick_change();"
+    },
+    {
+      "line": 500,
+      "source": "if(ImGui::SliderFloat(\"Stick deadzone\",&deadzone,1,50,\"%.0f%%\",ImGuiSliderFlags_AlwaysClamp)) {"
+    },
+    {
+      "line": 504,
+      "source": "if(readable_checkbox(\"Invert Y\",&config.stick.invert_y)) stick_change();"
+    },
+    {
+      "line": 505,
+      "source": "if(readable_checkbox(\"Allow looking during jumps and climbing\",&config.stick.look_during_parkour)) stick_change();"
+    },
+    {
+      "line": 515,
+      "source": "if(readable_checkbox(\"Enable on-board Right Stick Free Look\",&config.board.enabled)) board_change();"
+    },
+    {
+      "line": 533,
+      "source": "if(ImGui::SliderFloat(label,&value,low,high,format,ImGuiSliderFlags_AlwaysClamp)) board_change();"
+    },
+    {
+      "line": 535,
+      "source": "board_slider(\"Horizontal sensitivity\",config.board.yaw_speed,1,720,\"%.0f deg/s\");"
+    },
+    {
+      "line": 536,
+      "source": "board_slider(\"Vertical sensitivity\",config.board.pitch_speed,1,720,\"%.0f deg/s\");"
+    },
+    {
+      "line": 539,
+      "source": "if(ImGui::SliderFloat(\"Stick deadzone\",&board_deadzone,1,50,\"%.0f%%\",ImGuiSliderFlags_AlwaysClamp)) { config.board.deadzone=board_deadzone*.01f;board_change(); }"
+    },
+    {
+      "line": 540,
+      "source": "if(readable_checkbox(\"Invert Y\",&config.board.invert_y)) board_change();"
+    },
+    {
+      "line": 541,
+      "source": "board_slider(\"Horizontal look limit\",config.board.yaw_limit,0,180,\"%.0f degrees\");"
+    },
+    {
+      "line": 542,
+      "source": "board_slider(\"Vertical look limit\",config.board.pitch_limit,0,85,\"%.0f degrees\");"
+    },
+    {
+      "line": 544,
+      "source": "board_slider(\"On Board Free Look Smoothing\",config.board.look_smoothing,0,100,\"%.0f%%\");"
+    },
+    {
+      "line": 546,
+      "source": "if(readable_checkbox(\"Modifier Key Keeps Right Stick Input Held\",&config.board.keep_native_input)) board_change();"
+    },
+    {
+      "line": 548,
+      "source": "if(readable_checkbox(\"Auto Center On Right Stick Let Go\",&config.board.center_on_stick)) board_change();"
+    },
+    {
+      "line": 550,
+      "source": "if(readable_checkbox(\"Auto Center On Modifier Key Let Go\",&config.board.center_on_modifier)) board_change();"
+    },
+    {
+      "line": 552,
+      "source": "if(readable_checkbox(\"Continue Auto Center Until New Look Input\",&config.board.continue_auto_center)) board_change();"
+    },
+    {
+      "line": 555,
+      "source": "board_slider(\"Auto-center smoothing\",config.board.center_smoothing,0,100,\"%.0f%%\");"
+    },
+    {
+      "line": 558,
+      "source": "board_slider(\"Center pitch angle\",config.board.center_pitch,-85,85,\"%.0f degrees\");"
+    }
+  ],
+  "source_sha256": {
+    "src/bail_camera_trace.cpp": "5a9fc2fd175a73098e7d58634eebd605a345131789d4404b4a2eec6164de1f7f",
+    "src/bail_camera_trace.h": "23f8acd74f4b8af4dbe6319162ce2828920d6ee9d14161297a461e7b696b9dbf",
+    "src/bail_collision.cpp": "bbed709f7e28c283002d40336b4e73854a610c495b0b5453b263e9bcb37b1a1f",
+    "src/bail_collision.h": "af190a360fa235dade058bc33c97b867abfc2d96a8cd954fef24aaea66731268",
+    "src/bail_collision_contract.h": "5a11ae577f6ddc1b413d104ac7d488a3166e71eacb69ee15f8fa693f54aef50e",
+    "src/bail_recovery_contract.h": "3f8355e834b75e1bf99d7f9a5c492a8cd1bdb9b6c837df1e002f98a919b9cb22",
+    "src/bail_view.h": "e88ca598bcfe2b33095301f993cb988a89d59acfe1c5a9a9a0cea9d45d1fd150",
+    "src/binding_conflicts.h": "1df6254d49227f6bd3d971ac69495bafecf3759b33da10a2b6240b1bfc29b51e",
+    "src/board_look.h": "5d2fb0f43d2ef49833120b164a02f281d70508dd22728f0cb2f1dbdcfd15e900",
+    "src/body_flip.h": "2a3b32bb77f2c38bd6c4a43359a01c7a9c04bcef3639ae6d8a58752c381c5870",
+    "src/body_flip_runtime.cpp": "3d3a9a25442c3fa1f1d668b361b510afc2bb27857951f0876746f697bd18cd7a",
+    "src/body_flip_runtime.h": "68604b683b6ceb5e220a650e5c9e371ce13bb4f5eebad95a027ecf623137a26e",
+    "src/bootstrap.cpp": "d1fc4b6a6c531a826df5f48a28dc9a40c30fda340a2d978eec86ae30dd6ba39e",
+    "src/bridge_patterns.h": "66e0a58461a89fdd7443f4f15d578155613d0d8368bb2b9280aa34d30cb29b58",
+    "src/bridge_resolver.cpp": "073dec3ccc7ad47ef76208ed85593b7b2d9c67573b65d55e5a89854b7cf8c67d",
+    "src/bridge_resolver.h": "0d658ddf8907e1352c2eacd38736ca9352ff3889672eec80ba87f84d0deef6e2",
+    "src/camera_cycle_override.h": "4f30f97f093b64dda2ffade4fed255c1fe2386eb2e6f1b3155789bca8b48139d",
+    "src/camera_movement.h": "9456adb029ea75058adf1659a1d8faec1ce999af4109ffcaf5c8bf77f58523e2",
+    "src/camera_phase.cpp": "7d0d3732662633a5b9fa52bc1fa6430e9367f455b568b6d61d96e498e450fecd",
+    "src/camera_policy.h": "24cb77e636685bfdffb4d8decb1b8a2a4c4bfce24c4426feb0b23b51d0cdc423",
+    "src/camera_tail.asm": "88212520ecda51e5ad0e5481b0e46c1a0c94cd10365c2ef8da10446b2d4ac6f9",
+    "src/camera_transition.h": "4271911ec8b1d487ec97c758646ebc0b8fd38f9de0a4773d0a6550938332c265",
+    "src/comfort.cpp": "b394884140613e8732ee85a3ded308d9c76c2d5906a0c0de5a6389e5fe2d0fd2",
+    "src/comfort_policy.h": "c9b01a9d1a3ae047f0670795035248f49e62b0dae66b56c29f4034412890c36f",
+    "src/config.cpp": "ddd171152a54c11a96317606ad8a2418294849531221e954dfcce0c7f5e4b4e3",
+    "src/diagnostic_log.h": "ddbfea27cc3282d7d8b87d7d1f39e1e96b526d5581158cfc12c03313539e96cd",
+    "src/direct_input_filter.inl": "ff1af8bfee12a354694e0dd76fd23a8497c2cead48c2925a9257fcaa2ba4b4a3",
+    "src/first_person_runtime.cpp": "f16ae8929b60c68302f39b252c45cdafa1e483615167d377ccb0f64d3ad7240a",
+    "src/game_camera_ownership.cpp": "3175e67fac85a55f87703f4d4c8278eec41311f9a5a09f5eb06c9b8088effffd",
+    "src/game_camera_ownership.h": "d63408abfa4dc2f0f26a519f7bcd0c76944d5931b37949378cd35140df8979d0",
+    "src/getup_contract.h": "031cc852d195edd373a7240260a926b2bbead15d9ee4f893305b98227b8dc314",
+    "src/glance_controls.h": "41159918fd50e9c87ea57e334281d0ce07e07845c14802acb8148098a39581cc",
+    "src/glance_emote_policy.h": "3a29d70cba35c7b45d6db66672a0389dbce49cc5e54a591fbfb4555d5d59f701",
+    "src/head_attachment.cpp": "b99f616105f091bccf7beb50b130a93ebde9da54cfe11ebe90b5b024aba179a1",
+    "src/head_attachment.h": "a7981d43541f5f1865f0c2395c93625f79a7cbfd116b2a1cf7b8393b525ebd8b",
+    "src/head_visibility.cpp": "1a13485db368b40b8bfa4f2458b130ca7cc28af768647027892be17cc6ae55d7",
+    "src/hippy_jump.h": "9e9bc0421972260ccd4e54deb5fd355d0dcec2bc292a0da74b3a24955e6bcd51",
+    "src/hooks.cpp": "61f6b38f49a561985a22c502759d15c9670ebbfa4a60ad3b9c0b1cc3e2169207",
+    "src/jump_episode.h": "7eec84774fdba956d9ed4a49b1705554a87ecabb9175b5c690ef33ca8dc0ab0e",
+    "src/jump_state_contract.h": "baf805c921027df1e1ba94dc7300b58259deac86a3b7841aa5ba8d0dfce931ad",
+    "src/launcher_mod.h": "01fedfe5e5bd120e97e3dae88992537499b022419ec8fba28fbfb8a2f4edad36",
+    "src/look_smoothing.h": "bfa1b18093e5f7fc510eb7b01ddc979baaff1c0ca11bdb524f462fd73864b476",
+    "src/marker_glance.h": "defba7a05ed7045d79bf15f2aac5c9b71171eafa78c10702944d1eae66cb3b29",
+    "src/menu.cpp": "5e7e2e74167ae60a42522fb2c3afb6695ae296ae7ec438da19bb45ab05d62ae8",
+    "src/menu.h": "7dc1e0a57149157193e5cbfa1dd85f67dedc873258d1386cd85b01929cd18c0f",
+    "src/menu_controller.h": "7fcd23f2c8053d1e52f30a0e419e808fb73ed83af155570ce5b2de4dc9df3ff6",
+    "src/menu_input.cpp": "033a5672896ffd9a432212814fddd4cec14cc04a072f20c81bf0b590a33b9604",
+    "src/menu_renderer.cpp": "ee49dc5f30cbd6d08eb30f90d6a2023c0e974ff19b2f45c8b8e99107f0f6aa4c",
+    "src/mod.h": "2653b7212bb6096100f7a59304ea58862f40e3e6ca5bba24f1f23e02e161fbad",
+    "src/native.h": "a4829e8662c37d7dd44ddd9cfb1d0d686df34af599b5fffa91b8a73c3195cb15",
+    "src/native_camera_interop.cpp": "c246515487c176cdf166cc7f32c451ab87277e5bf1cbe5a486c034edd17480fb",
+    "src/native_camera_interop.h": "1394d85e5ef2533c94e4faf4ea548f597fbbb76769efc85e2be1f731431232dc",
+    "src/native_controls.h": "ceb86e51cb5eebb180d94033319b262e36dc7dcd64ab19c3beec7c94d4086e3b",
+    "src/native_hid_filter.inl": "9877fb814a90d627613963b25a6b9adf372fb224cc645f13f9eb9e98efa8cb75",
+    "src/native_recording.h": "98aa8afc2edf229d82029813c7bde366f0d1e35bdc957d8d5a0258c55dd854bb",
+    "src/owned_hooks.h": "3291e748a3d7393b25eb9ac9aab79546d6b2be93b1eb02b3b8156d3438914c1d",
+    "src/player_state_contract.h": "ed715f9b3088e9822230e00b516349d67c5476d93914734ef365255992961565",
+    "src/proven_camera.cpp": "2614dca5ecc5906d6c91d3c8345489ddbd9203591eff4056025bd86bdf19cb74",
+    "src/proven_camera_identity.inc": "79b08ebfb4472c2cb977230245b1c5f573d923340cc1eeda4dee78e86612d248",
+    "src/proven_debug.cpp": "6e9d1299b56bdc803c0842e3d71e19263f68dd8f1227e51565b101f4ce6f7f72",
+    "src/proven_first_person.cpp": "bc5566d6575116952a4ce27053706e05a805fe8a1fe1e0e1a6a5709ab22fe948",
+    "src/proven_input.cpp": "402a93c5fd5c2a26c60d130def67ec1f1efff5bbb782dc6384aae229c93005c5",
+    "src/proxy_loader.cpp": "8cb117cd0f6248a453219e3d8050028881657d3af9101810aba61734ab4e042f",
+    "src/proxy_loader.def": "963c8920cb383545dd465ebc7ca702cb7fdc4f50a019c493fe76f57244217d51",
+    "src/recording_input.cpp": "f4cdffc191cf8b2c24feef6f09b337474b6670629454de30afb02134c8eee3cc",
+    "src/reskate_spectator_spring.h": "35ec950106ff89ea94bdcbc6b5c08b13305fc4dd4770a3174b8698320d0aa7ac",
+    "src/rotating_log.h": "28cdb7163495ac8be91d2a1361ca6ba3092b347411da927c6fe6cd2b257901d3",
+    "src/settings.cpp": "e8e91b671f28ff9c7bd6b309ee0da18c8cbc470831f5c7f8c9965ee5b4d170ee",
+    "src/settings.h": "820e5e7746f7649b52194cb3e111cac092788549d0d3048e9ca2f9281ae04f5b",
+    "src/spectator_contract.h": "eb1f3deff18b51af622b2fbbe2e86a4855ce4431845e07971f99791769c5fddf",
+    "src/spectator_head.h": "c35745363a2d81a19cbe0e006836c82c9cb9edac8a8cb94264e23ab1be6ee9da",
+    "src/spectator_look.h": "a7e4ce6b22a01fd66307942d02b17b952ce4599b4ff4c597fe48c3648f100834",
+    "src/spectator_pose.h": "2f03a382e66cbce046b60a34c2d37a3cd47082465e60a7e6501a99806b2c644c",
+    "src/spectator_runtime.cpp": "6f76408d2196b716c558fab66edcbc4d40b7cacf44e72a98eeaab20abc171569",
+    "src/spectator_runtime.h": "223daa1c848577d656ae420f106e4c9341a45c5077155ba02a41ac068f119542",
+    "src/spectator_view.h": "ffd6dd0b1bc88a35b12890c87574fdce8d81edf942cf394170ee72408917d3fa",
+    "src/spring_policy.h": "4b9c120f9d2e0ffe240305fbb5e6adcbc739565f8305eceb5564964b798b9733",
+    "src/stick_input_filter.cpp": "332a94318646832b3c0e27fe776dca46dee9c9b96ed82270ce3b2d13af60c0b4",
+    "src/stick_input_filter.h": "4137d35ec80b554704fad54e574d9e3abe748922100ae48ee992c041398550a3",
+    "src/stick_look.h": "9ba4426d24b473a979c77abdbe025d345dc6a9370eee63f640c26cac77299813",
+    "src/stick_runtime.cpp": "197ae6c9e8fffe7186bb5149b7208e97e565f04b1ee11d420e04f446fb7c9225",
+    "src/stick_runtime.h": "48d334a1abdce2fc70dd1cb1cc583bbf4180b030c79c880a95af1da4849f3b4e",
+    "src/stock_bridge.cpp": "615b9f05bcab13b1ef35f9050efb64e687be55a91f82d2e9fef5d2a3d43d04ad",
+    "src/stock_bridge.h": "67678d1137403523516e7e28b18fddc895990a5101ace5ce325ec21f776a228b",
+    "src/stock_camera_feed.cpp": "af0ca90d09b2bf5728e88de63327e80614bad9de754589014c005f61b51e07fd",
+    "src/stock_contract.h": "aaa6af6847b9eea68f7c9963c84a5bb38eb2163c00e3c2d0c495fc7134297c2c",
+    "src/stock_hid_contract.h": "3ac3281a0ce96e3505aaa704bcd463a24dcdad53ebf4229c8a4ae49b235314cf",
+    "src/user_data.h": "fc615b1b64be6d44954b3514f68e27a0c51151c3936d3d7330d523c4a8109e0c"
+  },
+  "latest_audited_commit": "c0d2c4788fcbc1f970d4b3dc013a70f46b43bd6f",
+  "local_rebuild_branch": "JishFPMNative",
+  "excluded_features": [
+    "MSC presence",
+    "mount/jump/hippy attachment",
+    "body-flip head lock",
+    "jump/climbing look overrides"
+  ],
+  "deferred_features": [
+    "DirectInput stick filtering",
+    "original ReSkate camera mode"
+  ],
+  "latest_checked_date": "2026-10-18",
+  "reskate_base_tag": "v2.1.0",
+  "reskate_base_commit": "ba1245a5af51892e90f2be8637dd69a7e20f5b77"
+}

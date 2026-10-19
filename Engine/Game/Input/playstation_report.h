@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 namespace dingosdk {
 // DualShock 4 / DualSense HID input reports translated into XInput's
@@ -79,4 +80,18 @@ inline std::optional<PlayStationGamepad> parse_playstation_report(PlayStationPad
         return detail::playstation_common(report + 3, report + 7, report[10], report[11]);
     return {};
 }
+// Shared by native menu neutralization and selective gameplay edits.
+inline void update_playstation_report_crc(std::span<std::uint8_t> report) noexcept {
+    if(report.size()!=78 || (report[0]!=0x31 && report[0]!=0x11)) return;
+    std::uint32_t crc=0xffffffffu;
+    const auto feed=[&](std::uint8_t byte) {
+        crc^=byte;
+        for(unsigned bit=0;bit<8;++bit) crc=(crc>>1)^(0xedb88320u&(0u-(crc&1u)));
+    };
+    feed(0xa1);
+    for(std::size_t i=0;i<report.size()-4;++i) feed(report[i]);
+    crc=~crc;
+    for(unsigned i=0;i<4;++i) report[report.size()-4+i]=static_cast<std::uint8_t>(crc>>(i*8));
+}
+
 }

@@ -108,6 +108,12 @@ void multiplayer_page(SkateMenu&, const Model&, const CallbacksV3&);
 void map_page(SkateMenu&, const Model&, const CallbacksV3&);
 void build_page(SkateMenu&, const Model&, const CallbacksV3&);
 void skater_page(SkateMenu&, const Model&, const CallbacksV3&);
+bool first_person_slider(const char* id,float& value,float low,float high,const char* format,float reset);
+void first_person_main_controls(SkateMenu&, const Model&, const CallbacksV3&);
+void first_person_glance_controls(SkateMenu&);
+void first_person_view_controls(SkateMenu& menu);
+void first_person_foot_spring_control(SkateMenu&);
+void first_person_stick_controls(SkateMenu&);
 void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);

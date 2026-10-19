@@ -1,3 +1,4 @@
+#include "Extension/Skater/FirstPerson/integration.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
@@ -729,7 +730,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // (The card that asks has the pointer, as a menu does: it is still read for.)
         DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote || message_up);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
-        if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
+        if (!dingosdk::action_binds[i].held && r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
             std::array<char, 256> result{};
             const std::string command(dingosdk::action_binds[i].command);
             if (queue_console_command(nullptr, command.c_str(), result.data(), result.size()))
@@ -1260,6 +1261,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.keyframe_smoothing = {dingosdk::replay_keyframes::available(), dingosdk::replay_keyframes::on(),
                                 dingosdk::replay_keyframes::smoothness()};
     model.bindings = dingosdk::local_profile_controller_bindings();
+    dingosdk::first_person_integration::observe_bindings(model.bindings);
     model.parks = dingosdk::local_profile_parks();
     model.world = dingosdk::local_profile_world_layers();
     model.missions_available = missions_model.available;

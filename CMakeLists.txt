@@ -334,6 +334,11 @@ if(DINGOSDK_BUILD_TESTS AND EXISTS "${PROJECT_SOURCE_DIR}/tests/logging_tests.cp
     add_test(NAME logging_regressions COMMAND dingosdk_logging_tests)
 endif()
 
+option(DINGOSDK_BUILD_FIRST_PERSON_HOST_TESTS "Build First Person shared-settings host tests" OFF)
+if(WIN32)
+    include(cmake/FirstPerson.cmake)
+endif()
+
 # Header-only game contracts belong to the runtime's subsystem tree.
 if(WIN32)
     file(GLOB_RECURSE game_headers CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/Engine/Game/*.h")
@@ -403,6 +408,20 @@ if(DINGOSDK_BUILD_HALL_OF_MEAT_TESTS)
     target_include_directories(dingosdk_hall_of_meat_skeleton_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_hall_of_meat_skeleton_tests PRIVATE dingosdk_game_archives dingosdk_logging)
     add_test(NAME hall_of_meat_skeleton COMMAND dingosdk_hall_of_meat_skeleton_tests "${DINGOSDK_TEST_GAME_ROOT}")
+endif()
+if(DINGOSDK_BUILD_FIRST_PERSON_HOST_TESTS)
+    enable_testing()
+    add_executable(dingosdk_first_person_host_tests
+        Extension/Skater/Test/first_person_settings_host_tests.cpp
+        Extension/Skater/first_person_settings_host.cpp)
+    target_include_directories(dingosdk_first_person_host_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME first_person_settings_host COMMAND dingosdk_first_person_host_tests)
+    add_executable(dingosdk_first_person_fov_tests Extension/Skater/Test/first_person_fov_tests.cpp)
+    target_include_directories(dingosdk_first_person_fov_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME first_person_native_fov COMMAND dingosdk_first_person_fov_tests)
+    add_executable(dingosdk_first_person_camera_host_tests Extension/Skater/Test/first_person_camera_host_tests.cpp)
+    target_include_directories(dingosdk_first_person_camera_host_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME first_person_camera_host COMMAND dingosdk_first_person_camera_host_tests)
 endif()
 get_property(project_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(target IN LISTS project_targets)

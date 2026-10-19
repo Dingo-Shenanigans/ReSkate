@@ -170,6 +170,7 @@ bool queue_menu_bam();
 // Overlay and native menu callbacks (overlay_callbacks.cpp).
 void read_model(void*, dingosdk::overlay::Model& output);
 void read_native_menu_model(void*, dingosdk::overlay::Model& output);
+bool queue_first_person_profile(std::span<const dingosdk::overlay::DebugRequest>, char*, std::size_t);
 bool queue_debug(void*, const dingosdk::overlay::DebugRequest& request, char* result, std::size_t size);
 bool queue_offline_feature(void*, const dingosdk::overlay::OfflineFeatureRequest& request,
                            char* result, std::size_t size);

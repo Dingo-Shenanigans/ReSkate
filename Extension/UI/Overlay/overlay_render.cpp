@@ -1,3 +1,4 @@
+#include "Extension/Skater/FirstPerson/integration.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
@@ -449,6 +450,7 @@ bool setup_graphics() {
     sync_menu_cursor();
     if (s.console_visible.load()) s.console_focus_requested.store(true);
     s.ready = true;
+    first_person_integration::start_when_ready();
     s.selected_window_destroyed.store(false);
     const auto keys = dingosdk::launcher::overlay_keys();
     dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
