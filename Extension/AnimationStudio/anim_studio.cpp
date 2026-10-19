@@ -6,6 +6,7 @@
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Skater/grind_exit_control.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -70,7 +71,12 @@ struct CustomTrick {
     std::string name;  // the saved animation's
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
+    bool goofy{};      // recorded goofy
+    std::shared_ptr<const Animation> other; // the same trick on the other side (mirrored), for the other stance
+    std::shared_ptr<const Clip> other_clip;  // its clip, mirrored
 };
+// The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
+bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
 using CustomTricks = std::vector<CustomTrick>;
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
@@ -296,6 +302,11 @@ Quat room_facing{0, 0, 0, 1};
 bool room_facing_valid{};
 // The loading screen: what it shows, and since when (for the fade).
 std::atomic<Loading> loading_what{Loading::none};
+// A recording starts from a clean level: the game loads it again behind the loading screen, and the skater
+// spawns clean (not half in the ground where the last respawn left him). The client tick takes the request,
+// reloads, and says when the load is in; no trick is recorded meanwhile.
+std::atomic<bool> clean_request{}, clean_hold{};
+std::atomic<double> clean_until{};
 std::atomic<double> loading_since{}, loading_until{};
 Live& live() {
     static auto* l = new Live;
@@ -343,7 +354,17 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             if (clip->joints != skeleton_joints || clip->takeoff < 0) continue;
             std::string trick;
             for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            tricks->push_back({trick, entry.path().stem().string(), std::move(clip), std::move(animation)});
+            const bool goofy = animation->stance == "goofy";
+            std::shared_ptr<const Animation> other;
+            std::shared_ptr<const Clip> other_clip;
+            try {
+                other = std::make_shared<const Animation>(mirror_animation(*animation));
+                other_clip = std::make_shared<const Clip>(mirror_clip(*clip));
+            } catch (const std::exception& e) {
+                other = nullptr;
+                logging::log(Level::warning, Channel::skater, "Animation Studio: {} cannot be mirrored: {}", entry.path().stem().string(), e.what());
+            }
+            tricks->push_back({trick, entry.path().stem().string(), clip, std::move(animation), goofy, std::move(other), std::move(other_clip)});
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.path().filename().string(), e.what());
         }
@@ -452,6 +473,7 @@ void finish_recording(Live& l) {
     s.time = 0; // at its start: on the board, on the ground
     s.playing = false;
     s.recording = Recording::off;
+    s.edits.stance = goofy_stance() ? "goofy" : "regular";
     if (!l.recorded_trick.empty()) {
         // Named after the trick the game says it was: saving it makes it play on that trick.
         s.edits.trick = l.recorded_trick;
@@ -833,7 +855,9 @@ void on_animation(std::uintptr_t component) noexcept {
         }
         const double at = now_seconds();
         const auto air = in_the_air(base, component);
-        if (snap->armed && !snap->open && air) record(l, at, *air, *air ? current_trick(component) : std::string{});
+        if (clean_hold.load(std::memory_order_acquire) && now_seconds() > clean_until.load(std::memory_order_relaxed)) clean_hold.store(false, std::memory_order_release);
+        if (snap->armed && !snap->open && air && !clean_hold.load(std::memory_order_acquire))
+            record(l, at, *air, *air ? current_trick(component) : std::string{});
         else if (!snap->armed) reset_recording(l);
 
         // Which joints to write back, and from what.
@@ -1006,8 +1030,11 @@ void on_animation(std::uintptr_t component) noexcept {
                                  l.predicted_air);
             }
             if (const auto* trick = l.game_trick) {
-                const auto& clip = *trick->clip;
-                const float speed = std::max(trick->edits->speed, 0.1f);
+                // Played on the side the skater stands on: the other side's copy when the stances differ.
+                const bool flip = trick->other && trick->other_clip && trick->goofy != goofy_stance();
+                const Animation& played = flip ? *trick->other : *trick->edits;
+                const Clip& clip = flip ? *trick->other_clip : *trick->clip;
+                const float speed = std::max(played.speed, 0.1f);
                 float t = -1, weight = 1;
                 if (l.game_air && clip.takeoff >= 0) {
                     // The recording's air stretched to this one's, so its keys meet this pop and landing.
@@ -1032,9 +1059,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.custom.resize(layout.count);
                     std::copy(l.pose.begin(), l.pose.end(), l.custom.begin());
                     clip.sample(t, l.custom);
-                    apply_edits(*trick->edits, t, l.custom);
+                    apply_edits(played, t, l.custom);
                     if (Joint rel; clip.sample_board(t, rel)) {
-                        board_target = board_edited(compose(live_placement, rel), *trick->edits, t, start_frame(clip, live_placement, 0).rotation);
+                        board_target = board_edited(compose(live_placement, rel), played, t, start_frame(clip, live_placement, 0).rotation);
                         board_weight = weight;
                     }
                     const auto& body = body_joints();
@@ -1609,12 +1636,19 @@ void set_speed(float speed) {
     s.edits.speed = std::clamp(speed, 0.1f, 4.0f);
     changed_locked(s);
 }
+bool take_clean_start() noexcept { return clean_request.exchange(false, std::memory_order_acq_rel); }
+void clean_start_done() noexcept { clean_hold.store(false, std::memory_order_release); }
 void record_next_trick() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.recording = Recording::waiting;
-    s.status = "Recording: skate and do the trick. The studio opens again once you land.";
+    s.status = "Starting clean: loading the level, then skate and do the trick.";
     s.open_requested = false;
+    // The level loads again first, behind the loading screen, so the skater starts clean.
+    clean_until.store(now_seconds() + 30.0, std::memory_order_relaxed);
+    clean_hold.store(true, std::memory_order_release);
+    clean_request.store(true, std::memory_order_release);
+    set_loading(Loading::opening, 4.0f);
     s.open_request_pending = true;
     publish_locked(s);
     logging::log(Level::info, Channel::skater, "Animation Studio: waiting to record the next trick.");
@@ -1622,6 +1656,7 @@ void record_next_trick() {
 void cancel_recording() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    clean_hold.store(false, std::memory_order_release);
     s.recording = Recording::off;
     s.status = "Recording cancelled.";
     publish_locked(s);

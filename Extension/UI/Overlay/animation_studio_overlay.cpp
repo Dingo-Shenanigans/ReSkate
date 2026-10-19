@@ -73,6 +73,8 @@ struct Ui {
     double held_since[16]{};
     double repeat_at[16]{};
     bool l3_combo{}, stick_turning{}, stick_zoom{}, scrubbing{};
+    // The sticks, filtered over time: a light touch and a hard push both settle, with no jump at the dead zone's edge.
+    float filtered[4]{};
     float scrub_time{};
     bool combo_armed{true}; // false while the hold that opened the studio is still on
     float stick_dx{}, stick_dy{};
@@ -352,6 +354,21 @@ bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, fl
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(5);
     return done || left;
+}
+
+// The stick's response: a dead zone, then a curve that starts gently and reaches full speed at the rim (so a
+// small push is fine control and a full push is fast, with no step at the dead zone's edge).
+float stick_response(float raw) {
+    constexpr float dead = 0.14f;
+    const float a = std::abs(raw);
+    if (a <= dead) return 0.0f;
+    const float n = std::min((a - dead) / (1.0f - dead), 1.0f);
+    return std::copysign(n * n, raw);
+}
+// The stick filtered towards its target over the frame time (about 1/20 s): removes the jitter of the pad.
+float smooth_stick(float& state, float target, float dt) {
+    state += (target - state) * (1.0f - std::exp(-dt * 20.0f));
+    return std::abs(state) < 0.002f ? 0.0f : state;
 }
 
 // ---- turning the chosen joint (mouse drag or left stick) ---------------------------------------------
@@ -698,7 +715,6 @@ void controller(const studio::View& v, const Projector& p) {
     const auto held_for = [&](unsigned bit) { return (buttons & bit) ? now - u.held_since[std::countr_zero(bit)] : 0.0; };
     const auto was_held = [&](unsigned bit) { return now - u.held_since[std::countr_zero(bit)]; };
     u.buttons = buttons;
-    const float dz = 0.22f;
     const bool sticks = std::abs(pad.left_x) > 0.35f || std::abs(pad.left_y) > 0.35f || std::abs(pad.right_x) > 0.35f ||
                         std::abs(pad.right_y) > 0.35f || pad.left_trigger > 0.4f || pad.right_trigger > 0.4f;
     if (pressed || sticks) u.pad_mode = true;
@@ -764,7 +780,7 @@ void controller(const studio::View& v, const Projector& p) {
     if (repeats(pad_right, buttons, pressed, now)) step_frame(v, 1);
 
     // Left stick turns the chosen joint (LT held: moves the hips); a turn is one undo step.
-    const float lx = std::abs(pad.left_x) > dz ? pad.left_x : 0, ly = std::abs(pad.left_y) > dz ? pad.left_y : 0;
+    const float lx = smooth_stick(u.filtered[0], stick_response(pad.left_x), dt), ly = smooth_stick(u.filtered[1], stick_response(pad.left_y), dt);
     if (lx != 0 || ly != 0) {
         const auto* t = track_view(v, u.selected);
         if (!u.stick_turning && v.has_clip && !(t && t->locked) && joint_view(v, u.selected)) {
@@ -781,7 +797,7 @@ void controller(const studio::View& v, const Projector& p) {
     } else if (u.stick_turning && now - u.stick_idle_since > 0.25) u.stick_turning = false;
 
     // Right stick orbits; with RT held it zooms (up / down) and pans (left / right).
-    const float rx = std::abs(pad.right_x) > dz ? pad.right_x : 0, ry = std::abs(pad.right_y) > dz ? pad.right_y : 0;
+    const float rx = smooth_stick(u.filtered[2], stick_response(pad.right_x), dt), ry = smooth_stick(u.filtered[3], stick_response(pad.right_y), dt);
     if (rx != 0 || ry != 0) {
         auto orbit = v.orbit;
         if (u.stick_zoom) {

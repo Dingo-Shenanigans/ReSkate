@@ -96,6 +96,11 @@ void set_playing(bool playing);
 void set_loop(bool loop);
 void set_speed(float speed);
 void record_next_trick();             // closes the studio until the next trick has been landed
+// A recording starts from a clean level: take_clean_start() once per request, so the client tick loads the
+// level again (behind the loading screen); clean_start_done() when that load is in. Nothing is recorded
+// until then.
+bool take_clean_start() noexcept;
+void clean_start_done() noexcept;
 void cancel_recording();
 void set_play_in_game(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is

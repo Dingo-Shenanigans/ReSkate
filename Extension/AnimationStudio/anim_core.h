@@ -102,6 +102,8 @@ struct Animation {
     bool loop{true};
     // Which pop it is for: "" any, or "low", "mid", "high" (a trick can have one of each).
     std::string pop;
+    // The stance the trick was recorded in: "regular" or "goofy" ("" for a file from before stances: regular).
+    std::string stance;
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;

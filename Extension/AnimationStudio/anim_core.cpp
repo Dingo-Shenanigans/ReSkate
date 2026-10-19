@@ -303,6 +303,7 @@ std::string to_json(const Animation& animation) {
     root["speed"] = animation.speed;
     root["loop"] = animation.loop;
     root["pop"] = animation.pop;
+    if (!animation.stance.empty()) root["stance"] = animation.stance;
     root["duration"] = animation.clip.duration();
     root["takeoff"] = animation.clip.takeoff;
     root["landing"] = animation.clip.landing;
@@ -340,6 +341,7 @@ Animation from_json(std::string_view text) {
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
     result.pop = root.value("pop", "");
+    result.stance = root.value("stance", "");
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
     require(duration >= 0 && duration < 120, "bad duration");
@@ -518,7 +520,7 @@ Clip mirror_clip(const Clip& clip) {
 }
 Animation mirror_animation(const Animation& animation) {
     Animation out = animation;
-    out.clip = mirror_clip(animation.clip);
+    if (animation.clip.joints) out.clip = mirror_clip(animation.clip); // the profile alone has no clip
     for (auto& track : out.tracks) {
         if (track.joint < skeleton_joints) track.joint = mirror_joint[track.joint];
         for (auto& key : track.keys) {

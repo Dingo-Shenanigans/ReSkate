@@ -1,3 +1,4 @@
+#include "Extension/AnimationStudio/anim_studio.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
@@ -1142,6 +1143,27 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // whenever this client is not in play; otherwise every 10 s and 2 s.
     bool requests_loading{};
     { std::lock_guard lock(r.mutex); requests_loading = r.requests.loading(); }
+    // A recording starts from a clean level (anim_studio): the level is loaded again behind the loading screen,
+    // and the recording waits until that load is in (or 15 s, when the load did not show as loading).
+    static bool clean_loading{}, clean_seen{};
+    static ULONGLONG clean_since{};
+    if (dingosdk::anim_studio::take_clean_start() && !current_level.empty()) {
+        std::lock_guard lock(r.mutex);
+        if (r.requests.enqueue(ConsoleRequest{"load " + current_level}, request_context(r), GetCurrentThreadId())) {
+            clean_loading = true;
+            clean_seen = false;
+            clean_since = GetTickCount64();
+        } else {
+            dingosdk::anim_studio::clean_start_done();
+        }
+    }
+    if (clean_loading) {
+        if (requests_loading) clean_seen = true;
+        if ((clean_seen && !requests_loading) || GetTickCount64() - clean_since > 15000) {
+            clean_loading = false;
+            dingosdk::anim_studio::clean_start_done();
+        }
+    }
     const bool world_changed = manifests_applied || requests_loading || (state != 13 && state != 21) ||
         state != r.previous_state || description.level != r.last_level || description.lm_level != r.catalog_level;
     r.catalog_level = description.lm_level;
