@@ -385,15 +385,37 @@ void begin_turn(const studio::View& v) {
     studio::set_playing(false);
 }
 // Drags the selected limb: the point under the mouse, on the camera's plane through the joint, is where it goes.
+// The board's up, from its turn (a quaternion rotating the axis Y).
+studio::Vec3 up_of(const studio::Quat& q) {
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    return {2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)};
+}
+// Drags the selected limb: the mouse's ray meets the plane of the board (through the joint, facing the board's
+// up), so the foot slides over the board as the board moves. Without a board in the view, the camera's plane.
 void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
     const auto* sel = joint_view(v, ui().selected);
-    if (!sel || !p.valid) return;
+    if (!sel || !p.valid || p.focal <= 0) return;
     const studio::Vec3 d{sel->position[0] - p.origin[0], sel->position[1] - p.origin[1], sel->position[2] - p.origin[2]};
     const float depth = -(d[0] * p.back[0] + d[1] * p.back[1] + d[2] * p.back[2]);
-    if (depth < 0.05f || p.focal <= 0) return;
-    const float side = (mouse.x - p.cx) * depth / p.focal, height = -(mouse.y - p.cy) * depth / p.focal;
+    if (depth < 0.05f) return;
+    // The ray through the mouse: from the camera, along -back at the focal length, sideways by the pixel.
+    const float sx = (mouse.x - p.cx) / p.focal, sy = -(mouse.y - p.cy) / p.focal;
+    studio::Vec3 ray{};
+    for (int i = 0; i < 3; ++i) ray[i] = -p.back[i] + p.right[i] * sx + p.up[i] * sy;
+    studio::Vec3 normal{0, 0, 0};
+    const auto* board = joint_view(v, studio::board_joint);
+    if (board) normal = up_of(board->rotation);
+    else normal = p.back; // the camera's plane
+    const float facing = ray[0] * normal[0] + ray[1] * normal[1] + ray[2] * normal[2];
     studio::Vec3 target{};
-    for (int i = 0; i < 3; ++i) target[i] = p.origin[i] - p.back[i] * depth + p.right[i] * side + p.up[i] * height;
+    if (std::abs(facing) > 1e-4f) {
+        const float t = ((sel->position[0] - p.origin[0]) * normal[0] + (sel->position[1] - p.origin[1]) * normal[1] +
+                         (sel->position[2] - p.origin[2]) * normal[2]) / facing;
+        if (t <= 0) return;
+        for (int i = 0; i < 3; ++i) target[i] = p.origin[i] + ray[i] * t;
+    } else {
+        for (int i = 0; i < 3; ++i) target[i] = p.origin[i] - p.back[i] * depth + p.right[i] * (sx * depth) + p.up[i] * (sy * depth);
+    }
     studio::drag_limb(ui().selected, target);
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
