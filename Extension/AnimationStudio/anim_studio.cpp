@@ -543,7 +543,9 @@ void record(Live& l, double at, bool air, const std::string& trick) {
     }
     if (l.airborne) {
         if (air) {
-            if (!trick.empty() && at - l.takeoff_at < 0.3) l.recorded_trick = trick;
+            // The first trick the game names in this air is the one recorded: a flip or tweak after it does not
+            // rename the recording.
+            if (!trick.empty() && l.recorded_trick.empty() && at - l.takeoff_at < 0.3) l.recorded_trick = trick;
             l.ground_count = 0;
             if (at - l.takeoff_at > longest_air) {
                 l.airborne = false;
