@@ -223,6 +223,10 @@ struct Live {
     double game_takeoff{}, game_landing{-1};
     int game_ground{};
     const CustomTrick* game_trick{}; // the saved trick playing now, from snapshot `game_tricks`
+    // The skater's turn when the trick left the ground: the trick plays facing that way, so a turn in the air
+    // (the right stick) does not turn the board, the legs or the pelvis.
+    Quat facing_at_takeoff{0, 0, 0, 1};
+    bool facing_held{};
     std::shared_ptr<const CustomTricks> game_tricks;
     std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
@@ -993,6 +997,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 if (!l.game_air) {
                     l.game_air = true;
                     l.game_takeoff = at;
+                    l.facing_at_takeoff = l.pose[placement_joint].rotation;
+                    l.facing_held = true;
                     l.game_landing = -1;
                     l.game_trick = nullptr;
                     l.game_tricks = snap->tricks;
@@ -1048,16 +1054,27 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (clip.landing > clip.takeoff) t = std::min(t, clip.landing);
                 } else if (l.game_landing > 0 && clip.landing >= 0) {
                     const float after = static_cast<float>(at - l.game_landing) * speed;
-                    const float span = std::max(0.05f, std::min(0.35f, clip.duration() - clip.landing));
+                    // The trick settles into the game's pose over 0.6 s (its own landing plays out meanwhile), eased
+                    // at both ends, so the back foot comes down on the board instead of snapping there.
+                    const float span = std::max(0.05f, std::min(0.6f, clip.duration() - clip.landing));
+                    const float x = std::clamp(after / span, 0.0f, 1.0f);
                     t = std::min(clip.landing + after, clip.duration());
-                    weight = 1 - std::clamp(after / span, 0.0f, 1.0f);
+                    weight = 1 - x * x * (3 - 2 * x);
                     if (weight <= 0) {
                         l.game_trick = nullptr;
                         l.game_landing = -1;
+                        l.facing_held = false;
                         t = -1;
                     }
                 }
                 if (t >= 0 && weight > 0) {
+                    // Held facing: the skater's own turn is the one it had when the trick left the ground,
+                    // easing back to the game's as the trick is done.
+                    if (l.facing_held && placement_joint < l.pose.size()) {
+                        auto& turned = l.pose[placement_joint];
+                        turned.rotation = normalised(slerp(turned.rotation, l.facing_at_takeoff, weight));
+                        live_placement = world(l.pose, placement_joint);
+                    }
                     l.custom.resize(layout.count);
                     std::copy(l.pose.begin(), l.pose.end(), l.custom.begin());
                     clip.sample(t, l.custom);
