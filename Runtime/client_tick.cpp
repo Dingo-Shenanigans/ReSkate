@@ -1143,7 +1143,6 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // whenever this client is not in play; otherwise every 10 s and 2 s.
     bool requests_loading{};
     { std::lock_guard lock(r.mutex); requests_loading = r.requests.loading(); }
-    dingosdk::anim_studio::game_loading_state(requests_loading);
     // A recording starts from a clean level (anim_studio): the level is loaded again behind the loading screen,
     // and the recording waits until that load is in (or 15 s, when the load did not show as loading).
     static bool clean_loading{}, clean_seen{};
@@ -1165,6 +1164,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
             dingosdk::anim_studio::clean_start_done();
         }
     }
+    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
+    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
+    const bool in_play = state == 13 || state == 21;
+    dingosdk::anim_studio::game_loading_state(requests_loading || (clean_loading && !in_play));
     const bool world_changed = manifests_applied || requests_loading || (state != 13 && state != 21) ||
         state != r.previous_state || description.level != r.last_level || description.lm_level != r.catalog_level;
     r.catalog_level = description.lm_level;
