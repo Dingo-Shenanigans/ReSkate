@@ -50,6 +50,22 @@ void turn_keeps_its_speed_through_a_key() {
     check(near(speed_before, speed_after, 0.2f * speed_after), "The speed on either side of a key is the same");
 }
 
+// A hand's attach point and the wrists' effectors keep their rest place in a clip; their turns still move.
+void effectors_hold_their_place() {
+    Clip clip;
+    clip.joints = skeleton_joints;
+    clip.times = {0, 0.1f, 0.2f};
+    clip.frames.assign(skeleton_joints * 3, Joint{});
+    for (std::size_t f = 0; f < 3; ++f) {
+        clip.frames[f * skeleton_joints + 50].position = {0.1f * f, 1.0f * f, 0};
+        clip.frames[f * skeleton_joints + 50].rotation = from_euler({10.0f * static_cast<float>(f), 0, 0});
+    }
+    hold_effector_positions(clip);
+    check(clip.frames[2 * skeleton_joints + 50].position[1] == 0 && clip.frames[1 * skeleton_joints + 50].position[0] == 0,
+          "A hand's attach point holds its first place");
+    check(same_turn(clip.frames[2 * skeleton_joints + 50].rotation, from_euler({20, 0, 0})), "and its turns still follow the animation");
+}
+
 void keys_hold_outside_and_blend_between() {
     Animation animation;
     animation.clip.times = {0, 1};
@@ -217,6 +233,7 @@ int main() {
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
+        effectors_hold_their_place();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
         keys_can_be_dragged_in_time();

@@ -463,6 +463,7 @@ void finish_recording(Live& l) {
         s.recording = Recording::waiting;
         return;
     }
+    hold_effector_positions(*clip);
     clip->takeoff = static_cast<float>(std::max(0.0, l.takeoff_at - first));
     clip->landing = static_cast<float>(std::max(0.0, l.landing_at - first));
     auto& s = state();

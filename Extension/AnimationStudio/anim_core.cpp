@@ -1,3 +1,4 @@
+#include "skater_effectors.h"
 #include "skater_mirror.h"
 #include "anim_core.h"
 #include "Engine/Core/Json/json.h"
@@ -517,6 +518,7 @@ Clip clip_from_bytes(std::span<const std::uint8_t> bytes) {
         for (auto& j : clip.board) get_joint(j, "the clip holds a broken board");
     }
     require(std::isfinite(clip.takeoff) && std::isfinite(clip.landing), "bad takeoff or landing");
+    if (clip.joints == skeleton_joints) hold_effector_positions(clip);
     return clip;
 }
 std::string file_safe(std::string_view name) {
@@ -646,6 +648,16 @@ void drag_joint(Animation& animation, std::span<const Joint> native, float secon
         Vec3 offset{};
         if (const auto* track = animation.track(joint)) offset = evaluate(*track, seconds).offset;
         set_key(animation, joint, seconds, {delta, offset});
+    }
+}
+} // namespace dingosdk::anim_studio
+namespace dingosdk::anim_studio {
+void hold_effector_positions(Clip& clip) {
+    if (clip.joints != skeleton_joints || clip.times.empty()) return;
+    for (const auto joint : effector_joints) {
+        if (joint >= clip.joints) continue;
+        const Vec3 rest = clip.frames[joint].position;
+        for (std::size_t frame = 0; frame < clip.times.size(); ++frame) clip.frames[frame * clip.joints + joint].position = rest;
     }
 }
 } // namespace dingosdk::anim_studio

@@ -122,6 +122,10 @@ std::size_t move_key(Track& track, std::size_t index, float to, float duration) 
 Joint world(std::span<const Joint> local, std::uint16_t joint) noexcept;
 std::int16_t parent(std::uint16_t joint) noexcept;
 
+// The attach and effector joints (skater_effectors.h) hold their rest place in a clip: only their turns move.
+// A recording copied their places as the animation's, and they jumped; a clip loaded from a file gets the same.
+void hold_effector_positions(Clip& clip);
+
 // ---- dragging a limb (inverse kinematics) ---------------------------------------------------------
 // Moves the joint `end` to `target` (in the frame world() gives) by bending the chain of `length` joints above
 // it: the top of the chain stays where it is, the joints between bend, and the end is put where the drag is.
