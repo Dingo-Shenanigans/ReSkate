@@ -1514,9 +1514,11 @@ LoadingView loading() noexcept {
     constexpr double fade = 0.35;
     const double now = now_seconds(), since = loading_since.load(), until = loading_until.load();
     LoadingView v;
-    if (loading_held.load() && loading_what.load() != Loading::none && now >= until) {
+    // The level's title card and its streaming come after the game's requests are done: the screen stays until the
+    // game has been quiet for 4 s, and at least 6 s in all.
+    if (loading_held.load() && loading_what.load() != Loading::none && now >= until && now - since >= 6.0) {
         const double quiet = game_quiet_since.load();
-        if (quiet >= 0 && now - quiet > 1.0) {
+        if (quiet >= 0 && now - quiet > 4.0) {
             loading_held.store(false);
             loading_until.store(now);
         }
