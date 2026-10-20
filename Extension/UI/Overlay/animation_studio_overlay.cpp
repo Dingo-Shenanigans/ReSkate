@@ -1148,7 +1148,13 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 return a->label == b->label ? a->asset < b->asset : a->label < b->label;
             });
             if (!u.asset_filter.empty()) rows.push_back({std::to_string(leaves.size()) + " results", "", "Search includes readable names, aliases, original names and types across every folder. All search words must match.", {}, false});
-            if (leaves.empty() && children.empty()) rows.push_back({"No animations found", "", "Try fewer words, another trick name, or Show: All assets.", {}, false});
+            if (assets->empty())
+                rows.push_back({"No animation index on this install", "",
+                                "The native animation tree is built from a dump of the game's own asset names (contrib/animator-studio). "
+                                "Without it there is nothing here to browse or search; the tricks you can edit are in the list behind this one.",
+                                {}, false});
+            else if (leaves.empty() && children.empty())
+                rows.push_back({"No animations found", "", "Try fewer words, another trick name, or Show: All assets.", {}, false});
             for (const auto& [child, counts] : children) {
                 rows.push_back({child, std::to_string(counts.second) + " editable / " + std::to_string(counts.first) + " >", "Browse this branch of the native animation inventory.", [path = prefix + child] {
                     ui().asset_category = path; ui().asset_page = 0; ui().row = 0;
@@ -1224,6 +1230,42 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 row.on = v.trick == t.trick && v.pop == t.pop;
                 rows.push_back(std::move(row));
             }
+            break;
+        }
+        // Searching: the tricks whose name, category or pop matches every word typed, and nothing else, so
+        // the one you are after is one line away rather than down a folder.
+        const auto trick_terms = studio::native_search_terms(u.asset_filter);
+        if (!trick_terms.empty()) {
+            rows.push_back({"< Clear search", "", "Back to the whole list of tricks.", [] {
+                                auto& state = ui();
+                                state.asset_filter.clear();
+                                state.asset_query.fill(0);
+                                state.row = 0;
+                            }});
+            std::size_t found = 0;
+            std::string seen;
+            for (const auto& t : list) {
+                if (t.trick == seen) continue;
+                if (!studio::native_search_matches(studio::native_search_key(t.label + " " + t.trick + " " + t.category), trick_terms)) continue;
+                seen = t.trick;
+                ++found;
+                const int index = static_cast<int>(rows.size());
+                Row row{t.label, upper(t.category), "Choose the pop next: low, mid or high.", [name = t.trick, index] {
+                            auto& state = ui();
+                            state.open_trick = name;
+                            state.trick_row = index;
+                            state.row = 2;
+                        }};
+                row.on = v.trick == t.trick;
+                rows.push_back(std::move(row));
+            }
+            rows.insert(rows.begin() + 1, {found ? std::to_string(found) + (found == 1 ? " TRICK" : " TRICKS") : "NO TRICK OF THAT NAME", "", "", {}, false});
+            if (!found)
+                rows.push_back({"Search every animation", assets->empty() ? "no index" : std::to_string(assets->size()) + " assets",
+                                assets->empty() ? "The native animation index has not been built on this install, so there is nothing beyond the tricks above to search. "
+                                                  "It is made by contrib/animator-studio, from a dump of the game's own asset names."
+                                                : "Look through the game's whole animation tree for these words, not only the tricks you can edit.",
+                                [] { ui().browse_assets = true; ui().row = 0; }, !assets->empty()});
             break;
         }
         // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
@@ -2913,12 +2955,15 @@ void draw_animation_studio() {
             ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 20 * k));
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
             const bool changed = text_field(f, "##nativequery", u.asset_query, menu_w - 104 * k);
-            ImGui::SameLine();
-            const bool clear = ImGui::Button("Clear", ImVec2(70 * k, 0));
+            const bool clear = button(d, f, "##clearquery", ImVec2(menu_x + menu_w - 86 * k, list_top + 20 * k), ImVec2(70 * k, 30 * k),
+                                      "CLEAR", false, u.asset_query[0] != 0);
             if (changed || clear) {
                 if (clear) u.asset_query.fill(0);
                 u.asset_filter = studio::native_search_terms(u.asset_query.data()).empty() ? "" : u.asset_query.data();
-                if (!u.asset_filter.empty()) u.browse_assets = true;
+                // The search filters whichever list you are in. It used to throw you into the native asset
+                // tree, which on an install without that index built is empty, so every search read as
+                // nothing found even when the trick was right there in the list.
+                u.open_trick.clear();
                 u.asset_page = 0; u.row = 0;
                 u.list_scroll[static_cast<std::size_t>(u.tab)] = 0;
                 u.list_followed[static_cast<std::size_t>(u.tab)] = -1;
