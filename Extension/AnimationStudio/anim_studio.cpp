@@ -1,4 +1,6 @@
 ﻿#include "anim_studio.h"
+#include "trick_batch.h"
+#include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -101,6 +103,7 @@ struct State {
     bool idle_read{};
     // Record all tricks (trick_batch.h): the next landed trick is saved to the recorded tricks and the studio stays closed.
     bool batch{};
+    bool manual_recording{};
     std::optional<BatchTake> batch_take;
     bool record_all_requested{};
     Animation edits;
@@ -406,7 +409,7 @@ void publish_locked(State& s) {
     snap->edits = std::move(edits);
     snap->time = s.time;
     snap->open = s.open;
-    snap->play_in_game = s.play_in_game;
+    snap->play_in_game = s.play_in_game && !s.manual_recording;
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
     snap->speed = s.edits.speed;
@@ -514,6 +517,7 @@ void finish_recording(Live& l) {
     if (clip->times.size() < 8 || first < 0) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
+        if (s.recording == Recording::off) return;
         s.status = "The recording was too short. Try again.";
         if (s.batch) {
             s.batch_take = BatchTake{false, {}, {}, "the recording was too short", 0};
@@ -527,10 +531,11 @@ void finish_recording(Live& l) {
     clip->landing = static_cast<float>(std::max(0.0, l.landing_at - first));
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    if (s.batch) {
-        // Record all tricks: saved as the trick and the pop it was, the studio stays closed.
+    if (s.recording == Recording::off) return; // canceled while the clip was assembled
+    if (s.batch || s.manual_recording) {
+        // Save recognized takes without opening the studio or driving the skater.
         s.batch = false;
-        s.recording = Recording::off;
+        s.recording = s.manual_recording ? Recording::waiting : Recording::off;
         const float air = clip->landing - clip->takeoff;
         // Its pop, as pop_of has it: low under 0.45 s in the air, high from 0.65 s.
         BatchTake take{false, l.recorded_trick, air < 0.45f ? "low" : air < 0.65f ? "mid" : "high", {}, air};
@@ -541,18 +546,31 @@ void finish_recording(Live& l) {
                 const auto folder = library_folder() / L"recorded";
                 std::filesystem::create_directories(folder);
                 const auto bytes = clip_bytes(*clip);
-                std::ofstream out(folder / std::filesystem::path(recorded_file_name(take.trick, take.pop)), std::ios::binary | std::ios::trunc);
+                const auto destination = folder / std::filesystem::path(recorded_file_name(take.trick, take.pop));
+                if (s.manual_recording && std::filesystem::exists(destination)) {
+                    const auto history = folder / L"history";
+                    std::filesystem::create_directories(history);
+                    std::filesystem::copy_file(destination, history / (destination.stem().string() + "_" + std::to_string(GetTickCount64()) + ".clip"));
+                }
+                auto temporary = destination;
+                temporary += L".tmp";
+                std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
                 out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-                take.ok = static_cast<bool>(out);
+                out.close();
+                take.ok = static_cast<bool>(out) && MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
                 if (!take.ok) take.message = "the clip could not be written";
-                tricks_revision.fetch_add(1, std::memory_order_acq_rel);
+                if (take.ok) tricks_revision.fetch_add(1, std::memory_order_acq_rel);
             } catch (const std::exception& e) {
                 take.message = e.what();
             }
         }
         logging::log(Level::info, Channel::skater, "Animation Studio: recorded {} ({} pop, {:.2f} s in the air){}{}", take.trick.empty() ? "a trick" : take.trick,
                      take.pop, air, take.ok ? "" : ": not kept, ", take.message);
-        s.batch_take = std::move(take);
+        if (s.manual_recording) {
+            s.status = take.ok ? std::format("Saved {} ({} pop). Skate the next trick; F8 stops recording.", take.trick, take.pop)
+                               : "Not kept: " + take.message + ". Waiting for the next trick.";
+        } else s.batch_take = std::move(take);
+        publish_locked(s);
         return;
     }
     s.clip = std::move(clip);
@@ -647,6 +665,20 @@ void record(Live& l, double at, bool air, const std::string& trick) {
             }
             return;
         }
+        {
+            std::lock_guard lock(s.mutex);
+            if (s.manual_recording) {
+                const auto landed = physics_state(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
+                if (!landed || (*landed != 100 && *landed != 101)) {
+                    l.airborne = false;
+                    l.landing_at = -1;
+                    l.ring.clear();
+                    s.recording = Recording::waiting;
+                    s.status = "Not a riding landing. Waiting for the next trick.";
+                    return;
+                }
+            }
+        }
         if (++l.ground_count < 3) return; // a frame or two of contact mid-air is not a landing
         l.airborne = false;
         if (at - l.takeoff_at < shortest_air) {
@@ -667,6 +699,19 @@ void record(Live& l, double at, bool air, const std::string& trick) {
         return;
     }
     if (at - l.landing_at >= after_landing) {
+        {
+            std::lock_guard lock(s.mutex);
+            if (s.manual_recording) {
+                const auto landed = physics_state(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
+                if (!landed || (*landed != 100 && *landed != 101)) {
+                    l.landing_at = -1;
+                    l.ring.clear();
+                    s.recording = Recording::waiting;
+                    s.status = "The landing did not hold. Waiting for the next trick.";
+                    return;
+                }
+            }
+        }
         finish_recording(l);
         l.landing_at = -1;
         l.ring.clear();
@@ -943,6 +988,7 @@ void on_animation(std::uintptr_t component) noexcept {
     try {
         const auto snap = snapshot();
         if (!snap || (!snap->open && !snap->armed && !snap->play_in_game)) {
+            reset_recording(l);
             SetLastError(error);
             return;
         }
@@ -980,7 +1026,7 @@ void on_animation(std::uintptr_t component) noexcept {
         if (clean_hold.load(std::memory_order_acquire) && now_seconds() > clean_until.load(std::memory_order_relaxed)) clean_hold.store(false, std::memory_order_release);
         if (snap->armed && !snap->open && air && !clean_hold.load(std::memory_order_acquire))
             record(l, at, *air, *air ? current_trick(component) : std::string{});
-        else if (!snap->armed) reset_recording(l);
+        else reset_recording(l);
 
         // Which joints to write back, and from what.
         std::size_t first = 0, last = 0; // [first, last) of l.pose written; 0, 0 = nothing
@@ -1465,7 +1511,53 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
 
 // ---- the engine thread ---------------------------------------------------------------------------
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
+void manual_recording_request(std::uintptr_t component, bool open) {
+    static ULONGLONG checked{};
+    const auto now = GetTickCount64();
+    if (now - checked < 250) return;
+    checked = now;
+    try {
+        const auto folder = library_folder();
+        const auto request = folder / L"manual-recording.request";
+        std::ifstream input(request);
+        if (!input) return;
+        std::string command, token;
+        input >> command >> token;
+        input.close();
+        std::error_code ec;
+        if (!std::filesystem::remove(request, ec) || token.empty()) return;
+        std::string message;
+        const bool busy = batch::active();
+        auto& s = state();
+        {
+            std::lock_guard lock(s.mutex);
+            if (command == "stop") {
+                s.manual_recording = false;
+                if (!s.batch) s.recording = Recording::off;
+                message = "OK Manual recording stopped. Open F8 / TRICKS to see your takes.";
+            } else if (command != "start") message = "ERROR Unknown recording request.";
+            else if (!component || open) message = "ERROR Close Animator Studio and enter solo play on your board, then try again.";
+            else if (multiplayer_session_active()) message = "ERROR Manual recording is available in solo play only.";
+            else if (busy || s.batch || (!s.manual_recording && s.recording != Recording::off)) message = "ERROR Another recording is active. Finish or cancel it first.";
+            else {
+                s.manual_recording = true;
+                s.recording = Recording::waiting;
+                s.batch_take.reset();
+                s.open_requested = false;
+                message = "OK Manual recording ON. Do your own tricks; each recognized take is saved by pop. F8 stops recording.";
+            }
+            s.status = message;
+            publish_locked(s);
+        }
+        std::ofstream response(folder / L"manual-recording.response", std::ios::trunc);
+        response << token << '\n' << message << '\n';
+        logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Manual recording request failed: {}", e.what());
+    }
+}
 TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float camera_fov) {
+    manual_recording_request(component, open);
     auto& l = live();
     auto& s = state();
     TickResult result;
@@ -1473,11 +1565,22 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
     {
         std::lock_guard lock(s.mutex);
         if (!s.snapshot) publish_locked(s);
+        if (s.manual_recording && multiplayer_session_active()) {
+            s.manual_recording = false;
+            s.recording = Recording::off;
+            s.status = "Manual recording stopped: solo play only.";
+            publish_locked(s);
+        }
         open_flag.store(open, std::memory_order_release);
         const bool room_now = open && in_room_flag.load(std::memory_order_acquire);
         if (room_flag.exchange(room_now, std::memory_order_acq_rel) && !room_now)
             room_restore_until.store(now_seconds() + 3, std::memory_order_release);
         if (s.open != open) {
+            if (open && s.manual_recording) {
+                s.manual_recording = false;
+                s.recording = Recording::off;
+                s.status = "Manual recording stopped. Your saved takes are in TRICKS.";
+            }
             s.open = open;
             s.base_yaw_valid = false;
             s.eased_valid = false;
@@ -1689,7 +1792,7 @@ View view() {
     v.joints = s.joints;
     for (const auto& t : s.edits.tracks) {
         TrackView tv{t.joint, {}, t.hidden, t.locked};
-        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease});
+        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease, k.smooth});
         v.tracks.push_back(std::move(tv));
     }
     v.library = s.library;
@@ -2068,6 +2171,22 @@ void set_ease(std::uint16_t joint, float time, Ease ease) {
                 k.ease = ease;
                 changed_locked(s);
             }
+}
+void smooth_keys(std::uint16_t joint) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const float end = s.edits.end < 0 ? (s.clip ? s.clip->duration() : 0.0f) : s.edits.end;
+    std::size_t changed = 0, tracks = 0;
+    for (auto& t : s.edits.tracks) {
+        if (t.locked || (joint != all_joints && t.joint != joint)) continue;
+        if (const auto n = anim_studio::smooth_track(t, s.edits.start, end)) {
+            changed += n;
+            ++tracks;
+        }
+    }
+    s.status = changed ? std::format("Smoothed {} key(s) on {} track(s).", changed, tracks) : "Nothing to smooth here.";
+    if (changed) changed_locked(s);
+    else publish_locked(s);
 }
 void reset_joint(std::uint16_t joint) {
     auto& s = state();

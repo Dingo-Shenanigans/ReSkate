@@ -231,6 +231,11 @@ bool button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 siz
 void diamond(ImDrawList* d, ImVec2 c, float r, ImU32 colour) {
     d->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), colour);
 }
+// A key marker: round when it has been smoothed, a diamond otherwise.
+void key_mark(ImDrawList* d, ImVec2 c, float r, ImU32 colour, bool smooth) {
+    if (smooth) d->AddCircleFilled(c, r * 0.92f, colour, 18);
+    else diamond(d, c, r, colour);
+}
 // The box on the chosen joint, glowing the game's blue.
 // The chosen joint: a small blue ring around it, softly glowing.
 void glow_box(ImDrawList* d, ImVec2 c, float half, float k) {
@@ -630,6 +635,16 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                 studio::set_ease(ui().selected, time, static_cast<studio::Ease>((ease + 1) % 3));
                             }, !locked});
         }
+        rows.push_back({"Smooth keys", "", "Smooths this joint's keys: they all ease smoothly, keys that say nothing are dropped, "
+                                            "and the rest are drawn towards their neighbours. Smoothed keys show round.",
+                        [] {
+                            studio::begin_change();
+                            studio::smooth_keys(ui().selected);
+                        }, v.has_clip && !locked});
+        rows.push_back({"Smooth every joint", "", "The same, over every joint's keys at once.", [] {
+                            studio::begin_change();
+                            studio::smooth_keys(studio::all_joints);
+                        }, v.has_clip});
         rows.push_back({"Turn about", u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "any axis",
                         "Which axis a drag or the left stick turns the joint about.", [] { ui().axis = ui().axis >= 2 ? -1 : ui().axis + 1; }});
         rows.push_back({"Axes", u.local_axes ? "the joint's own" : "the world's", "X, Y and Z of the joint itself or of the world.",
@@ -1227,7 +1242,8 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     d->PushClipRect(ImVec2(ruler_left, summary_y), ImVec2(ruler_right, summary_y + summary_h), true);
     for (const auto& t : v.tracks)
         for (const auto& key : t.keys)
-            if (!bracket_key(key.time)) diamond(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft);
+            if (!bracket_key(key.time))
+                    key_mark(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft, key.smooth);
     d->PopClipRect();
     // Rows, one per joint.
     const auto joints = studio::editable_joints();
@@ -1283,8 +1299,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 const bool current = std::abs(key.time - v.time) < 0.5f / fps;
                 const bool close_to = lane_hovered && std::abs(ImGui::GetIO().MousePos.x - c.x) < 9 * k;
                 const bool in_pick = is_picked(joint.index, key.time);
-                if ((current && chosen) || in_pick) diamond(d, c, 13 * k, in_pick ? blue : blue_dim);
-                diamond(d, c, (close_to ? 10.5f : 9) * k, track->hidden ? faint : in_pick || (current && chosen) ? blue_light : white);
+                if ((current && chosen) || in_pick) key_mark(d, c, 13 * k, in_pick ? blue : blue_dim, key.smooth);
+                key_mark(d, c, (close_to ? 10.5f : 9) * k, track->hidden ? faint : in_pick || (current && chosen) ? blue_light : white,
+                         key.smooth);
                 if (key.ease == studio::Ease::step) d->AddLine(ImVec2(c.x, c.y - 4 * k), ImVec2(c.x, c.y + 4 * k), IM_COL32(40, 40, 40, 255), 2 * k);
                 if (close_to && lane_clicked && !track->locked && ImGui::GetIO().KeyShift) {
                     on_key = true;

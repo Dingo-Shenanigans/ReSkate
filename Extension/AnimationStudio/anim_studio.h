@@ -26,6 +26,7 @@ struct JointView {
 struct KeyView {
     float time{};
     Ease ease{};
+    bool smooth{}; // smoothed: the timeline draws it round
 };
 struct TrackView {
     std::uint16_t joint{};
@@ -138,6 +139,9 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);
 void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);
+// Smooths the keys of one joint, or of every joint when `joint` is `all_joints`. Call begin_change first.
+inline constexpr std::uint16_t all_joints = 0xffff;
+void smooth_keys(std::uint16_t joint);
 void reset_joint(std::uint16_t joint); // takes all its keys off
 void set_track_flags(std::uint16_t joint, bool hidden, bool locked);
 void copy_pose();  // every joint's edit at the current time

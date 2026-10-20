@@ -16,12 +16,19 @@ Vec3 lerp(const Vec3& a, const Vec3& b, float t) noexcept {
     return {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
 }
 // Cubic Hermite through p1 -> p2 with Catmull-Rom slopes from the neighbours.
-Vec3 hermite(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, float u) noexcept {
+// `before`, `span` and `after` are the lengths in seconds of the step before this one, this one, and the
+// one after. The slopes are measured in seconds and scaled back into this step, so keys that are not
+// evenly spaced keep their speed through the key instead of kinking there.
+Vec3 hermite(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, float u, float before, float span,
+             float after) noexcept {
     const float u2 = u * u, u3 = u2 * u;
     const float h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
+    const float lead = (std::max)(before, 1e-4f) + (std::max)(span, 1e-4f);
+    const float trail = (std::max)(span, 1e-4f) + (std::max)(after, 1e-4f);
+    const float k1 = (std::max)(span, 1e-4f) / lead, k2 = (std::max)(span, 1e-4f) / trail;
     Vec3 out{};
     for (std::size_t i = 0; i < 3; ++i) {
-        const float m1 = (p2[i] - p0[i]) * 0.5f, m2 = (p3[i] - p1[i]) * 0.5f;
+        const float m1 = (p2[i] - p0[i]) * k1, m2 = (p3[i] - p1[i]) * k2;
         out[i] = h00 * p1[i] + h10 * m1 + h01 * p2[i] + h11 * m2;
     }
     return out;
@@ -209,10 +216,15 @@ Quat nearest(const Quat& q, const Quat& ref) noexcept {
     return d < 0 ? Quat{-q[0], -q[1], -q[2], -q[3]} : q;
 }
 // The turn through a key that keeps its speed: the key's tangent from the keys either side of it.
-Quat tangent(const Quat& prev, const Quat& q, const Quat& next) noexcept {
+// `before` and `after` are the seconds either side of this key: as with hermite, the turn either side is
+// measured per second so uneven spacing does not kink the speed.
+Quat tangent(const Quat& prev, const Quat& q, const Quat& next, float before, float after) noexcept {
     const Quat inverse = conjugate(q);
     const Quat a = quat_log(multiply(inverse, nearest(prev, q))), b = quat_log(multiply(inverse, nearest(next, q)));
-    return normalised(multiply(q, quat_exp({-(a[0] + b[0]) / 4, -(a[1] + b[1]) / 4, -(a[2] + b[2]) / 4, 0})));
+    const float lead = (std::max)(before, 1e-4f), trail = (std::max)(after, 1e-4f);
+    const float share = 2 * lead * trail / (lead + trail); // the harmonic mean: the shorter side leads
+    const float ka = share / lead * 0.25f, kb = share / trail * 0.25f;
+    return normalised(multiply(q, quat_exp({-(a[0] * ka + b[0] * kb), -(a[1] * ka + b[1] * kb), -(a[2] * ka + b[2] * kb), 0})));
 }
 } // namespace
 
@@ -240,9 +252,11 @@ Offset evaluate(const Track& track, float seconds) noexcept {
         const auto& after = i + 2 < keys.size() ? keys[i + 2].offset : b.offset;
         const Quat prev = i > 0 ? keys[i - 1].rotation : a.rotation, next = i + 2 < keys.size() ? keys[i + 2].rotation : b.rotation;
         const Quat b_rotation = nearest(b.rotation, a.rotation);
-        const Quat ta = tangent(prev, a.rotation, b_rotation), tb = tangent(a.rotation, b_rotation, next);
+        const float lead = i > 0 ? a.time - keys[i - 1].time : span;
+        const float trail = i + 2 < keys.size() ? keys[i + 2].time - b.time : span;
+        const Quat ta = tangent(prev, a.rotation, b_rotation, lead, span), tb = tangent(a.rotation, b_rotation, next, span, trail);
         const Quat moved = slerp(slerp(a.rotation, b_rotation, u), slerp(ta, tb, u), 2 * u * (1 - u));
-        return {normalised(moved), hermite(before, a.offset, b.offset, after, u)};
+        return {normalised(moved), hermite(before, a.offset, b.offset, after, u, lead, span, trail)};
     }
     }
 }
@@ -298,6 +312,63 @@ bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float 
     std::erase_if(track->keys, [&](const Key& k) { return std::abs(k.time - seconds) <= merge; });
     return track->keys.size() != before;
 }
+namespace {
+// How far a key's turn is from the turn the curve would have had there anyway, in radians.
+float turn_apart(const Quat& a, const Quat& b) noexcept {
+    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
+}
+} // namespace
+
+std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept {
+    auto& keys = track.keys;
+    if (keys.size() < 2) return 0;
+    const auto pinned = [&](const Key& k) {
+        return std::abs(k.time - keep_start) < 1.0f / 60 || std::abs(k.time - keep_end) < 1.0f / 60;
+    };
+    std::size_t changed = 0;
+    // Every key eases smoothly: one step or linear key in the middle breaks the curve either side of it.
+    for (auto& k : keys)
+        if (k.ease != Ease::smooth) {
+            k.ease = Ease::smooth;
+            ++changed;
+        }
+    // A key that sits where the line between its neighbours already goes says nothing: it is dropped, so the
+    // curve through what is left is not pulled about by keys that were only ever noise.
+    for (std::size_t i = 1; i + 1 < keys.size();) {
+        const Key &before = keys[i - 1], &here = keys[i], &after = keys[i + 1];
+        const float span = after.time - before.time;
+        const float u = span > 1e-6f ? (here.time - before.time) / span : 0.5f;
+        bool same = !pinned(here);
+        if (same) {
+            const auto guess = lerp(before.offset, after.offset, u);
+            for (std::size_t c = 0; c < 3 && same; ++c) same = std::abs(guess[c] - here.offset[c]) < 0.002f;
+            same = same && turn_apart(slerp(before.rotation, after.rotation, u), here.rotation) < 0.5f * 3.14159265f / 180;
+        }
+        if (same) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            ++changed;
+        } else ++i;
+    }
+    // What is left is drawn a little towards its neighbours, so a key that was placed by hand a frame off
+    // its neighbours no longer shows as a flick.
+    if (keys.size() > 2) {
+        const auto was = keys;
+        for (std::size_t i = 1; i + 1 < keys.size(); ++i) {
+            if (pinned(keys[i])) continue;
+            const Key &before = was[i - 1], &after = was[i + 1];
+            const float span = after.time - before.time;
+            const float u = span > 1e-6f ? (was[i].time - before.time) / span : 0.5f;
+            constexpr float pull = 0.35f;
+            keys[i].offset = lerp(was[i].offset, lerp(before.offset, after.offset, u), pull);
+            keys[i].rotation = slerp(was[i].rotation, slerp(before.rotation, after.rotation, u), pull);
+            ++changed;
+        }
+    }
+    for (auto& k : keys) k.smooth = true;
+    return changed;
+}
+
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept {
     if (index >= track.keys.size()) return index;
     auto key = track.keys[index];
@@ -361,6 +432,7 @@ std::string to_json(const Animation& animation) {
             k["r"] = Json::array({key.rotation[0], key.rotation[1], key.rotation[2], key.rotation[3]});
             k["p"] = Json::array({key.offset[0], key.offset[1], key.offset[2]});
             k["ease"] = std::string(ease_name(key.ease));
+            if (key.smooth) k["smooth"] = true;
             keys.push_back(std::move(k));
         }
         t["keys"] = std::move(keys);
@@ -414,6 +486,7 @@ Animation from_json(std::string_view text) {
                 for (const float v : value.offset) require(std::abs(v) < 10, "a key moves a joint more than 10 m");
                 const auto ease = key.value("ease", "smooth");
                 value.ease = ease == "linear" ? Ease::linear : ease == "step" ? Ease::step : Ease::smooth;
+                value.smooth = key.value("smooth", false);
                 track.keys.push_back(value);
             }
             std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
