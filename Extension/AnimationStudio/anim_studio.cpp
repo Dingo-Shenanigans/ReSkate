@@ -1,7 +1,7 @@
-﻿#include "anim_studio.h"
+#include "anim_studio.h"
 #include "trick_batch.h"
 #include "native_asset_names.h"
-#include "trick_intents.h"
+#include "pop_grades.h"
 #include "recording_rules.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
@@ -683,10 +683,10 @@ void finish_recording(Live& l) {
         s.batch = false;
         s.recording = s.manual_recording ? Recording::waiting : Recording::off;
         const float air = clip->landing - clip->takeoff;
-        // Its pop is the one the take asked for, as the game itself grades it (EnumGS.PopHeight, trick_intents.h).
-        const auto grade = scripted ? trick_intents::take_pop_height() :
+        // Its pop is the one the take asked for, as the game itself grades it (EnumGS.PopHeight, pop_grades.h).
+        const auto grade = scripted ? pop_grades::take_pop_height() :
             grade_is_ours.load(std::memory_order_acquire) ?
-                trick_intents::pop_height_since(pop_grade_since(GetTickCount64(), now_seconds() - l.takeoff_at)) : 0;
+                pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), now_seconds() - l.takeoff_at)) : 0;
         const auto decision = evaluate_recorded_take(scripted, l.recorded_trick, s.batch_trick, s.batch_pop, grade, !clip->board.empty(), air);
         BatchTake take{false, l.recorded_trick, decision.pop, {}, air};
         if (decision.rejection == TakeRejection::missing_trick) take.message = "the game did not name the trick";
@@ -1449,7 +1449,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // air's length. The grade is any skater's, so it is used only with no other skaters about.
                 const auto since_takeoff_ms = static_cast<std::uint64_t>(std::max(0.0, at - l.episode.takeoff) * 1000);
                 const auto graded = grade_is_ours.load(std::memory_order_acquire)
-                                        ? trick_intents::pop_height_since(pop_grade_since(GetTickCount64(), since_takeoff_ms / 1000.0)) : 0;
+                                        ? pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), since_takeoff_ms / 1000.0)) : 0;
                 const auto graded_name = graded_pop_name(graded);
                 const auto pop = !graded_name.empty() ? std::string(graded_name) : pop_of(l.predicted_air);
                 const CustomTrick* found = nullptr;
@@ -1487,8 +1487,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.episode.select(at);
                     l.game_trick = found;
                     if (found)
-                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop, {:.2f} s in the air), playing your {} ({}).", name,
-                                     pop.empty() ? "unknown" : pop, l.predicted_air, found->name,
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
+                                     pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air, found->name,
                                      "authored edits over fresh native pose");
                 }
             }
@@ -2131,7 +2131,7 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
     if (needs_listener && !grading_tried && base) {
         grading_tried = true;
         std::string why;
-        grading = trick_intents::install_grading(base, why);
+        grading = pop_grades::install(base, why);
         if (!grading) logging::log(Level::warning, Channel::skater, "Animation Studio: pops are chosen by their air time, not the game's grade: {}.", why);
     }
     grade_is_ours.store(grading && !multiplayer_session_active() && ai_skaters::active_count() == 0, std::memory_order_release);

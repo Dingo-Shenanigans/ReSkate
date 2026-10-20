@@ -19,7 +19,7 @@ Unadvertised, unreachable server objects cannot be enumerated by a normal clone.
 | PR #3 / 22sh/native-animation-tree | 0c6d16d | Native tree, 4,004 previews, readable names, search and upgrade guidance |
 | feature/unreal-bone-transform-gizmos | c09775b | Joint gizmos, snapping, camera shots, solo transforms and timeline work |
 | test/gizmos-with-pr3 | a01501d | Combined studio UX, loading art, keep-clear controls and ReSkate-menu entry |
-| PR #4 / anim-pop-strength | 3e59f52 | Per-tick scripted pad, native pop grading and validated batch takes |
+| PR #4 / anim-pop-strength | aa7cca7 | Per-tick scripted pad, crouch-duration pop control, native grading and validated batch takes |
 
 Two integration conflicts were resolved by keeping both features: native naming
 and pop-intent includes; loading-screen settling and the new trick/pop batch API.
@@ -28,8 +28,13 @@ not matching a stale batch target. Manual takes now use their actual recognized
 trick and native pop grade (or the existing air-time fallback). Scripted takes
 continue rejecting a wrong trick or wrong/ungraded pop. Regression tests cover
 both paths, missing board/name, unknown enum values and bounded grade timestamps.
-The two 32-byte pop-setter fingerprints also match the inspected local Skate.exe;
-that byte comparison does not establish runtime behavior or thread safety.
+The latest PR #4 revision replaces pop-strength scaling with crouch-duration
+control and a read-only pop-grade hook. Its additional crouch-state fix is already
+covered by the shared playback classifier and regression tests; no second runtime
+classifier is introduced. Manual recording acceptance and bounded grade timestamps
+are preserved through the hook rename. The retained 32-byte integer-setter
+fingerprint matches the inspected local Skate.exe; that byte comparison does not
+establish runtime behavior or thread safety.
 
 ## Build and download
 

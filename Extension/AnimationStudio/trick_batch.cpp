@@ -1,7 +1,7 @@
 #include "trick_batch.h"
 #include "anim_studio.h"
 #include "trick_gestures.h"
-#include "trick_intents.h"
+#include "pop_grades.h"
 #include "trick_stage.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
@@ -28,21 +28,22 @@ namespace {
 using logging::Channel;
 using logging::Level;
 // Every take is the quick flick of PR #230's trick pad: the game knows every trick from it. The game grades each pop
-// low, medium or high (EnumGS.PopHeight, trick_intents.h), which is what the player's Minimum Pop Height setting moves,
+// low, medium or high (EnumGS.PopHeight, pop_grades.h), which is what the player's Minimum Pop Height setting moves,
 // and a take is kept only when the game grades it as asked.
 constexpr std::uint32_t flick_ms = 24;
 struct Pop {
     const char* name;
-    float strength;           // x the game's own on the first try; 1 is the game's own pop, never held
-    float lowest, highest;    // where a try graded under or over it searches next: halfway to these
+    std::uint32_t crouch_ticks;         // how long the stick is held down before the flick, on the first try
+    std::uint32_t shortest, longest;    // where a try graded under or over it searches next: halfway to these
 };
-// High as a player does it; low and mid with the strength held inside the game's low and medium bands. Measured
-// 2026-10-19/20, standing kickflip: held at 0.2-0.4 the game graded the pop low, 0.5-0.6 medium, 0.7 and up high. The
-// bands sit apart from trick to trick: the long 360 gestures pop weaker of themselves (their own pop tops out at
-// 0.68-0.75), and a nollie 360 hardflip held at 0.6, 0.65 and 0.7 was graded low every time. A try graded under or
-// over what was asked holds the next try halfway toward the other side.
-constexpr std::array<Pop, 3> pops{{{"low", 0.3f, 0.1f, 0.6f}, {"mid", 0.6f, 0.3f, 1.0f}, {"high", 1.0f, 1.0f, 1.0f}}};
-constexpr int tries_each = 3; // as PR #230's recorder
+// The pop builds while the stick is held down, so the crouch's length is the pop, as a player does it. Measured
+// 2026-10-20, standing, game ticks at 60 Hz: a crouch of 3-5 ticks was graded low, 7-11 medium, 13 and up high
+// (kickflip and nollie inward heelflip alike). Holding the pop's strength down instead made some gestures lose their
+// flip (a nollie inward heelflip came out a nollie, 3 tries of 3). A try graded under or over what was asked crouches
+// halfway toward the other side on the next one.
+constexpr std::array<Pop, 3> pops{{{"low", 4, 1, 6}, {"mid", 9, 6, 13}, {"high", 18, 18, 18}}};
+// One more than PR #230's recorder: a try that came out another trick moves the crouch, and needs room to.
+constexpr int tries_each = 4;
 constexpr std::uint8_t last_recorded_trick = 30;
 // Riding on the ground (100), and the state seen after some landings (101); on foot (504). Measured 2026-10-04 (PR #230).
 constexpr std::uint32_t riding_state = 100, landed_state = 101, on_foot_state = 504;
@@ -65,10 +66,11 @@ struct State {
     std::vector<Job> jobs;
     std::size_t tricks{}, place{}, kept{};
     int tries{}, menu_returns{};
-    // The strength the next try holds, and the band it is searched in (Pop).
-    struct StrengthSearch {
-        float held{1.0f}, lowest{1.0f}, highest{1.0f};
-    } strength_search;
+    // The crouch the next try holds, and the band it is searched in (Pop).
+    struct CrouchSearch {
+        std::uint32_t ticks{}, shortest{}, longest{}, first_ticks{};
+        int wrong_tricks{}; // tries that came out another trick than asked
+    } crouch_search;
     std::uint64_t since{}, still_since{}, next_press{}, last_step_at{};
     bool waiting_for_focus{};
     overlay::PadReads pad_reads_at; // the scripted pad's answers when the step began
@@ -124,22 +126,13 @@ std::string label(const Job& job) {
     for (auto& c : name) if (c == '_') c = ' ';
     return std::format("{} ({} pop)", name, job.pop.name);
 }
-// The pop and flip the game chose for the take, before any scaling.
-std::string game_values() {
-    const auto values = trick_intents::written();
-    // A value the graph builds up over the crouch is told as where it started, its top and where it ended.
-    const auto listed = [](const std::vector<float>& list) {
-        if (list.empty()) return std::string("none");
-        if (list.size() == 1) return std::format("{:.3f}", list.front());
-        return std::format("{:.3f} to {:.3f}, top {:.3f}", list.front(), list.back(), *std::ranges::max_element(list));
-    };
-    const auto graded = trick_intents::pop_name(trick_intents::take_pop_height());
-    return std::format("the game graded it {}, wrote strength {}, flip speed {}", graded.empty() ? "nothing" : graded, listed(values.strengths),
-                       listed(values.flip_speeds));
+// The take's crouch and the game's grade of its pop.
+std::string take_report(const State& s) {
+    const auto graded = pop_grades::pop_name(pop_grades::take_pop_height());
+    return std::format("{} tick crouch, the game graded it {}", s.crouch_search.ticks, graded.empty() ? "nothing" : graded);
 }
-// The take is over: the game's pops are its own again.
 void end_take() noexcept {
-    trick_intents::end_take();
+    pop_grades::end_take();
     anim_studio::cancel_batch_take();
 }
 // A fixed 60 Hz simulation at normal speed for the run, as PR #230's recorder held it: the gestures' arcs have
@@ -193,16 +186,16 @@ void try_again(State& s) {
     if (s.stopping.load()) return go_home(s, "you stopped it");
     next(s, Step::board);
 }
-// Why the last try of a take was not kept, for the summary. A pop graded higher even with the strength held lowest is
-// most likely the player's Minimum Pop Height setting.
-std::string not_kept_reason(const State& s, const BatchTake& taken, trick_intents::PopHeight graded) {
+// Why the last try of a take was not kept, for the summary. A pop graded higher even from the shortest crouch is most
+// likely the player's Minimum Pop Height setting.
+std::string not_kept_reason(const State& s, const BatchTake& taken, pop_grades::PopHeight graded) {
     const auto& job = s.jobs[s.place];
-    const auto wanted = trick_intents::pop_height_of(job.pop.name);
+    const auto wanted = pop_grades::pop_height_of(job.pop.name);
     if (taken.trick != game_name(job) || !graded) return std::format("{} ({})", s.last_trick, taken.message);
     if (graded > wanted)
-        return std::format("{} (graded {} even with the pop held at x{:.2f}: is Gameplay > Assists > Minimum Pop Height above Low?)", s.last_trick,
-                           trick_intents::pop_name(graded), s.strength_search.held);
-    return std::format("{} (graded {})", s.last_trick, trick_intents::pop_name(graded));
+        return std::format("{} (graded {} even from a {} tick crouch: is Gameplay > Assists > Minimum Pop Height above Low?)", s.last_trick,
+                           pop_grades::pop_name(graded), s.crouch_search.ticks);
+    return std::format("{} (graded {})", s.last_trick, pop_grades::pop_name(graded));
 }
 // Esc, or Back (View) on a controller.
 bool stop_pressed() {
@@ -280,7 +273,7 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
         }
         if (s.jobs.empty()) return end_without_starting(s, "the game's data has no flip tricks to record");
         // Without the game's grade of each pop a take cannot be told low, mid or high.
-        if (std::string why; !trick_intents::install_scaling(base, why)) return end_without_starting(s, why);
+        if (std::string why; !pop_grades::install(base, why)) return end_without_starting(s, why);
         say(s, std::format("{} tricks, {} takes: opening the practice stage", s.tricks, s.jobs.size()));
         next(s, Step::world);
         return;
@@ -320,7 +313,7 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
         if (s.still_since && now >= s.still_since + still_ms) {
             if (!s.tries) {
                 const auto& pop = s.jobs[s.place].pop;
-                s.strength_search = {pop.strength, pop.lowest, pop.highest};
+                s.crouch_search = {pop.crouch_ticks, pop.shortest, pop.longest, pop.crouch_ticks, 0};
             }
             ++s.tries;
             s.last_trick = label(s.jobs[s.place]);
@@ -335,9 +328,8 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
         // The recording keeps 0.7 s before the takeoff: the skater stands still that long first.
         if (now < s.since + preroll_ms) return;
         const auto& job = s.jobs[s.place];
-        // The take ends by its result or after take_wait_ms; the pop's strength goes back by itself soon after either way.
-        trick_intents::begin_take(s.strength_search.held, 1.0f, take_wait_ms + 2000);
-        overlay::play_pad(gestures::flick(job.gesture, flick_ms));
+        pop_grades::begin_take(take_wait_ms + 2000);
+        overlay::play_pad(gestures::flick(job.gesture, flick_ms, s.crouch_search.ticks));
         s.take_states.clear();
         return next(s, Step::take);
     }
@@ -345,23 +337,36 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
         if (const auto state_now = anim_studio::physics_state(base, component); state_now && (s.take_states.empty() || s.take_states.back() != *state_now))
             s.take_states.push_back(*state_now);
         if (const auto taken = anim_studio::take_batch_result()) {
-            const auto graded = trick_intents::take_pop_height();
-            const auto values = game_values();
+            const auto graded = pop_grades::take_pop_height();
+            const auto report = take_report(s);
             end_take();
             if (taken->ok) {
                 ++s.kept;
-                say(s, std::format("kept: {}, {:.2f} s in the air; {}", s.last_trick, taken->air, values));
+                say(s, std::format("kept: {}, {:.2f} s in the air; {}", s.last_trick, taken->air, report));
                 return next_job(s);
             }
             if (s.tries < tries_each) {
-                const auto wanted = trick_intents::pop_height_of(s.jobs[s.place].pop.name);
+                const auto wanted = pop_grades::pop_height_of(s.jobs[s.place].pop.name);
                 // The pop of another trick than asked says nothing about this one's band.
                 if (taken->trick == game_name(s.jobs[s.place]) && graded && graded != wanted) {
-                    auto& search = s.strength_search;
-                    (graded < wanted ? search.lowest : search.highest) = search.held;
-                    search.held = (search.lowest + search.highest) / 2;
+                    auto& search = s.crouch_search;
+                    if (graded < wanted) {
+                        search.shortest = search.ticks;
+                        search.ticks = std::min(search.longest, (search.ticks + search.longest + 1) / 2);
+                    } else {
+                        search.longest = search.ticks;
+                        search.ticks = std::max(search.shortest, (search.shortest + search.ticks) / 2);
+                    }
+                } else if (taken->trick != game_name(s.jobs[s.place])) {
+                    // Another trick than asked: the same crouch tends to give it again (a nollie varial kickflip from a
+                    // 4 tick crouch came out a nollie kickflip 3 times of 3), so the next try crouches a tick to either
+                    // side, inside the band.
+                    auto& search = s.crouch_search;
+                    const int side = ++search.wrong_tricks % 2 ? 1 : -1, reach = (search.wrong_tricks + 1) / 2;
+                    const auto moved = static_cast<int>(search.first_ticks) + side * reach;
+                    search.ticks = static_cast<std::uint32_t>(std::clamp(moved, static_cast<int>(search.shortest), static_cast<int>(search.longest)));
                 }
-                say(s, std::format("{} not kept ({}; {}), again", s.last_trick, taken->message, values));
+                say(s, std::format("{} not kept ({}; {}), again", s.last_trick, taken->message, report));
                 return try_again(s);
             }
             s.not_kept.push_back(not_kept_reason(s, *taken, graded));
@@ -371,7 +376,7 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
             std::string states;
             for (const auto state_seen : s.take_states) states += std::format("{}{}", states.empty() ? "" : " ", state_seen);
             say(s, std::format("{}: nothing recorded in {} s (physics states {}; {}; {})", s.last_trick, take_wait_ms / 1000,
-                               states.empty() ? "none read" : states, game_values(), pad_report(s, base)));
+                               states.empty() ? "none read" : states, take_report(s), pad_report(s, base)));
             end_take();
             if (s.tries < tries_each) return try_again(s);
             s.not_kept.push_back(s.last_trick + " (no trick landed)");
@@ -450,7 +455,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, std::uintptr_t component, 
             std::lock_guard lock(s.mutex);
             if (s.step != Step::idle && s.step != Step::home) go_home(s, "an error");
         } catch (...) {
-            trick_intents::end_take();
+            pop_grades::end_take();
         }
     }
 }
