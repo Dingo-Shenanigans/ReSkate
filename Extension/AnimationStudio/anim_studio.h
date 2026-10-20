@@ -190,7 +190,14 @@ bool include_preset(const std::string& name, bool included, std::string& message
 bool load(const std::string& name, std::string& message);
 // The game's own tricks, made into studio clips by contrib/animator-studio/make_trick_library.py:
 // <folder>/library/catalog.json and its .clip files.
-struct NativeAsset { std::string category, asset, kind; };
+struct NativeAsset {
+    std::string category, asset, kind;
+    std::string root_type, decode_state, detail, partition;
+    std::string label, context, search;
+};
+struct NativeField { std::string label, path, value, reference; bool expandable{}; };
+struct NativeDocumentPage { std::string title, error; std::vector<NativeField> fields; std::size_t pages{}; };
+NativeDocumentPage native_asset_fields(const std::string& asset, const std::string& path, std::size_t page);
 std::shared_ptr<const std::vector<NativeAsset>> native_assets();
 std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // cached until explicit refresh
 void refresh_game_tricks(std::string& message);

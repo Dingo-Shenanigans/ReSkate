@@ -7,6 +7,17 @@
 namespace dingosdk::anim_studio {
 // These are observed physics states, not decoded native animation-graph phases.
 enum class MotionState { unknown, riding, air, rail, offboard };
+// Supported native physics selector values, shared by runtime and replay tests.
+// 103 is the crouch/pop preparation observed between 100 and 200. It remains
+// grounded; treating it as unavailable discards the entry before every normal pop.
+inline MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
+    if (!state) return MotionState::unknown;
+    if (*state == 300 || *state >= 500) return MotionState::offboard;
+    if (*state >= 400 && *state < 500) return MotionState::rail;
+    if (*state == 200 || *state == 201) return MotionState::air;
+    if (*state == 100 || *state == 101 || *state == 103) return MotionState::riding;
+    return MotionState::unknown;
+}
 enum class EntryKind { unknown, ground, rail };
 enum class PlaybackPhase { idle, air, landing, rail_release };
 inline const char* entry_name(EntryKind value) noexcept {
@@ -52,12 +63,23 @@ struct PlaybackEpisode {
     }
     bool selection_open(double now) const noexcept { return phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35; }
     void select(double now) noexcept { if (std::isfinite(now)) { selected_at = now; clock.reset(); } }
-    PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air) noexcept {
+    PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air,
+                          bool source_timing = false) noexcept {
         PlaybackSample out;
         if (selected_at < 0 || up < 0 || duration <= 0 || up > duration || down > duration ||
             !std::isfinite(now) || !std::isfinite(up) || !std::isfinite(down) ||
             !std::isfinite(duration) || !std::isfinite(speed) || speed <= 0 || !std::isfinite(predicted_air)) return out;
-        if (phase == PlaybackPhase::air) {
+        if (source_timing && (phase == PlaybackPhase::air || phase == PlaybackPhase::landing)) {
+            // Recognition can arrive late or refine ollie into a flip. Anchor the
+            // source clock at takeoff, never at selection, and keep source seconds
+            // through reception instead of stretching air and discarding late keys.
+            out.time = static_cast<float>(std::min(static_cast<double>(duration), up + std::max(0.0, now - takeoff) * speed));
+            clock.observe_air(now, out.time, speed);
+            const auto enter = std::clamp(static_cast<float>(now - selected_at) / 0.08f, 0.0f, 1.0f);
+            const auto leave = std::clamp((duration - out.time) / 0.08f, 0.0f, 1.0f);
+            out.weight = enter * leave;
+            out.finished = out.time >= duration;
+        } else if (phase == PlaybackPhase::air) {
             float rate = speed;
             if (predicted_air > 0 && down > up) rate *= (down - up) / predicted_air;
             out.time = clock.advance_air(now, up, rate, down > up ? down : duration);

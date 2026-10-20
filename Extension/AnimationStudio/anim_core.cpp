@@ -301,7 +301,7 @@ void apply_edits(const Animation& animation, float seconds, std::span<Joint> pos
     }
 }
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror) {
+                    std::span<Joint> target, bool mirror, bool reverse_facing) {
     if (!std::isfinite(seconds) || seconds < animation.start || (animation.end >= 0 && seconds > animation.end) ||
         source.size() < skeleton_joints || target.size() < skeleton_joints) return;
     // Read every frame from the unmodified poses: editing a parent must not change the
@@ -309,6 +309,10 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
     const std::vector<Joint> native(target.begin(), target.end());
     const auto source_placement = world(source, placement_joint).rotation;
     const auto target_placement = world(native, placement_joint).rotation;
+    // Switch changes the body's facing relative to placement independently of
+    // which limbs lead. Transfer deltas through that half turn before converting
+    // to the live joint basis; a reflection alone reverses local X/Z edits.
+    constexpr Quat half_turn{0, 1, 0, 0};
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || !editable(track.joint) || track.joint >= skeleton_joints) continue;
         const auto to = mirror ? mirror_joint[track.joint] : track.joint;
@@ -321,6 +325,7 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
             const auto dst_frame = normalised(multiply(conjugate(target_placement), world(native, to).rotation));
             auto delta = normalised(multiply(multiply(src_frame, edit.rotation), conjugate(src_frame)));
             if (mirror) delta = mirror_rotation(delta);
+            if (reverse_facing) delta = normalised(multiply(multiply(half_turn, delta), conjugate(half_turn)));
             const auto local_delta = normalised(multiply(multiply(conjugate(dst_frame), delta), dst_frame));
             joint.rotation = normalised(multiply(native[to].rotation, local_delta));
         }
@@ -332,6 +337,7 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
             const auto dst_parent = normalised(multiply(conjugate(target_placement), target_parent.rotation));
             auto offset = rotate(src_parent, edit.offset);
             if (mirror) offset = mirror_vector(offset);
+            if (reverse_facing) offset = rotate(half_turn, offset);
             offset = rotate(conjugate(dst_parent), offset);
             const float source_scale = world(source, placement_joint).scale[0];
             const float target_scale = world(native, placement_joint).scale[0];
@@ -342,12 +348,28 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
         }
     }
 }
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight) {
+    if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
+        seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
+    weight = std::min(weight, 1.0f);
+    for (const auto& track : animation.tracks) {
+        if (track.hidden || track.keys.empty() || track.joint >= skeleton_joints ||
+            track.joint >= native.size() || !editable(track.joint)) continue;
+        const auto edit = evaluate(track, seconds);
+        auto& current = native[track.joint];
+        if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
+            const auto wanted = normalised(multiply(current.rotation, edit.rotation));
+            current.rotation = weight >= 1 ? wanted : slerp(current.rotation, wanted, weight);
+        }
+        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * weight;
+    }
+}
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
-                             std::span<Joint> native, bool mirror, float weight) {
+                             std::span<Joint> native, bool mirror, float weight, bool reverse_facing) {
     if (!std::isfinite(weight) || weight <= 0 || native.size() < skeleton_joints) return;
     weight = std::min(weight, 1.0f);
     std::vector<Joint> edited(native.begin(), native.end());
-    retarget_edits(animation, seconds, source, edited, mirror);
+    retarget_edits(animation, seconds, source, edited, mirror, reverse_facing);
     for (const auto& editable_joint : editable_joints()) {
         const auto i = editable_joint.index;
         if (i >= skeleton_joints) continue; // The physical board has its own fresh publication.
