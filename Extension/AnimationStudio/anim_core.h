@@ -59,6 +59,10 @@ inline constexpr std::uint16_t skateboard_root_joint = 380;
 // Not a skater joint: the board (its deck's mount, which carries the deck, trucks and wheels). Its
 // track turns and moves the board where the recording had it, in the board's own frame.
 inline constexpr std::uint16_t board_joint = 900;
+// Keys sit on whole frames of the timeline, 30 a second, never between two: anything that moves a key in
+// time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
+inline constexpr float key_fps = 30.0f;
+float on_a_frame(float seconds) noexcept;
 // The feet (343 and 10) ride this far above the board's mount, along the board's up: measured in the
 // game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and
 // snapping puts a foot on the deck at this height in the air.
@@ -156,7 +160,11 @@ float animation_window_weight(const Animation& animation, float seconds) noexcep
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge = 1.0f / 120);
 // Moves every key of every track by `delta` seconds (the start bracket moves with them); keys never go before 0.
 void shift_keys(Animation& animation, float delta, float duration = std::numeric_limits<float>::infinity()) noexcept;
-bool retime_window(Animation& animation, float start, float end, float duration) noexcept;
+// Moves one bracket: 1 the start, 2 the end, to `to`. Only the keys sitting on that bracket go with it -
+// everything between the brackets stays where it is, so nothing is stretched and the timeline keeps its
+// whole frames. A key the bracket is pulled back past is left where it is and stops applying until the
+// bracket is taken out over it again.
+bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept;
 bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float merge = 1.0f / 120);
 // Moves a key to `to` (clamped to the clip), keeping the track in time order. Returns its new index.
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept;

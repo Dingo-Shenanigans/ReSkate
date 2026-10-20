@@ -431,16 +431,30 @@ void merged_library_and_timing() {
     check(near(clock.advance_air(10.35, 0.3f, 2, 2), 0.9f), "A long callback integrates its elapsed time at the updated rate");
     check(near(clock.advance_air(10, 0.3f, 2, 2), 0.9f), "Backwards callbacks cannot rewind air playback");
     check(near(clock.advance_air(12, 0.3f, 2, 2), 2) && near(clock.air_rate, 0), "The landing marker holds until contact");
+    // Moving a bracket carries that bracket's own key and nothing else: the keys between the brackets are
+    // left exactly where they are, so the track keeps its whole frames instead of being stretched onto
+    // fractions of one. (This replaces the window retiming, which stretched every key.)
     Animation animation; animation.start = 1; animation.end = 3;
     Track track{7, {}, false, false};
     track.keys = {{0, {}, {}, Ease::smooth}, {1, {}, {}, Ease::smooth}, {2, {}, {}, Ease::smooth}, {3, {}, {}, Ease::smooth}};
     animation.tracks.push_back(track); track.joint = 8; track.locked = true; animation.tracks.push_back(track);
-    check(retime_window(animation, 0, 1, 4), "Bracket retiming accepts a bounded window");
-    check(animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[1].time, 0.5f) &&
-          near(animation.tracks[1].keys[2].time, 2), "Retiming consolidates clipped collisions and preserves locked tracks");
-    check(!retime_window(animation, 2, 1, 4) && near(animation.start, 0), "Invalid brackets do not mutate the document");
-    check(retime_window(animation, 0, 0, 0) && animation.tracks[0].keys.size() == 1,
-          "Zero-length clips cannot produce divided-by-zero or duplicate key times");
+    check(move_window_edge(animation, 1, 0.5f, 4), "A bracket accepts a place inside the window");
+    check(near(animation.start, 0.5f), "and the window starts there");
+    check(animation.tracks[0].keys.size() == 4 && near(animation.tracks[0].keys[1].time, 0.5f),
+          "The key that was on the bracket goes with it");
+    check(near(animation.tracks[0].keys[2].time, 2) && near(animation.tracks[0].keys[3].time, 3),
+          "and the keys between the brackets do not move");
+    check(near(animation.tracks[1].keys[1].time, 1), "A locked track is left alone");
+    check(!move_window_edge(animation, 1, 3.5f, 4) && near(animation.start, 0.5f), "A bracket cannot be put past its other half");
+    check(!move_window_edge(animation, 2, 0.2f, 4) && near(animation.end, 3), "and that holds for the end as well");
+    check(move_window_edge(animation, 1, 0.0f, 4) && animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[0].time, 0),
+          "Taken back onto a key that is already there, the two become one");
+    // Smoothing puts keys back on whole frames, which is where an older stretched animation is mended.
+    Track drifted{9, {}, false, false};
+    drifted.keys = {{0, {}, {}, Ease::smooth}, {0.337f, {}, {0, 0.4f, 0}, Ease::step}, {0.681f, {}, {0, 0.1f, 0}, Ease::linear}, {1, {}, {}, Ease::smooth}};
+    smooth_track(drifted, 0, 1);
+    for (const auto& k : drifted.keys)
+        check(near(k.time, on_a_frame(k.time), 1e-5f), "Every key sits on a whole frame after smoothing");
 }
 void preview_trajectory_uses_the_whole_clip() {
     Clip clip;

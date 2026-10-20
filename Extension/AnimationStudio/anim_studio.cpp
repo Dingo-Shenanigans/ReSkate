@@ -2631,9 +2631,9 @@ void move_bracket(int which, float seconds) {
     } else if (which == 2) {
         end = std::clamp(std::max(t, start + gap), 0.0f, duration);
     } else return;
-    if (!retime_window(s.edits, start, end, duration)) return;
-    key_all_at(s.edits, start);
-    key_all_at(s.edits, end);
+    if (!move_window_edge(s.edits, which, which == 1 ? start : end, duration)) return;
+    key_all_at(s.edits, s.edits.start);
+    key_all_at(s.edits, s.edits.end < 0 ? duration : s.edits.end);
     changed_locked(s);
 }
 
