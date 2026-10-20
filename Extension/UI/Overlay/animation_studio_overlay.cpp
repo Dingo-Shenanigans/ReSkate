@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <format>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -70,6 +71,7 @@ struct Ui {
     bool local_axes{true}, move_mode{};
 
     std::array<char, 64> name{}, trick{};
+    std::array<char, 64> pack_name{};
     std::uint64_t names_for{};
     std::string message;
     double message_until{};
@@ -95,6 +97,9 @@ struct Ui {
     std::array<float, 5> list_scroll{};
     std::array<int, 5> list_followed{-1, -1, -1, -1, -1}; // the row the list last scrolled to, per tab
     std::string open_trick; // TRICKS: the trick whose pops are shown ("" = the list of tricks)
+    bool browse_assets{};
+    std::string asset_category;
+    std::size_t asset_page{};
     int trick_row{1};       // its row in the list of tricks, to come back to
     ImVec2 last_mouse{};
 };
@@ -531,9 +536,73 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         // The game's tricks by category, each once; choosing one shows its pops (low, mid, high).
         const auto tricks = studio::game_tricks();
         const auto& list = *tricks;
-        if (list.empty()) {
+        const auto assets = studio::native_assets();
+        if (u.browse_assets) {
+            rows.push_back({"< Back", "", "Browse parent category, or return to editable tricks.", [] {
+                auto& state = ui();
+                if (state.asset_category.empty()) state.browse_assets = false;
+                else {
+                    const auto slash = state.asset_category.rfind('/');
+                    state.asset_category = slash == std::string::npos ? "" : state.asset_category.substr(0, slash);
+                }
+                state.asset_page = 0; state.row = 0;
+            }});
+            rows.push_back({u.asset_category.empty() ? "NATIVE ASSET TREE" : upper(u.asset_category), "", "Categories are inferred from names; indexed assets are not all editable clips.", {}, false});
+            std::map<std::string, std::size_t> children;
+            std::vector<const studio::NativeAsset*> leaves;
+            const auto prefix = u.asset_category.empty() ? "" : u.asset_category + "/";
+            for (const auto& asset : *assets) {
+                if (asset.category == u.asset_category) leaves.push_back(&asset);
+                else if (asset.category.starts_with(prefix)) {
+                    const auto rest = asset.category.substr(prefix.size());
+                    ++children[rest.substr(0, rest.find('/'))];
+                }
+            }
+            for (const auto& [child, count] : children) {
+                rows.push_back({child, std::to_string(count) + " >", "Browse this branch of the native animation inventory.", [path = prefix + child] {
+                    ui().asset_category = path; ui().asset_page = 0; ui().row = 0;
+                }});
+            }
+            constexpr std::size_t page_size = 50;
+            const auto pages = (leaves.size() + page_size - 1) / page_size;
+            if (pages) u.asset_page = std::min(u.asset_page, pages - 1);
+            if (pages > 1) {
+                rows.push_back({"Next page", std::to_string(u.asset_page + 1) + "/" + std::to_string(pages), "Show the next 50 assets (wraps to the first page).", [pages] {
+                    ui().asset_page = (ui().asset_page + 1) % pages; ui().row = 2;
+                }});
+                rows.push_back({"Previous page", "", "Show the previous 50 assets.", [pages] {
+                    ui().asset_page = (ui().asset_page + pages - 1) % pages; ui().row = 2;
+                }});
+            }
+            for (std::size_t i = u.asset_page * page_size; i < std::min(leaves.size(), (u.asset_page + 1) * page_size); ++i) {
+                const auto& asset = *leaves[i];
+                const auto ready = std::find_if(list.begin(), list.end(), [&](const auto& t) { return !t.asset.empty() && t.asset == asset.asset; });
+                auto label = asset.asset.substr(std::string("animation/dingo/").size());
+                if (ready != list.end()) rows.push_back({label, "Editable", "Open this decoded native clip. Native board physics and transition constraints are not included in a clip.", [t = *ready] {
+                    std::string m; studio::load_game_trick(t, m); say(m); ui().names_for = 0;
+                }});
+                else rows.push_back({label, "Indexed", asset.kind + ": " + asset.asset + ". Not decoded or connected to live playback yet.", [name = asset.asset] {
+                    say("Indexed only: " + name + ". Decoding and runtime phase mapping are still required.");
+                }});
+            }
+            break;
+        }
+        const auto asset_entry = [&] {
+            if (!assets->empty()) rows.push_back({"Native asset tree", std::to_string(assets->size()) + " >", "Browse clips, graph states, transitions, grind phases and parameters. Indexed does not mean editable.", [] {
+                ui().browse_assets = true; ui().asset_category.clear(); ui().asset_page = 0; ui().row = 0;
+            }});
+            rows.push_back({"Reload native library", std::to_string(list.size()) + " clips", "Refresh converted native clips after importing or extracting more animations.", [] {
+                std::string m; studio::refresh_game_tricks(m); say(m);
+            }});
+        };
+        const auto record_entries = [&] {
             rows.push_back({"RECORD", "", "", {}, false});
             rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
+            rows.push_back({"Record all tricks", std::any_of(list.begin(), list.end(), [](const auto& t) { return t.recorded; }) ? "Has recorded takes" : "", "Records the game's trick gestures on a solo practice stage, with the real board physics. Esc/Back stops after the current take.", [] { studio::request_record_all(); }});
+        };
+        if (list.empty()) {
+            record_entries();
+            asset_entry();
             break;
         }
         if (!u.open_trick.empty()) {
@@ -545,11 +614,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                 ui_state.row = ui_state.trick_row;
                             }});
             rows.push_back({upper(label), "", "", {}, false});
-            for (const char* want : {"high", "mid", "low"})
+            for (const char* want : {"high", "mid", "low", ""})
             for (const auto& t : list) {
                 if (t.trick != u.open_trick || t.pop != want) continue;
-                const std::string pop = t.pop == "low" ? "Low pop" : t.pop == "mid" ? "Mid pop" : "High pop";
-                Row row{pop, "", "Opens the game's " + t.label + " with a " + t.pop + " pop to change it. Save it and it plays on your " + t.label + "s.",
+                const std::string pop = t.preview_only ? "Edit native clip" : t.pop == "low" ? "Low pop" : t.pop == "mid" ? "Mid pop" : t.pop == "high" ? "High pop" : "Native clip";
+                Row row{pop, t.preview_only ? "Preview only" : t.recorded ? "Recorded" : "Native", t.preview_only ? "Opens the native phase for editing and saving. Gameplay phase replacement is not connected yet." :
+                        "Opens the game's " + t.label + " with a " + t.pop + " pop to change it. Native board physics and graph constraints are not included.",
                         [t] {
                             std::string m;
                             studio::load_game_trick(t, m);
@@ -562,10 +632,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             break;
         }
         // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
-        rows.push_back({"RECORD", "", "", {}, false});
-        rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
-        // Then the game's own tricks, by kind. One of these is the usual way in: the trick is already the
-        // game's own, so it fits every stance and only has to be changed, not performed.
+        record_entries();
+        asset_entry();
+        rows.push_back({"TRICKS TO EDIT", "", "Recorded takes replace matching native trick/pop slots. Other native clips and grind previews stay available.", {}, false});
         std::string category, trick;
         for (const auto& t : list) {
             if (t.category != category) {
@@ -587,6 +656,23 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         break;
     }
     case Tab::animations:
+        rows.push_back({"PACKS", "", "", {}, false});
+        rows.push_back({"Active pack", v.active_pack.empty() ? "All saved (fixed)" : v.active_pack,
+                        "Choose a pack. Each pack keeps its own selection of saved animations.", [v] {
+                            std::string next;
+                            const auto found = std::find(v.packs.begin(), v.packs.end(), v.active_pack);
+                            if (v.active_pack.empty() && !v.packs.empty()) next = v.packs.front();
+                            else if (found != v.packs.end() && std::next(found) != v.packs.end()) next = *std::next(found);
+                            std::string m; studio::use_preset_pack(next, m); say(m);
+                        }});
+        rows.push_back({"Create a new pack", u.pack_name.data(), "Type a pack name in the details panel (for example Steezy), then choose this row. Copies current choices; an existing pack is never overwritten.", [] {
+                            std::string m; studio::create_preset_pack(m, ui().pack_name.data()); say(m);
+                        }});
+        rows.push_back({"Variant playback", v.alternate_variants ? "Alternate" : "Fixed",
+                        "Fixed uses the chosen variant. Alternate cycles the included variants of each trick between attempts.", [v] {
+                            std::string m; studio::set_pack_alternation(!v.alternate_variants, m); say(m);
+                        }, !v.active_pack.empty()});
+        rows.push_back({"SAVED ANIMATIONS", "", "", {}, false});
         if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
         for (const auto& name : v.library) {
             Row row{name, name == v.name ? "open" : "", "A saved animation: choose it to open it. Delete takes it out of the library (press it twice).",
@@ -597,6 +683,8 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         ui().names_for = 0;
                     }};
             row.on = name == v.name;
+            const auto preset = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
+            if (preset != v.presets.end()) row.value += preset->active ? "  active" : preset->included ? "  in pack" : "";
             row.library = name;
             if (u.confirm_delete == name) row.value = "delete again";
             rows.push_back(std::move(row));
@@ -668,16 +756,45 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         break;
     }
     case Tab::playback:
+        rows.push_back({"Save as new variation", "", "Saves a separate copy of this animation and its edits, keeping the original.", [] {
+                            std::string m; studio::save_preset_copy(m); say(m); ui().names_for = 0;
+                        }, v.has_clip});
+        {
+            const auto found = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == v.name; });
+            const bool saved = found != v.presets.end(), included = saved && found->included;
+            rows.push_back({"Include saved variation in pack", included ? "yes" : "no",
+                            "Changes the active pack's membership. Uses the saved version; save your edits first.", [v, included] {
+                                std::string m; studio::include_preset(v.name, !included, m); say(m);
+                            }, saved && !v.active_pack.empty()});
+            rows.push_back({"Choose this fixed variation", "", "Makes this saved animation the fixed choice for its trick and pop in this pack.", [v] {
+                                std::string m; studio::activate_preset(v.name, m); say(m);
+                            }, saved && !v.active_pack.empty() && !v.alternate_variants});
+        }
+        rows.push_back({"Export diagnostics", "Last 15 seconds", "Reproduce the bug, open F8, then export. Captures native/modified poses, switch/stance, timings, board and selected presets as local text files. Gameplay history freezes while the studio is open.", [] {
+                            std::string m; studio::export_diagnostics(m); say(m);
+                        }});
         rows.push_back({v.playing ? "Pause" : "Play", "", "Plays the trick with your keys.", [v] { studio::set_playing(!v.playing); }, v.has_clip});
-        rows.push_back({"Loop", v.loop ? "on" : "off", "", [v] { studio::set_loop(!v.loop); }});
-        rows.push_back({"Speed", std::format("{:.2f}x", v.speed), "How fast the trick plays, here and in game. Choose it to step through the speeds.", [v] {
+        rows.push_back({"Loop", v.loop ? "on" : "off", "Repeat the timeline. A source whose end differs from its start can visibly reset when looped.", [v] { studio::set_loop(!v.loop); }});
+        rows.push_back({"Speed", std::format("{:.2f}x", v.speed), "Timeline playback speed. In game this retimes your edit keys; the underlying trick keeps the game's timing.", [v] {
                             const float speeds[] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
                             float next = speeds[0];
                             for (const float s : speeds) if (s > v.speed + 0.01f) { next = s; break; }
                             studio::set_speed(next);
                         }});
+        rows.push_back({"Source", v.source_kind == "native_asset" ? (v.source_position_codec == "native-piec-v1-extent" ? "Native clip" : "Unverified native clip") : v.source_kind == "render_capture" ? "In-game capture" : "Legacy / unknown",
+                        "The studio previews this source. Gameplay applies your saved keys over native motion; full source-motion replacement requires native phase and constraint support.", {}, false});
+        if (v.has_clip && v.source_pose_count > 1) {
+            const float hz = v.duration > 0 ? static_cast<float>(v.source_pose_count - 1) / v.duration : 0;
+            const bool sparse = v.source_max_sample_gap > 0.05f;
+            rows.push_back({"Source sampling", std::format("{} poses / {:.0f} Hz{}", v.source_pose_count, hz, sparse ? " (sparse)" : ""),
+                            sparse ? "This source has widely spaced poses. Interpolation cannot restore missing motion; use a full-rate recording for a finished animation." :
+                                     "The source poses available to the timeline. Slower playback does not add missing source frames.", {}, false});
+        }
+        if (v.source_kind == "native_asset" && v.source_position_codec != "native-piec-v1-extent")
+            rows.push_back({"Source needs updating", "Reopen from TRICKS", "This saved source predates the position decoder correction. Your saved keys remain intact; use the updated native library to inspect the corrected source.", {}, false});
+        rows.push_back({"Entry binding", v.entry, "Ground and rail-exit recordings are separate presets. Entry is captured when recording.", {}, false});
         rows.push_back({"Custom tricks in game", v.play_in_game ? "on" : "off",
-                        "On: when you do a trick you saved an animation for (its TRICK, as ollie or kickflip), yours plays instead of the game's.",
+                        "On: your saved keys modify the native trick. An untouched preset preserves native body and board motion. Full source motion is previewed in the studio.",
                         [v] { studio::set_play_in_game(!v.play_in_game); }});
         rows.push_back({"Studio room", v.room ? "on" : "off",
                         "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where you are. Takes effect the next time it opens.",
@@ -1114,10 +1231,14 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         ImGui::SetNextItemWidth(w);
         if (ImGui::InputText("##trick", u.trick.data(), u.trick.size(), ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::IsItemDeactivatedAfterEdit())
             studio::set_trick(u.trick.data());
+        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 62 * k), ink_soft, "NEW PACK NAME");
+        ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, y + 80 * k));
+        ImGui::SetNextItemWidth(size.x - 44 * k);
+        ImGui::InputTextWithHint("##packname", "e.g. Steezy", u.pack_name.data(), u.pack_name.size());
         ImGui::PopFont();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(5);
-        y += 62 * k;
+        y += 124 * k;
     }
     const auto rows = rows_of(tab, v);
     if (u.row >= 0 && u.row < static_cast<int>(rows.size())) {
@@ -1766,7 +1887,7 @@ bool animation_studio_loading_pending() { return studio::loading().alpha > 0 || 
 // While a trick is being recorded (the studio steps out so you can skate): a strip across the top in the
 // studio's look, and Esc (Back on a controller) goes back to the studio without one.
 bool animation_studio_recording_pending() {
-    return !studio::is_open() && studio::view().recording != studio::Recording::off;
+    return !studio::batch::active() && !studio::is_open() && studio::view().recording != studio::Recording::off;
 }
 void draw_animation_studio_recording() {
     if (!animation_studio_recording_pending() || studio::loading().alpha > 0.99f) return;

@@ -47,9 +47,16 @@ const fb::BundleAsset* GameBundle::find_chunk(const fb::Guid& id, std::size_t* i
 
 GameData::GameData(fs::path gameRoot)
     : gameRoot_(std::move(gameRoot)), archives_(gameRoot_ / "Data", read_layout(gameRoot_ / "Data" / "layout.toc").root) {}
+GameData::GameData(fs::path gameRoot, fs::path patchRoot) : GameData(std::move(gameRoot)) {
+    patchArchives_.emplace(patchRoot, read_layout(patchRoot / "layout.toc").root);
+}
 
 fb::TocDocument GameData::read_toc(std::string_view relative) const {
-    const auto path = gameRoot_ / "Data" / fs::path(relative);
+    auto path = gameRoot_ / "Data" / fs::path(relative);
+    if (patchArchives_) {
+        const auto candidate = patchArchives_->root() / fs::path(relative);
+        if (fs::is_regular_file(candidate)) path = candidate;
+    }
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("Cannot open " + path_utf8(path));
     std::vector<std::byte> bytes(static_cast<std::size_t>(fs::file_size(path)));
@@ -70,7 +77,8 @@ std::optional<GameBundle> GameData::read_bundle(const fb::TocDocument& toc, std:
             // The manifest is the region's first file, in cas like any payload.
             if (region.files.empty()) throw std::runtime_error("Bundle " + std::string(name) + " has no manifest");
             const auto& first = region.files.front();
-            result.manifest = archives_.read_manifest(archives_.root(), first.location, first.offset, first.size, gameRoot_);
+            const auto& source = first.location.patch && patchArchives_ ? *patchArchives_ : archives_;
+            result.manifest = source.read_manifest(source.root(), first.location, first.offset, first.size, gameRoot_);
             result.payloads.assign(region.files.begin() + 1, region.files.end());
         }
         return result;
@@ -79,7 +87,8 @@ std::optional<GameBundle> GameData::read_bundle(const fb::TocDocument& toc, std:
 }
 
 std::vector<std::byte> GameData::read(const fb::BundleFileInfo& payload) const {
-    const auto raw = archives_.read(archives_.root(), payload.location, payload.offset, payload.size);
+    const auto& source = payload.location.patch && patchArchives_ ? *patchArchives_ : archives_;
+    const auto raw = source.read(source.root(), payload.location, payload.offset, payload.size);
     return fb::decode_cas(raw, {gameRoot_});
 }
 }

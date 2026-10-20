@@ -2,6 +2,15 @@
 // and a clip file hold, and that edits never grow a pose.
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/AnimationStudio/skater_mirror.h"
+#include "Extension/AnimationStudio/anim_presets.h"
+#include "Extension/AnimationStudio/anim_research.h"
+#include "Extension/AnimationStudio/anim_runtime_rules.h"
+#include "Extension/AnimationStudio/anim_diagnostics.h"
+#include "Extension/AnimationStudio/anim_library.h"
+#include "Extension/AnimationStudio/anim_playback.h"
+#include <limits>
+#include <filesystem>
+#include <fstream>
 #include <cmath>
 #include <iostream>
 #include <vector>
@@ -50,8 +59,7 @@ void turn_keeps_its_speed_through_a_key() {
     check(near(speed_before, speed_after, 0.2f * speed_after), "The speed on either side of a key is the same");
 }
 
-// A hand's attach point and the wrists' effectors keep their rest place in a clip; their turns still move.
-void effectors_hold_their_place() {
+void animation_targets_keep_their_motion_and_hierarchy() {
     Clip clip;
     clip.joints = skeleton_joints;
     clip.times = {0, 0.1f, 0.2f};
@@ -60,10 +68,34 @@ void effectors_hold_their_place() {
         clip.frames[f * skeleton_joints + 50].position = {0.1f * f, 1.0f * f, 0};
         clip.frames[f * skeleton_joints + 50].rotation = from_euler({10.0f * static_cast<float>(f), 0, 0});
     }
-    hold_effector_positions(clip);
-    check(clip.frames[2 * skeleton_joints + 50].position[1] == 0 && clip.frames[1 * skeleton_joints + 50].position[0] == 0,
-          "A hand's attach point holds its first place");
-    check(same_turn(clip.frames[2 * skeleton_joints + 50].rotation, from_euler({20, 0, 0})), "and its turns still follow the animation");
+    for (std::size_t f = 0; f < 3; ++f) {
+        clip.frames[f * skeleton_joints + 376].position = {0, 0.3f * f, 0};
+        clip.frames[f * skeleton_joints + 390].position = {0, 0.4f * f, 0};
+    }
+    const auto decoded = clip_from_bytes(clip_bytes(clip));
+    check(decoded.frames == clip.frames, "Serialization preserves authored attachment, ground and deck target motion exactly");
+    check(parent(376) == 375 && parent(379) == 375 && parent(380) == 1 && parent(390) == 380 && parent(394) == 380,
+          "Animation targets use the 395-joint Ant skeleton, not the 386-bone render skeleton");
+    std::vector<Joint> pose(skeleton_joints);
+    pose[1].position = {1, 2, 3}; pose[375].position = {0, 4, 0};
+    pose[380].position = {0, 5, 0}; pose[380].rotation = from_euler({0, 90, 0});
+    pose[376].position = {0, 0.3f, 0}; pose[390].position = {1, 0.4f, 0};
+    const auto ground = world(pose, 376), deck = world(pose, 390);
+    check(near(ground.position[1], 6.3f) && near(deck.position[1], 7.4f) && near(deck.position[2], 2),
+          "Ground and deck effectors follow their actual parents and deck targets rotate with the board");
+    clip.board.clear();
+    for (std::size_t f = 0; f < clip.times.size(); ++f) {
+        auto& mount = clip.frames[f * skeleton_joints + skateboard_root_joint];
+        mount.position = {0.4f * f, 0.1f * f, 0};
+        mount.rotation = from_euler({80.0f * f, 50.0f * f, 0});
+        clip.board.push_back(mount);
+    }
+    std::vector<Joint> sampled(skeleton_joints);
+    for (const float time : {0.0f, 0.05f, 0.11f, 0.2f}) {
+        clip.sample(time, sampled); Joint mount;
+        check(clip.sample_board(time, mount) && mount == sampled[skateboard_root_joint],
+              "A native captured mount follows the same body sample through interpolation, without a separate board timestamp");
+    }
 }
 
 void keys_hold_outside_and_blend_between() {
@@ -251,14 +283,450 @@ void smoothing_tidies_a_track() {
     }
 }
 
-int main() {
+void packs_select_variants_without_filesystem_order() {
+    std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
+    select_presets(presets, std::nullopt);
+    check(!presets[0].active && presets[1].active && presets[2].active, "Default choice is deterministic and separate for each pop");
+    PresetPack pack;
+    pack.name = "Test";
+    pack.slots["kickflip|mid"] = {"Deleted", "Z", "A"};
+    select_presets(presets, pack);
+    check(presets[0].active && !presets[1].active && !presets[2].active, "Fixed pack skips missing variants and respects its chosen order");
+    check(presets[0].included && presets[1].included && !presets[2].included, "Pack membership is distinct from the fixed choice");
+    pack.alternate = true;
+    select_presets(presets, read_pack_json(pack_json(pack)));
+    check(presets[0].active && presets[1].active && !presets[2].active, "Alternate pack enables all included variants after round trip");
+    pack.slots.clear();
+    select_presets(presets, pack);
+    check(!presets[0].active && !presets[1].active && !presets[2].active, "An empty pack leaves tricks native");
+    bool refused = false;
+    try { read_pack_json(dingosdk::Json::parse(R"({"format":"animator-preset-pack","version":1,"slots":{"ollie|":[42]}})")); }
+    catch (const std::exception&) { refused = true; }
+    check(refused, "Invalid pack members are refused");
+    std::vector<Preset> stances{
+        {"Normal A", "ollie", "", false, false, "goofy", false},
+        {"Switch A", "ollie", "", false, false, "goofy", true},
+        {"Switch Z", "ollie", "", false, false, "goofy", true},
+        {"Regular", "ollie", "", false, false, "regular", false}};
+    select_presets(stances, std::nullopt);
+    check(stances[0].active && stances[1].active && !stances[2].active && stances[3].active,
+          "Default selection retains a separate playable recording per base/switch stance");
+    pack.alternate = false;
+    pack.slots["ollie|"] = {"Normal A", "Switch Z", "Switch A", "Regular"};
+    select_presets(stances, pack);
+    check(stances[0].active && !stances[1].active && stances[2].active && stances[3].active,
+          "Fixed packs choose their first included compatible variant for each stance");
+}
+void research_keeps_short_transitions_and_is_bounded() {
+    ResearchBuffer buffer;
+    ResearchSample sample;
+    sample.physics = 200;
+    buffer.append(sample);
+    sample.seconds = 0.001;
+    buffer.append(sample);
+    check(buffer.samples.size() == 1, "Unchanged state is sampled periodically");
+    sample.physics = 403;
+    buffer.append(sample);
+    sample.seconds = 0.002;
+    sample.physics = 401;
+    buffer.append(sample);
+    check(buffer.samples.size() == 3, "Rail transitions between periodic samples are retained");
+    sample.seconds = 0.003;
+    sample.physics.reset();
+    buffer.append(sample);
+    check(!buffer.samples.back().physics, "Unavailable state is preserved, never guessed as ground");
+    sample.seconds = 61;
+    check(!buffer.append(sample) && buffer.samples.size() == 4, "Trace ends after its bounded duration");
+    buffer.samples.clear();
+    for (std::size_t i = 0; i < ResearchBuffer::capacity + 4; ++i) {
+        sample.seconds = static_cast<double>(i) / 1000.0;
+        sample.physics = static_cast<std::uint32_t>(i);
+        buffer.append(sample);
+    }
+    check(buffer.samples.size() == ResearchBuffer::capacity, "Trace memory stays bounded even with a state change each tick");
+}
+void merged_library_and_timing() {
+    check(episode_selection_changed("", "ollie") && episode_selection_changed("ollie", "kickflip"),
+          "A first recognized trick and a late flip can select a preset");
+    check(!episode_selection_changed("kickflip", "kickflip") && !episode_selection_changed("kickflip", ""),
+          "Pop refinement and a blank name cannot restart the same trick's source clock");
+    check(recorded_clip_identity("n_heelflip__high.clip") == std::pair{std::string("n_heelflip"), std::string("high")},
+          "Recorded filenames preserve the game's underscored trick ID");
+    for (const auto* file : {"../ollie__high.clip", "a\\ollie__high.clip", "a:ollie__high.clip", "ollie__any.clip", "__high.clip"})
+        check(!recorded_clip_identity(file), "Recorded clips reject traversal and ambiguous identities");
+    GameTrick low{"Flip", "Kickflip", "kickflip", "low", "native-low.clip", "asset-low"};
+    auto high = low; high.pop = "high"; high.file = "native-high.clip"; high.asset = "asset-high";
+    GameTrick grind{"Grind", "50-50 entry", "", "", "grind.clip", "grind-asset", true};
+    auto take = high; take.file = "kickflip__high.clip"; take.asset.clear(); take.stance = "goofy"; take.switch_stance = true;
+    const auto library = merge_game_library({low, high, grind}, {take});
+    check(library.size() == 3, "A batch recording replaces only its matching native trick/pop slot");
+    check(library[0].recorded && library[0].file == take.file && library[0].asset == "asset-high" &&
+          library[0].stance == "goofy" && library[0].switch_stance.value_or(false),
+          "High pop is shown first and retains native provenance plus recorded stance");
+    check(!library[1].recorded && library[1].file == low.file && library[2].preview_only,
+          "Other pop heights and grind previews stay available after Record all");
+    check(playback_pop_rank("high", "high") < playback_pop_rank("high", "") &&
+          playback_pop_rank("high", "") < playback_pop_rank("high", "low"),
+          "Playback prefers exact pop, then a generic preset, then another height");
+    GameplayClipClock clock;
+    check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
+    check(near(clock.advance_air(10.1, 0.3f, 1, 2), 0.4f), "Air source time advances incrementally");
+    check(near(clock.advance_air(10.1, 0.3f, 2, 2), 0.4f), "Changing pop rate cannot move the playhead on the same callback");
+    check(near(clock.advance_air(10.35, 0.3f, 2, 2), 0.9f), "A long callback integrates its elapsed time at the updated rate");
+    check(near(clock.advance_air(10, 0.3f, 2, 2), 0.9f), "Backwards callbacks cannot rewind air playback");
+    check(near(clock.advance_air(12, 0.3f, 2, 2), 2) && near(clock.air_rate, 0), "The landing marker holds until contact");
+    Animation animation; animation.start = 1; animation.end = 3;
+    Track track{7, {}, false, false};
+    track.keys = {{0, {}, {}, Ease::smooth}, {1, {}, {}, Ease::smooth}, {2, {}, {}, Ease::smooth}, {3, {}, {}, Ease::smooth}};
+    animation.tracks.push_back(track); track.joint = 8; track.locked = true; animation.tracks.push_back(track);
+    check(retime_window(animation, 0, 1, 4), "Bracket retiming accepts a bounded window");
+    check(animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[1].time, 0.5f) &&
+          near(animation.tracks[1].keys[2].time, 2), "Retiming consolidates clipped collisions and preserves locked tracks");
+    check(!retime_window(animation, 2, 1, 4) && near(animation.start, 0), "Invalid brackets do not mutate the document");
+    check(retime_window(animation, 0, 0, 0) && animation.tracks[0].keys.size() == 1,
+          "Zero-length clips cannot produce divided-by-zero or duplicate key times");
+}
+void preview_trajectory_uses_the_whole_clip() {
+    Clip clip;
+    clip.joints = 2; clip.times = {0, 0.25f, 0.5f, 0.75f, 1};
+    clip.frames.resize(clip.times.size() * clip.joints); clip.takeoff = 0; clip.landing = 1;
+    for (std::size_t i = 0; i < clip.times.size(); ++i)
+        clip.frames[i * clip.joints + placement_joint].position[1] = 10 + clip.times[i];
+    check(!clip_has_vertical_trajectory(clip), "A rising/sloped linear trajectory is not a jump relative to its endpoints");
+    clip.frames[2 * clip.joints + placement_joint].position[1] += 0.3f;
+    check(clip_has_vertical_trajectory(clip),
+          "A captured jump uses its trajectory for the whole clip, including early/late frames below the old 12 cm switch threshold");
+    clip.frames[2 * clip.joints + placement_joint].position[1] -= 0.3f;
+    check(!clip_has_vertical_trajectory(clip), "An in-place clip can use the preview arc consistently");
+    clip.landing = clip.takeoff;
+    check(!clip_has_vertical_trajectory(clip), "Preview-only or invalid phase markers cannot divide by a zero airborne span");
+}
+void timing_and_stance_edge_cases() {
+    check(!gameplay_body_joint(50) && !gameplay_body_joint(283), "Gameplay does not replace native hand attachment transforms with recorded rest positions");
+    check(!gameplay_body_joint(placement_joint) && !gameplay_body_joint(board_joint), "Gameplay body ownership excludes placement and board");
+    for (const auto& joint : editable_joints())
+        if (joint.index != board_joint) check(gameplay_body_joint(joint.index), "Every editable body joint retains gameplay ownership");
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j)
+        check(gameplay_body_joint(j) == gameplay_body_joint(mirror_joint[j]), "Gameplay ownership is symmetric across left and right");
+    GameplayClipClock clock;
+    clock.observe_air(10, 0.94f, 0.46f);
+    const auto first_landing = clock.land(10.0163584, 1, 1.6675f, 1.01725f);
+    check(first_landing > 0.94f && first_landing < 0.95f,
+          "Landing continues the previous source time instead of the measured 77 ms contact-marker jump");
+    const auto later = clock.land(10.1, 1, 1.6675f, 1.1f);
+    check(near(later, 0.94f + 0.08f * (0.46f + 1) / 2 + 0.02f),
+          "Landing integrates its smooth rate ramp exactly even across a long callback interval");
+    check(near(clock.land(10.1, 1, 1.6675f, 1.1f), later), "A duplicate callback cannot advance the landing clock");
+    check(near(clock.land(9, 1, 1.6675f, 1.1f), later), "A backwards timestamp cannot rewind landing playback");
+    check(near(clock.land(12, 1, 1.6675f, 1.1f), 1.6675f), "Landing clock stays inside its clip");
+    clock.reset(); clock.observe_air(20, 0.98f, 0);
+    check(clock.land(20.016, 1, 2, 1.1f) < 0.981f, "Held airborne pose starts landing without a source-time snap");
+    Track uneven{7, {}, false, false};
+    for (const float t : {0.0f, 0.25f, 2.0f, 3.0f})
+        uneven.keys.push_back({t, from_euler({t * 60, 0, 0}), {t, 0, 0}, Ease::smooth});
+    constexpr float h = 0.002f;
+    const auto left = evaluate(uneven, 0.25f - h), centre = evaluate(uneven, 0.25f), right = evaluate(uneven, 0.25f + h);
+    check(near((centre.offset[0] - left.offset[0]) / h, (right.offset[0] - centre.offset[0]) / h, 0.03f),
+          "Uneven key spacing must not introduce a position velocity jump");
+    check(near((to_euler(centre.rotation)[0] - to_euler(left.rotation)[0]) / h,
+               (to_euler(right.rotation)[0] - to_euler(centre.rotation)[0]) / h, 2.0f),
+          "Uneven key spacing must not introduce an angular velocity jump");
+    for (const double hz : {30.0, 60.0, 144.0}) {
+        ContactWindow contact;
+        check(!contact.observe(10, true), "A single contact sample is not a confirmed landing");
+        bool confirmed = false;
+        for (int i = 1; i < 20; ++i)
+            if (contact.observe(10 + i / hz, true)) { confirmed = true; break; }
+        check(confirmed && contact.since && *contact.since == 10, "Landing marker preserves first contact independent of sample frequency");
+        contact.observe(11, false);
+        check(!contact.since && !contact.observe(11.001, true), "A brief contact interrupted by air cannot accumulate into a false landing");
+    }
+    for (const bool recorded_goofy : {false, true})
+        for (const bool recorded_switch : {false, true})
+            for (const bool live_goofy : {false, true})
+                for (const bool live_switch : {false, true}) {
+                    const bool same_stance = recorded_goofy == live_goofy && recorded_switch == live_switch;
+                    check(playback_stance_compatible(recorded_goofy, recorded_switch, live_goofy, live_switch) == same_stance,
+                          "Only identical base stance and switch state may replay raw recorded bones");
+                }
+    check(!playback_stance_compatible(true, false, true, true), "A goofy normal recording cannot enter switch through raw bone mirroring");
+    check(!playback_stance_compatible(false, true, true, false), "Equal lead feet do not make regular switch and goofy normal compatible");
+    check(!playback_stance_compatible(true, false, true, std::nullopt), "Unknown live switch state keeps native animation");
+    check(playback_stance_compatible(true, std::nullopt, true, false) &&
+          !playback_stance_compatible(true, std::nullopt, true, true), "Legacy recordings are normal stance only");
+    check(near(advance_time(0, 0.25f, 1, 2, false), 0.25f), "A 250 ms render stall must not discard 150 ms of playback");
+    check(near(advance_time(0.8f, 0.7f, 2, 1, true), 0.2f), "Looping handles a frame spanning multiple loops");
+    check(near(advance_time(0.8f, 0.7f, 2, 1, false), 1), "Non-looping playback ends at the last frame");
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    check(near(advance_time(0.4f, nan, 1, 1, false), 0.4f), "Nonfinite elapsed time cannot corrupt the playhead");
+    check(!fresh_sample(10, 9.99, 9.99), "A render pose cannot be recorded again with a new animation timestamp");
+    check(!fresh_sample(10, 10.01, 9.99) && fresh_sample(10, 9.995, 9.99), "Render capture rejects future and accepts fresh timestamps");
+    const auto a = variation_name(std::string(48, 'a'), 2), b = variation_name(std::string(48, 'a'), 3);
+    check(a.size() <= 48 && file_safe(a) == a && file_safe(a) != file_safe(b), "Long variation names retain their unique suffix after filename sanitization");
+    Animation animation;
+    animation.stance = "goofy";
+    animation.switch_stance = true;
+    auto back = from_json(to_json(animation));
+    check(back.switch_stance && *back.switch_stance, "Switch metadata survives profile serialization");
+    animation.switch_stance = false;
+    back = from_json(to_json(animation));
+    check(back.switch_stance && !*back.switch_stance, "Normal stance is distinct from missing legacy metadata");
+    const auto mirror = mirror_animation(animation);
+    check(mirror.stance == "regular" && mirror.switch_stance == animation.switch_stance, "Mirrored animation metadata describes the opposite base stance");
+    Clip clip;
+    clip.joints = 1;
+    clip.times = {0, 1};
+    clip.frames.resize(2);
+    clip.board.resize(2);
+    std::vector<Joint> pose(1);
+    pose[0].position = {17, 0, 0};
+    clip.sample(nan, pose);
+    check(pose[0].position[0] == 17 && !clip.sample_board(nan, pose[0]), "NaN sampling cannot index past a clip's final frame");
+    clip.frames.clear();
+    clip.sample(0.5f, pose);
+    check(pose[0].position[0] == 17, "Incomplete in-memory clips never read nonexistent poses");
+    bool refused = false;
+    try { (void)clip_bytes(clip); } catch (const std::runtime_error&) { refused = true; }
+    check(refused, "Incomplete poses cannot be written as a valid-looking clip");
+    Animation shifted;
+    shifted.clip.times = {0, 1};
+    set_key(shifted, 7, 0.2f, {}).offset = {0.1f, 0, 0};
+    set_key(shifted, 7, 0.8f, {});
+    set_key(shifted, 7, 1.0f, {});
+    set_key(shifted, 49, 0.3f, {});
+    shifted.track(49)->locked = true;
+    shift_keys(shifted, 0.5f, 1.0f);
+    const auto restored = from_json(to_json(shifted));
+    check(restored.track(7)->keys.size() == 2 && near(restored.track(7)->keys.back().time, 1),
+          "Moving a start bracket keeps saturated keys unique and the profile reloadable");
+    check(near(restored.track(49)->keys[0].time, 0.3f), "Bracket shifts preserve locked tracks");
+    auto track = *restored.track(7);
+    move_key(track, 0, 1, 1);
+    check(track.keys.size() == 1 && near(track.keys[0].offset[0], 0.1f), "Dropping a key on another frame replaces its pose instead of introducing a duplicate timestamp");
+    Animation window;
+    window.start = 0.2f;
+    window.end = 0.8f;
+    set_key(window, 7, 0, {from_euler({0, 30, 0}), {0.2f, 0, 0}});
+    std::vector<Joint> body(skeleton_joints);
+    apply_edits(window, 0.1f, body);
+    check(near(body[7].position[0], 0) && animation_window_weight(window, 0.1f) == 0,
+          "A bracket excludes both joint edits and in-game replacement outside its window");
+    check(near(animation_window_weight(window, 0.24f), 0.5f) && near(animation_window_weight(window, 0.5f), 1) &&
+          near(animation_window_weight(window, 0.76f), 0.5f), "Custom playback blends continuously at explicit bracket edges");
+    for (const auto text : {
+        R"({"format":"fourth-animation-studio","version":1,"duration":1,"start":-1})",
+        R"({"format":"fourth-animation-studio","version":1,"duration":1,"start":0.8,"end":0.2})",
+        R"({"format":"fourth-animation-studio","version":1,"duration":1,"switch_stance":"yes"})"}) {
+        refused = false;
+        try { (void)from_json(text); } catch (const std::exception&) { refused = true; }
+        check(refused, "Malformed timeline and stance metadata is rejected before reaching playback");
+    }
+}
+void retargeted_edits_preserve_native_rig_and_convert_joint_frames() {
+    std::vector<Joint> source(skeleton_joints), native(skeleton_joints);
+    source[placement_joint].rotation = from_euler({0, 37, 0});
+    native[placement_joint].rotation = from_euler({0, -125, 0});
+    source[hips_joint].rotation = from_euler({12, 35, -8});
+    native[hips_joint].rotation = from_euler({-10, -25, 17});
+    source[8].rotation = from_euler({67, 11, -20});
+    native[341].rotation = from_euler({-32, 48, 91});
+    for (std::size_t i = 2; i < native.size(); ++i) {
+        native[i].position = {0.013f * static_cast<float>(i % 5), 0.03f, -0.02f};
+        native[i].scale = {1.1f, 1.1f, 1.1f};
+    }
+    Animation animation;
+    animation.tracks.push_back({8, {{0, {0, 0, 0, 1}, {}, Ease::linear}}});
+    auto target = native;
+    retarget_edits(animation, 0, source, target, true);
+    for (std::size_t i = 0; i < target.size(); ++i) {
+        check(target[i].position == native[i].position && target[i].scale == native[i].scale,
+              "Identity retarget never imports recorded bone positions or scale");
+        for (int k = 0; k < 4; ++k) check(near(target[i].rotation[k], native[i].rotation[k]), "Identity edit leaves native switch pose unchanged");
+    }
+    const auto edit = from_euler({23, -11, 8});
+    animation.tracks[0].keys[0].rotation = edit;
+    retarget_edits(animation, 0, source, target, true);
+    const auto sf = multiply(conjugate(world(source, placement_joint).rotation), world(source, 8).rotation);
+    const auto tf = multiply(conjugate(world(native, placement_joint).rotation), world(native, 341).rotation);
+    const auto local_delta = multiply(conjugate(native[341].rotation), target[341].rotation);
+    const auto actual = normalised(multiply(multiply(tf, local_delta), conjugate(tf)));
+    const auto expected = normalised(mirror_rotation(multiply(multiply(sf, edit), conjugate(sf))));
+    float dot = 0;
+    for (int k = 0; k < 4; ++k) dot += actual[k] * expected[k];
+    check(std::abs(dot) > 0.99999f, "Edit rotates in the reflected placement frame even with asymmetric local bone bases");
+    for (std::size_t i = 0; i < target.size(); ++i) {
+        check(target[i].position == native[i].position && target[i].scale == native[i].scale && finite(target[i]),
+              "Rotational retarget preserves all native local bone lengths and scales");
+        if (i != 341) check(target[i].rotation == native[i].rotation, "Only the paired editable joint is changed");
+    }
+    animation.tracks[0].keys[0].offset = {0.03f, -0.1f, 0.02f};
+    target = native;
+    retarget_edits(animation, 0, source, target, true);
+    const auto src_parent = world(source, hips_joint);
+    const auto dst_parent = world(native, hips_joint);
+    const auto source_frame = multiply(conjugate(world(source, placement_joint).rotation), src_parent.rotation);
+    const auto target_frame = multiply(conjugate(world(native, placement_joint).rotation), dst_parent.rotation);
+    const auto wanted_offset = mirror_vector(rotate(source_frame, animation.tracks[0].keys[0].offset));
+    Vec3 local_offset{};
+    for (int k = 0; k < 3; ++k) local_offset[k] = (target[341].position[k] - native[341].position[k]) * dst_parent.scale[0];
+    const auto actual_offset = rotate(target_frame, local_offset);
+    for (int k = 0; k < 3; ++k) check(near(actual_offset[k], wanted_offset[k]), "Offsets convert through parent frames and compensate target parent scale");
+    animation.tracks[0].hidden = true;
+    target = native;
+    retarget_edits(animation, 0, source, target, true);
+    check(target[341].rotation == native[341].rotation, "Hidden edits stay hidden in switch");
+}
+void diagnostic_history_is_bounded() {
+    DiagnosticBuffer history;
+    for (int i = 0; i < 5000; ++i) {
+        DiagnosticSample sample; sample.at = i / 240.0; sample.sequence = i;
+        // Deliberately submit poses at callback frequency: the history enforces its own cap.
+        sample.native.resize(1); sample.desired.resize(1); sample.render_native.resize(1); sample.render_edited.resize(1);
+        history.append(std::move(sample));
+    }
+    check(history.samples.size() <= DiagnosticBuffer::capacity &&
+          history.samples.back().at - history.samples.front().at <= DiagnosticBuffer::duration,
+          "Diagnostic callback history is bounded by both count and duration");
+    std::size_t poses = 0;
+    for (const auto& sample : history.samples) {
+        if (!sample.native.empty()) ++poses;
+        else check(sample.render_edited.empty(), "Post-edit diagnostic poses obey the same sampling/memory bound as native poses");
+    }
+    check(poses <= 151, "Diagnostic poses cannot grow past the 10 Hz time window even at 240 callbacks per second");
+    const auto size = history.samples.size();
+    DiagnosticSample bad; bad.at = std::numeric_limits<double>::quiet_NaN(); history.append(std::move(bad));
+    check(history.samples.size() == size, "Invalid diagnostic timestamps cannot corrupt the ring");
+    DiagnosticSample reset; reset.at = 0; history.append(std::move(reset));
+    check(history.samples.size() == 1, "Clock reset starts a fresh diagnostic window");
+    check(diagnostic_csv("a,\"b\"") == "\"a,\"\"b\"\"\"", "Diagnostic CSV quotes names correctly");
+}
+void native_playback_contracts() {
+    EditTransition transition;
+    std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
+    check(near(transition.evaluate(1, 1, 1, 10, a)[0].offset[0], 0), "The first edit layer fades from native motion");
+    check(near(transition.evaluate(1.081, 1, 1, 10, a)[0].offset[0], 0.4f), "An established edit layer reaches its target");
+    check(near(transition.evaluate(1.1, 1, 1, 11, b)[0].offset[0], 0.4f),
+          "Ollie-to-flip selection starts from the previous edit delta instead of resetting the visible pose");
+    check(near(transition.evaluate(1.14, 1, 1, 11, b)[0].offset[0], 0, 0.001f), "A changed preset blends smoothly between deltas");
+    check(near(transition.evaluate(1.15, 2, 1, 11, b)[0].offset[0], 0), "Respawn cannot carry a previous entity's edit layer");
+    PlaybackEpisode episode;
+    check(!episode.observe(0, MotionState::riding) && episode.observe(0.1, MotionState::air), "Riding to air starts a new observed episode");
+    check(episode.entry == EntryKind::ground, "Ground takeoff carries a ground binding");
+    episode.select(0.1);
+    (void)episode.sample(0.1, 0.2f, 1, 2, 1, 1);
+    const auto air = episode.sample(0.2, 0.2f, 1, 2, 1, 1);
+    const auto original_id = episode.id;
+    episode.observe(0.21, MotionState::rail);
+    const auto release = episode.sample(0.25, 0.2f, 1, 2, 1, 1);
+    check(episode.phase == PlaybackPhase::rail_release && near(release.time, air.time) && release.weight < air.weight,
+          "Rail entry releases to native constraints instead of advancing/holding a fake airborne grind");
+    check(episode.sample(0.3, 0.2f, 1, 2, 1, 1).finished, "Rail release is bounded");
+    episode.observe(0.31, MotionState::rail);
+    check(episode.observe(0.4, MotionState::air) && episode.entry == EntryKind::rail && episode.id > original_id,
+          "A grind pop-out is a fresh rail-entry episode");
+    check(episode.sample(0.4, 0.2f, 1, 2, 1, 1).time < 0, "A new pop-out cannot inherit the entry preset or source clock");
+    episode.observe(0.5, MotionState::unknown);
+    check(episode.phase == PlaybackPhase::idle, "Unavailable native state cancels pending edits");
+    episode.observe(1, MotionState::riding); episode.observe(1.1, MotionState::air); episode.select(1.1);
+    (void)episode.sample(1.15, 0.2f, 1, 2, 1, 1);
+    episode.observe(1.2, MotionState::riding); episode.observe(1.21, MotionState::air);
+    check(episode.phase == PlaybackPhase::air, "A brief contact does not become a landing");
+    episode.observe(1.3, MotionState::riding); episode.observe(1.334, MotionState::riding);
+    check(episode.phase == PlaybackPhase::landing && episode.landing == 1.3, "Landing confirms elapsed contact while retaining first-contact time");
+    episode.observe(1.35, MotionState::offboard);
+    check(episode.phase == PlaybackPhase::idle && episode.clock.time < 0, "Bails and off-board states release the episode");
+
+    PresentationLatch<int> cohort;
+    auto first = std::make_shared<const int>(1), second = std::make_shared<const int>(2);
+    check(*cohort.get(10, 1, first) == 1 && *cohort.get(10, 1, second) == 1,
+          "Body and board in one presentation pin the same schedule despite a producer update");
+    check(*cohort.get(11, 1, second) == 2 && !cohort.get(11, 2, {}), "The next presentation advances; invalidation releases an already pinned schedule");
+    {
+    struct Preview { Joint foot, board; };
+    auto preview_before = std::make_shared<Preview>(), preview_after = std::make_shared<Preview>();
+    preview_before->foot.position = {0, 0.1f, 0};
+    preview_after->foot.position = {0, 0.8f, 0}; preview_after->board.position = {0, 0.7f, 0};
+    PresentationLatch<Preview> preview;
+    const auto body = preview.get(1, 0, preview_before);
+    const auto board_sample = preview.get(1, 0, preview_after);
+    check(body == board_sample && near(body->foot.position[1] - board_sample->board.position[1], 0.1f),
+          "Preview body and board retain contact when preview_before producer publishes between their callbacks");
+    const auto board_first = preview.get(2, 0, preview_after);
+    check(board_first == preview.get(2, 0, preview_before) && near(board_first->foot.position[1] - board_first->board.position[1], 0.1f),
+          "Preview sampling is coherent when board renders first and on repeated publications");
+    check(!preview.get(2, 1, {}), "Closing or invalidating preview releases its current presentation");
+    PresentationLatch<Preview> no_sample;
+    check(!no_sample.get(3, 0, {}) && !no_sample.get(3, 0, preview_before),
+          "A missing first preview sample cannot publish only one half later in the same presentation");
+    }
+
+    std::vector<Joint> native(skeleton_joints), source(skeleton_joints);
+    native[7].position = {1, 2, 3}; native[7].scale = {1.2f, 0.8f, 1};
+    source[7].position = {90, 80, 70}; source[7].rotation = from_euler({90, 30, 80});
+    Animation keys; keys.tracks.push_back({7, {{0, {}, {}, Ease::linear}}, false, false});
+    auto fresh = native;
+    apply_native_edit_layer(keys, 0, source, fresh, false, 1);
+    check(fresh == native, "An untouched source preset preserves the complete native pose exactly, regardless of its recorded coordinates");
+    Joint board; board.position = {80, 60, 40}; board.rotation = from_euler({0, 70, 0});
+    keys.tracks.push_back({board_joint, {{0, {}, {}, Ease::linear}}, false, false});
+    check(board_edited(board, keys, 0, from_euler({0, 90, 0})) == board, "Neutral board keys preserve native physics exactly");
+    keys.tracks[1].keys[0].offset = {0.2f, 0, 0};
+    const auto board_edit = board_edited(board, keys, 0, from_euler({0, 90, 0}));
+    check(near(board_edit.position[2], board.position[2] - 0.2f) && board_edit.rotation == board.rotation && board_edit.scale == board.scale,
+          "A board offset uses its explicit edit frame and does not import source coordinates or modify rotation/scale");
+    keys.tracks[0].keys[0].offset = {0.2f, 0, 0};
+    apply_native_edit_layer(keys, 0, source, fresh, false, 0.5f);
+    check(fresh[7].rotation == native[7].rotation, "A translation-only edit leaves native joint rotation exactly unchanged");
+    check(fresh[7].scale == native[7].scale && fresh[placement_joint] == native[placement_joint] && fresh[50] == native[50],
+          "Authored edits retain native scale, placement and attachment ownership");
+    EditPublicationCache cache;
+    cache.commit(1, 10, 100, native, fresh);
+    auto repeated = fresh; cache.restore(1, 10, 100, repeated);
+    check(repeated == native, "Repeated publication unwraps our prior writes before reapplying keys");
+    apply_native_edit_layer(keys, 0, source, repeated, false, 0.5f);
+    check(repeated == fresh, "Network capture of an already edited render pose applies the keys exactly once");
+    const auto deltas = pose_edit_deltas(native, fresh);
+    auto moved_native = native; moved_native[7].position[1] += 20;
+    apply_pose_deltas(deltas, moved_native);
+    check(near(moved_native[7].position[1], fresh[7].position[1] + 20),
+          "Blended deltas follow a moving native pose without teleporting to an old absolute skeleton");
+    auto changed_native = fresh; changed_native[7].position[1] += 1;
+    const auto fresh_y = changed_native[7].position[1];
+    cache.restore(1, 10, 100, changed_native);
+    check(changed_native[7].position[1] == fresh_y && changed_native[7].position[0] == native[7].position[0],
+          "A fresh Y correction survives while our exact previous X edit is unwrapped to avoid accumulation");
+    repeated = fresh; cache.restore(1, 11, 100, repeated);
+    check(repeated == fresh, "A new animation callback cannot reuse an earlier update's baseline");
+    repeated = fresh; cache.restore(2, 10, 100, repeated);
+    check(repeated == fresh, "Entity replacement invalidates repeated-publication recovery");
+
+    Animation metadata; metadata.source = {"native_asset", "animation/dingo/test", "rig", "skater-placement"}; metadata.entry = "rail";
+    metadata.source.position_codec = "native-piec-v1-extent";
+    const auto back = from_json(to_json(metadata));
+    check(back.source.kind == metadata.source.kind && back.source.asset == metadata.source.asset &&
+          back.source.position_codec == metadata.source.position_codec && back.entry == "rail",
+          "Source provenance and entry bindings survive save/load without becoming rendered captures");
+    std::vector<Preset> presets{{"Ground", "ollie", "", false, false, "regular", false, "ground"},
+                                {"Rail", "ollie", "", false, false, "regular", false, "rail"}};
+    select_presets(presets, {});
+    check(presets[0].active && presets[1].active, "Fixed selection preserves separate ground and rail-exit presets");
+}
+int main(int argc, char** argv) {
     try {
+        timing_and_stance_edge_cases();
+        merged_library_and_timing();
+        preview_trajectory_uses_the_whole_clip();
+        native_playback_contracts();
+        diagnostic_history_is_bounded();
+        retargeted_edits_preserve_native_rig_and_convert_joint_frames();
+        packs_select_variants_without_filesystem_order();
+        research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
-        effectors_hold_their_place();
+        animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
         keys_can_be_dragged_in_time();
@@ -266,6 +734,130 @@ int main() {
         joints_hang_from_their_parents();
         profiles_read_back_and_bad_ones_are_refused();
         clips_read_back_and_broken_ones_are_refused();
+        if (argc == 3 && std::string_view(argv[1]) == "--diagnostic-export") {
+            DiagnosticBuffer history;
+            for (int i = 0; i < 3; ++i) {
+                DiagnosticSample sample; sample.at = 100 + i * 0.1; sample.sequence = i; sample.physics = 200;
+                sample.trick = "test,\"trick\""; sample.preset = "synthetic fixture";
+                sample.live_switch = true; sample.recorded_switch = false; sample.retarget = sample.mirror = true;
+                sample.native.resize(skeleton_joints); sample.desired = sample.native;
+                sample.desired[7].position[0] = 0.1f;
+                sample.desired[7].rotation = from_euler({30, 0, 0});
+                sample.native_board = Joint{}; sample.desired_board = Joint{};
+                sample.render_edited = sample.desired; sample.render_edited_at = sample.at;
+                sample.render_edited_board = sample.desired_board; sample.render_edited_board_at = sample.at;
+                sample.source = sample.native; sample.source_board = Joint{};
+                sample.board_rig.resize(16); sample.render_board_at = sample.board_rig_at = sample.at;
+                sample.observed_phase = "air"; sample.entry = "ground"; sample.source_kind = "native_asset";
+                sample.episode = 1; sample.render_edit_sequence = sample.board_edit_sequence = i + 1;
+                sample.render_presentation = sample.board_presentation = i + 10;
+                history.append(std::move(sample));
+            }
+            auto summary = write_diagnostic_history(history, argv[2]);
+            check(summary.at("samples").get<std::size_t>() == 3 &&
+                  near(summary.at("max_local_position_delta").get<float>(), 0.1f) &&
+                  near(summary.at("max_local_rotation_delta_degrees").get<float>(), 30.0f, 0.01f),
+                  "Diagnostic text export measures known pose differences");
+            summary["synthetic_fixture"] = true;
+            const auto contents = [&](const char* file) {
+                std::ifstream in(std::filesystem::path(argv[2]) / file);
+                return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            };
+            check(contents("poses.csv").find(",source_sample,7,") != std::string::npos &&
+                  contents("board.csv").find(",source_sample,900,") != std::string::npos &&
+                  contents("board-rig.csv").find(",render_before_override,15,") != std::string::npos,
+                  "Preview diagnostics export source poses and all sixteen physical board bones");
+            std::ofstream out(std::filesystem::path(argv[2]) / "summary.json"); out << summary.dump(2);
+            std::cout << "Synthetic diagnostic text export passed\n";
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--animation-skeleton") {
+            std::ifstream in(argv[2]);
+            const auto document = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            const auto& joints = document.at("instances")[0].at("object").at("fields").at("Joints");
+            check(joints.size() == skeleton_joints, "Native animation skeleton has the supported joint count");
+            for (std::size_t i = 0; i < joints.size(); ++i)
+                check(parent(static_cast<std::uint16_t>(i)) == joints[i].at("fields").at("Parent").get<int>(),
+                      "Every studio parent must match the actual native AntSkeletonAsset");
+            std::cout << "Native animation hierarchy: all 395 parents match\n";
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--native-catalog") {
+            const std::filesystem::path folder(argv[2]);
+            std::ifstream in(folder / "catalog.json", std::ios::binary);
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            check(root.is_array() && root.size() > 0, "Exported native catalog must be nonempty");
+            for (const auto& entry : root) {
+                const auto name = entry.value("file", "");
+                std::ifstream binary(folder / name, std::ios::binary);
+                const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(binary)), std::istreambuf_iterator<char>());
+                const auto clip = clip_from_bytes(bytes);
+                check(clip.joints == skeleton_joints && !clip.empty(), "Native library clip must load on the skater rig");
+                if (entry.value("preview_only", false))
+                    check(clip.takeoff == -1 && clip.landing == -1, "Preview-only grind clips must not invent airborne markers");
+                for (const auto& joint : clip.frames) check(finite(joint), "Native catalog clip has a broken joint");
+            }
+            std::cout << "Native catalog compatibility: " << root.size() << " clips passed\n";
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--native-vector-coherence") {
+            const std::filesystem::path folder(argv[2]);
+            std::ifstream in(folder / "catalog.json");
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}));
+            float maximum = 0;
+            std::string worst;
+            for (const auto& entry : root) {
+                std::ifstream file(folder / entry.value("file", ""), std::ios::binary);
+                const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(file)), {});
+                const auto clip = clip_from_bytes(bytes);
+                for (std::size_t f = 0; f < clip.times.size(); ++f) {
+                    const auto pose = clip.frame(f);
+                    for (const auto pair : {std::pair{343, 376}, std::pair{10, 377}, std::pair{343, 390}, std::pair{10, 391}}) {
+                        const auto foot = world(pose, static_cast<std::uint16_t>(pair.first));
+                        const auto target = world(pose, static_cast<std::uint16_t>(pair.second));
+                        float square = 0;
+                        for (std::size_t axis = 0; axis < 3; ++axis) square += std::pow(foot.position[axis]-target.position[axis], 2.0f);
+                        const float distance = std::sqrt(square);
+                        if (distance > maximum) { maximum = distance; worst = entry.value("file", ""); }
+                    }
+                }
+            }
+            std::cout << "Native FK/ankle-target maximum separation: " << maximum << " m in " << worst << '\n';
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--native-index") {
+            std::ifstream in(argv[2], std::ios::binary);
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            check(root.is_array() && root.size() > 0, "Native index must fit production JSON parser limits");
+            for (const auto& entry : root)
+                check(entry.value("asset", "").starts_with("animation/dingo/") && !entry.value("category", "").empty(), "Indexed native asset requires category and stable source path");
+            std::cout << "Native index compatibility: " << root.size() << " assets passed\n";
+        }
+        if (argc == 2) {
+            std::size_t files = 0;
+            for (const auto& entry : std::filesystem::directory_iterator(argv[1])) {
+                if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+                std::ifstream json(entry.path(), std::ios::binary);
+                const auto animation = from_json(std::string((std::istreambuf_iterator<char>(json)), std::istreambuf_iterator<char>()));
+                auto path = entry.path(); path.replace_extension(".clip");
+                std::ifstream binary(path, std::ios::binary);
+                const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(binary)), std::istreambuf_iterator<char>());
+                const auto clip = clip_from_bytes(bytes);
+                for (const auto& t : animation.tracks) for (const auto& k : t.keys)
+                    check(k.time <= clip.duration() + 0.01f, "Saved user key is outside the actual clip");
+                std::vector<Joint> sampled(clip.joints);
+                for (float time = 0; time <= clip.duration(); time += 1.0f / 60) {
+                    clip.sample(time, sampled);
+                    apply_edits(animation, time, sampled);
+                    for (const auto& joint : sampled) check(finite(joint), "Saved user animation produces a nonfinite joint");
+                    if (clip.joints == skeleton_joints) {
+                        std::vector<Joint> source(clip.joints), native(clip.joints);
+                        clip.sample(time, source);
+                        for (auto& joint : native) joint.rotation = from_euler({11, -29, 31});
+                        retarget_edits(animation, time, source, native, true);
+                        for (const auto& joint : native) check(finite(joint), "Saved user edits produce finite retargeted switch joints");
+                    }
+                }
+                ++files;
+            }
+            std::cout << "Saved animation compatibility: " << files << " files passed\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';
         return 1;

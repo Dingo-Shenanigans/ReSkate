@@ -5,7 +5,7 @@ writes it as an Animator Studio clip (.clip, "FAS2": the 395 joints of the skate
 board relative to the skater's placement joint) with a catalog entry. The studio lists the catalog
 (ANIMATIONS > Game tricks) and loads a trick from it: no recording needed.
 
-    python make_trick_library.py <game folder> <library folder> [--only ollie]
+    python make_trick_library.py GAME LIBRARY --probe PROBE_EXE --dof-names VERIFIED_BINDINGS_JSON [--only ollie]
 
 The joints are matched by name: the skeleton's joints carry FNV-1 hashes of their names
 (animbase_default_skeleton), the exported FBX carries the names.
@@ -18,11 +18,13 @@ import struct
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from clip import Clip  # noqa: E402
+from native_piecewise import correct_translations, read_native_vectors  # noqa: E402
 
 CLI = os.environ.get("RESKATE_CLI", "reskate_cli")  # ReSkate Studio's command line tool
 
@@ -109,8 +111,9 @@ def joint_of(m):
     return (tuple(scale), quat(rot), tuple(m[:3, 3]))
 
 
-def convert(fbx_path, hashes):
+def convert(fbx_path, hashes, native_vectors):
     c = Clip(fbx_path)
+    correct_translations(c, native_vectors)
     by_hash = {fnv1(name): name for name in c.node}
     names = [by_hash.get(h) for h in hashes]
     missing = sum(1 for n in names if n is None)
@@ -196,11 +199,15 @@ def main():
         return
     game, library = sys.argv[1], sys.argv[2]
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
+    if "--probe" not in sys.argv or "--dof-names" not in sys.argv:
+        raise SystemExit("Native position decoding requires --probe <dingosdk_anim_graph_probe.exe> --dof-names <verified dof-names.json from repair_library_positions.py>.")
+    probe = Path(sys.argv[sys.argv.index("--probe") + 1]).resolve()
+    names = {int(key):value for key,value in json.load(open(sys.argv[sys.argv.index("--dof-names") + 1])).items()}
     os.makedirs(library, exist_ok=True)
     hashes = joint_hashes(game)
     catalog_path = os.path.join(library, "catalog.json")
     catalog = json.load(open(catalog_path)) if os.path.exists(catalog_path) else []
-    done = {(e["trick"], e["pop"]) for e in catalog}
+    done = {(e["trick"], e["pop"]) for e in catalog if e.get("position_codec") == "native-piec-v1-extent"}
     with tempfile.TemporaryDirectory() as tmp:
         for family, trick, label, category in TRICKS:
             if only and trick != only:
@@ -215,13 +222,18 @@ def main():
                     print(f"skip {trick} {pop}: {(r.stderr or r.stdout).strip()[:120]}")
                     continue
                 try:
-                    times, frames, board, takeoff, landing = convert(fbx, hashes)
+                    native_folder = Path(tmp) / f"{trick}_{pop}-native"
+                    vectors = read_native_vectors(probe, game, asset, native_folder, names)
+                    times, frames, board, takeoff, landing = convert(fbx, hashes, vectors)
+                    native_looping = json.loads((native_folder/'controller.json').read_text())['instances'][0]['object']['fields']['IsLooping']
                 except Exception as e:  # noqa: BLE001
                     print(f"skip {trick} {pop}: {e}")
                     continue
                 name = f"{trick}_{pop}.clip"
                 write_clip(os.path.join(library, name), times, frames, board, takeoff, landing)
-                catalog.append({"category": category, "label": label, "trick": trick, "pop": pop, "file": name})
+                catalog = [entry for entry in catalog if (entry['trick'],entry['pop']) != (trick,pop)]
+                catalog.append({"category": category, "label": label, "trick": trick, "pop": pop, "file": name, "asset": asset,
+                                "position_codec": "native-piec-v1-extent", "native_looping": native_looping})
                 print(f"{label} {pop}: {len(times)} frames, takeoff {takeoff:.2f} s, landing {landing:.2f} s")
                 with open(catalog_path, "w") as f:
                     json.dump(catalog, f, indent=1)
