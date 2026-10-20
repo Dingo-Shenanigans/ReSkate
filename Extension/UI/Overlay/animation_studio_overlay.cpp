@@ -107,6 +107,7 @@ struct Ui {
     bool menu_hidden{};
     bool hide_joints{};          // J: the dots and the gizmo are out of the way
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
+    int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
     bool zoom_to_playhead{};
@@ -993,6 +994,69 @@ struct Row {
     bool enabled{true}, on{};
     std::string library; // a saved animation's name (Delete takes it out)
 };
+// ---- the shots ------------------------------------------------------------------------------------
+// Set camera angles to work in, the ones a skate part is actually shot from. Each is the orbit the studio
+// already drives - turned and tilted about the skater, at a distance - and what it holds in the middle, so
+// a shot follows him and stays on while you pose and while it plays. Moving the camera yourself puts it
+// back to FREE without losing where you were.
+struct Shot {
+    const char* name;
+    float yaw, pitch, distance;
+    std::uint16_t on; // the joint it holds in the middle, all_joints for the whole skater
+};
+constexpr std::array<Shot, 6> shots{{
+    {"FREE", 0, 0, 0, studio::all_joints},
+    {"CLOSE", 0.60f, 0.14f, 1.60f, studio::hips_joint},
+    {"BOARD", 0.90f, 0.06f, 1.25f, studio::board_joint},
+    {"CINEMATIC", 1.15f, -0.10f, 4.00f, studio::all_joints},
+    {"FILMER", 2.50f, 0.02f, 1.15f, studio::board_joint},
+    {"SKATER", 3.00f, 0.22f, 0.95f, 103},
+}};
+void take_shot(const studio::View& v, int which) {
+    auto& u = ui();
+    u.camera_shot = std::clamp(which, 0, static_cast<int>(shots.size()) - 1);
+    const auto& shot = shots[static_cast<std::size_t>(u.camera_shot)];
+    if (!u.camera_shot) return; // FREE: the camera is left exactly where it is
+    studio::Orbit orbit = v.orbit;
+    orbit.yaw = shot.yaw;
+    orbit.pitch = shot.pitch;
+    orbit.distance = shot.distance;
+    orbit.pan = {};
+    studio::set_orbit(orbit);
+    studio::set_focus(shot.on);
+    say(std::string(shot.name) + " camera.");
+}
+void next_shot(const studio::View& v, int by) {
+    const int count = static_cast<int>(shots.size());
+    take_shot(v, (ui().camera_shot + by % count + count) % count);
+}
+// The strip that shows it, at the top of the view: the name between two arrows, clicked or scrolled with V.
+void shot_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 area_min, ImVec2 area_max) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto& shot = shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))];
+    const float w = 190 * k, h = 30 * k;
+    const ImVec2 a(area_max.x - w - 22 * k, area_min.y + 18 * k), b(a.x + w, a.y + h);
+    skate_theme::rough_rect(d, a, b, IM_COL32(12, 12, 14, 190), 41, k * 0.7f);
+    const float fs = 13 * k;
+    const auto t = text_size(f.bold, fs, shot.name);
+    text(d, f.bold, fs, ImVec2((a.x + b.x) * 0.5f - t.x * 0.5f, (a.y + b.y) * 0.5f - t.y * 0.5f),
+         u.camera_shot ? blue_light : IM_COL32(255, 255, 255, 150), shot.name);
+    const auto arrow = [&](const char* glyph, float x, int by) {
+        ImGui::SetCursorScreenPos(ImVec2(x, a.y));
+        ImGui::PushID(by);
+        const bool hit = ImGui::InvisibleButton("##shot", ImVec2(28 * k, h));
+        const bool over = ImGui::IsItemHovered();
+        ImGui::PopID();
+        const auto g = text_size(f.bold, fs, glyph);
+        text(d, f.bold, fs, ImVec2(x + 14 * k - g.x * 0.5f, (a.y + b.y) * 0.5f - g.y * 0.5f), over ? white : IM_COL32(255, 255, 255, 120), glyph);
+        if (hit) next_shot(v, by);
+    };
+    arrow("<", a.x + 4 * k, -1);
+    arrow(">", b.x - 32 * k, 1);
+    text(d, f.bold, 10 * k, ImVec2(a.x, b.y + 4 * k), IM_COL32(255, 255, 255, 70), "V  CAMERA");
+}
+
 std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     auto& u = ui();
     std::vector<Row> rows;
@@ -1220,6 +1284,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
                         "instead of through it or over it. Key: N.",
                         [] { ui().snap = !ui().snap; }});
+        rows.push_back({"Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name,
+                        "A set camera angle to work in: close, on the board, cinematic, the filmer's follow, or over the skater. "
+                        "It follows him while you pose and while it plays. Moving the camera yourself goes back to free. Key: V.",
+                        [v] { next_shot(v, 1); }});
         rows.push_back({"Follow joint", "", "The camera keeps the joint in the middle (again: the whole skater).", [] { studio::focus_joint(ui().selected); }});
         rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame.", [] { studio::copy_pose(); }});
         rows.push_back({"Paste pose", "", "Keys the remembered pose on this frame.", [] {
@@ -2252,7 +2320,10 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         orbit.distance *= io.MouseWheel > 0 ? 0.9f : 1.1f;
         camera_changed = true;
     }
-    if (camera_changed) studio::set_orbit(orbit);
+    if (camera_changed) {
+        u.camera_shot = 0; // taking the camera yourself is leaving the shot
+        studio::set_orbit(orbit);
+    }
 }
 
 void keyboard(const studio::View& v) {
@@ -2294,6 +2365,7 @@ void keyboard(const studio::View& v) {
         u.anti_clip = !u.anti_clip;
         say(u.anti_clip ? "Keep clear on: what you move stays out of the body and off the deck." : "Keep clear off.");
     }
+    if (!ctrl && pressed(ImGuiKey_V)) next_shot(v, io.KeyShift ? -1 : 1);
     if (!ctrl && pressed(ImGuiKey_J)) {
         u.hide_joints = !u.hide_joints;
         say(u.hide_joints ? "Joints hidden. J shows them again." : "Joints shown.");
@@ -2387,6 +2459,7 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
                 {std::nullopt, "N", u.snap ? "Snapping on" : "Snapping off"},
                 {std::nullopt, "J", u.hide_joints ? "Joints hidden" : "Hide joints"},
                 {std::nullopt, "C", u.anti_clip ? "Keep clear on" : "Keep clear off"},
+                {std::nullopt, "V", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name},
                 {std::nullopt, "UP DN", "Choose"},
                 {std::nullopt, "< >", "One frame"},
                 {std::nullopt, "SPACE", v.playing ? "Pause" : "Play"},
@@ -2754,6 +2827,7 @@ void draw_animation_studio() {
     const auto project = projector(v, display);
     controller(v, project);
     viewport(d, f, v, project, view_min, view_max);
+    shot_strip(d, f, v, view_min, view_max);
     if (!u.menu_hidden) {
         page_title(d, f, ImVec2(menu_x, 40 * k));
         tab_row(d, f, ImVec2(menu_x, 140 * k));

@@ -202,7 +202,8 @@ void rename(const std::string& name);
 void set_trick(const std::string& trick);
 // Camera.
 void set_orbit(const Orbit& orbit);
-void focus_joint(std::uint16_t joint); // the orbit centres on it
+void focus_joint(std::uint16_t joint); // the orbit centres on it, or comes off it when it is on it already
+void set_focus(std::uint16_t joint);   // the orbit centres on it; all_joints for the whole skater
 // How far above and right of the screen's middle the free area beside the menu has its middle, both
 // as shares of the screen's height: the camera aims so the skater sits there.
 void set_view_shift(float share, float right_share);

@@ -3281,4 +3281,10 @@ void focus_joint(std::uint16_t joint) {
     if (s.focus == joint) s.focus.reset();
     else s.focus = joint;
 }
+void set_focus(std::uint16_t joint) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (joint == all_joints) s.focus.reset();
+    else s.focus = joint;
+}
 } // namespace dingosdk::anim_studio
