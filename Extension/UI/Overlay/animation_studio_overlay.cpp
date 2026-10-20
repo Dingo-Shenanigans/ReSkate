@@ -53,7 +53,10 @@ struct Ui {
     bool rows_bar_held{};  // the joint list's scroll bar is being dragged
     bool list_bar_held{};  // the menu list's scroll bar is being dragged
     std::uint16_t rows_followed{0xffff}; // the joint the list last scrolled to
-    bool bracket_view{};   // zoom to the brackets on the next frame
+    // What the timeline is showing: free (zoomed by hand), the whole trick, or the custom animation's
+    // own window. The last one is kept, so it follows the brackets as they are moved.
+    enum class View { free, fit, region };
+    View timeline_view{View::fit};
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -1188,8 +1191,10 @@ void controller(const studio::View& v, const Projector& p) {
     if (pressed & pad_b) studio::undo();
     if (pressed & pad_view) {
         // The timeline: the whole trick, or zoomed in on the playhead.
-        if (u.timeline_zoom > 1.01f) u.timeline_zoom = 1;
-        else zoom_timeline(3);
+        // View: the whole trick, the custom animation's window, then in on the playhead.
+        if (u.timeline_view == Ui::View::fit) u.timeline_view = Ui::View::region;
+        else if (u.timeline_view == Ui::View::region) zoom_timeline(3);
+        else u.timeline_view = Ui::View::fit;
     }
     if (pressed & pad_menu) save_now();
     // L3: turn about any axis, X, Y, Z, then move (the hips and the board).
@@ -1543,6 +1548,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
 // LT + up / down on a controller) zoom in on the playhead.
 void zoom_timeline(float factor) {
     auto& u = ui();
+    u.timeline_view = Ui::View::free; // zooming by hand is leaving FIT or REGION
     u.timeline_zoom = std::clamp(u.timeline_zoom * factor, 1.0f, 16.0f);
     u.zoom_to_playhead = true;
 }
@@ -1574,10 +1580,17 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     // Zoom: - FIT + at the header's right; the time under them.
     {
         float zx = at.x + size.x - 16 * k - 3 * 34 * k;
-        if (button(d, f, "##brackets", ImVec2(zx - 96 * k, at.y + 6 * k), ImVec2(86 * k, 24 * k), "BRACKETS", false, v.has_clip)) u.bracket_view = true;
+        // REGION holds the timeline on the custom animation's window and follows the brackets; FIT shows
+        // the whole trick. - and + zoom by hand, which leaves both.
+        if (button(d, f, "##region", ImVec2(zx - 96 * k, at.y + 6 * k), ImVec2(86 * k, 24 * k), "REGION",
+                   u.timeline_view == Ui::View::region, v.has_clip))
+            u.timeline_view = u.timeline_view == Ui::View::region ? Ui::View::fit : Ui::View::region;
         if (button(d, f, "##zoomout", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "-", false, u.timeline_zoom > 1)) zoom_timeline(1 / 1.5f);
         zx += 34 * k;
-        if (button(d, f, "##fit", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "FIT", u.timeline_zoom <= 1.001f)) u.timeline_zoom = 1;
+        if (button(d, f, "##fit", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "FIT", u.timeline_view == Ui::View::fit)) {
+            u.timeline_view = Ui::View::fit;
+            u.timeline_zoom = 1;
+        }
         zx += 34 * k;
         if (button(d, f, "##zoomin", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "+", false, u.timeline_zoom < 16)) zoom_timeline(1.5f);
         const std::string time = v.has_clip ? std::format("{:.2f} / {:.2f} s   frame {}", v.time, v.duration, static_cast<int>(std::round(v.time * fps))) : "";
@@ -1586,16 +1599,20 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     }
     const float ruler_left = lane.x, ruler_right = at.x + size.x - 130 * k;
     const float ruler_w = ruler_right - ruler_left;
-    if (u.bracket_view && v.has_clip) {
-        // Zoomed to the window between the brackets, its start at the left.
-        u.bracket_view = false;
-        const float s0 = v.bracket_start, e0 = v.bracket_end < 0 ? duration : v.bracket_end;
-        u.timeline_zoom = std::clamp(duration / std::max(e0 - s0, 1.0f / fps), 1.0f, 16.0f);
-        u.timeline_scroll = s0 * (ruler_w - 2 * pad) / duration * u.timeline_zoom;
+    const float region_start = v.bracket_start, region_end = v.bracket_end < 0 ? duration : v.bracket_end;
+    // Held still while a bracket is being carried: the window is worked out from the brackets, so letting it
+    // rescale under a drag would have the bracket running away from the mouse. It settles on letting go.
+    const bool carrying = u.bracket_drag != 0 || u.shoulder_shifted;
+    const bool in_region = u.timeline_view == Ui::View::region && v.has_clip && !carrying;
+    if (in_region) {
+        // Held on the window between the brackets, its start at the left: worked out again every frame, so
+        // moving a bracket keeps the window filling the timeline.
+        u.timeline_zoom = std::clamp(duration / std::max(region_end - region_start, 1.0f / fps), 1.0f, 16.0f);
         u.zoom_to_playhead = false;
-    }
+    } else if (u.timeline_view == Ui::View::fit) u.timeline_zoom = 1;
     const float seconds_w = (ruler_w - 2 * pad) / duration * u.timeline_zoom;
-    if (u.zoom_to_playhead || u.timeline_zoom <= 1.001f) {
+    if (in_region) u.timeline_scroll = region_start * seconds_w;
+    else if (u.zoom_to_playhead || u.timeline_zoom <= 1.001f) {
         u.timeline_scroll = v.time * seconds_w - (ruler_w - 2 * pad) * 0.5f;
         u.zoom_to_playhead = false;
     } else if (const float x = pad + v.time * seconds_w - u.timeline_scroll; v.playing && (x < pad || x > ruler_w - pad))
@@ -1796,24 +1813,40 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             const float ds = std::abs(io.MousePos.x - xs), de = std::abs(io.MousePos.x - xe);
             if (std::min(ds, de) < grab) near_bracket = ds <= de ? 1 : 2;
         }
-        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 22));
+        // The window the custom animation works in, barely there: a wash between the brackets over the rows
+        // and a thin band along the top, both in time, so they stretch and slide with the zoom and the
+        // scroll. Outside it the game's own animation plays, and that is left plain.
+        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 14));
+        d->AddRectFilled(ImVec2(xs, at.y + header_h - 3 * k), ImVec2(xe, at.y + header_h), IM_COL32(1, 131, 255, 70));
+        // Its edges, where it hands over, a touch stronger than the middle.
+        const float feather = std::min(26 * k, std::max(0.0f, (xe - xs) * 0.25f));
+        if (feather > 1) {
+            const ImU32 edge = IM_COL32(1, 131, 255, 30), none = IM_COL32(1, 131, 255, 0);
+            d->AddRectFilledMultiColor(ImVec2(xs, at.y + header_h), ImVec2(xs + feather, at.y + size.y), edge, none, none, edge);
+            d->AddRectFilledMultiColor(ImVec2(xe - feather, at.y + header_h), ImVec2(xe, at.y + size.y), none, edge, edge, none);
+        }
         int which = 1;
         for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
-            const float tick = 7 * k, dir = open_right ? 1.0f : -1.0f;
+            const float dir = open_right ? 1.0f : -1.0f;
             const bool hot = u.bracket_drag == which || (!u.bracket_drag && near_bracket == which);
             const ImU32 colour = hot ? IM_COL32(150, 205, 255, 255) : IM_COL32(1, 131, 255, 255);
             const float weight = hot ? 4.5f : 3.0f;
             // The grab area, shown while the mouse is on it so it is plain how big it is.
             if (hot) d->AddRectFilled(ImVec2(x - grab * 0.5f, at.y), ImVec2(x + grab * 0.5f, at.y + size.y), IM_COL32(1, 131, 255, 26));
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), colour, weight * k);
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), colour, weight * k);
-            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), colour, weight * k);
-            // Its name, at the top: inside the window, so the two never read as one.
+            // The flag: the name on the marker itself, a little pennant off the top of its pole, pointing
+            // into the window. The pole runs the height of the timeline.
             const char* name = open_right ? "START ANIM." : "END ANIM.";
-            const auto tw = text_size(f.bold, 11 * k, name);
-            const float tx = open_right ? x + 7 * k : x - 7 * k - tw.x;
-            d->AddRectFilled(ImVec2(tx - 4 * k, at.y + 2 * k), ImVec2(tx + tw.x + 4 * k, at.y + 6 * k + tw.y), IM_COL32(10, 12, 16, 190), 2 * k);
-            text(d, f.bold, 11 * k, ImVec2(tx, at.y + 4 * k), colour, name);
+            const float fs = 10 * k;
+            const auto tw = text_size(f.bold, fs, name);
+            const float flag_h = tw.y + 7 * k, flag_w = tw.x + 12 * k, top = at.y + 3 * k;
+            const float tail = 5 * k; // the notch cut out of the flag's far end
+            const ImVec2 a(x, top), b(x + dir * flag_w, top), c(x + dir * (flag_w - tail), top + flag_h * 0.5f);
+            const ImVec2 e(x + dir * flag_w, top + flag_h), g(x, top + flag_h);
+            const ImVec2 points[5]{a, b, c, e, g};
+            d->AddConvexPolyFilled(points, 5, colour);
+            text(d, f.bold, fs, ImVec2(open_right ? x + 6 * k : x - flag_w + 6 * k, top + (flag_h - tw.y) * 0.5f), IM_COL32(8, 14, 24, 255), name);
+            d->AddLine(ImVec2(x, top), ImVec2(x, at.y + size.y - 4 * k), colour, weight * k);
+            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * 7 * k, at.y + size.y - 4 * k), colour, weight * k);
             ++which;
         }
         if (near_bracket && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.bracket_drag = near_bracket;
