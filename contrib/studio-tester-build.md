@@ -38,8 +38,9 @@ establish runtime behavior or thread safety.
 
 ## Build and download
 
-The **Studio tester build** workflow runs on pull requests and pushes to main or
-the integration branch. It builds Windows Release binaries, runs C++ and Python
+The **Studio tester build** workflow runs on pull requests and pushes to main.
+Each PR update schedules one build, avoiding duplicate push/PR jobs and cache
+scopes for the same revision. It builds Windows Release binaries, runs C++ and Python
 regressions, downloads a pinned private release asset, verifies its SHA256 and
 every native payload, and checks all packaged previews/index/documents/names with
 the production readers before publishing a ZIP.
@@ -56,7 +57,7 @@ its usual AppData behavior. Artifacts expire after seven days; rerun to build a 
 After the workflow reaches the repository's default branch, collaborators can use
 **Actions → Studio tester build → Run workflow**, choose a source branch, and keep
 **full_library** enabled to produce the complete package. Turning it off runs build
-checks only. The integration branch's push trigger validates the workflow before
+checks only. The integration PR validates the workflow before
 that default-branch merge. Repository/organization Actions access and billing are
 controlled by its administrators; this change does not alter those settings.
 

@@ -3,7 +3,7 @@ name: Studio tester build
 on:
   pull_request:
   push:
-    branches: [main, 22sh/tester-stability]
+    branches: [main]
   workflow_dispatch:
     inputs:
       full_library:
@@ -47,7 +47,8 @@ jobs:
           $version = (rustc --version).Trim()
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Restore Rust dependencies and compiled helper
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: rust-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -68,6 +69,15 @@ jobs:
           . ../contrib/enter-msvc.ps1
           cargo build --locked --release --lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save helper cache before the remaining build
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            SpotifyHelper/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Configure candidate with binary auto-update disabled
         run: |
           . ./contrib/enter-msvc.ps1
