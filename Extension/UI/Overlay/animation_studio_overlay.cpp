@@ -2424,24 +2424,11 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     if (hovered && *hovered != u.selected)
         if (const auto at = project(joint_view(v, *hovered)->position))
             text(d, f.bold, 13 * k, ImVec2(at->x + 10 * k, at->y - 22 * k), white, upper(label_of(*hovered)));
-    // The joint's numbers over the view. The card in the menu shows the same ones, and the two sat on
-    // top of each other, so this is for when the menu is away (Tab) or a tab without the card is open.
-    const bool card_shows = !u.menu_hidden && (u.tab == static_cast<int>(Tab::joints) || u.tab == static_cast<int>(Tab::keys));
-    if (sel && !card_shows) {
-        const auto off = studio::offset_of(u.selected);
-        const auto e = studio::to_euler(off.rotation);
-        // High enough that the mode line below them clears the message along the bottom of the screen.
-        const float x = area_min.x + 24 * k, y = area_max.y - 168 * k;
-        if (const auto* joint = studio::editable(u.selected); (joint && joint->moves) || limb_end(u.selected)) {
-            const auto p = limb_end(u.selected) ? studio::limb_position(u.selected) : off.offset;
-            text(d, f.heading, 15 * k, ImVec2(x, y - 44 * k), IM_COL32(255, 255, 255, 110), "POSITION");
-            text(d, f.body, 13 * k, ImVec2(x, y - 24 * k), IM_COL32(255, 255, 255, 90),
-                 std::format("X: {:.2f}    Y: {:.2f}    Z: {:.2f}", p[0], p[1], p[2]));
-        }
-        text(d, f.heading, 15 * k, ImVec2(x, y), IM_COL32(255, 255, 255, 110), "ROTATION");
-        text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));
+    // What the gizmo is set to. The joint's own numbers are not here: the card in the menu has them, and
+    // the two sat over each other.
+    if (sel) {
         const char* axis = u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "FREE";
-        text(d, f.body, 12 * k, ImVec2(x, y + 42 * k), IM_COL32(120, 190, 255, 150),
+        text(d, f.body, 12 * k, ImVec2(area_min.x + 24 * k, area_max.y - 110 * k), IM_COL32(120, 190, 255, 150),
              std::format("{}  axis {}  ({}){}{}", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "object" : "world",
                          v.solo ? "  solo" : "", u.snap ? "  snapping" : ""));
     }
