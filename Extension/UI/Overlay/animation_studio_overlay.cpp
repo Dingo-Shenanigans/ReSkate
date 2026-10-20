@@ -971,11 +971,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         [] { ui().local_axes = !ui().local_axes; }});
         rows.push_back({"Solo", v.solo ? "on" : "off",
                         "On: a turn moves that joint alone. The joints hanging off it are turned back by as much, so the limb below "
-                        "keeps the way it faces instead of swinging with its parent. Bones are rigid, so it still travels with the joint.",
+                        "keeps the way it faces instead of swinging with its parent. Bones are rigid, so it still travels with the "
+                        "joint. Key: S.",
                         [v] { studio::set_solo(!v.solo); }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
                         "On: a foot moved while the skater is in the air lands on the deck, at the height the feet ride at. On the "
-                        "ground the game puts the board under the feet itself, so nothing is snapped there.",
+                        "ground the game puts the board under the feet itself, so nothing is snapped there. Key: N.",
                         [] { ui().snap = !ui().snap; }});
         rows.push_back({"Follow joint", "", "The camera keeps the joint in the middle (again: the whole skater).", [] { studio::focus_joint(ui().selected); }});
         rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame.", [] { studio::copy_pose(); }});
@@ -1948,6 +1949,11 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_R)) u.move_mode = false;
     if (!ctrl && pressed(ImGuiKey_G)) u.move_mode = true;
     if (!ctrl && pressed(ImGuiKey_L)) u.local_axes = !u.local_axes;
+    if (!ctrl && pressed(ImGuiKey_S)) studio::set_solo(!v.solo);
+    if (!ctrl && pressed(ImGuiKey_N)) {
+        u.snap = !u.snap;
+        say(u.snap ? "Snapping on: a foot moved in the air lands on the deck." : "Snapping off.");
+    }
     if (!ctrl && pressed(ImGuiKey_Tab)) u.menu_hidden = !u.menu_hidden;
     auto orbit = v.orbit;
     bool set = true;
@@ -2298,8 +2304,8 @@ void draw_animation_studio_loading() {
             "Pick a trick in TRICKS, then its pop: low, mid or high.",
             "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
             "The arrows on a joint move it along one axis, the rings turn it about one.",
-            "L swaps the gizmo between the joint's own axes and the world's.",
-            "Solo in KEYS turns one joint alone. Snapping puts a foot on the deck in the air.",
+            "G moves, R turns, X Y Z lock an axis, F follows the joint.",
+            "S turns one joint alone. N snaps a foot to the deck in the air. L swaps object and world.",
             "K keys the pose on this frame. Keys always sit on whole frames.",
             "G moves the hips or the board. X, Y and Z lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
