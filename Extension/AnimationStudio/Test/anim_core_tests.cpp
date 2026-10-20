@@ -259,6 +259,30 @@ void dragged_foot_reaches_the_drag() {
     check(length3_test(sub3_test(world(rest, 10).position, before_foot)) < 2e-3f, "A drag to where the foot is holds it there");
 }
 
+// Smooth keys: a key that says nothing goes, the rest ease smoothly and are marked, and the brackets stay.
+void smoothing_tidies_a_track() {
+    Track track;
+    track.joint = 343;
+    const auto key_at = [&](float t, float y, Ease e = Ease::smooth) {
+        Key k; k.time = t; k.offset = {0, y, 0}; k.ease = e; track.keys.push_back(k);
+    };
+    key_at(0.0f, 0.0f);          // the start bracket
+    key_at(0.5f, 0.5f);
+    key_at(1.0f, 1.0f, Ease::step); // straight between its neighbours: it says nothing
+    key_at(1.5f, 1.5f);
+    key_at(2.0f, 2.0f);          // the end bracket
+    const auto before = track.keys.size();
+    const auto changed = smooth_track(track, 0.0f, 2.0f);
+    check(changed > 0, "Smoothing reports what it changed");
+    check(track.keys.size() < before, "A key that says nothing is dropped");
+    check(track.keys.front().time == 0.0f && track.keys.back().time == 2.0f, "The bracket keys stay where they are");
+    check(near(track.keys.front().offset[1], 0.0f) && near(track.keys.back().offset[1], 2.0f), "and keep their values");
+    for (const auto& k : track.keys) {
+        check(k.ease == Ease::smooth, "Every key eases smoothly afterwards");
+        check(k.smooth, "and is marked as smoothed");
+    }
+}
+
 void packs_select_variants_without_filesystem_order() {
     std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
     select_presets(presets, std::nullopt);
@@ -748,6 +772,7 @@ int main(int argc, char** argv) {
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
+        smoothing_tidies_a_track();
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();

@@ -458,6 +458,63 @@ bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float 
     std::erase_if(track->keys, [&](const Key& k) { return std::abs(k.time - seconds) <= merge; });
     return track->keys.size() != before;
 }
+namespace {
+// How far a key's turn is from the turn the curve would have had there anyway, in radians.
+float turn_apart(const Quat& a, const Quat& b) noexcept {
+    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
+}
+} // namespace
+
+std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept {
+    auto& keys = track.keys;
+    if (keys.size() < 2) return 0;
+    const auto pinned = [&](const Key& k) {
+        return std::abs(k.time - keep_start) < 1.0f / 60 || std::abs(k.time - keep_end) < 1.0f / 60;
+    };
+    std::size_t changed = 0;
+    // Every key eases smoothly: one step or linear key in the middle breaks the curve either side of it.
+    for (auto& k : keys)
+        if (k.ease != Ease::smooth) {
+            k.ease = Ease::smooth;
+            ++changed;
+        }
+    // A key that sits where the line between its neighbours already goes says nothing: it is dropped, so the
+    // curve through what is left is not pulled about by keys that were only ever noise.
+    for (std::size_t i = 1; i + 1 < keys.size();) {
+        const Key &before = keys[i - 1], &here = keys[i], &after = keys[i + 1];
+        const float span = after.time - before.time;
+        const float u = span > 1e-6f ? (here.time - before.time) / span : 0.5f;
+        bool same = !pinned(here);
+        if (same) {
+            const auto guess = lerp(before.offset, after.offset, u);
+            for (std::size_t c = 0; c < 3 && same; ++c) same = std::abs(guess[c] - here.offset[c]) < 0.002f;
+            same = same && turn_apart(slerp(before.rotation, after.rotation, u), here.rotation) < 0.5f * 3.14159265f / 180;
+        }
+        if (same) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            ++changed;
+        } else ++i;
+    }
+    // What is left is drawn a little towards its neighbours, so a key that was placed by hand a frame off
+    // its neighbours no longer shows as a flick.
+    if (keys.size() > 2) {
+        const auto was = keys;
+        for (std::size_t i = 1; i + 1 < keys.size(); ++i) {
+            if (pinned(keys[i])) continue;
+            const Key &before = was[i - 1], &after = was[i + 1];
+            const float span = after.time - before.time;
+            const float u = span > 1e-6f ? (was[i].time - before.time) / span : 0.5f;
+            constexpr float pull = 0.35f;
+            keys[i].offset = lerp(was[i].offset, lerp(before.offset, after.offset, u), pull);
+            keys[i].rotation = slerp(was[i].rotation, slerp(before.rotation, after.rotation, u), pull);
+            ++changed;
+        }
+    }
+    for (auto& k : keys) k.smooth = true;
+    return changed;
+}
+
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept {
     if (index >= track.keys.size() || !std::isfinite(to) || !std::isfinite(duration)) return index;
     auto key = track.keys[index];
@@ -527,6 +584,7 @@ std::string to_json(const Animation& animation) {
             k["r"] = Json::array({key.rotation[0], key.rotation[1], key.rotation[2], key.rotation[3]});
             k["p"] = Json::array({key.offset[0], key.offset[1], key.offset[2]});
             k["ease"] = std::string(ease_name(key.ease));
+            if (key.smooth) k["smooth"] = true;
             keys.push_back(std::move(k));
         }
         t["keys"] = std::move(keys);
@@ -598,6 +656,7 @@ Animation from_json(std::string_view text) {
                 for (const float v : value.offset) require(std::abs(v) < 10, "a key moves a joint more than 10 m");
                 const auto ease = key.value("ease", "smooth");
                 value.ease = ease == "linear" ? Ease::linear : ease == "step" ? Ease::step : Ease::smooth;
+                value.smooth = key.value("smooth", false);
                 track.keys.push_back(value);
             }
             std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });

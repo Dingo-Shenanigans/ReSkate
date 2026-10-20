@@ -89,6 +89,7 @@ struct Key {
     Quat rotation{0, 0, 0, 1};
     Vec3 offset{};
     Ease ease{Ease::smooth};
+    bool smooth{}; // smoothed by the Smooth keys pass: the timeline draws it round instead of a diamond
 };
 struct Track {
     std::uint16_t joint{};
@@ -152,6 +153,11 @@ bool retime_window(Animation& animation, float start, float end, float duration)
 bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float merge = 1.0f / 120);
 // Moves a key to `to` (clamped to the clip), keeping the track in time order. Returns its new index.
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept;
+// Smooths a track's keys: every key eases smoothly, keys that say nothing the curve would not have said
+// anyway are dropped, and the rest are drawn towards their neighbours so the motion runs evenly. The keys
+// at `keep_start` and `keep_end` (the brackets) are never moved or dropped. Returns how many keys it
+// changed or removed; they are all marked `smooth`.
+std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept;
 
 // ---- skeleton -------------------------------------------------------------------------------------
 // The world transform of `joint` composed from the root through its animation-rig parents,

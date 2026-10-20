@@ -89,6 +89,14 @@ bool stop_pressed() {
     DingoSDKOverlayReadControllerInput(&pad, true);
     return (DingoSDKOverlayReadPromptKeys() & escape_key) != 0 || (pad.buttons & XINPUT_GAMEPAD_BACK) != 0;
 }
+// The practice stage is off unless RESKATE_RECORD_STAGE=1: the tricks are done in the world.
+bool use_stage() {
+    static const bool on = [] {
+        wchar_t value[4]{};
+        return GetEnvironmentVariableW(L"RESKATE_RECORD_STAGE", value, 4) == 1 && value[0] == L'1';
+    }();
+    return on;
+}
 void press(WORD buttons) {
     XINPUT_GAMEPAD pressed{}, neutral{};
     pressed.wButtons = buttons;
@@ -115,9 +123,16 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
             say(s, s.summary);
             return;
         }
-        say(s, std::format("{} tricks, {} takes: opening the practice stage", s.jobs.size() / flicks_ms.size(), s.jobs.size()));
-        stage::open(false);
-        next(s, Step::stage);
+        // The tricks are done where the skater stands, in the world. The practice stage is only used when it
+        // is asked for (RESKATE_RECORD_STAGE=1): on it the skater would not step back onto his board.
+        if (use_stage()) {
+            say(s, std::format("{} tricks, {} takes: opening the practice stage", s.jobs.size() / flicks_ms.size(), s.jobs.size()));
+            stage::open(false);
+            next(s, Step::stage);
+            return;
+        }
+        say(s, std::format("{} tricks, {} takes: starting here", s.jobs.size() / flicks_ms.size(), s.jobs.size()));
+        next(s, Step::board);
         return;
     }
     case Step::stage:
@@ -125,7 +140,7 @@ void step(State& s, std::uintptr_t base, std::uintptr_t component) {
         if (now > s.since + stage_wait_ms || (now > s.since + 2000 && !stage::active())) return go_home(s, "the practice stage did not open: " + stage::status());
         return;
     case Step::board: {
-        if (!stage::ready()) return go_home(s, "the practice stage closed");
+        if (use_stage() && !stage::ready()) return go_home(s, "the practice stage closed");
         const auto state_now = anim_studio::physics_state(base, component);
         if (state_now && *state_now == on_foot_state && now >= s.next_mount) {
             press(XINPUT_GAMEPAD_Y); // onto the board
