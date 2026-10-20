@@ -64,6 +64,7 @@ struct Ui {
     std::vector<std::pair<std::uint16_t, float>> picked;
     // The joint's state when a turn (mouse drag or stick) began, and how far it has gone since.
     studio::Offset drag_offset;
+    studio::Vec3 drag_field{}; // a hand's or a foot's POSITION fields when the drag began
     studio::Quat drag_world{0, 0, 0, 1}, drag_parent{0, 0, 0, 1};
     float drag_parent_scale{1};
     ImVec2 drag_start{};
@@ -395,6 +396,11 @@ float smooth_stick(float& state, float target, float dt) {
     return std::abs(state) < 0.002f ? 0.0f : state;
 }
 
+// A hand or a foot: the limb above it bends to reach where it is put, so these are moved with the IK
+// rather than by shifting the bone itself, and their POSITION fields are where they are from their rest.
+bool limb_end(std::uint16_t joint) { return joint == 10 || joint == 343 || joint == 49 || joint == 278; }
+float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
 // ---- turning the chosen joint (mouse drag or left stick) ---------------------------------------------
 void begin_turn(const studio::View& v) {
     auto& u = ui();
@@ -402,6 +408,7 @@ void begin_turn(const studio::View& v) {
     if (!sel) return;
     u.drag_offset = studio::offset_of(u.selected);
     u.drag_point = sel->position;
+    u.drag_field = limb_end(u.selected) ? studio::limb_position(u.selected) : studio::Vec3{};
     u.drag_world = sel->rotation;
     u.drag_parent = sel->parent_rotation;
     u.drag_parent_scale = sel->parent_scale;
@@ -414,11 +421,6 @@ studio::Vec3 up_of(const studio::Quat& q) {
     const float x = q[0], y = q[1], z = q[2], w = q[3];
     return {2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)};
 }
-// A hand or a foot: the limb above it bends to reach where it is put, so these are moved with the IK
-// rather than by shifting the bone itself.
-bool limb_end(std::uint16_t joint) { return joint == 10 || joint == 343 || joint == 49 || joint == 278; }
-float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-
 // ---- snapping ---------------------------------------------------------------------------------------
 // Snapping holds a foot on the deck: it keeps its place along and across the board, but sits
 // `feet_above_board` up the board's up, the height the game holds the feet at while riding.
@@ -463,10 +465,13 @@ struct Gizmo {
 // The axis a handle works along, in the world. Moving goes along the frame the offsets are kept in: the
 // joint's parent, and for the board the ground it starts on. Turning goes about the joint's own axes -
 // except the board's, whose keys turn it about that same ground frame. Either can be the world's instead.
-studio::Vec3 handle_axis(const studio::JointView& sel, std::uint16_t joint, int a, bool move, bool local) {
+studio::Vec3 handle_axis(const studio::View& v, const studio::JointView& sel, std::uint16_t joint, int a, bool move, bool local) {
     studio::Vec3 unit{};
     unit[static_cast<std::size_t>(a)] = 1;
     if (!local) return unit;
+    // A hand or a foot is moved by its POSITION fields, which are measured in the clip's own space: its
+    // arrows point the way those numbers go, so pulling the X arrow moves X and nothing else.
+    if (move && limb_end(joint)) return v.field_axes_valid ? studio::rotate(v.field_axes, unit) : unit;
     const bool parent_frame = move || joint == studio::board_joint;
     return studio::rotate(parent_frame ? sel.parent_rotation : sel.rotation, unit);
 }
@@ -489,9 +494,9 @@ Gizmo gizmo_of(const studio::View& v, const Projector& p, float k) {
     const float arrow = 54 * k / scale, radius = 78 * k / scale;
     for (int a = 0; a < 3; ++a) {
         const auto index = static_cast<std::size_t>(a);
-        g.axis[index] = handle_axis(*sel, u.selected, a, false, u.local_axes);
+        g.axis[index] = handle_axis(v, *sel, u.selected, a, false, u.local_axes);
         if (g.arrows) {
-            const auto move_axis = handle_axis(*sel, u.selected, a, true, u.local_axes);
+            const auto move_axis = handle_axis(v, *sel, u.selected, a, true, u.local_axes);
             studio::Vec3 end{};
             for (int i = 0; i < 3; ++i) end[i] = sel->position[i] + move_axis[i] * arrow;
             if (const auto tip = p(end)) {
@@ -585,13 +590,29 @@ void apply_axis(const studio::View& v, int a, float amount, bool move) {
     studio::Vec3 unit{};
     unit[index] = 1;
     if (move && limb_end(u.selected)) {
-        // A hand or a foot goes where the arrow points, and the limb above it bends to reach.
-        const auto* sel = joint_view(v, u.selected);
-        if (!sel) return;
-        const auto axis = handle_axis(*sel, u.selected, a, true, u.local_axes);
-        studio::Vec3 target{};
-        for (int i = 0; i < 3; ++i) target[i] = u.drag_point[i] + axis[i] * amount;
-        studio::drag_limb(u.selected, on_the_deck(v, u.selected, target));
+        // A hand or a foot is moved by its POSITION fields, so the arrow sets those numbers and the limb
+        // above it bends to reach: pull the X arrow a centimetre and the X field goes up by 0.01.
+        studio::Vec3 field = u.drag_field;
+        if (u.local_axes) field[index] += amount;
+        else {
+            // A world arrow: the step is brought into the axes the fields are measured in.
+            const auto step = v.field_axes_valid ? studio::rotate(studio::conjugate(v.field_axes), unit) : unit;
+            for (int i = 0; i < 3; ++i) field[i] += step[i] * amount;
+        }
+        // Snapping works where the board is, so the foot's place is taken out to the world, put on the
+        // deck, and brought back to the fields.
+        if (snapping_now(v) && (u.selected == 10 || u.selected == 343) && v.field_axes_valid) {
+            studio::Vec3 world{};
+            for (int i = 0; i < 3; ++i) world[i] = field[i] - u.drag_field[i];
+            world = studio::rotate(v.field_axes, world);
+            for (int i = 0; i < 3; ++i) world[i] += u.drag_point[i];
+            const auto landed = on_the_deck(v, u.selected, world);
+            studio::Vec3 back{};
+            for (int i = 0; i < 3; ++i) back[i] = landed[i] - u.drag_point[i];
+            back = studio::rotate(studio::conjugate(v.field_axes), back);
+            for (int i = 0; i < 3; ++i) field[i] = u.drag_field[i] + back[i];
+        }
+        studio::set_limb_position(u.selected, field);
         return;
     }
     studio::Offset next = u.drag_offset;
@@ -1441,9 +1462,12 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
         }
         if (tab == Tab::keys) {
+            // Wrapped inside the card, from low enough that three lines still sit on it: it used to run
+            // off the right edge in one line and across the skater.
             const auto rows = rows_of(tab, v);
             if (u.row >= 0 && u.row < static_cast<int>(rows.size()))
-                text(d, f.bold, 14 * k, ImVec2(at.x + 22 * k, at.y + size.y - 30 * k), ink_soft, rows[static_cast<std::size_t>(u.row)].about);
+                d->AddText(f.bold, 13 * k, ImVec2(at.x + 22 * k, at.y + size.y - 62 * k), ink_soft,
+                           rows[static_cast<std::size_t>(u.row)].about.c_str(), nullptr, size.x - 44 * k);
         }
         return;
     }
@@ -1820,7 +1844,10 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     if (hovered && *hovered != u.selected)
         if (const auto at = project(joint_view(v, *hovered)->position))
             text(d, f.bold, 13 * k, ImVec2(at->x + 10 * k, at->y - 22 * k), white, upper(label_of(*hovered)));
-    if (sel) {
+    // The joint's numbers over the view. The card in the menu shows the same ones, and the two sat on
+    // top of each other, so this is for when the menu is away (Tab) or a tab without the card is open.
+    const bool card_shows = !u.menu_hidden && (u.tab == static_cast<int>(Tab::joints) || u.tab == static_cast<int>(Tab::keys));
+    if (sel && !card_shows) {
         const auto off = studio::offset_of(u.selected);
         const auto e = studio::to_euler(off.rotation);
         const float x = area_min.x + 24 * k, y = area_max.y - 92 * k;
@@ -2226,11 +2253,12 @@ void draw_animation_studio_loading() {
     // The background is always opaque: the game's own loading art underneath must not show through while
     // this fades. Only the content fades.
     d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(19, 19, 19, 255));
-    // The backdrop, when the studio has one, under a dark veil so the wordmark reads on it.
-    const bool backdrop_drawn = draw_studio_picture_cover(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
-    if (backdrop_drawn)
-        d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(8, 8, 10, 90)));
-    else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
+    // The loading picture, filled over the screen with its own shape kept. It carries the wordmark, the
+    // blue tape and who built it already, so none of those are drawn over it and nothing is veiled: the
+    // artwork is shown as it is, and only the sides are lost on a screen less wide than it.
+    const bool backdrop_drawn = draw_studio_backdrop_cover(d, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
+    if (backdrop_drawn) {
+    } else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
         for (unsigned i = 0; i < 2600; ++i) {
             const float x = skate_theme::noise(i * 3 + 1) * display.x, y = skate_theme::noise(i * 3 + 2) * display.y;
             const auto shade = static_cast<int>(26 + skate_theme::noise(i * 3 + 3) * 40);

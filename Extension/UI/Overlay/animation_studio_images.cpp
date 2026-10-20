@@ -45,14 +45,14 @@ constexpr std::array<Place, 3> kickflip_places{{
     {ui::bam_toc, ui::bam_bundle},
 }};
 
-constexpr std::size_t picture_count = 5, backdrop_index = 4;
+constexpr std::size_t picture_count = 6, backdrop_index = 4, backdrop_right_index = 5;
 struct Source {
     const ui::Texture* texture; // the kickflip's is found in kickflip_places
     std::uint32_t side;
     bool brightness{}; // white with the texture's brightness as alpha, else its own alpha
 };
 constexpr std::array<Source, picture_count> sources{{
-    {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152}, {nullptr, 0},
+    {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152}, {nullptr, 0}, {nullptr, 0},
 }};
 using Images = std::array<std::optional<frostbite::Image>, picture_count>;
 
@@ -79,8 +79,10 @@ frostbite::Image whiten(frostbite::Image image, bool brightness) {
     return image;
 }
 
-// The loading screen's backdrop, a picture the user puts beside the studio's tricks: the RESKATE_STUDIO_BACKDROP
-// file, else backdrop.png in the folder above the tricks (RESKATE_ANIMATION_STUDIO_DIR). Fitted to 1920 x 1080.
+// The loading screen's picture. The one built into ReSkate.dll (assets/animator_studio/loading.jpg, baked
+// in by cmake/Runtime.cmake) is what everyone who installs the mod sees; a RESKATE_STUDIO_BACKDROP file, or
+// backdrop.png in the folder above the tricks (RESKATE_ANIMATION_STUDIO_DIR), takes its place when there is
+// one. Kept at up to 3072 across, which is more than a 16:9 screen at 1080 lines shows of it.
 std::filesystem::path backdrop_path() {
     std::array<wchar_t, 32768> buffer{};
     if (const auto length = GetEnvironmentVariableW(L"RESKATE_STUDIO_BACKDROP", buffer.data(), static_cast<DWORD>(buffer.size())); length && length < buffer.size())
@@ -89,12 +91,27 @@ std::filesystem::path backdrop_path() {
         return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path() / L"backdrop.png";
     return {};
 }
+// The picture baked into the DLL.
+std::vector<unsigned char> built_in_backdrop() {
+    HMODULE module{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&built_in_backdrop), &module))
+        return {};
+    const auto found = FindResourceW(module, L"STUDIO_LOADING", MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+    const auto handle = found ? LoadResource(module, found) : nullptr;
+    const auto* bytes = handle ? static_cast<const unsigned char*>(LockResource(handle)) : nullptr;
+    const auto size = found ? SizeofResource(module, found) : 0;
+    return bytes && size ? std::vector<unsigned char>(bytes, bytes + size) : std::vector<unsigned char>{};
+}
 std::optional<frostbite::Image> read_backdrop() {
     const auto path = backdrop_path();
     std::error_code error;
-    if (path.empty() || !std::filesystem::is_regular_file(path, error)) return std::nullopt;
-    std::ifstream in(path, std::ios::binary);
-    const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const bool own = !path.empty() && std::filesystem::is_regular_file(path, error);
+    std::vector<unsigned char> bytes;
+    if (own) {
+        std::ifstream in(path, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    } else bytes = built_in_backdrop();
     if (bytes.empty() || bytes.size() > (64u << 20)) return std::nullopt;
     const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
     std::optional<frostbite::Image> out;
@@ -113,7 +130,7 @@ std::optional<frostbite::Image> read_backdrop() {
             SUCCEEDED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) {
             frostbite::Image image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
             if (SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(image.rgba.size()), image.rgba.data()))) {
-                const float scale = std::min({1.0f, 1920.0f / static_cast<float>(width), 1080.0f / static_cast<float>(height)});
+                const float scale = std::min({1.0f, 3072.0f / static_cast<float>(width), 1728.0f / static_cast<float>(height)});
                 out = scale < 1.0f ? frostbite::resize(image, std::max(1u, static_cast<std::uint32_t>(width * scale)), std::max(1u, static_cast<std::uint32_t>(height * scale)))
                                    : std::move(image);
             }
@@ -122,8 +139,21 @@ std::optional<frostbite::Image> read_backdrop() {
         out.reset();
     }
     if (com) CoUninitialize();
-    if (out) logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: the loading backdrop is read from {}.", path.string());
-    else logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: no loading backdrop read from {}.", path.string());
+    if (out) logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: the loading picture is {} x {}, from {}.",
+                         out->width, out->height, own ? path.string() : std::string("the one built in"));
+    else logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: no loading picture was read.");
+    return out;
+}
+// One half of the picture. The overlay's atlas is 2048 across, so a wide picture goes in as two rects and
+// is drawn back together; cut on a whole pixel, and the atlas keeps a gap round each, so there is no seam.
+std::optional<frostbite::Image> half_of(const frostbite::Image& image, bool right) {
+    const std::uint32_t cut = image.width / 2;
+    const std::uint32_t from = right ? cut : 0, width = right ? image.width - cut : cut;
+    if (!width || !image.height) return std::nullopt;
+    frostbite::Image out{width, image.height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * image.height * 4)};
+    for (std::uint32_t y = 0; y < image.height; ++y)
+        std::memcpy(out.rgba.data() + static_cast<std::size_t>(y) * width * 4,
+                    image.rgba.data() + (static_cast<std::size_t>(y) * image.width + from) * 4, static_cast<std::size_t>(width) * 4);
     return out;
 }
 
@@ -133,9 +163,13 @@ Images decode() {
         vfs::GameTextures textures(hall_of_meat::game_folder());
         for (std::size_t index = 0; index < picture_count; ++index) {
             if (index == backdrop_index) {
-                result[index] = read_backdrop();
+                if (const auto whole = read_backdrop()) {
+                    result[backdrop_index] = half_of(*whole, false);
+                    result[backdrop_right_index] = half_of(*whole, true);
+                }
                 continue;
             }
+            if (index == backdrop_right_index) continue; // filled with its left half
             const auto& source = sources[index];
             if (!source.texture) {
                 for (const auto& place : kickflip_places) {
@@ -278,6 +312,35 @@ bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 m
     const ImVec2 a(found.uv0.x + (found.uv1.x - found.uv0.x) * (1 - u) * 0.5f, found.uv0.y + (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
     const ImVec2 b(found.uv1.x - (found.uv1.x - found.uv0.x) * (1 - u) * 0.5f, found.uv1.y - (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
     draw->AddImage(loaded().atlas->TexID, min, max, a, b, tint);
+    return true;
+}
+bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+    Found left, right;
+    if (!find(StudioPicture::backdrop, left) || !find(StudioPicture::backdrop_right, right)) return false;
+    const auto& left_size = loaded().sizes[static_cast<std::size_t>(StudioPicture::backdrop)];
+    const auto& right_size = loaded().sizes[static_cast<std::size_t>(StudioPicture::backdrop_right)];
+    const float whole_w = static_cast<float>(left_size.first + right_size.first), whole_h = static_cast<float>(left_size.second);
+    const float box_w = max.x - min.x, box_h = max.y - min.y;
+    if (!(whole_w > 0 && whole_h > 0 && box_w > 0 && box_h > 0)) return false;
+    // What is shown of it: the rest is cropped, half off each side (or off the top and bottom).
+    const float picture_shape = whole_w / whole_h, box_shape = box_w / box_h;
+    float u = 1.0f, v = 1.0f;
+    if (picture_shape > box_shape) u = box_shape / picture_shape;
+    else v = picture_shape / box_shape;
+    const float x0 = whole_w * (1 - u) * 0.5f, x1 = whole_w - x0;
+    const float shown = x1 - x0;
+    const auto piece = [&](const Found& found, float from, float to) {
+        // Where this half sits in the whole picture, against what is shown of it.
+        const float a = std::max(from, x0), b = std::min(to, x1);
+        if (b <= a) return;
+        const float ua = (a - from) / (to - from), ub = (b - from) / (to - from);
+        const ImVec2 uv0(found.uv0.x + (found.uv1.x - found.uv0.x) * ua, found.uv0.y + (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
+        const ImVec2 uv1(found.uv0.x + (found.uv1.x - found.uv0.x) * ub, found.uv1.y - (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
+        draw->AddImage(loaded().atlas->TexID, ImVec2(min.x + (a - x0) / shown * box_w, min.y),
+                       ImVec2(min.x + (b - x0) / shown * box_w, max.y), uv0, uv1, tint);
+    };
+    piece(left, 0, static_cast<float>(left_size.first));
+    piece(right, static_cast<float>(left_size.first), whole_w);
     return true;
 }
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {

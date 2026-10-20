@@ -18,12 +18,17 @@ void prepare_animation_studio_images() noexcept;
 void reserve_animation_studio_images(ImFontAtlas& atlas, std::chrono::milliseconds wait) noexcept;
 void fill_animation_studio_images(ImFontAtlas& atlas) noexcept;
 
-enum class StudioPicture { grain, tile, brush, kickflip, backdrop };
+enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right };
 // Stretched onto the box. False when the picture is not there.
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
 // Filled over the box with its own shape kept: what does not fit is cropped off, evenly on both sides (a 21:9
 // backdrop on a 16:9 screen loses its sides rather than being squeezed). False when the picture is not there.
 bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
+// The loading screen's picture, filled over the box with its own shape kept: a 21:9 artwork on a 16:9
+// screen loses its sides rather than being squeezed. It is carried in two halves, because one of them
+// is as wide as the overlay's atlas can take, and they are drawn back together here. False when there
+// is no picture.
+bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint);
 // The brush bar's body on the box, its splatter around it.
 bool draw_studio_brush(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint);
 // The rough tile nine-sliced onto the box, `edge` pixels of rough edge.

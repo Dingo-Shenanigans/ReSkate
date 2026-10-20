@@ -2229,6 +2229,16 @@ View view() {
     v.play_in_game = s.play_in_game;
     v.room = s.room;
     v.solo = s.solo;
+    // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
+    // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
+    // along a field's axis and move that field by what the arrow is pulled.
+    if (s.clip && !s.clip->empty()) {
+        std::vector<Joint> native(skeleton_joints);
+        s.clip->sample(std::round(s.time * 30.0f) / 30.0f, native); // frame_time, which is declared below
+        const auto clip_place = world(native, placement_joint).rotation;
+        v.field_axes = normalised(multiply(s.joints_placement.rotation, conjugate(clip_place)));
+        v.field_axes_valid = finite(Joint{{1, 1, 1}, v.field_axes, {}});
+    }
     v.duration = duration_locked(s);
     v.takeoff = s.clip ? s.clip->takeoff : -1;
     v.landing = s.clip ? s.clip->landing : -1;
