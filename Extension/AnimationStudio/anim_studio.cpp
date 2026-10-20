@@ -609,6 +609,8 @@ std::array<float, 16> orbit_matrix(const Vec3& centre, const Orbit& orbit, float
 // ---- recorded tricks -----------------------------------------------------------------------------
 // Record all tricks keeps each take as <folder>/recorded/<trick>__<pop>.clip.
 std::atomic<std::uint64_t> tricks_revision{1};
+// Published on the client thread: animation callbacks must not lock AI/session state.
+std::atomic<bool> grade_is_ours{};
 std::string recorded_file_name(const std::string& trick, const std::string& pop) {
     std::string safe;
     for (const char c : trick) safe += std::isalnum(static_cast<unsigned char>(c)) ? static_cast<char>(std::tolower(static_cast<unsigned char>(c))) : '_';
@@ -683,7 +685,7 @@ void finish_recording(Live& l) {
         const float air = clip->landing - clip->takeoff;
         // Its pop is the one the take asked for, as the game itself grades it (EnumGS.PopHeight, trick_intents.h).
         const auto grade = scripted ? trick_intents::take_pop_height() :
-            !multiplayer_session_active() && ai_skaters::active_count() == 0 ?
+            grade_is_ours.load(std::memory_order_acquire) ?
                 trick_intents::pop_height_since(pop_grade_since(GetTickCount64(), now_seconds() - l.takeoff_at)) : 0;
         const auto decision = evaluate_recorded_take(scripted, l.recorded_trick, s.batch_trick, s.batch_pop, grade, !clip->board.empty(), air);
         BatchTake take{false, l.recorded_trick, decision.pop, {}, air};
@@ -962,9 +964,6 @@ std::optional<float> board_up_speed(std::uintptr_t base, std::uintptr_t componen
     if (!v || !std::isfinite((*v)[1])) return std::nullopt;
     return (*v)[1];
 }
-// The game's grades are any skater's: true while only the local skater can be popping (solo, no AI skaters). Set on
-// the client thread, read on the animation thread.
-std::atomic<bool> grade_is_ours{};
 // The pop of an air, from how long it is going to last: low, mid or high. Only when the game's grade is not known.
 std::string pop_of(float air) {
     if (!(air > 0)) return {};

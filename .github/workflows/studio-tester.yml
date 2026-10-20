@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: studio-tester-${{ github.workflow }}-${{ github.ref }}
+  group: studio-tester-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
