@@ -2185,7 +2185,7 @@ std::atomic<double> game_quiet_since{-1}; // -1: taken to be loading until a tic
 // When a clean start finished. The client counts as in play before the game has taken its own loading
 // screen down, so ours stays up a few seconds past that or the game's shows from under it.
 std::atomic<double> clean_done_at{-1};
-constexpr double clean_settle = 4.5;
+constexpr double clean_settle = 6.5; // measured in game: 4.5 let the tail of the game's screen through
 void game_loading_state(bool game_loading) noexcept {
     if (game_loading) game_quiet_since.store(-1, std::memory_order_release);
     else if (game_quiet_since.load() < 0) game_quiet_since.store(now_seconds(), std::memory_order_release);
