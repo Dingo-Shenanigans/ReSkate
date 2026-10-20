@@ -432,22 +432,34 @@ void shift_keys(Animation& animation, float delta, float duration) noexcept {
     }
     animation.start = std::max(0.0f, animation.start + delta);
 }
-bool retime_window(Animation& animation, float start, float end, float duration) noexcept {
-    if (!std::isfinite(start) || !std::isfinite(end) || !std::isfinite(duration) || duration < 0 || start < 0 || end < start || end > duration) return false;
+float on_a_frame(float seconds) noexcept { return std::round(seconds * key_fps) / key_fps; }
+bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept {
+    if (!std::isfinite(to) || !std::isfinite(duration) || duration < 0 || to < 0 || to > duration) return false;
     const float old_start = animation.start, old_end = animation.end < 0 ? duration : animation.end;
     if (!std::isfinite(old_start) || !std::isfinite(old_end) || old_end < old_start) return false;
-    const float span = old_end - old_start, scale = span > 1e-6f ? (end - start) / span : 0.0f;
+    const float from = which == 1 ? old_start : which == 2 ? old_end : -1;
+    if (from < 0) return false;
+    const float at = on_a_frame(to);
+    const float gap = 1.0f / key_fps;
+    if (which == 1 && at > old_end - gap) return false;
+    if (which == 2 && at < old_start + gap) return false;
+    if (which == 1) animation.start = at;
+    else animation.end = at;
+    if (std::abs(at - from) < 1e-6f) return true;
+    constexpr float merge = 0.5f / key_fps;
     for (auto& track : animation.tracks) {
         if (track.locked) continue;
-        std::size_t kept = 0;
-        for (auto key : track.keys) {
-            key.time = std::clamp(start + (key.time - old_start) * scale, 0.0f, duration);
-            if (kept && std::abs(track.keys[kept - 1].time - key.time) < 1e-6f) track.keys[kept - 1] = key;
-            else track.keys[kept++] = key;
-        }
-        track.keys.resize(kept);
+        auto& keys = track.keys;
+        const auto on_bracket = std::find_if(keys.begin(), keys.end(), [&](const Key& k) { return std::abs(k.time - from) < merge; });
+        if (on_bracket == keys.end()) continue;
+        Key moved = *on_bracket;
+        moved.time = at;
+        keys.erase(on_bracket);
+        // Whatever was already standing where it lands gives way to it.
+        const auto clash = std::find_if(keys.begin(), keys.end(), [&](const Key& k) { return std::abs(k.time - at) < merge; });
+        if (clash != keys.end()) *clash = moved;
+        else keys.insert(std::upper_bound(keys.begin(), keys.end(), at, [](float t, const Key& k) { return t < k.time; }), moved);
     }
-    animation.start = start; animation.end = end;
     return true;
 }
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge) {
@@ -526,6 +538,24 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
             keys[i].rotation = slerp(was[i].rotation, slerp(before.rotation, after.rotation, u), pull);
             ++changed;
         }
+    }
+    // On whole frames. Smoothing rebuilds the track, so this is where a key that drifted off a frame -
+    // an older animation whose window was once stretched - is put back on one. The two keys on the
+    // brackets are left exactly where they are, because the brackets are what they answer to.
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (pinned(keys[i])) continue;
+        const float at = on_a_frame(keys[i].time);
+        if (std::abs(at - keys[i].time) > 1e-6f) {
+            keys[i].time = at;
+            ++changed;
+        }
+    }
+    std::stable_sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
+    for (std::size_t i = 1; i < keys.size();) {
+        if (std::abs(keys[i].time - keys[i - 1].time) < 0.5f / key_fps) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            ++changed;
+        } else ++i;
     }
     for (auto& k : keys) k.smooth = true;
     return changed;

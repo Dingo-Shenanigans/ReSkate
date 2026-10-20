@@ -55,7 +55,10 @@ struct Ui {
     bool rows_bar_held{};  // the joint list's scroll bar is being dragged
     bool list_bar_held{};  // the menu list's scroll bar is being dragged
     std::uint16_t rows_followed{0xffff}; // the joint the list last scrolled to
-    bool bracket_view{};   // zoom to the brackets on the next frame
+    // What the timeline is showing: free (zoomed by hand), the whole trick, or the custom animation's
+    // own window. The last one is kept, so it follows the brackets as they are moved.
+    enum class View { free, fit, region };
+    View timeline_view{View::fit};
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -66,11 +69,19 @@ struct Ui {
     std::vector<std::pair<std::uint16_t, float>> picked;
     // The joint's state when a turn (mouse drag or stick) began, and how far it has gone since.
     studio::Offset drag_offset;
+    studio::Vec3 drag_field{}; // a hand's or a foot's POSITION fields when the drag began
     studio::Quat drag_world{0, 0, 0, 1}, drag_parent{0, 0, 0, 1};
     float drag_parent_scale{1};
     ImVec2 drag_start{};
     int axis{-1}; // -1 free, 0 X, 1 Y, 2 Z
     bool local_axes{true}, move_mode{};
+    // The gizmo on the chosen joint: three arrows to move along an axis, three rings to turn about one.
+    int gizmo_handle{-1};      // the one being dragged: 0 to 2 the arrows, 3 to 5 the rings, -1 none
+    int gizmo_hot{-1};         // the one under the mouse
+    studio::Vec3 drag_point{}; // where the joint was when the drag began
+    float ring_from{};         // the angle round the ring where a ring drag began
+    bool drag_moved{};         // the mouse has gone far enough for the drag to count
+    bool snap{};               // a foot moved in the air lands on the deck
 
     std::array<char, 64> name{}, trick{};
     std::array<char, 64> pack_name{};
@@ -84,6 +95,8 @@ struct Ui {
     double held_since[16]{};
     double repeat_at[16]{};
     bool l3_combo{}, stick_turning{}, stick_zoom{}, scrubbing{};
+    bool shoulder_shifted{}; // a shoulder was held and the stick moved a bracket, so it is not a tab tap
+    float bracket_at[2]{};   // where each bracket is being carried to, while a stick carries it
     // The sticks, filtered over time: a light touch and a hard push both settle, with no jump at the dead zone's edge.
     float filtered[4]{};
     float scrub_time{};
@@ -94,6 +107,12 @@ struct Ui {
     int menu_index{};
     int tab{0}, row{1};
     bool menu_hidden{};
+    bool hide_joints{};          // J: the dots and the gizmo are out of the way
+    bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
+    float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
+    bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
+    int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
+    std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
     bool zoom_to_playhead{};
     std::array<float, 5> list_scroll{};
@@ -365,16 +384,24 @@ bool number(const Fonts& f, const char* id, const char* label, float& value, flo
     ImGui::EndGroup();
     return changed;
 }
-bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, float width) {
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(34, 35, 38, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(46, 47, 52, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 47, 52, 240));
+// A typed field in the studio's hand: its own type, the rough edge the buttons and rows have, and the
+// same height as the button beside it, instead of the stock box in the stock font.
+bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, float width, const char* hint = "Type a trick name") {
+    const float k = f.k;
+    const float h = 30 * k;
+    // The field's own box stays, painted the shade the rows and buttons use: the studio draws on the
+    // foreground list, so a frame drawn there would land on top of what is being typed.
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(28, 29, 32, 240));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 240));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 245));
     ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, blue_dim);
     ImGui::PushStyleColor(ImGuiCol_Text, white);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2 * f.k);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8 * f.k, 6 * f.k));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, (h - 14 * k) * 0.5f));
+    ImGui::PushFont(f.bold);
     ImGui::SetNextItemWidth(width);
-    const bool done = ImGui::InputTextWithHint(id, "e.g. kickflip, 360 flip high, tailslide loop", buffer.data(), buffer.size());
+    const bool done = ImGui::InputTextWithHint(id, hint, buffer.data(), buffer.size());
+    ImGui::PopFont();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(5);
     return done;
@@ -395,12 +422,21 @@ float smooth_stick(float& state, float target, float dt) {
     return std::abs(state) < 0.002f ? 0.0f : state;
 }
 
+// The joints that can be put somewhere: the hands, the feet, and the knees and elbows between them. The
+// limb above bends to reach, so these are moved with the IK rather than by shifting the bone itself, and
+// their POSITION fields are where they are from their rest. A knee or an elbow turns only the bone above
+// it, so placing one never swings the hips or the chest (anim_studio's limb_chain).
+bool limb_end(std::uint16_t joint) { return studio::limb_chain(joint) != 0; }
+float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
 // ---- turning the chosen joint (mouse drag or left stick) ---------------------------------------------
 void begin_turn(const studio::View& v) {
     auto& u = ui();
     const auto* sel = joint_view(v, u.selected);
     if (!sel) return;
     u.drag_offset = studio::offset_of(u.selected);
+    u.drag_point = sel->position;
+    u.drag_field = limb_end(u.selected) ? studio::limb_position(u.selected) : studio::Vec3{};
     u.drag_world = sel->rotation;
     u.drag_parent = sel->parent_rotation;
     u.drag_parent_scale = sel->parent_scale;
@@ -413,6 +449,451 @@ studio::Vec3 up_of(const studio::Quat& q) {
     const float x = q[0], y = q[1], z = q[2], w = q[3];
     return {2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)};
 }
+// ---- snapping ---------------------------------------------------------------------------------------
+// Snapping holds a foot on the deck: it keeps its place along and across the board, but sits
+// `feet_above_board` up the board's up, the height the game holds the feet at while riding.
+//
+// Wherever the board is, which is the point: on the ground that is the board the game has already put
+// under the lower foot (board_on_feet), in the air the one the clip and its keys put there. Snapping a
+// foot onto it is right either way, so this asks nothing about the trick but whether the board is known.
+bool snapping_now(const studio::View& v) { return ui().snap && v.has_clip; }
+studio::Vec3 on_the_deck(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
+    if ((joint != 10 && joint != 343) || !snapping_now(v)) return target;
+    const auto* board = joint_view(v, studio::board_joint);
+    if (!board) return target;
+    const auto up = up_of(board->rotation);
+    const studio::Vec3 from{target[0] - board->position[0], target[1] - board->position[1], target[2] - board->position[2]};
+    const float over = dot3(from, up) - studio::feet_above_board;
+    for (int i = 0; i < 3; ++i) target[i] -= up[i] * over;
+    return target;
+}
+
+// ---- keeping the skater out of himself ------------------------------------------------------------
+// The body is taken as a handful of capsules - a line between two joints with a thickness - and the deck
+// as a thin flat box. A joint being placed is pushed back out of any of them it has got inside, the
+// shortest way out, which is enough to keep the meshes off one another without the pose being dragged
+// about. His own limb is left out of the test, or it would push against itself.
+//
+// This holds what is being placed. Turning a bone can still swing the limb below it into the body: that
+// would want the whole pose solved at once, which is a different thing from this.
+struct Capsule {
+    std::uint16_t from, to;
+    float radius;
+};
+// The arms and the legs are a pair of capsules each; the torso and the head one each.
+constexpr std::array<Capsule, 11> body_shape{{
+    {7, 44, 0.150f},    // hips to chest
+    {44, 101, 0.130f},  // chest to neck
+    {101, 103, 0.105f}, // neck to head
+    {276, 277, 0.052f}, {277, 278, 0.046f}, // left arm, forearm
+    {47, 48, 0.052f},   {48, 49, 0.046f},   // right arm, forearm
+    {341, 342, 0.075f}, {342, 343, 0.062f}, // left thigh, shin
+    {8, 9, 0.075f},     {9, 10, 0.062f},    // right thigh, shin
+}};
+// How thick the joint being placed is taken to be.
+float joint_radius(std::uint16_t joint) {
+    switch (joint) {
+    case 49: case 278: return 0.045f;  // a hand
+    case 10: case 343: return 0.055f;  // a foot
+    default: return 0.050f;            // a knee or an elbow
+    }
+}
+// Which limb a joint belongs to, so its own bones are not tested against it. 0 is none.
+int limb_of(std::uint16_t joint) {
+    switch (joint) {
+    case 275: case 276: case 277: case 278: return 1;
+    case 46: case 47: case 48: case 49: return 2;
+    case 341: case 342: case 343: case 344: return 3;
+    case 8: case 9: case 10: case 11: return 4;
+    default: return 0;
+    }
+}
+// The point on the segment a to b nearest p, and how far p is from it.
+float near_segment(const studio::Vec3& p, const studio::Vec3& a, const studio::Vec3& b, studio::Vec3& on) {
+    studio::Vec3 ab{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    const float len = dot3(ab, ab);
+    float t = 0;
+    if (len > 1e-8f) t = std::clamp(((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / len, 0.0f, 1.0f);
+    for (int i = 0; i < 3; ++i) on[i] = a[i] + ab[i] * t;
+    return std::hypot(std::hypot(p[0] - on[0], p[1] - on[1]), p[2] - on[2]);
+}
+studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
+    const float force = std::clamp(ui().clear_force, 0.0f, 1.0f);
+    if (!ui().anti_clip || !v.has_clip || force <= 0.01f) return target;
+    // Against his own body the joint is as thick as the slider says; against the deck it is always its
+    // whole self, since a shoe inside the board is wrong at every setting.
+    const float r = joint_radius(joint) * force, deck_r = joint_radius(joint);
+    const int mine = limb_of(joint);
+    // Two passes: pushing out of one shape can put it inside another, and twice settles it in practice.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const auto& c : body_shape) {
+            if (limb_of(c.from) == mine && limb_of(c.to) == mine) continue; // his own limb
+            const auto* a = joint_view(v, c.from);
+            const auto* b = joint_view(v, c.to);
+            if (!a || !b) continue;
+            studio::Vec3 on{};
+            const float away = near_segment(target, a->position, b->position, on);
+            const float want = c.radius * force + r;
+            if (away >= want) continue;
+            if (away < 1e-4f) {
+                target[1] += want; // dead centre of a bone: straight up, so there is a way out at all
+                continue;
+            }
+            for (int i = 0; i < 3; ++i) target[i] = on[i] + (target[i] - on[i]) / away * want;
+        }
+        // The deck: a thin flat box about the board's mount, pushed out whichever of its faces is nearest.
+        if (const auto* board = joint_view(v, studio::board_joint)) {
+            constexpr std::array<float, 3> half{0.105f, 0.020f, 0.430f}; // across, thick, along
+            std::array<studio::Vec3, 3> axes{};
+            for (int i = 0; i < 3; ++i) {
+                studio::Vec3 e{};
+                e[static_cast<std::size_t>(i)] = 1;
+                axes[static_cast<std::size_t>(i)] = studio::rotate(board->rotation, e);
+            }
+            const studio::Vec3 from{target[0] - board->position[0], target[1] - board->position[1], target[2] - board->position[2]};
+            std::array<float, 3> along{};
+            bool inside = true;
+            for (int i = 0; i < 3; ++i) {
+                along[static_cast<std::size_t>(i)] = dot3(from, axes[static_cast<std::size_t>(i)]);
+                inside = inside && std::abs(along[static_cast<std::size_t>(i)]) < half[static_cast<std::size_t>(i)] + deck_r;
+            }
+            if (!inside) continue;
+            // A foot comes out of the top of the deck and nowhere else. He stands on his board: pushing it
+            // out by whichever face is nearest put the foot under the deck whenever it had got a little
+            // below the middle of it, and then it had to be dragged back through to get on top again.
+            if (joint == 10 || joint == 343) {
+                // Just under the height the game holds the feet at while riding, so a foot sits on the
+                // deck rather than in its top face, and snapping can still take it the rest of the way.
+                constexpr float on_top = studio::feet_above_board - 0.012f;
+                const float up = on_top - along[1];
+                if (up > 0) for (int i = 0; i < 3; ++i) target[i] += axes[1][i] * up;
+                continue;
+            }
+            // A hand can be under the board, holding it, so that one leaves by its shallowest face.
+            int face = 0;
+            float least = 1e9f;
+            for (int i = 0; i < 3; ++i) {
+                const float out = half[static_cast<std::size_t>(i)] + deck_r - std::abs(along[static_cast<std::size_t>(i)]);
+                if (out < least) least = out, face = i;
+            }
+            const float sign = along[static_cast<std::size_t>(face)] < 0 ? -1.0f : 1.0f;
+            for (int i = 0; i < 3; ++i) target[i] += axes[static_cast<std::size_t>(face)][i] * least * sign;
+        }
+    }
+    return target;
+}
+
+// The nearest points on two segments, and how far apart they are. Clamped, so segments that pass each
+// other give the pair at the ends rather than off the line.
+float near_segments(const studio::Vec3& a0, const studio::Vec3& a1, const studio::Vec3& b0, const studio::Vec3& b1,
+                    studio::Vec3& on_a, studio::Vec3& on_b) {
+    studio::Vec3 da{a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]}, db{b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2]};
+    const studio::Vec3 r{a0[0] - b0[0], a0[1] - b0[1], a0[2] - b0[2]};
+    const float aa = dot3(da, da), bb = dot3(db, db), rb = dot3(r, db), ra = dot3(r, da), ab = dot3(da, db);
+    float s_t = 0, t_t = 0;
+    const float denom = aa * bb - ab * ab;
+    if (aa > 1e-8f && bb > 1e-8f) {
+        s_t = denom > 1e-8f ? std::clamp((ab * rb - ra * bb) / denom, 0.0f, 1.0f) : 0.0f;
+        t_t = std::clamp((ab * s_t + rb) / bb, 0.0f, 1.0f);
+        s_t = std::clamp((ab * t_t - ra) / std::max(aa, 1e-8f), 0.0f, 1.0f);
+    }
+    for (int i = 0; i < 3; ++i) {
+        on_a[i] = a0[i] + da[i] * s_t;
+        on_b[i] = b0[i] + db[i] * t_t;
+    }
+    return std::hypot(std::hypot(on_a[0] - on_b[0], on_a[1] - on_b[1]), on_a[2] - on_b[2]);
+}
+// The force field proper: when the limb you are moving runs into another one, that other limb is shoved
+// out of the way rather than the two being left through one another. The limb's end - its hand or its
+// foot - is moved by the deepest overlap, and the IK bends the rest of it to follow, so an arm swings
+// aside the way an arm would. The worst one each frame, which settles over a drag without a fight.
+//
+// The torso and the head are not shoved: his body is where it is, and it is the limb that gives way.
+void shove_clear(const studio::View& v, std::uint16_t moving) {
+    auto& u = ui();
+    const int mine = limb_of(moving);
+    const float force = std::clamp(u.clear_force, 0.0f, 1.0f);
+    if (!u.shove_limbs || !u.anti_clip || !v.has_clip || !mine || force <= 0.01f) return;
+    // Each limb by the joint on its end, which is the one that is moved to shift it.
+    constexpr std::array<std::uint16_t, 4> ends{278, 49, 343, 10};
+    studio::Vec3 best_push{};
+    std::uint16_t best_end = 0;
+    float worst = 0;
+    const bool mine_is_leg = mine == 3 || mine == 4;
+    for (const auto end : ends) {
+        const int other = limb_of(end);
+        if (other == mine) continue;
+        // His legs live close together in any crouch, so one leg never shoves the other: that was the
+        // whole body being thrown about while a foot was being placed.
+        if (mine_is_leg && (other == 3 || other == 4)) continue;
+        if (const auto* t = track_view(v, end); t && t->locked) continue;
+        const auto* end_at = joint_view(v, end);
+        if (!end_at) continue;
+        for (const auto& theirs : body_shape) {
+            if (limb_of(theirs.from) != other || limb_of(theirs.to) != other) continue;
+            const auto* ta = joint_view(v, theirs.from);
+            const auto* tb = joint_view(v, theirs.to);
+            if (!ta || !tb) continue;
+            for (const auto& ours : body_shape) {
+                if (limb_of(ours.from) != mine || limb_of(ours.to) != mine) continue;
+                const auto* oa = joint_view(v, ours.from);
+                const auto* ob = joint_view(v, ours.to);
+                if (!oa || !ob) continue;
+                studio::Vec3 on_theirs{}, on_ours{};
+                const float away = near_segments(ta->position, tb->position, oa->position, ob->position, on_theirs, on_ours);
+                const float want = (theirs.radius + ours.radius) * force;
+                if (away >= want) continue;
+                // How much of it the end joint should answer for: a touch at the hand moves the hand, a
+                // touch up at the shoulder barely moves it at all. Moving the end by a push felt at the
+                // top of the limb is what sent it off to odd places.
+                const float to_end = std::hypot(std::hypot(on_theirs[0] - end_at->position[0], on_theirs[1] - end_at->position[1]),
+                                                on_theirs[2] - end_at->position[2]);
+                const float share = std::clamp(1.0f - to_end / 0.55f, 0.0f, 1.0f);
+                const float depth = (want - away) * share;
+                if (depth <= worst) continue;
+                worst = depth;
+                best_end = end;
+                if (away > 1e-4f)
+                    for (int i = 0; i < 3; ++i) best_push[i] = (on_theirs[i] - on_ours[i]) / away * depth;
+                else best_push = {0, depth, 0}; // dead centre: up, so there is a way out at all
+            }
+        }
+    }
+    if (!best_end || worst < 0.004f) return;
+    const auto* at = joint_view(v, best_end);
+    if (!at) return;
+    // Eased, not snapped: a shove a frame is enough to clear a drag and keeps the arm's motion its own.
+    studio::Vec3 target{};
+    for (int i = 0; i < 3; ++i) target[i] = at->position[i] + best_push[i] * 0.5f;
+    studio::drag_limb(best_end, target);
+}
+
+// ---- the gizmo -------------------------------------------------------------------------------------
+// Unreal's handles, drawn the game's way: three arrows out of the chosen joint to move it along one axis,
+// three rings round it to turn it about one. X is red, Y green, Z blue, and the handle under the mouse
+// goes white. Dragging the joint itself is still a free turn, as it always was.
+//
+// The arrows show on the joints that can be moved: the board, the hips, and the hands and feet (those are
+// moved with the limb bending to follow). The rings show on every joint.
+constexpr int ring_points = 48;
+struct Gizmo {
+    bool valid{};
+    ImVec2 centre{};
+    bool arrows{};
+    std::array<studio::Vec3, 3> axis{};                    // the axes a ring turns about, in the world
+    std::array<ImVec2, 3> tip{};                           // where each arrow ends on screen
+    std::array<float, 3> pixels_per_metre{};               // along each arrow
+    std::array<std::array<ImVec2, ring_points>, 3> ring{}; // each ring, on screen
+    std::array<bool, 3> ring_drawn{}, arrow_drawn{};
+};
+// The axis a handle works along, in the world. Moving goes along the frame the offsets are kept in: the
+// joint's parent, and for the board the ground it starts on. Turning goes about the joint's own axes -
+// except the board's, whose keys turn it about that same ground frame. Either can be the world's instead.
+studio::Vec3 handle_axis(const studio::View& v, const studio::JointView& sel, std::uint16_t joint, int a, bool move, bool local) {
+    studio::Vec3 unit{};
+    unit[static_cast<std::size_t>(a)] = 1;
+    if (!local) return unit;
+    // A hand or a foot is moved by its POSITION fields, which are measured in the clip's own space: its
+    // arrows point the way those numbers go, so pulling the X arrow moves X and nothing else.
+    if (move && limb_end(joint)) return v.field_axes_valid ? studio::rotate(v.field_axes, unit) : unit;
+    const bool parent_frame = move || joint == studio::board_joint;
+    return studio::rotate(parent_frame ? sel.parent_rotation : sel.rotation, unit);
+}
+Gizmo gizmo_of(const studio::View& v, const Projector& p, float k) {
+    Gizmo g;
+    auto& u = ui();
+    const auto* sel = joint_view(v, u.selected);
+    if (!sel || !p.valid || p.focal <= 0 || !v.has_clip) return g;
+    const auto at = p(sel->position);
+    if (!at) return g;
+    const studio::Vec3 d{sel->position[0] - p.origin[0], sel->position[1] - p.origin[1], sel->position[2] - p.origin[2]};
+    const float depth = -dot3(d, p.back);
+    if (depth < 0.05f) return g;
+    const auto* e = studio::editable(u.selected);
+    g.valid = true;
+    g.centre = *at;
+    g.arrows = (e && e->moves) || limb_end(u.selected);
+    // A metre of the world is this many pixels at the joint, so the handles keep their size on screen.
+    const float scale = p.focal / depth;
+    const float arrow = 54 * k / scale, radius = 78 * k / scale;
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        g.axis[index] = handle_axis(v, *sel, u.selected, a, false, u.local_axes);
+        if (g.arrows) {
+            const auto move_axis = handle_axis(v, *sel, u.selected, a, true, u.local_axes);
+            studio::Vec3 end{};
+            for (int i = 0; i < 3; ++i) end[i] = sel->position[i] + move_axis[i] * arrow;
+            if (const auto tip = p(end)) {
+                g.tip[index] = *tip;
+                const float on_screen = std::hypot(tip->x - at->x, tip->y - at->y);
+                g.pixels_per_metre[index] = on_screen / arrow;
+                // An arrow pointing almost at the camera is a dot: it cannot be dragged.
+                g.arrow_drawn[index] = on_screen > 18 * k;
+            }
+        }
+        // The ring: a circle round the joint across the axis, projected point by point, so it leans with
+        // the camera the way a real circle would.
+        const auto& n = g.axis[index];
+        studio::Vec3 side = std::abs(n[2]) < 0.9f ? studio::Vec3{-n[1], n[0], 0} : studio::Vec3{0, -n[2], n[1]};
+        const float len = std::sqrt(dot3(side, side));
+        if (len < 1e-4f) continue;
+        for (auto& c : side) c /= len;
+        const studio::Vec3 other{n[1] * side[2] - n[2] * side[1], n[2] * side[0] - n[0] * side[2], n[0] * side[1] - n[1] * side[0]};
+        bool whole = true;
+        for (int i = 0; i < ring_points; ++i) {
+            const float t = static_cast<float>(i) * 6.2831853f / ring_points;
+            studio::Vec3 point{};
+            for (int c = 0; c < 3; ++c) point[c] = sel->position[c] + (side[c] * std::cos(t) + other[c] * std::sin(t)) * radius;
+            if (const auto on = p(point)) g.ring[index][static_cast<std::size_t>(i)] = *on;
+            else whole = false;
+        }
+        g.ring_drawn[index] = whole;
+    }
+    return g;
+}
+// The handle under the mouse: the nearest arrow or ring within a few pixels, the arrows first.
+int gizmo_pick(const Gizmo& g, ImVec2 mouse, float k) {
+    if (!g.valid) return -1;
+    int best = -1;
+    float best_dist = 10 * k;
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.arrow_drawn[index]) continue;
+        const ImVec2 line{g.tip[index].x - g.centre.x, g.tip[index].y - g.centre.y};
+        const float length = line.x * line.x + line.y * line.y;
+        if (length < 1) continue;
+        const float t = std::clamp(((mouse.x - g.centre.x) * line.x + (mouse.y - g.centre.y) * line.y) / length, 0.0f, 1.0f);
+        if (t < 0.25f) continue; // close to the joint the free drag has it
+        const float dist = std::hypot(g.centre.x + line.x * t - mouse.x, g.centre.y + line.y * t - mouse.y);
+        if (dist < best_dist) best_dist = dist, best = a;
+    }
+    if (best >= 0) return best;
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.ring_drawn[index]) continue;
+        for (int i = 0; i < ring_points; ++i) {
+            const auto point = g.ring[index][static_cast<std::size_t>(i)];
+            const float dist = std::hypot(point.x - mouse.x, point.y - mouse.y);
+            if (dist < best_dist) best_dist = dist, best = 3 + a;
+        }
+    }
+    return best;
+}
+void draw_gizmo(ImDrawList* d, const Gizmo& g, int hot, float k) {
+    if (!g.valid) return;
+    constexpr std::array<ImU32, 3> colours{IM_COL32(236, 76, 72, 230), IM_COL32(118, 212, 96, 230), IM_COL32(74, 150, 255, 230)};
+    constexpr ImU32 lit = IM_COL32(255, 248, 190, 255);
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.ring_drawn[index]) continue;
+        const bool on = hot == 3 + a;
+        d->AddPolyline(g.ring[index].data(), ring_points, on ? lit : colours[index], ImDrawFlags_Closed, (on ? 3.4f : 2.0f) * k);
+    }
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.arrow_drawn[index]) continue;
+        const bool on = hot == a;
+        const auto colour = on ? lit : colours[index];
+        const auto tip = g.tip[index];
+        d->AddLine(g.centre, tip, colour, (on ? 3.4f : 2.2f) * k);
+        // The head: a little triangle pointing the way the arrow goes.
+        const float dx = tip.x - g.centre.x, dy = tip.y - g.centre.y;
+        const float len = std::hypot(dx, dy);
+        if (len < 1) continue;
+        const float ux = dx / len, uy = dy / len, size = (on ? 9.0f : 7.0f) * k;
+        d->AddTriangleFilled(tip, ImVec2(tip.x - ux * size * 2 - uy * size, tip.y - uy * size * 2 + ux * size),
+                             ImVec2(tip.x - ux * size * 2 + uy * size, tip.y - uy * size * 2 - ux * size), colour);
+    }
+}
+// One axis of the gizmo: `amount` is metres to move along it or radians to turn about it, measured off the
+// mouse by drag_gizmo.
+void apply_axis(const studio::View& v, int a, float amount, bool move) {
+    auto& u = ui();
+    const auto* e = studio::editable(u.selected);
+    const auto index = static_cast<std::size_t>(a);
+    studio::Vec3 unit{};
+    unit[index] = 1;
+    if (move && limb_end(u.selected)) {
+        // A hand or a foot is moved by its POSITION fields, so the arrow sets those numbers and the limb
+        // above it bends to reach: pull the X arrow a centimetre and the X field goes up by 0.01.
+        studio::Vec3 field = u.drag_field;
+        if (u.local_axes) field[index] += amount;
+        else {
+            // A world arrow: the step is brought into the axes the fields are measured in.
+            const auto step = v.field_axes_valid ? studio::rotate(studio::conjugate(v.field_axes), unit) : unit;
+            for (int i = 0; i < 3; ++i) field[i] += step[i] * amount;
+        }
+        // Snapping works where the board is, so the foot's place is taken out to the world, put on the
+        // deck, and brought back to the fields.
+        if (snapping_now(v) && (u.selected == 10 || u.selected == 343) && v.field_axes_valid) {
+            studio::Vec3 world{};
+            for (int i = 0; i < 3; ++i) world[i] = field[i] - u.drag_field[i];
+            world = studio::rotate(v.field_axes, world);
+            for (int i = 0; i < 3; ++i) world[i] += u.drag_point[i];
+            const auto landed = on_the_deck(v, u.selected, world);
+            studio::Vec3 back{};
+            for (int i = 0; i < 3; ++i) back[i] = landed[i] - u.drag_point[i];
+            back = studio::rotate(studio::conjugate(v.field_axes), back);
+            for (int i = 0; i < 3; ++i) field[i] = u.drag_field[i] + back[i];
+        }
+        // Out of the body and the deck, the same way snapping is done: taken to the world, pushed clear,
+        // and brought back to the fields.
+        if (u.anti_clip && v.field_axes_valid) {
+            studio::Vec3 world{};
+            for (int i = 0; i < 3; ++i) world[i] = field[i] - u.drag_field[i];
+            world = studio::rotate(v.field_axes, world);
+            for (int i = 0; i < 3; ++i) world[i] += u.drag_point[i];
+            const auto clear = keep_clear(v, u.selected, world);
+            studio::Vec3 back{};
+            for (int i = 0; i < 3; ++i) back[i] = clear[i] - u.drag_point[i];
+            back = studio::rotate(studio::conjugate(v.field_axes), back);
+            for (int i = 0; i < 3; ++i) field[i] = u.drag_field[i] + back[i];
+        }
+        studio::set_limb_position(u.selected, field);
+        return;
+    }
+    studio::Offset next = u.drag_offset;
+    if (move && e && e->moves) {
+        // A world arrow is brought into the frame the offsets are kept in; a local one is that frame.
+        const auto step = u.local_axes ? unit : studio::rotate(studio::conjugate(u.drag_parent), unit);
+        for (int i = 0; i < 3; ++i) next.offset[i] += step[i] * amount / std::max(u.drag_parent_scale, 0.01f);
+    } else {
+        const auto q = studio::axis_angle(unit, amount);
+        const auto turn = u.local_axes ? q : studio::multiply(studio::multiply(studio::conjugate(u.drag_world), q), u.drag_world);
+        next.rotation = studio::normalised(studio::multiply(u.drag_offset.rotation, turn));
+        // The board's keys turn it about the axes of the ground it starts on, so its turn goes on the left,
+        // in that frame: a local ring is already in it, a world one is brought into it.
+        if (u.selected == studio::board_joint) {
+            const auto ground = u.local_axes ? q : studio::multiply(studio::multiply(studio::conjugate(u.drag_parent), q), u.drag_parent);
+            next.rotation = studio::normalised(studio::multiply(ground, u.drag_offset.rotation));
+        }
+    }
+    studio::set_offset(u.selected, next);
+}
+// The mouse against the handle it holds: along an arrow, how far it has gone in metres; round a ring, the
+// angle it has swept in radians.
+void drag_gizmo(const studio::View& v, const Projector& p, const Gizmo& g, ImVec2 mouse) {
+    auto& u = ui();
+    const int handle = u.gizmo_handle;
+    if (handle < 0 || !g.valid) return;
+    if (handle < 3) {
+        const auto index = static_cast<std::size_t>(handle);
+        const float dx = g.tip[index].x - g.centre.x, dy = g.tip[index].y - g.centre.y;
+        const float len = std::hypot(dx, dy);
+        if (len < 1 || g.pixels_per_metre[index] < 1e-3f) return;
+        const float along = ((mouse.x - u.drag_start.x) * dx + (mouse.y - u.drag_start.y) * dy) / len;
+        apply_axis(v, handle, along / g.pixels_per_metre[index], true);
+        return;
+    }
+    const int a = handle - 3;
+    float swept = std::atan2(mouse.y - g.centre.y, mouse.x - g.centre.x) - u.ring_from;
+    while (swept > 3.14159265f) swept -= 6.2831853f;
+    while (swept < -3.14159265f) swept += 6.2831853f;
+    // Screen y runs down, so a sweep that reads positive turns the axis pointing into the screen; an axis
+    // pointing back at the camera turns the other way.
+    apply_axis(v, a, dot3(g.axis[static_cast<std::size_t>(a)], p.back) < 0 ? swept : -swept, false);
+}
+
 // Drags the selected limb: the mouse's ray meets the plane of the board (through the joint, facing the board's
 // up), so the foot slides over the board as the board moves. Without a board in the view, the camera's plane.
 void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
@@ -443,7 +924,7 @@ void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
     } else {
         for (int i = 0; i < 3; ++i) target[i] = p.origin[i] - p.back[i] * depth + p.right[i] * (sx * depth) + p.up[i] * (sy * depth);
     }
-    studio::drag_limb(ui().selected, target);
+    studio::drag_limb(ui().selected, keep_clear(v, ui().selected, on_the_deck(v, ui().selected, target)));
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
 void apply_turn(const Projector& p, float dx, float dy, bool move) {
@@ -527,12 +1008,105 @@ void save_now() {
 // ---- the menu: skate.'s own list menu (Trick List), with tabs ---------------------------------------
 enum class Tab { tricks, animations, joints, keys, playback };
 constexpr std::array<const char*, 5> tab_names{"TRICKS", "SAVED", "JOINTS", "KEYS", "PLAYBACK"};
+// Back, one step, in the TRICKS tab: out of a trick's pops, or up the native asset tree. True when it
+// went back, so Esc and B only fall through to anything else when there was nowhere to go.
+bool go_back_in_tricks() {
+    auto& u = ui();
+    if (static_cast<Tab>(u.tab) != Tab::tricks) return false;
+    if (!u.open_trick.empty()) {
+        u.open_trick.clear();
+        u.row = u.trick_row;
+        u.message.clear();
+        return true;
+    }
+    if (u.browse_assets) {
+        if (u.asset_category.empty()) u.browse_assets = false;
+        else {
+            const auto slash = u.asset_category.rfind('/');
+            u.asset_category = slash == std::string::npos ? "" : u.asset_category.substr(0, slash);
+        }
+        u.asset_page = 0;
+        u.row = 0;
+        u.message.clear();
+        return true;
+    }
+    return false;
+}
 struct Row {
     std::string label, value, about;
     std::function<void()> act;
     bool enabled{true}, on{};
     std::string library; // a saved animation's name (Delete takes it out)
 };
+// ---- the shots ------------------------------------------------------------------------------------
+// Set camera angles to work in, the ones a skate part is actually shot from. Each is the orbit the studio
+// already drives - turned and tilted about the skater, at a distance - and what it holds in the middle, so
+// a shot follows him and stays on while you pose and while it plays. Moving the camera yourself puts it
+// back to FREE without losing where you were.
+struct Shot {
+    const char* name;
+    float yaw, pitch, distance;
+    std::uint16_t on; // the joint it holds in the middle, all_joints for the whole skater
+};
+constexpr std::array<Shot, 6> shots{{
+    {"FREE", 0, 0, 0, studio::all_joints}, // stays where it is left; the rest travel with him
+    {"CLOSE", 0.60f, 0.14f, 1.60f, studio::hips_joint},
+    {"BOARD", 0.90f, 0.13f, 1.25f, studio::board_joint},
+    {"CINEMATIC", 1.15f, -0.04f, 4.00f, studio::all_joints},
+    {"FILMER", 2.50f, 0.10f, 1.15f, studio::board_joint},
+    {"SKATER", 3.00f, 0.22f, 0.95f, 103},
+}};
+void take_shot(const studio::View& v, int which) {
+    auto& u = ui();
+    u.camera_shot = std::clamp(which, 0, static_cast<int>(shots.size()) - 1);
+    const auto& shot = shots[static_cast<std::size_t>(u.camera_shot)];
+    // A set shot travels with him; the free camera stays where it is put and he goes past it.
+    studio::set_camera_follow(u.camera_shot != 0);
+    if (!u.camera_shot) {
+        studio::set_focus(studio::all_joints);
+        say("Free camera: it stays where you leave it.");
+        return;
+    }
+    studio::Orbit orbit = v.orbit;
+    orbit.yaw = shot.yaw;
+    orbit.pitch = shot.pitch;
+    orbit.distance = shot.distance;
+    orbit.pan = {};
+    studio::set_orbit(orbit);
+    studio::set_focus(shot.on);
+    say(std::string(shot.name) + " camera.");
+}
+void next_shot(const studio::View& v, int by) {
+    const int count = static_cast<int>(shots.size());
+    take_shot(v, (ui().camera_shot + by % count + count) % count);
+}
+// The strip that shows it, at the top of the view: the name between two arrows, clicked or scrolled with V.
+void shot_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 area_min, ImVec2 area_max) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto& shot = shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, static_cast<int>(shots.size()) - 1))];
+    const float w = 190 * k, h = 30 * k;
+    const ImVec2 a(area_max.x - w - 22 * k, area_min.y + 18 * k), b(a.x + w, a.y + h);
+    skate_theme::rough_rect(d, a, b, IM_COL32(12, 12, 14, 190), 41, k * 0.7f);
+    const float fs = 13 * k;
+    const auto t = text_size(f.bold, fs, shot.name);
+    text(d, f.bold, fs, ImVec2((a.x + b.x) * 0.5f - t.x * 0.5f, (a.y + b.y) * 0.5f - t.y * 0.5f),
+         u.camera_shot ? blue_light : IM_COL32(255, 255, 255, 150), shot.name);
+    const auto arrow = [&](const char* glyph, float x, int by) {
+        ImGui::SetCursorScreenPos(ImVec2(x, a.y));
+        ImGui::PushID(by);
+        const bool hit = ImGui::InvisibleButton("##shot", ImVec2(28 * k, h));
+        const bool over = ImGui::IsItemHovered();
+        ImGui::PopID();
+        const auto g = text_size(f.bold, fs, glyph);
+        text(d, f.bold, fs, ImVec2(x + 14 * k - g.x * 0.5f, (a.y + b.y) * 0.5f - g.y * 0.5f), over ? white : IM_COL32(255, 255, 255, 120), glyph);
+        if (hit) next_shot(v, by);
+    };
+    arrow("<", a.x + 4 * k, -1);
+    arrow(">", b.x - 32 * k, 1);
+    text(d, f.bold, 10 * k, ImVec2(a.x, b.y + 4 * k), IM_COL32(255, 255, 255, 70), "V  CAMERA");
+}
+
 std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     auto& u = ui();
     std::vector<Row> rows;
@@ -611,7 +1185,13 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 return a->label == b->label ? a->asset < b->asset : a->label < b->label;
             });
             if (!u.asset_filter.empty()) rows.push_back({std::to_string(leaves.size()) + " results", "", "Search includes readable names, aliases, original names and types across every folder. All search words must match.", {}, false});
-            if (leaves.empty() && children.empty()) rows.push_back({"No animations found", "", "Try fewer words, another trick name, or Show: All assets.", {}, false});
+            if (assets->empty())
+                rows.push_back({"No animation index on this install", "",
+                                "The native animation tree is built from a dump of the game's own asset names (contrib/animator-studio). "
+                                "Without it there is nothing here to browse or search; the tricks you can edit are in the list behind this one.",
+                                {}, false});
+            else if (leaves.empty() && children.empty())
+                rows.push_back({"No animations found", "", "Try fewer words, another trick name, or Show: All assets.", {}, false});
             for (const auto& [child, counts] : children) {
                 rows.push_back({child, std::to_string(counts.second) + " editable / " + std::to_string(counts.first) + " >", "Browse this branch of the native animation inventory.", [path = prefix + child] {
                     ui().asset_category = path; ui().asset_page = 0; ui().row = 0;
@@ -687,6 +1267,42 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 row.on = v.trick == t.trick && v.pop == t.pop;
                 rows.push_back(std::move(row));
             }
+            break;
+        }
+        // Searching: the tricks whose name, category or pop matches every word typed, and nothing else, so
+        // the one you are after is one line away rather than down a folder.
+        const auto trick_terms = studio::native_search_terms(u.asset_filter);
+        if (!trick_terms.empty()) {
+            rows.push_back({"< Clear search", "", "Back to the whole list of tricks.", [] {
+                                auto& state = ui();
+                                state.asset_filter.clear();
+                                state.asset_query.fill(0);
+                                state.row = 0;
+                            }});
+            std::size_t found = 0;
+            std::string seen;
+            for (const auto& t : list) {
+                if (t.trick == seen) continue;
+                if (!studio::native_search_matches(studio::native_search_key(t.label + " " + t.trick + " " + t.category), trick_terms)) continue;
+                seen = t.trick;
+                ++found;
+                const int index = static_cast<int>(rows.size());
+                Row row{t.label, upper(t.category), "Choose the pop next: low, mid or high.", [name = t.trick, index] {
+                            auto& state = ui();
+                            state.open_trick = name;
+                            state.trick_row = index;
+                            state.row = 2;
+                        }};
+                row.on = v.trick == t.trick;
+                rows.push_back(std::move(row));
+            }
+            rows.insert(rows.begin() + 1, {found ? std::to_string(found) + (found == 1 ? " TRICK" : " TRICKS") : "NO TRICK OF THAT NAME", "", "", {}, false});
+            if (!found)
+                rows.push_back({"Search every animation", assets->empty() ? "no index" : std::to_string(assets->size()) + " assets",
+                                assets->empty() ? "The native animation index has not been built on this install, so there is nothing beyond the tricks above to search. "
+                                                  "It is made by contrib/animator-studio, from a dump of the game's own asset names."
+                                                : "Look through the game's whole animation tree for these words, not only the tricks you can edit.",
+                                [] { ui().browse_assets = true; ui().row = 0; }, !assets->empty()});
             break;
         }
         // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
@@ -793,8 +1409,33 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }, v.has_clip});
         rows.push_back({"Turn about", u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "any axis",
                         "Which axis a drag or the left stick turns the joint about.", [] { ui().axis = ui().axis >= 2 ? -1 : ui().axis + 1; }});
-        rows.push_back({"Axes", u.local_axes ? "the joint's own" : "the world's", "X, Y and Z of the joint itself or of the world.",
+        rows.push_back({"Gizmo alignment", u.local_axes ? "Object" : "World",
+                        "Which way the gizmo's arrows and rings lie: along the joint's own X, Y and Z (Object), or the world's "
+                        "(World). The board's own is the ground it starts on, because that is the frame its keys are in. Key: L.",
                         [] { ui().local_axes = !ui().local_axes; }});
+        rows.push_back({"Solo", v.solo ? "on" : "off",
+                        "On: a turn moves that joint alone. The joints hanging off it are turned back by as much, so the limb below "
+                        "keeps the way it faces instead of swinging with its parent. Bones are rigid, so it still travels with the "
+                        "joint. Key: S.",
+                        [v] { studio::set_solo(!v.solo); }});
+        rows.push_back({"Keep clear", u.anti_clip ? "on" : "off",
+                        "On: what you move is kept out of the body and off the deck, and a limb it runs into is shoved aside - its "
+                        "hand or foot is moved by the overlap and the rest of it bends to follow. How wide his body is taken to be is "
+                        "the slider under the joint in JOINTS. Key: C.",
+                        [] { ui().anti_clip = !ui().anti_clip; }});
+        rows.push_back({"Push limbs aside", u.shove_limbs ? "on" : "off",
+                        "On: a limb that the one you are moving runs into gives way too - its hand or foot moves by the overlap and "
+                        "the rest bends to follow. Off, only what you move is kept clear, which is steadier. His two legs never push "
+                        "each other, since they belong close together.",
+                        [] { ui().shove_limbs = !ui().shove_limbs; }});
+        rows.push_back({"Snapping", u.snap ? "on" : "off",
+                        "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
+                        "instead of through it or over it. Key: N.",
+                        [] { ui().snap = !ui().snap; }});
+        rows.push_back({"Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name,
+                        "A set camera angle to work in: close, on the board, cinematic, the filmer's follow, or over the skater. "
+                        "It follows him while you pose and while it plays. Moving the camera yourself goes back to free. Key: V.",
+                        [v] { next_shot(v, 1); }});
         rows.push_back({"Follow joint", "", "The camera keeps the joint in the middle (again: the whole skater).", [] { studio::focus_joint(ui().selected); }});
         rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame.", [] { studio::copy_pose(); }});
         rows.push_back({"Paste pose", "", "Keys the remembered pose on this frame.", [] {
@@ -976,19 +1617,26 @@ void controller(const studio::View& v, const Projector& p) {
     }
     // The close warning takes the buttons: A save and close, X close without saving, B back.
     if (v.confirm_close) return; // the close warning's card takes the buttons
-    if (pressed & pad_lb) switch_tab(-1);
-    if (pressed & pad_rb) switch_tab(1);
+    // LB and RB change tab on a tap. Held with a stick they carry a bracket instead (below), so the tab
+    // only changes when the shoulder is let go without having carried anything.
+    if (pressed & (pad_lb | pad_rb)) u.shoulder_shifted = false;
+    if ((released & pad_lb) && !u.shoulder_shifted) switch_tab(-1);
+    if ((released & pad_rb) && !u.shoulder_shifted) switch_tab(1);
     if (pressed & pad_a) activate_row(v);
     if (pressed & pad_x) {
         if (static_cast<Tab>(u.tab) == Tab::animations) delete_row(v);
         else delete_key(v);
     }
     if (pressed & pad_y) studio::set_playing(!v.playing);
-    if (pressed & pad_b) studio::undo();
+    if (pressed & pad_b) {
+        if (!go_back_in_tricks()) studio::undo();
+    }
     if (pressed & pad_view) {
         // The timeline: the whole trick, or zoomed in on the playhead.
-        if (u.timeline_zoom > 1.01f) u.timeline_zoom = 1;
-        else zoom_timeline(3);
+        // View: the whole trick, the custom animation's window, then in on the playhead.
+        if (u.timeline_view == Ui::View::fit) u.timeline_view = Ui::View::region;
+        else if (u.timeline_view == Ui::View::region) zoom_timeline(3);
+        else u.timeline_view = Ui::View::fit;
     }
     if (pressed & pad_menu) save_now();
     // L3: turn about any axis, X, Y, Z, then move (the hips and the board).
@@ -1017,6 +1665,30 @@ void controller(const studio::View& v, const Projector& p) {
     if (repeats(pad_left, buttons, pressed, now)) step_frame(v, -1);
     if (repeats(pad_right, buttons, pressed, now)) step_frame(v, 1);
 
+    // A shoulder and the stick under it carry a bracket in or out: LB and the left stick the start, RB and
+    // the right stick the end (L1 and R1 on a PlayStation pad). Held, so it cannot be done by accident, and
+    // the tab does not change when it has been used.
+    const bool carrying_start = (buttons & pad_lb) && v.has_clip, carrying_end = (buttons & pad_rb) && v.has_clip;
+    if (carrying_start || carrying_end) {
+        const float raw = carrying_start ? stick_response(pad.left_x) : stick_response(pad.right_x);
+        const int which = carrying_start ? 1 : 2;
+        const float now_at = which == 1 ? v.bracket_start : (v.bracket_end < 0 ? v.duration : v.bracket_end);
+        if (!u.shoulder_shifted) u.bracket_at[which - 1] = now_at;
+        if (raw != 0) {
+            if (!u.shoulder_shifted) {
+                studio::begin_change();
+                u.shoulder_shifted = true;
+                u.bracket_at[which - 1] = now_at;
+            }
+            // A second of the trick a second of holding it over, so a short clip is still fine to aim.
+            u.bracket_at[which - 1] = std::clamp(u.bracket_at[which - 1] + raw * dt, 0.0f, v.duration);
+            studio::move_bracket(which, std::round(u.bracket_at[which - 1] * fps) / fps);
+        }
+        // The sticks are the brackets' while a shoulder is down: nothing is turned or orbited.
+        u.filtered[0] = u.filtered[1] = u.filtered[2] = u.filtered[3] = 0;
+        u.stick_turning = false;
+        return;
+    }
     // Left stick turns the chosen joint (LT held: moves the hips); a turn is one undo step.
     const float lx = smooth_stick(u.filtered[0], stick_response(pad.left_x), dt), ly = smooth_stick(u.filtered[1], stick_response(pad.left_y), dt);
     if (lx != 0 || ly != 0) {
@@ -1047,6 +1719,42 @@ void controller(const studio::View& v, const Projector& p) {
         }
         studio::set_orbit(orbit);
     }
+}
+
+// Keep clear, at the head of the list of joints: a row of the same cut as the list's own, filled to
+// how wide his body is taken to be. Drag it anywhere, or press C. Dragged to nothing it reads OFF,
+// which is the same thing as turning it off, so there is one control and not two.
+void keep_clear_row(ImDrawList* d, const Fonts& f, ImVec2 at, float width) {
+    auto& u = ui();
+    const float k = f.k, h = 50 * k;
+    const ImVec2 a = at, b(at.x + width, at.y + h);
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("##keepclearrow", ImVec2(width, h));
+    const bool over = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+    const float inset = 18 * k;
+    if (held) {
+        const float along = (ImGui::GetIO().MousePos.x - (a.x + inset)) / std::max(1.0f, width - 2 * inset);
+        u.clear_force = std::clamp(along, 0.0f, 1.0f);
+        u.anti_clip = u.clear_force > 0.005f;
+    }
+    const bool on = u.anti_clip && u.clear_force > 0.005f;
+    const float force = on ? u.clear_force : 0.0f;
+    // The row, then the part of it that is filled, cut off square against the rough edge behind it.
+    skate_theme::rough_rect(d, a, b, over || held ? IM_COL32(52, 54, 60, 245) : IM_COL32(34, 35, 38, 240), seed_of(a), k * 1.2f);
+    if (force > 0.005f) {
+        d->PushClipRect(a, ImVec2(a.x + inset + (width - 2 * inset) * force, b.y), true);
+        skate_theme::rough_rect(d, a, b, IM_COL32(1, 131, 255, 190), seed_of(a), k * 1.2f);
+        d->PopClipRect();
+    }
+    theme::halftone(d, ImVec2(b.x - 70 * k, a.y + 8 * k), 9, 5, IM_COL32(255, 255, 255, on ? 40 : 18));
+    // The mark where it stands, and what it says.
+    const float x = a.x + inset + (width - 2 * inset) * force;
+    if (on) d->AddRectFilled(ImVec2(x - 1.5f * k, a.y + 9 * k), ImVec2(x + 1.5f * k, b.y - 9 * k), IM_COL32(235, 243, 255, 220));
+    const float fs = 15 * k;
+    text(d, f.bold, fs, ImVec2(a.x + inset, a.y + (h - fs) * 0.5f - 2 * k), on ? white : IM_COL32(255, 255, 255, 120), "KEEP CLEAR");
+    const std::string value = on ? std::format("{:.0f}%", force * 100) : "OFF";
+    const auto vw = text_size(f.bold, fs, value.c_str());
+    text(d, f.bold, fs, ImVec2(b.x - inset - vw.x, a.y + (h - fs) * 0.5f - 2 * k), on ? white : IM_COL32(255, 255, 255, 120), value);
 }
 
 // ---- the parts of the screen --------------------------------------------------------------------
@@ -1201,9 +1909,10 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         y += 40 * k;
         const auto offset = studio::offset_of(u.selected);
         auto euler = studio::to_euler(offset.rotation);
-        // A hand or a foot: its position fields are where it is from its rest (the limb above it bends to reach).
-        const bool limb_end = u.selected == 10 || u.selected == 343 || u.selected == 49 || u.selected == 278;
-        auto position = limb_end ? studio::limb_position(u.selected) : offset.offset;
+        // A hand, foot, knee or elbow: its position fields are where it is from its rest, and the limb above
+        // it bends to reach (studio::limb_chain). The others take a move of their own, or none at all.
+        const bool placed = studio::limb_chain(u.selected) != 0;
+        auto position = placed ? studio::limb_position(u.selected) : offset.offset;
         // The board: where it is and how it is turned, from where it starts on the ground (its keys added to the trick's own).
         const bool board_fields = u.selected == studio::board_joint && v.board_base_valid;
         if (board_fields) {
@@ -1232,7 +1941,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             turned |= ImGui::DragFloat("##r", &euler[static_cast<std::size_t>(i)], 0.4f, 0, 0, "%.1f");
             ImGui::PopID();
         }
-        if (e && e->moves) {
+        if ((e && e->moves) || placed) {
             text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 52 * k), ink_soft, board_fields ? "POSITION (0, 0, 0 = WHERE IT STARTS, ON THE GROUND)" : "POSITION");
             for (int i = 0; i < 3; ++i) {
                 ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k + i * col_w, y + 70 * k));
@@ -1256,15 +1965,18 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 for (std::size_t i = 0; i < 3; ++i) next.offset[i] = position[i] - v.board_base.position[i];
                 next.rotation = studio::normalised(studio::multiply(studio::from_euler(euler), studio::conjugate(v.board_base.rotation)));
                 studio::set_offset(u.selected, next);
-            } else if (limb_end) {
+            } else if (placed) {
                 if (moved) studio::set_limb_position(u.selected, position);
                 if (turned) studio::set_offset(u.selected, {studio::from_euler(euler), {0, 0, 0}});
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
         }
         if (tab == Tab::keys) {
+            // Wrapped inside the card, from low enough that three lines still sit on it: it used to run
+            // off the right edge in one line and across the skater.
             const auto rows = rows_of(tab, v);
             if (u.row >= 0 && u.row < static_cast<int>(rows.size()))
-                text(d, f.bold, 14 * k, ImVec2(at.x + 22 * k, at.y + size.y - 30 * k), ink_soft, rows[static_cast<std::size_t>(u.row)].about);
+                d->AddText(f.bold, 13 * k, ImVec2(at.x + 22 * k, at.y + size.y - 62 * k), ink_soft,
+                           rows[static_cast<std::size_t>(u.row)].about.c_str(), nullptr, size.x - 44 * k);
         }
         return;
     }
@@ -1315,6 +2027,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
 // LT + up / down on a controller) zoom in on the playhead.
 void zoom_timeline(float factor) {
     auto& u = ui();
+    u.timeline_view = Ui::View::free; // zooming by hand is leaving FIT or REGION
     u.timeline_zoom = std::clamp(u.timeline_zoom * factor, 1.0f, 16.0f);
     u.zoom_to_playhead = true;
 }
@@ -1346,10 +2059,17 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     // Zoom: - FIT + at the header's right; the time under them.
     {
         float zx = at.x + size.x - 16 * k - 3 * 34 * k;
-        if (button(d, f, "##brackets", ImVec2(zx - 96 * k, at.y + 6 * k), ImVec2(86 * k, 24 * k), "BRACKETS", false, v.has_clip)) u.bracket_view = true;
+        // REGION holds the timeline on the custom animation's window and follows the brackets; FIT shows
+        // the whole trick. - and + zoom by hand, which leaves both.
+        if (button(d, f, "##region", ImVec2(zx - 96 * k, at.y + 6 * k), ImVec2(86 * k, 24 * k), "REGION",
+                   u.timeline_view == Ui::View::region, v.has_clip))
+            u.timeline_view = u.timeline_view == Ui::View::region ? Ui::View::fit : Ui::View::region;
         if (button(d, f, "##zoomout", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "-", false, u.timeline_zoom > 1)) zoom_timeline(1 / 1.5f);
         zx += 34 * k;
-        if (button(d, f, "##fit", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "FIT", u.timeline_zoom <= 1.001f)) u.timeline_zoom = 1;
+        if (button(d, f, "##fit", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "FIT", u.timeline_view == Ui::View::fit)) {
+            u.timeline_view = Ui::View::fit;
+            u.timeline_zoom = 1;
+        }
         zx += 34 * k;
         if (button(d, f, "##zoomin", ImVec2(zx, at.y + 6 * k), ImVec2(30 * k, 24 * k), "+", false, u.timeline_zoom < 16)) zoom_timeline(1.5f);
         const std::string time = v.has_clip ? std::format("{:.2f} / {:.2f} s   frame {}", v.time, v.duration, static_cast<int>(std::round(v.time * fps))) : "";
@@ -1358,16 +2078,20 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     }
     const float ruler_left = lane.x, ruler_right = at.x + size.x - 130 * k;
     const float ruler_w = ruler_right - ruler_left;
-    if (u.bracket_view && v.has_clip) {
-        // Zoomed to the window between the brackets, its start at the left.
-        u.bracket_view = false;
-        const float s0 = v.bracket_start, e0 = v.bracket_end < 0 ? duration : v.bracket_end;
-        u.timeline_zoom = std::clamp(duration / std::max(e0 - s0, 1.0f / fps), 1.0f, 16.0f);
-        u.timeline_scroll = s0 * (ruler_w - 2 * pad) / duration * u.timeline_zoom;
+    const float region_start = v.bracket_start, region_end = v.bracket_end < 0 ? duration : v.bracket_end;
+    // Held still while a bracket is being carried: the window is worked out from the brackets, so letting it
+    // rescale under a drag would have the bracket running away from the mouse. It settles on letting go.
+    const bool carrying = u.bracket_drag != 0 || u.shoulder_shifted;
+    const bool in_region = u.timeline_view == Ui::View::region && v.has_clip && !carrying;
+    if (in_region) {
+        // Held on the window between the brackets, its start at the left: worked out again every frame, so
+        // moving a bracket keeps the window filling the timeline.
+        u.timeline_zoom = std::clamp(duration / std::max(region_end - region_start, 1.0f / fps), 1.0f, 16.0f);
         u.zoom_to_playhead = false;
-    }
+    } else if (u.timeline_view == Ui::View::fit) u.timeline_zoom = 1;
     const float seconds_w = (ruler_w - 2 * pad) / duration * u.timeline_zoom;
-    if (u.zoom_to_playhead || u.timeline_zoom <= 1.001f) {
+    if (in_region) u.timeline_scroll = region_start * seconds_w;
+    else if (u.zoom_to_playhead || u.timeline_zoom <= 1.001f) {
         u.timeline_scroll = v.time * seconds_w - (ruler_w - 2 * pad) * 0.5f;
         u.zoom_to_playhead = false;
     } else if (const float x = pad + v.time * seconds_w - u.timeline_scroll; v.playing && (x < pad || x > ruler_w - pad))
@@ -1552,24 +2276,59 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             u.key_joint.reset();
         }
     }
-    // The brackets: the window the animation works in, drawn over the rows. Dragging the start moves every key
-    // with it; the end only sets the window's end. Blue, with the window shaded.
+    // The brackets: the window the animation works in, drawn over the rows, with the window shaded. Either
+    // one retimes the animation into the new window. Each is labelled and has a grab area wide enough to
+    // catch: a 3 px line was a hard thing to hit.
     if (v.has_clip) {
         const float bs = v.bracket_start, be = v.bracket_end < 0 ? v.duration : v.bracket_end;
         const float xs = x_of(bs), xe = x_of(be);
-        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 22));
-        for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
-            const float tick = 7 * k, dir = open_right ? 1.0f : -1.0f;
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-        }
+        const float grab = 22 * k; // how near the mouse counts as on a bracket
         auto& io = ImGui::GetIO();
-        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h && io.MousePos.x >= ruler_left && io.MousePos.x <= ruler_right;
-        if (in_ruler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (std::abs(io.MousePos.x - xs) < 9 * k) u.bracket_drag = 1;
-            else if (std::abs(io.MousePos.x - xe) < 9 * k) u.bracket_drag = 2;
+        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h + 10 * k &&
+                              io.MousePos.x >= ruler_left - grab && io.MousePos.x <= ruler_right + grab;
+        // The nearer bracket when both are in reach, so they stay separable when the window is short.
+        int near_bracket = 0;
+        if (in_ruler) {
+            const float ds = std::abs(io.MousePos.x - xs), de = std::abs(io.MousePos.x - xe);
+            if (std::min(ds, de) < grab) near_bracket = ds <= de ? 1 : 2;
         }
+        // The window the custom animation works in, barely there: a wash between the brackets over the rows
+        // and a thin band along the top, both in time, so they stretch and slide with the zoom and the
+        // scroll. Outside it the game's own animation plays, and that is left plain.
+        d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 14));
+        d->AddRectFilled(ImVec2(xs, at.y + header_h - 3 * k), ImVec2(xe, at.y + header_h), IM_COL32(1, 131, 255, 70));
+        // Its edges, where it hands over, a touch stronger than the middle.
+        const float feather = std::min(26 * k, std::max(0.0f, (xe - xs) * 0.25f));
+        if (feather > 1) {
+            const ImU32 edge = IM_COL32(1, 131, 255, 30), none = IM_COL32(1, 131, 255, 0);
+            d->AddRectFilledMultiColor(ImVec2(xs, at.y + header_h), ImVec2(xs + feather, at.y + size.y), edge, none, none, edge);
+            d->AddRectFilledMultiColor(ImVec2(xe - feather, at.y + header_h), ImVec2(xe, at.y + size.y), none, edge, edge, none);
+        }
+        int which = 1;
+        for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
+            const float dir = open_right ? 1.0f : -1.0f;
+            const bool hot = u.bracket_drag == which || (!u.bracket_drag && near_bracket == which);
+            const ImU32 colour = hot ? IM_COL32(150, 205, 255, 255) : IM_COL32(1, 131, 255, 255);
+            const float weight = hot ? 4.5f : 3.0f;
+            // The grab area, shown while the mouse is on it so it is plain how big it is.
+            if (hot) d->AddRectFilled(ImVec2(x - grab * 0.5f, at.y), ImVec2(x + grab * 0.5f, at.y + size.y), IM_COL32(1, 131, 255, 26));
+            // The flag: the name on the marker itself, a little pennant off the top of its pole, pointing
+            // into the window. The pole runs the height of the timeline.
+            const char* name = open_right ? "START ANIM." : "END ANIM.";
+            const float fs = 10 * k;
+            const auto tw = text_size(f.bold, fs, name);
+            const float flag_h = tw.y + 7 * k, flag_w = tw.x + 12 * k, top = at.y + 3 * k;
+            const float tail = 5 * k; // the notch cut out of the flag's far end
+            const ImVec2 a(x, top), b(x + dir * flag_w, top), c(x + dir * (flag_w - tail), top + flag_h * 0.5f);
+            const ImVec2 e(x + dir * flag_w, top + flag_h), g(x, top + flag_h);
+            const ImVec2 points[5]{a, b, c, e, g};
+            d->AddConvexPolyFilled(points, 5, colour);
+            text(d, f.bold, fs, ImVec2(open_right ? x + 6 * k : x - flag_w + 6 * k, top + (flag_h - tw.y) * 0.5f), IM_COL32(8, 14, 24, 255), name);
+            d->AddLine(ImVec2(x, top), ImVec2(x, at.y + size.y - 4 * k), colour, weight * k);
+            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * 7 * k, at.y + size.y - 4 * k), colour, weight * k);
+            ++which;
+        }
+        if (near_bracket && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.bracket_drag = near_bracket;
         if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
         if (u.bracket_drag) studio::move_bracket(u.bracket_drag, std::round(t_of(io.MousePos.x) * fps) / fps);
     }
@@ -1597,11 +2356,34 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
 void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projector& project, ImVec2 area_min, ImVec2 area_max) {
     auto& u = ui();
     const float k = f.k;
+    // A clip has arrived - a trick opened, an animation loaded, a take recorded - so nothing is carried
+    // over from the last one: the chosen joint, the picked keys, a drag in progress, the message that was
+    // standing, and the timeline back to the whole trick.
+    if (u.clip_seen != v.clip_serial) {
+        u.clip_seen = v.clip_serial;
+        u.selected = studio::hips_joint;
+        u.picked.clear();
+        u.key_joint.reset();
+        u.gizmo_handle = -1;
+        u.dragging_gizmo = u.dragging_playhead = u.bracket_drag = false;
+        u.axis = -1;
+        u.timeline_view = Ui::View::fit;
+        u.timeline_zoom = 1;
+        u.timeline_scroll = u.rows_scroll = 0;
+        u.rows_followed = 0xffff;
+        u.message.clear();
+        // The camera keeps whichever shot you chose, but is told again whether to travel with him, since
+        // the studio starts out carrying him along and nothing has said otherwise yet.
+        studio::set_camera_follow(u.camera_shot != 0);
+    }
     const auto mouse = ImGui::GetIO().MousePos;
     const bool inside = !u.menu_open && mouse.x >= area_min.x && mouse.y >= area_min.y && mouse.x <= area_max.x && mouse.y <= area_max.y;
+    // Out of the way while it plays or is scrubbed, so the motion can be watched, and on J whenever you
+    // want the skater plain.
+    const bool joints_hidden = u.hide_joints || v.playing || u.scrubbing || u.dragging_playhead || u.bracket_drag != 0;
     std::optional<std::uint16_t> hovered;
     float best = 22 * k;
-    if (!u.pad_mode)
+    if (!u.pad_mode && !joints_hidden)
         for (const auto& j : v.joints)
             if (const auto at = project(j.position)) {
                 const float dist = std::hypot(at->x - mouse.x, at->y - mouse.y);
@@ -1610,54 +2392,100 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
                     hovered = j.joint;
                 }
             }
-    for (const auto& j : v.joints) {
-        const auto at = project(j.position);
-        if (!at || j.joint == u.selected) continue;
-        const bool hot = hovered && *hovered == j.joint;
-        d->AddCircleFilled(*at, (hot ? 6.0f : 3.5f) * k, hot ? blue_light : IM_COL32(255, 255, 255, 90));
-    }
+    if (!joints_hidden)
+        for (const auto& j : v.joints) {
+            const auto at = project(j.position);
+            if (!at || j.joint == u.selected) continue;
+            const bool hot = hovered && *hovered == j.joint;
+            d->AddCircleFilled(*at, (hot ? 6.0f : 3.5f) * k, hot ? blue_light : IM_COL32(255, 255, 255, 90));
+        }
     const auto* sel = joint_view(v, u.selected);
     std::optional<ImVec2> sel_at = sel ? project(sel->position) : std::nullopt;
-    if (sel_at) {
+    // The gizmo on the chosen joint. While a handle is held it is drawn from the frame the drag began on,
+    // so the handle stays under the mouse as the joint moves.
+    const auto* locked_track = track_view(v, u.selected);
+    const bool can_edit = v.has_clip && !(locked_track && locked_track->locked) && !joints_hidden;
+    static Gizmo held;
+    const auto gizmo = u.gizmo_handle >= 0 ? held : gizmo_of(v, project, k);
+    if (u.gizmo_handle < 0) held = gizmo;
+    u.gizmo_hot = u.gizmo_handle >= 0 ? u.gizmo_handle
+                  : (!u.pad_mode && inside && can_edit) ? gizmo_pick(gizmo, mouse, k) : -1;
+    if (sel_at && !joints_hidden) {
         glow_box(d, *sel_at, 22 * k, k);
         if (u.pad_mode) text(d, f.bold, 13 * k, ImVec2(sel_at->x + 30 * k, sel_at->y - 8 * k), blue_light, upper(label_of(u.selected)));
+    }
+    if (can_edit && !u.pad_mode) {
+        draw_gizmo(d, gizmo, u.gizmo_hot, k);
+        // Which way the handles lie, beside them: the one thing you cannot read off the gizmo itself.
+        if (gizmo.valid)
+            text(d, f.bold, 12 * k, ImVec2(gizmo.centre.x + 14 * k, gizmo.centre.y + 10 * k), IM_COL32(255, 255, 255, 120),
+                 u.local_axes ? "OBJECT" : "WORLD");
     }
     if (hovered && *hovered != u.selected)
         if (const auto at = project(joint_view(v, *hovered)->position))
             text(d, f.bold, 13 * k, ImVec2(at->x + 10 * k, at->y - 22 * k), white, upper(label_of(*hovered)));
-    if (sel) {
+    // The joint's numbers over the view. The card in the menu shows the same ones, and the two sat on
+    // top of each other, so this is for when the menu is away (Tab) or a tab without the card is open.
+    const bool card_shows = !u.menu_hidden && (u.tab == static_cast<int>(Tab::joints) || u.tab == static_cast<int>(Tab::keys));
+    if (sel && !card_shows) {
         const auto off = studio::offset_of(u.selected);
         const auto e = studio::to_euler(off.rotation);
-        const float x = area_min.x + 24 * k, y = area_max.y - 92 * k;
-        if (studio::editable(u.selected) && studio::editable(u.selected)->moves) {
+        // High enough that the mode line below them clears the message along the bottom of the screen.
+        const float x = area_min.x + 24 * k, y = area_max.y - 168 * k;
+        if (const auto* joint = studio::editable(u.selected); (joint && joint->moves) || limb_end(u.selected)) {
+            const auto p = limb_end(u.selected) ? studio::limb_position(u.selected) : off.offset;
             text(d, f.heading, 15 * k, ImVec2(x, y - 44 * k), IM_COL32(255, 255, 255, 110), "POSITION");
             text(d, f.body, 13 * k, ImVec2(x, y - 24 * k), IM_COL32(255, 255, 255, 90),
-                 std::format("X: {:.2f}    Y: {:.2f}    Z: {:.2f}", off.offset[0], off.offset[1], off.offset[2]));
+                 std::format("X: {:.2f}    Y: {:.2f}    Z: {:.2f}", p[0], p[1], p[2]));
         }
         text(d, f.heading, 15 * k, ImVec2(x, y), IM_COL32(255, 255, 255, 110), "ROTATION");
         text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));
         const char* axis = u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "FREE";
         text(d, f.body, 12 * k, ImVec2(x, y + 42 * k), IM_COL32(120, 190, 255, 150),
-             std::format("{}  axis {}  ({})", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world"));
+             std::format("{}  axis {}  ({}){}{}", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "object" : "world",
+                         v.solo ? "  solo" : "", u.snap ? "  snapping" : ""));
     }
-    if (u.menu_open || (!inside && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
+    if (u.menu_open || (!inside && u.gizmo_handle < 0 && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
     auto& io = ImGui::GetIO();
     if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered()) {
         // Press and hold a joint: it is grabbed, and the limb above it follows the mouse. Shift turns the
         // selected joint with the gizmo instead.
-        if (hovered && *hovered != u.selected) u.selected = *hovered;
-        else if (sel && v.has_clip) {
-            const auto* track = track_view(v, u.selected);
-            if (!(track && track->locked)) {
-                u.dragging_gizmo = true;
-                u.drag_start = mouse;
-                begin_turn(v);
-            }
+        if (u.gizmo_hot >= 0 && can_edit) {
+            u.gizmo_handle = u.gizmo_hot;
+            u.axis = u.gizmo_hot % 3;
+            u.drag_start = mouse;
+            u.drag_moved = false;
+            u.ring_from = std::atan2(mouse.y - gizmo.centre.y, mouse.x - gizmo.centre.x);
+            begin_turn(v);
+        } else if (hovered && *hovered != u.selected) u.selected = *hovered;
+        else if (sel && can_edit) {
+            u.dragging_gizmo = true;
+            u.drag_start = mouse;
+            u.drag_moved = false;
+            begin_turn(v);
         }
     }
+    // Pressing is not yet dragging. Until the mouse has really moved nothing is applied: a press that
+    // writes a key would key the pose where it stands, and on a hand or a foot that is a fresh bend of
+    // the whole limb, which threw the leg about as soon as a handle was touched.
+    const auto drag_counts = [&] {
+        if (!u.drag_moved && std::hypot(mouse.x - u.drag_start.x, mouse.y - u.drag_start.y) > 3 * k) u.drag_moved = true;
+        return u.drag_moved;
+    };
+    if (u.gizmo_handle >= 0) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.gizmo_handle = -1;
+        else if (project.valid && drag_counts()) drag_gizmo(v, project, gizmo, mouse);
+    }
+    // Whatever the drag is doing, anything it has run into is shoved clear afterwards.
+    if ((u.gizmo_handle >= 0 || u.dragging_gizmo) && u.drag_moved) shove_clear(v, u.selected);
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
-        else if (project.valid) apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
+        else if (project.valid && drag_counts()) {
+            // A hand or a foot in MOVE goes where the mouse is over the board, the limb bending to reach;
+            // anything else turns, as a free drag always has.
+            if (u.move_mode && limb_end(u.selected)) drag_limb_to(v, project, mouse);
+            else apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
+        }
     }
     auto orbit = v.orbit;
     bool camera_changed = false;
@@ -1683,7 +2511,14 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         orbit.distance *= io.MouseWheel > 0 ? 0.9f : 1.1f;
         camera_changed = true;
     }
-    if (camera_changed) studio::set_orbit(orbit);
+    if (camera_changed) {
+        // Taking the camera yourself is leaving the shot: it stops travelling with him from here.
+        if (u.camera_shot) {
+            u.camera_shot = 0;
+            studio::set_camera_follow(false);
+        }
+        studio::set_orbit(orbit);
+    }
 }
 
 void keyboard(const studio::View& v) {
@@ -1716,7 +2551,20 @@ void keyboard(const studio::View& v) {
     }
     if (ctrl && pressed(ImGuiKey_S)) save_now();
     if (ctrl && pressed(ImGuiKey_A)) pick_all(v);
-    if (!ctrl && pressed(ImGuiKey_Escape) && !u.picked.empty()) u.picked.clear();
+    if (!ctrl && pressed(ImGuiKey_Escape)) {
+        // Esc backs out: the chosen keys first, then a step back through the trick list.
+        if (!u.picked.empty()) u.picked.clear();
+        else go_back_in_tricks();
+    }
+    if (!ctrl && pressed(ImGuiKey_C)) {
+        u.anti_clip = !u.anti_clip;
+        say(u.anti_clip ? "Keep clear on: what you move stays out of the body and off the deck." : "Keep clear off.");
+    }
+    if (!ctrl && pressed(ImGuiKey_V)) next_shot(v, io.KeyShift ? -1 : 1);
+    if (!ctrl && pressed(ImGuiKey_J)) {
+        u.hide_joints = !u.hide_joints;
+        say(u.hide_joints ? "Joints hidden. J shows them again." : "Joints shown.");
+    }
     if (pressed(ImGuiKey_Equal) || pressed(ImGuiKey_KeypadAdd)) zoom_timeline(1.5f);
     if (pressed(ImGuiKey_Minus) || pressed(ImGuiKey_KeypadSubtract)) zoom_timeline(1 / 1.5f);
     if (!ctrl && pressed(ImGuiKey_F)) studio::focus_joint(u.selected);
@@ -1732,6 +2580,11 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_R)) u.move_mode = false;
     if (!ctrl && pressed(ImGuiKey_G)) u.move_mode = true;
     if (!ctrl && pressed(ImGuiKey_L)) u.local_axes = !u.local_axes;
+    if (!ctrl && pressed(ImGuiKey_S)) studio::set_solo(!v.solo);
+    if (!ctrl && pressed(ImGuiKey_N)) {
+        u.snap = !u.snap;
+        say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
+    }
     if (!ctrl && pressed(ImGuiKey_Tab)) u.menu_hidden = !u.menu_hidden;
     auto orbit = v.orbit;
     bool set = true;
@@ -1787,6 +2640,8 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
                 {Glyph::b, "", "Undo"},
                 {Glyph::view, "", "Zoom timeline"},
                 {Glyph::lb, "", "Tabs (RB)"},
+                {Glyph::lb, "", "+ LS: start anim."},
+                {Glyph::rb, "", "+ RS: end anim."},
                 {Glyph::l3, "", "+ R3 hold: back"}};
     else
         list = {{std::nullopt, "LMB", "Pick / turn"},
@@ -1794,6 +2649,12 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
                 {std::nullopt, "MMB", "Pan"},
                 {std::nullopt, "G / R", u.move_mode ? "Move" : "Turn"},
                 {std::nullopt, "X Y Z", "Axis"},
+                {std::nullopt, "L", u.local_axes ? "Object axes" : "World axes"},
+                {std::nullopt, "S", v.solo ? "Solo on" : "Solo off"},
+                {std::nullopt, "N", u.snap ? "Snapping on" : "Snapping off"},
+                {std::nullopt, "J", u.hide_joints ? "Joints hidden" : "Hide joints"},
+                {std::nullopt, "C", u.anti_clip ? "Keep clear on" : "Keep clear off"},
+                {std::nullopt, "V", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name},
                 {std::nullopt, "UP DN", "Choose"},
                 {std::nullopt, "< >", "One frame"},
                 {std::nullopt, "SPACE", v.playing ? "Pause" : "Play"},
@@ -2004,11 +2865,12 @@ void draw_animation_studio_loading() {
     // The background is always opaque: the game's own loading art underneath must not show through while
     // this fades. Only the content fades.
     d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(19, 19, 19, 255));
-    // The backdrop, when the studio has one, under a dark veil so the wordmark reads on it.
-    const bool backdrop_drawn = draw_studio_picture_cover(d, StudioPicture::backdrop, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
-    if (backdrop_drawn)
-        d->AddRectFilled(ImVec2(0, 0), display, fade(IM_COL32(8, 8, 10, 90)));
-    else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
+    // The loading picture, filled over the screen with its own shape kept. It carries the wordmark, the
+    // blue tape and who built it already, so none of those are drawn over it and nothing is veiled: the
+    // artwork is shown as it is, and only the sides are lost on a screen less wide than it.
+    const bool backdrop_drawn = draw_studio_backdrop_cover(d, ImVec2(0, 0), display, IM_COL32(255, 255, 255, 255));
+    if (backdrop_drawn) {
+    } else if (!draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, fade(IM_COL32(255, 255, 255, 150))))
         for (unsigned i = 0; i < 2600; ++i) {
             const float x = skate_theme::noise(i * 3 + 1) * display.x, y = skate_theme::noise(i * 3 + 2) * display.y;
             const auto shade = static_cast<int>(26 + skate_theme::noise(i * 3 + 3) * 40);
@@ -2078,9 +2940,12 @@ void draw_animation_studio_loading() {
 
     // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
     {
-        static constexpr std::array<const char*, 7> tips{
+        static constexpr std::array<const char*, 10> tips{
             "Pick a trick in TRICKS, then its pop: low, mid or high.",
             "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
+            "The arrows on a joint move it along one axis, the rings turn it about one.",
+            "G moves, R turns, X Y Z lock an axis, F follows the joint.",
+            "S turns one joint alone. N keeps a foot on the deck. L swaps object and world.",
             "K keys the pose on this frame. Keys always sit on whole frames.",
             "G moves the hips or the board. X, Y and Z lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
@@ -2100,8 +2965,10 @@ void draw_animation_studio_loading() {
     // Bottom right: what is going on, then skate.'s own loading box with its kickflipping board.
     {
         const char* what = l.what == studio::Loading::leaving ? "BACK TO THE STREETS" : "SETTING UP THE STUDIO";
-        const float box_h = 0.062f * H, box_w = 0.205f * H;
-        const ImVec2 bb(display.x - 0.034f * display.x, H - 0.045f * H), ba(bb.x - box_w, bb.y - box_h);
+        // The size and the place skate.'s own loading box has, so ours reads as the same thing.
+        const float box_h = 0.088f * H, box_w = 0.300f * H;
+        // Up off the bottom edge, with what is going on under it in the corner.
+        const ImVec2 bb(display.x - 0.034f * display.x, H - 0.125f * H), ba(bb.x - box_w, bb.y - box_h);
         // skate.'s box: black, with a light rough edge.
         const float rim = 2.5f * k;
         if (!draw_studio_tile(d, ba, bb, 8 * k, fade(IM_COL32(205, 205, 205, 255)))) skate_theme::rough_rect(d, ba, bb, fade(IM_COL32(205, 205, 205, 255)), 5, 1.2f * k);
@@ -2109,8 +2976,8 @@ void draw_animation_studio_loading() {
         if (!draw_studio_tile(d, ia, ib, 8 * k, fade(IM_COL32(8, 8, 9, 255)))) skate_theme::rough_rect(d, ia, ib, fade(IM_COL32(8, 8, 9, 255)), 6, 1.2f * k);
         const char* dots[]{"Loading", "Loading.", "Loading..", "Loading..."};
         const auto loading_text = dots[static_cast<int>(l.seconds * 2.5f) % 4];
-        const auto lw = text_size(bold, 0.021f * H, "Loading...");
-        text(d, bold, 0.021f * H, ImVec2(ba.x + 0.024f * H, ba.y + (box_h - lw.y) * 0.5f), fade(skate_theme::white), loading_text);
+        const auto lw = text_size(bold, 0.030f * H, "Loading...");
+        text(d, bold, 0.030f * H, ImVec2(ba.x + 0.030f * H, ba.y + (box_h - lw.y) * 0.5f), fade(skate_theme::white), loading_text);
         const ImVec2 fa(bb.x - box_h * 1.25f - 0.012f * H, ba.y + box_h * 0.1f), fb(bb.x - 0.012f * H, bb.y - box_h * 0.1f);
         if (!draw_studio_kickflip(d, fa, fb, l.seconds, fade(skate_theme::white))) {
             // Without the game's board: a wheel that spins.
@@ -2119,8 +2986,9 @@ void draw_animation_studio_loading() {
             d->AddCircle(c, wr, fade(skate_theme::white), 24, 3 * k);
             d->AddLine(c, ImVec2(c.x + std::cos(t * 6) * wr, c.y + std::sin(t * 6) * wr), fade(skate_theme::blue), 3 * k);
         }
-        const auto ww = text_size(heading, 0.021f * H, what);
-        text(d, heading, 0.021f * H, ImVec2(ba.x - 0.022f * H - ww.x, ba.y + (box_h - ww.y) * 0.5f), fade(skate_theme::white), what);
+        // What is going on, in the bottom right corner, under the box.
+        const auto ww = text_size(heading, 0.026f * H, what);
+        text(d, heading, 0.026f * H, ImVec2(bb.x - ww.x, H - 0.05f * H - ww.y * 0.5f), fade(skate_theme::white), what);
     }
 }
 
@@ -2157,27 +3025,35 @@ void draw_animation_studio() {
     const auto project = projector(v, display);
     controller(v, project);
     viewport(d, f, v, project, view_min, view_max);
+    shot_strip(d, f, v, view_min, view_max);
     if (!u.menu_hidden) {
         page_title(d, f, ImVec2(menu_x, 40 * k));
         tab_row(d, f, ImVec2(menu_x, 140 * k));
         float list_top = 205 * k;
         const float card_h = 190 * k;
         if (static_cast<Tab>(u.tab) == Tab::tricks && u.asset_document.empty()) {
-            text(d, f.bold, 13 * k, ImVec2(menu_x + 16 * k, list_top), white, "SEARCH ANIMATIONS / ALL FOLDERS");
-            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 20 * k));
+            text(d, f.heading, 15 * k, ImVec2(menu_x + 16 * k, list_top), blue_light, "SEARCH");
+            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 22 * k));
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
-            const bool changed = text_field(f, "##nativequery", u.asset_query, menu_w - 104 * k);
-            ImGui::SameLine();
-            const bool clear = ImGui::Button("Clear", ImVec2(70 * k, 0));
+            const bool changed = text_field(f, "##nativequery", u.asset_query, menu_w - 104 * k, "Trick name, e.g. hardflip");
+            const bool clear = button(d, f, "##clearquery", ImVec2(menu_x + menu_w - 86 * k, list_top + 22 * k), ImVec2(70 * k, 30 * k),
+                                      "CLEAR", false, u.asset_query[0] != 0);
             if (changed || clear) {
                 if (clear) u.asset_query.fill(0);
                 u.asset_filter = studio::native_search_terms(u.asset_query.data()).empty() ? "" : u.asset_query.data();
-                if (!u.asset_filter.empty()) u.browse_assets = true;
+                // The search filters whichever list you are in. It used to throw you into the native asset
+                // tree, which on an install without that index built is empty, so every search read as
+                // nothing found even when the trick was right there in the list.
+                u.open_trick.clear();
                 u.asset_page = 0; u.row = 0;
                 u.list_scroll[static_cast<std::size_t>(u.tab)] = 0;
                 u.list_followed[static_cast<std::size_t>(u.tab)] = -1;
             }
             list_top += 70 * k;
+        }
+        if (static_cast<Tab>(u.tab) == Tab::joints) {
+            keep_clear_row(d, f, ImVec2(menu_x + 16 * k, list_top), menu_w - 40 * k);
+            list_top += 62 * k;
         }
         const float list_bottom = display.y - timeline_h - card_h - 40 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));

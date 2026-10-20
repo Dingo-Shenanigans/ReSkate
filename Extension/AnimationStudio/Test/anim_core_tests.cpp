@@ -312,6 +312,62 @@ void smoothing_tidies_a_track() {
     }
 }
 
+// Solo: turning a joint on its own. The joints hanging off it are turned back by as much, so they keep
+// the way they face. This is the sum the studio does in set_offset, on the arm and its elbow and hand.
+void solo_turn_holds_the_joints_below() {
+    std::vector<Joint> native(skeleton_joints);
+    for (std::size_t j = 0; j < native.size(); ++j) {
+        native[j].rotation = from_euler({3.0f * static_cast<float>(j % 7) - 9, 5.0f * static_cast<float>(j % 5) - 10, 7.0f * static_cast<float>(j % 3)});
+        native[j].position = {0.1f, 0.05f, -0.02f};
+    }
+    constexpr std::uint16_t arm = 47, elbow = 48, hand = 49;
+    Animation edits;
+    edits.end = -1;
+    // The elbow and the hand already carry keys of their own: solo must build on those, not wipe them.
+    const auto key_of = [&](std::uint16_t joint, const Vec3& degrees) {
+        Key k;
+        k.time = 0.5f;
+        k.rotation = from_euler(degrees);
+        Track track;
+        track.joint = joint;
+        track.keys.push_back(k);
+        edits.tracks.push_back(track);
+    };
+    key_of(elbow, {12, -8, 4});
+    key_of(hand, {-5, 15, 2});
+    std::vector<Joint> before(native);
+    apply_edits(edits, 0.5f, before);
+    const auto faced_elbow = world(before, elbow).rotation, faced_hand = world(before, hand).rotation;
+
+    // The arm is turned, as a drag would.
+    Key turn;
+    turn.time = 0.5f;
+    turn.rotation = from_euler({0, 40, 0});
+    Track arm_track;
+    arm_track.joint = arm;
+    arm_track.keys.push_back(turn);
+    edits.tracks.push_back(arm_track);
+    std::vector<Joint> swung(native);
+    apply_edits(edits, 0.5f, swung);
+    check(!same_turn(world(swung, elbow).rotation, faced_elbow), "Without solo the joints below swing with their parent");
+
+    // Solo puts them back: a joint's place is the chain above it times its own key, so multiplying its key
+    // by conj(where it faces now) * (where it faced) holds it. Only the joint hanging directly off the one
+    // being turned is touched - the hand rides on the elbow, so holding the elbow holds the hand with it.
+    check(parent(elbow) == arm && parent(hand) == elbow, "The arm, its elbow and its hand hang off one another");
+    const auto back = normalised(multiply(conjugate(world(swung, elbow).rotation), faced_elbow));
+    for (auto& track : edits.tracks)
+        if (track.joint == elbow) track.keys.front().rotation = normalised(multiply(track.keys.front().rotation, back));
+    std::vector<Joint> held(native);
+    apply_edits(edits, 0.5f, held);
+    check(same_turn(world(held, elbow).rotation, faced_elbow), "Solo holds the way the joint below the turn faces");
+    check(same_turn(world(held, hand).rotation, faced_hand), "and the one below that, which rides on the held joint");
+    check(same_turn(world(held, arm).rotation, world(swung, arm).rotation), "while the joint being turned keeps its turn");
+    // Bones are rigid: the joints below still travel with the one that turned. Only their facing is held.
+    check(length3_test(sub3_test(world(held, hand).position, world(before, hand).position)) > 1e-3f,
+          "The joints below still travel with their parent: solo holds the facing, not the place");
+}
+
 void packs_select_variants_without_filesystem_order() {
     std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
     select_presets(presets, std::nullopt);
@@ -404,16 +460,30 @@ void merged_library_and_timing() {
     check(near(clock.advance_air(10.35, 0.3f, 2, 2), 0.9f), "A long callback integrates its elapsed time at the updated rate");
     check(near(clock.advance_air(10, 0.3f, 2, 2), 0.9f), "Backwards callbacks cannot rewind air playback");
     check(near(clock.advance_air(12, 0.3f, 2, 2), 2) && near(clock.air_rate, 0), "The landing marker holds until contact");
+    // Moving a bracket carries that bracket's own key and nothing else: the keys between the brackets are
+    // left exactly where they are, so the track keeps its whole frames instead of being stretched onto
+    // fractions of one. (This replaces the window retiming, which stretched every key.)
     Animation animation; animation.start = 1; animation.end = 3;
     Track track{7, {}, false, false};
     track.keys = {{0, {}, {}, Ease::smooth}, {1, {}, {}, Ease::smooth}, {2, {}, {}, Ease::smooth}, {3, {}, {}, Ease::smooth}};
     animation.tracks.push_back(track); track.joint = 8; track.locked = true; animation.tracks.push_back(track);
-    check(retime_window(animation, 0, 1, 4), "Bracket retiming accepts a bounded window");
-    check(animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[1].time, 0.5f) &&
-          near(animation.tracks[1].keys[2].time, 2), "Retiming consolidates clipped collisions and preserves locked tracks");
-    check(!retime_window(animation, 2, 1, 4) && near(animation.start, 0), "Invalid brackets do not mutate the document");
-    check(retime_window(animation, 0, 0, 0) && animation.tracks[0].keys.size() == 1,
-          "Zero-length clips cannot produce divided-by-zero or duplicate key times");
+    check(move_window_edge(animation, 1, 0.5f, 4), "A bracket accepts a place inside the window");
+    check(near(animation.start, 0.5f), "and the window starts there");
+    check(animation.tracks[0].keys.size() == 4 && near(animation.tracks[0].keys[1].time, 0.5f),
+          "The key that was on the bracket goes with it");
+    check(near(animation.tracks[0].keys[2].time, 2) && near(animation.tracks[0].keys[3].time, 3),
+          "and the keys between the brackets do not move");
+    check(near(animation.tracks[1].keys[1].time, 1), "A locked track is left alone");
+    check(!move_window_edge(animation, 1, 3.5f, 4) && near(animation.start, 0.5f), "A bracket cannot be put past its other half");
+    check(!move_window_edge(animation, 2, 0.2f, 4) && near(animation.end, 3), "and that holds for the end as well");
+    check(move_window_edge(animation, 1, 0.0f, 4) && animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[0].time, 0),
+          "Taken back onto a key that is already there, the two become one");
+    // Smoothing puts keys back on whole frames, which is where an older stretched animation is mended.
+    Track drifted{9, {}, false, false};
+    drifted.keys = {{0, {}, {}, Ease::smooth}, {0.337f, {}, {0, 0.4f, 0}, Ease::step}, {0.681f, {}, {0, 0.1f, 0}, Ease::linear}, {1, {}, {}, Ease::smooth}};
+    smooth_track(drifted, 0, 1);
+    for (const auto& k : drifted.keys)
+        check(near(k.time, on_a_frame(k.time), 1e-5f), "Every key sits on a whole frame after smoothing");
 }
 void preview_trajectory_uses_the_whole_clip() {
     Clip clip;
@@ -845,6 +915,7 @@ int main(int argc, char** argv) {
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
+        solo_turn_holds_the_joints_below();
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();

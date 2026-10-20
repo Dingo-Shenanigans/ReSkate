@@ -56,6 +56,11 @@ struct View {
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool room{true}; // the studio opens in its room (studio_room.h)
+    bool solo{};     // a turn moves one joint alone (set_solo)
+    // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
+    // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
+    Quat field_axes{0, 0, 0, 1};
+    bool field_axes_valid{};
     float duration{}, takeoff{-1}, landing{-1}, time{}, speed{1};
     std::vector<JointView> joints; // the editable joints, now
     // The board without its keys, now, from where it starts: 0, 0, 0 is the board at the trick's start,
@@ -75,6 +80,9 @@ struct View {
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
     std::string pop;      // "" any, "low", "mid", "high"
     std::uint64_t revision{};
+    // Goes up every time a clip arrives: a trick opened, a saved animation loaded, a take recorded, a new
+    // animation started. The overlay starts clean on it.
+    std::uint64_t clip_serial{};
 };
 View view();
 // Opt-in 60-second read-only trace; exported under ReSkate.Tricks/research.
@@ -133,6 +141,10 @@ bool take_record_all_request(); // the client tick takes it once
 std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept;
 void cancel_recording();
 void set_play_in_game(bool on);
+// Solo: a turn moves that joint alone. The editable joints hanging off it are turned back by as much,
+// so the limb below keeps the way it faces instead of swinging with its parent. Bones are rigid, so
+// those joints still travel with the one being turned: it is the way they face that is held.
+void set_solo(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();
@@ -141,11 +153,17 @@ void set_offset(std::uint16_t joint, const Offset& value); // keys it at the cur
 // Drags a limb: the joint goes to `target` (the skater's frame, as JointView::position is), the limb above it
 // bends, and the bend is keyed at the current time. Call begin_change once when the drag starts.
 void drag_limb(std::uint16_t joint, const Vec3& target);
-// Which bracket: 1 start (moves every key with it), 2 end (the window's end only). `seconds` is where it goes.
+// Which bracket: 1 start, 2 end. `seconds` is where it goes, on a whole frame. Only the keys sitting on
+// that bracket travel with it; the keys between the brackets are left exactly where they are, so nothing
+// is stretched. A key the bracket is pulled back past stops applying until it is taken out over it again.
 void move_bracket(int which, float seconds);
-// A hand's or a foot's place, as the position fields show it: how far it is from its rest place, in the view's
-// axes. Setting it moves the joint there with the limb above it bent to reach (the knee and hip follow, the
-// bones keep their lengths); a point out of reach is brought to full stretch, never past it.
+// The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
+// to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
+// knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.
+std::size_t limb_chain(std::uint16_t joint) noexcept;
+// One of those joints' places, as the position fields show it: how far it is from its rest place. Setting it
+// moves the joint there with the limb above it bent to reach (the bones keep their lengths); a point out of
+// reach is brought to full stretch, never past it.
 Vec3 limb_position(std::uint16_t joint);
 void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);
@@ -191,7 +209,11 @@ void rename(const std::string& name);
 void set_trick(const std::string& trick);
 // Camera.
 void set_orbit(const Orbit& orbit);
-void focus_joint(std::uint16_t joint); // the orbit centres on it
+void focus_joint(std::uint16_t joint); // the orbit centres on it, or comes off it when it is on it already
+void set_focus(std::uint16_t joint);   // the orbit centres on it; all_joints for the whole skater
+// Whether the camera travels with the skater. Off, it stays where it is in the world and he moves through
+// it, which is what the free camera wants; on, it carries him along, which is what a set shot wants.
+void set_camera_follow(bool on);
 // How far above and right of the screen's middle the free area beside the menu has its middle, both
 // as shares of the screen's height: the camera aims so the skater sits there.
 void set_view_shift(float share, float right_share);

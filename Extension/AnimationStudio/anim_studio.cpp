@@ -132,6 +132,15 @@ struct State {
     // Playback.
     float time{};
     bool playing{}, play_in_game{true}, room{true};
+    bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
+    std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
+    // The ground he stands or rides on, from the live pose: no camera is allowed under it.
+    float floor{};
+    bool floor_valid{};
+    // The camera travels with the skater for a set shot; the free camera stays put and he moves through it.
+    bool camera_follows{true};
+    Vec3 held_centre{};
+    bool held_centre_valid{};
     std::shared_ptr<const CustomTricks> tricks;
     bool tricks_read{};
     // Mode.
@@ -624,6 +633,7 @@ void key_all_at(Animation& animation, float seconds) {
 // recording or from the game's own library.
 void reset_brackets_locked(State& s) {
     if (!s.clip || s.clip->empty()) return;
+    ++s.clip_serial; // a clip has arrived: the overlay clears what it was holding
     s.edits.start = 0;
     s.edits.end = -1;
     key_all_at(s.edits, 0);
@@ -1045,7 +1055,6 @@ std::string research_trace(const std::string& action) {
 // ground the board goes that far under the lower foot; in the air it is the clip's own, with a short
 // blend at the pop and the landing. `pose` is the clip's pose at `seconds`, `board` its board, both
 // under the placement joint.
-constexpr float feet_above_board = 0.104f, board_blend = 0.06f;
 struct BoardShape;
 BoardShape board_shape(const Clip& clip);
 Vec3 board_up(const Clip& clip);
@@ -1312,6 +1321,12 @@ void on_animation(std::uintptr_t component) noexcept {
             if (!l.floor_valid || (air && *air)) {
                 l.floor = world(l.pose, ground_joint).position[1];
                 l.floor_valid = std::isfinite(l.floor);
+                if (l.floor_valid) {
+                    auto& st = state();
+                    std::lock_guard floor_lock(st.mutex);
+                    st.floor = l.floor;
+                    st.floor_valid = true;
+                }
             }
             const auto& clip = *shown;
             const auto shape = board_shape(clip);
@@ -2114,18 +2129,39 @@ bool camera(std::array<float, 16>& matrix) {
         s.eased_valid = true;
     }
     for (std::size_t i = 0; i < 3; ++i) s.eased_centre[i] += (s.centre[i] - s.eased_centre[i]) * 0.12f;
-    const Vec3 centre{s.eased_centre[0] + s.focus_offset[0], s.eased_centre[1] + s.focus_offset[1], s.eased_centre[2] + s.focus_offset[2]};
+    Vec3 centre{s.eased_centre[0] + s.focus_offset[0], s.eased_centre[1] + s.focus_offset[1], s.eased_centre[2] + s.focus_offset[2]};
+    // The free camera is not carried along: it holds the spot it was left at and the skater moves through
+    // it, so a trick can be watched going past rather than the world sliding under a camera stuck to him.
+    if (!s.camera_follows) {
+        // Taken again when he has gone a long way off - into the studio's room, or a level loaded - so the
+        // camera is never left behind somewhere he no longer is.
+        const float away = std::abs(centre[0] - s.held_centre[0]) + std::abs(centre[1] - s.held_centre[1]) + std::abs(centre[2] - s.held_centre[2]);
+        if (!s.held_centre_valid || away > 5) {
+            s.held_centre = centre;
+            s.held_centre_valid = true;
+        }
+        centre = s.held_centre;
+    } else s.held_centre_valid = false;
     if (!s.base_yaw_valid) {
         s.base_yaw = facing_yaw(s.facing);
         s.base_yaw_valid = true;
     }
-    auto m = orbit_matrix(centre, s.orbit, s.base_yaw);
+    // No camera goes under the ground, whichever shot it is and however it has been orbited by hand: the
+    // eye is lifted by raising how far above it looks down from, so it still holds what it is aimed at.
+    Orbit orbit = s.orbit;
+    if (s.floor_valid) {
+        constexpr float above_floor = 0.30f; // enough that the near plane does not cut into the ground
+        const float distance = std::clamp(orbit.distance, 0.6f, 25.0f);
+        const float lowest = (s.floor + above_floor - centre[1]) / distance;
+        if (lowest > std::sin(orbit.pitch)) orbit.pitch = std::asin(std::clamp(lowest, -1.0f, 1.0f));
+    }
+    auto m = orbit_matrix(centre, orbit, s.base_yaw);
     if (s.fov > 1 && s.fov < 175 && (s.view_shift != 0 || s.view_shift_x != 0)) {
         // Aim below and beside the centre so it shows that far above and right of the screen's middle.
-        const float per_share = std::clamp(s.orbit.distance, 0.6f, 25.0f) * 2 * std::tan(s.fov * 3.14159265f / 360);
+        const float per_share = std::clamp(orbit.distance, 0.6f, 25.0f) * 2 * std::tan(s.fov * 3.14159265f / 360);
         const float up = s.view_shift * per_share, side = s.view_shift_x * per_share;
         const Vec3 aimed{centre[0] - m[4] * up - m[0] * side, centre[1] - m[5] * up - m[1] * side, centre[2] - m[6] * up - m[2] * side};
-        m = orbit_matrix(aimed, s.orbit, s.base_yaw);
+        m = orbit_matrix(aimed, orbit, s.base_yaw);
     }
     for (const std::size_t i : {0u, 1u, 2u, 4u, 5u, 6u, 8u, 9u, 10u, 12u, 13u, 14u}) matrix[i] = m[i];
     s.camera = matrix;
@@ -2146,6 +2182,10 @@ bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std:
 // The game's own load is still going: the loading screen stays until the game has been quiet for a second.
 std::atomic<bool> loading_held{};
 std::atomic<double> game_quiet_since{-1}; // -1: taken to be loading until a tick says otherwise
+// When a clean start finished. The client counts as in play before the game has taken its own loading
+// screen down, so ours stays up a few seconds past that or the game's shows from under it.
+std::atomic<double> clean_done_at{-1};
+constexpr double clean_settle = 6.5; // measured in game: 4.5 let the tail of the game's screen through
 void game_loading_state(bool game_loading) noexcept {
     if (game_loading) game_quiet_since.store(-1, std::memory_order_release);
     else if (game_quiet_since.load() < 0) game_quiet_since.store(now_seconds(), std::memory_order_release);
@@ -2157,6 +2197,7 @@ void set_loading(Loading what, float seconds) noexcept {
         // Taken to be loading from here: the first tick that finds the game quiet starts the countdown, so the
         // screen is never lifted before the client tick has even seen the load begin.
         game_quiet_since.store(-1, std::memory_order_release);
+        clean_done_at.store(-1, std::memory_order_release);
         // A screen that is still showing stays up (no fade in again).
         if (loading_what.exchange(what, std::memory_order_acq_rel) == Loading::none || now > loading_until.load()) loading_since.store(now);
         loading_until.store(now + seconds);
@@ -2173,7 +2214,10 @@ LoadingView loading() noexcept {
         // A clean start holds it all the way: the walk out of the room, the level loading behind it and the
         // skater arriving are one screen, instead of ours ending and the game's own coming up after it.
         const bool clean = clean_hold.load(std::memory_order_acquire);
-        if ((!clean && quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
+        // And for a moment after it, while the game takes its own screen down behind ours.
+        const double done = clean_done_at.load(std::memory_order_acquire);
+        const bool settling = done >= 0 && now - done < clean_settle;
+        if ((!clean && !settling && quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
             loading_held.store(false);
             loading_until.store(now);
         } else if (loading_until.load() < now + 0.2) {
@@ -2218,6 +2262,17 @@ View view() {
     v.loop = s.edits.loop;
     v.play_in_game = s.play_in_game;
     v.room = s.room;
+    v.solo = s.solo;
+    // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
+    // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
+    // along a field's axis and move that field by what the arrow is pulled.
+    if (s.clip && !s.clip->empty()) {
+        std::vector<Joint> native(skeleton_joints);
+        s.clip->sample(std::round(s.time * 30.0f) / 30.0f, native); // frame_time, which is declared below
+        const auto clip_place = world(native, placement_joint).rotation;
+        v.field_axes = normalised(multiply(s.joints_placement.rotation, conjugate(clip_place)));
+        v.field_axes_valid = finite(Joint{{1, 1, 1}, v.field_axes, {}});
+    }
     v.duration = duration_locked(s);
     v.takeoff = s.clip ? s.clip->takeoff : -1;
     v.landing = s.clip ? s.clip->landing : -1;
@@ -2243,6 +2298,7 @@ View view() {
     v.confirm_close = s.confirm_close;
     v.pop = s.edits.pop;
     v.revision = s.revision;
+    v.clip_serial = s.clip_serial;
     return v;
 }
 // Keys sit on whole frames of the timeline (30 a second), never between two.
@@ -2372,7 +2428,9 @@ void set_speed(float speed) {
     changed_locked(s);
 }
 bool take_clean_start() noexcept { return clean_request.exchange(false, std::memory_order_acq_rel); }
-void clean_start_done() noexcept { clean_hold.store(false, std::memory_order_release); }
+void clean_start_done() noexcept {
+    if (clean_hold.exchange(false, std::memory_order_acq_rel)) clean_done_at.store(now_seconds(), std::memory_order_release);
+}
 void arm_batch_take() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2423,7 +2481,8 @@ void record_next_trick() {
     clean_until.store(now_seconds() + 30.0, std::memory_order_relaxed);
     clean_hold.store(true, std::memory_order_release);
     clean_request.store(true, std::memory_order_release);
-    set_loading(Loading::opening, 4.0f);
+    set_loading(Loading::leaving, 4.0f); // out to the streets, not into the studio
+    clean_done_at.store(-1, std::memory_order_release);
     s.open_request_pending = true;
     publish_locked(s);
     logging::log(Level::info, Channel::skater, "Animation Studio: waiting to record the next trick.");
@@ -2451,12 +2510,78 @@ void set_play_in_game(bool on) {
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
     publish_locked(s);
 }
+void set_solo(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.solo = on;
+    s.status = on ? "Solo: a turn moves that joint alone. The joints below keep the way they face."
+                  : "A turn carries the joints below it, as before.";
+    publish_locked(s);
+}
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
+}
+namespace {
+// Solo: the editable joints hanging directly off `joint` - the ones whose nearest editable parent it is.
+// The board is not part of the skeleton, so it neither holds children nor is one.
+std::vector<std::uint16_t> solo_children(const State& s, std::uint16_t joint) {
+    std::vector<std::uint16_t> children;
+    if (!s.solo || joint == board_joint || !s.clip || s.clip->empty()) return children;
+    for (const auto& e : editable_joints()) {
+        if (e.index == board_joint || e.index == joint || e.index >= skeleton_joints) continue;
+        if (const auto* t = s.edits.track(e.index); t && (t->locked || t->hidden)) continue;
+        for (auto up = parent(e.index); up >= 0; up = parent(static_cast<std::uint16_t>(up))) {
+            const auto above = static_cast<std::uint16_t>(up);
+            if (above == joint) {
+                children.push_back(e.index);
+                break;
+            }
+            if (editable(above)) break; // a nearer editable parent owns this one
+        }
+    }
+    return children;
+}
+// The way each of those joints faces in the world, with the edits as they stand.
+std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> children) {
+    const float at = frame_time(s.time);
+    std::vector<Joint> pose(skeleton_joints);
+    s.clip->sample(at, pose);
+    apply_edits(s.edits, at, pose);
+    std::vector<Quat> facing;
+    facing.reserve(children.size());
+    for (const auto c : children) facing.push_back(world(pose, c).rotation);
+    return facing;
+}
+// Turns each of them back to the way it faced. A joint's place in the world is the chain above it times
+// its own key, so multiplying its key by conj(where it faces now) * (where it faced) puts it back.
+void hold_facing(State& s, std::span<const std::uint16_t> children, std::span<const Quat> before) {
+    const float at = frame_time(s.time);
+    std::vector<Joint> pose(skeleton_joints);
+    s.clip->sample(at, pose);
+    apply_edits(s.edits, at, pose);
+    for (std::size_t i = 0; i < children.size() && i < before.size(); ++i) {
+        const auto child = children[i];
+        const auto turn = normalised(multiply(conjugate(world(pose, child).rotation), before[i]));
+        if (std::abs(turn[3]) > 0.999995f) continue; // it did not swing: it needs no key
+        const auto* t = s.edits.track(child);
+        Offset held = t ? evaluate(*t, at) : Offset{};
+        held.rotation = normalised(multiply(held.rotation, turn));
+        if (!editable(child)->moves) held.offset = {};
+        set_key(s.edits, child, at, held);
+    }
+}
+} // namespace
+
+std::size_t limb_chain(std::uint16_t joint) noexcept {
+    switch (joint) {
+    case 10: case 343: case 49: case 278: return 3;  // the feet and the hands
+    case 9: case 342: case 48: case 277: return 2;   // the knees and the elbows
+    default: return 0;
+    }
 }
 Offset offset_of(std::uint16_t joint) {
     auto& s = state();
@@ -2475,7 +2600,12 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     Offset clean = value;
     if (!editable(joint)->moves) clean.offset = {};
     for (auto& v : clean.offset) v = std::clamp(v, -2.0f, 2.0f);
+    // Solo: the way the joints below face is read before the turn and put back after it.
+    const auto children = solo_children(s, joint);
+    std::vector<Quat> facing;
+    if (!children.empty()) facing = facing_of(s, children);
     set_key(s.edits, joint, frame_time(s.time), clean);
+    if (!children.empty()) hold_facing(s, children, facing);
     changed_locked(s);
 }
 namespace {
@@ -2514,13 +2644,15 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
         s.status = "That track is locked.";
         return;
     }
+    const auto chain = limb_chain(joint);
+    if (!chain) return;
     const float at = frame_time(s.time);
     std::vector<Joint> native(skeleton_joints);
     s.clip->sample(at, native);
     const auto rest = world(native, joint).position;
     const Vec3 target{rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]};
     try {
-        anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
+        anim_studio::drag_joint(s.edits, native, at, joint, target, chain);
     } catch (const std::exception& e) {
         s.status = e.what();
         return;
@@ -2546,9 +2678,9 @@ void move_bracket(int which, float seconds) {
     } else if (which == 2) {
         end = std::clamp(std::max(t, start + gap), 0.0f, duration);
     } else return;
-    if (!retime_window(s.edits, start, end, duration)) return;
-    key_all_at(s.edits, start);
-    key_all_at(s.edits, end);
+    if (!move_window_edge(s.edits, which, which == 1 ? start : end, duration)) return;
+    key_all_at(s.edits, s.edits.start);
+    key_all_at(s.edits, s.edits.end < 0 ? duration : s.edits.end);
     changed_locked(s);
 }
 
@@ -2573,7 +2705,7 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     const Vec3 moved = rotate(clip_place.rotation, local);
     const Vec3 target{moved[0] + clip_place.position[0], moved[1] + clip_place.position[1], moved[2] + clip_place.position[2]};
     try {
-        anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
+        anim_studio::drag_joint(s.edits, native, at, joint, target, std::max<std::size_t>(limb_chain(joint), 2));
     } catch (const std::exception& e) {
         s.status = e.what();
         return;
@@ -3110,6 +3242,10 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         return true;
     } catch (const std::exception& e) {
         message = "Could not open " + trick.label + ": " + e.what();
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        s.status = message; // what was open stays open, and this says why the new one did not
+        publish_locked(s);
         return false;
     }
 }
@@ -3278,5 +3414,17 @@ void focus_joint(std::uint16_t joint) {
     std::lock_guard lock(s.mutex);
     if (s.focus == joint) s.focus.reset();
     else s.focus = joint;
+}
+void set_focus(std::uint16_t joint) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (joint == all_joints) s.focus.reset();
+    else s.focus = joint;
+}
+void set_camera_follow(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.camera_follows = on;
+    s.held_centre_valid = false; // taken again where the camera stands now
 }
 } // namespace dingosdk::anim_studio

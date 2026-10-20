@@ -333,6 +333,17 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
         "EMOTES_PNG RCDATA \"${dingosdk_emotes_native}\\\\emotes.png\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/emotes.rc")
 endif()
+# The Animator Studio's loading screen, built into ReSkate.dll so everyone who installs the mod has it
+# (Extension/UI/Overlay/animation_studio_images.h). A picture beside the studio's tricks still wins.
+set(dingosdk_studio_loading "${PROJECT_SOURCE_DIR}/assets/animator_studio/loading.jpg")
+if(EXISTS "${dingosdk_studio_loading}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_studio_loading}")
+    file(TO_NATIVE_PATH "${dingosdk_studio_loading}" dingosdk_studio_loading_native)
+    string(REPLACE "\\" "\\\\" dingosdk_studio_loading_native "${dingosdk_studio_loading_native}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc"
+        "STUDIO_LOADING RCDATA \"${dingosdk_studio_loading_native}\"\n")
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc")
+endif()
 # Game content ReSkate carries itself (Engine/Vfs/builtin_packs.h), one zip each in assets/builtin:
 # the FPV drone's model (tools/models/build_drone_pack.py; without it other players' drones use a
 # stand-in prop). A missing zip is left out. (Mods that are content for ReSkate's features, such
