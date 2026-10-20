@@ -80,6 +80,7 @@ Json document_json(const std::string& name, const ebx::Document& doc, const Name
 void write(const std::filesystem::path& path, const Json& data) {
     std::ofstream out(path, std::ios::binary); out.exceptions(std::ios::badbit | std::ios::failbit);
     out << data.dump(2) << '\n';
+    out.close();
 }
 void self_test() {
     ebx::Document doc;
@@ -198,11 +199,22 @@ int main(int argc, char** argv) {
             }
             throw std::runtime_error("Asset not found in the inspected native bundles");
         }
-        if (argc < 4) throw std::runtime_error("Usage: dingosdk_anim_graph_probe game-root output-directory asset [asset ...]");
+        if (argc < 4) throw std::runtime_error("Usage: dingosdk_anim_graph_probe game-root output-directory asset [asset ...]; or --inventory game-root output-directory");
+        const bool inventory = argc == 4 && mode == "--inventory";
         namespace skeleton = dingosdk::game::build::v20260929::skater_skeleton;
-        const dingosdk::vfs::GameData data(std::filesystem::absolute(argv[1]));
+        const auto game_root = std::filesystem::absolute(argv[inventory ? 2 : 1]);
+        const dingosdk::vfs::GameData data(game_root);
+        const auto output = std::filesystem::absolute(argv[inventory ? 3 : 2]);
+        std::filesystem::create_directories(output);
+        if (inventory) {
+            std::filesystem::create_directories(output / "documents");
+            std::filesystem::create_directories(output / "resources");
+        }
         std::set<std::string> wanted;
-        for (int i = 3; i < argc; ++i) wanted.insert(lower(argv[i]));
+        if (!inventory) for (int i = 3; i < argc; ++i) wanted.insert(lower(argv[i]));
+        std::set<std::string> channel_maps, channel_prefixes, maps_written;
+        std::set<std::uint64_t> resources, resources_written;
+        std::vector<std::string> inventory_tocs{"Win32/levels/game/bam_levelroot/bam_levelroot.toc", "Win32/globals.toc", "Win32/levels/game/dingolevel_root/dingolevel_root.toc"};
         Names names;
         std::map<std::string, ebx::Document> selected;
         Json index = Json::array(), errors = Json::array();
@@ -222,6 +234,24 @@ int main(int argc, char** argv) {
                 if (!fresh && found->second != name) errors.push_back({{"asset", name}, {"error", "Duplicate partition GUID"}, {"other", found->second}});
                 index.push_back({{"asset", name}, {"partition", id}, {"root_type", document.rootType}, {"instances", document.instances.size()},
                                  {"toc", toc}, {"bundle", bundle_name}, {"payload_sha1", value_json(ebx::Value{bundle.manifest.ebx[i].sha1, {}}, document, {})}});
+                if (inventory) {
+                    const auto decoded = document_json(name, document, {});
+                    write(output / "documents" / (id + ".json"), decoded);
+                    for (const auto& instance : decoded.at("instances")) {
+                        const auto& object = instance.at("object");
+                        if (!object.is_object() || !object.value("type", "").ends_with("AnimationAsset")) continue;
+                        const auto& fields = object.at("fields");
+                        if (fields.contains("ChannelToDofAsset") && fields.at("ChannelToDofAsset").is_object()) {
+                            const auto guid = fields.at("ChannelToDofAsset").value("partition", "");
+                            if (guid.size() == 36) {
+                                channel_maps.insert(lower(guid));
+                                channel_prefixes.insert("_af/" + lower(guid.substr(0, 18)) + "/");
+                            }
+                        }
+                        if (fields.contains("Resource") && fields.at("Resource").is_object())
+                            resources.insert(fields.at("Resource").at("resource_id").get<std::uint64_t>());
+                    }
+                }
                 if (wanted.contains(name)) selected.emplace(name, std::move(document));
                 seen.insert(name);
             } catch (const std::exception& e) { errors.push_back({{"asset", name}, {"error", e.what()}}); }
@@ -248,17 +278,74 @@ int main(int argc, char** argv) {
             const auto bundle = data.read_bundle(base, entry.name);
             if (bundle) scan(*bundle, base_toc, entry.name);
         }
+        if (inventory) {
+            std::vector<std::string> extra;
+            std::set<std::string> known;
+            for (const auto& name : inventory_tocs) known.insert(lower(name));
+            for (const auto& file : std::filesystem::recursive_directory_iterator(game_root / "Data" / "Win32")) {
+                if (!file.is_regular_file() || lower(file.path().extension().string()) != ".toc") continue;
+                const auto relative = std::filesystem::relative(file.path(), game_root / "Data").generic_string();
+                if (known.insert(lower(relative)).second) extra.push_back(relative);
+            }
+            std::sort(extra.begin(), extra.end());
+            for (const auto& toc_name : extra) {
+                inventory_tocs.push_back(toc_name);
+                try {
+                    const auto toc = data.read_toc(toc_name);
+                    for (const auto& entry : toc.bundles) if (const auto bundle = data.read_bundle(toc, entry.name)) scan(*bundle, toc_name, entry.name);
+                } catch (const std::exception& e) { errors.push_back({{"toc", toc_name}, {"error", e.what()}}); }
+            }
+            for (const auto& guid : channel_maps) if (names.contains(guid)) maps_written.insert(guid);
+            const auto dependencies = [&](const dingosdk::vfs::GameBundle& bundle) {
+                for (std::size_t i = 0; i < bundle.manifest.ebx.size(); ++i) {
+                    const auto name = lower(bundle.manifest.ebx[i].name);
+                    if (!name.starts_with("_af/") || name.size() < 23 || !channel_prefixes.contains(name.substr(0, 23))) continue;
+                    try {
+                        const auto* payload = bundle.payload(fb::AssetKind::ebx, i);
+                        if (!payload) continue;
+                        const auto document = ebx::read_document(data.read(*payload));
+                        const auto guid = lower(document.fileGuid.string());
+                        if (channel_maps.contains(guid) && maps_written.insert(guid).second)
+                            write(output / "documents" / (guid + ".json"), document_json(name, document, {}));
+                    } catch (const std::exception& e) { errors.push_back({{"asset", name}, {"error", e.what()}}); }
+                }
+                for (std::size_t i = 0; i < bundle.manifest.resources.size(); ++i) {
+                    const auto& asset = bundle.manifest.resources[i];
+                    if (!resources.contains(asset.resourceId) || resources_written.contains(asset.resourceId)) continue;
+                    try {
+                        const auto* payload = bundle.payload(fb::AssetKind::resource, i);
+                        if (!payload) continue;
+                        const auto bytes = data.read(*payload);
+                        const auto path = output / "resources" / (std::to_string(asset.resourceId) + ".bin");
+                        std::ofstream out(path, std::ios::binary); out.exceptions(std::ios::badbit | std::ios::failbit);
+                        out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                        out.close();
+                        resources_written.insert(asset.resourceId);
+                    } catch (const std::exception& e) { errors.push_back({{"asset", asset.name}, {"error", e.what()}}); }
+                }
+            };
+            for (const auto& toc_name : inventory_tocs) {
+                try {
+                    const auto toc = data.read_toc(toc_name);
+                    for (const auto& entry : toc.bundles) if (const auto bundle = data.read_bundle(toc, entry.name)) dependencies(*bundle);
+                } catch (const std::exception& e) { errors.push_back({{"toc", toc_name}, {"error", e.what()}}); }
+            }
+            Json inspected_tocs = Json::array();
+            for (const auto& name : inventory_tocs) inspected_tocs.push_back(name);
+            write(output / "inventory-source.json", {{"scope", "All Win32 TOCs; native Data only, first asset per name; not runtime mod-layer resolution"}, {"tocs", inspected_tocs}});
+            write(output / "dependencies.json", {{"channel_maps_required", channel_maps.size()}, {"channel_maps_written", maps_written.size()},
+                  {"resources_required", resources.size()}, {"resources_written", resources_written.size()}});
+        }
         Json assets = Json::array();
         for (const auto& [name, document] : selected) assets.push_back(document_json(name, document, names));
         Json missing = Json::array();
         for (const auto& name : wanted) if (!selected.contains(name)) missing.push_back(name);
-        const auto output = std::filesystem::absolute(argv[2]);
-        std::filesystem::create_directories(output);
         write(output / "native-asset-types.json", index);
         write(output / "native-graph.json", {{"schema", 1}, {"scope", "animation/dingo EBX in bam_levelroot, dingolevel_root and globals plus explicitly requested assets; first copy per name"},
               {"interpretation", "Static authoring data only; field offsets are not live memory addresses. Unresolved references remain null."},
               {"assets", assets}, {"missing", missing}, {"errors", errors}});
         std::cout << "Decoded " << index.size() << " assets; selected " << selected.size() << "; missing " << missing.size() << "; errors " << errors.size() << '\n';
+        if (inventory) return errors.empty() && maps_written.size() == channel_maps.size() && resources_written.size() == resources.size() ? 0 : 2;
         return missing.empty() ? 0 : 2;
     } catch (const std::exception& e) { std::cerr << "FAILED: " << e.what() << '\n'; return 1; }
 }

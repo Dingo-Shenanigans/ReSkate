@@ -912,11 +912,26 @@ int main(int argc, char** argv) {
         }
         if (argc == 3 && std::string_view(argv[1]) == "--native-index") {
             std::ifstream in(argv[2], std::ios::binary);
-            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), dingosdk::JsonLimits{32 * 1024 * 1024, 48, 2 * 1024 * 1024});
             check(root.is_array() && root.size() > 0, "Native index must fit production JSON parser limits");
             for (const auto& entry : root)
-                check(entry.value("asset", "").starts_with("animation/dingo/") && !entry.value("category", "").empty(), "Indexed native asset requires category and stable source path");
+                check((entry.value("asset", "").starts_with("animation/dingo/") || entry.value("asset", "").starts_with("_af/")) && !entry.value("category", "").empty(), "Indexed native asset requires category and stable source path");
             std::cout << "Native index compatibility: " << root.size() << " assets passed\n";
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--native-documents") {
+            std::size_t count = 0;
+            for (const auto& directory : {"native-documents", "native-resources"}) {
+                for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(argv[2]) / directory)) {
+                    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+                    std::ifstream in(entry.path(), std::ios::binary);
+                    const auto document = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), dingosdk::JsonLimits{16 * 1024 * 1024, 64, 2 * 1024 * 1024});
+                    check(document.is_object() && document.contains("asset") && document.at("asset").is_string() &&
+                          document.contains("root_type") && document.at("root_type").is_string(), "Native inspector documents must fit the production reader and retain source identity/type");
+                    ++count;
+                }
+            }
+            check(count > 0, "Native inspector requires actual documents");
+            std::cout << "Native inspector compatibility: " << count << " documents passed\n";
         }
         if (argc == 2) {
             std::size_t files = 0;

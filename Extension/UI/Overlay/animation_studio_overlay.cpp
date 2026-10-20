@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ReSkate Animator Studio's screen: the skater in the middle on the studio's own camera, a timeline of
@@ -98,6 +99,12 @@ struct Ui {
     std::array<int, 5> list_followed{-1, -1, -1, -1, -1}; // the row the list last scrolled to, per tab
     std::string open_trick; // TRICKS: the trick whose pops are shown ("" = the list of tricks)
     bool browse_assets{};
+    bool asset_ready_only{}, asset_inspect{};
+    std::array<char, 64> asset_query{};
+    std::string asset_filter;
+    std::string asset_document, asset_json_path;
+    std::vector<std::pair<std::string, std::string>> asset_history;
+    std::size_t asset_return_page{};
     std::string asset_category;
     std::size_t asset_page{};
     int trick_row{1};       // its row in the list of tricks, to come back to
@@ -538,6 +545,34 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         const auto& list = *tricks;
         const auto assets = studio::native_assets();
         if (u.browse_assets) {
+            if (!u.asset_document.empty()) {
+                const auto document = studio::native_asset_fields(u.asset_document, u.asset_json_path, u.asset_page);
+                rows.push_back({"< Back", "", "Return to the parent field, referenced document, or native tree.", [] {
+                    auto& s = ui();
+                    if (!s.asset_json_path.empty()) {
+                        const auto slash = s.asset_json_path.rfind('/');
+                        s.asset_json_path = slash == std::string::npos ? "" : s.asset_json_path.substr(0, slash);
+                        s.asset_page = 0;
+                    } else if (!s.asset_history.empty()) {
+                        s.asset_document = s.asset_history.back().first; s.asset_json_path = s.asset_history.back().second;
+                        s.asset_history.pop_back(); s.asset_page = 0;
+                    } else { s.asset_document.clear(); s.asset_page = s.asset_return_page; }
+                    s.row = 0;
+                }});
+                rows.push_back({"NATIVE DATA", document.title, "Read-only native authoring data. References are static dependencies, not proof of runtime execution order.", {}, false});
+                if (!u.asset_json_path.empty()) rows.push_back({"Field path", u.asset_json_path, "Objects and arrays can be expanded; values are not modified.", {}, false});
+                if (!document.error.empty()) rows.push_back({"Data unavailable", document.error, document.error, {}, false});
+                if (document.pages > 1) rows.push_back({"Next page", std::to_string(u.asset_page + 1) + "/" + std::to_string(document.pages), "Next 50 fields or array values.", [pages = document.pages] { ui().asset_page = (ui().asset_page + 1) % pages; ui().row = 0; }});
+                for (const auto& field : document.fields) {
+                    rows.push_back({field.label, field.value, field.expandable ? "Expand this native object or array." : field.value,
+                        [path = field.path] { ui().asset_json_path = path; ui().asset_page = 0; ui().row = 0; }, field.expandable});
+                    if (!field.reference.empty()) rows.push_back({"Open reference: " + field.label, ">", "Follow the referenced native partition; missing documents remain explicit.", [ref = field.reference] {
+                        auto& s = ui(); s.asset_history.emplace_back(s.asset_document, s.asset_json_path);
+                        s.asset_document = ref; s.asset_json_path.clear(); s.asset_page = 0; s.row = 0;
+                    }});
+                }
+                break;
+            }
             rows.push_back({"< Back", "", "Browse parent category, or return to editable tricks.", [] {
                 auto& state = ui();
                 if (state.asset_category.empty()) state.browse_assets = false;
@@ -547,19 +582,32 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 }
                 state.asset_page = 0; state.row = 0;
             }});
-            rows.push_back({u.asset_category.empty() ? "NATIVE ASSET TREE" : upper(u.asset_category), "", "Categories are inferred from names; indexed assets are not all editable clips.", {}, false});
-            std::map<std::string, std::size_t> children;
+            rows.push_back({u.asset_category.empty() ? "NATIVE ASSET TREE" : upper(u.asset_category), "", "Categories are name hints; root types come from decoded native documents. Editable previews do not imply live phase replacement.", {}, false});
+            rows.push_back({"Show", u.asset_ready_only ? "Editable clips" : "All assets", "Filter the whole tree to clips with an available preview.", [] { ui().asset_ready_only = !ui().asset_ready_only; ui().asset_page = 0; ui().row = 0; }});
+            rows.push_back({"Selection action", u.asset_inspect ? "Inspect native data" : "Open preview", "Inspect data opens the full typed field tree and references, including for editable clips.", [] { ui().asset_inspect = !ui().asset_inspect; }});
+            if (!u.asset_filter.empty()) rows.push_back({"Clear search", u.asset_filter, "Clear the native asset name/type filter.", [] { ui().asset_query.fill(0); ui().asset_filter.clear(); ui().asset_page = 0; ui().row = 0; }});
+            std::unordered_map<std::string_view, const studio::GameTrick*> available;
+            for (const auto& trick : list) if (!trick.asset.empty()) available.emplace(trick.asset, &trick);
+            std::map<std::string, std::pair<std::size_t, std::size_t>> children;
             std::vector<const studio::NativeAsset*> leaves;
             const auto prefix = u.asset_category.empty() ? "" : u.asset_category + "/";
             for (const auto& asset : *assets) {
+                const bool ready = available.contains(asset.asset);
+                if (u.asset_ready_only && !ready) continue;
+                if (!u.asset_filter.empty()) {
+                    auto haystack = asset.asset + ' ' + asset.root_type + ' ' + asset.category;
+                    for (auto& c : haystack) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+                    if (haystack.find(u.asset_filter) == std::string::npos) continue;
+                }
                 if (asset.category == u.asset_category) leaves.push_back(&asset);
                 else if (asset.category.starts_with(prefix)) {
                     const auto rest = asset.category.substr(prefix.size());
-                    ++children[rest.substr(0, rest.find('/'))];
+                    auto& counts = children[rest.substr(0, rest.find('/'))];
+                    ++counts.first; counts.second += ready;
                 }
             }
-            for (const auto& [child, count] : children) {
-                rows.push_back({child, std::to_string(count) + " >", "Browse this branch of the native animation inventory.", [path = prefix + child] {
+            for (const auto& [child, counts] : children) {
+                rows.push_back({child, std::to_string(counts.second) + " editable / " + std::to_string(counts.first) + " >", "Browse this branch of the native animation inventory.", [path = prefix + child] {
                     ui().asset_category = path; ui().asset_page = 0; ui().row = 0;
                 }});
             }
@@ -576,13 +624,16 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             }
             for (std::size_t i = u.asset_page * page_size; i < std::min(leaves.size(), (u.asset_page + 1) * page_size); ++i) {
                 const auto& asset = *leaves[i];
-                const auto ready = std::find_if(list.begin(), list.end(), [&](const auto& t) { return !t.asset.empty() && t.asset == asset.asset; });
-                auto label = asset.asset.substr(std::string("animation/dingo/").size());
-                if (ready != list.end()) rows.push_back({label, "Editable", "Open this decoded native clip. Native board physics and transition constraints are not included in a clip.", [t = *ready] {
+                const auto ready = available.find(asset.asset);
+                auto label = asset.asset.starts_with("animation/dingo/") ? asset.asset.substr(std::string("animation/dingo/").size()) : asset.kind + " " + asset.partition.substr(0, 8);
+                if (ready != available.end() && !u.asset_inspect) rows.push_back({label, "Editable", "Open this decoded native source clip. Graph constraints and live phase replacement are separate.", [t = *ready->second] {
                     std::string m; studio::load_game_trick(t, m); say(m); ui().names_for = 0;
                 }});
-                else rows.push_back({label, "Indexed", asset.kind + ": " + asset.asset + ". Not decoded or connected to live playback yet.", [name = asset.asset] {
-                    say("Indexed only: " + name + ". Decoding and runtime phase mapping are still required.");
+                else rows.push_back({label, ready != available.end() ? "Editable / data" : asset.decode_state == "metadata" ? "Metadata" :
+                    asset.decode_state == "unsupported" ? "Unsupported preview" : asset.decode_state == "error" ? "Decode failed" : asset.decode_state == "pending" ? "Queued" : "Indexed",
+                    asset.kind + ": " + asset.asset + ". " + asset.detail, [name = asset.asset] {
+                    auto& s = ui(); s.asset_return_page = s.asset_page; s.asset_document = name;
+                    s.asset_json_path.clear(); s.asset_history.clear(); s.asset_page = 0; s.row = 0;
                 }});
             }
             break;
@@ -1134,6 +1185,16 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
     const ImU32 ink = IM_COL32(20, 20, 22, 255), ink_soft = IM_COL32(90, 90, 96, 255);
     const auto tab = static_cast<Tab>(u.tab);
     float y = at.y + 16 * k;
+    if (tab == Tab::tricks && u.browse_assets && u.asset_document.empty()) {
+        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y), ink_soft, "SEARCH NATIVE NAMES / TYPES");
+        ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, y + 20 * k));
+        if (text_field(f, "##nativequery", u.asset_query, size.x - 44 * k)) {
+            u.asset_filter = u.asset_query.data();
+            for (auto& c : u.asset_filter) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+            u.asset_page = 0; u.row = 0;
+        }
+        y += 70 * k;
+    }
     if (tab == Tab::joints || tab == Tab::keys) {
         text(d, f.heading, 22 * k, ImVec2(at.x + 22 * k, y), ink, upper(label_of(u.selected)));
         const auto* key = key_here(v, u.selected);
