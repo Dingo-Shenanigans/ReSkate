@@ -2897,7 +2897,8 @@ void draw_animation_studio_loading() {
         const char* what = l.what == studio::Loading::leaving ? "BACK TO THE STREETS" : "SETTING UP THE STUDIO";
         // The size and the place skate.'s own loading box has, so ours reads as the same thing.
         const float box_h = 0.088f * H, box_w = 0.300f * H;
-        const ImVec2 bb(display.x - 0.034f * display.x, H - 0.045f * H), ba(bb.x - box_w, bb.y - box_h);
+        // Up off the bottom edge, with what is going on under it in the corner.
+        const ImVec2 bb(display.x - 0.034f * display.x, H - 0.125f * H), ba(bb.x - box_w, bb.y - box_h);
         // skate.'s box: black, with a light rough edge.
         const float rim = 2.5f * k;
         if (!draw_studio_tile(d, ba, bb, 8 * k, fade(IM_COL32(205, 205, 205, 255)))) skate_theme::rough_rect(d, ba, bb, fade(IM_COL32(205, 205, 205, 255)), 5, 1.2f * k);
@@ -2915,8 +2916,9 @@ void draw_animation_studio_loading() {
             d->AddCircle(c, wr, fade(skate_theme::white), 24, 3 * k);
             d->AddLine(c, ImVec2(c.x + std::cos(t * 6) * wr, c.y + std::sin(t * 6) * wr), fade(skate_theme::blue), 3 * k);
         }
-        const auto ww = text_size(heading, 0.024f * H, what);
-        text(d, heading, 0.024f * H, ImVec2(ba.x - 0.024f * H - ww.x, ba.y + (box_h - ww.y) * 0.5f), fade(skate_theme::white), what);
+        // What is going on, in the bottom right corner, under the box.
+        const auto ww = text_size(heading, 0.026f * H, what);
+        text(d, heading, 0.026f * H, ImVec2(bb.x - ww.x, H - 0.05f * H - ww.y * 0.5f), fade(skate_theme::white), what);
     }
 }
 
