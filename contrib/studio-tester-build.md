@@ -57,6 +57,15 @@ controlled by its administrators; this change does not alter those settings.
 
 For local reproduction:
 
+CI uses the `ci-windows` Ninja Multi-Config preset from an MSVC developer shell,
+with two compiler jobs, embedded compiler symbols (linked PDBs are retained),
+sccache for C++ and a separate cache for Cargo sources and the Spotify helper.
+Rust and C++ have separate timing steps. The first cold run populates these
+caches; later runs reuse unchanged compilations. The 75-minute job limit leaves
+room for the complete library checks, ZIP creation and upload on a cold runner;
+it is a safety limit, not a build-time target. Local Visual Studio builds keep
+their existing preset and compiler settings.
+
 ```powershell
 cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_ANIMATION_STUDIO_TESTS=ON -DDINGOSDK_LAUNCHER_AUTO_UPDATE=OFF

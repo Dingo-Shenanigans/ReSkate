@@ -21,9 +21,12 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       PYTHONUTF8: '1'
+      CARGO_BUILD_JOBS: '2'
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
     defaults:
       run:
         shell: pwsh
@@ -34,19 +37,53 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: Install C++ compilation cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.16.0
+      - name: Identify Rust toolchain
+        id: rust
+        run: |
+          $version = (rustc --version).Trim()
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Restore Rust dependencies and compiled helper
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            SpotifyHelper/target
+          key: studio-rust-windows-2022-v1-${{ steps.rust.outputs.version }}-${{ hashFiles('SpotifyHelper/Cargo.lock', 'SpotifyHelper/Cargo.toml', 'SpotifyHelper/.cargo/config.toml', 'SpotifyHelper/src/**') }}
+          restore-keys: |
+            studio-rust-windows-2022-v1-${{ steps.rust.outputs.version }}-
       - name: Prepare Python and optional Rust dependencies
         run: |
           python -m pip install -r contrib/animator-studio/requirements-test.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build optional Spotify helper
+        working-directory: SpotifyHelper
+        run: |
+          . ../contrib/enter-msvc.ps1
+          cargo build --locked --release --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Configure candidate with binary auto-update disabled
-        run: cmake --preset vs2022-x64 -DDINGOSDK_BUILD_ANIMATION_STUDIO_TESTS=ON -DDINGOSDK_LAUNCHER_AUTO_UPDATE=OFF
+        run: |
+          . ./contrib/enter-msvc.ps1
+          cmake --preset ci-windows -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build runtime, launcher and animation checks
-        run: cmake --build --preset release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_trick_gesture_tests dingosdk_anim_graph_probe --parallel 4
+        run: |
+          . ./contrib/enter-msvc.ps1
+          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_trick_gesture_tests dingosdk_anim_graph_probe --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Show C++ cache statistics
+        if: always()
+        run: sccache --show-stats
       - name: Run regression checks
         run: |
-          ctest --test-dir build/vs2022-x64 -C Release --output-on-failure
+          ctest --test-dir build/ci-windows -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -61,11 +98,11 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.full_library
         env:
           BUILD_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python contrib/stage_studio_tester.py --build build/vs2022-x64 --library work/native-library.zip --output work/tester-stage --run-url "$env:BUILD_RUN_URL"
+        run: python contrib/stage_studio_tester.py --build build/ci-windows --library work/native-library.zip --output work/tester-stage --run-url "$env:BUILD_RUN_URL"
       - name: Validate all packaged previews, names and inspector documents
         if: github.event_name != 'workflow_dispatch' || inputs.full_library
         run: |
-          $tool = './build/vs2022-x64/Release/dingosdk_animation_studio_tests.exe'
+          $tool = './build/ci-windows/Release/dingosdk_animation_studio_tests.exe'
           $library = 'work/tester-stage/ReSkate.Tricks/library'
           & $tool --native-index "$library/native-catalog.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -105,7 +142,7 @@ jobs:
         with:
           name: studio-build-diagnostics-${{ github.run_id }}
           path: |
-            build/vs2022-x64/Testing/Temporary/
-            build/vs2022-x64/CMakeFiles/CMakeConfigureLog.yaml
+            build/ci-windows/Testing/Temporary/
+            build/ci-windows/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: ignore
           retention-days: 7
