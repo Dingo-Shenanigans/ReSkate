@@ -2,7 +2,9 @@
 #include "Engine/Core/Debug/trace.h"
 #include "crash_reporter.h"
 #include "gui.h"
+#include "language.h"
 #include "launch.h"
+#include "text_encoding.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -23,6 +25,7 @@ namespace app = dingosdk::launcher_app;
 namespace update = dingosdk::launcher_update;
 using dingosdk::logging::Channel;
 using dingosdk::logging::Level;
+using dingosdk::launcher_language::tr;
 
 std::wstring widen(std::string_view value) {
     if (value.empty()) return {};
@@ -118,10 +121,12 @@ std::wstring non_ascii_folder() {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // (Only read: what is said before the window opens is in the player's language too.)
+    dingosdk::launcher_gui::apply_language_setting();
     int argc{};
     auto** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv) {
-        MessageBoxW(nullptr, L"Could not read the launcher command line.",
+        MessageBoxW(nullptr, widen(tr("Could not read the launcher command line.")).c_str(),
             L"ReSkate Launcher", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return 1;
     }
@@ -134,22 +139,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     LocalFree(argv);
     // (Before anything is read or written there: the only thing to do is to close.)
     if (in_steam_library()) {
-        MessageBoxW(nullptr,
-            L"ReSkate cannot run from Steam's skate. folder.\n\n"
-            L"Move ReSkateLauncher.exe and ReSkate.dll to a new, empty folder of their own (for example C:\\Games\\ReSkate) "
-            L"and run the launcher from there. It installs its own copy of the game into that folder, so a Steam update "
-            L"cannot break it.\n\nThe launcher will now close.",
+        MessageBoxW(nullptr, widen(tr(
+            "ReSkate cannot run from Steam's skate. folder.\n\n"
+            "Move ReSkateLauncher.exe and ReSkate.dll to a new, empty folder of their own (for example C:\\Games\\ReSkate) "
+            "and run the launcher from there. It installs its own copy of the game into that folder, so a Steam update "
+            "cannot break it.\n\nThe launcher will now close.")).c_str(),
             L"ReSkate Launcher", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return 1;
     }
     if (const auto folder = non_ascii_folder(); !folder.empty() &&
         MessageBoxW(nullptr,
-            (L"ReSkate is in a folder whose path has letters skate. cannot read:\n\n" + folder +
-             L"\n\nThe game cannot find its own files there (accented, Cyrillic, Japanese and other letters outside "
-             L"A to Z; OneDrive and Desktop folders often have them) and crashes as it starts.\n\n"
-             L"Move ReSkateLauncher.exe and ReSkate.dll, with the game the launcher installed beside them, to a folder "
-             L"with only plain letters, for example C:\\Games\\ReSkate, and run the launcher from there.\n\n"
-             L"Start anyway?").c_str(),
+            widen(dingosdk::launcher_language::trf(
+                "ReSkate is in a folder whose path has letters skate. cannot read:\n\n{}"
+                "\n\nThe game cannot find its own files there (accented, Cyrillic, Japanese and other letters outside "
+                "A to Z; OneDrive and Desktop folders often have them) and crashes as it starts.\n\n"
+                "Move ReSkateLauncher.exe and ReSkate.dll, with the game the launcher installed beside them, to a folder "
+                "with only plain letters, for example C:\\Games\\ReSkate, and run the launcher from there.\n\n"
+                "Start anyway?", dingosdk::launcher_text::utf8(folder))).c_str(),
             L"ReSkate Launcher", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) != IDYES)
         return 1;
     auto arguments = original;
@@ -171,8 +177,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         const auto message = widen(exception.what());
         dingosdk::logging::write(Level::critical, Channel::launcher, message);
         dingosdk::logging::flush();
-        std::wstring dialog = L"Could not start Skate.\n\n" + message;
-        if (!logs.empty()) dialog += L"\n\nDetails: " + (logs / L"ReSkate.log").wstring();
+        std::wstring dialog = widen(tr("Could not start Skate.")) + L"\n\n" + widen(tr(exception.what()));
+        if (!logs.empty()) dialog += L"\n\n" + widen(tr("Details:")) + L" " + (logs / L"ReSkate.log").wstring();
         MessageBoxW(nullptr, dialog.c_str(), L"ReSkate Launcher", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         result = 1;
     }

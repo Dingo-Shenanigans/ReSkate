@@ -47,6 +47,28 @@ void section_caption(const Fonts& fonts, const char* text) {
     ImGui::PopFont();
 }
 
+// The launcher's language (language.h), each named in itself so a player who cannot read the
+// one shown still finds theirs.
+void language_choice(Launcher& launcher, Settings& settings) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(tr("Language"));
+    ImGui::SameLine(S(200));
+    ImGui::SetNextItemWidth(S(160));
+    const auto& languages = launcher_language::languages();
+    const auto& chosen = launcher_language::chosen();
+    const auto shown = std::ranges::find(languages, chosen, &launcher_language::Language::code);
+    if (ImGui::BeginCombo("##language", shown != languages.end() ? shown->name.c_str() : chosen.c_str())) {
+        for (const auto& language : languages)
+            if (ImGui::Selectable(language.name.c_str(), language.code == chosen) && language.code != chosen) {
+                settings.language = language.code;
+                launcher_language::choose(language.code);
+                launcher.save();
+            }
+        ImGui::EndCombo();
+    }
+    setting_note(tr("Text without a translation shows in English."));
+}
+
 // ---------------------------------------------------------------- skate.'s own settings
 
 namespace game = launcher_game_settings;
@@ -69,13 +91,13 @@ bool game_settings_ready(Launcher& launcher, Ui& ui, bool& running) {
         pages.resolutions = game::display_resolutions();
     }
     if (pages.saved.folders.empty()) {
-        setting_note(pages.error.empty() ? "skate. has not saved its settings on this PC yet. Start the game once and they "
-                                           "appear here." : pages.error.c_str());
+        setting_note(pages.error.empty() ? tr("skate. has not saved its settings on this PC yet. Start the game once and they "
+                                              "appear here.") : pages.error.c_str());
         return false;
     }
     running = launcher.game() != 0 || launcher.busy();
-    setting_note("skate.'s own settings, the ones in its Settings menu. The game reads them when it starts.");
-    if (running) setting_note("Skate is running: close it to change these here.");
+    setting_note(tr("skate.'s own settings, the ones in its Settings menu. The game reads them when it starts."));
+    if (running) setting_note(tr("Skate is running: close it to change these here."));
     if (!pages.error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color::danger));
         ImGui::PushTextWrapPos(0);
@@ -104,7 +126,7 @@ void store_game_settings(Ui& ui) {
         pages.saved.values = pages.values;
         pages.error.clear();
     } catch (const std::exception& failure) {
-        pages.error = std::string("Not saved: ") + failure.what() + ".";
+        pages.error = trf("Not saved: {}.", failure.what());
         pages.values = pages.saved.values;
     }
 }
@@ -122,10 +144,10 @@ void game_settings_page(const Fonts& fonts, Ui& ui, std::string_view page, bool 
         if (std::string_view(section) != item.section) {
             if (*section) ImGui::Spacing(), ImGui::Spacing();
             section = item.section;
-            section_caption(fonts, section);
+            section_caption(fonts, tr(section));
         }
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(item.label);
+        ImGui::TextUnformatted(tr(item.label));
         ImGui::SameLine(S(game_control_x));
         ImGui::PushID(item.key);
         ImGui::SetNextItemWidth(S(game_control_width));
@@ -158,10 +180,10 @@ void game_settings_page(const Fonts& fonts, Ui& ui, std::string_view page, bool 
                 // A value the launcher has no name for shows as its number.
                 std::string preview = std::to_string(*number);
                 for (const auto& choice : item.choices)
-                    if (choice.value == *number) preview = choice.label;
+                    if (choice.value == *number) preview = tr(choice.label);
                 if (ImGui::BeginCombo("##value", preview.c_str())) {
                     for (const auto& choice : item.choices)
-                        if (ImGui::Selectable(choice.label, choice.value == *number)) *number = choice.value;
+                        if (ImGui::Selectable(tr(choice.label), choice.value == *number)) *number = choice.value;
                     ImGui::EndCombo();
                 }
             }
@@ -170,7 +192,7 @@ void game_settings_page(const Fonts& fonts, Ui& ui, std::string_view page, bool 
             // The game saves a place in this PC's list of display sizes.
             if (auto* number = std::get_if<std::int32_t>(&found->second)) {
                 const auto name = [&](int index) {
-                    if (index < 0 || index >= static_cast<int>(pages.resolutions.size())) return std::format("Mode {}", index);
+                    if (index < 0 || index >= static_cast<int>(pages.resolutions.size())) return trf("Mode {}", index);
                     const auto [width, height] = pages.resolutions[static_cast<std::size_t>(index)];
                     return std::format("{} x {}", width, height);
                 };
@@ -208,11 +230,12 @@ void graphics_options(const Fonts& fonts, Ui& ui, bool running) {
     ImGui::BeginDisabled(running);
     ImGui::Spacing();
     ImGui::Spacing();
-    section_caption(fonts, "SET EVERY QUALITY OPTION TO");
-    static constexpr std::array<const char*, 4> levels{"Low", "Medium", "High", "Ultra"};
+    section_caption(fonts, tr("SET EVERY QUALITY OPTION TO"));
+    static constexpr std::array<const char*, 4> levels{translatable("Low"), translatable("Medium"), translatable("High"),
+                                                       translatable("Ultra")};
     for (int level = 0; level < static_cast<int>(levels.size()); ++level) {
         if (level) ImGui::SameLine();
-        if (!ImGui::Button(levels[static_cast<std::size_t>(level)], ImVec2(S(110), 0))) continue;
+        if (!ImGui::Button(tr(levels[static_cast<std::size_t>(level)]), ImVec2(S(110), 0))) continue;
         for (const auto& setting : game::graphics_options())
             if (const auto* wanted = game::level_value(setting, level))
                 if (auto* value = value_of(setting.name)) *value = wanted, changed = true;
@@ -226,22 +249,22 @@ void graphics_options(const Fonts& fonts, Ui& ui, bool running) {
             category = setting.category;
             ImGui::Spacing();
             ImGui::Spacing();
-            section_caption(fonts, category);
+            section_caption(fonts, tr(category));
         }
         const auto* needed = *setting.needs_name ? value_of(setting.needs_name) : nullptr;
         ImGui::BeginDisabled(*setting.needs_name && (!needed || *needed != setting.needs_value));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(setting.label);
+        ImGui::TextUnformatted(tr(setting.label));
         ImGui::SameLine(S(game_control_x));
         ImGui::SetNextItemWidth(S(game_control_width));
         // A value the launcher has no name for (set in game, or by a newer game) shows as it is.
         const char* preview = value->c_str();
         for (const auto& choice : setting.choices)
-            if (*value == choice.value) preview = choice.label;
+            if (*value == choice.value) preview = tr(choice.label);
         ImGui::PushID(setting.name);
         if (ImGui::BeginCombo("##value", preview)) {
             for (const auto& choice : setting.choices)
-                if (ImGui::Selectable(choice.label, *value == choice.value) && *value != choice.value)
+                if (ImGui::Selectable(tr(choice.label), *value == choice.value) && *value != choice.value)
                     *value = choice.value, changed = true;
             ImGui::EndCombo();
         }
@@ -267,20 +290,21 @@ bool key_bindings(const Fonts& fonts, Settings& settings, Ui& ui) {
         const int other = ui.binding == 1 ? settings.console_key : settings.menu_key;
         if (key == VK_ESCAPE) ui.key_error.clear();
         else if (!launcher::bindable_key(key))
-            ui.key_error = launcher::key_name(key) + " can't be used. Pick another key.";
+            ui.key_error = trf("{} can't be used. Pick another key.", launcher::key_name(key));
         else if (static_cast<int>(key) == other)
-            ui.key_error = launcher::key_name(key) + " already opens the " + (ui.binding == 1 ? "console." : "menu.");
+            ui.key_error = ui.binding == 1 ? trf("{} already opens the console.", launcher::key_name(key))
+                                           : trf("{} already opens the menu.", launcher::key_name(key));
         else { changed = target != static_cast<int>(key); target = static_cast<int>(key); ui.key_error.clear(); }
         ui.binding = 0;
     }
-    section_caption(fonts, "IN-GAME KEYS");
-    setting_note("Click a key, then press the one you want. Esc cancels.");
+    section_caption(fonts, tr("IN-GAME KEYS"));
+    setting_note(tr("Click a key, then press the one you want. Esc cancels."));
     const auto row = [&](int which, const char* label, const char* detail, int key) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label);
         ImGui::SameLine(S(200));
         const bool waiting = ui.binding == which;
-        const auto text = (waiting ? std::string("Press a key...")
+        const auto text = (waiting ? std::string(tr("Press a key..."))
                                    : launcher::key_name(static_cast<unsigned>(key))) + "##key" + std::to_string(which);
         if (waiting) push_primary_button();
         if (ImGui::Button(text.c_str(), ImVec2(-1, 0)) && !waiting) {
@@ -294,15 +318,15 @@ bool key_bindings(const Fonts& fonts, Settings& settings, Ui& ui) {
         ImGui::TextDisabled("%s", detail);
         ImGui::Spacing();
     };
-    row(1, "ReSkate menu", "Opens and closes the ReSkate menu.", settings.menu_key);
-    row(2, "Console", "Opens and closes the command console.", settings.console_key);
+    row(1, tr("ReSkate menu"), tr("Opens and closes the ReSkate menu."), settings.menu_key);
+    row(2, tr("Console"), tr("Opens and closes the command console."), settings.console_key);
     if (!ui.key_error.empty())
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "%s", ui.key_error.c_str());
     ImGui::Spacing();
     const bool defaults = settings.menu_key == static_cast<int>(launcher::default_menu_key) &&
                           settings.console_key == static_cast<int>(launcher::default_console_key);
     ImGui::BeginDisabled(defaults || ui.binding);
-    if (ImGui::Button("Reset to defaults")) {
+    if (ImGui::Button(tr("Reset to defaults"))) {
         settings.menu_key = static_cast<int>(launcher::default_menu_key);
         settings.console_key = static_cast<int>(launcher::default_console_key);
         ui.key_error.clear();
@@ -310,7 +334,7 @@ bool key_bindings(const Fonts& fonts, Settings& settings, Ui& ui) {
     }
     ImGui::EndDisabled();
     ImGui::Spacing();
-    setting_note("The chosen keys stop reaching the game while it runs, so avoid keys you skate with.");
+    setting_note(tr("The chosen keys stop reaching the game while it runs, so avoid keys you skate with."));
     return changed;
 }
 
@@ -331,7 +355,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     const float content_x = rail_x + rail_width + S(26);
     const float top = S(52), bottom = frame.y - S(24);
     const float title_size = S(44);
-    page_title(draw, fonts, ImVec2(rail_x + S(2), top - S(4)), "SETTINGS", title_size);
+    page_title(draw, fonts, ImVec2(rail_x + S(2), top - S(4)), tr("SETTINGS"), title_size);
 
     // ------------------------------------------------ rail
     const float rail_top = top + title_size + S(20);
@@ -339,23 +363,24 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     // Flattened, so a controller's D-pad crosses from the rail into the page and back.
     ImGui::BeginChild("##settings_rail", ImVec2(rail_width, bottom - rail_top), ImGuiChildFlags_NavFlattened);
     // The launcher's own pages, then the game's (game_settings.h).
-    static constexpr std::array<const char*, 9> names{"GAME", "DISPLAY", "KEYS", "ADVANCED",
-                                                      "GRAPHICS", "AUDIO", "CAMERA", "CONTROLS", "REPLAY"};
+    static constexpr std::array<const char*, 9> names{translatable("GAME"), translatable("DISPLAY"), translatable("KEYS"),
+        translatable("ADVANCED"), translatable("GRAPHICS"), translatable("AUDIO"), translatable("CAMERA"),
+        translatable("CONTROLS"), translatable("REPLAY")};
     constexpr int game_pages = 4;
     ImGui::BeginDisabled(binding);
     for (int i = 0; i < static_cast<int>(names.size()); ++i) {
         if (i == game_pages) {
             ImGui::Dummy(ImVec2(0, S(4)));
-            section_caption(fonts, "SKATE. SETTINGS");
+            section_caption(fonts, tr("SKATE. SETTINGS"));
         }
-        if (nav_tile(fonts, rail_width, names[static_cast<std::size_t>(i)], ui.settings_tab == i))
+        if (nav_tile(fonts, rail_width, tr(names[static_cast<std::size_t>(i)]), ui.settings_tab == i))
             ui.settings_tab = i;
         // A controller starts on the open tab's tile.
         if (ui.settings_tab == i) default_focus();
     }
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(38));
     push_primary_button();
-    if (ImGui::Button("\xe2\x86\x90  BACK", ImVec2(-1, S(34)))) open = false;
+    if (ImGui::Button((std::string("\xe2\x86\x90  ") + tr("BACK")).c_str(), ImVec2(-1, S(34)))) open = false;
     pop_primary_button();
     ImGui::EndDisabled();
     ImGui::EndChild();
@@ -369,37 +394,37 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     ImGui::BeginChild("##settings_page", ImVec2(0, ImGui::GetWindowHeight() - footer), ImGuiChildFlags_NavFlattened);
     switch (ui.settings_tab) {
     case 0: {
-        section_caption(fonts, "GAME FOLDER");
+        section_caption(fonts, tr("GAME FOLDER"));
         ImGui::PushTextWrapPos(0);
         ImGui::TextUnformatted(utf8(paths.directory.wstring()).c_str());
         ImGui::PopTextWrapPos();
-        if (ImGui::Button("Open folder")) open_path(paths.directory);
+        if (ImGui::Button(tr("Open folder"))) open_path(paths.directory);
         ImGui::SameLine();
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Verify game files")) { open = false; open_sign_in(launcher, ui, true); }
+        if (ImGui::Button(tr("Verify game files"))) { open = false; open_sign_in(launcher, ui, true); }
         ImGui::EndDisabled();
         ImGui::Spacing();
         ImGui::Spacing();
-        section_caption(fonts, "PLAY");
-        setting_check("Offline mode", "Play without Steam as Unknown Player; multiplayer is hidden. "
-                      "Used automatically whenever Steam isn't running.", settings.offline);
-        setting_check("Loose files", "Export the game's scripts/ and config/ beside Skate.exe so you can edit them.",
+        section_caption(fonts, tr("PLAY"));
+        setting_check(tr("Offline mode"), tr("Play without Steam as Unknown Player; multiplayer is hidden. "
+                      "Used automatically whenever Steam isn't running."), settings.offline);
+        setting_check(tr("Loose files"), tr("Export the game's scripts/ and config/ beside Skate.exe so you can edit them."),
                       settings.loose_files);
-        setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
-                      "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
+        setting_check(tr("Discord status"), tr("Show on your Discord profile where you are skating: the map, the server or "
+                      "lobby and how many are in it. Off, the game does not talk to Discord at all."), settings.discord_status);
         ImGui::Spacing();
-        section_caption(fonts, "EXTRA GAME ARGUMENTS");
+        section_caption(fonts, tr("EXTRA GAME ARGUMENTS"));
         std::array<char, 1024> arguments{};
         std::copy_n(settings.arguments.begin(), std::min(settings.arguments.size(), arguments.size() - 1), arguments.begin());
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputTextWithHint("##arguments", "Arguments for Skate.exe", arguments.data(), arguments.size()))
+        if (ImGui::InputTextWithHint("##arguments", tr("Arguments for Skate.exe"), arguments.data(), arguments.size()))
             settings.arguments = arguments.data();
-        setting_note("Passed to Skate.exe as they are.");
+        setting_note(tr("Passed to Skate.exe as they are."));
         break;
     }
     case 1:
-        section_caption(fonts, "WINDOW");
-        setting_check("Windowed", "Start in a window of this size instead of the game's saved display settings.",
+        section_caption(fonts, tr("WINDOW"));
+        setting_check(tr("Windowed"), tr("Start in a window of this size instead of the game's saved display settings."),
                       settings.windowed);
         ImGui::BeginDisabled(!settings.windowed);
         ImGui::Indent(ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x);
@@ -427,22 +452,23 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         break;
     }
     case 3:
-        section_caption(fonts, "LAUNCHER");
-        setting_check("Keep the launcher open after launch",
-                      "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
+        section_caption(fonts, tr("LAUNCHER"));
+        language_choice(launcher, settings);
+        setting_check(tr("Keep the launcher open after launch"),
+                      tr("Hide while you play and return when Skate closes. Turn off to close after a successful launch."),
                       settings.keep_open_after_launch);
         {
             const bool updates_were = settings.updates, prereleases_were = settings.prereleases;
-            setting_check("Install ReSkate updates",
-                          "Turn off to keep the ReSkate.dll and launcher you have, such as a test build someone gave you. "
-                          "Skate's own Steam updates are not affected.",
+            setting_check(tr("Install ReSkate updates"),
+                          tr("Turn off to keep the ReSkate.dll and launcher you have, such as a test build someone gave you. "
+                             "Skate's own Steam updates are not affected."),
                           settings.updates);
             // Only while there is a pre-release to test (one newer than the latest release), or while
             // it is on, so it can always be turned off.
             if (settings.prereleases || launcher.prerelease_available())
-                setting_check("Test pre-releases",
-                              "Update to the newest pre-release on GitHub, to try what is coming before it is released. "
-                              "Pre-releases are less tested. Turn off to go back to the latest release.",
+                setting_check(tr("Test pre-releases"),
+                              tr("Update to the newest pre-release on GitHub, to try what is coming before it is released. "
+                                 "Pre-releases are less tested. Turn off to go back to the latest release."),
                               settings.prereleases);
             // Either flipped: checked again now, so PLAY or the update button changes to match.
             if (settings.updates != updates_were || settings.prereleases != prereleases_were) {
@@ -451,33 +477,33 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
             }
         }
         ImGui::Spacing();
-        section_caption(fonts, "TROUBLESHOOTING");
+        section_caption(fonts, tr("TROUBLESHOOTING"));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Log level");
+        ImGui::TextUnformatted(tr("Log level"));
         ImGui::SameLine(S(200));
         ImGui::SetNextItemWidth(S(160));
         ImGui::Combo("##log_level", &settings.log_level, log_levels.data(), static_cast<int>(log_levels.size()));
         ImGui::SameLine();
-        if (ImGui::Button("Open logs")) open_path(paths.logs);
-        setting_note("How much ReSkate.log records. Use debug or trace when reporting a problem.");
+        if (ImGui::Button(tr("Open logs"))) open_path(paths.logs);
+        setting_note(tr("How much ReSkate.log records. Use debug or trace when reporting a problem."));
         ImGui::Spacing();
-        setting_check("GPU crash diagnostics (DRED)", "Records extra detail when the graphics driver crashes. Slightly slower.",
-                      settings.gpu_diagnostics);
-        setting_check("Send crash reports",
-                      "When the launcher or Skate crashes, upload a crash dump and that session's log so the ReSkate "
-                      "developers can fix it. The launcher picks a change up when it next starts.",
+        setting_check(tr("GPU crash diagnostics (DRED)"),
+                      tr("Records extra detail when the graphics driver crashes. Slightly slower."), settings.gpu_diagnostics);
+        setting_check(tr("Send crash reports"),
+                      tr("When the launcher or Skate crashes, upload a crash dump and that session's log so the ReSkate "
+                         "developers can fix it. The launcher picks a change up when it next starts."),
                       settings.crash_reports);
-        setting_check("Send performance timings",
-                      "Send how long downloads, mod installs, the mod merge, level loads and joining a "
-                      "session took, and each level's average frame rate, so slow spots can be found and fixed. Nothing "
-                      "about your account is included. Needs crash reports on; the launcher picks a change up when it "
-                      "next starts.",
+        setting_check(tr("Send performance timings"),
+                      tr("Send how long downloads, mod installs, the mod merge, level loads and joining a "
+                         "session took, and each level's average frame rate, so slow spots can be found and fixed. Nothing "
+                         "about your account is included. Needs crash reports on; the launcher picks a change up when it "
+                         "next starts."),
                       settings.performance_timings);
         ImGui::Spacing();
-        if (ImGui::Button("Privacy Policy")) ui.legal.open = Legal::privacy;
+        if (ImGui::Button(tr("Privacy Policy"))) ui.legal.open = Legal::privacy;
         ImGui::SameLine();
-        if (ImGui::Button("Terms of Service")) ui.legal.open = Legal::terms;
-        setting_note("What ReSkate collects and sends, and the rules for using it and its servers.");
+        if (ImGui::Button(tr("Terms of Service"))) ui.legal.open = Legal::terms;
+        setting_note(tr("What ReSkate collects and sends, and the rules for using it and its servers."));
         break;
     }
     ImGui::EndChild();
@@ -485,9 +511,9 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
 
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - footer + S(8));
     ImGui::PushFont(fonts.caption);
-    ImGui::TextDisabled("%s", !update::binary_updates_enabled() ? "Development build: ReSkate files are never replaced."
-                              : settings.updates ? "Release build: updates install automatically."
-                                                 : "Updates are off: ReSkate files are never replaced.");
+    ImGui::TextDisabled("%s", !update::binary_updates_enabled() ? tr("Development build: ReSkate files are never replaced.")
+                              : settings.updates ? tr("Release build: updates install automatically.")
+                                                 : tr("Updates are off: ReSkate files are never replaced."));
     ImGui::PopFont();
     ImGui::EndChild();
 

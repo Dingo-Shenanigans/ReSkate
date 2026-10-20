@@ -25,5 +25,7 @@ launcher::LaunchOptions saved_launch_options(const launcher_app::Session& sessio
 // The Settings page's "Send crash reports" choice, for this launcher and the game it starts.
 // Call before open_session, which starts crash reporting with the log.
 void apply_crash_report_setting() noexcept;
+// The Settings page's language (or Windows' when none was chosen), for what main shows first.
+void apply_language_setting() noexcept;
 
 } // namespace dingosdk::launcher_gui

@@ -330,9 +330,13 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
-// Fonts are embedded as RCDATA (External/fonts); Segoe UI is the fallback.
-ImFont* embedded_font(const wchar_t* name, float size) {
-    static const ImWchar ranges[]{0x0020, 0x024F, 0x0400, 0x052F, 0x2000, 0x206F, 0x2190, 0x2193, 0};
+// The glyphs every font loads: Latin with its extensions (Turkish, Polish...), Cyrillic,
+// punctuation and the arrows.
+const ImWchar font_ranges[]{0x0020, 0x024F, 0x0400, 0x052F, 0x2000, 0x206F, 0x2190, 0x2193, 0};
+
+// Fonts are embedded as RCDATA (External/fonts); Segoe UI is the fallback. `merge` adds only the glyphs the
+// font loaded before it lacks.
+ImFont* embedded_font(const wchar_t* name, float size, bool merge = false) {
     const auto instance = GetModuleHandleW(nullptr);
     const auto resource = FindResourceW(instance, name, MAKEINTRESOURCEW(10) /* RT_RCDATA */);
     if (!resource) return nullptr;
@@ -342,8 +346,9 @@ ImFont* embedded_font(const wchar_t* name, float size) {
     ImFontConfig config;
     config.FontDataOwnedByAtlas = false;  // the resource lives as long as the process
     config.OversampleH = size >= 48 ? 1 : 2;
+    config.MergeMode = merge;
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(SizeofResource(instance, resource)),
-        S(size), &config, ranges);
+        S(size), &config, font_ranges);
 }
 
 ImFont* system_font(const wchar_t* file, float size) {
@@ -352,7 +357,8 @@ ImFont* system_font(const wchar_t* file, float size) {
     const auto path = fs::path(windows.data()) / L"Fonts" / file;
     std::error_code error;
     if (!fs::is_regular_file(path, error)) return nullptr;
-    return ImGui::GetIO().Fonts->AddFontFromFileTTF(path_utf8(path).c_str(), S(size)); // (ImGui reads UTF-8)
+    // (ImGui reads UTF-8)
+    return ImGui::GetIO().Fonts->AddFontFromFileTTF(path_utf8(path).c_str(), S(size), nullptr, font_ranges);
 }
 
 Fonts load_fonts() {
@@ -371,6 +377,8 @@ Fonts load_fonts() {
     fonts.tile = font(L"FONT_HEADING", L"seguibl.ttf", 30);
     fonts.action = font(L"FONT_HEADING", L"seguibl.ttf", 50);
     fonts.title = font(L"FONT_BRUSH", L"seguibl.ttf", 86);
+    // Permanent Marker has no Ğ, İ or Ş, which some languages' titles need.
+    embedded_font(L"FONT_HEADING", 86, true);
     io.FontDefault = fonts.body;
     // Built here rather than on the first frame, so the log says whether it
     // worked. A window with no atlas draws nothing but its clear colour.
@@ -500,9 +508,10 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         DestroyWindow(window);
-        throw std::runtime_error("This PC's graphics driver cannot draw the launcher's window. Update your "
+        // (Shown translated by main.)
+        throw std::runtime_error(translatable("This PC's graphics driver cannot draw the launcher's window. Update your "
             "graphics driver and try again. If that does not help, the graphics card is below what ReSkate and "
-            "skate. need. The log names the card it tried to use.");
+            "skate. need. The log names the card it tried to use."));
     }
     g_renderer = &renderer;
     {
