@@ -964,7 +964,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }, v.has_clip});
         rows.push_back({"Turn about", u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "any axis",
                         "Which axis a drag or the left stick turns the joint about.", [] { ui().axis = ui().axis >= 2 ? -1 : ui().axis + 1; }});
-        rows.push_back({"Axes", u.local_axes ? "the joint's own" : "the world's", "X, Y and Z of the joint itself or of the world.",
+        rows.push_back({"Gizmo alignment", u.local_axes ? "Object" : "World",
+                        "Which way the gizmo's arrows and rings lie: along the joint's own X, Y and Z (Object), or the world's "
+                        "(World). The board's own is the ground it starts on, because that is the frame its keys are in. Key: L.",
                         [] { ui().local_axes = !ui().local_axes; }});
         rows.push_back({"Solo", v.solo ? "on" : "off",
                         "On: a turn moves that joint alone. The joints hanging off it are turned back by as much, so the limb below "
@@ -1806,7 +1808,13 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         glow_box(d, *sel_at, 22 * k, k);
         if (u.pad_mode) text(d, f.bold, 13 * k, ImVec2(sel_at->x + 30 * k, sel_at->y - 8 * k), blue_light, upper(label_of(u.selected)));
     }
-    if (can_edit && !u.pad_mode) draw_gizmo(d, gizmo, u.gizmo_hot, k);
+    if (can_edit && !u.pad_mode) {
+        draw_gizmo(d, gizmo, u.gizmo_hot, k);
+        // Which way the handles lie, beside them: the one thing you cannot read off the gizmo itself.
+        if (gizmo.valid)
+            text(d, f.bold, 12 * k, ImVec2(gizmo.centre.x + 14 * k, gizmo.centre.y + 10 * k), IM_COL32(255, 255, 255, 120),
+                 u.local_axes ? "OBJECT" : "WORLD");
+    }
     if (hovered && *hovered != u.selected)
         if (const auto at = project(joint_view(v, *hovered)->position))
             text(d, f.bold, 13 * k, ImVec2(at->x + 10 * k, at->y - 22 * k), white, upper(label_of(*hovered)));
@@ -1823,7 +1831,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));
         const char* axis = u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "FREE";
         text(d, f.body, 12 * k, ImVec2(x, y + 42 * k), IM_COL32(120, 190, 255, 150),
-             std::format("{}  axis {}  ({}){}{}", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world",
+             std::format("{}  axis {}  ({}){}{}", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "object" : "world",
                          v.solo ? "  solo" : "", u.snap ? "  snapping" : ""));
     }
     if (u.menu_open || (!inside && u.gizmo_handle < 0 && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
@@ -2276,10 +2284,11 @@ void draw_animation_studio_loading() {
 
     // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
     {
-        static constexpr std::array<const char*, 9> tips{
+        static constexpr std::array<const char*, 10> tips{
             "Pick a trick in TRICKS, then its pop: low, mid or high.",
             "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
             "The arrows on a joint move it along one axis, the rings turn it about one.",
+            "L swaps the gizmo between the joint's own axes and the world's.",
             "Solo in KEYS turns one joint alone. Snapping puts a foot on the deck in the air.",
             "K keys the pose on this frame. Keys always sit on whole frames.",
             "G moves the hips or the board. X, Y and Z lock an axis.",
