@@ -425,14 +425,10 @@ studio::Vec3 up_of(const studio::Quat& q) {
 // Snapping holds a foot on the deck: it keeps its place along and across the board, but sits
 // `feet_above_board` up the board's up, the height the game holds the feet at while riding.
 //
-// Only in the air. On the ground the game's own contact does the opposite - it pulls the board up under
-// the lower foot (board_on_feet) - so snapping there would only fight it, and the foot is on the deck
-// already. The pop and the landing blend between the two, so those are left alone as well.
-bool snapping_now(const studio::View& v) {
-    if (!ui().snap || !v.has_clip) return false;
-    if (v.takeoff < 0 || v.landing <= v.takeoff) return false;
-    return v.time > v.takeoff + studio::board_blend && v.time < v.landing - studio::board_blend;
-}
+// Wherever the board is, which is the point: on the ground that is the board the game has already put
+// under the lower foot (board_on_feet), in the air the one the clip and its keys put there. Snapping a
+// foot onto it is right either way, so this asks nothing about the trick but whether the board is known.
+bool snapping_now(const studio::View& v) { return ui().snap && v.has_clip; }
 studio::Vec3 on_the_deck(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
     if ((joint != 10 && joint != 343) || !snapping_now(v)) return target;
     const auto* board = joint_view(v, studio::board_joint);
@@ -996,8 +992,8 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "joint. Key: S.",
                         [v] { studio::set_solo(!v.solo); }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
-                        "On: a foot moved while the skater is in the air lands on the deck, at the height the feet ride at. On the "
-                        "ground the game puts the board under the feet itself, so nothing is snapped there. Key: N.",
+                        "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
+                        "instead of through it or over it. Key: N.",
                         [] { ui().snap = !ui().snap; }});
         rows.push_back({"Follow joint", "", "The camera keeps the joint in the middle (again: the whole skater).", [] { studio::focus_joint(ui().selected); }});
         rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame.", [] { studio::copy_pose(); }});
@@ -1850,7 +1846,8 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     if (sel && !card_shows) {
         const auto off = studio::offset_of(u.selected);
         const auto e = studio::to_euler(off.rotation);
-        const float x = area_min.x + 24 * k, y = area_max.y - 92 * k;
+        // High enough that the mode line below them clears the message along the bottom of the screen.
+        const float x = area_min.x + 24 * k, y = area_max.y - 168 * k;
         if (studio::editable(u.selected) && studio::editable(u.selected)->moves) {
             text(d, f.heading, 15 * k, ImVec2(x, y - 44 * k), IM_COL32(255, 255, 255, 110), "POSITION");
             text(d, f.body, 13 * k, ImVec2(x, y - 24 * k), IM_COL32(255, 255, 255, 90),
@@ -1979,7 +1976,7 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_S)) studio::set_solo(!v.solo);
     if (!ctrl && pressed(ImGuiKey_N)) {
         u.snap = !u.snap;
-        say(u.snap ? "Snapping on: a foot moved in the air lands on the deck." : "Snapping off.");
+        say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
     }
     if (!ctrl && pressed(ImGuiKey_Tab)) u.menu_hidden = !u.menu_hidden;
     auto orbit = v.orbit;
@@ -2333,7 +2330,7 @@ void draw_animation_studio_loading() {
             "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
             "The arrows on a joint move it along one axis, the rings turn it about one.",
             "G moves, R turns, X Y Z lock an axis, F follows the joint.",
-            "S turns one joint alone. N snaps a foot to the deck in the air. L swaps object and world.",
+            "S turns one joint alone. N keeps a foot on the deck. L swaps object and world.",
             "K keys the pose on this frame. Keys always sit on whole frames.",
             "G moves the hips or the board. X, Y and Z lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
