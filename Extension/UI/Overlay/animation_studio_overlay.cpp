@@ -74,6 +74,7 @@ struct Ui {
     int gizmo_hot{-1};         // the one under the mouse
     studio::Vec3 drag_point{}; // where the joint was when the drag began
     float ring_from{};         // the angle round the ring where a ring drag began
+    bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
 
     std::array<char, 64> name{}, trick{};
@@ -1843,22 +1844,31 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             u.gizmo_handle = u.gizmo_hot;
             u.axis = u.gizmo_hot % 3;
             u.drag_start = mouse;
+            u.drag_moved = false;
             u.ring_from = std::atan2(mouse.y - gizmo.centre.y, mouse.x - gizmo.centre.x);
             begin_turn(v);
         } else if (hovered && *hovered != u.selected) u.selected = *hovered;
         else if (sel && can_edit) {
             u.dragging_gizmo = true;
             u.drag_start = mouse;
+            u.drag_moved = false;
             begin_turn(v);
         }
     }
+    // Pressing is not yet dragging. Until the mouse has really moved nothing is applied: a press that
+    // writes a key would key the pose where it stands, and on a hand or a foot that is a fresh bend of
+    // the whole limb, which threw the leg about as soon as a handle was touched.
+    const auto drag_counts = [&] {
+        if (!u.drag_moved && std::hypot(mouse.x - u.drag_start.x, mouse.y - u.drag_start.y) > 3 * k) u.drag_moved = true;
+        return u.drag_moved;
+    };
     if (u.gizmo_handle >= 0) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.gizmo_handle = -1;
-        else if (project.valid) drag_gizmo(v, project, gizmo, mouse);
+        else if (project.valid && drag_counts()) drag_gizmo(v, project, gizmo, mouse);
     }
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
-        else if (project.valid) {
+        else if (project.valid && drag_counts()) {
             // A hand or a foot in MOVE goes where the mouse is over the board, the limb bending to reach;
             // anything else turns, as a free drag always has.
             if (u.move_mode && limb_end(u.selected)) drag_limb_to(v, project, mouse);
