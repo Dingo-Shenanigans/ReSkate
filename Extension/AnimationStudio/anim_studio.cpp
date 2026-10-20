@@ -1,5 +1,12 @@
 ﻿#include "anim_studio.h"
 #include "Engine/Core/Log/logging.h"
+#include "anim_research.h"
+#include "anim_runtime_rules.h"
+#include "anim_playback.h"
+#include "Engine/Core/Profiling/profiler.h"
+#include "anim_diagnostics.h"
+#include "skater_mirror.h"
+#include "Engine/Game/Build/supported_build.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/grind_exit.h"
@@ -24,6 +31,9 @@ namespace dingosdk::anim_studio {
 namespace {
 using logging::Channel;
 using logging::Level;
+struct DiagnosticHistory { std::mutex mutex; DiagnosticBuffer buffer; };
+DiagnosticHistory& diagnostic_history() { static auto* history = new DiagnosticHistory; return *history; }
+DiagnosticHistory& preview_history() { static auto* history = new DiagnosticHistory; return *history; }
 
 // ---- guarded memory --------------------------------------------------------------------------------
 constexpr std::uintptr_t highest_user = 0x00007fffffffffffULL;
@@ -74,11 +84,16 @@ struct CustomTrick {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
     bool goofy{};      // recorded goofy
-    std::shared_ptr<const Animation> other; // the same trick on the other side (mirrored), for the other stance
-    std::shared_ptr<const Clip> other_clip;  // its clip, mirrored
 };
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
 bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
+std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
+    if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
+    const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
+    const auto flags = context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
+    return flags ? std::optional<bool>{(*flags & addr::grind_exit::stance_switch_mask) != 0} : std::nullopt;
+}
 using CustomTricks = std::vector<CustomTrick>;
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
@@ -91,6 +106,7 @@ struct Snapshot {
 };
 struct History {
     std::vector<Track> tracks;
+    float start{}, end{-1};
 };
 struct State {
     std::mutex mutex;
@@ -143,8 +159,12 @@ struct State {
     bool camera_valid{};
     std::uint64_t revision{1};
     std::vector<std::string> library;
+    std::vector<Preset> presets;
+    std::vector<std::string> packs;
+    std::optional<PresetPack> pack;
     bool library_read{};
     std::shared_ptr<const Snapshot> snapshot;
+    std::shared_ptr<const Animation> published_edits;
 };
 State& state() {
     static auto* s = new State;
@@ -205,7 +225,11 @@ Joint board_parent(const std::array<NativeBone, board_bones>& b) noexcept { retu
 
 // The animation thread's own, never touched elsewhere.
 struct Live {
+    std::mutex animation_mutex;
     std::atomic<std::uintptr_t> base{}, component{}, board_holder{};
+    std::atomic<std::uint64_t> generation{};
+    std::atomic<std::uint64_t> animation_updates{};
+    std::uint64_t seen_generation{~std::uint64_t{0}};
     std::vector<NativeBone> bones;
     std::vector<Joint> pose, sampled;
     // Recording.
@@ -217,31 +241,30 @@ struct Live {
     };
     std::array<NativeBone, board_bones> board{};
     bool board_ok{};
-    double board_vy{};      // the board's upward speed in the first frames of the air (m/s)
     float predicted_air{}; // from it: how long this air lasts
     std::deque<Frame> ring;
     std::vector<std::vector<Joint>> spare;
     bool airborne{};
-    int ground_count{};
+    bool recording_seen_ground{};
+    ContactWindow contact;
     double takeoff_at{}, landing_at{};
+    double last_capture{-1};
+    bool recorded_goofy{}, playback_goofy{};
+    std::optional<bool> recorded_switch, playback_switch;
     // In-game playback.
-    bool game_air{};
-    double game_takeoff{}, game_landing{-1};
-    int game_ground{};
+    PlaybackEpisode episode;
+    MotionState last_motion{MotionState::unknown};
+    std::atomic<MotionState> render_motion{MotionState::unknown};
+    std::string recorded_entry{"unknown"};
     const CustomTrick* game_trick{}; // the saved trick playing now, from snapshot `game_tricks`
-    // The board as it stood when the trick left the ground, under the skater: the trick's own turn is put on
-    // this, so a board that rides fakie or switch keeps its own way round.
-    Joint board_at_takeoff{};
+    // Board edit axes at takeoff, relative to actor placement. No recorded board pose is replayed.
+    Quat board_frame_local{0, 0, 0, 1};
     bool board_at_takeoff_ok{};
-    // The clip's own time, carried along instead of worked out afresh each frame: a pop that turns out
-    // shorter or longer than guessed then only changes the speed from there on, never jumps the pose.
-    float game_t{-1};
-    double game_t_at{};
-    double game_trick_at{}; // when the trick was picked: the blend in starts there, not at the takeoff
-    bool lead_right{};  // which foot led at the takeoff
-    bool pop_known{};   // the pop has just been worked out: the pick may be bettered once
 
     std::shared_ptr<const CustomTricks> game_tricks;
+    std::map<std::string, std::size_t> variant_counts;
+    std::map<std::string, std::size_t> attempt_variants;
+    std::string stance_fallback_trick;
     std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
     // The studio's floor: the skater's Ground joint (375) when the studio opened, which lies on the
@@ -249,58 +272,108 @@ struct Live {
     // deck's mount 0.086 m above). Kept while the studio is open; taken again while he is in the air.
     float floor{};
     bool floor_valid{};
-    const Clip* floor_clip{};
+    std::shared_ptr<const Clip> floor_clip;
+    bool preview_own_jump{};
     std::uint64_t failures{};
     bool logged_layout{};
 };
 // The pose to draw, from the animation thread to the render publication (engine thread).
-struct Pending {
-    std::mutex mutex;
+struct PreviewPacket {
     std::uintptr_t buffer{};
     std::uint32_t first{}, last{};
     std::vector<NativeBone> bones; // [first, last)
     double at{};
-};
-// The board to draw: where its mount goes in the world, and how much of that (blending).
-struct PendingBoard {
-    std::mutex mutex;
+    std::uint64_t generation{}, sequence{}, epoch{};
     Joint mount;
     float weight{};
-    double at{};
+    std::uintptr_t holder{};
 };
-PendingBoard& pending_board() {
-    static auto* p = new PendingBoard;
-    return *p;
-}
-Pending& pending() {
-    static auto* p = new Pending;
-    return *p;
-}
-// A saved trick playing in game, for other players: what capture_local sends of the local skater
-// (multiplayer::set_local_pose_filter) gets the same joints as the renderer (PR #230 sends its style
-// the same way).
-struct SentPose {
+struct GameplayPacket {
+    std::uint64_t generation{}, episode{}, sequence{}, epoch{};
+    std::uintptr_t component{}, board_holder{};
+    double at{};
+    float time{}, weight{};
+    bool mirror{}, board_frame_valid{}, board_owned{};
+    Quat board_frame_local{0, 0, 0, 1};
+    std::shared_ptr<const Clip> clip;
+    std::shared_ptr<const Animation> edits;
+};
+std::atomic<std::uint64_t> gameplay_epoch{};
+std::atomic<bool> overrides_allowed{true};
+Live& live();
+struct GameplayPackets {
     std::mutex mutex;
-    std::uintptr_t component{};
-    std::uint32_t first{}, last{};
-    std::vector<Joint> joints;
-    double at{};
+    std::shared_ptr<const GameplayPacket> latest;
+    PresentationLatch<GameplayPacket> presentation;
 };
-SentPose& sent_pose() {
-    static auto* value = new SentPose;
-    return *value;
+GameplayPackets& gameplay_packets() { static auto* packets = new GameplayPackets; return *packets; }
+void publish_gameplay_packet(std::shared_ptr<const GameplayPacket> packet) {
+    auto& packets = gameplay_packets(); std::lock_guard lock(packets.mutex);
+    if (!packet) {
+        if (packets.latest || packets.presentation.pinned) gameplay_epoch.fetch_add(1, std::memory_order_acq_rel);
+        packets.latest.reset(); packets.presentation.pinned.reset();
+    } else if (packet->epoch == gameplay_epoch.load(std::memory_order_acquire)) packets.latest = std::move(packet);
+}
+std::shared_ptr<const GameplayPacket> gameplay_packet(bool presentation, std::uint64_t* frame = nullptr) {
+    auto& packets = gameplay_packets(); std::lock_guard lock(packets.mutex);
+    const auto epoch = gameplay_epoch.load(std::memory_order_acquire);
+    auto packet = presentation ? packets.presentation.get(profiler::presents(), epoch, packets.latest) : packets.latest;
+    if (frame) *frame = packets.presentation.presentation;
+    if (!packet || packet->epoch != epoch || packet->generation != live().generation.load(std::memory_order_acquire) ||
+        packet->component != live().component.load(std::memory_order_acquire) || !overrides_allowed.load(std::memory_order_acquire) ||
+        now_seconds() - packet->at > 0.1) return {};
+    return packet;
+}
+struct PreviewPackets {
+    std::mutex mutex;
+    std::uint64_t epoch{};
+    std::shared_ptr<const PreviewPacket> latest;
+    PresentationLatch<PreviewPacket> presentation;
+};
+PreviewPackets& preview_packets() { static auto* p = new PreviewPackets; return *p; }
+void publish_preview_packet(std::shared_ptr<PreviewPacket> packet) {
+    auto& p = preview_packets(); std::lock_guard lock(p.mutex);
+    if (!packet) {
+        if (p.latest || p.presentation.pinned) ++p.epoch;
+        p.latest.reset(); p.presentation.pinned.reset();
+    } else { packet->epoch = p.epoch; p.latest = std::move(packet); }
+}
+std::shared_ptr<const PreviewPacket> preview_packet(std::uint64_t& presentation) {
+    auto& p = preview_packets(); std::lock_guard lock(p.mutex);
+    auto packet = p.presentation.get(profiler::presents(), p.epoch, p.latest);
+    presentation = p.presentation.presentation;
+    if (!packet || packet->generation != live().generation.load(std::memory_order_acquire) ||
+        !overrides_allowed.load(std::memory_order_acquire) || now_seconds() - packet->at > 0.1) return {};
+    return packet;
+}
+void invalidate_outputs() noexcept {
+    try {
+        live().render_motion.store(MotionState::unknown, std::memory_order_release);
+        publish_gameplay_packet({});
+        publish_preview_packet({});
+    } catch (...) {}
 }
 std::atomic<bool> open_flag{};
 // While a recording waits or runs: the local skater's pose and its board as they are drawn (after the
 // body physics and the feet's placement on the board), taken at their render publication. A recording
 // keeps these, so the board and the feet are where the game put them.
 std::atomic<bool> capture_flag{};
+std::atomic<bool> research_capture_flag{};
 struct RenderShot {
     std::mutex mutex;
     std::vector<NativeBone> skater;
     double at{-1};
     Joint board; // the board's mount, in the world
     double board_at{-1};
+    std::uint64_t skater_generation{~std::uint64_t{0}}, board_generation{~std::uint64_t{0}};
+    std::uint64_t skater_publications{}, board_publications{};
+    std::vector<Joint> edited_skater;
+    double edited_at{-1};
+    std::uint64_t edited_generation{}, edited_sequence{}, edited_episode{}, edited_presentation{};
+    std::optional<Joint> edited_board;
+    double edited_board_at{-1};
+    std::uint64_t edited_board_generation{}, edited_board_sequence{}, edited_board_presentation{};
+    std::vector<Joint> board_rig;
 };
 RenderShot& render_shot() {
     static auto* value = new RenderShot;
@@ -341,8 +414,36 @@ std::filesystem::path library_folder() {
     if (!count || count >= buffer.size()) return {};
     return std::filesystem::path(std::wstring(buffer.data(), count)).parent_path() / L"ReSkate.Tricks";
 }
+std::optional<PresetPack> current_pack() {
+    const auto folder = library_folder() / L"presets";
+    std::ifstream active(folder / L"current.txt", std::ios::binary);
+    std::string name;
+    if (!active || !std::getline(active, name) || name.empty()) return std::nullopt;
+    if (name != file_safe(name)) throw std::runtime_error("Invalid active pack name");
+    std::ifstream in(folder / (name + ".json"), std::ios::binary);
+    if (!in) throw std::runtime_error("Active animation pack is missing: " + name);
+    auto pack = read_pack_json(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())));
+    pack.name = name;
+    return pack;
+}
+void write_preset_file(const std::filesystem::path& path, const std::string& text) {
+    std::filesystem::create_directories(path.parent_path());
+    auto temporary = path;
+    temporary += L".saving";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out.close();
+        if (!out) throw std::runtime_error("Could not write preset selection");
+    }
+    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::runtime_error("Could not replace preset selection");
+}
 void read_library_locked(State& s) {
     s.library.clear();
+    s.presets.clear();
+    s.packs.clear();
+    s.pack.reset();
     s.library_read = true;
     std::error_code error;
     const auto folder = library_folder();
@@ -350,6 +451,22 @@ void read_library_locked(State& s) {
     for (const auto& entry : std::filesystem::directory_iterator(folder, error))
         if (entry.is_regular_file(error) && entry.path().extension() == L".json") s.library.push_back(entry.path().stem().string());
     std::sort(s.library.begin(), s.library.end());
+    try {
+        s.pack = current_pack();
+        for (const auto& name : s.library) {
+            try {
+                std::ifstream in(folder / (name + ".json"), std::ios::binary);
+                auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+                if (!animation.trick.empty()) s.presets.push_back({name, animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
+            } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
+        }
+        select_presets(s.presets, s.pack);
+        const auto packs = folder / L"presets";
+        if (std::filesystem::is_directory(packs, error))
+            for (const auto& entry : std::filesystem::directory_iterator(packs, error))
+                if (entry.is_regular_file(error) && entry.path().extension() == L".json") s.packs.push_back(entry.path().stem().string());
+        std::sort(s.packs.begin(), s.packs.end());
+    } catch (const std::exception& e) { s.status = e.what(); }
 }
 
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
@@ -358,8 +475,32 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
     std::error_code error;
     const auto folder = library_folder();
     if (folder.empty() || !std::filesystem::is_directory(folder, error)) return tricks;
+    // Select from small JSON metadata before expanding clips.
+    // An inactive pack variant must not consume full animation memory or block a pack switch.
+    std::vector<Preset> requested;
     for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
         if (!entry.is_regular_file(error) || entry.path().extension() != L".json") continue;
+        try {
+            std::ifstream in(entry.path(), std::ios::binary);
+            const auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            auto clip_path = entry.path();
+            clip_path.replace_extension(L".clip");
+            if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error))
+                requested.push_back({entry.path().stem().string(), animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
+        } catch (const std::exception& e) {
+            logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.path().filename().string(), e.what());
+        }
+    }
+    try { select_presets(requested, current_pack()); }
+    catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
+        return tricks;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (!entry.is_regular_file(error) || entry.path().extension() != L".json") continue;
+        if (std::none_of(requested.begin(), requested.end(), [&](const Preset& p) {
+            return p.active && p.name == entry.path().stem().string();
+        })) continue;
         try {
             std::ifstream json_in(entry.path(), std::ios::binary);
             const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
@@ -374,20 +515,12 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             std::string trick;
             for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const bool goofy = animation->stance == "goofy";
-            std::shared_ptr<const Animation> other;
-            std::shared_ptr<const Clip> other_clip;
-            try {
-                other = std::make_shared<const Animation>(mirror_animation(*animation));
-                other_clip = std::make_shared<const Clip>(mirror_clip(*clip));
-            } catch (const std::exception& e) {
-                other = nullptr;
-                logging::log(Level::warning, Channel::skater, "Animation Studio: {} cannot be mirrored: {}", entry.path().stem().string(), e.what());
-            }
-            tricks->push_back({trick, entry.path().stem().string(), clip, std::move(animation), goofy, std::move(other), std::move(other_clip)});
+            tricks->push_back({trick, entry.path().stem().string(), clip, std::move(animation), goofy});
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.path().filename().string(), e.what());
         }
     }
+    std::sort(tricks->begin(), tricks->end(), [](const CustomTrick& a, const CustomTrick& b) { return a.name < b.name; });
     std::string names;
     for (const auto& t : *tricks) names += (names.empty() ? "" : ", ") + t.trick;
     logging::log(Level::info, Channel::skater, "Animation Studio: {} custom tricks ready{}{}.", tricks->size(), names.empty() ? "" : ": ", names);
@@ -395,15 +528,14 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
 }
 
 // Publishes what the animation thread works from. Caller holds the mutex.
-void publish_locked(State& s) {
+void publish_locked(State& s, bool edits_changed = true) {
+    overrides_allowed.store(s.open || (s.play_in_game && s.recording == Recording::off), std::memory_order_release);
     auto snap = std::make_shared<Snapshot>();
     snap->clip = s.clip;
     snap->idle = s.idle_clip;
     snap->tricks = s.tricks;
-    auto edits = std::make_shared<Animation>();
-    edits->tracks = s.edits.tracks;
-    edits->speed = s.edits.speed;
-    snap->edits = std::move(edits);
+    if (edits_changed || !s.published_edits) s.published_edits = std::make_shared<const Animation>(s.edits);
+    snap->edits = s.published_edits;
     snap->time = s.time;
     snap->open = s.open;
     snap->play_in_game = s.play_in_game;
@@ -468,8 +600,6 @@ std::string recorded_file_name(const std::string& trick, const std::string& pop)
 // ---- recording ---------------------------------------------------------------------------------
 constexpr double before_takeoff = 0.7, after_landing = 0.7, ring_seconds = 2.5;
 constexpr double shortest_air = 0.25, longest_air = 8.0;
-// Which foot is at the nose (defined with the other skater reads, below).
-bool right_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept;
 
 // A bracket is a key on every body joint at its time, with no turn or move of its own: the start and the end
 // of the animation, keyed on all limbs at once.
@@ -478,6 +608,7 @@ void key_all_at(Animation& animation, float seconds) {
         // The board as well: an empty offset turns and moves it by nothing, so the key holds it where the
         // trick already has it (board_edited) and the brackets anchor the board like any limb.
         const auto* track = animation.track(joint.index);
+        if (track && track->locked) continue;
         bool has = false;
         if (track)
             for (const auto& key : track->keys) has |= std::abs(key.time - seconds) <= 1.0f / 120;
@@ -492,9 +623,6 @@ void reset_brackets_locked(State& s) {
     s.edits.end = -1;
     key_all_at(s.edits, 0);
     key_all_at(s.edits, s.clip->duration());
-}
-void unkey_all_at(Animation& animation, float seconds) {
-    for (const auto& joint : editable_joints()) remove_key(animation, joint.index, seconds);
 }
 void finish_recording(Live& l) {
     auto clip = std::make_shared<Clip>();
@@ -522,7 +650,6 @@ void finish_recording(Live& l) {
         } else s.recording = Recording::waiting;
         return;
     }
-    hold_effector_positions(*clip);
     clip->takeoff = static_cast<float>(std::max(0.0, l.takeoff_at - first));
     clip->landing = static_cast<float>(std::max(0.0, l.landing_at - first));
     auto& s = state();
@@ -541,10 +668,22 @@ void finish_recording(Live& l) {
                 const auto folder = library_folder() / L"recorded";
                 std::filesystem::create_directories(folder);
                 const auto bytes = clip_bytes(*clip);
-                std::ofstream out(folder / std::filesystem::path(recorded_file_name(take.trick, take.pop)), std::ios::binary | std::ios::trunc);
-                out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-                take.ok = static_cast<bool>(out);
-                if (!take.ok) take.message = "the clip could not be written";
+                const auto path = folder / std::filesystem::path(recorded_file_name(take.trick, take.pop));
+                Animation metadata;
+                metadata.name = take.trick;
+                metadata.trick = take.trick;
+                metadata.pop = take.pop;
+                metadata.stance = l.recorded_goofy ? "goofy" : "regular";
+                metadata.switch_stance = l.recorded_switch;
+                metadata.source = {"render_capture", "", "animation/dingo/animbase_default_skeleton", "skater-placement"};
+                metadata.entry = l.recorded_entry;
+                metadata.clip.times = {0, clip->duration()};
+                metadata.clip.takeoff = clip->takeoff;
+                metadata.clip.landing = clip->landing;
+                write_preset_file(path, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+                auto sidecar = path; sidecar.replace_extension(L".json");
+                write_preset_file(sidecar, to_json(metadata));
+                take.ok = true;
                 tricks_revision.fetch_add(1, std::memory_order_acq_rel);
             } catch (const std::exception& e) {
                 take.message = e.what();
@@ -556,15 +695,18 @@ void finish_recording(Live& l) {
         return;
     }
     s.clip = std::move(clip);
-    // Keys from an earlier clip stay, held inside the new one.
-    for (auto& track : s.edits.tracks)
-        for (auto& key : track.keys) key.time = std::min(key.time, s.clip->duration());
+    // A recording is a new document. Old trick/pop/speed/history must not leak into it.
+    s.edits = Animation{};
+    s.saved_as.clear();
+    s.undo.clear();
+    s.redo.clear();
     s.time = 0; // at its start: on the board, on the ground
     s.playing = false;
     s.recording = Recording::off;
-    // Which foot led when it was recorded: a trick is mirrored on playback only when the other foot leads,
-    // so one recording covers regular, goofy, switch and fakie.
-    s.edits.stance = right_foot_leads(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire)) ? "goofy" : "regular";
+    s.edits.stance = l.recorded_goofy ? "goofy" : "regular";
+    s.edits.switch_stance = l.recorded_switch;
+    s.edits.source = {"render_capture", "", "animation/dingo/animbase_default_skeleton", "skater-placement"};
+    s.edits.entry = l.recorded_entry;
     // A new trick starts clean: the old keys and brackets go, the recording is the only thing there is.
     s.edits.tracks.clear();
     reset_brackets_locked(s);
@@ -576,13 +718,13 @@ void finish_recording(Live& l) {
     s.open_requested = true;
     s.open_request_pending = true;
     s.dirty = true;
-    s.status = std::format("Recorded {} ({:.2f} s in the air). Save it to play it in place of the game's {}.",
+    s.status = std::format("Recorded {} ({:.2f} s in the air). Edit and save its keys to modify the game's {}.",
                            l.recorded_trick.empty() ? std::string("a trick") : l.recorded_trick, s.clip->landing - s.clip->takeoff,
                            l.recorded_trick.empty() ? std::string("trick") : l.recorded_trick);
     publish_locked(s);
     logging::log(Level::info, Channel::skater, "Animation Studio: {}", s.status);
 }
-void record(Live& l, double at, bool air, const std::string& trick) {
+void record(Live& l, double at, bool air, const std::string& trick, MotionState previous) {
     // Keep a few seconds of poses; reuse the vectors that fall out.
     std::vector<Joint> joints;
     if (!l.spare.empty()) {
@@ -590,25 +732,29 @@ void record(Live& l, double at, bool air, const std::string& trick) {
         l.spare.pop_back();
     }
     joints.assign(l.pose.begin(), l.pose.end());
-    std::optional<Joint> drawn_board;
+    double captured_at = -1;
     {
         // As drawn, when the render publication has given it lately: what the game shows, feet on the board.
         auto& shot = render_shot();
         std::lock_guard shot_lock(shot.mutex);
-        if (at - shot.at < 0.1 && shot.skater.size() == joints.size()) {
+        const auto generation = l.generation.load(std::memory_order_acquire);
+        if (shot.skater_generation == generation && fresh_sample(at, shot.at, l.last_capture) && shot.skater.size() == joints.size()) {
+            captured_at = shot.at;
             for (std::size_t i = 0; i < joints.size(); ++i) joints[i] = joint_of(shot.skater[i]);
-            if (at - shot.board_at < 0.1) drawn_board = shot.board;
         }
     }
-    Live::Frame frame{at, std::move(joints), {}, false};
-    if (drawn_board) {
-        frame.board = relative(world(frame.joints, placement_joint), *drawn_board);
-        frame.has_board = finite(frame.board);
-    } else if (l.board_ok) {
-        frame.board = relative(world(frame.joints, placement_joint), compose(board_parent(l.board), joint_of(l.board[board_mount])));
+    Live::Frame frame{captured_at, std::move(joints), {}, false};
+    if (captured_at >= 0 && frame.joints.size() == skeleton_joints) {
+        // The native animation rig already carries the physical mount. Capturing
+        // joint 380 keeps board and body in exactly the same publication instead
+        // of accepting another board callback up to 50 ms away during a flip.
+        frame.board = frame.joints[skateboard_root_joint];
         frame.has_board = finite(frame.board);
     }
-    l.ring.push_back(std::move(frame));
+    if (captured_at >= 0) {
+        l.last_capture = captured_at;
+        l.ring.push_back(std::move(frame));
+    } else l.spare.push_back(std::move(frame.joints));
     const double keep_from = l.airborne || l.landing_at > 0 ? l.takeoff_at - before_takeoff - 0.1 : at - ring_seconds;
     while (!l.ring.empty() && l.ring.front().at < keep_from) {
         l.spare.push_back(std::move(l.ring.front().joints));
@@ -616,10 +762,14 @@ void record(Live& l, double at, bool air, const std::string& trick) {
     }
     auto& s = state();
     if (!l.airborne && l.landing_at <= 0) {
-        if (air) {
+        if (!air) l.recording_seen_ground = true;
+        if (air && l.recording_seen_ground) {
             l.airborne = true;
             l.takeoff_at = at;
-            l.ground_count = 0;
+            l.recorded_goofy = goofy_stance();
+            l.recorded_switch = switch_stance(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
+            l.recorded_entry = entry_name(previous == MotionState::rail ? EntryKind::rail : previous == MotionState::riding ? EntryKind::ground : EntryKind::unknown);
+            l.contact.since.reset();
             l.recorded_trick.clear();
             std::lock_guard lock(s.mutex);
             s.recording = Recording::in_air;
@@ -632,7 +782,7 @@ void record(Live& l, double at, bool air, const std::string& trick) {
             // The first trick the game names in this air is the one recorded: a flip or tweak after it does not
             // rename the recording.
             if (!trick.empty() && l.recorded_trick.empty() && at - l.takeoff_at < 0.3) l.recorded_trick = trick;
-            l.ground_count = 0;
+            l.contact.since.reset();
             if (at - l.takeoff_at > longest_air) {
                 l.airborne = false;
                 l.ring.clear();
@@ -647,9 +797,9 @@ void record(Live& l, double at, bool air, const std::string& trick) {
             }
             return;
         }
-        if (++l.ground_count < 3) return; // a frame or two of contact mid-air is not a landing
+        if (!l.contact.observe(at, true)) return;
         l.airborne = false;
-        if (at - l.takeoff_at < shortest_air) {
+        if (*l.contact.since - l.takeoff_at < shortest_air) {
             std::lock_guard lock(s.mutex);
             s.recording = Recording::waiting;
             s.status = "Too short a hop. Waiting for a trick.";
@@ -660,7 +810,7 @@ void record(Live& l, double at, bool air, const std::string& trick) {
             }
             return;
         }
-        l.landing_at = at;
+        l.landing_at = *l.contact.since;
         std::lock_guard lock(s.mutex);
         s.recording = Recording::finishing;
         s.status = "Landed. Finishing the recording...";
@@ -674,8 +824,10 @@ void record(Live& l, double at, bool air, const std::string& trick) {
 }
 void reset_recording(Live& l) {
     l.airborne = false;
+    l.recording_seen_ground = false;
     l.landing_at = -1;
-    l.ground_count = 0;
+    l.contact.since.reset();
+    l.last_capture = -1;
     for (auto& f : l.ring) l.spare.push_back(std::move(f.joints));
     l.ring.clear();
 }
@@ -688,26 +840,14 @@ std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) no
     return std::find(addr::skater_state::board_air_states.begin(), addr::skater_state::board_air_states.end(), *value) !=
            addr::skater_state::board_air_states.end();
 }
-// Riding switch: the game's stance flag on the skater's context (the other foot at the nose).
-bool riding_switch(std::uintptr_t base, std::uintptr_t component) noexcept {
-    const auto core = read<std::uintptr_t>(component + 0x70);
-    if (!core || !*core) return false;
-    const auto type = read<std::uintptr_t>(*core);
-    if (!type || *type != base + addr::no_bail::bail_core_vtable) return false;
-    const auto context = read<std::uintptr_t>(*core + 0x3c0);
-    if (!context || !*context) return false;
-    const auto flags = read<std::uint8_t>(*context + addr::grind_exit::stance_flags_offset);
-    return flags && (*flags & addr::grind_exit::stance_switch_mask) != 0;
-}
-// Which foot is at the nose: goofy or switch turns it round, both together turn it back. A trick is recorded
-// and played by this alone, so it fits regular, goofy, switch and fakie without a copy for each.
-bool right_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept {
-    return goofy_stance() != riding_switch(base, component);
-}
 // Grinds are physics states 400 to 499 (no_bail.cpp's selector): on a rail the trick goes on with the rail.
-bool grinding(std::uintptr_t base, std::uintptr_t component) noexcept {
-    const auto value = physics_state(base, component);
-    return value && *value >= 400 && *value < 500;
+MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
+    if (!state) return MotionState::unknown;
+    if (*state == addr::no_bail::wipeout_physics_state || *state >= 500) return MotionState::offboard;
+    if (*state >= 400 && *state < 500) return MotionState::rail;
+    if (*state == 200 || *state == 201) return MotionState::air;
+    if (*state == 100 || *state == 101) return MotionState::riding;
+    return MotionState::unknown;
 }
 
 // The game's name for the trick the skater is doing ("ollie", "kickflip", "heelflip"): the animation
@@ -729,22 +869,6 @@ std::string current_trick(std::uintptr_t component) noexcept {
     }
     return name.size() >= 2 ? name : std::string{};
 }
-// The body: Hips (7) and every joint below it. A saved trick replaces these only, never the placement
-// joints the game moves the skater with, nor the board's bones in the skater's rig (376 on).
-const std::array<bool, skeleton_joints>& body_joints() {
-    static const auto mask = [] {
-        std::array<bool, skeleton_joints> m{};
-        for (std::uint16_t i = 0; i < skeleton_joints; ++i)
-            for (int at = i; at >= 0; at = parent(static_cast<std::uint16_t>(at)))
-                if (at == hips_joint) {
-                    m[i] = true;
-                    break;
-                }
-        return m;
-    }();
-    return mask;
-}
-
 void publish_joints(std::span<const Joint> pose, const Joint& placement, const std::optional<Joint>& board, const Quat& board_frame) {
     std::vector<JointView> views;
     views.reserve(editable_joints().size());
@@ -805,18 +929,100 @@ std::string pop_of(float air) {
     if (!(air > 0)) return {};
     return air < 0.45f ? "low" : air < 0.65f ? "mid" : "high";
 }
+namespace {
+struct Research {
+    std::mutex mutex;
+    bool active{};
+    double started{};
+    ResearchBuffer buffer;
+    std::string last_file;
+};
+Research& research() { static Research value; return value; }
+void research_tick(std::uintptr_t base, std::uintptr_t component, bool open) {
+    auto& r = research();
+    bool finished = false;
+    {
+        std::lock_guard lock(r.mutex);
+        if (!r.active) return;
+        ResearchSample sample;
+        sample.seconds = now_seconds() - r.started;
+        if (base && component) {
+            sample.physics = physics_state(base, component);
+            sample.trick = current_trick(component);
+            sample.board_up_speed = board_up_speed(base, component);
+            sample.switch_stance = switch_stance(base, component);
+        }
+        sample.animation_updates = live().animation_updates.load(std::memory_order_acquire);
+        {
+            auto& shot = render_shot();
+            std::lock_guard shot_lock(shot.mutex);
+            sample.skater_publications = shot.skater_publications;
+            sample.board_publications = shot.board_publications;
+            const auto generation = live().generation.load(std::memory_order_acquire);
+            const double now = now_seconds();
+            if (shot.at >= 0 && shot.skater_generation == generation) sample.skater_age = std::max(0.0, now - shot.at);
+            if (shot.board_at >= 0 && shot.board_generation == generation) sample.board_age = std::max(0.0, now - shot.board_at);
+        }
+        sample.studio_open = open;
+        sample.goofy = goofy_stance();
+        if (const auto snap = snapshot()) {
+            sample.custom_enabled = snap->play_in_game;
+            sample.recording_armed = snap->armed;
+        }
+        finished = !r.buffer.append(std::move(sample));
+    }
+    if (finished) logging::write(Level::info, Channel::skater, research_trace("stop"));
+}
+} // namespace
+
+std::string research_trace(const std::string& action) {
+    auto& r = research();
+    std::lock_guard lock(r.mutex);
+    if (action == "start") {
+        if (r.active) return "Animation trace is already running. Use animstudio trace stop to export it.";
+        if (!r.buffer.samples.empty()) return "An unexported trace is retained. Use animstudio trace stop to retry export first.";
+        r.buffer.samples.reserve(ResearchBuffer::capacity);
+        r.started = now_seconds();
+        r.active = true;
+        research_capture_flag.store(true, std::memory_order_release);
+        return "Animation trace started (60 seconds). Skate normally; animstudio trace stop exports early.";
+    }
+    if (action == "status")
+        return std::format("Animation trace: {}, {} samples. Last export: {}", r.active ? "running" : "stopped",
+                           r.buffer.samples.size(), r.last_file.empty() ? "none" : r.last_file);
+    if (action != "stop") return "Usage: animstudio trace start|stop|status";
+    if (!r.active && r.buffer.samples.empty()) return "No animation trace to export.";
+    r.active = false;
+    research_capture_flag.store(false, std::memory_order_release);
+    try {
+        const auto folder = library_folder() / L"research";
+        std::filesystem::create_directories(folder);
+        const auto path = folder / ("transitions-" + std::to_string(GetTickCount64()) + ".csv");
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << "# animator_trace_schema=2\n# game_sha256=" << supported_build::game_sha256 << '\n';
+        out << "seconds,physics_state,phase_hint,trick_name,board_up_mps,studio_open,custom_playback_enabled,goofy_setting,recording_armed,switch_flag,animation_updates,skater_publications,board_publications,skater_age_s,board_age_s\n";
+        for (const auto& s : r.buffer.samples) {
+            const bool air = s.physics && (*s.physics == 200 || *s.physics == 201);
+            const bool rail = s.physics && *s.physics >= 400 && *s.physics < 500;
+            out << std::format("{:.6f},", s.seconds);
+            if (s.physics) out << *s.physics;
+            out << ',' << (!s.physics ? "unavailable" : air ? "air" : rail ? "rail_range" : "other") << ',' << s.trick << ',';
+            if (s.board_up_speed) out << *s.board_up_speed;
+            out << ',' << s.studio_open << ',' << s.custom_enabled << ',' << s.goofy << ',' << s.recording_armed << ',';
+            if (s.switch_stance) out << *s.switch_stance;
+            out << ',' << s.animation_updates << ',' << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << '\n';
+        }
+        out.close();
+        if (!out) throw std::runtime_error("could not write trace");
+        r.last_file = path.string();
+        r.buffer.samples.clear();
+        return "Animation trace exported: " + r.last_file;
+    } catch (const std::exception& e) {
+        return std::string("Animation trace export failed (samples kept; retry stop): ") + e.what();
+    }
+}
 // The board's edit at `seconds`, in the frame of its start (`ground`, that frame's turn): moved along its X, Y
 // and Z, and turned about them, whatever the board does in the trick.
-Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& ground) {
-    const auto* track = edits.track(board_joint);
-    if (!track || track->hidden || track->keys.empty()) return board;
-    const auto e = evaluate(*track, seconds);
-    Joint out = board;
-    const auto moved = rotate(ground, e.offset);
-    for (std::size_t i = 0; i < 3; ++i) out.position[i] += moved[i];
-    out.rotation = normalised(multiply(multiply(multiply(ground, e.rotation), conjugate(ground)), board.rotation));
-    return out;
-}
 
 // The board under the feet, as when riding. The game's clips leave the board where the animators had
 // it, and the game's foot placement puts the feet on it: before the pop and after the landing their
@@ -857,22 +1063,15 @@ Joint board_on_feet(const Clip& clip, float seconds, std::span<const Joint> pose
 
 // The board where the trick starts (time 0), under the placement joint: the 0, 0, 0 of the board's
 // keys and fields. Kept per clip.
-Joint start_board(const Clip& clip) {
-    thread_local const Clip* cached = nullptr;
-    thread_local Joint board;
-    if (cached != &clip) {
-        std::vector<Joint> pose(clip.joints);
-        clip.sample(0, pose);
-        board = {};
-        if (Joint rel; clip.sample_board(0, rel)) board = board_on_feet(clip, 0, pose, rel);
-        cached = &clip;
-    }
+Joint start_board(const Clip& clip, bool fit_contact) {
+    Joint board;
+    if (Joint rel; clip.sample_board(0, rel)) board = fit_contact ? board_on_feet(clip, 0, clip.frame(0), rel) : rel;
     return board;
 }
 // The board's start in the world, turned only about the up axis: its keys move it along this frame's X,
 // Y and Z and turn it about them, so 0, 0, 0 is where it starts, on the ground, as it lies there.
-Joint start_frame(const Clip& clip, const Joint& placement, float floor_y) {
-    const auto start = compose(placement, start_board(clip));
+Joint start_frame(const Clip& clip, const Joint& placement, float floor_y, bool fit_contact) {
+    const auto start = compose(placement, start_board(clip, fit_contact));
     return {{1, 1, 1}, ground_turn(start), {start.position[0], floor_y, start.position[2]}};
 }
 
@@ -886,12 +1085,8 @@ struct BoardShape {
     Vec3 up{0, 1, 0}; // the board's up, in its mount's frame
 };
 BoardShape board_shape(const Clip& clip) {
-    thread_local const Clip* cached = nullptr;
-    thread_local BoardShape shape;
-    if (cached == &clip) return shape;
-    cached = &clip;
-    std::vector<Joint> pose(clip.joints);
-    clip.sample(0, pose);
+    BoardShape shape;
+    const auto pose = clip.frame(0);
     Joint board;
     (void)clip.sample_board(0, board); // its turn only: the board's place does not matter here
     const auto placed = world(pose, placement_joint);
@@ -938,13 +1133,34 @@ float lowest_point(const Joint& board, const BoardShape& shape) noexcept {
 // ---- the animation thread ------------------------------------------------------------------------
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
+    std::lock_guard animation_lock(l.animation_mutex);
     if (!component || component != l.component.load(std::memory_order_acquire)) return;
     const auto error = GetLastError();
     try {
+        const auto generation = l.generation.load(std::memory_order_acquire);
+        if (l.seen_generation != generation) {
+            reset_recording(l);
+            l.episode.reset();
+            l.last_motion = MotionState::unknown;
+            l.game_trick = nullptr;
+            l.game_tricks.reset();
+            l.attempt_variants.clear();
+            l.floor_valid = false;
+            l.floor_clip = nullptr;
+            l.logged_layout = false;
+            l.seen_generation = generation;
+        }
         const auto snap = snapshot();
-        if (!snap || (!snap->open && !snap->armed && !snap->play_in_game)) {
+        if (!snap || (!diagnostics_capture && !snap->open && !snap->armed && !snap->play_in_game && !research_capture_flag.load(std::memory_order_acquire))) {
+            invalidate_outputs();
+            l.episode.reset();
+            l.game_trick = nullptr;
             SetLastError(error);
             return;
+        }
+        if (snap->open || snap->armed || !snap->play_in_game) {
+            l.episode.reset();
+            l.game_trick = nullptr;
         }
         const auto base = l.base.load(std::memory_order_acquire);
         const auto holder = read<std::uintptr_t>(component + 0xa0);
@@ -953,6 +1169,7 @@ void on_animation(std::uintptr_t component) noexcept {
         if (!layout.buffer) throw std::runtime_error("the skater's pose is still loading");
         if (layout.count != skeleton_joints)
             throw std::runtime_error(std::format("the skater has {} joints, not the standard {}", layout.count, skeleton_joints));
+        l.animation_updates.fetch_add(1, std::memory_order_relaxed);
         if (!l.logged_layout) {
             l.logged_layout = true;
             logging::log(Level::info, Channel::skater, "Animation Studio: skater pose found, {} joints at {:#x} (component {:#x}).",
@@ -976,14 +1193,56 @@ void on_animation(std::uintptr_t component) noexcept {
             j.position = {b.position[0], b.position[1], b.position[2]};
         }
         const double at = now_seconds();
+        const auto current_state = physics_state(base, component);
+        const auto previous_motion = l.last_motion;
+        const auto motion = motion_state(current_state);
+        l.last_motion = motion;
+        l.render_motion.store(motion, std::memory_order_release);
         const auto air = in_the_air(base, component);
+        DiagnosticSample diagnostic;
+        bool diagnostic_pose = false;
+        if (diagnostics_capture) {
+            auto& history = snap->open ? preview_history() : diagnostic_history();
+            { std::lock_guard lock(history.mutex); diagnostic_pose = history.buffer.pose_due(at); }
+            diagnostic.at = at;
+            diagnostic.generation = generation;
+            diagnostic.sequence = l.animation_updates.load();
+            diagnostic.failures = l.failures;
+            diagnostic.physics = current_state;
+            diagnostic.trick = current_trick(component);
+            diagnostic.live_switch = switch_stance(base, component);
+            diagnostic.goofy = goofy_stance();
+            diagnostic.enabled = snap->play_in_game;
+            diagnostic.armed = snap->armed;
+            if (diagnostic_pose) diagnostic.native = l.pose;
+            if (l.board_ok) diagnostic.native_board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+        }
+        const bool bailing = current_state && (*current_state == addr::no_bail::wipeout_physics_state ||
+                                              *current_state == addr::no_bail::offboard_physics_state);
+        if (!current_state && !snap->open) {
+            l.episode.reset();
+            l.game_trick = nullptr;
+            if (snap->armed) reset_recording(l);
+        }
+        if (bailing && !snap->open) {
+            l.episode.reset();
+            l.game_trick = nullptr;
+            if (snap->armed) {
+                reset_recording(l);
+                auto& s = state();
+                std::lock_guard lock(s.mutex);
+                s.recording = Recording::waiting;
+                s.status = "Bail or off-board: waiting for a clean trick.";
+            }
+        }
         if (clean_hold.load(std::memory_order_acquire) && now_seconds() > clean_until.load(std::memory_order_relaxed)) clean_hold.store(false, std::memory_order_release);
-        if (snap->armed && !snap->open && air && !clean_hold.load(std::memory_order_acquire))
-            record(l, at, *air, *air ? current_trick(component) : std::string{});
+        if (snap->armed && !snap->open && !bailing && air && !clean_hold.load(std::memory_order_acquire))
+            record(l, at, *air, *air ? current_trick(component) : std::string{}, previous_motion);
         else if (!snap->armed) reset_recording(l);
 
         // Which joints to write back, and from what.
-        std::size_t first = 0, last = 0; // [first, last) of l.pose written; 0, 0 = nothing
+        std::size_t first = 0, last = 0; // Studio snapshots only. Gameplay publishes an edit schedule.
+        std::shared_ptr<const GameplayPacket> scheduled;
         Joint board_target;
         Quat board_frame{0, 0, 0, 1}; // the turn of the board's start (start_frame): its keys work in it
         float board_weight = 0;
@@ -1012,6 +1271,10 @@ void on_animation(std::uintptr_t component) noexcept {
         const float shown_time = has_trick ? snap->time : shown ? shown->duration() : 0.0f;
         static const Animation no_edits;
         const Animation& shown_edits = has_trick ? *snap->edits : no_edits;
+        // Render captures already include native contacts. Fitting their board
+        // independently to the lowest foot corrupts that resolved relative pose.
+        const bool fit_preview_contact = shown_edits.source.kind != "render_capture" &&
+                                         shown_edits.source.position_codec != "native-piec-v1-extent";
         if (snap->open && shown) {
             // The studio: the recorded trick, played in place where the skater stands now. The placement
             // joint (1) carries the trick's rise and turn (it rides with the body), and the game places
@@ -1027,8 +1290,9 @@ void on_animation(std::uintptr_t component) noexcept {
             // and between them follows the arc of a jump as long as the clip's air (unless the clip rises by
             // itself, as a recording does), never under the floor.
             // A new trick starts from where the skater is now: his floor is taken again.
-            if (shown != l.floor_clip) {
-                l.floor_clip = shown;
+            if (shown != l.floor_clip.get()) {
+                l.floor_clip = has_trick ? snap->clip : snap->idle;
+                l.preview_own_jump = clip_has_vertical_trajectory(*shown);
                 l.floor_valid = false;
             }
             if (!l.floor_valid || (air && *air)) {
@@ -1045,14 +1309,20 @@ void on_animation(std::uintptr_t component) noexcept {
                 const auto ait = world(tmp, placement_joint);
                 ait_y = ait.position[1];
                 Joint rel;
-                return clip.sample_board(t, rel) ? lowest_point(compose(ait, board_on_feet(clip, t, tmp, rel)), shape)
+                return clip.sample_board(t, rel) ? lowest_point(compose(ait, fit_preview_contact ? board_on_feet(clip, t, tmp, rel) : rel), shape)
                                                  : world(tmp, 10).position[1] - 0.18f;
             };
             constexpr float deck = 0.087f; // the deck's mount above the floor, the board on its wheels (board_shape)
             float ait_now{}, ait_up{}, ait_down{};
             const float by_now = board_y(shown_time, ait_now);
             float rise_y = 0;
-            if (l.floor_valid) {
+            if (l.floor_valid && shown_edits.source.position_codec == "native-piec-v1-extent") {
+                // Verified native vectors already carry AITrajectory and its inverse
+                // Ground track. Place that source once on the studio floor; inferred
+                // pop/landing markers must not flatten its preparation or invent an arc.
+                const float source_floor = world(clip.frame(0), ground_joint).position[1];
+                rise_y = l.floor - source_floor + ait_now - live_placement.position[1];
+            } else if (l.floor_valid) {
                 const float up = std::max(clip.takeoff, 0.0f), down = clip.landing > up ? clip.landing : up;
                 const float t = shown_time;
                 if (t <= up || t >= down || down <= up) rise_y = l.floor - by_now;
@@ -1060,16 +1330,15 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float s_up = l.floor - board_y(up, ait_up), s_down = l.floor - board_y(down, ait_down);
                     const float u = (t - up) / (down - up);
                     // The clip's own rise in the air: a recording jumps by itself, the game's clips do not.
-                    const bool own_jump = ait_now - (ait_up + (ait_down - ait_up) * u) > 0.12f;
                     const float air_time = down - up;
-                    const float arc = own_jump ? 0.0f : 9.81f * air_time * air_time / 8.0f * 4 * u * (1 - u);
+                    const float arc = l.preview_own_jump ? 0.0f : 9.81f * air_time * air_time / 8.0f * 4 * u * (1 - u);
                     rise_y = s_up + (s_down - s_up) * u + arc;
                     // Nothing of the board goes under the floor.
                     rise_y = std::max(rise_y, l.floor - by_now);
                 }
                 rise_y += ait_now - live_placement.position[1];
             } else rise_y = now_rec.position[1] - start.position[1];
-            const auto rise = rotate(conjugate(l.pose[placement_joint].rotation), {0, rise_y, 0});
+            const auto rise = rotate(conjugate(live_placement.rotation), {0, rise_y, 0});
             for (std::size_t i = 2; i < std::min<std::size_t>(layout.count, shown->joints); ++i) {
                 l.pose[i] = l.sampled[i];
                 if (parent(static_cast<std::uint16_t>(i)) == placement_joint) {
@@ -1087,12 +1356,12 @@ void on_animation(std::uintptr_t component) noexcept {
             last = layout.count;
             // The board as the recording had it, the same way the body hangs from the placement joint.
             if (Joint rel; shown->sample_board(shown_time, rel)) {
-                rel = board_on_feet(*shown, shown_time, l.sampled, rel);
+                if (fit_preview_contact) rel = board_on_feet(*shown, shown_time, l.sampled, rel);
                 const auto moved = rotate(turn, rel.position);
                 for (std::size_t a = 0; a < 3; ++a) rel.position[a] = rise[a] + moved[a];
                 rel.rotation = normalised(multiply(turn, rel.rotation));
                 const auto unedited = compose(live_placement, rel);
-                const auto origin = start_frame(*shown, live_placement, (l.floor_valid ? l.floor : live_placement.position[1]) + deck);
+                const auto origin = start_frame(*shown, live_placement, (l.floor_valid ? l.floor : live_placement.position[1]) + deck, fit_preview_contact);
                 board_target = board_edited(unedited, shown_edits, shown_time, origin.rotation);
                 board_frame = origin.rotation;
                 board_weight = 1;
@@ -1106,141 +1375,163 @@ void on_animation(std::uintptr_t component) noexcept {
             apply_edits(*snap->edits, 0, l.pose);
             first = in_room ? placement_joint : 2;
             last = layout.count;
-        } else if (snap->play_in_game && !snap->armed && snap->tricks && !snap->tricks->empty() && (air.has_value() || grinding(base, component))) {
-            // In game: when the game does a trick there is a saved animation for, that animation plays on
-            // the body in place of the game's own, from the takeoff, blended in and out. A grind counts as
-            // the air: the trick holds its landing while the skater grinds, and the board stays with the
-            // game's own, so it follows the rail; it settles once the grind is over.
-            const bool on_rail = grinding(base, component);
-            if (air.value_or(false) || on_rail) {
-                if (!l.game_air) {
-                    l.game_air = true;
-                    l.game_takeoff = at;
-                    l.game_landing = -1;
-                    l.game_trick = nullptr;
-                    l.game_tricks = snap->tricks;
-                    l.predicted_air = 0;
-                    l.lead_right = right_foot_leads(base, component);
-                    l.game_t = -1;
-                    l.pop_known = false;
-                    l.board_at_takeoff_ok = false;
-                    if (l.board_ok) {
-                        const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
-                        if (finite(mount)) {
-                            l.board_at_takeoff = relative(world(l.pose, placement_joint), mount);
-                            l.board_at_takeoff_ok = finite(l.board_at_takeoff);
-                        }
+        } else if (snap->play_in_game && !snap->armed && !bailing && snap->tricks && !snap->tricks->empty()) {
+            const bool began = l.episode.observe(at, motion);
+            if (began) {
+                l.playback_goofy = goofy_stance();
+                l.playback_switch = switch_stance(base, component);
+                l.game_trick = nullptr; l.game_tricks = snap->tricks;
+                l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
+                l.board_at_takeoff_ok = false;
+                if (l.board_ok) {
+                    const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                    if (finite(mount)) {
+                        l.board_frame_local = normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount)));
+                        l.board_at_takeoff_ok = true;
                     }
                 }
-                l.game_ground = 0;
-                // How high the pop is: the rise in the first 0.05 s gives the upward speed, and from it the
-                // time until the skater is back at the height he left.
-                if (l.predicted_air == 0 && at - l.game_takeoff >= 0.03) {
-                    // The board's own upward speed (its physics' root body), back to the height it left.
-                    const double elapsed = at - l.game_takeoff;
-                    const auto vy = board_up_speed(base, component);
-                    l.predicted_air = vy && *vy > 0.3f
-                                          ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
-                    l.pop_known = true; // the pop is known: the pick below may better it once
+            }
+            if (l.episode.phase == PlaybackPhase::idle) l.game_trick = nullptr;
+            if (l.episode.phase == PlaybackPhase::air && l.predicted_air == 0 && at - l.episode.takeoff >= 0.03) {
+                const double elapsed = at - l.episode.takeoff;
+                const auto vy = board_up_speed(base, component);
+                l.predicted_air = vy && *vy > 0.3f
+                    ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
+            }
+            const auto name = l.episode.selection_open(at) ? current_trick(component) : std::string{};
+            if (l.episode.entry != EntryKind::unknown && l.game_tricks && episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name)) {
+                const auto pop = pop_of(l.predicted_air);
+                const CustomTrick* found = nullptr;
+                // Exact pop first; cycle eligible variants once per named trick in this attempt.
+                std::vector<const CustomTrick*> variants;
+                const auto compatible = [&](const CustomTrick& t) {
+                    return playback_stance_compatible(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch);
+                };
+                int best_pop = 3;
+                for (const auto& t : *l.game_tricks) {
+                    if (t.trick != name || t.edits->entry != entry_name(l.episode.entry) || !l.playback_switch.has_value()) continue;
+                    const int rank = playback_pop_rank(pop, t.edits->pop);
+                    if (rank < best_pop) { variants.clear(); best_pop = rank; }
+                    if (rank == best_pop) variants.push_back(&t);
                 }
-                // The game names the trick within a few frames of the takeoff; a flip added late counts too.
-                if ((!l.game_trick || l.pop_known) && at - l.game_takeoff < 0.35 && l.game_tricks) {
-                    const auto name = current_trick(component);
-                    const auto pop = pop_of(l.predicted_air);
-                    // The animation made for this pop; failing that the one made for any pop; failing that
-                    // whichever one there is, so a trick saved for one pop still plays on the others.
-                    const CustomTrick *exact = nullptr, *any_pop = nullptr, *other = nullptr;
-                    for (const auto& t : *l.game_tricks) {
-                        if (t.trick != name) continue;
-                        if (!pop.empty() && t.edits->pop == pop) exact = &t;
-                        else if (t.edits->pop.empty()) { if (!any_pop) any_pop = &t; }
-                        else if (!other) other = &t;
-                    }
-                    const CustomTrick* found = exact ? exact : any_pop ? any_pop : other;
-                    // Only ever traded up: a trick already playing is never dropped because the game's name
-                    // failed to read for a frame, which used to snap the body back with no fade.
-                    if (l.pop_known) l.pop_known = false;
-                    if (found && found != l.game_trick) {
-                        l.game_trick = found;
-                        l.game_trick_at = at;
-                        l.game_t = -1;
-                        if (found)
-                            logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop, {:.2f} s in the air), playing your {}.", name,
-                                         pop.empty() ? "unknown" : pop, l.predicted_air, found->name);
-                    }
+                // A recorded switch variant wins over converting another stance's edits.
+                if (std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
+                    std::erase_if(variants, [&](const CustomTrick* t) { return !compatible(*t); });
+                if (!variants.empty()) {
+                    auto choice = l.attempt_variants.find(name);
+                    if (choice == l.attempt_variants.end())
+                        choice = l.attempt_variants.emplace(name, l.variant_counts[name + "|" + entry_name(l.episode.entry)]++).first;
+                    found = variants[choice->second % variants.size()];
+                } else if (!name.empty() && l.stance_fallback_trick != name &&
+                           std::any_of(l.game_tricks->begin(), l.game_tricks->end(), [&](const CustomTrick& t) {
+                               return t.trick == name && !compatible(t);
+                           })) {
+                    l.stance_fallback_trick = name;
+                    logging::log(Level::info, Channel::skater,
+                                 "Animation Studio: {} uses native animation; no compatible recording for {} / {} at takeoff.", name,
+                                 l.playback_goofy ? "goofy" : "regular",
+                                 l.playback_switch ? (*l.playback_switch ? "switch" : "normal") : "unknown switch state");
                 }
-            } else if (l.game_air && ++l.game_ground >= 3) {
-                l.game_air = false;
-                l.game_landing = at;
-                if (l.game_trick)
-                    logging::log(Level::info, Channel::skater, "Animation Studio: landed after {:.2f} s in the air (guessed {:.2f} s).", at - l.game_takeoff,
-                                 l.predicted_air);
+                if (found && found != l.game_trick) {
+                    l.episode.select(at);
+                    l.game_trick = found;
+                    if (found)
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop, {:.2f} s in the air), playing your {} ({}).", name,
+                                     pop.empty() ? "unknown" : pop, l.predicted_air, found->name,
+                                     "authored edits over fresh native pose");
+                }
             }
             if (const auto* trick = l.game_trick) {
-                // Played on the side the skater stands on: the other side's copy when the stances differ.
-                const bool flip = trick->other && trick->other_clip && trick->goofy != l.lead_right;
-                const Animation& played = flip ? *trick->other : *trick->edits;
-                const Clip& clip = flip ? *trick->other_clip : *trick->clip;
-                const float speed = std::max(played.speed, 0.1f);
-                float t = -1, weight = 1;
-                if (l.game_air && clip.takeoff >= 0) {
-                    // The recording's air stretched to this one's, so its keys meet this pop and landing.
-                    float rate = speed;
-                    if (l.predicted_air > 0 && clip.landing > clip.takeoff) rate *= (clip.landing - clip.takeoff) / l.predicted_air;
-                    if (l.game_t < 0) {
-                        l.game_t = clip.takeoff;
-                        l.game_t_at = at;
+                const auto& played = *trick->edits;
+                const auto& clip = *trick->clip;
+                const bool mirror = (trick->goofy != played.switch_stance.value_or(false)) !=
+                    (l.playback_goofy != l.playback_switch.value_or(false));
+                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air);
+                const float weight = sampled.weight * animation_window_weight(played, sampled.time);
+                diagnostic.preset = trick->name;
+                diagnostic.source_kind = played.source.kind;
+                diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
+                diagnostic.retarget = true; diagnostic.mirror = mirror;
+                diagnostic.clip_time = sampled.time; diagnostic.weight = weight;
+                if (sampled.time >= 0 && !sampled.finished) {
+                    auto packet = std::make_shared<GameplayPacket>();
+                    packet->generation = generation; packet->episode = l.episode.id;
+                    packet->sequence = l.animation_updates.load(); packet->epoch = gameplay_epoch.load(std::memory_order_acquire);
+                    packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
+                    packet->at = at; packet->time = sampled.time; packet->weight = weight; packet->mirror = mirror;
+                    packet->clip = trick->clip; packet->edits = trick->edits;
+                    packet->board_frame_local = l.board_frame_local; packet->board_frame_valid = l.board_at_takeoff_ok;
+                    packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
+                    scheduled = std::move(packet);
+                    // Diagnostic prediction only. The renderer evaluates these edits again over its
+                    // fresh post-physics native pose; no body/board snapshot is queued for gameplay.
+                    if (diagnostic_pose) {
+                        l.sampled.resize(layout.count); clip.sample(sampled.time, l.sampled);
+                        apply_native_edit_layer(played, sampled.time, l.sampled, l.pose, mirror, weight);
                     }
-                    l.game_t += static_cast<float>((std::max)(0.0, (std::min)(at - l.game_t_at, 0.25))) * rate;
-                    l.game_t_at = at;
-                    t = l.game_t;
-                    weight = std::clamp(static_cast<float>(at - l.game_trick_at) / 0.08f, 0.0f, 1.0f);
-                    // In the air longer than the recording: the last frame before its landing holds.
-                    if (clip.landing > clip.takeoff) t = (std::min)(t, clip.landing);
-                } else if (l.game_landing > 0 && clip.landing >= 0) {
-                    const float after = static_cast<float>(at - l.game_landing) * speed;
-                    const float from = l.game_t >= 0 ? l.game_t : clip.landing;
-                    // The trick settles into the game's pose over 0.6 s (its own landing plays out meanwhile), eased
-                    // at both ends, so the back foot comes down on the board instead of snapping there.
-                    const float span = std::max(0.05f, std::min(0.6f, clip.duration() - clip.landing));
-                    const float x = std::clamp(after / span, 0.0f, 1.0f);
-                    t = (std::min)(from + after, clip.duration());
-                    weight = 1 - x * x * (3 - 2 * x);
-                    if (weight <= 0) {
-                        l.game_t = -1;
-                        l.game_trick = nullptr;
-                        l.game_landing = -1;
-                        t = -1;
-                    }
-                }
-                if (t >= 0 && weight > 0) {
-                    l.custom.resize(layout.count);
-                    std::copy(l.pose.begin(), l.pose.end(), l.custom.begin());
-                    clip.sample(t, l.custom);
-                    apply_edits(played, t, l.custom);
-                    if (Joint rel; !on_rail && clip.sample_board(t, rel)) {
-                        // The recording's board turn, counted from its own takeoff and put on the board as it
-                        // stood at this takeoff: the trick turns the board it is given, rather than forcing the
-                        // board the recording had (nose forward, one stance).
-                        Joint rel0{};
-                        if (l.board_at_takeoff_ok && clip.sample_board((std::max)(clip.takeoff, 0.0f), rel0) && finite(rel0))
-                            rel.rotation = normalised(multiply(l.board_at_takeoff.rotation, multiply(conjugate(rel0.rotation), rel.rotation)));
-                        board_target = board_edited(compose(live_placement, rel), played, t, start_frame(clip, live_placement, 0).rotation);
+                    if (scheduled->board_owned && scheduled->board_frame_valid && l.board_ok) {
+                        Joint frame; frame.rotation = normalised(multiply(live_placement.rotation, l.board_frame_local));
+                        const auto native_board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                        board_target = board_edited(native_board, played, sampled.time, ground_turn(frame), mirror);
                         board_weight = weight;
                     }
-                    const auto& body = body_joints();
-                    for (std::size_t i = 0; i < std::min<std::size_t>(layout.count, clip.joints); ++i) {
-                        if (!body[i]) continue;
-                        auto& j = l.pose[i];
-                        const auto& c = l.custom[i];
-                        j.rotation = slerp(j.rotation, c.rotation, weight);
-                        for (std::size_t k = 0; k < 3; ++k) j.position[k] += (c.position[k] - j.position[k]) * weight;
-                    }
-                    first = 2;
-                    last = layout.count;
                 }
+                if (sampled.finished) l.game_trick = nullptr;
             }
         }
+        publish_gameplay_packet(std::move(scheduled));
+        if (diagnostics_capture) {
+            diagnostic.observed_phase = snap->open ? "studio_preview" : phase_name(l.episode.phase);
+            if (snap->open) {
+                diagnostic.clip_time = shown_time;
+                diagnostic.preset = shown_edits.name;
+                diagnostic.trick = shown_edits.trick;
+                diagnostic.source_kind = shown_edits.source.kind;
+                if (diagnostic_pose && shown) {
+                    diagnostic.source.resize(shown->joints);
+                    shown->sample(shown_time, diagnostic.source);
+                    Joint source_board;
+                    if (shown->sample_board(shown_time, source_board))
+                        diagnostic.source_board = compose(world(diagnostic.source, placement_joint), source_board);
+                }
+            }
+            diagnostic.entry = entry_name(l.episode.entry); diagnostic.episode = l.episode.id;
+            diagnostic.takeoff_goofy = l.playback_goofy;
+            diagnostic.takeoff_switch = l.playback_switch;
+            diagnostic.board_weight = board_weight;
+            if (board_weight > 0) diagnostic.desired_board = board_target;
+            if (diagnostic_pose) diagnostic.desired = l.pose;
+            { auto& shot = render_shot(); std::lock_guard lock(shot.mutex);
+              diagnostic.skater_publications = shot.skater_publications;
+              diagnostic.board_publications = shot.board_publications;
+              diagnostic.render_edit_sequence = shot.edited_sequence;
+              diagnostic.render_presentation = shot.edited_presentation;
+              diagnostic.board_edit_sequence = shot.edited_board_sequence;
+              diagnostic.board_presentation = shot.edited_board_presentation;
+              if (diagnostic_pose && shot.board_generation == generation) {
+                  diagnostic.board_rig = shot.board_rig;
+                  diagnostic.board_rig_at = shot.board_at;
+              }
+              if (shot.skater_generation == generation && shot.at >= 0) diagnostic.skater_age = at - shot.at;
+              if (shot.board_generation == generation && shot.board_at >= 0) diagnostic.board_age = at - shot.board_at;
+              if (diagnostic_pose && shot.skater_generation == generation && shot.at >= 0) {
+                  if (shot.edited_generation == generation && shot.edited_at >= 0) {
+                      diagnostic.render_edited = shot.edited_skater; diagnostic.render_edited_at = shot.edited_at;
+                  }
+                  if (shot.edited_board_generation == generation && shot.edited_board_at >= 0) {
+                      diagnostic.render_edited_board = shot.edited_board; diagnostic.render_edited_board_at = shot.edited_board_at;
+                  }
+                  diagnostic.render_at = shot.at;
+                  diagnostic.render_native.reserve(shot.skater.size());
+                  for (const auto& bone : shot.skater) diagnostic.render_native.push_back(joint_of(bone));
+                  if (shot.board_generation == generation && std::abs(shot.at - shot.board_at) < 0.05) {
+                      diagnostic.render_board = shot.board; diagnostic.render_board_at = shot.board_at;
+                  }
+              } }
+            auto& history = snap->open ? preview_history() : diagnostic_history(); std::lock_guard lock(history.mutex);
+            history.buffer.append(std::move(diagnostic));
+        }
+        auto preview = snap->open ? std::make_shared<PreviewPacket>() : nullptr;
         if (last > first) {
             for (std::size_t i = first; i < last; ++i)
                 if (!finite(l.pose[i])) throw std::runtime_error("an edit made a broken pose; nothing was written");
@@ -1254,34 +1545,26 @@ void on_animation(std::uintptr_t component) noexcept {
             // Written when the pose is handed to the renderer (on_render): the skater's body physics
             // rebuild this buffer after the animation update, which a write now would not survive (seen
             // 2026-10-18: the buffer held the edit, the drawn skater did not).
-            auto& p = pending();
-            std::lock_guard lock(p.mutex);
+            auto& p = *preview;
             p.buffer = layout.buffer;
             p.first = static_cast<std::uint32_t>(first);
             p.last = static_cast<std::uint32_t>(last);
             p.bones.assign(l.bones.begin() + static_cast<std::ptrdiff_t>(first), l.bones.begin() + static_cast<std::ptrdiff_t>(last));
             p.at = at;
-            if (!snap->open) {
-                auto& sp = sent_pose();
-                std::lock_guard sent_lock(sp.mutex);
-                sp.component = component;
-                sp.first = static_cast<std::uint32_t>(first);
-                sp.last = static_cast<std::uint32_t>(last);
-                sp.joints.assign(l.pose.begin() + static_cast<std::ptrdiff_t>(first), l.pose.begin() + static_cast<std::ptrdiff_t>(last));
-                sp.at = at;
-            }
-        } else {
-            auto& p = pending();
-            std::lock_guard lock(p.mutex);
-            p.bones.clear();
+            p.generation = generation;
         }
-        {
-            auto& pb = pending_board();
-            std::lock_guard lock(pb.mutex);
-            pb.weight = board_weight > 0 && finite(board_target) ? board_weight : 0;
+        if (preview) {
+            auto& pb = *preview;
+            pb.weight = snap->open && board_weight > 0 && finite(board_target) ? board_weight : 0;
             pb.mount = board_target;
             pb.at = at;
+            pb.generation = generation;
+            pb.holder = l.board_holder.load(std::memory_order_acquire);
+            pb.sequence = l.animation_updates.load(std::memory_order_acquire);
         }
+        // Publish both parts together. Whichever render callback arrives first pins this
+        // immutable sample for the current presentation, including a missing body/board.
+        publish_preview_packet(std::move(preview));
         if (!snap->open) l.floor_valid = false;
         if (snap->open) {
             std::optional<Joint> board;
@@ -1290,28 +1573,46 @@ void on_animation(std::uintptr_t component) noexcept {
             publish_joints(l.pose, live_placement, board, board_frame);
         }
     } catch (const std::exception& e) {
+        invalidate_outputs();
         if (l.failures++ % 600 == 0) logging::log(Level::warning, Channel::skater, "Animation Studio: {}", e.what());
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.failure = e.what();
     } catch (...) {
+        invalidate_outputs();
     }
     SetLastError(error);
 }
 
 // What other players get of the local skater: a saved trick that plays in game, as drawn here.
+struct BodyPublicationState {
+    std::mutex mutex; EditPublicationCache edits; EditTransition transition;
+    std::vector<Offset> network_deltas;
+    std::uint64_t network_generation{}, network_epoch{};
+    double network_at{-1};
+};
+BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 void on_send(std::uintptr_t component, std::vector<multiplayer::Transform>& skater) noexcept {
     try {
-        auto& sp = sent_pose();
-        std::lock_guard lock(sp.mutex);
-        if (component != sp.component || now_seconds() - sp.at > 0.15 || sp.last > skater.size() || is_open()) return;
-        for (std::uint32_t i = sp.first; i < sp.last; ++i) {
-            const auto& j = sp.joints[i - sp.first];
-            skater[i].rotation = j.rotation;
-            skater[i].position = j.position;
+        if (component != live().component.load(std::memory_order_acquire) || is_open() || skater.size() < skeleton_joints) return;
+        std::vector<Joint> native(skater.size());
+        for (std::size_t i = 0; i < skater.size(); ++i) native[i] = {skater[i].scale, skater[i].rotation, skater[i].position};
+        const auto holder = read<std::uintptr_t>(component + 0xa0).value_or(0);
+        const auto layout = multiplayer::read_native_pose_layout(peek, live().base.load(), holder, 512);
+        if (!layout.buffer || layout.count != native.size()) return;
+        { auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
+          const auto gen = live().generation.load();
+          publication.edits.restore(gen, live().animation_updates.load(), layout.buffer, native);
+          const auto motion = live().render_motion.load();
+          if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard &&
+              publication.network_generation == gen && publication.network_epoch == gameplay_epoch.load() && now_seconds() - publication.network_at < 0.1)
+              apply_pose_deltas(publication.network_deltas, native); }
+        for (const auto& joint : editable_joints()) {
+            if (joint.index >= skeleton_joints) continue;
+            skater[joint.index].rotation = native[joint.index].rotation;
+            skater[joint.index].position = native[joint.index].position;
         }
-    } catch (...) {
-    }
+    } catch (...) {}
 }
 
 // The room's own skater and board (the menu's): hidden while the studio
@@ -1352,10 +1653,66 @@ void hide_in_room(std::uintptr_t animation_interface, bool skater) noexcept {
     }
 }
 
+void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
+    auto& l = live();
+    const auto generation = l.generation.load(std::memory_order_acquire);
+    const auto update = l.animation_updates.load(std::memory_order_acquire);
+    const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), holder, 512);
+    if (!layout.buffer || layout.count != skeleton_joints) return;
+    auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
+    std::vector<NativeBone> current(layout.count);
+    if (!peek(layout.buffer, current.data(), current.size() * sizeof(NativeBone))) return;
+    std::vector<Joint> native; native.reserve(current.size());
+    for (const auto& bone : current) native.push_back(joint_of(bone));
+    publication.edits.restore(generation, update, layout.buffer, native);
+    auto edited = native;
+    if (packet) {
+        std::vector<Joint> source(packet->clip->joints); packet->clip->sample(packet->time, source);
+        apply_native_edit_layer(*packet->edits, packet->time, source, edited, packet->mirror, packet->weight);
+    }
+    const auto desired_deltas = pose_edit_deltas(native, edited);
+    edited = native;
+    std::vector<Offset> applied_deltas;
+    const auto motion = l.render_motion.load(std::memory_order_acquire);
+    if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+        const auto deltas = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
+            packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas);
+        apply_pose_deltas(deltas, edited);
+        applied_deltas.assign(deltas.begin(), deltas.end());
+    } else publication.transition.reset();
+    if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
+        (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) return;
+    for (const auto& joint : edited)
+        if (!finite(joint)) throw std::runtime_error("Native edit layer produced an invalid joint");
+    for (std::size_t i = 0; i < edited.size(); ++i) {
+        if (edited[i] == joint_of(current[i])) continue;
+        auto& bone = current[i]; bone.rotation = edited[i].rotation;
+        std::memcpy(bone.position.data(), edited[i].position.data(), 12);
+        if (!poke(layout.buffer + i * sizeof(NativeBone), &bone, sizeof(bone))) throw std::runtime_error("Cannot publish native edits");
+    }
+    publication.network_deltas = std::move(applied_deltas);
+    publication.network_generation = generation; publication.network_at = now_seconds();
+    publication.network_epoch = gameplay_epoch.load();
+    if (diagnostics_capture) {
+        auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
+        shot.edited_skater = edited; shot.edited_at = now_seconds();
+        shot.edited_generation = generation; shot.edited_sequence = packet ? packet->sequence : 0;
+        shot.edited_episode = packet ? packet->episode : 0; shot.edited_presentation = presentation;
+        // Strip our exact previous writes from the diagnostic/recording baseline too.
+        shot.skater = current;
+        for (std::size_t i = 0; i < native.size(); ++i) {
+            shot.skater[i].rotation = native[i].rotation;
+            std::memcpy(shot.skater[i].position.data(), native[i].position.data(), 12);
+        }
+    }
+    publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
+}
+
 // The local skater's pose handed to the renderer: the studio's pose goes in now, over whatever the
 // body physics left there, each joint's own lanes only (each bone's 4th scale/position lane stays).
 void on_render(std::uintptr_t animation_interface) noexcept {
     auto& l = live();
+    const auto generation = l.generation.load(std::memory_order_acquire);
     const auto component = l.component.load(std::memory_order_acquire);
     if (!component) return;
     const auto error = GetLastError();
@@ -1366,21 +1723,33 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             SetLastError(error);
             return;
         }
-        if (capture_flag.load(std::memory_order_acquire)) {
+        if (diagnostics_capture || capture_flag.load(std::memory_order_acquire) || research_capture_flag.load(std::memory_order_acquire)) {
             const auto shot_layout = multiplayer::read_native_pose_layout(peek, l.base.load(std::memory_order_acquire), *holder, 512);
             if (shot_layout.buffer && shot_layout.count == skeleton_joints) {
                 auto& shot = render_shot();
                 std::lock_guard shot_lock(shot.mutex);
                 shot.skater.resize(shot_layout.count);
-                if (peek(shot_layout.buffer, shot.skater.data(), shot.skater.size() * sizeof(NativeBone))) shot.at = now_seconds();
+                if (peek(shot_layout.buffer, shot.skater.data(), shot.skater.size() * sizeof(NativeBone))) {
+                    shot.at = now_seconds();
+                    shot.skater_generation = generation;
+                    ++shot.skater_publications;
+                }
             }
         }
-        auto& p = pending();
-        std::lock_guard lock(p.mutex);
-        if (p.bones.empty() || now_seconds() - p.at > 0.1) {
+        if (!is_open()) {
+            std::uint64_t presentation{};
+            const auto packet = gameplay_packet(true, &presentation);
+            apply_gameplay_body(*holder, packet, presentation);
             SetLastError(error);
             return;
         }
+        std::uint64_t presentation{};
+        const auto packet = preview_packet(presentation);
+        if (!packet || packet->bones.empty()) {
+            SetLastError(error);
+            return;
+        }
+        const auto& p = *packet;
         const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(std::memory_order_acquire), *holder, 512);
         if (layout.buffer != p.buffer || layout.count != skeleton_joints || p.last > layout.count || p.first >= p.last) {
             SetLastError(error);
@@ -1394,22 +1763,94 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             current[i].rotation = p.bones[i].rotation;
             std::memcpy(current[i].position.data(), p.bones[i].position.data(), 12);
         }
-        (void)poke(layout.buffer + p.first * sizeof(NativeBone), current.data(), current.size() * sizeof(NativeBone));
-    } catch (...) {
-    }
+        if (!poke(layout.buffer + p.first * sizeof(NativeBone), current.data(), current.size() * sizeof(NativeBone)))
+            throw std::runtime_error("Cannot publish studio pose");
+        if (diagnostics_capture) {
+            auto& shot = render_shot(); std::lock_guard lock(shot.mutex);
+            shot.edited_skater.clear();
+            for (const auto& bone : shot.skater) shot.edited_skater.push_back(joint_of(bone));
+            if (shot.edited_skater.size() == layout.count)
+                for (std::size_t i = 0; i < current.size(); ++i) shot.edited_skater[p.first + i] = joint_of(current[i]);
+            shot.edited_at = now_seconds(); shot.edited_generation = generation;
+            shot.edited_sequence = packet->sequence; shot.edited_presentation = presentation;
+        }
+    } catch (...) { invalidate_outputs(); }
     SetLastError(error);
+}
+
+struct BoardPublicationState { std::mutex mutex; EditPublicationCache edits; EditTransition transition; };
+BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
+void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
+    auto& l = live();
+    const auto generation = l.generation.load(std::memory_order_acquire), update = l.animation_updates.load(std::memory_order_acquire);
+    const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), holder, 64);
+    if (!layout.buffer || layout.count != board_bones) return;
+    auto& publication = board_publication_state(); std::lock_guard lock(publication.mutex);
+    std::array<NativeBone, board_bones> bones{};
+    if (!peek(layout.buffer, bones.data(), sizeof(bones))) return;
+    std::vector<Joint> native; for (const auto& bone : bones) native.push_back(joint_of(bone));
+    publication.edits.restore(generation, update, layout.buffer, native);
+    auto edited = native;
+    const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
+    Joint want = native_mount;
+    if (packet && packet->board_holder == holder && packet->board_owned && packet->board_frame_valid) {
+        const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
+        const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
+        std::array<NativeBone, 2> placement_bones{};
+        if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
+            const auto placement = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
+            Joint frame; frame.rotation = normalised(multiply(placement.rotation, packet->board_frame_local));
+            const auto target = board_edited(native_mount, *packet->edits, packet->time, ground_turn(frame), packet->mirror);
+            if (target != native_mount) {
+                want.rotation = slerp(native_mount.rotation, target.rotation, packet->weight);
+                for (std::size_t i = 0; i < 3; ++i) want.position[i] += (target.position[i] - native_mount.position[i]) * packet->weight;
+            }
+        }
+    }
+    std::array<Offset, 1> desired{};
+    if (want.rotation != native_mount.rotation) desired[0].rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
+    for (std::size_t k = 0; k < 3; ++k) desired[0].offset[k] = want.position[k] - native_mount.position[k];
+    want = native_mount;
+    const auto motion = l.render_motion.load(std::memory_order_acquire);
+    if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard && motion != MotionState::rail) {
+        const auto delta = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
+            packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired)[0];
+        if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
+        for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
+    } else publication.transition.reset();
+    if (want != native_mount) {
+        edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
+        edited[1].scale = native[1].scale;
+    }
+    if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
+        (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) return;
+    if (!finite(edited[1])) throw std::runtime_error("Native board edit produced an invalid transform");
+    if (edited[1] != joint_of(bones[1])) {
+        auto& root = bones[1]; root.rotation = edited[1].rotation;
+        std::memcpy(root.position.data(), edited[1].position.data(), 12);
+        if (!poke(layout.buffer + sizeof(NativeBone), &root, sizeof(root))) throw std::runtime_error("Cannot publish board edits");
+    }
+    if (diagnostics_capture) {
+        auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
+        shot.edited_board = compose(compose(edited[0], edited[1]), edited[board_mount]);
+        shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
+        shot.edited_board_sequence = packet ? packet->sequence : 0; shot.edited_board_presentation = presentation;
+        shot.board = native_mount;
+    }
+    publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
 }
 
 // The board's pose, just before it is handed to the renderer: its mount where the studio or the
 // custom trick wants it.
 void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render_data*/) noexcept {
     auto& l = live();
+    const auto generation = l.generation.load(std::memory_order_acquire);
     const auto error = GetLastError();
     try {
         // The board: its mount (bone 2) put where the studio or the custom trick wants it.
         const auto bh = l.board_holder.load(std::memory_order_acquire);
         if (bh && animation_interface != bh + 0xc0) hide_in_room(animation_interface, false);
-        if (bh && animation_interface == bh + 0xc0 && capture_flag.load(std::memory_order_acquire)) {
+        if (bh && animation_interface == bh + 0xc0 && (diagnostics_capture || capture_flag.load(std::memory_order_acquire) || research_capture_flag.load(std::memory_order_acquire))) {
             const auto shot_layout = multiplayer::read_native_pose_layout(peek, l.base.load(std::memory_order_acquire), bh, 64);
             std::array<NativeBone, board_bones> b{};
             if (shot_layout.buffer && shot_layout.count == board_bones && peek(shot_layout.buffer, b.data(), sizeof(b))) {
@@ -1419,19 +1860,28 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
                     std::lock_guard shot_lock(shot.mutex);
                     shot.board = mount;
                     shot.board_at = now_seconds();
+                    shot.board_generation = generation;
+                    shot.board_rig.clear();
+                    for (const auto& bone : b) shot.board_rig.push_back(joint_of(bone));
+                    ++shot.board_publications;
                 }
             }
         }
         if (bh && animation_interface == bh + 0xc0) {
+            if (!is_open()) {
+                std::uint64_t presentation{};
+                const auto packet = gameplay_packet(true, &presentation);
+                apply_gameplay_board(bh, packet, presentation);
+                SetLastError(error);
+                return;
+            }
             Joint target;
             float weight{};
-            {
-                auto& pb = pending_board();
-                std::lock_guard lock(pb.mutex);
-                if (pb.weight > 0 && now_seconds() - pb.at < 0.1) {
-                    target = pb.mount;
-                    weight = pb.weight;
-                }
+            std::uint64_t presentation{};
+            const auto packet = preview_packet(presentation);
+            if (packet && packet->holder == bh) {
+                target = packet->mount;
+                weight = packet->weight;
             }
             if (weight > 0) {
                 const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(std::memory_order_acquire), bh, 64);
@@ -1453,19 +1903,26 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
                         auto& r = b[1];
                         r.rotation = root_local.rotation;
                         std::memcpy(r.position.data(), root_local.position.data(), 12);
-                        (void)poke(layout.buffer + sizeof(NativeBone), &r, sizeof(NativeBone));
+                        if (!poke(layout.buffer + sizeof(NativeBone), &r, sizeof(NativeBone)))
+                            throw std::runtime_error("Cannot publish studio board");
+                        if (diagnostics_capture) {
+                            auto& shot = render_shot(); std::lock_guard lock(shot.mutex);
+                            shot.edited_board = compose(board_parent(b), joint_of(b[board_mount]));
+                            shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
+                            shot.edited_board_sequence = packet->sequence; shot.edited_board_presentation = presentation;
+                        }
                     }
                 }
             }
         }
-    } catch (...) {
-    }
+    } catch (...) { invalidate_outputs(); }
     SetLastError(error);
 }
 
 // ---- the engine thread ---------------------------------------------------------------------------
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float camera_fov) {
+    research_tick(base, component, open);
     auto& l = live();
     auto& s = state();
     TickResult result;
@@ -1486,11 +1943,12 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         }
         if (std::isfinite(camera_fov) && camera_fov > 1 && camera_fov < 175) s.fov = camera_fov;
         capture_flag.store(s.recording != Recording::off, std::memory_order_release);
-        needs_listener = s.open || room_watch.load() || s.recording != Recording::off || (s.play_in_game && s.tricks && !s.tricks->empty());
+        needs_listener = diagnostics_capture || research_capture_flag.load(std::memory_order_acquire) || s.open || room_watch.load() || s.recording != Recording::off || (s.play_in_game && s.tricks && !s.tricks->empty());
         result.want_open = s.open_requested;
         result.changed = s.open_request_pending;
         s.open_request_pending = false;
     }
+    std::uintptr_t next_board_holder{};
     if (component && base) {
         // The skater's board (its own entity, with a 16-bone rig): its animation holder.
         std::uintptr_t holder{};
@@ -1499,12 +1957,16 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             const auto entity = collection ? read<std::uintptr_t>(collection).value_or(0) : 0;
             if (entity) holder = multiplayer::read_native_board(peek, base, entity).holder;
         } catch (...) {}
-        l.board_holder.store(holder, std::memory_order_release);
+        next_board_holder = holder;
     }
-    if (component != l.component.load(std::memory_order_acquire)) {
+    {
+        std::lock_guard animation_lock(l.animation_mutex);
+        if (component != l.component.load(std::memory_order_acquire) || base != l.base.load(std::memory_order_acquire) ||
+            next_board_holder != l.board_holder.load(std::memory_order_acquire))
+            l.generation.fetch_add(1, std::memory_order_acq_rel);
         l.base.store(base, std::memory_order_release);
         l.component.store(component, std::memory_order_release);
-        l.logged_layout = false;
+        l.board_holder.store(next_board_holder, std::memory_order_release);
     }
     {
         bool read{};
@@ -1675,6 +2137,13 @@ View view() {
     v.camera_valid = s.camera_valid;
     v.name = s.edits.name;
     v.trick = s.edits.trick;
+    v.source_kind = s.edits.source.kind; v.source_asset = s.edits.source.asset; v.entry = s.edits.entry;
+    v.source_position_codec = s.edits.source.position_codec;
+    if (s.clip) {
+        v.source_pose_count = s.clip->times.size();
+        for (std::size_t i = 1; i < s.clip->times.size(); ++i)
+            v.source_max_sample_gap = std::max(v.source_max_sample_gap, s.clip->times[i] - s.clip->times[i-1]);
+    }
     v.has_clip = s.clip && !s.clip->empty();
     v.dirty = s.dirty;
     v.playing = s.playing;
@@ -1693,6 +2162,10 @@ View view() {
         v.tracks.push_back(std::move(tv));
     }
     v.library = s.library;
+    v.presets = s.presets;
+    v.packs = s.packs;
+    v.active_pack = s.pack ? s.pack->name : "";
+    v.alternate_variants = s.pack && s.pack->alternate;
     v.recording = s.recording;
     v.bracket_start = s.edits.start;
     v.bracket_end = s.edits.end;
@@ -1758,18 +2231,23 @@ bool copy_to_pops(std::string& message) {
     const auto folder = library_folder();
     try {
         std::filesystem::create_directories(folder);
+        const auto bytes = clip_bytes(*clip);
+        const std::string binary(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         for (const char* pop : {"low", "mid", "high"}) {
             Animation copy = edits;
             copy.pop = pop;
-            copy.name = base + " " + pop;
+            const std::string suffix = std::string(" ") + pop;
+            const auto stem = base.substr(0, 48 - suffix.size()) + suffix;
+            copy.name = stem;
+            unsigned number = 2;
+            while (std::filesystem::exists(folder / (copy.name + ".json")) || std::filesystem::exists(folder / (copy.name + ".clip")))
+                copy.name = variation_name(stem, number++);
             copy.clip.times = {0, clip->duration()};
             copy.clip.takeoff = clip->takeoff;
             copy.clip.landing = clip->landing;
             const auto json = to_json(copy);
-            const auto bytes = clip_bytes(*clip);
-            std::ofstream(folder / (copy.name + ".json"), std::ios::binary).write(json.data(), static_cast<std::streamsize>(json.size()));
-            std::ofstream(folder / (copy.name + ".clip"), std::ios::binary)
-                .write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            write_preset_file(folder / (copy.name + ".clip"), binary);
+            write_preset_file(folder / (copy.name + ".json"), json);
         }
     } catch (const std::exception& e) {
         message = std::string("Copying failed: ") + e.what();
@@ -1779,7 +2257,7 @@ bool copy_to_pops(std::string& message) {
     std::lock_guard lock(s.mutex);
     read_library_locked(s);
     s.tricks_read = false;
-    message = "Saved " + base + " low, mid and high. Open one to change it for that pop.";
+    message = "Saved new low, mid and high variations of " + base + "; existing animations were preserved.";
     s.status = message;
     return true;
 }
@@ -1794,21 +2272,16 @@ void advance(float seconds) {
     std::lock_guard lock(s.mutex);
     if (!s.playing || !s.clip || s.clip->empty() || !(seconds > 0)) return;
     const float duration = s.clip->duration();
-    s.time += std::min(seconds, 0.1f) * s.edits.speed;
-    if (s.time > duration) {
-        if (s.edits.loop) s.time = std::fmod(s.time, std::max(duration, 0.01f));
-        else {
-            s.time = duration;
-            s.playing = false;
-        }
-    }
-    publish_locked(s);
+    s.time = advance_time(s.time, seconds, s.edits.speed, duration, s.edits.loop);
+    if (!s.edits.loop && s.time >= duration) s.playing = false;
+    publish_locked(s, false);
 }
 void set_time(float seconds) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (!std::isfinite(seconds)) return;
     s.time = std::clamp(seconds, 0.0f, duration_locked(s));
-    publish_locked(s);
+    publish_locked(s, false);
 }
 void set_playing(bool playing) {
     auto& s = state();
@@ -1824,6 +2297,7 @@ void set_loop(bool loop) {
     changed_locked(s);
 }
 void set_speed(float speed) {
+    if (!std::isfinite(speed)) return;
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.edits.speed = std::clamp(speed, 0.1f, 4.0f);
@@ -1906,13 +2380,13 @@ void set_play_in_game(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
-    s.status = on ? "Your saved tricks play in place of the game's." : "Tricks play as the game has them.";
+    s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
     publish_locked(s);
 }
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    s.undo.push_back({s.edits.tracks});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
 }
@@ -1991,24 +2465,20 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
 }
 
 void move_bracket(int which, float seconds) {
+    if (!std::isfinite(seconds)) return;
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (!s.clip || s.clip->empty()) return;
     const float duration = s.clip->duration();
     const float t = std::clamp(seconds, 0.0f, duration);
-    const float was_start = s.edits.start, was_end = s.edits.end < 0 ? duration : s.edits.end;
-    float start = was_start, end = was_end;
-    if (which == 1) start = std::clamp(t, 0.0f, was_end - 1.0f / 30);
-    else if (which == 2) end = std::clamp(t, was_start + 1.0f / 30, duration);
-    else return;
-    // The animation lives between the brackets: every key keeps its place in the window, so moving a bracket
-    // takes the keys with it (the trick starts earlier or later, or runs longer or shorter) instead of leaving
-    // them behind.
-    const float was = (std::max)(was_end - was_start, 1.0f / 1000), now = end - start;
-    for (auto& track : s.edits.tracks)
-        for (auto& key : track.keys) key.time = std::clamp(start + (key.time - was_start) * now / was, 0.0f, duration);
-    s.edits.start = start;
-    s.edits.end = end;
+    float start = s.edits.start, end = s.edits.end < 0 ? duration : s.edits.end;
+    const float gap = std::min(duration, 1.0f / 30);
+    if (which == 1) {
+        start = std::clamp(t, 0.0f, std::max(0.0f, end - gap));
+    } else if (which == 2) {
+        end = std::clamp(std::max(t, start + gap), 0.0f, duration);
+    } else return;
+    if (!retime_window(s.edits, start, end, duration)) return;
     key_all_at(s.edits, start);
     key_all_at(s.edits, end);
     changed_locked(s);
@@ -2045,6 +2515,7 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
 void delete_key(std::uint16_t joint, float time) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    if (const auto* track = s.edits.track(joint); track && track->locked) return;
     if (anim_studio::remove_key(s.edits, joint, time, 1e-3f)) changed_locked(s);
 }
 void move_key(std::uint16_t joint, float from, float to) {
@@ -2062,7 +2533,7 @@ void move_key(std::uint16_t joint, float from, float to) {
 void set_ease(std::uint16_t joint, float time, Ease ease) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    if (auto* t = s.edits.track(joint))
+    if (auto* t = s.edits.track(joint); t && !t->locked)
         for (auto& k : t->keys)
             if (std::abs(k.time - time) < 1e-3f) {
                 k.ease = ease;
@@ -2111,7 +2582,9 @@ void undo() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (s.undo.empty()) return;
-    s.redo.push_back({s.edits.tracks});
+    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
+    s.edits.start = s.undo.back().start;
+    s.edits.end = s.undo.back().end;
     s.edits.tracks = std::move(s.undo.back().tracks);
     s.undo.pop_back();
     changed_locked(s);
@@ -2120,7 +2593,9 @@ void redo() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (s.redo.empty()) return;
-    s.undo.push_back({s.edits.tracks});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
+    s.edits.start = s.redo.back().start;
+    s.edits.end = s.redo.back().end;
     s.edits.tracks = std::move(s.redo.back().tracks);
     s.redo.pop_back();
     changed_locked(s);
@@ -2139,6 +2614,109 @@ void new_animation() {
     s.status = "New animation. Record a trick to start.";
     publish_locked(s);
 }
+bool save_preset_copy(std::string& message) {
+    {
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        if (!s.clip || s.clip->empty()) { message = "Record or load an animation first."; return false; }
+        if (!s.library_read) read_library_locked(s);
+        const auto base = file_safe(s.edits.name.empty() ? s.edits.trick : s.edits.name);
+        int number = 2;
+        std::string name;
+        do { name = variation_name(base, static_cast<unsigned>(number++)); }
+        while (std::filesystem::exists(library_folder() / (name + ".json")) || std::filesystem::exists(library_folder() / (name + ".clip")));
+        s.edits.name = name;
+        s.dirty = true;
+    }
+    return save(message);
+}
+namespace {
+template<class Change> bool change_pack(Change change, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (!s.pack) throw std::runtime_error("Create or choose a pack first in ANIMATIONS.");
+        auto pack = *s.pack;
+        change(pack, s);
+        write_preset_file(library_folder() / L"presets" / (pack.name + ".json"), pack_json(pack).dump(2));
+        s.tricks_read = false;
+        read_library_locked(s);
+        message = "Updated pack " + pack.name + ".";
+        s.status = message;
+        publish_locked(s);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
+}
+const Preset& saved_preset(const State& s, const std::string& name) {
+    const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == name; });
+    if (found == s.presets.end()) throw std::runtime_error("Save the animation before choosing it as a preset.");
+    return *found;
+}
+} // namespace
+bool create_preset_pack(std::string& message, const std::string& name) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (!s.library_read) read_library_locked(s);
+        auto pack = s.pack.value_or(PresetPack{});
+        if (!s.pack) for (const auto& p : s.presets) pack.slots[preset_slot(p.trick, p.pop)].push_back(p.name);
+        if (name.empty()) {
+            int number = 1;
+            do { pack.name = "Pack " + std::to_string(number++); }
+            while (std::filesystem::exists(library_folder() / L"presets" / (pack.name + ".json")));
+        } else {
+            pack.name = file_safe(name);
+            if (std::filesystem::exists(library_folder() / L"presets" / (pack.name + ".json")))
+                throw std::runtime_error("That pack name already exists. Choose another name.");
+        }
+        write_preset_file(library_folder() / L"presets" / (pack.name + ".json"), pack_json(pack).dump(2));
+        write_preset_file(library_folder() / L"presets" / L"current.txt", pack.name);
+        read_library_locked(s);
+        s.tricks_read = false;
+        message = "Created " + pack.name + ". Choose variations in PLAYBACK.";
+        s.status = message;
+        publish_locked(s);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
+}
+bool use_preset_pack(const std::string& name, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (!name.empty()) {
+            if (name != file_safe(name)) throw std::runtime_error("Invalid pack name");
+            std::ifstream in(library_folder() / L"presets" / (name + ".json"), std::ios::binary);
+            if (!in) throw std::runtime_error("Pack not found");
+            read_pack_json(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())));
+        }
+        write_preset_file(library_folder() / L"presets" / L"current.txt", name);
+        read_library_locked(s);
+        s.tricks_read = false;
+        message = name.empty() ? "Using all saved animations (one fixed variant per trick/pop)." : "Using pack " + name + ".";
+        s.status = message;
+        publish_locked(s);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
+}
+bool set_pack_alternation(bool alternate, std::string& message) {
+    return change_pack([=](PresetPack& pack, const State&) { pack.alternate = alternate; }, message);
+}
+bool activate_preset(const std::string& name, std::string& message) {
+    return change_pack([&](PresetPack& pack, const State& s) {
+        const auto& p = saved_preset(s, name);
+        auto& names = pack.slots[preset_slot(p.trick, p.pop)];
+        std::erase(names, name);
+        names.insert(names.begin(), name);
+    }, message);
+}
+bool include_preset(const std::string& name, bool included, std::string& message) {
+    return change_pack([&](PresetPack& pack, const State& s) {
+        const auto& p = saved_preset(s, name);
+        auto& names = pack.slots[preset_slot(p.trick, p.pop)];
+        std::erase(names, name);
+        if (included) names.push_back(name);
+    }, message);
+}
 bool save(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2146,7 +2724,7 @@ bool save(std::string& message) {
         message = "Record a trick before saving.";
         return false;
     }
-    if (s.edits.trick.empty()) {
+    if (s.edits.trick.empty() && s.clip->takeoff >= 0) {
         message = "Which trick is it? Type the game's trick in TRICK (ollie, kickflip...) or record it, then save.";
         s.status = message;
         return false;
@@ -2156,8 +2734,8 @@ bool save(std::string& message) {
         const auto taken = [&](const std::string& n) { return std::find(s.library.begin(), s.library.end(), file_safe(n)) != s.library.end(); };
         std::string name = s.edits.trick.empty() ? "Trick" : s.edits.trick;
         int n = 1;
-        while (taken(name + " " + std::to_string(n))) ++n;
-        s.edits.name = name + " " + std::to_string(n);
+        while (taken(variation_name(file_safe(name), static_cast<unsigned>(n)))) ++n;
+        s.edits.name = variation_name(file_safe(name), static_cast<unsigned>(n));
     }
     const auto name = file_safe(s.edits.name);
     const auto folder = library_folder();
@@ -2211,8 +2789,12 @@ std::vector<GameTrick> read_catalog() {
         for (std::size_t i = 0; i < json.size() && i < 2000; ++i) {
             const auto& e = json.at(i);
             if (!e.is_object()) continue;
-            GameTrick t{e.value("category", ""), e.value("label", ""), e.value("trick", ""), e.value("pop", ""), e.value("file", "")};
-            if (t.trick.empty() || t.file.empty() || t.file.find("..") != std::string::npos) continue;
+            GameTrick t{e.value("category", ""), e.value("label", ""), e.value("trick", ""), e.value("pop", ""), e.value("file", ""), e.value("asset", ""), e.value("preview_only", false)};
+            t.position_codec = e.value("position_codec", "");
+            t.looping = e.value("native_looping", false);
+            const std::filesystem::path relative_file(t.file);
+            if (t.trick.empty() || t.file.empty() || t.file.find("..") != std::string::npos ||
+                relative_file.has_root_path() || relative_file.extension() != L".clip") continue;
             out.push_back(std::move(t));
         }
     } catch (const std::exception& e) {
@@ -2220,56 +2802,85 @@ std::vector<GameTrick> read_catalog() {
     }
     return out;
 }
-// The tricks Record all tricks kept: by category (flip, nollie), each trick's pops low, mid, high.
 std::vector<GameTrick> read_recorded() {
     std::vector<GameTrick> out;
     std::error_code error;
     const auto folder = library_folder() / L"recorded";
     for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (!entry.is_regular_file(error) || entry.path().extension() != L".clip") continue;
-        const auto stem = entry.path().stem().string();
-        const auto split = stem.rfind("__");
-        if (split == std::string::npos) continue;
-        GameTrick t;
-        t.trick = stem.substr(0, split);
-        t.pop = stem.substr(split + 2);
-        if (t.trick.empty() || (t.pop != "low" && t.pop != "mid" && t.pop != "high")) continue;
-        for (auto& c : t.trick) if (c == '_') c = ' ';
-        t.label = t.trick;
-        bool start = true;
-        for (auto& c : t.label) {
-            if (start) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-            start = c == ' ';
+        if (!entry.is_regular_file(error)) continue;
+        const auto identity = recorded_clip_identity(entry.path().filename().string());
+        if (!identity) continue;
+        GameTrick take;
+        take.trick = identity->first; take.pop = identity->second;
+        take.file = entry.path().filename().string(); take.recorded = true;
+        // Old batch clips had no stance sidecar. Preserve their legacy regular assumption.
+        take.switch_stance.reset();
+        auto sidecar = entry.path(); sidecar.replace_extension(L".json");
+        if (std::filesystem::is_regular_file(sidecar, error)) {
+            try {
+                std::ifstream in(sidecar, std::ios::binary);
+                const auto metadata = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+                take.looping = metadata.loop;
+                if (metadata.trick.empty() || metadata.pop != take.pop) throw std::runtime_error("recorded take metadata does not match its slot");
+                take.trick = metadata.trick; take.stance = metadata.stance; take.switch_stance = metadata.switch_stance;
+                take.source = metadata.source; take.entry = metadata.entry;
+            } catch (const std::exception& e) {
+                logging::log(Level::warning, Channel::skater, "Recorded take not loaded: {}: {}", take.file, e.what());
+                continue;
+            }
         }
-        t.category = t.trick.rfind("nollie", 0) == 0 ? "Nollie tricks" : "Flip tricks";
-        t.file = "../recorded/" + entry.path().filename().string();
-        out.push_back(std::move(t));
+        take.label = take.trick;
+        bool first = true;
+        for (auto& c : take.label) { if (c == '_') c = ' '; if (first) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); first = c == ' '; }
+        take.category = take.trick.starts_with("nollie") || take.trick.starts_with("n_") ? "Nollie tricks" : "Flip tricks";
+        out.push_back(std::move(take));
     }
-    const auto pop_rank = [](const std::string& pop) { return pop == "low" ? 0 : pop == "mid" ? 1 : 2; };
-    std::ranges::sort(out, [&](const GameTrick& x, const GameTrick& y) {
-        if (x.category != y.category) return x.category < y.category;
-        const bool xo = x.trick == "ollie" || x.trick == "nollie", yo = y.trick == "ollie" || y.trick == "nollie";
-        if (xo != yo) return xo;
-        if (x.trick != y.trick) return x.trick < y.trick;
-        return pop_rank(x.pop) < pop_rank(y.pop);
-    });
     return out;
 }
+struct GameCatalogCache {
+    std::mutex mutex;
+    std::shared_ptr<const std::vector<GameTrick>> entries;
+    std::uint64_t revision{};
+};
+GameCatalogCache& game_catalog_cache() { static GameCatalogCache cache; return cache; }
 } // namespace
+std::shared_ptr<const std::vector<NativeAsset>> native_assets() {
+    static const auto assets = [] {
+        auto out = std::make_shared<std::vector<NativeAsset>>();
+        try {
+            const auto path = library_folder() / L"library" / L"native-catalog.json";
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(path, error) || std::filesystem::file_size(path, error) > 32 * 1024 * 1024) return out;
+            std::ifstream in(path, std::ios::binary);
+            const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            if (!root.is_array() || root.size() > 100000) return out;
+            for (const auto& e : root) {
+                if (!e.is_object()) continue;
+                NativeAsset asset{e.value("category", "Other"), e.value("asset", ""), e.value("kind", "unclassified")};
+                if (asset.asset.starts_with("animation/dingo/") && asset.asset.size() < 1024 && asset.category.size() < 256)
+                    out->push_back(std::move(asset));
+            }
+        } catch (const std::exception& e) {
+            logging::log(Level::warning, Channel::skater, "Animation Studio: native asset index not loaded: {}", e.what());
+        }
+        return out;
+    }();
+    return assets;
+}
 std::shared_ptr<const std::vector<GameTrick>> game_tricks() {
-    // Your recorded tricks when there are any (the board as the game had it); else the game's own clips.
-    static std::mutex mutex;
-    static std::shared_ptr<const std::vector<GameTrick>> list;
-    static std::uint64_t read_at = 0;
-    std::lock_guard lock(mutex);
-    if (const auto now = tricks_revision.load(std::memory_order_acquire); !list || now != read_at) {
-        read_at = now;
-        auto recorded = read_recorded();
-        auto next = std::make_shared<std::vector<GameTrick>>(recorded.empty() ? read_catalog() : std::move(recorded));
-        logging::log(Level::info, Channel::skater, "Animation Studio: {} tricks in the list.", next->size());
-        list = std::move(next);
+    auto& cache = game_catalog_cache();
+    std::lock_guard lock(cache.mutex);
+    const auto revision = tricks_revision.load(std::memory_order_acquire);
+    if (!cache.entries || cache.revision != revision) {
+        cache.entries = std::make_shared<const std::vector<GameTrick>>(merge_game_library(read_catalog(), read_recorded()));
+        cache.revision = revision;
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} game tricks in the library.", cache.entries->size());
     }
-    return list;
+    return cache.entries;
+}
+void refresh_game_tricks(std::string& message) {
+    tricks_revision.fetch_add(1, std::memory_order_acq_rel);
+    message = "Library refreshed: " + std::to_string(game_tricks()->size()) + " clips (recorded takes preferred per trick/pop).";
 }
 bool recorded_tricks() {
     std::error_code error;
@@ -2278,7 +2889,10 @@ bool recorded_tricks() {
     return false;
 }
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
-    std::ifstream in(library_folder() / L"library" / std::filesystem::path(trick.file), std::ios::binary);
+    if (!safe_library_clip(trick.file)) throw std::runtime_error("invalid local library clip name");
+    if (!trick.recorded && trick.position_codec != "native-piec-v1-extent")
+        throw std::runtime_error("This native library has outdated position decoding. Rebuild or update it before previewing.");
+    std::ifstream in(library_folder() / (trick.recorded ? L"recorded" : L"library") / std::filesystem::path(trick.file), std::ios::binary);
     if (!in) throw std::runtime_error("its file is missing");
     const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
@@ -2291,12 +2905,16 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.edits = {};
-        s.edits.trick = trick.trick;
+        s.edits.trick = trick.preview_only ? "" : trick.trick;
         s.edits.pop = trick.pop;
         s.edits.name = trick.label + " " + trick.pop;
-        // The game's clips are authored for a regular stance: saying so lets playback mirror them for goofy,
-        // switch and fakie instead of taking the blank for regular by luck.
-        s.edits.stance = "regular";
+        // Native clips are canonical regular; batch recordings keep their takeoff metadata.
+        s.edits.stance = trick.stance;
+        s.edits.switch_stance = trick.switch_stance;
+        s.edits.source = trick.recorded ? trick.source : AnimationSource{"native_asset", trick.asset, "animation/dingo/animbase_default_skeleton", "skater-placement"};
+        if (!trick.recorded) s.edits.source.position_codec = trick.position_codec;
+        s.edits.entry = trick.entry;
+        s.edits.loop = trick.looping;
         s.clip = std::move(clip);
         reset_brackets_locked(s);
         s.saved_as.clear();
@@ -2305,7 +2923,8 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.time = 0; // at its start: on the board, on the ground
         s.playing = false;
         s.dirty = false; // only an edit makes it unsaved
-        message = "Opened the game's " + trick.label + " (" + trick.pop + " pop). Change it and save: it then plays on your " + trick.label + "s.";
+        message = trick.preview_only ? "Opened " + trick.label + " for editing. Live grind phase replacement is not connected yet; saving preserves your work without activating it in game." :
+            "Opened the game's " + trick.label + " (" + trick.pop + " pop). Native board physics and graph constraints are not included in this clip.";
         s.status = message;
         publish_locked(s);
         return true;
@@ -2366,6 +2985,82 @@ bool remove(const std::string& name, std::string& message) {
     message = "Deleted " + safe + ".";
     s.status = message;
     return true;
+}
+bool export_diagnostics(std::string& message) {
+    try {
+        DiagnosticBuffer copy, preview;
+        { auto& history = diagnostic_history(); std::lock_guard lock(history.mutex); copy = history.buffer; }
+        { auto& history = preview_history(); std::lock_guard lock(history.mutex); preview = history.buffer; }
+        static std::atomic<unsigned> serial{};
+        const auto folder = library_folder() / L"diagnostics" /
+            ("dump-" + std::to_string(GetTickCount64()) + "-" + std::to_string(serial.fetch_add(1)));
+        auto summary = write_diagnostic_history(copy, folder);
+        summary["preview"] = write_diagnostic_history(preview, folder / L"preview");
+        summary["game_sha256_contract"] = std::string(supported_build::game_sha256);
+        summary["build"] = "studio-coherent-preview-v3";
+        summary["network_upload"] = false;
+        summary["failure"] = "";
+        summary["active_pack"] = "";
+        std::shared_ptr<const Clip> preview_clip;
+        Animation preview_edits;
+        { auto& s = state(); std::lock_guard lock(s.mutex);
+          summary["failure"] = s.failure;
+          summary["active_pack"] = s.pack ? s.pack->name : "";
+          summary["studio_open"] = s.open;
+          summary["custom_playback_enabled"] = s.play_in_game;
+          summary["preview_source"] = Json::object();
+          summary["preview_source"]["name"] = s.edits.name;
+          summary["preview_source"]["asset"] = s.edits.source.asset;
+          summary["preview_source"]["kind"] = s.edits.source.kind;
+          summary["preview_source"]["position_codec"] = s.edits.source.position_codec;
+          preview_clip = s.clip; preview_edits = s.edits; }
+        if (preview_clip && !preview_clip->empty()) {
+            const auto bytes = clip_bytes(*preview_clip);
+            std::ofstream source(folder / L"preview" / L"loaded-source.clip", std::ios::binary);
+            source.exceptions(std::ios::badbit | std::ios::failbit);
+            source.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            source.flush();
+            write_preset_file(folder / L"preview" / L"loaded-edits.json", to_json(preview_edits));
+        }
+        std::ofstream skeleton(folder / "skeleton.csv");
+        skeleton.exceptions(std::ios::failbit | std::ios::badbit);
+        skeleton << "joint,parent,mirror,editable_label\n";
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j)
+            skeleton << j << ',' << parent(j) << ',' << mirror_joint[j] << ',' << diagnostic_csv(editable(j) ? editable(j)->label : "") << '\n';
+        skeleton.flush();
+        Json presets = Json::array();
+        std::vector<std::string> names;
+        for (const auto& sample : copy.samples)
+            if (!sample.preset.empty() && std::find(names.begin(), names.end(), sample.preset) == names.end()) names.push_back(sample.preset);
+        const auto inputs = folder / L"presets";
+        std::filesystem::create_directory(inputs);
+        std::uintmax_t copied_bytes = 0;
+        for (const auto& name : names) {
+            if (name != file_safe(name)) continue;
+            Json record = Json::object(); record["name"] = name;
+            record["copied"] = false;
+            for (const auto* extension : {".json", ".clip"}) {
+                const auto source = library_folder() / (name + extension);
+                std::error_code error;
+                if (!std::filesystem::is_regular_file(source, error)) continue;
+                const auto bytes = std::filesystem::file_size(source, error);
+                if (error || bytes > 128 * 1024 * 1024 || copied_bytes + bytes > 128 * 1024 * 1024) continue;
+                std::filesystem::copy_file(source, inputs / (name + extension));
+                copied_bytes += bytes; record["copied"] = true;
+            }
+            presets.push_back(std::move(record));
+        }
+        summary["presets"] = std::move(presets);
+        summary["preset_payload_bytes"] = copied_bytes;
+        { const auto info = library_folder().parent_path() / L"build-info.json";
+          std::error_code error;
+          if (std::filesystem::is_regular_file(info, error) && std::filesystem::file_size(info, error) < 1024 * 1024)
+              std::filesystem::copy_file(info, folder / L"client-build-info.json"); }
+        write_preset_file(folder / L"summary.json", summary.dump(2));
+        message = "Diagnostics saved: " + folder.string() + (copy.samples.empty() && preview.samples.empty() ? " (no poses captured yet)." : ".");
+        auto& s = state(); std::lock_guard lock(s.mutex); s.status = message;
+        return true;
+    } catch (const std::exception& e) { message = std::string("Diagnostic export failed: ") + e.what(); return false; }
 }
 void rename(const std::string& name) {
     auto& s = state();

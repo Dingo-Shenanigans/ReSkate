@@ -1170,7 +1170,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // RESKATE_RECORD_ALL=1: the batch starts by itself once the level is in and the skater can be driven, so a
     // whole run can be started from a shortcut without touching the menus. It fires once per launch.
     {
-        static const bool wanted = GetEnvironmentVariableW(L"RESKATE_RECORD_ALL", nullptr, 0) != 0;
+        static const bool wanted = [] {
+            wchar_t value[2]{};
+            return GetEnvironmentVariableW(L"RESKATE_RECORD_ALL", value, 2) == 1 && value[0] == L'1';
+        }();
         static bool fired = false;
         static ULONGLONG ready_since = 0;
         if (wanted && !fired) {

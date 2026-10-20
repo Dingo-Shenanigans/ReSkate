@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <optional>
+#include <limits>
 
 // FOURTH Animation Studio's own data: a trick recorded from the game, and the keyframes a player puts
 // on it. Nothing here touches the game. The game side (anim_studio.cpp) copies the pose the native
@@ -15,8 +17,8 @@
 //
 // A pose is parent-local per joint, {scale, Hamilton quaternion xyzw, translation}, in the numbering
 // of the 395-joint AnimBase_Default_Skeleton the skater's animation output uses (Hips 7, Spine 42,
-// Head 103). Its first 386 joints are the render skeleton's, with the parents in
-// Extension/Multiplayer/Net/skater_bone_parents.h; joint 1 (AITrajectory) carries the world placement.
+// Head 103). The hierarchy comes from AntSkeletonAsset (animation_skeleton.h),
+// including its auxiliary targets; joint 1 (AITrajectory) carries world placement.
 namespace dingosdk::anim_studio {
 using Vec3 = std::array<float, 3>;
 using Quat = std::array<float, 4>; // x, y, z, w
@@ -25,6 +27,7 @@ struct Joint {
     Vec3 scale{1, 1, 1};
     Quat rotation{0, 0, 0, 1};
     Vec3 position{};
+    bool operator==(const Joint&) const = default;
 };
 
 // ---- maths ---------------------------------------------------------------------------------------
@@ -50,6 +53,9 @@ std::span<const EditableJoint> editable_joints() noexcept;
 const EditableJoint* editable(std::uint16_t joint) noexcept;
 inline constexpr std::uint32_t skeleton_joints = 395;
 inline constexpr std::uint16_t hips_joint = 7, placement_joint = 1;
+// The animation rig's board mount, parented directly to AITrajectory. Distinct
+// from the physical board's sixteen-bone rig (whose mount is bone 2).
+inline constexpr std::uint16_t skateboard_root_joint = 380;
 // Not a skater joint: the board (its deck's mount, which carries the deck, trucks and wheels). Its
 // track turns and moves the board where the recording had it, in the board's own frame.
 inline constexpr std::uint16_t board_joint = 900;
@@ -70,6 +76,9 @@ struct Clip {
     // The board at `seconds`, relative to the placement joint; false when the clip has none.
     bool sample_board(float seconds, Joint& out) const noexcept;
 };
+// Decide from the whole airborne trajectory, never independently at each displayed frame.
+// This is a preview heuristic, not a reconstruction of the native graph or physics.
+bool clip_has_vertical_trajectory(const Clip& clip) noexcept;
 
 // ---- keyframes ------------------------------------------------------------------------------------
 enum class Ease : std::uint8_t { smooth, linear, step };
@@ -93,6 +102,11 @@ struct Offset {
 // Before the first key and after the last the nearest key holds.
 Offset evaluate(const Track& track, float seconds) noexcept;
 
+struct AnimationSource {
+    std::string kind{"unknown"}; // native_asset, render_capture, unknown (legacy)
+    std::string asset, rig, board_frame;
+    std::string position_codec; // provenance of native source position decoding; empty for legacy
+};
 struct Animation {
     std::string name;  // the profile's name, also its file name
     std::string trick; // what the player says it is (Kickflip, Heelflip ...)
@@ -104,8 +118,12 @@ struct Animation {
     std::string pop;
     // The stance the trick was recorded in: "regular" or "goofy" ("" for a file from before stances: regular).
     std::string stance;
+    // Captured at takeoff, not after a 180/landing. Absent in legacy recordings.
+    std::optional<bool> switch_stance;
+    AnimationSource source;
+    std::string entry{"ground"}; // observed ground/rail entry; unknown is never guessed as ground
     // The brackets on the timeline: the window the animation works in, from `start` to `end` (end < 0: to the
-    // clip's end). Moving the start bracket moves every key with it (shift_keys); the end only sets the window.
+    // clip's end). Moving either bracket retimes unlocked tracks into the new window.
     float start{0};
     float end{-1};
     Track* track(std::uint16_t joint) noexcept;
@@ -114,23 +132,34 @@ struct Animation {
 };
 // Puts the animation's edits at `seconds` on `pose` (already holding the base pose).
 void apply_edits(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// Transfers authored offsets through placement-relative joint frames onto a native pose.
+// Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
+void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
+                    std::span<Joint> target, bool mirror);
+// Add only authored edits over a fresh native pose; no recorded rest transforms or scales.
+void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
+                             std::span<Joint> native, bool mirror, float weight);
+Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
+std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
+void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
+// Native/custom blend at explicitly edited bracket boundaries. Legacy full-clip windows stay at 1.
+float animation_window_weight(const Animation& animation, float seconds) noexcept;
 // Sets (adds or replaces) the key of `joint` at `seconds`; keys closer than `merge` are one key.
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge = 1.0f / 120);
 // Moves every key of every track by `delta` seconds (the start bracket moves with them); keys never go before 0.
-void shift_keys(Animation& animation, float delta) noexcept;
+void shift_keys(Animation& animation, float delta, float duration = std::numeric_limits<float>::infinity()) noexcept;
+bool retime_window(Animation& animation, float start, float end, float duration) noexcept;
 bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float merge = 1.0f / 120);
 // Moves a key to `to` (clamped to the clip), keeping the track in time order. Returns its new index.
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept;
 
 // ---- skeleton -------------------------------------------------------------------------------------
-// The world transform of `joint` composed from the root through its parents (skater_bone_parents),
+// The world transform of `joint` composed from the root through its animation-rig parents,
 // `local` being a whole parent-local pose. Uniform scale, as the game's skater has.
 Joint world(std::span<const Joint> local, std::uint16_t joint) noexcept;
 std::int16_t parent(std::uint16_t joint) noexcept;
-
-// The attach and effector joints (skater_effectors.h) hold their rest place in a clip: only their turns move.
-// A recording copied their places as the animation's, and they jumped; a clip loaded from a file gets the same.
-void hold_effector_positions(Clip& clip);
+// Gameplay owns the skinned body, while native attachments/effector subtrees stay native.
+bool gameplay_body_joint(std::uint16_t joint) noexcept;
 
 // ---- dragging a limb (inverse kinematics) ---------------------------------------------------------
 // Moves the joint `end` to `target` (in the frame world() gives) by bending the chain of `length` joints above

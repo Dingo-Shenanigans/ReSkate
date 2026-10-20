@@ -1,5 +1,7 @@
 #pragma once
 #include "anim_core.h"
+#include "anim_library.h"
+#include "anim_presets.h"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -47,6 +49,10 @@ struct View {
     bool camera_valid{};
     // The animation being edited.
     std::string name, trick;
+    std::string source_kind, source_asset, entry;
+    std::string source_position_codec;
+    std::size_t source_pose_count{};
+    float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool room{true}; // the studio opens in its room (studio_room.h)
     float duration{}, takeoff{-1}, landing{-1}, time{}, speed{1};
@@ -57,6 +63,10 @@ struct View {
     bool board_base_valid{};
     std::vector<TrackView> tracks;
     std::vector<std::string> library; // saved animations, by name
+    std::vector<Preset> presets;
+    std::vector<std::string> packs;
+    std::string active_pack;
+    bool alternate_variants{};
     Recording recording{};
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
     bool can_undo{}, can_redo{};
@@ -66,6 +76,8 @@ struct View {
     std::uint64_t revision{};
 };
 View view();
+// Opt-in 60-second read-only trace; exported under ReSkate.Tricks/research.
+std::string research_trace(const std::string& action);
 // Cheap, any thread: whether the studio has the screen.
 bool is_open() noexcept;
 // The studio's room (studio_room.h). Any thread.
@@ -147,16 +159,21 @@ void redo();
 // Library.
 void new_animation();
 bool save(std::string& message);
+bool save_preset_copy(std::string& message);
+bool activate_preset(const std::string& name, std::string& message);
+bool create_preset_pack(std::string& message, const std::string& name = {});
+bool use_preset_pack(const std::string& name, std::string& message);
+bool set_pack_alternation(bool alternate, std::string& message);
+bool include_preset(const std::string& name, bool included, std::string& message);
 bool load(const std::string& name, std::string& message);
 // The game's own tricks, made into studio clips by contrib/animator-studio/make_trick_library.py:
 // <folder>/library/catalog.json and its .clip files.
-struct GameTrick {
-    std::string category, label, trick, pop, file;
-};
-// Your recorded tricks (Record all tricks) when there are any, else the game's own clips. Read again
-// when a take is saved.
-std::shared_ptr<const std::vector<GameTrick>> game_tricks();
-bool recorded_tricks(); // Record all tricks has kept some
+struct NativeAsset { std::string category, asset, kind; };
+std::shared_ptr<const std::vector<NativeAsset>> native_assets();
+std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // cached until explicit refresh
+void refresh_game_tricks(std::string& message);
+bool export_diagnostics(std::string& message);
+bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
