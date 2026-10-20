@@ -1,5 +1,6 @@
 ﻿#include "anim_studio.h"
 #include "trick_batch.h"
+#include "native_asset_names.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "anim_research.h"
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <vector>
 
@@ -2863,6 +2865,9 @@ namespace {
 std::vector<GameTrick> read_catalog() {
     std::vector<GameTrick> out;
     try {
+        const auto indexed = native_assets();
+        std::unordered_map<std::string_view, const NativeAsset*> named;
+        for (const auto& asset : *indexed) named.emplace(asset.asset, &asset);
         std::ifstream in(library_folder() / L"library" / L"catalog.json", std::ios::binary);
         if (!in) return out;
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -2874,6 +2879,11 @@ std::vector<GameTrick> read_catalog() {
             GameTrick t{e.value("category", ""), e.value("label", ""), e.value("trick", ""), e.value("pop", ""), e.value("file", ""), e.value("asset", ""), e.value("preview_only", false)};
             t.position_codec = e.value("position_codec", "");
             t.looping = e.value("native_looping", false);
+            if (t.preview_only && t.asset.starts_with("animation/dingo/")) {
+                const auto found = named.find(t.asset);
+                t.label = found != named.end() ? found->second->label : native_asset_name(t.asset).label;
+                t.category = native_asset_folder(t.asset, "ClipControllerAsset", t.category);
+            }
             const std::filesystem::path relative_file(t.file);
             if (t.trick.empty() || t.file.empty() || t.file.find("..") != std::string::npos ||
                 relative_file.has_root_path() || relative_file.extension() != L".clip") continue;
@@ -2951,9 +2961,14 @@ std::shared_ptr<const std::vector<NativeAsset>> native_assets() {
                 asset.partition = e.value("partition", "");
                 if (asset.partition.empty()) asset.partition = std::filesystem::path(e.value("document", "")).stem().string();
                 if (asset.root_type.size() > 128 || asset.decode_state.size() > 32 || asset.detail.size() > 1024 || asset.partition.size() > 36) continue;
+                const auto display = native_asset_name(asset.asset, asset.root_type, asset.category);
+                asset.label = display.label; asset.context = display.context;
+                asset.category = native_asset_folder(asset.asset, asset.root_type, asset.category);
+                asset.search = display.search + native_search_key(asset.category);
                 if ((asset.asset.starts_with("animation/dingo/") || asset.asset.starts_with("_af/")) && asset.asset.size() < 1024 && asset.category.size() < 256)
                     out->push_back(std::move(asset));
             }
+            native_disambiguate_names(*out);
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: native asset index not loaded: {}", e.what());
         }

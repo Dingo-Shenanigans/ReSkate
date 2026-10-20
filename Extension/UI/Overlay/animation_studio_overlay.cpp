@@ -2,6 +2,7 @@
 #include "skate_style.h"
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/trick_batch.h"
 #include <algorithm>
 #include <array>
@@ -373,11 +374,10 @@ bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, fl
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2 * f.k);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8 * f.k, 6 * f.k));
     ImGui::SetNextItemWidth(width);
-    const bool done = ImGui::InputText(id, buffer.data(), buffer.size(), ImGuiInputTextFlags_EnterReturnsTrue);
-    const bool left = ImGui::IsItemDeactivatedAfterEdit();
+    const bool done = ImGui::InputTextWithHint(id, "e.g. kickflip, 360 flip high, tailslide loop", buffer.data(), buffer.size());
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(5);
-    return done || left;
+    return done;
 }
 
 // The stick's response: a dead zone, then a curve that starts gently and reaches full speed at the rim (so a
@@ -573,31 +573,32 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 }
                 break;
             }
-            rows.push_back({"< Back", "", "Browse parent category, or return to editable tricks.", [] {
+            rows.push_back({"< Back", "", "Browse parent folder, or clear the global search.", [] {
                 auto& state = ui();
-                if (state.asset_category.empty()) state.browse_assets = false;
+                if (!state.asset_filter.empty()) { state.asset_filter.clear(); state.asset_query.fill(0); }
+                else if (state.asset_category.empty()) state.browse_assets = false;
                 else {
                     const auto slash = state.asset_category.rfind('/');
                     state.asset_category = slash == std::string::npos ? "" : state.asset_category.substr(0, slash);
                 }
                 state.asset_page = 0; state.row = 0;
             }});
-            rows.push_back({u.asset_category.empty() ? "NATIVE ASSET TREE" : upper(u.asset_category), "", "Categories are name hints; root types come from decoded native documents. Editable previews do not imply live phase replacement.", {}, false});
+            rows.push_back({!u.asset_filter.empty() ? "SEARCH RESULTS / ALL FOLDERS" : u.asset_category.empty() ? "ANIMATION FOLDERS" : upper(u.asset_category), "", "Folders and readable names are inferred from native names; the original identity remains in the description.", {}, false});
             rows.push_back({"Show", u.asset_ready_only ? "Editable clips" : "All assets", "Filter the whole tree to clips with an available preview.", [] { ui().asset_ready_only = !ui().asset_ready_only; ui().asset_page = 0; ui().row = 0; }});
             rows.push_back({"Selection action", u.asset_inspect ? "Inspect native data" : "Open preview", "Inspect data opens the full typed field tree and references, including for editable clips.", [] { ui().asset_inspect = !ui().asset_inspect; }});
-            if (!u.asset_filter.empty()) rows.push_back({"Clear search", u.asset_filter, "Clear the native asset name/type filter.", [] { ui().asset_query.fill(0); ui().asset_filter.clear(); ui().asset_page = 0; ui().row = 0; }});
             std::unordered_map<std::string_view, const studio::GameTrick*> available;
             for (const auto& trick : list) if (!trick.asset.empty()) available.emplace(trick.asset, &trick);
             std::map<std::string, std::pair<std::size_t, std::size_t>> children;
             std::vector<const studio::NativeAsset*> leaves;
             const auto prefix = u.asset_category.empty() ? "" : u.asset_category + "/";
+            const auto terms = studio::native_search_terms(u.asset_filter);
             for (const auto& asset : *assets) {
                 const bool ready = available.contains(asset.asset);
                 if (u.asset_ready_only && !ready) continue;
                 if (!u.asset_filter.empty()) {
-                    auto haystack = asset.asset + ' ' + asset.root_type + ' ' + asset.category;
-                    for (auto& c : haystack) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-                    if (haystack.find(u.asset_filter) == std::string::npos) continue;
+                    if (!studio::native_search_matches(asset.search, terms)) continue;
+                    leaves.push_back(&asset);
+                    continue;
                 }
                 if (asset.category == u.asset_category) leaves.push_back(&asset);
                 else if (asset.category.starts_with(prefix)) {
@@ -606,6 +607,11 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                     ++counts.first; counts.second += ready;
                 }
             }
+            std::sort(leaves.begin(), leaves.end(), [](const auto* a, const auto* b) {
+                return a->label == b->label ? a->asset < b->asset : a->label < b->label;
+            });
+            if (!u.asset_filter.empty()) rows.push_back({std::to_string(leaves.size()) + " results", "", "Search includes readable names, aliases, original names and types across every folder. All search words must match.", {}, false});
+            if (leaves.empty() && children.empty()) rows.push_back({"No animations found", "", "Try fewer words, another trick name, or Show: All assets.", {}, false});
             for (const auto& [child, counts] : children) {
                 rows.push_back({child, std::to_string(counts.second) + " editable / " + std::to_string(counts.first) + " >", "Browse this branch of the native animation inventory.", [path = prefix + child] {
                     ui().asset_category = path; ui().asset_page = 0; ui().row = 0;
@@ -625,13 +631,14 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             for (std::size_t i = u.asset_page * page_size; i < std::min(leaves.size(), (u.asset_page + 1) * page_size); ++i) {
                 const auto& asset = *leaves[i];
                 const auto ready = available.find(asset.asset);
-                auto label = asset.asset.starts_with("animation/dingo/") ? asset.asset.substr(std::string("animation/dingo/").size()) : asset.kind + " " + asset.partition.substr(0, 8);
-                if (ready != available.end() && !u.asset_inspect) rows.push_back({label, "Editable", "Open this decoded native source clip. Graph constraints and live phase replacement are separate.", [t = *ready->second] {
+                const auto& label = asset.label;
+                const auto description = asset.context + ". Folder: " + asset.category + ". Source: " + asset.asset + ". " + asset.detail;
+                if (ready != available.end() && !u.asset_inspect) rows.push_back({label, "Editable", description, [t = *ready->second] {
                     std::string m; studio::load_game_trick(t, m); say(m); ui().names_for = 0;
                 }});
                 else rows.push_back({label, ready != available.end() ? "Editable / data" : asset.decode_state == "metadata" ? "Metadata" :
                     asset.decode_state == "unsupported" ? "Unsupported preview" : asset.decode_state == "error" ? "Decode failed" : asset.decode_state == "pending" ? "Queued" : "Indexed",
-                    asset.kind + ": " + asset.asset + ". " + asset.detail, [name = asset.asset] {
+                    description, [name = asset.asset] {
                     auto& s = ui(); s.asset_return_page = s.asset_page; s.asset_document = name;
                     s.asset_json_path.clear(); s.asset_history.clear(); s.asset_page = 0; s.row = 0;
                 }});
@@ -1185,16 +1192,6 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
     const ImU32 ink = IM_COL32(20, 20, 22, 255), ink_soft = IM_COL32(90, 90, 96, 255);
     const auto tab = static_cast<Tab>(u.tab);
     float y = at.y + 16 * k;
-    if (tab == Tab::tricks && u.browse_assets && u.asset_document.empty()) {
-        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y), ink_soft, "SEARCH NATIVE NAMES / TYPES");
-        ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, y + 20 * k));
-        if (text_field(f, "##nativequery", u.asset_query, size.x - 44 * k)) {
-            u.asset_filter = u.asset_query.data();
-            for (auto& c : u.asset_filter) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-            u.asset_page = 0; u.row = 0;
-        }
-        y += 70 * k;
-    }
     if (tab == Tab::joints || tab == Tab::keys) {
         text(d, f.heading, 22 * k, ImVec2(at.x + 22 * k, y), ink, upper(label_of(u.selected)));
         const auto* key = key_here(v, u.selected);
@@ -2163,7 +2160,25 @@ void draw_animation_studio() {
     if (!u.menu_hidden) {
         page_title(d, f, ImVec2(menu_x, 40 * k));
         tab_row(d, f, ImVec2(menu_x, 140 * k));
-        const float list_top = 205 * k, card_h = 190 * k;
+        float list_top = 205 * k;
+        const float card_h = 190 * k;
+        if (static_cast<Tab>(u.tab) == Tab::tricks && u.asset_document.empty()) {
+            text(d, f.bold, 13 * k, ImVec2(menu_x + 16 * k, list_top), white, "SEARCH ANIMATIONS / ALL FOLDERS");
+            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 20 * k));
+            if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
+            const bool changed = text_field(f, "##nativequery", u.asset_query, menu_w - 104 * k);
+            ImGui::SameLine();
+            const bool clear = ImGui::Button("Clear", ImVec2(70 * k, 0));
+            if (changed || clear) {
+                if (clear) u.asset_query.fill(0);
+                u.asset_filter = studio::native_search_terms(u.asset_query.data()).empty() ? "" : u.asset_query.data();
+                if (!u.asset_filter.empty()) u.browse_assets = true;
+                u.asset_page = 0; u.row = 0;
+                u.list_scroll[static_cast<std::size_t>(u.tab)] = 0;
+                u.list_followed[static_cast<std::size_t>(u.tab)] = -1;
+            }
+            list_top += 70 * k;
+        }
         const float list_bottom = display.y - timeline_h - card_h - 40 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
         card(d, f, v, ImVec2(menu_x, list_bottom + 18 * k), ImVec2(menu_w + 10 * k, card_h));

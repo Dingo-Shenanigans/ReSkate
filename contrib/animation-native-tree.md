@@ -68,6 +68,21 @@ distinct tricks. The tree's search accepts names and types; editable-only filter
 limits navigation to available previews. Inspect data opens paginated fields and can
 follow document and resource references without running native code.
 
+The TRICKS tab has a live search field above the list (Ctrl+F to focus, Clear to
+reset). Search spans all native folders, accepts words in any order, ignores case
+and punctuation, and matches readable names, common aliases such as tre flip,
+original source names and types. The editable-only filter still applies. Folder
+navigation resumes when search is cleared. `native_asset_names.h` groups clips by
+movement family and explicit phase, and separates graph/rig data. Known name tokens
+are expanded; unknown codes and variant numbers remain visible. Duplicate labels
+gain context and stable variant numbers, without merging or changing asset IDs.
+Readable names/folders are generated at load time, so existing local libraries need
+no destructive rename or re-extraction. Validate an actual inventory with:
+
+```powershell
+build/vs2022-x64/Release/dingosdk_animation_studio_tests.exe --native-labels STAGED_LIBRARY/native-catalog.json READABLE_REPORT.json
+```
+
 The remaining 2,168 clip controllers have explicit unsupported reasons: 1,794 VBR
 sources, 333 different or missing rigs (mostly board-only), 39 trimmed clips and two
 source-timing cases. Their original metadata/resources remain inspectable. A board-only

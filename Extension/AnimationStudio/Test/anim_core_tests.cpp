@@ -8,6 +8,7 @@
 #include "Extension/AnimationStudio/anim_diagnostics.h"
 #include "Extension/AnimationStudio/anim_library.h"
 #include "Extension/AnimationStudio/anim_playback.h"
+#include "Extension/AnimationStudio/native_asset_names.h"
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -19,10 +20,38 @@
 using namespace dingosdk::anim_studio;
 namespace {
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+struct NamedNativeFixture { std::string asset, label, category, context, search, state; };
 bool near(float a, float b, float within = 1e-3f) { return std::abs(a - b) < within; }
 bool same_turn(const Quat& a, const Quat& b) {
     const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
     return d > 0.9999f;
+}
+
+void native_names_and_search() {
+    const auto flip = native_asset_name("animation/dingo/c_proto_onb_trick_n_360flip_high_dark", "ClipControllerAsset");
+    check(flip.label == "Nollie 360 Flip High Dark", "Readable names preserve pop family, height and native variant");
+    check(native_search_matches(flip.search, native_search_terms("HIGH tre-flip nollie")), "Readable aliases match all query words regardless of order/case/punctuation");
+    check(native_search_matches(flip.search, native_search_terms("360flip haut")), "Compact engine spelling and height alias remain searchable");
+    check(!native_search_matches(flip.search, native_search_terms("kickflip high")), "Unrelated tricks do not match");
+    check(native_asset_name("animation/dingo/c_proto_onb_trick_n_nollie_mid").label == "Nollie Medium", "Nollie is not duplicated");
+    check(native_asset_name("animation/dingo/c_proto_onb_trick_o_kickflip_low").label == "Kickflip Low", "Confirmed ollie-family marker is hidden without inventing stance");
+    check(native_asset_name("animation/dingo/c_proto_onb_manual_t_fakie_high").label == "Manual T Fakie High", "Unknown codes remain visible rather than guessed");
+    check(native_asset_name("animation/dingo/c_proto_ofbnb_walk_stop_90l_lfoot_fem").label == "Walk Stop 90 Left Left Foot Female", "Movement directions and physical feet retain their meaning");
+    check(native_asset_name("animation/dingo/c_proto_onb_gesture_mysteryXYZ_07").label == "Gesture Mystery XYZ 07", "Unknown animation and variant identifiers are retained");
+    const auto folder = [](const char* asset) { return native_asset_folder(asset, "ClipControllerAsset"); };
+    check(folder("c_proto_onb_grind_fs_feeble_bs_smith_rail_into") == "Grinds/Feeble + Smith/Entries", "Shared grind clips are grouped by tricks instead of FS/BS developer prefixes");
+    check(folder("c_proto_onb_grind_5050_rail_loop") == "Grinds/50-50/Loops", "Grind loops have a specific family/phase folder");
+    check(folder("c_proto_onb_grind_fs_bs_5_0_rail_into") == "Grinds/5-0/Entries" && native_asset_name("c_proto_onb_grind_5_0_loop").label == "Grind 5-0 Loop", "Five-oh source tokens form one readable trick name and folder");
+    check(folder("c_proto_onb_manual_t_fakie_high") == "Manuals/Other movements", "Unspecified phases are not invented");
+    check(folder("c_proto_ofbnb_walk_loop_short") == "Off board/Walk/Loops", "Locomotion is separate from on-board tricks");
+    check(folder("c_proto_onb_trick_n_360flip_high") == "Tricks/360 Flip/Variants", "Trick variants share a readable family folder");
+    check(native_asset_folder("anything", "TransitionAsset") == "Game logic/Transitions", "Actual root types separate graph transitions from playable animations");
+    check(native_search_terms("  --- \t ").empty(), "Punctuation-only input does not create misleading search terms");
+    std::vector<NamedNativeFixture> variants{{"source-b", "Wave", "Gestures", "Off board"}, {"source-a", "Wave", "Gestures", "Off board"}, {"source-c", "Wave", "Gestures", "On board"}};
+    native_disambiguate_names(variants);
+    check(variants[0].label == "Wave / Off board / Variant 2" && variants[1].label == "Wave / Off board / Variant 1" && variants[2].label == "Wave / On board",
+          "Equal names retain distinct source context and stable variants independent of input order");
+    check(variants[0].asset == "source-b", "Human names never change the identity used to open an animation");
 }
 
 void euler_numbers_read_back() {
@@ -811,6 +840,7 @@ int main(int argc, char** argv) {
         packs_select_variants_without_filesystem_order();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
+        native_names_and_search();
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
@@ -917,6 +947,32 @@ int main(int argc, char** argv) {
             for (const auto& entry : root)
                 check((entry.value("asset", "").starts_with("animation/dingo/") || entry.value("asset", "").starts_with("_af/")) && !entry.value("category", "").empty(), "Indexed native asset requires category and stable source path");
             std::cout << "Native index compatibility: " << root.size() << " assets passed\n";
+        }
+        if (argc == 4 && std::string_view(argv[1]) == "--native-labels") {
+            std::ifstream in(argv[2], std::ios::binary);
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), dingosdk::JsonLimits{32 * 1024 * 1024, 48, 2 * 1024 * 1024});
+            check(root.is_array() && root.size() > 0, "Readable-name validation requires the actual native index");
+            auto report = dingosdk::Json::array();
+            std::vector<NamedNativeFixture> names;
+            for (const auto& entry : root) {
+                const auto asset = entry.value("asset", ""), type = entry.value("root_type", "");
+                const auto name = native_asset_name(asset, type, entry.value("category", ""));
+                const auto folder = native_asset_folder(asset, type, entry.value("category", ""));
+                check(!name.label.empty() && !folder.empty() && !folder.starts_with('/') && !folder.ends_with('/') && folder.find("//") == std::string::npos,
+                      "Every native asset needs a readable label and a valid folder");
+                check(native_search_matches(name.search, native_search_terms(asset)), "Exact original names remain searchable");
+                names.push_back({asset, name.label, folder, name.context, name.search, entry.value("state", "")});
+            }
+            native_disambiguate_names(names);
+            for (const auto& name : names) {
+                dingosdk::Json row = dingosdk::Json::object();
+                row["asset"] = name.asset; row["label"] = name.label; row["category"] = name.category;
+                row["context"] = name.context; row["state"] = name.state;
+                report.push_back(std::move(row));
+            }
+            std::ofstream out(argv[3], std::ios::binary); out << report.dump(2); out.close();
+            check(out.good(), "Readable inventory report must be written successfully");
+            std::cout << "Native readable names and folders: " << root.size() << " assets passed\n";
         }
         if (argc == 3 && std::string_view(argv[1]) == "--native-documents") {
             std::size_t count = 0;

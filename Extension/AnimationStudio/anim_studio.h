@@ -175,6 +175,7 @@ bool load(const std::string& name, std::string& message);
 struct NativeAsset {
     std::string category, asset, kind;
     std::string root_type, decode_state, detail, partition;
+    std::string label, context, search;
 };
 struct NativeField { std::string label, path, value, reference; bool expandable{}; };
 struct NativeDocumentPage { std::string title, error; std::vector<NativeField> fields; std::size_t pages{}; };
