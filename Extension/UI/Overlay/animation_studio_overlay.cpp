@@ -1474,7 +1474,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }});
         rows.push_back({v.playing ? "Pause" : "Play", "", "Plays the trick with your keys.", [v] { studio::set_playing(!v.playing); }, v.has_clip});
         rows.push_back({"Loop", v.loop ? "on" : "off", "Repeat the timeline. A source whose end differs from its start can visibly reset when looped.", [v] { studio::set_loop(!v.loop); }});
-        rows.push_back({"Speed", std::format("{:.2f}x", v.speed), "Timeline playback speed. In game this retimes your edit keys; the underlying trick keeps the game's timing.", [v] {
+        rows.push_back({"Preview speed", std::format("{:.2f}x", v.speed), "Slow down the studio preview to edit. Gameplay keys keep the native trick's timing at 1x.", [v] {
                             const float speeds[] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
                             float next = speeds[0];
                             for (const float s : speeds) if (s > v.speed + 0.01f) { next = s; break; }
@@ -1485,7 +1485,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"In-game body edits", "Anatomical / local axes",
                         "Left leg stays left in every stance. Saved joint offsets and rotations use the same local axes as F8; gameplay does not automatically swap limbs.", {}, false});
         rows.push_back({"In-game key timing", "Source seconds from takeoff",
-                        "Takeoff aligns with the source takeoff marker, then keys advance at Speed through reception without airtime stretching. The trick is identified after takeoff, so preparation keys cannot be applied in advance. The native base motion still follows the game.", {}, false});
+                        "Takeoff aligns with the source takeoff marker, then keys advance at 1x through reception, independently of Preview speed. The trick is identified after takeoff, so preparation keys cannot be applied in advance. A low/mid/high preset only matches that pop; an Any binding matches all heights. The native base motion still follows the game.", {}, false});
         if (v.has_clip && v.source_pose_count > 1) {
             const float hz = v.duration > 0 ? static_cast<float>(v.source_pose_count - 1) / v.duration : 0;
             const bool sparse = v.source_max_sample_gap > 0.05f;
@@ -1505,7 +1505,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
                         "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
                         [v] { studio::set_pop(v.pop.empty() ? "low" : v.pop == "low" ? "mid" : v.pop == "mid" ? "high" : ""); }, v.has_clip});
-        rows.push_back({"Copy to low, mid and high pop", "", "Saves this trick three times, one for each pop, to change each on its own. In game every pop is timed to its own air.",
+        rows.push_back({"Copy to low, mid and high pop", "", "Saves these keys in three separate pop bindings. Each keeps source timing at 1x over that pop's native motion; the base low/mid/high animations are different.",
                         [] {
                             std::string m;
                             studio::copy_to_pops(m);

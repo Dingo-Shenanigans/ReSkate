@@ -73,8 +73,11 @@ struct PlaybackEpisode {
             // Recognition can arrive late or refine ollie into a flip. Anchor the
             // source clock at takeoff, never at selection, and keep source seconds
             // through reception instead of stretching air and discarding late keys.
-            out.time = static_cast<float>(std::min(static_cast<double>(duration), up + std::max(0.0, now - takeoff) * speed));
-            clock.observe_air(now, out.time, speed);
+            // Speed is a studio preview control. Slowing only this additive
+            // layer while the native trick runs at 1x desynchronizes limbs and
+            // board; source-bound gameplay keys always follow source seconds.
+            out.time = static_cast<float>(std::min(static_cast<double>(duration), up + std::max(0.0, now - takeoff)));
+            clock.observe_air(now, out.time, 1);
             const auto enter = std::clamp(static_cast<float>(now - selected_at) / 0.08f, 0.0f, 1.0f);
             const auto leave = std::clamp((duration - out.time) / 0.08f, 0.0f, 1.0f);
             out.weight = enter * leave;

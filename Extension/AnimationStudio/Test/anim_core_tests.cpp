@@ -470,9 +470,13 @@ void merged_library_and_timing() {
           "High pop is shown first and retains native provenance plus recorded stance");
     check(!library[1].recorded && library[1].file == low.file && library[2].preview_only,
           "Other pop heights and grind previews stay available after Record all");
-    check(playback_pop_rank("high", "high") < playback_pop_rank("high", "") &&
-          playback_pop_rank("high", "") < playback_pop_rank("high", "low"),
-          "Playback prefers exact pop, then a generic preset, then another height");
+    check(playback_pop_rank("high", "high") == 0 && playback_pop_rank("high", "") == 1 &&
+          playback_pop_rank("high", "low") < 0 && playback_pop_rank("mid", "low") < 0,
+          "Playback accepts exact or explicitly generic pops, never a different source height");
+    check(episode_selection_changed("360flip", "360flip", "low", "high") &&
+          !episode_selection_changed("360flip", "360flip", "low", "low") &&
+          !episode_selection_changed("360flip", "360flip", "", "high"),
+          "A late high-pop grade invalidates a low binding without cycling a generic or matching binding");
     GameplayClipClock clock;
     check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
     check(near(clock.advance_air(10.1, 0.3f, 1, 2), 0.4f), "Air source time advances incrementally");
@@ -783,6 +787,9 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
     const auto short_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 0.3f, true);
     const auto long_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 1.8f, true);
     check(near(short_air.time, 0.4f) && near(short_air.time, long_air.time), "Source key seconds are independent of ballistic airtime estimates");
+    check(near(episode.sample(10.3, 0.2f, 0.75f, 2, 0.25f, 0.3f, true).time, 0.4f) &&
+          near(episode.sample(10.3, 0.2f, 0.75f, 2, 4, 0.3f, true).time, 0.4f),
+          "Quarter-speed and accelerated studio previews cannot retime gameplay edit keys");
     episode.select(10.31);
     check(near(episode.sample(10.32, 0.2f, 0.75f, 2, 1, 1, true).time, 0.42f), "Refining the named trick cannot reset source key time");
     episode.observe(10.6, motion_state(100)); episode.observe(10.64, motion_state(100));

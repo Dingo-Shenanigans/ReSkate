@@ -124,7 +124,7 @@ struct Animation {
     std::string trick; // what the player says it is (Kickflip, Heelflip ...)
     Clip clip;
     std::vector<Track> tracks;
-    float speed{1};
+    float speed{1}; // Studio preview speed; gameplay source seconds stay at 1x.
     bool loop{true};
     // Which pop it is for: "" any, or "low", "mid", "high" (a trick can have one of each).
     std::string pop;

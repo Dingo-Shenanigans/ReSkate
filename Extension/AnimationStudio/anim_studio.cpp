@@ -1444,14 +1444,16 @@ void on_animation(std::uintptr_t component) noexcept {
                     ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
             }
             const auto name = l.episode.selection_open(at) ? current_trick(component) : std::string{};
-            if (l.episode.entry != EntryKind::unknown && l.game_tricks && episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name)) {
-                // The game's own grade of the pop, which the player's Minimum Pop Height setting moves; failing that, the
-                // air's length. The grade is any skater's, so it is used only with no other skaters about.
-                const auto since_takeoff_ms = static_cast<std::uint64_t>(std::max(0.0, at - l.episode.takeoff) * 1000);
-                const auto graded = grade_is_ours.load(std::memory_order_acquire)
-                                        ? pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), since_takeoff_ms / 1000.0)) : 0;
-                const auto graded_name = graded_pop_name(graded);
-                const auto pop = !graded_name.empty() ? std::string(graded_name) : pop_of(l.predicted_air);
+            // PopHeight can arrive after the trick name. A refined grade must
+            // invalidate a mismatched explicit binding without rewinding time.
+            const auto since_takeoff_ms = static_cast<std::uint64_t>(std::max(0.0, at - l.episode.takeoff) * 1000);
+            const auto graded = grade_is_ours.load(std::memory_order_acquire)
+                                    ? pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), since_takeoff_ms / 1000.0)) : 0;
+            const auto graded_name = graded_pop_name(graded);
+            const auto pop = !graded_name.empty() ? std::string(graded_name) : pop_of(l.predicted_air);
+            if (l.episode.entry != EntryKind::unknown && l.game_tricks &&
+                episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
+                                          l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop)) {
                 const CustomTrick* found = nullptr;
                 // Exact pop first; cycle eligible variants once per named trick in this attempt.
                 std::vector<const CustomTrick*> variants;
@@ -1462,6 +1464,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 for (const auto& t : *l.game_tricks) {
                     if (t.trick != name || t.edits->entry != entry_name(l.episode.entry) || !l.playback_switch.has_value()) continue;
                     const int rank = playback_pop_rank(pop, t.edits->pop);
+                    if (rank < 0) continue;
                     if (rank < best_pop) { variants.clear(); best_pop = rank; }
                     if (rank == best_pop) variants.push_back(&t);
                 }
@@ -1475,16 +1478,16 @@ void on_animation(std::uintptr_t component) noexcept {
                     found = variants[choice->second % variants.size()];
                 } else if (!name.empty() && l.stance_fallback_trick != name &&
                            std::any_of(l.game_tricks->begin(), l.game_tricks->end(), [&](const CustomTrick& t) {
-                               return t.trick == name && !compatible(t);
+                               return t.trick == name;
                            })) {
                     l.stance_fallback_trick = name;
                     logging::log(Level::info, Channel::skater,
-                                 "Animation Studio: {} uses native animation; no compatible recording for {} / {} at takeoff.", name,
+                                 "Animation Studio: {} uses native animation; no matching recording for {} pop / {} / {} at takeoff.", name, pop,
                                  l.playback_goofy ? "goofy" : "regular",
                                  l.playback_switch ? (*l.playback_switch ? "switch" : "normal") : "unknown switch state");
                 }
-                if (found && found != l.game_trick) {
-                    l.episode.select(at);
+                if (found != l.game_trick) {
+                    if (found) l.episode.select(at);
                     l.game_trick = found;
                     if (found)
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
@@ -2456,7 +2459,7 @@ void set_speed(float speed) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.edits.speed = std::clamp(speed, 0.1f, 4.0f);
-    changed_locked(s);
+    publish_locked(s, false);
 }
 bool take_clean_start() noexcept { return clean_request.exchange(false, std::memory_order_acq_rel); }
 void clean_start_done() noexcept {

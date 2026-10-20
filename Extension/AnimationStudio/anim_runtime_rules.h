@@ -48,12 +48,15 @@ struct GameplayClipClock {
     }
 };
 inline int playback_pop_rank(const std::string& wanted, const std::string& saved) noexcept {
-    return saved == wanted ? 0 : saved.empty() ? 1 : 2;
+    // A different source pop has different native body/board motion. Only an
+    // explicitly generic binding may substitute for the requested height.
+    return saved == wanted ? 0 : saved.empty() ? 1 : -1;
 }
-inline bool episode_selection_changed(std::string_view selected, std::string_view reported) noexcept {
-    // A refined pop estimate cannot reselect/restart a variant of the same named trick.
-    // Blank names are transient native state, not a new episode.
-    return !reported.empty() && selected != reported;
+inline bool episode_selection_changed(std::string_view selected, std::string_view reported,
+                                      std::string_view selected_pop = {}, std::string_view wanted_pop = {}) noexcept {
+    // Blank names are transient state. An explicit pop binding must be reconsidered
+    // when the native grade refines an estimate; generic bindings remain stable.
+    return !reported.empty() && (selected != reported || (!selected_pop.empty() && selected_pop != wanted_pop));
 }
 inline bool playback_stance_compatible(bool recorded_goofy, std::optional<bool> recorded_switch,
                                       bool live_goofy, std::optional<bool> live_switch) noexcept {

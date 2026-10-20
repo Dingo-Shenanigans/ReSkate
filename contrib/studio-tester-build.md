@@ -96,6 +96,18 @@ missing binaries, enabled binary auto-update and an existing staging directory.
 
 ## Tester acceptance
 
+Preview speed controls the studio timeline only. Gameplay source keys keep 1x
+timing so that slow-motion editing cannot desynchronize an additive limb/board
+layer from the game's native trick. A low/mid/high binding matches only its own
+pop; an explicitly Any binding may match all heights. Selection rechecks native
+pop grades during the recognition window without rewinding source time. The
+exported 360 Flip low regression was verified with the production save reader.
+
+An older local `ReSkate-NativeKickflipLab` research mod replaces native resources
+independently of studio presets. Deleting a saved kickflip cannot unload that
+external mod. It is excluded from tester packages; remove it from the active Mods
+folder (with the game closed) when testing unmodified native kickflips.
+
 Use a separate test installation and preserve its personal data. Follow the
 included checklist: native 360 Flip/360 Hardflip body/board coherence, playback
 and scrubbing, search/folders/inspector, gizmo and bracket editing, undo/redo,
