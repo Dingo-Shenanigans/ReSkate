@@ -71,6 +71,8 @@ caches; later runs reuse unchanged compilations. The 75-minute job limit leaves
 room for the complete library checks, ZIP creation and upload on a cold runner;
 it is a safety limit, not a build-time target. Local Visual Studio builds keep
 their existing preset and compiler settings.
+New revisions keep the running build and its cache work; only the newest pending
+revision is retained by the workflow's concurrency group.
 
 ```powershell
 cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml

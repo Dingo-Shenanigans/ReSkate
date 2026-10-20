@@ -16,7 +16,9 @@ permissions:
 
 concurrency:
   group: studio-tester-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  # Let the running build finish warming its caches. GitHub keeps only the
+  # newest pending revision, so frequent pushes do not restart a cold build.
+  cancel-in-progress: false
 
 jobs:
   windows:
