@@ -90,6 +90,8 @@ struct Ui {
     double held_since[16]{};
     double repeat_at[16]{};
     bool l3_combo{}, stick_turning{}, stick_zoom{}, scrubbing{};
+    bool shoulder_shifted{}; // a shoulder was held and the stick moved a bracket, so it is not a tab tap
+    float bracket_at[2]{};   // where each bracket is being carried to, while a stick carries it
     // The sticks, filtered over time: a light touch and a hard push both settle, with no jump at the dead zone's edge.
     float filtered[4]{};
     float scrub_time{};
@@ -1172,8 +1174,11 @@ void controller(const studio::View& v, const Projector& p) {
     }
     // The close warning takes the buttons: A save and close, X close without saving, B back.
     if (v.confirm_close) return; // the close warning's card takes the buttons
-    if (pressed & pad_lb) switch_tab(-1);
-    if (pressed & pad_rb) switch_tab(1);
+    // LB and RB change tab on a tap. Held with a stick they carry a bracket instead (below), so the tab
+    // only changes when the shoulder is let go without having carried anything.
+    if (pressed & (pad_lb | pad_rb)) u.shoulder_shifted = false;
+    if ((released & pad_lb) && !u.shoulder_shifted) switch_tab(-1);
+    if ((released & pad_rb) && !u.shoulder_shifted) switch_tab(1);
     if (pressed & pad_a) activate_row(v);
     if (pressed & pad_x) {
         if (static_cast<Tab>(u.tab) == Tab::animations) delete_row(v);
@@ -1213,6 +1218,30 @@ void controller(const studio::View& v, const Projector& p) {
     if (repeats(pad_left, buttons, pressed, now)) step_frame(v, -1);
     if (repeats(pad_right, buttons, pressed, now)) step_frame(v, 1);
 
+    // A shoulder and the stick under it carry a bracket in or out: LB and the left stick the start, RB and
+    // the right stick the end (L1 and R1 on a PlayStation pad). Held, so it cannot be done by accident, and
+    // the tab does not change when it has been used.
+    const bool carrying_start = (buttons & pad_lb) && v.has_clip, carrying_end = (buttons & pad_rb) && v.has_clip;
+    if (carrying_start || carrying_end) {
+        const float raw = carrying_start ? stick_response(pad.left_x) : stick_response(pad.right_x);
+        const int which = carrying_start ? 1 : 2;
+        const float now_at = which == 1 ? v.bracket_start : (v.bracket_end < 0 ? v.duration : v.bracket_end);
+        if (!u.shoulder_shifted) u.bracket_at[which - 1] = now_at;
+        if (raw != 0) {
+            if (!u.shoulder_shifted) {
+                studio::begin_change();
+                u.shoulder_shifted = true;
+                u.bracket_at[which - 1] = now_at;
+            }
+            // A second of the trick a second of holding it over, so a short clip is still fine to aim.
+            u.bracket_at[which - 1] = std::clamp(u.bracket_at[which - 1] + raw * dt, 0.0f, v.duration);
+            studio::move_bracket(which, std::round(u.bracket_at[which - 1] * fps) / fps);
+        }
+        // The sticks are the brackets' while a shoulder is down: nothing is turned or orbited.
+        u.filtered[0] = u.filtered[1] = u.filtered[2] = u.filtered[3] = 0;
+        u.stick_turning = false;
+        return;
+    }
     // Left stick turns the chosen joint (LT held: moves the hips); a turn is one undo step.
     const float lx = smooth_stick(u.filtered[0], stick_response(pad.left_x), dt), ly = smooth_stick(u.filtered[1], stick_response(pad.left_y), dt);
     if (lx != 0 || ly != 0) {
@@ -1751,24 +1780,43 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             u.key_joint.reset();
         }
     }
-    // The brackets: the window the animation works in, drawn over the rows. Dragging the start moves every key
-    // with it; the end only sets the window's end. Blue, with the window shaded.
+    // The brackets: the window the animation works in, drawn over the rows, with the window shaded. Either
+    // one retimes the animation into the new window. Each is labelled and has a grab area wide enough to
+    // catch: a 3 px line was a hard thing to hit.
     if (v.has_clip) {
         const float bs = v.bracket_start, be = v.bracket_end < 0 ? v.duration : v.bracket_end;
         const float xs = x_of(bs), xe = x_of(be);
+        const float grab = 22 * k; // how near the mouse counts as on a bracket
+        auto& io = ImGui::GetIO();
+        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h + 10 * k &&
+                              io.MousePos.x >= ruler_left - grab && io.MousePos.x <= ruler_right + grab;
+        // The nearer bracket when both are in reach, so they stay separable when the window is short.
+        int near_bracket = 0;
+        if (in_ruler) {
+            const float ds = std::abs(io.MousePos.x - xs), de = std::abs(io.MousePos.x - xe);
+            if (std::min(ds, de) < grab) near_bracket = ds <= de ? 1 : 2;
+        }
         d->AddRectFilled(ImVec2(xs, at.y + header_h), ImVec2(xe, at.y + size.y), IM_COL32(1, 131, 255, 22));
+        int which = 1;
         for (const auto [x, open_right] : {std::pair{xs, true}, std::pair{xe, false}}) {
             const float tick = 7 * k, dir = open_right ? 1.0f : -1.0f;
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
-            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), IM_COL32(1, 131, 255, 255), 3 * k);
+            const bool hot = u.bracket_drag == which || (!u.bracket_drag && near_bracket == which);
+            const ImU32 colour = hot ? IM_COL32(150, 205, 255, 255) : IM_COL32(1, 131, 255, 255);
+            const float weight = hot ? 4.5f : 3.0f;
+            // The grab area, shown while the mouse is on it so it is plain how big it is.
+            if (hot) d->AddRectFilled(ImVec2(x - grab * 0.5f, at.y), ImVec2(x + grab * 0.5f, at.y + size.y), IM_COL32(1, 131, 255, 26));
+            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x, at.y + size.y - 4 * k), colour, weight * k);
+            d->AddLine(ImVec2(x, at.y + 4 * k), ImVec2(x + dir * tick, at.y + 4 * k), colour, weight * k);
+            d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * tick, at.y + size.y - 4 * k), colour, weight * k);
+            // Its name, at the top: inside the window, so the two never read as one.
+            const char* name = open_right ? "START ANIM." : "END ANIM.";
+            const auto tw = text_size(f.bold, 11 * k, name);
+            const float tx = open_right ? x + 7 * k : x - 7 * k - tw.x;
+            d->AddRectFilled(ImVec2(tx - 4 * k, at.y + 2 * k), ImVec2(tx + tw.x + 4 * k, at.y + 6 * k + tw.y), IM_COL32(10, 12, 16, 190), 2 * k);
+            text(d, f.bold, 11 * k, ImVec2(tx, at.y + 4 * k), colour, name);
+            ++which;
         }
-        auto& io = ImGui::GetIO();
-        const bool in_ruler = io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h && io.MousePos.x >= ruler_left && io.MousePos.x <= ruler_right;
-        if (in_ruler && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (std::abs(io.MousePos.x - xs) < 9 * k) u.bracket_drag = 1;
-            else if (std::abs(io.MousePos.x - xe) < 9 * k) u.bracket_drag = 2;
-        }
+        if (near_bracket && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.bracket_drag = near_bracket;
         if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
         if (u.bracket_drag) studio::move_bracket(u.bracket_drag, std::round(t_of(io.MousePos.x) * fps) / fps);
     }
@@ -2033,6 +2081,8 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
                 {Glyph::b, "", "Undo"},
                 {Glyph::view, "", "Zoom timeline"},
                 {Glyph::lb, "", "Tabs (RB)"},
+                {Glyph::lb, "", "+ LS: start anim."},
+                {Glyph::rb, "", "+ RS: end anim."},
                 {Glyph::l3, "", "+ R3 hold: back"}};
     else
         list = {{std::nullopt, "LMB", "Pick / turn"},
@@ -2040,6 +2090,9 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
                 {std::nullopt, "MMB", "Pan"},
                 {std::nullopt, "G / R", u.move_mode ? "Move" : "Turn"},
                 {std::nullopt, "X Y Z", "Axis"},
+                {std::nullopt, "L", u.local_axes ? "Object axes" : "World axes"},
+                {std::nullopt, "S", v.solo ? "Solo on" : "Solo off"},
+                {std::nullopt, "N", u.snap ? "Snapping on" : "Snapping off"},
                 {std::nullopt, "UP DN", "Choose"},
                 {std::nullopt, "< >", "One frame"},
                 {std::nullopt, "SPACE", v.playing ? "Pause" : "Play"},
