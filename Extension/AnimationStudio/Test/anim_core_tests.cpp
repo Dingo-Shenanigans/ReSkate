@@ -283,6 +283,62 @@ void smoothing_tidies_a_track() {
     }
 }
 
+// Solo: turning a joint on its own. The joints hanging off it are turned back by as much, so they keep
+// the way they face. This is the sum the studio does in set_offset, on the arm and its elbow and hand.
+void solo_turn_holds_the_joints_below() {
+    std::vector<Joint> native(skeleton_joints);
+    for (std::size_t j = 0; j < native.size(); ++j) {
+        native[j].rotation = from_euler({3.0f * static_cast<float>(j % 7) - 9, 5.0f * static_cast<float>(j % 5) - 10, 7.0f * static_cast<float>(j % 3)});
+        native[j].position = {0.1f, 0.05f, -0.02f};
+    }
+    constexpr std::uint16_t arm = 47, elbow = 48, hand = 49;
+    Animation edits;
+    edits.end = -1;
+    // The elbow and the hand already carry keys of their own: solo must build on those, not wipe them.
+    const auto key_of = [&](std::uint16_t joint, const Vec3& degrees) {
+        Key k;
+        k.time = 0.5f;
+        k.rotation = from_euler(degrees);
+        Track track;
+        track.joint = joint;
+        track.keys.push_back(k);
+        edits.tracks.push_back(track);
+    };
+    key_of(elbow, {12, -8, 4});
+    key_of(hand, {-5, 15, 2});
+    std::vector<Joint> before(native);
+    apply_edits(edits, 0.5f, before);
+    const auto faced_elbow = world(before, elbow).rotation, faced_hand = world(before, hand).rotation;
+
+    // The arm is turned, as a drag would.
+    Key turn;
+    turn.time = 0.5f;
+    turn.rotation = from_euler({0, 40, 0});
+    Track arm_track;
+    arm_track.joint = arm;
+    arm_track.keys.push_back(turn);
+    edits.tracks.push_back(arm_track);
+    std::vector<Joint> swung(native);
+    apply_edits(edits, 0.5f, swung);
+    check(!same_turn(world(swung, elbow).rotation, faced_elbow), "Without solo the joints below swing with their parent");
+
+    // Solo puts them back: a joint's place is the chain above it times its own key, so multiplying its key
+    // by conj(where it faces now) * (where it faced) holds it. Only the joint hanging directly off the one
+    // being turned is touched - the hand rides on the elbow, so holding the elbow holds the hand with it.
+    check(parent(elbow) == arm && parent(hand) == elbow, "The arm, its elbow and its hand hang off one another");
+    const auto back = normalised(multiply(conjugate(world(swung, elbow).rotation), faced_elbow));
+    for (auto& track : edits.tracks)
+        if (track.joint == elbow) track.keys.front().rotation = normalised(multiply(track.keys.front().rotation, back));
+    std::vector<Joint> held(native);
+    apply_edits(edits, 0.5f, held);
+    check(same_turn(world(held, elbow).rotation, faced_elbow), "Solo holds the way the joint below the turn faces");
+    check(same_turn(world(held, hand).rotation, faced_hand), "and the one below that, which rides on the held joint");
+    check(same_turn(world(held, arm).rotation, world(swung, arm).rotation), "while the joint being turned keeps its turn");
+    // Bones are rigid: the joints below still travel with the one that turned. Only their facing is held.
+    check(length3_test(sub3_test(world(held, hand).position, world(before, hand).position)) > 1e-3f,
+          "The joints below still travel with their parent: solo holds the facing, not the place");
+}
+
 void packs_select_variants_without_filesystem_order() {
     std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
     select_presets(presets, std::nullopt);
@@ -726,6 +782,7 @@ int main(int argc, char** argv) {
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
+        solo_turn_holds_the_joints_below();
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();

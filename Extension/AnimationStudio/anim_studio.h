@@ -56,6 +56,7 @@ struct View {
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool room{true}; // the studio opens in its room (studio_room.h)
+    bool solo{};     // a turn moves one joint alone (set_solo)
     float duration{}, takeoff{-1}, landing{-1}, time{}, speed{1};
     std::vector<JointView> joints; // the editable joints, now
     // The board without its keys, now, from where it starts: 0, 0, 0 is the board at the trick's start,
@@ -133,6 +134,10 @@ bool take_record_all_request(); // the client tick takes it once
 std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept;
 void cancel_recording();
 void set_play_in_game(bool on);
+// Solo: a turn moves that joint alone. The editable joints hanging off it are turned back by as much,
+// so the limb below keeps the way it faces instead of swinging with its parent. Bones are rigid, so
+// those joints still travel with the one being turned: it is the way they face that is held.
+void set_solo(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();

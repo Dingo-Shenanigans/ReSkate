@@ -59,6 +59,13 @@ inline constexpr std::uint16_t skateboard_root_joint = 380;
 // Not a skater joint: the board (its deck's mount, which carries the deck, trucks and wheels). Its
 // track turns and moves the board where the recording had it, in the board's own frame.
 inline constexpr std::uint16_t board_joint = 900;
+// The feet (343 and 10) ride this far above the board's mount, along the board's up: measured in the
+// game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and
+// snapping puts a foot on the deck at this height in the air.
+inline constexpr float feet_above_board = 0.104f;
+// How long the board takes to go from under the feet to the clip's own at the pop, and back at the
+// landing. Inside this much of either, the board is part way between the two.
+inline constexpr float board_blend = 0.06f;
 
 // ---- a recorded trick -----------------------------------------------------------------------------
 struct Clip {

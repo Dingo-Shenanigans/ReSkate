@@ -130,6 +130,7 @@ struct State {
     // Playback.
     float time{};
     bool playing{}, play_in_game{true}, room{true};
+    bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
     std::shared_ptr<const CustomTricks> tricks;
     bool tricks_read{};
     // Mode.
@@ -1053,7 +1054,6 @@ std::string research_trace(const std::string& action) {
 // ground the board goes that far under the lower foot; in the air it is the clip's own, with a short
 // blend at the pop and the landing. `pose` is the clip's pose at `seconds`, `board` its board, both
 // under the placement joint.
-constexpr float feet_above_board = 0.104f, board_blend = 0.06f;
 struct BoardShape;
 BoardShape board_shape(const Clip& clip);
 Vec3 board_up(const Clip& clip);
@@ -2228,6 +2228,7 @@ View view() {
     v.loop = s.edits.loop;
     v.play_in_game = s.play_in_game;
     v.room = s.room;
+    v.solo = s.solo;
     v.duration = duration_locked(s);
     v.takeoff = s.clip ? s.clip->takeoff : -1;
     v.landing = s.clip ? s.clip->landing : -1;
@@ -2461,6 +2462,14 @@ void set_play_in_game(bool on) {
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
     publish_locked(s);
 }
+void set_solo(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.solo = on;
+    s.status = on ? "Solo: a turn moves that joint alone. The joints below keep the way they face."
+                  : "A turn carries the joints below it, as before.";
+    publish_locked(s);
+}
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2468,6 +2477,57 @@ void begin_change() {
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
 }
+namespace {
+// Solo: the editable joints hanging directly off `joint` - the ones whose nearest editable parent it is.
+// The board is not part of the skeleton, so it neither holds children nor is one.
+std::vector<std::uint16_t> solo_children(const State& s, std::uint16_t joint) {
+    std::vector<std::uint16_t> children;
+    if (!s.solo || joint == board_joint || !s.clip || s.clip->empty()) return children;
+    for (const auto& e : editable_joints()) {
+        if (e.index == board_joint || e.index == joint || e.index >= skeleton_joints) continue;
+        if (const auto* t = s.edits.track(e.index); t && (t->locked || t->hidden)) continue;
+        for (auto up = parent(e.index); up >= 0; up = parent(static_cast<std::uint16_t>(up))) {
+            const auto above = static_cast<std::uint16_t>(up);
+            if (above == joint) {
+                children.push_back(e.index);
+                break;
+            }
+            if (editable(above)) break; // a nearer editable parent owns this one
+        }
+    }
+    return children;
+}
+// The way each of those joints faces in the world, with the edits as they stand.
+std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> children) {
+    const float at = frame_time(s.time);
+    std::vector<Joint> pose(skeleton_joints);
+    s.clip->sample(at, pose);
+    apply_edits(s.edits, at, pose);
+    std::vector<Quat> facing;
+    facing.reserve(children.size());
+    for (const auto c : children) facing.push_back(world(pose, c).rotation);
+    return facing;
+}
+// Turns each of them back to the way it faced. A joint's place in the world is the chain above it times
+// its own key, so multiplying its key by conj(where it faces now) * (where it faced) puts it back.
+void hold_facing(State& s, std::span<const std::uint16_t> children, std::span<const Quat> before) {
+    const float at = frame_time(s.time);
+    std::vector<Joint> pose(skeleton_joints);
+    s.clip->sample(at, pose);
+    apply_edits(s.edits, at, pose);
+    for (std::size_t i = 0; i < children.size() && i < before.size(); ++i) {
+        const auto child = children[i];
+        const auto turn = normalised(multiply(conjugate(world(pose, child).rotation), before[i]));
+        if (std::abs(turn[3]) > 0.999995f) continue; // it did not swing: it needs no key
+        const auto* t = s.edits.track(child);
+        Offset held = t ? evaluate(*t, at) : Offset{};
+        held.rotation = normalised(multiply(held.rotation, turn));
+        if (!editable(child)->moves) held.offset = {};
+        set_key(s.edits, child, at, held);
+    }
+}
+} // namespace
+
 Offset offset_of(std::uint16_t joint) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2485,7 +2545,12 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     Offset clean = value;
     if (!editable(joint)->moves) clean.offset = {};
     for (auto& v : clean.offset) v = std::clamp(v, -2.0f, 2.0f);
+    // Solo: the way the joints below face is read before the turn and put back after it.
+    const auto children = solo_children(s, joint);
+    std::vector<Quat> facing;
+    if (!children.empty()) facing = facing_of(s, children);
     set_key(s.edits, joint, frame_time(s.time), clean);
+    if (!children.empty()) hold_facing(s, children, facing);
     changed_locked(s);
 }
 namespace {

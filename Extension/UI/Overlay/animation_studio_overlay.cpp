@@ -69,6 +69,12 @@ struct Ui {
     ImVec2 drag_start{};
     int axis{-1}; // -1 free, 0 X, 1 Y, 2 Z
     bool local_axes{true}, move_mode{};
+    // The gizmo on the chosen joint: three arrows to move along an axis, three rings to turn about one.
+    int gizmo_handle{-1};      // the one being dragged: 0 to 2 the arrows, 3 to 5 the rings, -1 none
+    int gizmo_hot{-1};         // the one under the mouse
+    studio::Vec3 drag_point{}; // where the joint was when the drag began
+    float ring_from{};         // the angle round the ring where a ring drag began
+    bool snap{};               // a foot moved in the air lands on the deck
 
     std::array<char, 64> name{}, trick{};
     std::array<char, 64> pack_name{};
@@ -394,6 +400,7 @@ void begin_turn(const studio::View& v) {
     const auto* sel = joint_view(v, u.selected);
     if (!sel) return;
     u.drag_offset = studio::offset_of(u.selected);
+    u.drag_point = sel->position;
     u.drag_world = sel->rotation;
     u.drag_parent = sel->parent_rotation;
     u.drag_parent_scale = sel->parent_scale;
@@ -406,6 +413,228 @@ studio::Vec3 up_of(const studio::Quat& q) {
     const float x = q[0], y = q[1], z = q[2], w = q[3];
     return {2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)};
 }
+// A hand or a foot: the limb above it bends to reach where it is put, so these are moved with the IK
+// rather than by shifting the bone itself.
+bool limb_end(std::uint16_t joint) { return joint == 10 || joint == 343 || joint == 49 || joint == 278; }
+float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+// ---- snapping ---------------------------------------------------------------------------------------
+// Snapping holds a foot on the deck: it keeps its place along and across the board, but sits
+// `feet_above_board` up the board's up, the height the game holds the feet at while riding.
+//
+// Only in the air. On the ground the game's own contact does the opposite - it pulls the board up under
+// the lower foot (board_on_feet) - so snapping there would only fight it, and the foot is on the deck
+// already. The pop and the landing blend between the two, so those are left alone as well.
+bool snapping_now(const studio::View& v) {
+    if (!ui().snap || !v.has_clip) return false;
+    if (v.takeoff < 0 || v.landing <= v.takeoff) return false;
+    return v.time > v.takeoff + studio::board_blend && v.time < v.landing - studio::board_blend;
+}
+studio::Vec3 on_the_deck(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
+    if ((joint != 10 && joint != 343) || !snapping_now(v)) return target;
+    const auto* board = joint_view(v, studio::board_joint);
+    if (!board) return target;
+    const auto up = up_of(board->rotation);
+    const studio::Vec3 from{target[0] - board->position[0], target[1] - board->position[1], target[2] - board->position[2]};
+    const float over = dot3(from, up) - studio::feet_above_board;
+    for (int i = 0; i < 3; ++i) target[i] -= up[i] * over;
+    return target;
+}
+
+// ---- the gizmo -------------------------------------------------------------------------------------
+// Unreal's handles, drawn the game's way: three arrows out of the chosen joint to move it along one axis,
+// three rings round it to turn it about one. X is red, Y green, Z blue, and the handle under the mouse
+// goes white. Dragging the joint itself is still a free turn, as it always was.
+//
+// The arrows show on the joints that can be moved: the board, the hips, and the hands and feet (those are
+// moved with the limb bending to follow). The rings show on every joint.
+constexpr int ring_points = 48;
+struct Gizmo {
+    bool valid{};
+    ImVec2 centre{};
+    bool arrows{};
+    std::array<studio::Vec3, 3> axis{};                    // the axes a ring turns about, in the world
+    std::array<ImVec2, 3> tip{};                           // where each arrow ends on screen
+    std::array<float, 3> pixels_per_metre{};               // along each arrow
+    std::array<std::array<ImVec2, ring_points>, 3> ring{}; // each ring, on screen
+    std::array<bool, 3> ring_drawn{}, arrow_drawn{};
+};
+// The axis a handle works along, in the world. Moving goes along the frame the offsets are kept in: the
+// joint's parent, and for the board the ground it starts on. Turning goes about the joint's own axes -
+// except the board's, whose keys turn it about that same ground frame. Either can be the world's instead.
+studio::Vec3 handle_axis(const studio::JointView& sel, std::uint16_t joint, int a, bool move, bool local) {
+    studio::Vec3 unit{};
+    unit[static_cast<std::size_t>(a)] = 1;
+    if (!local) return unit;
+    const bool parent_frame = move || joint == studio::board_joint;
+    return studio::rotate(parent_frame ? sel.parent_rotation : sel.rotation, unit);
+}
+Gizmo gizmo_of(const studio::View& v, const Projector& p, float k) {
+    Gizmo g;
+    auto& u = ui();
+    const auto* sel = joint_view(v, u.selected);
+    if (!sel || !p.valid || p.focal <= 0 || !v.has_clip) return g;
+    const auto at = p(sel->position);
+    if (!at) return g;
+    const studio::Vec3 d{sel->position[0] - p.origin[0], sel->position[1] - p.origin[1], sel->position[2] - p.origin[2]};
+    const float depth = -dot3(d, p.back);
+    if (depth < 0.05f) return g;
+    const auto* e = studio::editable(u.selected);
+    g.valid = true;
+    g.centre = *at;
+    g.arrows = (e && e->moves) || limb_end(u.selected);
+    // A metre of the world is this many pixels at the joint, so the handles keep their size on screen.
+    const float scale = p.focal / depth;
+    const float arrow = 54 * k / scale, radius = 78 * k / scale;
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        g.axis[index] = handle_axis(*sel, u.selected, a, false, u.local_axes);
+        if (g.arrows) {
+            const auto move_axis = handle_axis(*sel, u.selected, a, true, u.local_axes);
+            studio::Vec3 end{};
+            for (int i = 0; i < 3; ++i) end[i] = sel->position[i] + move_axis[i] * arrow;
+            if (const auto tip = p(end)) {
+                g.tip[index] = *tip;
+                const float on_screen = std::hypot(tip->x - at->x, tip->y - at->y);
+                g.pixels_per_metre[index] = on_screen / arrow;
+                // An arrow pointing almost at the camera is a dot: it cannot be dragged.
+                g.arrow_drawn[index] = on_screen > 18 * k;
+            }
+        }
+        // The ring: a circle round the joint across the axis, projected point by point, so it leans with
+        // the camera the way a real circle would.
+        const auto& n = g.axis[index];
+        studio::Vec3 side = std::abs(n[2]) < 0.9f ? studio::Vec3{-n[1], n[0], 0} : studio::Vec3{0, -n[2], n[1]};
+        const float len = std::sqrt(dot3(side, side));
+        if (len < 1e-4f) continue;
+        for (auto& c : side) c /= len;
+        const studio::Vec3 other{n[1] * side[2] - n[2] * side[1], n[2] * side[0] - n[0] * side[2], n[0] * side[1] - n[1] * side[0]};
+        bool whole = true;
+        for (int i = 0; i < ring_points; ++i) {
+            const float t = static_cast<float>(i) * 6.2831853f / ring_points;
+            studio::Vec3 point{};
+            for (int c = 0; c < 3; ++c) point[c] = sel->position[c] + (side[c] * std::cos(t) + other[c] * std::sin(t)) * radius;
+            if (const auto on = p(point)) g.ring[index][static_cast<std::size_t>(i)] = *on;
+            else whole = false;
+        }
+        g.ring_drawn[index] = whole;
+    }
+    return g;
+}
+// The handle under the mouse: the nearest arrow or ring within a few pixels, the arrows first.
+int gizmo_pick(const Gizmo& g, ImVec2 mouse, float k) {
+    if (!g.valid) return -1;
+    int best = -1;
+    float best_dist = 10 * k;
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.arrow_drawn[index]) continue;
+        const ImVec2 line{g.tip[index].x - g.centre.x, g.tip[index].y - g.centre.y};
+        const float length = line.x * line.x + line.y * line.y;
+        if (length < 1) continue;
+        const float t = std::clamp(((mouse.x - g.centre.x) * line.x + (mouse.y - g.centre.y) * line.y) / length, 0.0f, 1.0f);
+        if (t < 0.25f) continue; // close to the joint the free drag has it
+        const float dist = std::hypot(g.centre.x + line.x * t - mouse.x, g.centre.y + line.y * t - mouse.y);
+        if (dist < best_dist) best_dist = dist, best = a;
+    }
+    if (best >= 0) return best;
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.ring_drawn[index]) continue;
+        for (int i = 0; i < ring_points; ++i) {
+            const auto point = g.ring[index][static_cast<std::size_t>(i)];
+            const float dist = std::hypot(point.x - mouse.x, point.y - mouse.y);
+            if (dist < best_dist) best_dist = dist, best = 3 + a;
+        }
+    }
+    return best;
+}
+void draw_gizmo(ImDrawList* d, const Gizmo& g, int hot, float k) {
+    if (!g.valid) return;
+    constexpr std::array<ImU32, 3> colours{IM_COL32(236, 76, 72, 230), IM_COL32(118, 212, 96, 230), IM_COL32(74, 150, 255, 230)};
+    constexpr ImU32 lit = IM_COL32(255, 248, 190, 255);
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.ring_drawn[index]) continue;
+        const bool on = hot == 3 + a;
+        d->AddPolyline(g.ring[index].data(), ring_points, on ? lit : colours[index], ImDrawFlags_Closed, (on ? 3.4f : 2.0f) * k);
+    }
+    for (int a = 0; a < 3; ++a) {
+        const auto index = static_cast<std::size_t>(a);
+        if (!g.arrow_drawn[index]) continue;
+        const bool on = hot == a;
+        const auto colour = on ? lit : colours[index];
+        const auto tip = g.tip[index];
+        d->AddLine(g.centre, tip, colour, (on ? 3.4f : 2.2f) * k);
+        // The head: a little triangle pointing the way the arrow goes.
+        const float dx = tip.x - g.centre.x, dy = tip.y - g.centre.y;
+        const float len = std::hypot(dx, dy);
+        if (len < 1) continue;
+        const float ux = dx / len, uy = dy / len, size = (on ? 9.0f : 7.0f) * k;
+        d->AddTriangleFilled(tip, ImVec2(tip.x - ux * size * 2 - uy * size, tip.y - uy * size * 2 + ux * size),
+                             ImVec2(tip.x - ux * size * 2 + uy * size, tip.y - uy * size * 2 - ux * size), colour);
+    }
+}
+// One axis of the gizmo: `amount` is metres to move along it or radians to turn about it, measured off the
+// mouse by drag_gizmo.
+void apply_axis(const studio::View& v, int a, float amount, bool move) {
+    auto& u = ui();
+    const auto* e = studio::editable(u.selected);
+    const auto index = static_cast<std::size_t>(a);
+    studio::Vec3 unit{};
+    unit[index] = 1;
+    if (move && limb_end(u.selected)) {
+        // A hand or a foot goes where the arrow points, and the limb above it bends to reach.
+        const auto* sel = joint_view(v, u.selected);
+        if (!sel) return;
+        const auto axis = handle_axis(*sel, u.selected, a, true, u.local_axes);
+        studio::Vec3 target{};
+        for (int i = 0; i < 3; ++i) target[i] = u.drag_point[i] + axis[i] * amount;
+        studio::drag_limb(u.selected, on_the_deck(v, u.selected, target));
+        return;
+    }
+    studio::Offset next = u.drag_offset;
+    if (move && e && e->moves) {
+        // A world arrow is brought into the frame the offsets are kept in; a local one is that frame.
+        const auto step = u.local_axes ? unit : studio::rotate(studio::conjugate(u.drag_parent), unit);
+        for (int i = 0; i < 3; ++i) next.offset[i] += step[i] * amount / std::max(u.drag_parent_scale, 0.01f);
+    } else {
+        const auto q = studio::axis_angle(unit, amount);
+        const auto turn = u.local_axes ? q : studio::multiply(studio::multiply(studio::conjugate(u.drag_world), q), u.drag_world);
+        next.rotation = studio::normalised(studio::multiply(u.drag_offset.rotation, turn));
+        // The board's keys turn it about the axes of the ground it starts on, so its turn goes on the left,
+        // in that frame: a local ring is already in it, a world one is brought into it.
+        if (u.selected == studio::board_joint) {
+            const auto ground = u.local_axes ? q : studio::multiply(studio::multiply(studio::conjugate(u.drag_parent), q), u.drag_parent);
+            next.rotation = studio::normalised(studio::multiply(ground, u.drag_offset.rotation));
+        }
+    }
+    studio::set_offset(u.selected, next);
+}
+// The mouse against the handle it holds: along an arrow, how far it has gone in metres; round a ring, the
+// angle it has swept in radians.
+void drag_gizmo(const studio::View& v, const Projector& p, const Gizmo& g, ImVec2 mouse) {
+    auto& u = ui();
+    const int handle = u.gizmo_handle;
+    if (handle < 0 || !g.valid) return;
+    if (handle < 3) {
+        const auto index = static_cast<std::size_t>(handle);
+        const float dx = g.tip[index].x - g.centre.x, dy = g.tip[index].y - g.centre.y;
+        const float len = std::hypot(dx, dy);
+        if (len < 1 || g.pixels_per_metre[index] < 1e-3f) return;
+        const float along = ((mouse.x - u.drag_start.x) * dx + (mouse.y - u.drag_start.y) * dy) / len;
+        apply_axis(v, handle, along / g.pixels_per_metre[index], true);
+        return;
+    }
+    const int a = handle - 3;
+    float swept = std::atan2(mouse.y - g.centre.y, mouse.x - g.centre.x) - u.ring_from;
+    while (swept > 3.14159265f) swept -= 6.2831853f;
+    while (swept < -3.14159265f) swept += 6.2831853f;
+    // Screen y runs down, so a sweep that reads positive turns the axis pointing into the screen; an axis
+    // pointing back at the camera turns the other way.
+    apply_axis(v, a, dot3(g.axis[static_cast<std::size_t>(a)], p.back) < 0 ? swept : -swept, false);
+}
+
 // Drags the selected limb: the mouse's ray meets the plane of the board (through the joint, facing the board's
 // up), so the foot slides over the board as the board moves. Without a board in the view, the camera's plane.
 void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
@@ -436,7 +665,7 @@ void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
     } else {
         for (int i = 0; i < 3; ++i) target[i] = p.origin[i] - p.back[i] * depth + p.right[i] * (sx * depth) + p.up[i] * (sy * depth);
     }
-    studio::drag_limb(ui().selected, target);
+    studio::drag_limb(ui().selected, on_the_deck(v, ui().selected, target));
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
 void apply_turn(const Projector& p, float dx, float dy, bool move) {
@@ -737,6 +966,14 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "Which axis a drag or the left stick turns the joint about.", [] { ui().axis = ui().axis >= 2 ? -1 : ui().axis + 1; }});
         rows.push_back({"Axes", u.local_axes ? "the joint's own" : "the world's", "X, Y and Z of the joint itself or of the world.",
                         [] { ui().local_axes = !ui().local_axes; }});
+        rows.push_back({"Solo", v.solo ? "on" : "off",
+                        "On: a turn moves that joint alone. The joints hanging off it are turned back by as much, so the limb below "
+                        "keeps the way it faces instead of swinging with its parent. Bones are rigid, so it still travels with the joint.",
+                        [v] { studio::set_solo(!v.solo); }});
+        rows.push_back({"Snapping", u.snap ? "on" : "off",
+                        "On: a foot moved while the skater is in the air lands on the deck, at the height the feet ride at. On the "
+                        "ground the game puts the board under the feet itself, so nothing is snapped there.",
+                        [] { ui().snap = !ui().snap; }});
         rows.push_back({"Follow joint", "", "The camera keeps the joint in the middle (again: the whole skater).", [] { studio::focus_joint(ui().selected); }});
         rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame.", [] { studio::copy_pose(); }});
         rows.push_back({"Paste pose", "", "Keys the remembered pose on this frame.", [] {
@@ -1556,10 +1793,20 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     }
     const auto* sel = joint_view(v, u.selected);
     std::optional<ImVec2> sel_at = sel ? project(sel->position) : std::nullopt;
+    // The gizmo on the chosen joint. While a handle is held it is drawn from the frame the drag began on,
+    // so the handle stays under the mouse as the joint moves.
+    const auto* locked_track = track_view(v, u.selected);
+    const bool can_edit = v.has_clip && !(locked_track && locked_track->locked);
+    static Gizmo held;
+    const auto gizmo = u.gizmo_handle >= 0 ? held : gizmo_of(v, project, k);
+    if (u.gizmo_handle < 0) held = gizmo;
+    u.gizmo_hot = u.gizmo_handle >= 0 ? u.gizmo_handle
+                  : (!u.pad_mode && inside && can_edit) ? gizmo_pick(gizmo, mouse, k) : -1;
     if (sel_at) {
         glow_box(d, *sel_at, 22 * k, k);
         if (u.pad_mode) text(d, f.bold, 13 * k, ImVec2(sel_at->x + 30 * k, sel_at->y - 8 * k), blue_light, upper(label_of(u.selected)));
     }
+    if (can_edit && !u.pad_mode) draw_gizmo(d, gizmo, u.gizmo_hot, k);
     if (hovered && *hovered != u.selected)
         if (const auto at = project(joint_view(v, *hovered)->position))
             text(d, f.bold, 13 * k, ImVec2(at->x + 10 * k, at->y - 22 * k), white, upper(label_of(*hovered)));
@@ -1576,26 +1823,39 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));
         const char* axis = u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "FREE";
         text(d, f.body, 12 * k, ImVec2(x, y + 42 * k), IM_COL32(120, 190, 255, 150),
-             std::format("{}  axis {}  ({})", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world"));
+             std::format("{}  axis {}  ({}){}{}", u.move_mode ? "MOVE" : "TURN", axis, u.local_axes ? "local" : "world",
+                         v.solo ? "  solo" : "", u.snap ? "  snapping" : ""));
     }
-    if (u.menu_open || (!inside && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
+    if (u.menu_open || (!inside && u.gizmo_handle < 0 && !u.dragging_gizmo && !u.orbiting && !u.panning)) return;
     auto& io = ImGui::GetIO();
     if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered()) {
         // Press and hold a joint: it is grabbed, and the limb above it follows the mouse. Shift turns the
         // selected joint with the gizmo instead.
-        if (hovered && *hovered != u.selected) u.selected = *hovered;
-        else if (sel && v.has_clip) {
-            const auto* track = track_view(v, u.selected);
-            if (!(track && track->locked)) {
-                u.dragging_gizmo = true;
-                u.drag_start = mouse;
-                begin_turn(v);
-            }
+        if (u.gizmo_hot >= 0 && can_edit) {
+            u.gizmo_handle = u.gizmo_hot;
+            u.axis = u.gizmo_hot % 3;
+            u.drag_start = mouse;
+            u.ring_from = std::atan2(mouse.y - gizmo.centre.y, mouse.x - gizmo.centre.x);
+            begin_turn(v);
+        } else if (hovered && *hovered != u.selected) u.selected = *hovered;
+        else if (sel && can_edit) {
+            u.dragging_gizmo = true;
+            u.drag_start = mouse;
+            begin_turn(v);
         }
+    }
+    if (u.gizmo_handle >= 0) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.gizmo_handle = -1;
+        else if (project.valid) drag_gizmo(v, project, gizmo, mouse);
     }
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
-        else if (project.valid) apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
+        else if (project.valid) {
+            // A hand or a foot in MOVE goes where the mouse is over the board, the limb bending to reach;
+            // anything else turns, as a free drag always has.
+            if (u.move_mode && limb_end(u.selected)) drag_limb_to(v, project, mouse);
+            else apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
+        }
     }
     auto orbit = v.orbit;
     bool camera_changed = false;
@@ -2016,9 +2276,11 @@ void draw_animation_studio_loading() {
 
     // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
     {
-        static constexpr std::array<const char*, 7> tips{
+        static constexpr std::array<const char*, 9> tips{
             "Pick a trick in TRICKS, then its pop: low, mid or high.",
             "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
+            "The arrows on a joint move it along one axis, the rings turn it about one.",
+            "Solo in KEYS turns one joint alone. Snapping puts a foot on the deck in the air.",
             "K keys the pose on this frame. Keys always sit on whole frames.",
             "G moves the hips or the board. X, Y and Z lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
