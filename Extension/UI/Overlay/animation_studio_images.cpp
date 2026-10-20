@@ -329,18 +329,23 @@ bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 
     else v = picture_shape / box_shape;
     const float x0 = whole_w * (1 - u) * 0.5f, x1 = whole_w - x0;
     const float shown = x1 - x0;
-    const auto piece = [&](const Found& found, float from, float to) {
+    // The join. Filtering mixes each half's edge texel with what lies beside it in the atlas, which drew a
+    // faint line down the middle, so each half stops half a texel short of its own edge there and the two
+    // are made to overlap by a pixel on the screen, leaving nothing between them.
+    const float texel = loaded().atlas->TexWidth > 0 ? 0.5f / static_cast<float>(loaded().atlas->TexWidth) : 0.0f;
+    const auto piece = [&](const Found& found, float from, float to, float inset_left, float inset_right) {
         // Where this half sits in the whole picture, against what is shown of it.
         const float a = std::max(from, x0), b = std::min(to, x1);
         if (b <= a) return;
         const float ua = (a - from) / (to - from), ub = (b - from) / (to - from);
-        const ImVec2 uv0(found.uv0.x + (found.uv1.x - found.uv0.x) * ua, found.uv0.y + (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
-        const ImVec2 uv1(found.uv0.x + (found.uv1.x - found.uv0.x) * ub, found.uv1.y - (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
-        draw->AddImage(loaded().atlas->TexID, ImVec2(min.x + (a - x0) / shown * box_w, min.y),
-                       ImVec2(min.x + (b - x0) / shown * box_w, max.y), uv0, uv1, tint);
+        const float span = found.uv1.x - found.uv0.x;
+        const ImVec2 uv0(found.uv0.x + span * ua + inset_left, found.uv0.y + (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
+        const ImVec2 uv1(found.uv0.x + span * ub - inset_right, found.uv1.y - (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
+        draw->AddImage(loaded().atlas->TexID, ImVec2(min.x + (a - x0) / shown * box_w - (inset_left > 0 ? 1.0f : 0.0f), min.y),
+                       ImVec2(min.x + (b - x0) / shown * box_w + (inset_right > 0 ? 1.0f : 0.0f), max.y), uv0, uv1, tint);
     };
-    piece(left, 0, static_cast<float>(left_size.first));
-    piece(right, static_cast<float>(left_size.first), whole_w);
+    piece(left, 0, static_cast<float>(left_size.first), 0, texel);
+    piece(right, static_cast<float>(left_size.first), whole_w, texel, 0);
     return true;
 }
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {
