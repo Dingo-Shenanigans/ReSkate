@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <utility>
 
 namespace dingosdk::overlay {
 namespace {
@@ -13,8 +14,20 @@ struct State {
     std::chrono::steady_clock::time_point last_tick, done_at;
     bool active{};
     DWORD packet{};
+    PadReads reads;
 };
 State &state() { static auto *value = new State; return *value; }
+// Whether `address` is in Skate.exe's own image, worked out once: a read from the game's code, not an overlay's.
+bool in_game_image(const void *address) noexcept {
+    static const auto image = [] {
+        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+        const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+        return std::pair{base, base + nt->OptionalHeader.SizeOfImage};
+    }();
+    const auto at = reinterpret_cast<std::uintptr_t>(address);
+    return at >= image.first && at < image.second;
+}
 constexpr std::chrono::milliseconds linger{2000}, no_ticks{250}, tick_length{17};
 // One game tick of the script. The caller holds s.mutex.
 void advance(State &s, std::chrono::steady_clock::time_point now) {
@@ -41,7 +54,7 @@ void pad_tick() noexcept {
     std::lock_guard lock(s.mutex);
     if (s.active) advance(s, std::chrono::steady_clock::now());
 }
-bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
+bool scripted_pad(DWORD user, XINPUT_STATE &output, const void *caller) noexcept {
     auto &s = state();
     if (user != 0) return false;
     std::lock_guard lock(s.mutex);
@@ -56,6 +69,13 @@ bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     }
     output.Gamepad = done ? XINPUT_GAMEPAD{} : s.steps[s.current].pad;
     output.dwPacketNumber = ++s.packet;
+    ++s.reads.all;
+    if (in_game_image(caller)) ++s.reads.by_game_code;
     return true;
+}
+PadReads pad_reads_answered() noexcept {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    return s.reads;
 }
 } // namespace dingosdk::overlay

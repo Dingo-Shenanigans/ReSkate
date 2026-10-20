@@ -59,6 +59,17 @@ inline constexpr std::uint16_t skateboard_root_joint = 380;
 // Not a skater joint: the board (its deck's mount, which carries the deck, trucks and wheels). Its
 // track turns and moves the board where the recording had it, in the board's own frame.
 inline constexpr std::uint16_t board_joint = 900;
+// Keys sit on whole frames of the timeline, 30 a second, never between two: anything that moves a key in
+// time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
+inline constexpr float key_fps = 30.0f;
+float on_a_frame(float seconds) noexcept;
+// The feet (343 and 10) ride this far above the board's mount, along the board's up: measured in the
+// game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and
+// snapping puts a foot on the deck at this height in the air.
+inline constexpr float feet_above_board = 0.104f;
+// How long the board takes to go from under the feet to the clip's own at the pop, and back at the
+// landing. Inside this much of either, the board is part way between the two.
+inline constexpr float board_blend = 0.06f;
 
 // ---- a recorded trick -----------------------------------------------------------------------------
 struct Clip {
@@ -113,7 +124,7 @@ struct Animation {
     std::string trick; // what the player says it is (Kickflip, Heelflip ...)
     Clip clip;
     std::vector<Track> tracks;
-    float speed{1};
+    float speed{1}; // Studio preview speed; gameplay source seconds stay at 1x.
     bool loop{true};
     // Which pop it is for: "" any, or "low", "mid", "high" (a trick can have one of each).
     std::string pop;
@@ -133,13 +144,16 @@ struct Animation {
 };
 // Puts the animation's edits at `seconds` on `pose` (already holding the base pose).
 void apply_edits(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// Same anatomical joint and local edit axes as F8; stance never swaps authored limbs.
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight);
+// Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror);
+                    std::span<Joint> target, bool mirror, bool reverse_facing = false);
 // Add only authored edits over a fresh native pose; no recorded rest transforms or scales.
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
-                             std::span<Joint> native, bool mirror, float weight);
+                             std::span<Joint> native, bool mirror, float weight, bool reverse_facing = false);
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
@@ -149,7 +163,11 @@ float animation_window_weight(const Animation& animation, float seconds) noexcep
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge = 1.0f / 120);
 // Moves every key of every track by `delta` seconds (the start bracket moves with them); keys never go before 0.
 void shift_keys(Animation& animation, float delta, float duration = std::numeric_limits<float>::infinity()) noexcept;
-bool retime_window(Animation& animation, float start, float end, float duration) noexcept;
+// Moves one bracket: 1 the start, 2 the end, to `to`. Only the keys sitting on that bracket go with it -
+// everything between the brackets stays where it is, so nothing is stretched and the timeline keeps its
+// whole frames. A key the bracket is pulled back past is left where it is and stops applying until the
+// bracket is taken out over it again.
+bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept;
 bool remove_key(Animation& animation, std::uint16_t joint, float seconds, float merge = 1.0f / 120);
 // Moves a key to `to` (clamped to the clip), keeping the track in time order. Returns its new index.
 std::size_t move_key(Track& track, std::size_t index, float to, float duration) noexcept;

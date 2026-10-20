@@ -40,7 +40,12 @@ function(dingosdk_configure_target target)
         target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
     endif()
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /WX /MP4 /permissive- /EHsc)
+        target_compile_options(${target} PRIVATE /W4 /WX /permissive- /EHsc)
+        # Ninja already schedules individual translation units. Nesting /MP inside
+        # its jobs adds no useful work and prevents reliable compiler caching.
+        if(CMAKE_GENERATOR MATCHES "Visual Studio")
+            target_compile_options(${target} PRIVATE /MP4)
+        endif()
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-function -Wno-array-bounds)
     endif()

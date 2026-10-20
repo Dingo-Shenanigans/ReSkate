@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <imgui_internal.h>
 #include <string>
 
@@ -15,8 +16,11 @@ namespace dingosdk::overlay::menu {
 using namespace theme;
 namespace {
 // A tile for an addon on ALL ADDONS: what it is, whether it is on, and a way in.
+void quietly(const CallbacksV3& callbacks, const std::string& command); // a console line, defined below
+// `addon` is the page the tile opens. A tile with `run` set does that instead: it is a thing to do, not
+// a page to go to (the Animator Studio, which takes the screen itself).
 void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* about, const char* state, ImU32 state_colour,
-                int addon) {
+                int addon, const std::function<void()>& run = {}) {
     if (console_style()) {
         // Full screen: a tile as the pause menu's, A opens the addon.
         const auto at = ImGui::GetCursorScreenPos();
@@ -39,7 +43,10 @@ void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* 
         draw->AddText(menu.body, px(16), ImVec2(at.x + px(20), at.y + px(66)), lit ? paper : muted, about, nullptr, size.x - px(40));
         draw->PopClipRect();
         ImGui::PopID();
-        if (pressed) open_page(menu, page_addons, addon);
+        if (pressed) {
+            if (run) run();
+            else open_page(menu, page_addons, addon);
+        }
         return;
     }
     begin_card(menu, id, title);
@@ -49,11 +56,14 @@ void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* 
     }
     note(about);
     ImGui::Dummy(ImVec2(0, px(2)));
-    if (ImGui::Button((std::string("OPEN ") + title + "##" + id).c_str(), ImVec2(-FLT_MIN, px(34)))) open_page(menu, page_addons, addon);
+    if (ImGui::Button((std::string("OPEN ") + title + "##" + id).c_str(), ImVec2(-FLT_MIN, px(34)))) {
+        if (run) run();
+        else open_page(menu, page_addons, addon);
+    }
     end_card();
 }
 
-void all_addons(SkateMenu& menu, const Model& model) {
+void all_addons(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto on_off = [](bool available, bool on) -> const char* { return !available ? "NOT AVAILABLE" : on ? "ON" : "OFF"; };
     const auto colour = [](bool available, bool on) { return !available ? skate_theme::tile_light : on ? skate_theme::good : skate_theme::tile_light; };
     addon_tile(menu, "addon-drone", "DRONE", "Fly an FPV drone from the free camera, or let it follow you and film your line.", nullptr, 0,
@@ -86,6 +96,12 @@ void all_addons(SkateMenu& menu, const Model& model) {
     next();
     addon_tile(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
                nullptr, 0, addon_music);
+    next();
+    // Not a page of its own: it takes the screen, the way it does from F8.
+    addon_tile(menu, "addon-animator-studio", "ANIMATOR STUDIO",
+               "Record a trick, move the skater frame by frame, and your version plays in game. F8 opens it too.",
+               callbacks.queue_console_command ? "OPEN" : "NOT AVAILABLE", skate_theme::tile_light, addon_music,
+               [&callbacks] { quietly(callbacks, "animstudio open"); });
 }
 }
 
@@ -119,7 +135,7 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
         else if (menu.addon == addon_road_rash) road_rash_addon(menu, model, callbacks);
         else if (menu.addon == addon_hall_of_meat) hall_of_meat_addon(menu, model, callbacks);
         else if (menu.addon == addon_grind_exits) grind_exits_addon(menu, model, callbacks);
-        else all_addons(menu, model);
+        else all_addons(menu, model, callbacks);
         ImGui::EndChild();
         break;
     }

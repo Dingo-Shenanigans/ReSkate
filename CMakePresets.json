@@ -13,6 +13,19 @@
       "toolset": "v143"
     },
     {
+      "name": "ci-windows",
+      "displayName": "Windows CI (Ninja, MSVC developer shell)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/ci-windows",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS": "ON",
+        "DINGOSDK_LAUNCHER_AUTO_UPDATE": "OFF",
+        "DINGOSDK_EMBEDDED_DEBUG_INFO": "ON"
+      }
+    },
+    {
       "name": "linux-x64",
       "displayName": "Linux x64 (dedicated server only)",
       "generator": "Unix Makefiles",

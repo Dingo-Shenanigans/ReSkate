@@ -26,7 +26,8 @@ struct Gesture {
 std::vector<Gesture> read(const std::filesystem::path& game_root);
 // A stick position from -1 to 1 as an XInput axis value. NaN and infinity give the middle.
 [[nodiscard]] std::int16_t stick_axis(float value) noexcept;
-// Pad steps in game ticks (60 a second): the crouch, then the flick over `flick_ms`. The game takes the pop's height
-// from the flick's speed: a quick flick pops high. Empty when the gesture has no arcs.
-[[nodiscard]] std::vector<overlay::PadStep> flick(const Gesture& gesture, std::uint32_t flick_ms);
+// Pad steps in game ticks (60 a second): the crouch for `crouch_ticks`, then the flick over `flick_ms`. The pop builds
+// while the stick is held down, so the crouch's length is the pop's height (3-5 ticks low, 7-11 medium, 13 and up
+// high). Empty when the gesture has no arcs.
+[[nodiscard]] std::vector<overlay::PadStep> flick(const Gesture& gesture, std::uint32_t flick_ms, std::uint32_t crouch_ticks = 18);
 } // namespace dingosdk::anim_studio::gestures

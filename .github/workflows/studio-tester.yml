@@ -1,0 +1,160 @@
+name: Studio tester build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_library:
+        description: Package the complete tester ZIP after checks pass
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-tester-${{ github.head_ref || github.ref_name }}
+  # Let the running build finish warming its caches. GitHub keeps only the
+  # newest pending revision, so frequent pushes do not restart a cold build.
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 75
+    env:
+      PYTHONUTF8: '1'
+      CARGO_BUILD_JOBS: '2'
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install C++ compilation cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.16.0
+      - name: Identify Rust toolchain
+        id: rust
+        run: |
+          $version = (rustc --version).Trim()
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Restore Rust dependencies and compiled helper
+        id: rust-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            SpotifyHelper/target
+          key: studio-rust-windows-2022-v1-${{ steps.rust.outputs.version }}-${{ hashFiles('SpotifyHelper/Cargo.lock', 'SpotifyHelper/Cargo.toml', 'SpotifyHelper/.cargo/config.toml', 'SpotifyHelper/src/**') }}
+          restore-keys: |
+            studio-rust-windows-2022-v1-${{ steps.rust.outputs.version }}-
+      - name: Prepare Python and optional Rust dependencies
+        run: |
+          python -m pip install -r contrib/animator-studio/requirements-test.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build optional Spotify helper
+        working-directory: SpotifyHelper
+        run: |
+          . ../contrib/enter-msvc.ps1
+          cargo build --locked --release --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save helper cache before the remaining build
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            SpotifyHelper/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Configure candidate with binary auto-update disabled
+        run: |
+          . ./contrib/enter-msvc.ps1
+          cmake --preset ci-windows -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build runtime, launcher and animation checks
+        run: |
+          . ./contrib/enter-msvc.ps1
+          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_trick_gesture_tests dingosdk_anim_graph_probe --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Show C++ cache statistics
+        if: always()
+        run: sccache --show-stats
+      - name: Run regression checks
+        run: |
+          ctest --test-dir build/ci-windows -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s contrib/Test -p '*tests.py'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Fetch pinned complete native library
+        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python contrib/fetch_studio_test_library.py --output work/native-library.zip
+      - name: Stage complete tester package
+        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        env:
+          BUILD_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python contrib/stage_studio_tester.py --build build/ci-windows --library work/native-library.zip --output work/tester-stage --run-url "$env:BUILD_RUN_URL"
+      - name: Validate all packaged previews, names and inspector documents
+        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        run: |
+          $tool = './build/ci-windows/Release/dingosdk_animation_studio_tests.exe'
+          $library = 'work/tester-stage/ReSkate.Tricks/library'
+          & $tool --native-index "$library/native-catalog.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $tool --native-catalog $library
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $tool --native-documents $library
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $tool --native-labels "$library/native-catalog.json" work/native-readable-names.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Create one portable tester ZIP
+        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $short = (git rev-parse --short=12 HEAD).Trim()
+          python contrib/package_release_zip.py work/tester-stage "artifacts/ReSkateStudio-Test-$short.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload complete tester ZIP
+        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        id: tester
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: artifacts/ReSkateStudio-Test-*.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+      - name: Tester download summary
+        if: success() && steps.tester.outputs.artifact-url != ''
+        env:
+          ARTIFACT_URL: ${{ steps.tester.outputs.artifact-url }}
+        run: |
+          "## Complete studio tester candidate" >> $env:GITHUB_STEP_SUMMARY
+          "[Download the ZIP]($env:ARTIFACT_URL) — launcher, runtime, 4,004 native previews and inspector data." >> $env:GITHUB_STEP_SUMMARY
+          "Extract into a separate ReSkate test folder and read READ-ME-FIRST.txt. No game files, personal presets or credentials are included. Gameplay/visual testing is still required." >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: studio-build-diagnostics-${{ github.run_id }}
+          path: |
+            build/ci-windows/Testing/Temporary/
+            build/ci-windows/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7

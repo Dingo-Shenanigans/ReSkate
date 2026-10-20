@@ -301,7 +301,7 @@ void apply_edits(const Animation& animation, float seconds, std::span<Joint> pos
     }
 }
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror) {
+                    std::span<Joint> target, bool mirror, bool reverse_facing) {
     if (!std::isfinite(seconds) || seconds < animation.start || (animation.end >= 0 && seconds > animation.end) ||
         source.size() < skeleton_joints || target.size() < skeleton_joints) return;
     // Read every frame from the unmodified poses: editing a parent must not change the
@@ -309,6 +309,10 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
     const std::vector<Joint> native(target.begin(), target.end());
     const auto source_placement = world(source, placement_joint).rotation;
     const auto target_placement = world(native, placement_joint).rotation;
+    // Switch changes the body's facing relative to placement independently of
+    // which limbs lead. Transfer deltas through that half turn before converting
+    // to the live joint basis; a reflection alone reverses local X/Z edits.
+    constexpr Quat half_turn{0, 1, 0, 0};
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || !editable(track.joint) || track.joint >= skeleton_joints) continue;
         const auto to = mirror ? mirror_joint[track.joint] : track.joint;
@@ -321,6 +325,7 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
             const auto dst_frame = normalised(multiply(conjugate(target_placement), world(native, to).rotation));
             auto delta = normalised(multiply(multiply(src_frame, edit.rotation), conjugate(src_frame)));
             if (mirror) delta = mirror_rotation(delta);
+            if (reverse_facing) delta = normalised(multiply(multiply(half_turn, delta), conjugate(half_turn)));
             const auto local_delta = normalised(multiply(multiply(conjugate(dst_frame), delta), dst_frame));
             joint.rotation = normalised(multiply(native[to].rotation, local_delta));
         }
@@ -332,6 +337,7 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
             const auto dst_parent = normalised(multiply(conjugate(target_placement), target_parent.rotation));
             auto offset = rotate(src_parent, edit.offset);
             if (mirror) offset = mirror_vector(offset);
+            if (reverse_facing) offset = rotate(half_turn, offset);
             offset = rotate(conjugate(dst_parent), offset);
             const float source_scale = world(source, placement_joint).scale[0];
             const float target_scale = world(native, placement_joint).scale[0];
@@ -342,12 +348,28 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
         }
     }
 }
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight) {
+    if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
+        seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
+    weight = std::min(weight, 1.0f);
+    for (const auto& track : animation.tracks) {
+        if (track.hidden || track.keys.empty() || track.joint >= skeleton_joints ||
+            track.joint >= native.size() || !editable(track.joint)) continue;
+        const auto edit = evaluate(track, seconds);
+        auto& current = native[track.joint];
+        if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
+            const auto wanted = normalised(multiply(current.rotation, edit.rotation));
+            current.rotation = weight >= 1 ? wanted : slerp(current.rotation, wanted, weight);
+        }
+        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * weight;
+    }
+}
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
-                             std::span<Joint> native, bool mirror, float weight) {
+                             std::span<Joint> native, bool mirror, float weight, bool reverse_facing) {
     if (!std::isfinite(weight) || weight <= 0 || native.size() < skeleton_joints) return;
     weight = std::min(weight, 1.0f);
     std::vector<Joint> edited(native.begin(), native.end());
-    retarget_edits(animation, seconds, source, edited, mirror);
+    retarget_edits(animation, seconds, source, edited, mirror, reverse_facing);
     for (const auto& editable_joint : editable_joints()) {
         const auto i = editable_joint.index;
         if (i >= skeleton_joints) continue; // The physical board has its own fresh publication.
@@ -410,22 +432,34 @@ void shift_keys(Animation& animation, float delta, float duration) noexcept {
     }
     animation.start = std::max(0.0f, animation.start + delta);
 }
-bool retime_window(Animation& animation, float start, float end, float duration) noexcept {
-    if (!std::isfinite(start) || !std::isfinite(end) || !std::isfinite(duration) || duration < 0 || start < 0 || end < start || end > duration) return false;
+float on_a_frame(float seconds) noexcept { return std::round(seconds * key_fps) / key_fps; }
+bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept {
+    if (!std::isfinite(to) || !std::isfinite(duration) || duration < 0 || to < 0 || to > duration) return false;
     const float old_start = animation.start, old_end = animation.end < 0 ? duration : animation.end;
     if (!std::isfinite(old_start) || !std::isfinite(old_end) || old_end < old_start) return false;
-    const float span = old_end - old_start, scale = span > 1e-6f ? (end - start) / span : 0.0f;
+    const float from = which == 1 ? old_start : which == 2 ? old_end : -1;
+    if (from < 0) return false;
+    const float at = on_a_frame(to);
+    const float gap = 1.0f / key_fps;
+    if (which == 1 && at > old_end - gap) return false;
+    if (which == 2 && at < old_start + gap) return false;
+    if (which == 1) animation.start = at;
+    else animation.end = at;
+    if (std::abs(at - from) < 1e-6f) return true;
+    constexpr float merge = 0.5f / key_fps;
     for (auto& track : animation.tracks) {
         if (track.locked) continue;
-        std::size_t kept = 0;
-        for (auto key : track.keys) {
-            key.time = std::clamp(start + (key.time - old_start) * scale, 0.0f, duration);
-            if (kept && std::abs(track.keys[kept - 1].time - key.time) < 1e-6f) track.keys[kept - 1] = key;
-            else track.keys[kept++] = key;
-        }
-        track.keys.resize(kept);
+        auto& keys = track.keys;
+        const auto on_bracket = std::find_if(keys.begin(), keys.end(), [&](const Key& k) { return std::abs(k.time - from) < merge; });
+        if (on_bracket == keys.end()) continue;
+        Key moved = *on_bracket;
+        moved.time = at;
+        keys.erase(on_bracket);
+        // Whatever was already standing where it lands gives way to it.
+        const auto clash = std::find_if(keys.begin(), keys.end(), [&](const Key& k) { return std::abs(k.time - at) < merge; });
+        if (clash != keys.end()) *clash = moved;
+        else keys.insert(std::upper_bound(keys.begin(), keys.end(), at, [](float t, const Key& k) { return t < k.time; }), moved);
     }
-    animation.start = start; animation.end = end;
     return true;
 }
 Key& set_key(Animation& animation, std::uint16_t joint, float seconds, const Offset& value, float merge) {
@@ -504,6 +538,24 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
             keys[i].rotation = slerp(was[i].rotation, slerp(before.rotation, after.rotation, u), pull);
             ++changed;
         }
+    }
+    // On whole frames. Smoothing rebuilds the track, so this is where a key that drifted off a frame -
+    // an older animation whose window was once stretched - is put back on one. The two keys on the
+    // brackets are left exactly where they are, because the brackets are what they answer to.
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (pinned(keys[i])) continue;
+        const float at = on_a_frame(keys[i].time);
+        if (std::abs(at - keys[i].time) > 1e-6f) {
+            keys[i].time = at;
+            ++changed;
+        }
+    }
+    std::stable_sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
+    for (std::size_t i = 1; i < keys.size();) {
+        if (std::abs(keys[i].time - keys[i - 1].time) < 0.5f / key_fps) {
+            keys.erase(keys.begin() + static_cast<std::ptrdiff_t>(i));
+            ++changed;
+        } else ++i;
     }
     for (auto& k : keys) k.smooth = true;
     return changed;

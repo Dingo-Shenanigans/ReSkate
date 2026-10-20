@@ -80,8 +80,9 @@ std::int16_t stick_axis(float value) noexcept {
 }
 // The game reads the stick once a tick and takes the pop height and flip from the move's speed. The board lifts when the
 // stick leaves the crouch and pops when the game knows the trick, so each arc gets no more ticks than the flick needs.
-std::vector<overlay::PadStep> flick(const Gesture& gesture, std::uint32_t flick_ms) {
-    constexpr std::uint32_t crouch = 18, release = 4, end = 36, max_flick_ms = 1000;
+std::vector<overlay::PadStep> flick(const Gesture& gesture, std::uint32_t flick_ms, std::uint32_t crouch_ticks) {
+    constexpr std::uint32_t release = 4, end = 36, max_flick_ms = 1000;
+    const std::uint32_t crouch = std::max(crouch_ticks, 1u);
     const auto points = arc_points(gesture);
     if (points.empty()) return {};
     const auto moves = static_cast<std::uint32_t>(std::max<std::size_t>(points.size() - 1, 1));

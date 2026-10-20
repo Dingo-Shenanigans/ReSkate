@@ -8,6 +8,8 @@
 #include "Extension/AnimationStudio/anim_diagnostics.h"
 #include "Extension/AnimationStudio/anim_library.h"
 #include "Extension/AnimationStudio/anim_playback.h"
+#include "Extension/AnimationStudio/native_asset_names.h"
+#include "Extension/AnimationStudio/recording_rules.h"
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -19,10 +21,57 @@
 using namespace dingosdk::anim_studio;
 namespace {
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+struct NamedNativeFixture { std::string asset, label, category, context, search, state; };
 bool near(float a, float b, float within = 1e-3f) { return std::abs(a - b) < within; }
 bool same_turn(const Quat& a, const Quat& b) {
     const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
     return d > 0.9999f;
+}
+
+void native_names_and_search() {
+    const auto flip = native_asset_name("animation/dingo/c_proto_onb_trick_n_360flip_high_dark", "ClipControllerAsset");
+    check(flip.label == "Nollie 360 Flip High Dark", "Readable names preserve pop family, height and native variant");
+    check(native_search_matches(flip.search, native_search_terms("HIGH tre-flip nollie")), "Readable aliases match all query words regardless of order/case/punctuation");
+    check(native_search_matches(flip.search, native_search_terms("360flip haut")), "Compact engine spelling and height alias remain searchable");
+    check(!native_search_matches(flip.search, native_search_terms("kickflip high")), "Unrelated tricks do not match");
+    check(native_asset_name("animation/dingo/c_proto_onb_trick_n_nollie_mid").label == "Nollie Medium", "Nollie is not duplicated");
+    check(native_asset_name("animation/dingo/c_proto_onb_trick_o_kickflip_low").label == "Kickflip Low", "Confirmed ollie-family marker is hidden without inventing stance");
+    check(native_asset_name("animation/dingo/c_proto_onb_manual_t_fakie_high").label == "Manual T Fakie High", "Unknown codes remain visible rather than guessed");
+    check(native_asset_name("animation/dingo/c_proto_ofbnb_walk_stop_90l_lfoot_fem").label == "Walk Stop 90 Left Left Foot Female", "Movement directions and physical feet retain their meaning");
+    check(native_asset_name("animation/dingo/c_proto_onb_gesture_mysteryXYZ_07").label == "Gesture Mystery XYZ 07", "Unknown animation and variant identifiers are retained");
+    const auto folder = [](const char* asset) { return native_asset_folder(asset, "ClipControllerAsset"); };
+    check(folder("c_proto_onb_grind_fs_feeble_bs_smith_rail_into") == "Grinds/Feeble + Smith/Entries", "Shared grind clips are grouped by tricks instead of FS/BS developer prefixes");
+    check(folder("c_proto_onb_grind_5050_rail_loop") == "Grinds/50-50/Loops", "Grind loops have a specific family/phase folder");
+    check(folder("c_proto_onb_grind_fs_bs_5_0_rail_into") == "Grinds/5-0/Entries" && native_asset_name("c_proto_onb_grind_5_0_loop").label == "Grind 5-0 Loop", "Five-oh source tokens form one readable trick name and folder");
+    check(folder("c_proto_onb_manual_t_fakie_high") == "Manuals/Other movements", "Unspecified phases are not invented");
+    check(folder("c_proto_ofbnb_walk_loop_short") == "Off board/Walk/Loops", "Locomotion is separate from on-board tricks");
+    check(folder("c_proto_onb_trick_n_360flip_high") == "Tricks/360 Flip/Variants", "Trick variants share a readable family folder");
+    check(native_asset_folder("anything", "TransitionAsset") == "Game logic/Transitions", "Actual root types separate graph transitions from playable animations");
+    check(native_search_terms("  --- \t ").empty(), "Punctuation-only input does not create misleading search terms");
+    std::vector<NamedNativeFixture> variants{{"source-b", "Wave", "Gestures", "Off board"}, {"source-a", "Wave", "Gestures", "Off board"}, {"source-c", "Wave", "Gestures", "On board"}};
+    native_disambiguate_names(variants);
+    check(variants[0].label == "Wave / Off board / Variant 2" && variants[1].label == "Wave / Off board / Variant 1" && variants[2].label == "Wave / On board",
+          "Equal names retain distinct source context and stable variants independent of input order");
+    check(variants[0].asset == "source-b", "Human names never change the identity used to open an animation");
+}
+
+void manual_and_scripted_recording_keep_distinct_rules() {
+    const auto manual = evaluate_recorded_take(false, "kickflip", "heelflip", "low", 3, true, 0.7f);
+    check(manual.rejection == TakeRejection::none && manual.pop == "high", "Manual takes accept the recognized trick and actual grade, ignoring stale batch targets");
+    const auto fallback = evaluate_recorded_take(false, "kickflip", "", "", 0, true, 0.5f);
+    check(fallback.rejection == TakeRejection::none && fallback.pop == "mid", "Manual recording still works without native grading hooks");
+    check(evaluate_recorded_take(true, "heelflip", "varialheelflip", "high", 3, true, 0.7f).rejection == TakeRejection::wrong_trick,
+          "Batch recording cannot save the wrong recognized trick");
+    check(evaluate_recorded_take(true, "kickflip", "kickflip", "low", 3, true, 0.7f).rejection == TakeRejection::wrong_pop,
+          "Batch recording keeps the game's actual requested pop grade");
+    check(evaluate_recorded_take(true, "kickflip", "kickflip", "high", 0, true, 0.7f).rejection == TakeRejection::missing_grade,
+          "Batch cannot substitute an air-time guess for missing native grading");
+    check(evaluate_recorded_take(false, "kickflip", "", "", 4, true, 0.7f).pop == "high", "Unknown native enum values use the manual fallback");
+    check(evaluate_recorded_take(false, "", "", "", 3, true, 0.7f).rejection == TakeRejection::missing_trick &&
+          evaluate_recorded_take(false, "kickflip", "", "", 3, false, 0.7f).rejection == TakeRejection::missing_board,
+          "Manual recording still rejects missing identity and board capture");
+    check(pop_grade_since(100, 0.5) == 0 && pop_grade_since(5000, 0.5) == 4200,
+          "Grade lookup uses a bounded recent time window without unsigned wraparound");
 }
 
 void euler_numbers_read_back() {
@@ -283,6 +332,62 @@ void smoothing_tidies_a_track() {
     }
 }
 
+// Solo: turning a joint on its own. The joints hanging off it are turned back by as much, so they keep
+// the way they face. This is the sum the studio does in set_offset, on the arm and its elbow and hand.
+void solo_turn_holds_the_joints_below() {
+    std::vector<Joint> native(skeleton_joints);
+    for (std::size_t j = 0; j < native.size(); ++j) {
+        native[j].rotation = from_euler({3.0f * static_cast<float>(j % 7) - 9, 5.0f * static_cast<float>(j % 5) - 10, 7.0f * static_cast<float>(j % 3)});
+        native[j].position = {0.1f, 0.05f, -0.02f};
+    }
+    constexpr std::uint16_t arm = 47, elbow = 48, hand = 49;
+    Animation edits;
+    edits.end = -1;
+    // The elbow and the hand already carry keys of their own: solo must build on those, not wipe them.
+    const auto key_of = [&](std::uint16_t joint, const Vec3& degrees) {
+        Key k;
+        k.time = 0.5f;
+        k.rotation = from_euler(degrees);
+        Track track;
+        track.joint = joint;
+        track.keys.push_back(k);
+        edits.tracks.push_back(track);
+    };
+    key_of(elbow, {12, -8, 4});
+    key_of(hand, {-5, 15, 2});
+    std::vector<Joint> before(native);
+    apply_edits(edits, 0.5f, before);
+    const auto faced_elbow = world(before, elbow).rotation, faced_hand = world(before, hand).rotation;
+
+    // The arm is turned, as a drag would.
+    Key turn;
+    turn.time = 0.5f;
+    turn.rotation = from_euler({0, 40, 0});
+    Track arm_track;
+    arm_track.joint = arm;
+    arm_track.keys.push_back(turn);
+    edits.tracks.push_back(arm_track);
+    std::vector<Joint> swung(native);
+    apply_edits(edits, 0.5f, swung);
+    check(!same_turn(world(swung, elbow).rotation, faced_elbow), "Without solo the joints below swing with their parent");
+
+    // Solo puts them back: a joint's place is the chain above it times its own key, so multiplying its key
+    // by conj(where it faces now) * (where it faced) holds it. Only the joint hanging directly off the one
+    // being turned is touched - the hand rides on the elbow, so holding the elbow holds the hand with it.
+    check(parent(elbow) == arm && parent(hand) == elbow, "The arm, its elbow and its hand hang off one another");
+    const auto back = normalised(multiply(conjugate(world(swung, elbow).rotation), faced_elbow));
+    for (auto& track : edits.tracks)
+        if (track.joint == elbow) track.keys.front().rotation = normalised(multiply(track.keys.front().rotation, back));
+    std::vector<Joint> held(native);
+    apply_edits(edits, 0.5f, held);
+    check(same_turn(world(held, elbow).rotation, faced_elbow), "Solo holds the way the joint below the turn faces");
+    check(same_turn(world(held, hand).rotation, faced_hand), "and the one below that, which rides on the held joint");
+    check(same_turn(world(held, arm).rotation, world(swung, arm).rotation), "while the joint being turned keeps its turn");
+    // Bones are rigid: the joints below still travel with the one that turned. Only their facing is held.
+    check(length3_test(sub3_test(world(held, hand).position, world(before, hand).position)) > 1e-3f,
+          "The joints below still travel with their parent: solo holds the facing, not the place");
+}
+
 void packs_select_variants_without_filesystem_order() {
     std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
     select_presets(presets, std::nullopt);
@@ -365,9 +470,13 @@ void merged_library_and_timing() {
           "High pop is shown first and retains native provenance plus recorded stance");
     check(!library[1].recorded && library[1].file == low.file && library[2].preview_only,
           "Other pop heights and grind previews stay available after Record all");
-    check(playback_pop_rank("high", "high") < playback_pop_rank("high", "") &&
-          playback_pop_rank("high", "") < playback_pop_rank("high", "low"),
-          "Playback prefers exact pop, then a generic preset, then another height");
+    check(playback_pop_rank("high", "high") == 0 && playback_pop_rank("high", "") == 1 &&
+          playback_pop_rank("high", "low") < 0 && playback_pop_rank("mid", "low") < 0,
+          "Playback accepts exact or explicitly generic pops, never a different source height");
+    check(episode_selection_changed("360flip", "360flip", "low", "high") &&
+          !episode_selection_changed("360flip", "360flip", "low", "low") &&
+          !episode_selection_changed("360flip", "360flip", "", "high"),
+          "A late high-pop grade invalidates a low binding without cycling a generic or matching binding");
     GameplayClipClock clock;
     check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
     check(near(clock.advance_air(10.1, 0.3f, 1, 2), 0.4f), "Air source time advances incrementally");
@@ -375,16 +484,30 @@ void merged_library_and_timing() {
     check(near(clock.advance_air(10.35, 0.3f, 2, 2), 0.9f), "A long callback integrates its elapsed time at the updated rate");
     check(near(clock.advance_air(10, 0.3f, 2, 2), 0.9f), "Backwards callbacks cannot rewind air playback");
     check(near(clock.advance_air(12, 0.3f, 2, 2), 2) && near(clock.air_rate, 0), "The landing marker holds until contact");
+    // Moving a bracket carries that bracket's own key and nothing else: the keys between the brackets are
+    // left exactly where they are, so the track keeps its whole frames instead of being stretched onto
+    // fractions of one. (This replaces the window retiming, which stretched every key.)
     Animation animation; animation.start = 1; animation.end = 3;
     Track track{7, {}, false, false};
     track.keys = {{0, {}, {}, Ease::smooth}, {1, {}, {}, Ease::smooth}, {2, {}, {}, Ease::smooth}, {3, {}, {}, Ease::smooth}};
     animation.tracks.push_back(track); track.joint = 8; track.locked = true; animation.tracks.push_back(track);
-    check(retime_window(animation, 0, 1, 4), "Bracket retiming accepts a bounded window");
-    check(animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[1].time, 0.5f) &&
-          near(animation.tracks[1].keys[2].time, 2), "Retiming consolidates clipped collisions and preserves locked tracks");
-    check(!retime_window(animation, 2, 1, 4) && near(animation.start, 0), "Invalid brackets do not mutate the document");
-    check(retime_window(animation, 0, 0, 0) && animation.tracks[0].keys.size() == 1,
-          "Zero-length clips cannot produce divided-by-zero or duplicate key times");
+    check(move_window_edge(animation, 1, 0.5f, 4), "A bracket accepts a place inside the window");
+    check(near(animation.start, 0.5f), "and the window starts there");
+    check(animation.tracks[0].keys.size() == 4 && near(animation.tracks[0].keys[1].time, 0.5f),
+          "The key that was on the bracket goes with it");
+    check(near(animation.tracks[0].keys[2].time, 2) && near(animation.tracks[0].keys[3].time, 3),
+          "and the keys between the brackets do not move");
+    check(near(animation.tracks[1].keys[1].time, 1), "A locked track is left alone");
+    check(!move_window_edge(animation, 1, 3.5f, 4) && near(animation.start, 0.5f), "A bracket cannot be put past its other half");
+    check(!move_window_edge(animation, 2, 0.2f, 4) && near(animation.end, 3), "and that holds for the end as well");
+    check(move_window_edge(animation, 1, 0.0f, 4) && animation.tracks[0].keys.size() == 3 && near(animation.tracks[0].keys[0].time, 0),
+          "Taken back onto a key that is already there, the two become one");
+    // Smoothing puts keys back on whole frames, which is where an older stretched animation is mended.
+    Track drifted{9, {}, false, false};
+    drifted.keys = {{0, {}, {}, Ease::smooth}, {0.337f, {}, {0, 0.4f, 0}, Ease::step}, {0.681f, {}, {0, 0.1f, 0}, Ease::linear}, {1, {}, {}, Ease::smooth}};
+    smooth_track(drifted, 0, 1);
+    for (const auto& k : drifted.keys)
+        check(near(k.time, on_a_frame(k.time), 1e-5f), "Every key sits on a whole frame after smoothing");
 }
 void preview_trajectory_uses_the_whole_clip() {
     Clip clip;
@@ -576,6 +699,38 @@ void retargeted_edits_preserve_native_rig_and_convert_joint_frames() {
     retarget_edits(animation, 0, source, target, true);
     check(target[341].rotation == native[341].rotation, "Hidden edits stay hidden in switch");
 }
+void switch_edits_follow_the_native_body_facing() {
+    std::vector<Joint> source(skeleton_joints);
+    source[placement_joint].rotation = from_euler({0, 37, 0});
+    source[hips_joint].rotation = from_euler({12, 35, -8});
+    source[341].rotation = from_euler({23, -17, 9});
+    source[341].position = {0.1f, -0.2f, 0.03f};
+    const auto rotation = from_euler({19, 11, -7});
+    const Vec3 offset{0.03f, 0.02f, -0.01f};
+    Animation animation;
+    animation.tracks.push_back({341, {{0, rotation, offset, Ease::linear}}});
+    for (const bool mirror : {false, true}) for (const bool reverse : {false, true}) {
+        auto native = source;
+        if (mirror) for (std::size_t j = 0; j < source.size(); ++j) native[mirror_joint[j]] = mirror_pose(source[j]);
+        native[placement_joint].rotation = from_euler({0, -125, 0});
+        if (reverse) native[hips_joint].rotation = multiply(Quat{0, 1, 0, 0}, native[hips_joint].rotation);
+        auto target = native;
+        retarget_edits(animation, 0, source, target, mirror, reverse);
+        const auto joint = mirror ? mirror_joint[341] : 341;
+        const auto expected_rotation = normalised(multiply(native[joint].rotation, mirror ? mirror_rotation(rotation) : rotation));
+        const auto expected_offset = mirror ? mirror_vector(offset) : offset;
+        float dot = 0;
+        for (int k = 0; k < 4; ++k) dot += expected_rotation[k] * target[joint].rotation[k];
+        check(std::abs(dot) > 0.99999f, "A native body half turn preserves anatomical rotation direction independently of limb mirroring");
+        for (int k = 0; k < 3; ++k)
+            check(near(target[joint].position[k] - native[joint].position[k], expected_offset[k]),
+                  "Switch conversion keeps authored parent-local offset signs in the turned native body");
+        for (std::size_t j = 0; j < native.size(); ++j) {
+            check(target[j].scale == native[j].scale, "Facing conversion preserves native bone scales");
+            if (j != joint) check(target[j] == native[j], "Facing conversion changes only the authored limb, never the native skeleton");
+        }
+    }
+}
 void diagnostic_history_is_bounded() {
     DiagnosticBuffer history;
     for (int i = 0; i < 5000; ++i) {
@@ -600,6 +755,50 @@ void diagnostic_history_is_bounded() {
     check(history.samples.size() == 1, "Clock reset starts a fresh diagnostic window");
     check(diagnostic_csv("a,\"b\"") == "\"a,\"\"b\"\"\"", "Diagnostic CSV quotes names correctly");
 }
+void authored_gameplay_matches_f8_limbs_and_source_key_times() {
+    Animation animation;
+    animation.stance = "regular"; animation.switch_stance = false;
+    const auto edit = from_euler({23, -11, 8});
+    const Vec3 offset{0.03f, -0.02f, 0.01f};
+    animation.tracks.push_back({341, {{0, edit, offset, Ease::linear}}});
+    animation.tracks.push_back({board_joint, {{0, edit, {10, 10, 10}, Ease::linear}}});
+    for (const bool goofy : {false, true}) for (const bool switched : {false, true}) {
+        std::vector<Joint> native(skeleton_joints);
+        native[placement_joint].rotation = from_euler({0, goofy ? -125.0f : 37.0f, 0});
+        native[hips_joint].rotation = from_euler({12, switched ? 180.0f : 0.0f, -8});
+        native[341].rotation = from_euler({67, 11, -20});
+        native[8].rotation = from_euler({-32, 48, 91});
+        native[341].position = {0.1f, -0.2f, 0.03f};
+        auto expected = native; apply_edits(animation, 0, expected);
+        auto actual = native; apply_authored_edit_layer(animation, 0, actual, 1);
+        check(actual[341] == expected[341], "Gameplay uses the exact F8 local edit on the physical left leg in every stance");
+        for (std::size_t j = 0; j < native.size(); ++j)
+            if (j != 341) check(actual[j] == native[j], "An authored left-leg track never swaps into the right leg or imports a source pose");
+        actual = native; apply_authored_edit_layer(animation, 0, actual, 0);
+        check(actual == native, "A zero-weight anatomical edit is a strict no-op");
+        actual = native; apply_authored_edit_layer(animation, 0, actual, 0.5f);
+        for (int k = 0; k < 3; ++k)
+            check(near(actual[341].position[k], native[341].position[k] + offset[k] * 0.5f), "Authored offsets blend without changing local signs");
+    }
+    PlaybackEpisode episode;
+    episode.observe(10, motion_state(100)); episode.observe(10.1, motion_state(200)); episode.select(10.2);
+    const auto first = episode.sample(10.2, 0.2f, 0.75f, 2, 1, 0.3f, true);
+    check(near(first.time, 0.3f), "Late trick recognition catches up from takeoff instead of restarting the edit timeline");
+    const auto short_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 0.3f, true);
+    const auto long_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 1.8f, true);
+    check(near(short_air.time, 0.4f) && near(short_air.time, long_air.time), "Source key seconds are independent of ballistic airtime estimates");
+    check(near(episode.sample(10.3, 0.2f, 0.75f, 2, 0.25f, 0.3f, true).time, 0.4f) &&
+          near(episode.sample(10.3, 0.2f, 0.75f, 2, 4, 0.3f, true).time, 0.4f),
+          "Quarter-speed and accelerated studio previews cannot retime gameplay edit keys");
+    episode.select(10.31);
+    check(near(episode.sample(10.32, 0.2f, 0.75f, 2, 1, 1, true).time, 0.42f), "Refining the named trick cannot reset source key time");
+    episode.observe(10.6, motion_state(100)); episode.observe(10.64, motion_state(100));
+    const auto reception = episode.sample(11.4, 0.2f, 0.75f, 2, 1, 1, true);
+    check(near(reception.time, 1.5f) && reception.weight == 1 && !reception.finished,
+          "Keys past one second remain active through source reception instead of fading at landing plus 600 ms");
+    const auto finished = episode.sample(12, 0.2f, 0.75f, 2, 1, 1, true);
+    check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
+}
 void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
@@ -610,6 +809,20 @@ void native_playback_contracts() {
     check(near(transition.evaluate(1.14, 1, 1, 11, b)[0].offset[0], 0, 0.001f), "A changed preset blends smoothly between deltas");
     check(near(transition.evaluate(1.15, 2, 1, 11, b)[0].offset[0], 0), "Respawn cannot carry a previous entity's edit layer");
     PlaybackEpisode episode;
+    // Real failed hardflip trace: riding -> five crouch samples -> pop -> air.
+    // Production classification must retain ground entry through state 103.
+    PlaybackEpisode crouched;
+    crouched.observe(2.20, motion_state(100));
+    for (int i = 0; i < 5; ++i) crouched.observe(2.2158 + i / 60.0, motion_state(103));
+    check(crouched.observe(2.2998, motion_state(200)) && crouched.entry == EntryKind::ground,
+          "Native 100/103/200 takeoff retains ground entry so a saved ground preset can be selected");
+    const auto crouch_episode = crouched.id;
+    check(!crouched.observe(2.3156, motion_state(201)) && crouched.id == crouch_episode && crouched.selection_open(2.3338),
+          "200/201 remains one selectable airborne episode after the crouch");
+    check(motion_state(std::nullopt) == MotionState::unknown && motion_state(102) == MotionState::unknown &&
+          motion_state(300) == MotionState::offboard && motion_state(504) == MotionState::offboard &&
+          motion_state(401) == MotionState::rail,
+          "Recognizing grounded crouch does not guess other states or confuse bails and rails");
     check(!episode.observe(0, MotionState::riding) && episode.observe(0.1, MotionState::air), "Riding to air starts a new observed episode");
     check(episode.entry == EntryKind::ground, "Ground takeoff carries a ground binding");
     episode.select(0.1);
@@ -719,13 +932,18 @@ int main(int argc, char** argv) {
         native_playback_contracts();
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
+        switch_edits_follow_the_native_body_facing();
+        authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
+        native_names_and_search();
+        manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
+        solo_turn_holds_the_joints_below();
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
@@ -823,11 +1041,52 @@ int main(int argc, char** argv) {
         }
         if (argc == 3 && std::string_view(argv[1]) == "--native-index") {
             std::ifstream in(argv[2], std::ios::binary);
-            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()), dingosdk::JsonLimits{32 * 1024 * 1024, 48, 2 * 1024 * 1024});
             check(root.is_array() && root.size() > 0, "Native index must fit production JSON parser limits");
             for (const auto& entry : root)
-                check(entry.value("asset", "").starts_with("animation/dingo/") && !entry.value("category", "").empty(), "Indexed native asset requires category and stable source path");
+                check((entry.value("asset", "").starts_with("animation/dingo/") || entry.value("asset", "").starts_with("_af/")) && !entry.value("category", "").empty(), "Indexed native asset requires category and stable source path");
             std::cout << "Native index compatibility: " << root.size() << " assets passed\n";
+        }
+        if (argc == 4 && std::string_view(argv[1]) == "--native-labels") {
+            std::ifstream in(argv[2], std::ios::binary);
+            const auto root = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), dingosdk::JsonLimits{32 * 1024 * 1024, 48, 2 * 1024 * 1024});
+            check(root.is_array() && root.size() > 0, "Readable-name validation requires the actual native index");
+            auto report = dingosdk::Json::array();
+            std::vector<NamedNativeFixture> names;
+            for (const auto& entry : root) {
+                const auto asset = entry.value("asset", ""), type = entry.value("root_type", "");
+                const auto name = native_asset_name(asset, type, entry.value("category", ""));
+                const auto folder = native_asset_folder(asset, type, entry.value("category", ""));
+                check(!name.label.empty() && !folder.empty() && !folder.starts_with('/') && !folder.ends_with('/') && folder.find("//") == std::string::npos,
+                      "Every native asset needs a readable label and a valid folder");
+                check(native_search_matches(name.search, native_search_terms(asset)), "Exact original names remain searchable");
+                names.push_back({asset, name.label, folder, name.context, name.search, entry.value("state", "")});
+            }
+            native_disambiguate_names(names);
+            for (const auto& name : names) {
+                dingosdk::Json row = dingosdk::Json::object();
+                row["asset"] = name.asset; row["label"] = name.label; row["category"] = name.category;
+                row["context"] = name.context; row["state"] = name.state;
+                report.push_back(std::move(row));
+            }
+            std::ofstream out(argv[3], std::ios::binary); out << report.dump(2); out.close();
+            check(out.good(), "Readable inventory report must be written successfully");
+            std::cout << "Native readable names and folders: " << root.size() << " assets passed\n";
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--native-documents") {
+            std::size_t count = 0;
+            for (const auto& directory : {"native-documents", "native-resources"}) {
+                for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(argv[2]) / directory)) {
+                    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+                    std::ifstream in(entry.path(), std::ios::binary);
+                    const auto document = dingosdk::Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), dingosdk::JsonLimits{16 * 1024 * 1024, 64, 2 * 1024 * 1024});
+                    check(document.is_object() && document.contains("asset") && document.at("asset").is_string() &&
+                          document.contains("root_type") && document.at("root_type").is_string(), "Native inspector documents must fit the production reader and retain source identity/type");
+                    ++count;
+                }
+            }
+            check(count > 0, "Native inspector requires actual documents");
+            std::cout << "Native inspector compatibility: " << count << " documents passed\n";
         }
         if (argc == 2) {
             std::size_t files = 0;

@@ -45,7 +45,18 @@ int main(int argc, char** argv) {
               gestures::stick_axis(std::numeric_limits<float>::infinity()) == 0, "Nonfinite axes return neutral");
         gestures::Gesture example; example.arcs = {{170, 190, 0.8f, 1, 0}, {350, 10, 0.8f, 1, 0}, {0, 360, 0, 0.1f, 0}};
         (void)inspect(example);
-        check(gestures::flick(example, 260).back().tick > gestures::flick(example, 24).back().tick, "Low-pop script moves more slowly than high-pop script");
+        check(gestures::flick(example, 260).back().tick > gestures::flick(example, 24).back().tick, "Longer flicks take more game ticks");
+        const auto low = gestures::flick(example, 24, 4);
+        for (const unsigned crouch : {9u, 18u}) {
+            const auto higher = gestures::flick(example, 24, crouch);
+            check(higher.size() == low.size(), "Pop height preserves the gesture's number of samples");
+            for (std::size_t i = 0; i < low.size(); ++i) {
+                check(higher[i].pad.sThumbRX == low[i].pad.sThumbRX && higher[i].pad.sThumbRY == low[i].pad.sThumbRY,
+                      "Pop height preserves the gesture's stick positions");
+                check(higher[i].tick == low[i].tick + (i ? crouch - 4 : 0),
+                      "Only the initial crouch duration changes between pop heights");
+            }
+        }
         check(gestures::flick({}, 24).empty(), "Missing arcs produce no input");
         if (argc == 3) {
             const auto native = gestures::read(std::filesystem::absolute(argv[1]));

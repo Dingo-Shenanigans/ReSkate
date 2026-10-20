@@ -24,6 +24,7 @@
 #include "Extension/Skater/grind_exit_control.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
+#include "Extension/UI/Overlay/scripted_pad.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Remote/native_prop.h"
@@ -1157,16 +1158,20 @@ void update_model(std::uintptr_t client, TickState& frame) {
             dingosdk::anim_studio::clean_start_done();
         }
     }
+    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
+    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
+    const bool in_play = state == 13 || state == 21;
     if (clean_loading) {
-        if (requests_loading) clean_seen = true;
-        if ((clean_seen && !requests_loading) || GetTickCount64() - clean_since > 15000) {
+        // The load has begun once the request says so or this client has left play.
+        if (requests_loading || !in_play) clean_seen = true;
+        // and it is over only once the request is done AND this client is back in play. Letting go at the
+        // end of the request alone lifted our screen while the game was still bringing the level up, so the
+        // game's own loading screen came up after ours instead of behind it.
+        if ((clean_seen && !requests_loading && in_play) || GetTickCount64() - clean_since > 30000) {
             clean_loading = false;
             dingosdk::anim_studio::clean_start_done();
         }
     }
-    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
-    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
-    const bool in_play = state == 13 || state == 21;
     // RESKATE_RECORD_ALL=1: the batch starts by itself once the level is in and the skater can be driven, so a
     // whole run can be started from a shortcut without touching the menus. It fires once per launch.
     {
@@ -1725,6 +1730,15 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/AI skaters");
             dingosdk::ai_skaters::tick(r.base,client,multiplayer_ready);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/scripted pad");
+            // The scripted pad (the studio room's walk, Record all tricks) moves on once a game tick, as PR #230's trick
+            // pad did: this update runs once a simulation tick, not once a drawn frame (60.0 a second while the game drew
+            // 106, 30.0 at SimulationTime.ForceSimRate 30; ReSkate research, 2026-10-10). From the debug tick, which runs
+            // every 100 ms, each step of a gesture lasted 100 ms and the gestures with 75 ms arcs (the pop shuvits) were
+            // never recognised (2026-10-19).
+            dingosdk::overlay::pad_tick();
         }
         {
             DINGO_PROFILE_ZONE("tick/trainer");
