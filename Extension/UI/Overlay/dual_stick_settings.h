@@ -20,7 +20,6 @@ struct Choice {
 };
 inline constexpr std::array choices{
     Choice{L"ManualCatch", "Manual catch", 0, {0,1}, {"Off","On"},2},
-    Choice{L"GestureSpeed", "Stick-speed rotation", 1, {0,1}, {"Off","On"},2},
     Choice{L"DpadCameraSide", "D-pad camera sides", 1, {0,1}, {"Off","On"},2},
     Choice{L"SplitGrindControls", "Foot setup grinds", 1, {0,1}, {"Off","On"},2},
     Choice{L"PopOnRelease", "Pop style", 0, {0,1}, {"Flick","Release"},2},

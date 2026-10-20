@@ -827,7 +827,7 @@ void dual_stick_page(SkateMenu& menu) {
     begin_card(menu, "dual-presets", "PRESETS");
     if (primary_button(menu, config.active(false) ? "Session-style (active)" : "Apply Session-style")) saved(config.preset(false));
     if (primary_button(menu, config.active(true) ? "XL-style (active)" : "Apply XL-style")) saved(config.preset(true));
-    note("Both map Skate controls across two sticks; inputs differ from Session and Skater XL. Applying a style preserves your catch, camera and speed preferences.");
+    note("Both map Skate controls across two sticks; inputs differ from Session and Skater XL. Applying a style preserves your catch and camera preferences.");
     int selected_slot = slot - 1;
     if (option_row(menu, "Custom preset", nullptr, selected_slot, {"Slot 1", "Slot 2", "Slot 3", "Slot 4", "Slot 5"})) { slot = selected_slot + 1; overwrite_slot = 0; }
     if (primary_button(menu, "Load custom controls", config.filled(slot))) saved(config.load(slot));
@@ -881,7 +881,6 @@ void dual_stick_page(SkateMenu& menu) {
     if (toggle_row(menu, "Dual Stick on next launch", "Use the companion menu to toggle controls immediately.", enabled))
         saved(config.set(L"EnabledAtStart", enabled ? 1 : 0));
     note("Manual Catch: click L3/R3 in the air. Some tricks settle at an angle instead of continuing to rotate; catch timing still matters for a clean result. No independent foot or dark catches.");
-    note("Stick-speed rotation works independently of Manual Catch. Slower flicks/scoops request slower rotation; faster movements request faster rotation. The response varies with the trick.");
     note("Custom slots are shared with the companion. Loading preserves controller, menu and base-stance preferences. The companion End menu retains diagrams and additional tuning.");
     end_card();
 }

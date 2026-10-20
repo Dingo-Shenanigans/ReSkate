@@ -1225,7 +1225,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (settings.set(L"EnabledAtStart",!settings.number(L"EnabledAtStart",1))) say(h,"Saved for the next launch. Use the companion menu to toggle controls now.");
             else apply(false);
         }
-        list.note("Manual Catch uses L3/R3; some tricks settle at an angle and still need catch timing. Stick-speed rotation also works with Manual Catch off.");
+        list.note("Manual Catch uses L3/R3; some tricks settle at an angle and still need catch timing.");
         list.note("The companion menu remains available on its configured hotkey (End by default), including control diagrams and additional tuning.");
         list.note(h.notice);
         list.end();

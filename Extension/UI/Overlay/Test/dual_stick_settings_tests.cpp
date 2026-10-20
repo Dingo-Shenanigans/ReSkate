@@ -18,7 +18,7 @@ int main() {
     assert(WritePrivateProfileStringW(L"Unrelated", L"Keep", L"unchanged", name.data()));
     for (const auto& c : choices) {
         if (std::wcscmp(c.key,L"ManualCatch") == 0) assert(c.fallback == 0);
-        if (std::wcscmp(c.key,L"GestureSpeed") == 0 || std::wcscmp(c.key,L"DpadCameraSide") == 0 ||
+        if (std::wcscmp(c.key,L"DpadCameraSide") == 0 ||
             std::wcscmp(c.key,L"SplitGrindControls") == 0) assert(c.fallback == 1);
     }
     assert(settings.set(L"ManualCatch",1));
@@ -82,7 +82,7 @@ int main() {
     assert(settings.number(L"EnabledAtStart",-1) == 0);
     assert(settings.number(L"AirControls",-1) == 1);
     assert(settings.number(L"ManualCatch",-1) == 1);
-    assert(settings.number(L"GestureSpeed",-1) == 0);
+    assert(settings.number(L"GestureSpeed",-1) == 1); // Removed option stays an unknown global key.
     assert(settings.number(L"DpadCameraSide",-1) == 0);
     assert(settings.number(L"SplitGrindControls",-1) == 1);
     assert(settings.number(L"StickSteeringAngleDegrees",-1) == 23);
