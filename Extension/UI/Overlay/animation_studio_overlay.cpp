@@ -110,6 +110,7 @@ struct Ui {
     bool hide_joints{};          // J: the dots and the gizmo are out of the way
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
     float clear_force{0.45f};    // how wide the body is taken to be: 0 nothing, 1 the full shapes
+    bool shove_limbs{};          // a limb that is run into gives way as well, not only what you move
     int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
@@ -599,16 +600,22 @@ void shove_clear(const studio::View& v, std::uint16_t moving) {
     auto& u = ui();
     const int mine = limb_of(moving);
     const float force = std::clamp(u.clear_force, 0.0f, 1.0f);
-    if (!u.anti_clip || !v.has_clip || !mine || force <= 0.01f) return;
+    if (!u.shove_limbs || !u.anti_clip || !v.has_clip || !mine || force <= 0.01f) return;
     // Each limb by the joint on its end, which is the one that is moved to shift it.
     constexpr std::array<std::uint16_t, 4> ends{278, 49, 343, 10};
     studio::Vec3 best_push{};
     std::uint16_t best_end = 0;
     float worst = 0;
+    const bool mine_is_leg = mine == 3 || mine == 4;
     for (const auto end : ends) {
         const int other = limb_of(end);
         if (other == mine) continue;
+        // His legs live close together in any crouch, so one leg never shoves the other: that was the
+        // whole body being thrown about while a foot was being placed.
+        if (mine_is_leg && (other == 3 || other == 4)) continue;
         if (const auto* t = track_view(v, end); t && t->locked) continue;
+        const auto* end_at = joint_view(v, end);
+        if (!end_at) continue;
         for (const auto& theirs : body_shape) {
             if (limb_of(theirs.from) != other || limb_of(theirs.to) != other) continue;
             const auto* ta = joint_view(v, theirs.from);
@@ -623,7 +630,13 @@ void shove_clear(const studio::View& v, std::uint16_t moving) {
                 const float away = near_segments(ta->position, tb->position, oa->position, ob->position, on_theirs, on_ours);
                 const float want = (theirs.radius + ours.radius) * force;
                 if (away >= want) continue;
-                const float depth = want - away;
+                // How much of it the end joint should answer for: a touch at the hand moves the hand, a
+                // touch up at the shoulder barely moves it at all. Moving the end by a push felt at the
+                // top of the limb is what sent it off to odd places.
+                const float to_end = std::hypot(std::hypot(on_theirs[0] - end_at->position[0], on_theirs[1] - end_at->position[1]),
+                                                on_theirs[2] - end_at->position[2]);
+                const float share = std::clamp(1.0f - to_end / 0.55f, 0.0f, 1.0f);
+                const float depth = (want - away) * share;
                 if (depth <= worst) continue;
                 worst = depth;
                 best_end = end;
@@ -633,13 +646,13 @@ void shove_clear(const studio::View& v, std::uint16_t moving) {
             }
         }
     }
-    if (!best_end || worst < 0.002f) return;
-    const auto* end_at = joint_view(v, best_end);
-    if (!end_at) return;
+    if (!best_end || worst < 0.004f) return;
+    const auto* at = joint_view(v, best_end);
+    if (!at) return;
     // Eased, not snapped: a shove a frame is enough to clear a drag and keeps the arm's motion its own.
     studio::Vec3 target{};
-    for (int i = 0; i < 3; ++i) target[i] = end_at->position[i] + best_push[i] * 0.5f;
-    studio::drag_limb(best_end, keep_clear(v, best_end, target));
+    for (int i = 0; i < 3; ++i) target[i] = at->position[i] + best_push[i] * 0.5f;
+    studio::drag_limb(best_end, target);
 }
 
 // ---- the gizmo -------------------------------------------------------------------------------------
@@ -1397,6 +1410,11 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "hand or foot is moved by the overlap and the rest of it bends to follow. How wide his body is taken to be is "
                         "the slider under the joint in JOINTS. Key: C.",
                         [] { ui().anti_clip = !ui().anti_clip; }});
+        rows.push_back({"Push limbs aside", u.shove_limbs ? "on" : "off",
+                        "On: a limb that the one you are moving runs into gives way too - its hand or foot moves by the overlap and "
+                        "the rest bends to follow. Off, only what you move is kept clear, which is steadier. His two legs never push "
+                        "each other, since they belong close together.",
+                        [] { ui().shove_limbs = !ui().shove_limbs; }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
                         "instead of through it or over it. Key: N.",
