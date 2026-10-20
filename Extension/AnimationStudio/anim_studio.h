@@ -80,6 +80,9 @@ struct View {
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
     std::string pop;      // "" any, "low", "mid", "high"
     std::uint64_t revision{};
+    // Goes up every time a clip arrives: a trick opened, a saved animation loaded, a take recorded, a new
+    // animation started. The overlay starts clean on it.
+    std::uint64_t clip_serial{};
 };
 View view();
 // Opt-in 60-second read-only trace; exported under ReSkate.Tricks/research.

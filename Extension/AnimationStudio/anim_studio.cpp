@@ -131,6 +131,7 @@ struct State {
     float time{};
     bool playing{}, play_in_game{true}, room{true};
     bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
+    std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
     std::shared_ptr<const CustomTricks> tricks;
     bool tricks_read{};
     // Mode.
@@ -623,6 +624,7 @@ void key_all_at(Animation& animation, float seconds) {
 // recording or from the game's own library.
 void reset_brackets_locked(State& s) {
     if (!s.clip || s.clip->empty()) return;
+    ++s.clip_serial; // a clip has arrived: the overlay clears what it was holding
     s.edits.start = 0;
     s.edits.end = -1;
     key_all_at(s.edits, 0);
@@ -2264,6 +2266,7 @@ View view() {
     v.confirm_close = s.confirm_close;
     v.pop = s.edits.pop;
     v.revision = s.revision;
+    v.clip_serial = s.clip_serial;
     return v;
 }
 // Keys sit on whole frames of the timeline (30 a second), never between two.
@@ -3108,6 +3111,10 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         return true;
     } catch (const std::exception& e) {
         message = "Could not open " + trick.label + ": " + e.what();
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        s.status = message; // what was open stays open, and this says why the new one did not
+        publish_locked(s);
         return false;
     }
 }
