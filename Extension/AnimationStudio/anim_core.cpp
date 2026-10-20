@@ -348,6 +348,22 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
         }
     }
 }
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight) {
+    if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
+        seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
+    weight = std::min(weight, 1.0f);
+    for (const auto& track : animation.tracks) {
+        if (track.hidden || track.keys.empty() || track.joint >= skeleton_joints ||
+            track.joint >= native.size() || !editable(track.joint)) continue;
+        const auto edit = evaluate(track, seconds);
+        auto& current = native[track.joint];
+        if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
+            const auto wanted = normalised(multiply(current.rotation, edit.rotation));
+            current.rotation = weight >= 1 ? wanted : slerp(current.rotation, wanted, weight);
+        }
+        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * weight;
+    }
+}
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
                              std::span<Joint> native, bool mirror, float weight, bool reverse_facing) {
     if (!std::isfinite(weight) || weight <= 0 || native.size() < skeleton_joints) return;

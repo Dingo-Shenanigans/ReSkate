@@ -783,6 +783,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }});
         rows.push_back({"Source", v.source_kind == "native_asset" ? (v.source_position_codec == "native-piec-v1-extent" ? "Native clip" : "Unverified native clip") : v.source_kind == "render_capture" ? "In-game capture" : "Legacy / unknown",
                         "The studio previews this source. Gameplay applies your saved keys over native motion; full source-motion replacement requires native phase and constraint support.", {}, false});
+        rows.push_back({"In-game body edits", "Anatomical / local axes",
+                        "Left leg stays left in every stance. Saved joint offsets and rotations use the same local axes as F8; gameplay does not automatically swap limbs.", {}, false});
+        rows.push_back({"In-game key timing", "Source seconds from takeoff",
+                        "Takeoff aligns with the source takeoff marker, then keys advance at Speed through reception without airtime stretching. The trick is identified after takeoff, so preparation keys cannot be applied in advance. The native base motion still follows the game.", {}, false});
         if (v.has_clip && v.source_pose_count > 1) {
             const float hz = v.duration > 0 ? static_cast<float>(v.source_pose_count - 1) / v.duration : 0;
             const bool sparse = v.source_max_sample_gap > 0.05f;

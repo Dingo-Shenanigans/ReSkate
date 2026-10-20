@@ -296,7 +296,7 @@ struct GameplayPacket {
     std::uintptr_t component{}, board_holder{};
     double at{};
     float time{}, weight{};
-    bool mirror{}, reverse_facing{}, board_frame_valid{}, board_owned{};
+    bool board_frame_valid{}, board_owned{};
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -1456,24 +1456,21 @@ void on_animation(std::uintptr_t component) noexcept {
             if (const auto* trick = l.game_trick) {
                 const auto& played = *trick->edits;
                 const auto& clip = *trick->clip;
-                const bool mirror = (trick->goofy != played.switch_stance.value_or(false)) !=
-                    (l.playback_goofy != l.playback_switch.value_or(false));
-                const bool reverse_facing = played.switch_stance.value_or(false) != l.playback_switch.value_or(false);
-                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air);
+                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true);
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time);
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
                 diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
-                diagnostic.retarget = true; diagnostic.mirror = mirror;
-                diagnostic.reverse_facing = reverse_facing;
+                diagnostic.retarget = false; diagnostic.mirror = false;
+                diagnostic.reverse_facing = false;
+                diagnostic.source_timing = true;
                 diagnostic.clip_time = sampled.time; diagnostic.weight = weight;
                 if (sampled.time >= 0 && !sampled.finished) {
                     auto packet = std::make_shared<GameplayPacket>();
                     packet->generation = generation; packet->episode = l.episode.id;
                     packet->sequence = l.animation_updates.load(); packet->epoch = gameplay_epoch.load(std::memory_order_acquire);
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
-                    packet->at = at; packet->time = sampled.time; packet->weight = weight; packet->mirror = mirror;
-                    packet->reverse_facing = reverse_facing;
+                    packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = trick->edits;
                     packet->board_frame_local = l.board_frame_local; packet->board_frame_valid = l.board_at_takeoff_ok;
                     packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
@@ -1481,13 +1478,12 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Diagnostic prediction only. The renderer evaluates these edits again over its
                     // fresh post-physics native pose; no body/board snapshot is queued for gameplay.
                     if (diagnostic_pose) {
-                        l.sampled.resize(layout.count); clip.sample(sampled.time, l.sampled);
-                        apply_native_edit_layer(played, sampled.time, l.sampled, l.pose, mirror, weight, reverse_facing);
+                        apply_authored_edit_layer(played, sampled.time, l.pose, weight);
                     }
                     if (scheduled->board_owned && scheduled->board_frame_valid && l.board_ok) {
                         Joint frame; frame.rotation = normalised(multiply(live_placement.rotation, l.board_frame_local));
                         const auto native_board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
-                        board_target = board_edited(native_board, played, sampled.time, ground_turn(frame), mirror);
+                        board_target = board_edited(native_board, played, sampled.time, ground_turn(frame));
                         board_weight = weight;
                     }
                 }
@@ -1682,8 +1678,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
     publication.edits.restore(generation, update, layout.buffer, native);
     auto edited = native;
     if (packet) {
-        std::vector<Joint> source(packet->clip->joints); packet->clip->sample(packet->time, source);
-        apply_native_edit_layer(*packet->edits, packet->time, source, edited, packet->mirror, packet->weight, packet->reverse_facing);
+        apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight);
     }
     const auto desired_deltas = pose_edit_deltas(native, edited);
     edited = native;
@@ -1815,7 +1810,7 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
             const auto placement = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
             Joint frame; frame.rotation = normalised(multiply(placement.rotation, packet->board_frame_local));
-            const auto target = board_edited(native_mount, *packet->edits, packet->time, ground_turn(frame), packet->mirror);
+            const auto target = board_edited(native_mount, *packet->edits, packet->time, ground_turn(frame));
             if (target != native_mount) {
                 want.rotation = slerp(native_mount.rotation, target.rotation, packet->weight);
                 for (std::size_t i = 0; i < 3; ++i) want.position[i] += (target.position[i] - native_mount.position[i]) * packet->weight;
@@ -3095,6 +3090,9 @@ bool export_diagnostics(std::string& message) {
           summary["active_pack"] = s.pack ? s.pack->name : "";
           summary["studio_open"] = s.open;
           summary["custom_playback_enabled"] = s.play_in_game;
+          summary["gameplay_body_binding"] = "anatomical_local";
+          summary["gameplay_key_timing"] = "source_seconds_from_takeoff";
+          summary["gameplay_full_source_replacement"] = false;
           summary["preview_source"] = Json::object();
           summary["preview_source"]["name"] = s.edits.name;
           summary["preview_source"]["asset"] = s.edits.source.asset;

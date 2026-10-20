@@ -133,6 +133,9 @@ struct Animation {
 };
 // Puts the animation's edits at `seconds` on `pose` (already holding the base pose).
 void apply_edits(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// Same anatomical joint and local edit axes as F8; stance never swaps authored limbs.
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight);
+// Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,

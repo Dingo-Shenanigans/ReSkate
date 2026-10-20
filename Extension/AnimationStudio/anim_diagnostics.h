@@ -21,6 +21,7 @@ struct DiagnosticSample {
     std::optional<bool> live_switch, takeoff_switch, recorded_switch;
     bool goofy{}, takeoff_goofy{}, recorded_goofy{}, enabled{}, armed{}, retarget{}, mirror{};
     bool reverse_facing{};
+    bool source_timing{};
     float clip_time{-1}, weight{}, board_weight{};
     double skater_age{-1}, board_age{-1};
     double render_at{-1}, render_board_at{-1};
@@ -75,7 +76,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
     timeline << std::setprecision(12);
     poses << std::setprecision(12);
     board << std::setprecision(12);
-    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing\n";
+    timeline << "seconds,dt_s,generation,sequence,physics,trick,preset,custom_enabled,armed,goofy,live_switch,takeoff_goofy,takeoff_switch,recorded_goofy,recorded_switch,retarget,mirror,clip_time,weight,board_weight,failures,skater_publications,board_publications,skater_age_s,board_age_s,has_pose,observed_phase,entry,source_kind,episode,render_edit_sequence,render_presentation,board_edit_sequence,board_presentation,reverse_facing,source_timing\n";
     const std::string columns = "seconds,sequence,stage,joint,sx,sy,sz,qx,qy,qz,qw,px,py,pz\n";
     poses << columns; board << columns;
     rig << columns;
@@ -101,7 +102,7 @@ inline Json write_diagnostic_history(const DiagnosticBuffer& history, const std:
         timeline << s.retarget << ',' << s.mirror << ',' << s.clip_time << ',' << s.weight << ',' << s.board_weight << ',' << s.failures << ','
                  << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << ',' << !s.native.empty() << ','
                  << diagnostic_csv(s.observed_phase) << ',' << diagnostic_csv(s.entry) << ',' << diagnostic_csv(s.source_kind) << ','
-                 << s.episode << ',' << s.render_edit_sequence << ',' << s.render_presentation << ',' << s.board_edit_sequence << ',' << s.board_presentation << ',' << s.reverse_facing << '\n';
+                 << s.episode << ',' << s.render_edit_sequence << ',' << s.render_presentation << ',' << s.board_edit_sequence << ',' << s.board_presentation << ',' << s.reverse_facing << ',' << s.source_timing << '\n';
         if (!s.native.empty()) ++captured;
         for (std::size_t j = 0; j < s.native.size(); ++j) joint_row(poses, s.at, s.sequence, "animation_native", j, s.native[j]);
         for (std::size_t j = 0; j < s.desired.size(); ++j) {

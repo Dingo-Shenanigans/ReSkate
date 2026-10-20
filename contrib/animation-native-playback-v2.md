@@ -1,5 +1,7 @@
 # Native edit playback, first refactor
 
+Current gameplay policy is documented under **Anatomical binding and source key timing** below. Earlier cross-frame/mirroring sections describe superseded attempts.
+
 This replaces the gameplay path that replayed a saved skeleton/board snapshot over a later
 native render pose. Studio source preview remains a separate path. It is the first runtime
 stage of animation-native-architecture.md, not completion of native graph reverse engineering.
@@ -121,3 +123,47 @@ Physical board edits already use their separate captured takeoff-board frame and
 are unchanged by this body-only correction; the observed profile has neutral board
 keys. The bounded export contains only switch gameplay; normal playback comparison
 and the corrected switch appearance still need the user's visual retest.
+
+
+## Anatomical binding and source key timing
+
+The user's next test still reported the wrong leg and inconsistent timing.
+`dump-151927796-0` captures a goofy **normal**, not switch, high 360 hardflip with
+`mirror=1`. The saved source authors LeftLeg/LeftKnee/LeftFoot, but desired changes
+appear on RightLeg/RightKnee/RightFoot (indices 8/9/10), reaching 43 degrees at the
+right foot. The facing-only adjustment could not correct this: automatic lead-foot
+reflection itself contradicts the editor's anatomical Left/Right track labels.
+
+Gameplay now calls `apply_authored_edit_layer`: the saved joint ID, joint-local
+rotation and parent-local offset are applied to that same anatomical joint on the
+fresh native rig. Source/target stance does not swap limbs or conjugate the edit
+through a sampled source pose. Explicit mirrored-copy authoring remains available
+separately. Cross-frame transfer helpers remain experimental and are not called by
+gameplay. Neutral keys preserve the native transform; body scale and unauthored
+joints are untouched. Board keys use the actual takeoff-board frame without an
+extra lead-foot reflection.
+
+Gameplay selects the source-timing path of PlaybackEpisode: `source_takeoff +
+(now - observed_takeoff) * speed`. Recognition or name refinement does not restart
+that clock. Ballistic airtime estimates no longer rescale it, and landing no longer
+cuts reception keys off after 600 ms. The authored source continues to its duration
+with a short entry/end blend; rail contact releases to native constraints and bails
+still cancel playback. Explicit editor brackets still gate edits. Diagnostics
+identify `anatomical_local`, `source_seconds_from_takeoff` and `source_timing`.
+
+Regression tests compare gameplay directly against F8's local edit evaluation on
+independently oriented native bodies for all base/switch combinations: left stays
+left, offsets retain local signs, and only authored joints change. Source-clock
+tests cover recognition delay, refined names, differing ballistic estimates, late
+reception keys, and duration completion. This supersedes the earlier gameplay
+mirror/facing conversion, not the standalone coordinate-math tests.
+
+This is still an **additive edit backend**, not full source-motion replacement or
+an active native-controller phase read. A source phase marker aligns takeoff, but
+keys preceding takeoff cannot be applied before the future trick is identified.
+Native base motion, pop variants and contacts can therefore differ from F8's source.
+The offline native compiler has its own canonical-source/mirror-wrapper semantics;
+it is not an automatic anatomical runtime variant backend. Exact whole-animation
+parity requires verified native phase/branch bindings and stance-aware source
+replacement. The updated UI states these limits; user keys are never silently
+retimed, reassigned or rewritten. Visual retest of this policy is pending.

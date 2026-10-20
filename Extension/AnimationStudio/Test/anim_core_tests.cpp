@@ -632,6 +632,47 @@ void diagnostic_history_is_bounded() {
     check(history.samples.size() == 1, "Clock reset starts a fresh diagnostic window");
     check(diagnostic_csv("a,\"b\"") == "\"a,\"\"b\"\"\"", "Diagnostic CSV quotes names correctly");
 }
+void authored_gameplay_matches_f8_limbs_and_source_key_times() {
+    Animation animation;
+    animation.stance = "regular"; animation.switch_stance = false;
+    const auto edit = from_euler({23, -11, 8});
+    const Vec3 offset{0.03f, -0.02f, 0.01f};
+    animation.tracks.push_back({341, {{0, edit, offset, Ease::linear}}});
+    animation.tracks.push_back({board_joint, {{0, edit, {10, 10, 10}, Ease::linear}}});
+    for (const bool goofy : {false, true}) for (const bool switched : {false, true}) {
+        std::vector<Joint> native(skeleton_joints);
+        native[placement_joint].rotation = from_euler({0, goofy ? -125.0f : 37.0f, 0});
+        native[hips_joint].rotation = from_euler({12, switched ? 180.0f : 0.0f, -8});
+        native[341].rotation = from_euler({67, 11, -20});
+        native[8].rotation = from_euler({-32, 48, 91});
+        native[341].position = {0.1f, -0.2f, 0.03f};
+        auto expected = native; apply_edits(animation, 0, expected);
+        auto actual = native; apply_authored_edit_layer(animation, 0, actual, 1);
+        check(actual[341] == expected[341], "Gameplay uses the exact F8 local edit on the physical left leg in every stance");
+        for (std::size_t j = 0; j < native.size(); ++j)
+            if (j != 341) check(actual[j] == native[j], "An authored left-leg track never swaps into the right leg or imports a source pose");
+        actual = native; apply_authored_edit_layer(animation, 0, actual, 0);
+        check(actual == native, "A zero-weight anatomical edit is a strict no-op");
+        actual = native; apply_authored_edit_layer(animation, 0, actual, 0.5f);
+        for (int k = 0; k < 3; ++k)
+            check(near(actual[341].position[k], native[341].position[k] + offset[k] * 0.5f), "Authored offsets blend without changing local signs");
+    }
+    PlaybackEpisode episode;
+    episode.observe(10, motion_state(100)); episode.observe(10.1, motion_state(200)); episode.select(10.2);
+    const auto first = episode.sample(10.2, 0.2f, 0.75f, 2, 1, 0.3f, true);
+    check(near(first.time, 0.3f), "Late trick recognition catches up from takeoff instead of restarting the edit timeline");
+    const auto short_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 0.3f, true);
+    const auto long_air = episode.sample(10.3, 0.2f, 0.75f, 2, 1, 1.8f, true);
+    check(near(short_air.time, 0.4f) && near(short_air.time, long_air.time), "Source key seconds are independent of ballistic airtime estimates");
+    episode.select(10.31);
+    check(near(episode.sample(10.32, 0.2f, 0.75f, 2, 1, 1, true).time, 0.42f), "Refining the named trick cannot reset source key time");
+    episode.observe(10.6, motion_state(100)); episode.observe(10.64, motion_state(100));
+    const auto reception = episode.sample(11.4, 0.2f, 0.75f, 2, 1, 1, true);
+    check(near(reception.time, 1.5f) && reception.weight == 1 && !reception.finished,
+          "Keys past one second remain active through source reception instead of fading at landing plus 600 ms");
+    const auto finished = episode.sample(12, 0.2f, 0.75f, 2, 1, 1, true);
+    check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
+}
 void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
@@ -766,6 +807,7 @@ int main(int argc, char** argv) {
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
         switch_edits_follow_the_native_body_facing();
+        authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
