@@ -9,6 +9,7 @@
 #include "Extension/AnimationStudio/anim_library.h"
 #include "Extension/AnimationStudio/anim_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
+#include "Extension/AnimationStudio/recording_rules.h"
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -52,6 +53,25 @@ void native_names_and_search() {
     check(variants[0].label == "Wave / Off board / Variant 2" && variants[1].label == "Wave / Off board / Variant 1" && variants[2].label == "Wave / On board",
           "Equal names retain distinct source context and stable variants independent of input order");
     check(variants[0].asset == "source-b", "Human names never change the identity used to open an animation");
+}
+
+void manual_and_scripted_recording_keep_distinct_rules() {
+    const auto manual = evaluate_recorded_take(false, "kickflip", "heelflip", "low", 3, true, 0.7f);
+    check(manual.rejection == TakeRejection::none && manual.pop == "high", "Manual takes accept the recognized trick and actual grade, ignoring stale batch targets");
+    const auto fallback = evaluate_recorded_take(false, "kickflip", "", "", 0, true, 0.5f);
+    check(fallback.rejection == TakeRejection::none && fallback.pop == "mid", "Manual recording still works without native grading hooks");
+    check(evaluate_recorded_take(true, "heelflip", "varialheelflip", "high", 3, true, 0.7f).rejection == TakeRejection::wrong_trick,
+          "Batch recording cannot save the wrong recognized trick");
+    check(evaluate_recorded_take(true, "kickflip", "kickflip", "low", 3, true, 0.7f).rejection == TakeRejection::wrong_pop,
+          "Batch recording keeps the game's actual requested pop grade");
+    check(evaluate_recorded_take(true, "kickflip", "kickflip", "high", 0, true, 0.7f).rejection == TakeRejection::missing_grade,
+          "Batch cannot substitute an air-time guess for missing native grading");
+    check(evaluate_recorded_take(false, "kickflip", "", "", 4, true, 0.7f).pop == "high", "Unknown native enum values use the manual fallback");
+    check(evaluate_recorded_take(false, "", "", "", 3, true, 0.7f).rejection == TakeRejection::missing_trick &&
+          evaluate_recorded_take(false, "kickflip", "", "", 3, false, 0.7f).rejection == TakeRejection::missing_board,
+          "Manual recording still rejects missing identity and board capture");
+    check(pop_grade_since(100, 0.5) == 0 && pop_grade_since(5000, 0.5) == 4200,
+          "Grade lookup uses a bounded recent time window without unsigned wraparound");
 }
 
 void euler_numbers_read_back() {
@@ -911,6 +931,7 @@ int main(int argc, char** argv) {
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         native_names_and_search();
+        manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
