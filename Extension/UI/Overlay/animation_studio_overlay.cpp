@@ -401,9 +401,11 @@ float smooth_stick(float& state, float target, float dt) {
     return std::abs(state) < 0.002f ? 0.0f : state;
 }
 
-// A hand or a foot: the limb above it bends to reach where it is put, so these are moved with the IK
-// rather than by shifting the bone itself, and their POSITION fields are where they are from their rest.
-bool limb_end(std::uint16_t joint) { return joint == 10 || joint == 343 || joint == 49 || joint == 278; }
+// The joints that can be put somewhere: the hands, the feet, and the knees and elbows between them. The
+// limb above bends to reach, so these are moved with the IK rather than by shifting the bone itself, and
+// their POSITION fields are where they are from their rest. A knee or an elbow turns only the bone above
+// it, so placing one never swings the hips or the chest (anim_studio's limb_chain).
+bool limb_end(std::uint16_t joint) { return studio::limb_chain(joint) != 0; }
 float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 // ---- turning the chosen joint (mouse drag or left stick) ---------------------------------------------
@@ -1431,9 +1433,10 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         y += 40 * k;
         const auto offset = studio::offset_of(u.selected);
         auto euler = studio::to_euler(offset.rotation);
-        // A hand or a foot: its position fields are where it is from its rest (the limb above it bends to reach).
-        const bool limb_end = u.selected == 10 || u.selected == 343 || u.selected == 49 || u.selected == 278;
-        auto position = limb_end ? studio::limb_position(u.selected) : offset.offset;
+        // A hand, foot, knee or elbow: its position fields are where it is from its rest, and the limb above
+        // it bends to reach (studio::limb_chain). The others take a move of their own, or none at all.
+        const bool placed = studio::limb_chain(u.selected) != 0;
+        auto position = placed ? studio::limb_position(u.selected) : offset.offset;
         // The board: where it is and how it is turned, from where it starts on the ground (its keys added to the trick's own).
         const bool board_fields = u.selected == studio::board_joint && v.board_base_valid;
         if (board_fields) {
@@ -1462,7 +1465,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             turned |= ImGui::DragFloat("##r", &euler[static_cast<std::size_t>(i)], 0.4f, 0, 0, "%.1f");
             ImGui::PopID();
         }
-        if (e && e->moves) {
+        if ((e && e->moves) || placed) {
             text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 52 * k), ink_soft, board_fields ? "POSITION (0, 0, 0 = WHERE IT STARTS, ON THE GROUND)" : "POSITION");
             for (int i = 0; i < 3; ++i) {
                 ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k + i * col_w, y + 70 * k));
@@ -1486,7 +1489,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 for (std::size_t i = 0; i < 3; ++i) next.offset[i] = position[i] - v.board_base.position[i];
                 next.rotation = studio::normalised(studio::multiply(studio::from_euler(euler), studio::conjugate(v.board_base.rotation)));
                 studio::set_offset(u.selected, next);
-            } else if (limb_end) {
+            } else if (placed) {
                 if (moved) studio::set_limb_position(u.selected, position);
                 if (turned) studio::set_offset(u.selected, {studio::from_euler(euler), {0, 0, 0}});
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
@@ -1929,10 +1932,11 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         const auto e = studio::to_euler(off.rotation);
         // High enough that the mode line below them clears the message along the bottom of the screen.
         const float x = area_min.x + 24 * k, y = area_max.y - 168 * k;
-        if (studio::editable(u.selected) && studio::editable(u.selected)->moves) {
+        if (const auto* joint = studio::editable(u.selected); (joint && joint->moves) || limb_end(u.selected)) {
+            const auto p = limb_end(u.selected) ? studio::limb_position(u.selected) : off.offset;
             text(d, f.heading, 15 * k, ImVec2(x, y - 44 * k), IM_COL32(255, 255, 255, 110), "POSITION");
             text(d, f.body, 13 * k, ImVec2(x, y - 24 * k), IM_COL32(255, 255, 255, 90),
-                 std::format("X: {:.2f}    Y: {:.2f}    Z: {:.2f}", off.offset[0], off.offset[1], off.offset[2]));
+                 std::format("X: {:.2f}    Y: {:.2f}    Z: {:.2f}", p[0], p[1], p[2]));
         }
         text(d, f.heading, 15 * k, ImVec2(x, y), IM_COL32(255, 255, 255, 110), "ROTATION");
         text(d, f.body, 13 * k, ImVec2(x, y + 20 * k), IM_COL32(255, 255, 255, 90), std::format("X: {:.0f}    Y: {:.0f}    Z: {:.0f}", e[0], e[1], e[2]));

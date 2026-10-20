@@ -154,9 +154,13 @@ void drag_limb(std::uint16_t joint, const Vec3& target);
 // that bracket travel with it; the keys between the brackets are left exactly where they are, so nothing
 // is stretched. A key the bracket is pulled back past stops applying until it is taken out over it again.
 void move_bracket(int which, float seconds);
-// A hand's or a foot's place, as the position fields show it: how far it is from its rest place, in the view's
-// axes. Setting it moves the joint there with the limb above it bent to reach (the knee and hip follow, the
-// bones keep their lengths); a point out of reach is brought to full stretch, never past it.
+// The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
+// to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
+// knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.
+std::size_t limb_chain(std::uint16_t joint) noexcept;
+// One of those joints' places, as the position fields show it: how far it is from its rest place. Setting it
+// moves the joint there with the limb above it bent to reach (the bones keep their lengths); a point out of
+// reach is brought to full stretch, never past it.
 Vec3 limb_position(std::uint16_t joint);
 void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);

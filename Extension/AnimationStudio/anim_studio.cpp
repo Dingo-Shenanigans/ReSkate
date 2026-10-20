@@ -2538,6 +2538,13 @@ void hold_facing(State& s, std::span<const std::uint16_t> children, std::span<co
 }
 } // namespace
 
+std::size_t limb_chain(std::uint16_t joint) noexcept {
+    switch (joint) {
+    case 10: case 343: case 49: case 278: return 3;  // the feet and the hands
+    case 9: case 342: case 48: case 277: return 2;   // the knees and the elbows
+    default: return 0;
+    }
+}
 Offset offset_of(std::uint16_t joint) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2599,13 +2606,15 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
         s.status = "That track is locked.";
         return;
     }
+    const auto chain = limb_chain(joint);
+    if (!chain) return;
     const float at = frame_time(s.time);
     std::vector<Joint> native(skeleton_joints);
     s.clip->sample(at, native);
     const auto rest = world(native, joint).position;
     const Vec3 target{rest[0] + offset[0], rest[1] + offset[1], rest[2] + offset[2]};
     try {
-        anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
+        anim_studio::drag_joint(s.edits, native, at, joint, target, chain);
     } catch (const std::exception& e) {
         s.status = e.what();
         return;
@@ -2658,7 +2667,7 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     const Vec3 moved = rotate(clip_place.rotation, local);
     const Vec3 target{moved[0] + clip_place.position[0], moved[1] + clip_place.position[1], moved[2] + clip_place.position[2]};
     try {
-        anim_studio::drag_joint(s.edits, native, at, joint, target, 3);
+        anim_studio::drag_joint(s.edits, native, at, joint, target, std::max<std::size_t>(limb_chain(joint), 2));
     } catch (const std::exception& e) {
         s.status = e.what();
         return;
