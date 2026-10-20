@@ -1921,31 +1921,6 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 if (turned) studio::set_offset(u.selected, {studio::from_euler(euler), {0, 0, 0}});
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
         }
-        if (tab == Tab::joints) {
-            // How wide his body is taken to be when something is pushed clear of it. Low keeps the limbs
-            // close and only stops the worst of it; high holds them well apart. Off at nothing.
-            const float row_y = y + ((e && e->moves) || placed ? 104 * k : 52 * k);
-            text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, row_y), ink_soft, "KEEP CLEAR");
-            ImGui::PushStyleColor(ImGuiCol_Text, ink);
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(205, 205, 204, 255));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(190, 192, 196, 255));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(150, 200, 255, 255));
-            ImGui::PushStyleColor(ImGuiCol_SliderGrab, blue);
-            ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, blue_light);
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6 * k, 4 * k));
-            ImGui::PushFont(f.bold);
-            ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, row_y + 18 * k));
-            ImGui::SetNextItemWidth(size.x - 130 * k);
-            float percent = u.clear_force * 100;
-            if (ImGui::SliderFloat("##keepclear", &percent, 0, 100, u.clear_force <= 0.005f ? "OFF" : "%.0f%%"))
-                u.clear_force = std::clamp(percent / 100, 0.0f, 1.0f);
-            ImGui::PopFont();
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor(6);
-            if (button(d, f, "##keepclearon", ImVec2(at.x + size.x - 100 * k, row_y + 16 * k), ImVec2(78 * k, 26 * k),
-                       u.anti_clip ? "ON" : "OFF", u.anti_clip))
-                u.anti_clip = !u.anti_clip;
-        }
         if (tab == Tab::keys) {
             // Wrapped inside the card, from low enough that three lines still sit on it: it used to run
             // off the right edge in one line and across the skater.
@@ -3025,6 +3000,32 @@ void draw_animation_studio() {
                 u.list_scroll[static_cast<std::size_t>(u.tab)] = 0;
                 u.list_followed[static_cast<std::size_t>(u.tab)] = -1;
             }
+            list_top += 70 * k;
+        }
+        if (static_cast<Tab>(u.tab) == Tab::joints) {
+            // How wide his body is taken to be when something is pushed clear of it, at the head of the
+            // list of joints: low keeps the limbs close and stops only the worst, high holds them apart.
+            text(d, f.heading, 15 * k, ImVec2(menu_x + 16 * k, list_top), blue_light, "KEEP CLEAR");
+            if (button(d, f, "##keepclearon", ImVec2(menu_x + menu_w - 86 * k, list_top + 22 * k), ImVec2(70 * k, 30 * k),
+                       u.anti_clip ? "ON" : "OFF", u.anti_clip))
+                u.anti_clip = !u.anti_clip;
+            ImGui::PushStyleColor(ImGuiCol_Text, white);
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(28, 29, 32, 240));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 240));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 245));
+            ImGui::PushStyleColor(ImGuiCol_SliderGrab, blue);
+            ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, blue_light);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, 8 * k));
+            ImGui::PushFont(f.bold);
+            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 22 * k));
+            ImGui::SetNextItemWidth(menu_w - 104 * k);
+            float percent = u.clear_force * 100;
+            if (ImGui::SliderFloat("##keepclear", &percent, 0, 100, u.clear_force <= 0.005f ? "OFF" : "%.0f%%"))
+                u.clear_force = std::clamp(percent / 100, 0.0f, 1.0f);
+            ImGui::PopFont();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(6);
             list_top += 70 * k;
         }
         const float list_bottom = display.y - timeline_h - card_h - 40 * k;
