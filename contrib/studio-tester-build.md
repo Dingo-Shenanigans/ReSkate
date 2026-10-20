@@ -44,7 +44,9 @@ The single ZIP includes the launcher, runtime, complete native library/inspector
 data, licenses, `build-info.json`, launch shortcut and tester instructions. It
 contains no game installation, user presets, recorded takes or credentials.
 Binary auto-update is disabled so the candidate is not silently replaced by an
-upstream release. Artifacts expire after seven days; rerun to build a fresh one.
+upstream release. `START-STUDIO.cmd` also isolates the game's AppData profile under
+the test folder's `UserData` directory; opening the launcher EXE directly retains
+its usual AppData behavior. Artifacts expire after seven days; rerun to build a fresh one.
 
 After the workflow reaches the repository's default branch, collaborators can use
 **Actions → Studio tester build → Run workflow**, choose a source branch, and keep

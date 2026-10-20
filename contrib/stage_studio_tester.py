@@ -76,9 +76,10 @@ def stage(repo, build, library, output, config, commit, run_url=''):
         SupportedSteamBuild=config['steam_build'], RuntimeSHA256=sha256(output / 'ReSkate.dll'),
         LauncherSHA256=sha256(output / 'ReSkateLauncher.exe'), LibrarySHA256=config['sha256'],
         NativePreviews=config['previews'], NativeInventory=config['inventory'], NativeUnsupported=config['unsupported'],
-        BinaryAutoUpdate=False, VisualValidation='Pending tester checklist; automated checks do not run the game')
+        BinaryAutoUpdate=False, IsolatedUserData='UserData via START-STUDIO.cmd',
+        VisualValidation='Pending tester checklist; automated checks do not run the game')
     (output / 'build-info.json').write_text(json.dumps(info, indent=2), encoding='utf-8')
-    (output / 'START-STUDIO.cmd').write_bytes(b'@echo off\r\ncd /d "%~dp0"\r\nReSkateLauncher.exe --no-update\r\n')
+    (output / 'START-STUDIO.cmd').write_bytes(b'@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nset "LOCALAPPDATA=%~dp0UserData"\r\nif not exist "%LOCALAPPDATA%" mkdir "%LOCALAPPDATA%"\r\nif not exist "%LOCALAPPDATA%" exit /b 1\r\nReSkateLauncher.exe --no-update\r\n')
     (output / 'READ-ME-FIRST.txt').write_text(f'''ReSkate Animator Studio - tester candidate
 Commit: {commit}
 CI run: {run_url or 'Local build'}
@@ -91,8 +92,10 @@ You need your own skate. Steam copy. The launcher can install its supported game
 into that test folder. For an existing test installation, close the game and back
 up ReSkate.dll, ReSkateLauncher.exe and ReSkate.Tricks/library before extracting.
 Leave personal presets, recorded takes, saved animations and UserData intact.
-Extract the whole ZIP together. Launch START-STUDIO.cmd. Binary auto-update is
-disabled for this candidate so the upstream release cannot replace the test DLL.
+Extract the whole ZIP together. Launch START-STUDIO.cmd to use a separate profile
+under this folder's UserData directory. Opening the launcher EXE directly uses
+the normal AppData profile instead. Binary auto-update is disabled for this
+candidate so the upstream release cannot replace the test DLL.
 
 TEST THE STUDIO
 Open through the ReSkate menu or F8. Search is above TRICKS. Native asset tree

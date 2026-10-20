@@ -40,6 +40,9 @@ class TesterPackageTests(unittest.TestCase):
         self.assertEqual(info['SourceCommit'], 'fixture-commit'); self.assertFalse(info['BinaryAutoUpdate'])
         self.assertIn('tester candidate', (self.output / 'READ-ME-FIRST.txt').read_text())
         self.assertIn('--no-update', (self.output / 'START-STUDIO.cmd').read_text())
+        self.assertIn('set "LOCALAPPDATA=%~dp0UserData"', (self.output / 'START-STUDIO.cmd').read_text())
+        self.assertIn('setlocal', (self.output / 'START-STUDIO.cmd').read_text())
+        self.assertEqual(info['IsolatedUserData'], 'UserData via START-STUDIO.cmd')
         self.assertFalse((self.output / 'ReSkate.Tricks/presets').exists())
 
     def archive_for_success(self):
