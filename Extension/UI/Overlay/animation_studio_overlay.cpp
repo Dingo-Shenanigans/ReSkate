@@ -562,7 +562,10 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             // out by whichever face is nearest put the foot under the deck whenever it had got a little
             // below the middle of it, and then it had to be dragged back through to get on top again.
             if (joint == 10 || joint == 343) {
-                const float up = half[1] + deck_r - along[1];
+                // Just under the height the game holds the feet at while riding, so a foot sits on the
+                // deck rather than in its top face, and snapping can still take it the rest of the way.
+                constexpr float on_top = studio::feet_above_board - 0.012f;
+                const float up = on_top - along[1];
                 if (up > 0) for (int i = 0; i < 3; ++i) target[i] += axes[1][i] * up;
                 continue;
             }
