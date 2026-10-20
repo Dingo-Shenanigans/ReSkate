@@ -1,7 +1,6 @@
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/studio_room.h"
 #include "Extension/AnimationStudio/trick_batch.h"
-#include "Extension/UI/Overlay/scripted_pad.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
@@ -995,8 +994,6 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
         } catch (...) { debug.studio_brake.valid = false; }
     } else debug.studio_brake.valid = false;
     namespace room = anim_studio::room;
-    // The scripted pad (the room's walk, Record all tricks) moves on by game ticks.
-    overlay::pad_tick();
     room::tick(trial.base, component, can_control, component && anim_studio::room_wanted());
     // Record all tricks: asked for in the studio, it starts once the studio has closed and left its room.
     if (anim_studio::take_record_all_request()) {
