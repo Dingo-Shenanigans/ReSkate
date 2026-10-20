@@ -551,6 +551,78 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
     return target;
 }
 
+// The nearest points on two segments, and how far apart they are. Clamped, so segments that pass each
+// other give the pair at the ends rather than off the line.
+float near_segments(const studio::Vec3& a0, const studio::Vec3& a1, const studio::Vec3& b0, const studio::Vec3& b1,
+                    studio::Vec3& on_a, studio::Vec3& on_b) {
+    studio::Vec3 da{a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]}, db{b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2]};
+    const studio::Vec3 r{a0[0] - b0[0], a0[1] - b0[1], a0[2] - b0[2]};
+    const float aa = dot3(da, da), bb = dot3(db, db), rb = dot3(r, db), ra = dot3(r, da), ab = dot3(da, db);
+    float s_t = 0, t_t = 0;
+    const float denom = aa * bb - ab * ab;
+    if (aa > 1e-8f && bb > 1e-8f) {
+        s_t = denom > 1e-8f ? std::clamp((ab * rb - ra * bb) / denom, 0.0f, 1.0f) : 0.0f;
+        t_t = std::clamp((ab * s_t + rb) / bb, 0.0f, 1.0f);
+        s_t = std::clamp((ab * t_t - ra) / std::max(aa, 1e-8f), 0.0f, 1.0f);
+    }
+    for (int i = 0; i < 3; ++i) {
+        on_a[i] = a0[i] + da[i] * s_t;
+        on_b[i] = b0[i] + db[i] * t_t;
+    }
+    return std::hypot(std::hypot(on_a[0] - on_b[0], on_a[1] - on_b[1]), on_a[2] - on_b[2]);
+}
+// The force field proper: when the limb you are moving runs into another one, that other limb is shoved
+// out of the way rather than the two being left through one another. The limb's end - its hand or its
+// foot - is moved by the deepest overlap, and the IK bends the rest of it to follow, so an arm swings
+// aside the way an arm would. The worst one each frame, which settles over a drag without a fight.
+//
+// The torso and the head are not shoved: his body is where it is, and it is the limb that gives way.
+void shove_clear(const studio::View& v, std::uint16_t moving) {
+    auto& u = ui();
+    const int mine = limb_of(moving);
+    if (!u.anti_clip || !v.has_clip || !mine) return;
+    // Each limb by the joint on its end, which is the one that is moved to shift it.
+    constexpr std::array<std::uint16_t, 4> ends{278, 49, 343, 10};
+    studio::Vec3 best_push{};
+    std::uint16_t best_end = 0;
+    float worst = 0;
+    for (const auto end : ends) {
+        const int other = limb_of(end);
+        if (other == mine) continue;
+        if (const auto* t = track_view(v, end); t && t->locked) continue;
+        for (const auto& theirs : body_shape) {
+            if (limb_of(theirs.from) != other || limb_of(theirs.to) != other) continue;
+            const auto* ta = joint_view(v, theirs.from);
+            const auto* tb = joint_view(v, theirs.to);
+            if (!ta || !tb) continue;
+            for (const auto& ours : body_shape) {
+                if (limb_of(ours.from) != mine || limb_of(ours.to) != mine) continue;
+                const auto* oa = joint_view(v, ours.from);
+                const auto* ob = joint_view(v, ours.to);
+                if (!oa || !ob) continue;
+                studio::Vec3 on_theirs{}, on_ours{};
+                const float away = near_segments(ta->position, tb->position, oa->position, ob->position, on_theirs, on_ours);
+                const float want = theirs.radius + ours.radius;
+                if (away >= want) continue;
+                const float depth = want - away;
+                if (depth <= worst) continue;
+                worst = depth;
+                best_end = end;
+                if (away > 1e-4f)
+                    for (int i = 0; i < 3; ++i) best_push[i] = (on_theirs[i] - on_ours[i]) / away * depth;
+                else best_push = {0, depth, 0}; // dead centre: up, so there is a way out at all
+            }
+        }
+    }
+    if (!best_end || worst < 0.002f) return;
+    const auto* end_at = joint_view(v, best_end);
+    if (!end_at) return;
+    // Eased, not snapped: a shove a frame is enough to clear a drag and keeps the arm's motion its own.
+    studio::Vec3 target{};
+    for (int i = 0; i < 3; ++i) target[i] = end_at->position[i] + best_push[i] * 0.5f;
+    studio::drag_limb(best_end, keep_clear(v, best_end, target));
+}
+
 // ---- the gizmo -------------------------------------------------------------------------------------
 // Unreal's handles, drawn the game's way: three arrows out of the chosen joint to move it along one axis,
 // three rings round it to turn it about one. X is red, Y green, Z blue, and the handle under the mouse
@@ -1140,9 +1212,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "joint. Key: S.",
                         [v] { studio::set_solo(!v.solo); }});
         rows.push_back({"Keep clear", u.anti_clip ? "on" : "off",
-                        "On: a hand, foot, knee or elbow you move is kept out of the body and off the deck - it is pushed back out "
-                        "the shortest way so the meshes do not go through one another. It holds what you move; turning a bone can "
-                        "still swing the limb below it into the body. Key: C.",
+                        "On: what you move is kept out of the body and off the deck, and a limb it runs into is shoved aside - its "
+                        "hand or foot is moved by the overlap and the rest of it bends to follow. The body itself does not give way; "
+                        "it is the limbs that move. Key: C.",
                         [] { ui().anti_clip = !ui().anti_clip; }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
@@ -2145,6 +2217,8 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.gizmo_handle = -1;
         else if (project.valid && drag_counts()) drag_gizmo(v, project, gizmo, mouse);
     }
+    // Whatever the drag is doing, anything it has run into is shoved clear afterwards.
+    if ((u.gizmo_handle >= 0 || u.dragging_gizmo) && u.drag_moved) shove_clear(v, u.selected);
     if (u.dragging_gizmo) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.dragging_gizmo = false;
         else if (project.valid && drag_counts()) {
