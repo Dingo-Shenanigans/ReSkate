@@ -558,7 +558,15 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
                 inside = inside && std::abs(along[static_cast<std::size_t>(i)]) < half[static_cast<std::size_t>(i)] + deck_r;
             }
             if (!inside) continue;
-            // Out by its shallowest face, which for a deck is nearly always its top or its bottom.
+            // A foot comes out of the top of the deck and nowhere else. He stands on his board: pushing it
+            // out by whichever face is nearest put the foot under the deck whenever it had got a little
+            // below the middle of it, and then it had to be dragged back through to get on top again.
+            if (joint == 10 || joint == 343) {
+                const float up = half[1] + deck_r - along[1];
+                if (up > 0) for (int i = 0; i < 3; ++i) target[i] += axes[1][i] * up;
+                continue;
+            }
+            // A hand can be under the board, holding it, so that one leaves by its shallowest face.
             int face = 0;
             float least = 1e9f;
             for (int i = 0; i < 3; ++i) {
