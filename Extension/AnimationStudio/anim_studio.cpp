@@ -132,6 +132,13 @@ struct State {
     bool playing{}, play_in_game{true}, room{true};
     bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
     std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
+    // The ground he stands or rides on, from the live pose: no camera is allowed under it.
+    float floor{};
+    bool floor_valid{};
+    // The camera travels with the skater for a set shot; the free camera stays put and he moves through it.
+    bool camera_follows{true};
+    Vec3 held_centre{};
+    bool held_centre_valid{};
     std::shared_ptr<const CustomTricks> tricks;
     bool tricks_read{};
     // Mode.
@@ -1322,6 +1329,12 @@ void on_animation(std::uintptr_t component) noexcept {
             if (!l.floor_valid || (air && *air)) {
                 l.floor = world(l.pose, ground_joint).position[1];
                 l.floor_valid = std::isfinite(l.floor);
+                if (l.floor_valid) {
+                    auto& st = state();
+                    std::lock_guard floor_lock(st.mutex);
+                    st.floor = l.floor;
+                    st.floor_valid = true;
+                }
             }
             const auto& clip = *shown;
             const auto shape = board_shape(clip);
@@ -2126,18 +2139,39 @@ bool camera(std::array<float, 16>& matrix) {
         s.eased_valid = true;
     }
     for (std::size_t i = 0; i < 3; ++i) s.eased_centre[i] += (s.centre[i] - s.eased_centre[i]) * 0.12f;
-    const Vec3 centre{s.eased_centre[0] + s.focus_offset[0], s.eased_centre[1] + s.focus_offset[1], s.eased_centre[2] + s.focus_offset[2]};
+    Vec3 centre{s.eased_centre[0] + s.focus_offset[0], s.eased_centre[1] + s.focus_offset[1], s.eased_centre[2] + s.focus_offset[2]};
+    // The free camera is not carried along: it holds the spot it was left at and the skater moves through
+    // it, so a trick can be watched going past rather than the world sliding under a camera stuck to him.
+    if (!s.camera_follows) {
+        // Taken again when he has gone a long way off - into the studio's room, or a level loaded - so the
+        // camera is never left behind somewhere he no longer is.
+        const float away = std::abs(centre[0] - s.held_centre[0]) + std::abs(centre[1] - s.held_centre[1]) + std::abs(centre[2] - s.held_centre[2]);
+        if (!s.held_centre_valid || away > 5) {
+            s.held_centre = centre;
+            s.held_centre_valid = true;
+        }
+        centre = s.held_centre;
+    } else s.held_centre_valid = false;
     if (!s.base_yaw_valid) {
         s.base_yaw = facing_yaw(s.facing);
         s.base_yaw_valid = true;
     }
-    auto m = orbit_matrix(centre, s.orbit, s.base_yaw);
+    // No camera goes under the ground, whichever shot it is and however it has been orbited by hand: the
+    // eye is lifted by raising how far above it looks down from, so it still holds what it is aimed at.
+    Orbit orbit = s.orbit;
+    if (s.floor_valid) {
+        constexpr float above_floor = 0.30f; // enough that the near plane does not cut into the ground
+        const float distance = std::clamp(orbit.distance, 0.6f, 25.0f);
+        const float lowest = (s.floor + above_floor - centre[1]) / distance;
+        if (lowest > std::sin(orbit.pitch)) orbit.pitch = std::asin(std::clamp(lowest, -1.0f, 1.0f));
+    }
+    auto m = orbit_matrix(centre, orbit, s.base_yaw);
     if (s.fov > 1 && s.fov < 175 && (s.view_shift != 0 || s.view_shift_x != 0)) {
         // Aim below and beside the centre so it shows that far above and right of the screen's middle.
-        const float per_share = std::clamp(s.orbit.distance, 0.6f, 25.0f) * 2 * std::tan(s.fov * 3.14159265f / 360);
+        const float per_share = std::clamp(orbit.distance, 0.6f, 25.0f) * 2 * std::tan(s.fov * 3.14159265f / 360);
         const float up = s.view_shift * per_share, side = s.view_shift_x * per_share;
         const Vec3 aimed{centre[0] - m[4] * up - m[0] * side, centre[1] - m[5] * up - m[1] * side, centre[2] - m[6] * up - m[2] * side};
-        m = orbit_matrix(aimed, s.orbit, s.base_yaw);
+        m = orbit_matrix(aimed, orbit, s.base_yaw);
     }
     for (const std::size_t i : {0u, 1u, 2u, 4u, 5u, 6u, 8u, 9u, 10u, 12u, 13u, 14u}) matrix[i] = m[i];
     s.camera = matrix;
@@ -3286,5 +3320,11 @@ void set_focus(std::uint16_t joint) {
     std::lock_guard lock(s.mutex);
     if (joint == all_joints) s.focus.reset();
     else s.focus = joint;
+}
+void set_camera_follow(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.camera_follows = on;
+    s.held_centre_valid = false; // taken again where the camera stands now
 }
 } // namespace dingosdk::anim_studio

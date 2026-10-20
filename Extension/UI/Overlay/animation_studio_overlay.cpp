@@ -1005,18 +1005,24 @@ struct Shot {
     std::uint16_t on; // the joint it holds in the middle, all_joints for the whole skater
 };
 constexpr std::array<Shot, 6> shots{{
-    {"FREE", 0, 0, 0, studio::all_joints},
+    {"FREE", 0, 0, 0, studio::all_joints}, // stays where it is left; the rest travel with him
     {"CLOSE", 0.60f, 0.14f, 1.60f, studio::hips_joint},
-    {"BOARD", 0.90f, 0.06f, 1.25f, studio::board_joint},
-    {"CINEMATIC", 1.15f, -0.10f, 4.00f, studio::all_joints},
-    {"FILMER", 2.50f, 0.02f, 1.15f, studio::board_joint},
+    {"BOARD", 0.90f, 0.13f, 1.25f, studio::board_joint},
+    {"CINEMATIC", 1.15f, -0.04f, 4.00f, studio::all_joints},
+    {"FILMER", 2.50f, 0.10f, 1.15f, studio::board_joint},
     {"SKATER", 3.00f, 0.22f, 0.95f, 103},
 }};
 void take_shot(const studio::View& v, int which) {
     auto& u = ui();
     u.camera_shot = std::clamp(which, 0, static_cast<int>(shots.size()) - 1);
     const auto& shot = shots[static_cast<std::size_t>(u.camera_shot)];
-    if (!u.camera_shot) return; // FREE: the camera is left exactly where it is
+    // A set shot travels with him; the free camera stays where it is put and he goes past it.
+    studio::set_camera_follow(u.camera_shot != 0);
+    if (!u.camera_shot) {
+        studio::set_focus(studio::all_joints);
+        say("Free camera: it stays where you leave it.");
+        return;
+    }
     studio::Orbit orbit = v.orbit;
     orbit.yaw = shot.yaw;
     orbit.pitch = shot.pitch;
@@ -2184,6 +2190,9 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         u.timeline_scroll = u.rows_scroll = 0;
         u.rows_followed = 0xffff;
         u.message.clear();
+        // The camera keeps whichever shot you chose, but is told again whether to travel with him, since
+        // the studio starts out carrying him along and nothing has said otherwise yet.
+        studio::set_camera_follow(u.camera_shot != 0);
     }
     const auto mouse = ImGui::GetIO().MousePos;
     const bool inside = !u.menu_open && mouse.x >= area_min.x && mouse.y >= area_min.y && mouse.x <= area_max.x && mouse.y <= area_max.y;
@@ -2321,7 +2330,11 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         camera_changed = true;
     }
     if (camera_changed) {
-        u.camera_shot = 0; // taking the camera yourself is leaving the shot
+        // Taking the camera yourself is leaving the shot: it stops travelling with him from here.
+        if (u.camera_shot) {
+            u.camera_shot = 0;
+            studio::set_camera_follow(false);
+        }
         studio::set_orbit(orbit);
     }
 }
