@@ -124,7 +124,9 @@ struct BatchTake {
     std::string trick, pop, message;
     float air{};
 };
-void arm_batch_take();
+// The next take is kept only if the game did `trick` (its own name for it, as kickflip or n_varialheelflip) and graded
+// its pop `pop` ("low", "mid", "high"; trick_intents.h): a clip is saved under the name of the trick that was done.
+void arm_batch_take(const std::string& trick, const std::string& pop);
 void cancel_batch_take();
 std::optional<BatchTake> take_batch_result();
 void request_record_all();      // from the studio's TRICKS

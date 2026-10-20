@@ -4,10 +4,10 @@
 #include <string>
 
 // Record all tricks: the skater goes to a practice stage (trick_stage.h) and does every ground flip trick
-// with the game's own stick gestures (trick_gestures.h) on the scripted pad, once with a slow, a middle
-// and a quick flick (a low, mid and high pop). Each landed take is kept as the trick and pop it was,
-// with the board as the game drew it, and the trick list shows them. Solo play only. After PR #230's
-// "Record all my tricks" (Norms).
+// with the game's own stick gestures (trick_gestures.h) on the scripted pad, once each with a low, a mid
+// and a high pop as the game itself grades them (trick_intents.h). Each landed take is kept as the trick
+// and pop it was, with the board as the game drew it, and the trick list shows them. Solo play only, with
+// no AI skaters. After PR #230's "Record all my tricks" (Norms).
 namespace dingosdk::anim_studio::batch {
 // False with `why` on a multiplayer server or while one runs. Any thread.
 bool start(std::string& why);

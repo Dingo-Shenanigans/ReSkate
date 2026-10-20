@@ -4,6 +4,7 @@
 #include "held_input.h"
 #include "scripted_pad.h"
 #include "Engine/Game/Input/playstation_report.h"
+#include <intrin.h>
 #include <hidsdi.h>
 #include <atomic>
 #include <format>
@@ -357,7 +358,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
     // Only the game gets the script: ReSkate's own reads (a stop button) get the real pad.
-    if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
+    if (outer && output && scripted_pad(user, *output, _ReturnAddress())) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         output->dwPacketNumber ^= 0x80000000u;
@@ -661,7 +662,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
     // Only the game gets the script: ReSkate's own reads (a stop button) get the real pad.
-    if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
+    if (outer && output && scripted_pad(user, *output, _ReturnAddress())) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did

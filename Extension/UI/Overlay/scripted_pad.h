@@ -15,6 +15,12 @@ struct PadStep {
 void play_pad(std::vector<PadStep> steps);
 // The game thread calls this once a game tick.
 void pad_tick() noexcept;
-// True when it wrote the script's pad to `state`.
-bool scripted_pad(DWORD user, XINPUT_STATE &state) noexcept;
+// True when it wrote the script's pad to `state`. `caller` is the code that asked XInput.
+bool scripted_pad(DWORD user, XINPUT_STATE &state, const void *caller = nullptr) noexcept;
+// The pad reads the script has answered, ever: a script the game never read did nothing. Reads from Skate.exe's
+// own code are counted apart from all others (the Steam overlay's).
+struct PadReads {
+    std::uint32_t all{}, by_game_code{};
+};
+[[nodiscard]] PadReads pad_reads_answered() noexcept;
 } // namespace dingosdk::overlay
