@@ -552,6 +552,38 @@ void retargeted_edits_preserve_native_rig_and_convert_joint_frames() {
     retarget_edits(animation, 0, source, target, true);
     check(target[341].rotation == native[341].rotation, "Hidden edits stay hidden in switch");
 }
+void switch_edits_follow_the_native_body_facing() {
+    std::vector<Joint> source(skeleton_joints);
+    source[placement_joint].rotation = from_euler({0, 37, 0});
+    source[hips_joint].rotation = from_euler({12, 35, -8});
+    source[341].rotation = from_euler({23, -17, 9});
+    source[341].position = {0.1f, -0.2f, 0.03f};
+    const auto rotation = from_euler({19, 11, -7});
+    const Vec3 offset{0.03f, 0.02f, -0.01f};
+    Animation animation;
+    animation.tracks.push_back({341, {{0, rotation, offset, Ease::linear}}});
+    for (const bool mirror : {false, true}) for (const bool reverse : {false, true}) {
+        auto native = source;
+        if (mirror) for (std::size_t j = 0; j < source.size(); ++j) native[mirror_joint[j]] = mirror_pose(source[j]);
+        native[placement_joint].rotation = from_euler({0, -125, 0});
+        if (reverse) native[hips_joint].rotation = multiply(Quat{0, 1, 0, 0}, native[hips_joint].rotation);
+        auto target = native;
+        retarget_edits(animation, 0, source, target, mirror, reverse);
+        const auto joint = mirror ? mirror_joint[341] : 341;
+        const auto expected_rotation = normalised(multiply(native[joint].rotation, mirror ? mirror_rotation(rotation) : rotation));
+        const auto expected_offset = mirror ? mirror_vector(offset) : offset;
+        float dot = 0;
+        for (int k = 0; k < 4; ++k) dot += expected_rotation[k] * target[joint].rotation[k];
+        check(std::abs(dot) > 0.99999f, "A native body half turn preserves anatomical rotation direction independently of limb mirroring");
+        for (int k = 0; k < 3; ++k)
+            check(near(target[joint].position[k] - native[joint].position[k], expected_offset[k]),
+                  "Switch conversion keeps authored parent-local offset signs in the turned native body");
+        for (std::size_t j = 0; j < native.size(); ++j) {
+            check(target[j].scale == native[j].scale, "Facing conversion preserves native bone scales");
+            if (j != joint) check(target[j] == native[j], "Facing conversion changes only the authored limb, never the native skeleton");
+        }
+    }
+}
 void diagnostic_history_is_bounded() {
     DiagnosticBuffer history;
     for (int i = 0; i < 5000; ++i) {
@@ -709,6 +741,7 @@ int main(int argc, char** argv) {
         native_playback_contracts();
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
+        switch_edits_follow_the_native_body_facing();
         packs_select_variants_without_filesystem_order();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();

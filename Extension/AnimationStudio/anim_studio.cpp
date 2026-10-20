@@ -293,7 +293,7 @@ struct GameplayPacket {
     std::uintptr_t component{}, board_holder{};
     double at{};
     float time{}, weight{};
-    bool mirror{}, board_frame_valid{}, board_owned{};
+    bool mirror{}, reverse_facing{}, board_frame_valid{}, board_owned{};
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -1436,12 +1436,14 @@ void on_animation(std::uintptr_t component) noexcept {
                 const auto& clip = *trick->clip;
                 const bool mirror = (trick->goofy != played.switch_stance.value_or(false)) !=
                     (l.playback_goofy != l.playback_switch.value_or(false));
+                const bool reverse_facing = played.switch_stance.value_or(false) != l.playback_switch.value_or(false);
                 const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air);
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time);
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
                 diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
                 diagnostic.retarget = true; diagnostic.mirror = mirror;
+                diagnostic.reverse_facing = reverse_facing;
                 diagnostic.clip_time = sampled.time; diagnostic.weight = weight;
                 if (sampled.time >= 0 && !sampled.finished) {
                     auto packet = std::make_shared<GameplayPacket>();
@@ -1449,6 +1451,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->sequence = l.animation_updates.load(); packet->epoch = gameplay_epoch.load(std::memory_order_acquire);
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight; packet->mirror = mirror;
+                    packet->reverse_facing = reverse_facing;
                     packet->clip = trick->clip; packet->edits = trick->edits;
                     packet->board_frame_local = l.board_frame_local; packet->board_frame_valid = l.board_at_takeoff_ok;
                     packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
@@ -1457,7 +1460,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // fresh post-physics native pose; no body/board snapshot is queued for gameplay.
                     if (diagnostic_pose) {
                         l.sampled.resize(layout.count); clip.sample(sampled.time, l.sampled);
-                        apply_native_edit_layer(played, sampled.time, l.sampled, l.pose, mirror, weight);
+                        apply_native_edit_layer(played, sampled.time, l.sampled, l.pose, mirror, weight, reverse_facing);
                     }
                     if (scheduled->board_owned && scheduled->board_frame_valid && l.board_ok) {
                         Joint frame; frame.rotation = normalised(multiply(live_placement.rotation, l.board_frame_local));
@@ -1658,7 +1661,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
     auto edited = native;
     if (packet) {
         std::vector<Joint> source(packet->clip->joints); packet->clip->sample(packet->time, source);
-        apply_native_edit_layer(*packet->edits, packet->time, source, edited, packet->mirror, packet->weight);
+        apply_native_edit_layer(*packet->edits, packet->time, source, edited, packet->mirror, packet->weight, packet->reverse_facing);
     }
     const auto desired_deltas = pose_edit_deltas(native, edited);
     edited = native;

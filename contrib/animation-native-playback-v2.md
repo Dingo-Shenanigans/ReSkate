@@ -94,3 +94,30 @@ open trick-selection window. It does not move user keys, disable entry checks or
 misclassify unknown state as riding. Authored-profile visibility still needs a user
 retest with the corrected runtime; late keys may separately be attenuated by the
 landing envelope.
+
+
+## Switch body facing versus limb reflection
+
+The next gameplay export (`dump-151258656-0`) confirms the high 360 hardflip is
+selected with nonzero weight in goofy switch, using a canonical regular/non-switch
+source. `mirror=0` in that case: the reported sign reversal is not caused by an
+extra call to mirror_vector. Captured native hip orientation differs from the
+source by approximately a vertical half turn relative to placement. The old edit
+transfer expressed deltas in source placement axes, then converted straight into
+the turned native joint frame, reversing anatomical X/Z rotation/offset directions.
+
+Body transfer now carries two independent operations: the existing effective-lead
+limb reflection, and a Y half turn when source/target switch metadata differs.
+Both act on source placement-space edit deltas before conversion to target joint
+bases. The switch relation is frozen at takeoff and shared by the diagnostic
+prediction and render packet; timeline CSV adds `reverse_facing`. Native skeleton
+poses, lengths and scales remain untouched except for explicit authored offsets.
+
+Regression coverage constructs independently turned native bodies, with and without
+limb reflection, and verifies anatomical edit rotation/offset signs under arbitrary
+actor heading while all unauthored joints/scales remain unchanged. Matching switch
+states retain the previous conversion. Unknown switch still prevents selection.
+Physical board edits already use their separate captured takeoff-board frame and
+are unchanged by this body-only correction; the observed profile has neutral board
+keys. The bounded export contains only switch gameplay; normal playback comparison
+and the corrected switch appearance still need the user's visual retest.

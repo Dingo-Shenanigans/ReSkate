@@ -135,10 +135,10 @@ void apply_edits(const Animation& animation, float seconds, std::span<Joint> pos
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
-                    std::span<Joint> target, bool mirror);
+                    std::span<Joint> target, bool mirror, bool reverse_facing = false);
 // Add only authored edits over a fresh native pose; no recorded rest transforms or scales.
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
-                             std::span<Joint> native, bool mirror, float weight);
+                             std::span<Joint> native, bool mirror, float weight, bool reverse_facing = false);
 Joint board_edited(const Joint& board, const Animation& edits, float seconds, const Quat& frame, bool mirror = false);
 std::vector<Offset> pose_edit_deltas(std::span<const Joint> native, std::span<const Joint> edited);
 void apply_pose_deltas(std::span<const Offset> deltas, std::span<Joint> native);
