@@ -2182,6 +2182,10 @@ bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std:
 // The game's own load is still going: the loading screen stays until the game has been quiet for a second.
 std::atomic<bool> loading_held{};
 std::atomic<double> game_quiet_since{-1}; // -1: taken to be loading until a tick says otherwise
+// When a clean start finished. The client counts as in play before the game has taken its own loading
+// screen down, so ours stays up a few seconds past that or the game's shows from under it.
+std::atomic<double> clean_done_at{-1};
+constexpr double clean_settle = 4.5;
 void game_loading_state(bool game_loading) noexcept {
     if (game_loading) game_quiet_since.store(-1, std::memory_order_release);
     else if (game_quiet_since.load() < 0) game_quiet_since.store(now_seconds(), std::memory_order_release);
@@ -2193,6 +2197,7 @@ void set_loading(Loading what, float seconds) noexcept {
         // Taken to be loading from here: the first tick that finds the game quiet starts the countdown, so the
         // screen is never lifted before the client tick has even seen the load begin.
         game_quiet_since.store(-1, std::memory_order_release);
+        clean_done_at.store(-1, std::memory_order_release);
         // A screen that is still showing stays up (no fade in again).
         if (loading_what.exchange(what, std::memory_order_acq_rel) == Loading::none || now > loading_until.load()) loading_since.store(now);
         loading_until.store(now + seconds);
@@ -2209,7 +2214,10 @@ LoadingView loading() noexcept {
         // A clean start holds it all the way: the walk out of the room, the level loading behind it and the
         // skater arriving are one screen, instead of ours ending and the game's own coming up after it.
         const bool clean = clean_hold.load(std::memory_order_acquire);
-        if ((!clean && quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
+        // And for a moment after it, while the game takes its own screen down behind ours.
+        const double done = clean_done_at.load(std::memory_order_acquire);
+        const bool settling = done >= 0 && now - done < clean_settle;
+        if ((!clean && !settling && quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
             loading_held.store(false);
             loading_until.store(now);
         } else if (loading_until.load() < now + 0.2) {
@@ -2420,7 +2428,9 @@ void set_speed(float speed) {
     changed_locked(s);
 }
 bool take_clean_start() noexcept { return clean_request.exchange(false, std::memory_order_acq_rel); }
-void clean_start_done() noexcept { clean_hold.store(false, std::memory_order_release); }
+void clean_start_done() noexcept {
+    if (clean_hold.exchange(false, std::memory_order_acq_rel)) clean_done_at.store(now_seconds(), std::memory_order_release);
+}
 void arm_batch_take() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -2471,7 +2481,8 @@ void record_next_trick() {
     clean_until.store(now_seconds() + 30.0, std::memory_order_relaxed);
     clean_hold.store(true, std::memory_order_release);
     clean_request.store(true, std::memory_order_release);
-    set_loading(Loading::opening, 4.0f);
+    set_loading(Loading::leaving, 4.0f); // out to the streets, not into the studio
+    clean_done_at.store(-1, std::memory_order_release);
     s.open_request_pending = true;
     publish_locked(s);
     logging::log(Level::info, Channel::skater, "Animation Studio: waiting to record the next trick.");

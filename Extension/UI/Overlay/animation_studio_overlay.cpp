@@ -382,16 +382,24 @@ bool number(const Fonts& f, const char* id, const char* label, float& value, flo
     ImGui::EndGroup();
     return changed;
 }
-bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, float width) {
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(34, 35, 38, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(46, 47, 52, 240));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 47, 52, 240));
+// A typed field in the studio's hand: its own type, the rough edge the buttons and rows have, and the
+// same height as the button beside it, instead of the stock box in the stock font.
+bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, float width, const char* hint = "Type a trick name") {
+    const float k = f.k;
+    const float h = 30 * k;
+    // The field's own box stays, painted the shade the rows and buttons use: the studio draws on the
+    // foreground list, so a frame drawn there would land on top of what is being typed.
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(28, 29, 32, 240));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 240));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 245));
     ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, blue_dim);
     ImGui::PushStyleColor(ImGuiCol_Text, white);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2 * f.k);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8 * f.k, 6 * f.k));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, (h - 14 * k) * 0.5f));
+    ImGui::PushFont(f.bold);
     ImGui::SetNextItemWidth(width);
-    const bool done = ImGui::InputTextWithHint(id, "e.g. kickflip, 360 flip high, tailslide loop", buffer.data(), buffer.size());
+    const bool done = ImGui::InputTextWithHint(id, hint, buffer.data(), buffer.size());
+    ImGui::PopFont();
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(5);
     return done;
@@ -2887,7 +2895,8 @@ void draw_animation_studio_loading() {
     // Bottom right: what is going on, then skate.'s own loading box with its kickflipping board.
     {
         const char* what = l.what == studio::Loading::leaving ? "BACK TO THE STREETS" : "SETTING UP THE STUDIO";
-        const float box_h = 0.062f * H, box_w = 0.205f * H;
+        // The size and the place skate.'s own loading box has, so ours reads as the same thing.
+        const float box_h = 0.088f * H, box_w = 0.300f * H;
         const ImVec2 bb(display.x - 0.034f * display.x, H - 0.045f * H), ba(bb.x - box_w, bb.y - box_h);
         // skate.'s box: black, with a light rough edge.
         const float rim = 2.5f * k;
@@ -2896,8 +2905,8 @@ void draw_animation_studio_loading() {
         if (!draw_studio_tile(d, ia, ib, 8 * k, fade(IM_COL32(8, 8, 9, 255)))) skate_theme::rough_rect(d, ia, ib, fade(IM_COL32(8, 8, 9, 255)), 6, 1.2f * k);
         const char* dots[]{"Loading", "Loading.", "Loading..", "Loading..."};
         const auto loading_text = dots[static_cast<int>(l.seconds * 2.5f) % 4];
-        const auto lw = text_size(bold, 0.021f * H, "Loading...");
-        text(d, bold, 0.021f * H, ImVec2(ba.x + 0.024f * H, ba.y + (box_h - lw.y) * 0.5f), fade(skate_theme::white), loading_text);
+        const auto lw = text_size(bold, 0.030f * H, "Loading...");
+        text(d, bold, 0.030f * H, ImVec2(ba.x + 0.030f * H, ba.y + (box_h - lw.y) * 0.5f), fade(skate_theme::white), loading_text);
         const ImVec2 fa(bb.x - box_h * 1.25f - 0.012f * H, ba.y + box_h * 0.1f), fb(bb.x - 0.012f * H, bb.y - box_h * 0.1f);
         if (!draw_studio_kickflip(d, fa, fb, l.seconds, fade(skate_theme::white))) {
             // Without the game's board: a wheel that spins.
@@ -2906,8 +2915,8 @@ void draw_animation_studio_loading() {
             d->AddCircle(c, wr, fade(skate_theme::white), 24, 3 * k);
             d->AddLine(c, ImVec2(c.x + std::cos(t * 6) * wr, c.y + std::sin(t * 6) * wr), fade(skate_theme::blue), 3 * k);
         }
-        const auto ww = text_size(heading, 0.021f * H, what);
-        text(d, heading, 0.021f * H, ImVec2(ba.x - 0.022f * H - ww.x, ba.y + (box_h - ww.y) * 0.5f), fade(skate_theme::white), what);
+        const auto ww = text_size(heading, 0.024f * H, what);
+        text(d, heading, 0.024f * H, ImVec2(ba.x - 0.024f * H - ww.x, ba.y + (box_h - ww.y) * 0.5f), fade(skate_theme::white), what);
     }
 }
 
@@ -2951,11 +2960,11 @@ void draw_animation_studio() {
         float list_top = 205 * k;
         const float card_h = 190 * k;
         if (static_cast<Tab>(u.tab) == Tab::tricks && u.asset_document.empty()) {
-            text(d, f.bold, 13 * k, ImVec2(menu_x + 16 * k, list_top), white, "SEARCH ANIMATIONS / ALL FOLDERS");
-            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 20 * k));
+            text(d, f.heading, 15 * k, ImVec2(menu_x + 16 * k, list_top), blue_light, "SEARCH");
+            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 22 * k));
             if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false)) ImGui::SetKeyboardFocusHere();
-            const bool changed = text_field(f, "##nativequery", u.asset_query, menu_w - 104 * k);
-            const bool clear = button(d, f, "##clearquery", ImVec2(menu_x + menu_w - 86 * k, list_top + 20 * k), ImVec2(70 * k, 30 * k),
+            const bool changed = text_field(f, "##nativequery", u.asset_query, menu_w - 104 * k, "Trick name, e.g. hardflip");
+            const bool clear = button(d, f, "##clearquery", ImVec2(menu_x + menu_w - 86 * k, list_top + 22 * k), ImVec2(70 * k, 30 * k),
                                       "CLEAR", false, u.asset_query[0] != 0);
             if (changed || clear) {
                 if (clear) u.asset_query.fill(0);
