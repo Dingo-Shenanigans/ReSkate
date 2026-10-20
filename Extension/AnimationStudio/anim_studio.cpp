@@ -869,13 +869,16 @@ std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) no
     return std::find(addr::skater_state::board_air_states.begin(), addr::skater_state::board_air_states.end(), *value) !=
            addr::skater_state::board_air_states.end();
 }
-// Grinds are physics states 400 to 499 (no_bail.cpp's selector): on a rail the trick goes on with the rail.
+// Grinds are physics states 400 to 499 (no_bail.cpp's selector): on a rail the trick goes on with the rail. The
+// crouch before a pop is 103, between riding (100) and the air (200) on every pop: measured 2026-10-20, 3 of 3
+// kickflips in the world, and the ReSkate research notes. Read as anything but riding, every pop starts its air from
+// "unknown", so no ground trick is recorded or played as one.
 MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
     if (!state) return MotionState::unknown;
     if (*state == addr::no_bail::wipeout_physics_state || *state >= 500) return MotionState::offboard;
     if (*state >= 400 && *state < 500) return MotionState::rail;
     if (*state == 200 || *state == 201) return MotionState::air;
-    if (*state == 100 || *state == 101) return MotionState::riding;
+    if (*state == 100 || *state == 101 || *state == 103) return MotionState::riding;
     return MotionState::unknown;
 }
 
@@ -1475,8 +1478,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.episode.select(at);
                     l.game_trick = found;
                     if (found)
-                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop, {:.2f} s in the air), playing your {} ({}).", name,
-                                     pop.empty() ? "unknown" : pop, l.predicted_air, found->name,
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
+                                     pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air, found->name,
                                      "authored edits over fresh native pose");
                 }
             }
