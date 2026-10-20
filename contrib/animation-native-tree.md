@@ -36,6 +36,36 @@ closed. Preserve personal profiles, presets and recordings outside that library.
 
 ## Decoder evidence
 
+### Existing installations: outdated position decoding
+
+Building or copying the PR's DLL does not regenerate `ReSkate.Tricks/library`.
+Generated game-specific clips and catalogs are local data and are not included in
+the Git branch. The error "This native library has outdated position decoding"
+means the selected native entry lacks the supported `position_codec` value
+`native-piec-v1-extent` (or has another value). It does not diagnose a game crash.
+
+Install a matching corrected library, including both `catalog.json` and its actual
+`.clip` payloads. For a base-library replacement, close the game and back up its
+existing `ReSkate.Tricks/library` folder first. Leave personal `.json`/`.clip`
+files directly inside `ReSkate.Tricks`, `presets` and `recorded` intact. A 101-clip
+base package does not contain the expanded 4,004-preview inventory. Keep any
+expanded library backup if testing a base package.
+
+Developers can repair a compatible existing source library into a new staging
+directory using the original game's compressed resources:
+
+```powershell
+build/vs2022-x64/Release/dingosdk_anim_graph_probe.exe --inventory GAME CACHE
+python contrib/animator-studio/repair_library_positions.py --game GAME --probe build/vs2022-x64/Release/dingosdk_anim_graph_probe.exe --library OLD_LIBRARY --output NEW_REPAIRED_LIBRARY --asset-index CACHE/native-asset-types.json
+build/vs2022-x64/Release/dingosdk_animation_studio_tests.exe --native-catalog NEW_REPAIRED_LIBRARY
+```
+
+Check `repair-report.json` for failures and completeness before replacing anything;
+unsupported sources require a fresh supported extraction. Restart after installing,
+or use Reload native library if the game was already open. Do not merely add the
+codec marker to old metadata: that bypasses the version check while retaining the
+incorrect translations that caused board/skater clipping.
+
 Native PIEC vectors use minimum plus normalized value times extent. Short two-key
 vectors contain two actual endpoints. Quaternion codec 1 stores three big-endian
 16-bit components with omitted-component bits in the first two words. Inline constants
