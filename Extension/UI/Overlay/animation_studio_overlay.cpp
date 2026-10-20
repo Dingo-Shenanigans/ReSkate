@@ -1708,6 +1708,42 @@ void controller(const studio::View& v, const Projector& p) {
     }
 }
 
+// Keep clear, at the head of the list of joints: a row of the same cut as the list's own, filled to
+// how wide his body is taken to be. Drag it anywhere, or press C. Dragged to nothing it reads OFF,
+// which is the same thing as turning it off, so there is one control and not two.
+void keep_clear_row(ImDrawList* d, const Fonts& f, ImVec2 at, float width) {
+    auto& u = ui();
+    const float k = f.k, h = 50 * k;
+    const ImVec2 a = at, b(at.x + width, at.y + h);
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("##keepclearrow", ImVec2(width, h));
+    const bool over = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+    const float inset = 18 * k;
+    if (held) {
+        const float along = (ImGui::GetIO().MousePos.x - (a.x + inset)) / std::max(1.0f, width - 2 * inset);
+        u.clear_force = std::clamp(along, 0.0f, 1.0f);
+        u.anti_clip = u.clear_force > 0.005f;
+    }
+    const bool on = u.anti_clip && u.clear_force > 0.005f;
+    const float force = on ? u.clear_force : 0.0f;
+    // The row, then the part of it that is filled, cut off square against the rough edge behind it.
+    skate_theme::rough_rect(d, a, b, over || held ? IM_COL32(52, 54, 60, 245) : IM_COL32(34, 35, 38, 240), seed_of(a), k * 1.2f);
+    if (force > 0.005f) {
+        d->PushClipRect(a, ImVec2(a.x + inset + (width - 2 * inset) * force, b.y), true);
+        skate_theme::rough_rect(d, a, b, IM_COL32(1, 131, 255, 190), seed_of(a), k * 1.2f);
+        d->PopClipRect();
+    }
+    theme::halftone(d, ImVec2(b.x - 70 * k, a.y + 8 * k), 9, 5, IM_COL32(255, 255, 255, on ? 40 : 18));
+    // The mark where it stands, and what it says.
+    const float x = a.x + inset + (width - 2 * inset) * force;
+    if (on) d->AddRectFilled(ImVec2(x - 1.5f * k, a.y + 9 * k), ImVec2(x + 1.5f * k, b.y - 9 * k), IM_COL32(235, 243, 255, 220));
+    const float fs = 15 * k;
+    text(d, f.bold, fs, ImVec2(a.x + inset, a.y + (h - fs) * 0.5f - 2 * k), on ? white : IM_COL32(255, 255, 255, 120), "KEEP CLEAR");
+    const std::string value = on ? std::format("{:.0f}%", force * 100) : "OFF";
+    const auto vw = text_size(f.bold, fs, value.c_str());
+    text(d, f.bold, fs, ImVec2(b.x - inset - vw.x, a.y + (h - fs) * 0.5f - 2 * k), on ? white : IM_COL32(255, 255, 255, 120), value);
+}
+
 // ---- the parts of the screen --------------------------------------------------------------------
 // The page title, brushed like the game's ("TRICK LIST"), with its spray of dots.
 void page_title(ImDrawList* d, const Fonts& f, ImVec2 at) {
@@ -3003,30 +3039,8 @@ void draw_animation_studio() {
             list_top += 70 * k;
         }
         if (static_cast<Tab>(u.tab) == Tab::joints) {
-            // How wide his body is taken to be when something is pushed clear of it, at the head of the
-            // list of joints: low keeps the limbs close and stops only the worst, high holds them apart.
-            text(d, f.heading, 15 * k, ImVec2(menu_x + 16 * k, list_top), blue_light, "KEEP CLEAR");
-            if (button(d, f, "##keepclearon", ImVec2(menu_x + menu_w - 86 * k, list_top + 22 * k), ImVec2(70 * k, 30 * k),
-                       u.anti_clip ? "ON" : "OFF", u.anti_clip))
-                u.anti_clip = !u.anti_clip;
-            ImGui::PushStyleColor(ImGuiCol_Text, white);
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(28, 29, 32, 240));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 240));
-            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 245));
-            ImGui::PushStyleColor(ImGuiCol_SliderGrab, blue);
-            ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, blue_light);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, 8 * k));
-            ImGui::PushFont(f.bold);
-            ImGui::SetCursorScreenPos(ImVec2(menu_x + 16 * k, list_top + 22 * k));
-            ImGui::SetNextItemWidth(menu_w - 104 * k);
-            float percent = u.clear_force * 100;
-            if (ImGui::SliderFloat("##keepclear", &percent, 0, 100, u.clear_force <= 0.005f ? "OFF" : "%.0f%%"))
-                u.clear_force = std::clamp(percent / 100, 0.0f, 1.0f);
-            ImGui::PopFont();
-            ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor(6);
-            list_top += 70 * k;
+            keep_clear_row(d, f, ImVec2(menu_x + 16 * k, list_top), menu_w - 40 * k);
+            list_top += 62 * k;
         }
         const float list_bottom = display.y - timeline_h - card_h - 40 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
