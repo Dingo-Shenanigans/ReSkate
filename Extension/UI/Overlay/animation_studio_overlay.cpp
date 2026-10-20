@@ -109,6 +109,7 @@ struct Ui {
     bool menu_hidden{};
     bool hide_joints{};          // J: the dots and the gizmo are out of the way
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
+    float clear_force{0.45f};    // how wide the body is taken to be: 0 nothing, 1 the full shapes
     int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
@@ -516,8 +517,9 @@ float near_segment(const studio::Vec3& p, const studio::Vec3& a, const studio::V
     return std::hypot(std::hypot(p[0] - on[0], p[1] - on[1]), p[2] - on[2]);
 }
 studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
-    if (!ui().anti_clip || !v.has_clip) return target;
-    const float r = joint_radius(joint);
+    const float force = std::clamp(ui().clear_force, 0.0f, 1.0f);
+    if (!ui().anti_clip || !v.has_clip || force <= 0.01f) return target;
+    const float r = joint_radius(joint) * force;
     const int mine = limb_of(joint);
     // Two passes: pushing out of one shape can put it inside another, and twice settles it in practice.
     for (int pass = 0; pass < 2; ++pass) {
@@ -528,7 +530,7 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             if (!a || !b) continue;
             studio::Vec3 on{};
             const float away = near_segment(target, a->position, b->position, on);
-            const float want = c.radius + r;
+            const float want = c.radius * force + r;
             if (away >= want) continue;
             if (away < 1e-4f) {
                 target[1] += want; // dead centre of a bone: straight up, so there is a way out at all
@@ -596,7 +598,8 @@ float near_segments(const studio::Vec3& a0, const studio::Vec3& a1, const studio
 void shove_clear(const studio::View& v, std::uint16_t moving) {
     auto& u = ui();
     const int mine = limb_of(moving);
-    if (!u.anti_clip || !v.has_clip || !mine) return;
+    const float force = std::clamp(u.clear_force, 0.0f, 1.0f);
+    if (!u.anti_clip || !v.has_clip || !mine || force <= 0.01f) return;
     // Each limb by the joint on its end, which is the one that is moved to shift it.
     constexpr std::array<std::uint16_t, 4> ends{278, 49, 343, 10};
     studio::Vec3 best_push{};
@@ -618,7 +621,7 @@ void shove_clear(const studio::View& v, std::uint16_t moving) {
                 if (!oa || !ob) continue;
                 studio::Vec3 on_theirs{}, on_ours{};
                 const float away = near_segments(ta->position, tb->position, oa->position, ob->position, on_theirs, on_ours);
-                const float want = theirs.radius + ours.radius;
+                const float want = (theirs.radius + ours.radius) * force;
                 if (away >= want) continue;
                 const float depth = want - away;
                 if (depth <= worst) continue;
@@ -1391,8 +1394,8 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         [v] { studio::set_solo(!v.solo); }});
         rows.push_back({"Keep clear", u.anti_clip ? "on" : "off",
                         "On: what you move is kept out of the body and off the deck, and a limb it runs into is shoved aside - its "
-                        "hand or foot is moved by the overlap and the rest of it bends to follow. The body itself does not give way; "
-                        "it is the limbs that move. Key: C.",
+                        "hand or foot is moved by the overlap and the rest of it bends to follow. How wide his body is taken to be is "
+                        "the slider under the joint in JOINTS. Key: C.",
                         [] { ui().anti_clip = !ui().anti_clip; }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
@@ -1899,6 +1902,31 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 if (moved) studio::set_limb_position(u.selected, position);
                 if (turned) studio::set_offset(u.selected, {studio::from_euler(euler), {0, 0, 0}});
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
+        }
+        if (tab == Tab::joints) {
+            // How wide his body is taken to be when something is pushed clear of it. Low keeps the limbs
+            // close and only stops the worst of it; high holds them well apart. Off at nothing.
+            const float row_y = y + ((e && e->moves) || placed ? 104 * k : 52 * k);
+            text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, row_y), ink_soft, "KEEP CLEAR");
+            ImGui::PushStyleColor(ImGuiCol_Text, ink);
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(205, 205, 204, 255));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(190, 192, 196, 255));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(150, 200, 255, 255));
+            ImGui::PushStyleColor(ImGuiCol_SliderGrab, blue);
+            ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, blue_light);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6 * k, 4 * k));
+            ImGui::PushFont(f.bold);
+            ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, row_y + 18 * k));
+            ImGui::SetNextItemWidth(size.x - 130 * k);
+            float percent = u.clear_force * 100;
+            if (ImGui::SliderFloat("##keepclear", &percent, 0, 100, u.clear_force <= 0.005f ? "OFF" : "%.0f%%"))
+                u.clear_force = std::clamp(percent / 100, 0.0f, 1.0f);
+            ImGui::PopFont();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(6);
+            if (button(d, f, "##keepclearon", ImVec2(at.x + size.x - 100 * k, row_y + 16 * k), ImVec2(78 * k, 26 * k),
+                       u.anti_clip ? "ON" : "OFF", u.anti_clip))
+                u.anti_clip = !u.anti_clip;
         }
         if (tab == Tab::keys) {
             // Wrapped inside the card, from low enough that three lines still sit on it: it used to run
