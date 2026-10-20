@@ -1157,16 +1157,20 @@ void update_model(std::uintptr_t client, TickState& frame) {
             dingosdk::anim_studio::clean_start_done();
         }
     }
+    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
+    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
+    const bool in_play = state == 13 || state == 21;
     if (clean_loading) {
-        if (requests_loading) clean_seen = true;
-        if ((clean_seen && !requests_loading) || GetTickCount64() - clean_since > 15000) {
+        // The load has begun once the request says so or this client has left play.
+        if (requests_loading || !in_play) clean_seen = true;
+        // and it is over only once the request is done AND this client is back in play. Letting go at the
+        // end of the request alone lifted our screen while the game was still bringing the level up, so the
+        // game's own loading screen came up after ours instead of behind it.
+        if ((clean_seen && !requests_loading && in_play) || GetTickCount64() - clean_since > 30000) {
             clean_loading = false;
             dingosdk::anim_studio::clean_start_done();
         }
     }
-    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
-    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
-    const bool in_play = state == 13 || state == 21;
     // RESKATE_RECORD_ALL=1: the batch starts by itself once the level is in and the skater can be driven, so a
     // whole run can be started from a shortcut without touching the menus. It fires once per launch.
     {
