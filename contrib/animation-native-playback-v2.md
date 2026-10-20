@@ -75,3 +75,22 @@ still violate contacts because native constraints are not re-solved after those 
 constrained preview, contact-aware authoring and full motion replacement require a verified
 native graph/rig insertion point. No new offsets are guessed here. The new packet/episode/edit
 interfaces isolate that work from file formats, UI and absolute pose replacement.
+
+
+## Ground crouch selection regression
+
+A gameplay diagnostic on 2026-10-20 reproduced nine pops as `100 -> 103 -> 200 ->
+201 -> 100`, six named 360 hardflip. Custom playback was enabled and the saved
+profile loaded, but every episode retained `entry=unknown`, no preset and zero edit
+weight. The classifier recognized only 100/101 as grounded; native crouch/pop
+preparation 103 was treated as unavailable and reset the episode immediately before
+launch. The ground-entry predicate therefore excluded every saved ground preset.
+
+The runtime and regression tests now share the explicit physics classifier, which
+recognizes measured 103 as grounded. Other unverified values remain unknown; rail,
+bail and offboard classifications are unchanged. A regression replays the observed
+five crouch samples followed by 200/201, asserting one ground-entry episode and an
+open trick-selection window. It does not move user keys, disable entry checks or
+misclassify unknown state as riding. Authored-profile visibility still needs a user
+retest with the corrected runtime; late keys may separately be attenuated by the
+landing envelope.

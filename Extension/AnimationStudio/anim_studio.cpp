@@ -840,16 +840,6 @@ std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) no
     return std::find(addr::skater_state::board_air_states.begin(), addr::skater_state::board_air_states.end(), *value) !=
            addr::skater_state::board_air_states.end();
 }
-// Grinds are physics states 400 to 499 (no_bail.cpp's selector): on a rail the trick goes on with the rail.
-MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
-    if (!state) return MotionState::unknown;
-    if (*state == addr::no_bail::wipeout_physics_state || *state >= 500) return MotionState::offboard;
-    if (*state >= 400 && *state < 500) return MotionState::rail;
-    if (*state == 200 || *state == 201) return MotionState::air;
-    if (*state == 100 || *state == 101) return MotionState::riding;
-    return MotionState::unknown;
-}
-
 // The game's name for the trick the skater is doing ("ollie", "kickflip", "heelflip"): the animation
 // holder (component +0xa0) -> +0x20 -> +0x250 -> +0x98, a C string. Found 2026-10-18 by walking the
 // holder's objects mid-trick; right from 0.05 s after takeoff and through the whole air, the same on

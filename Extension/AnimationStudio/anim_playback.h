@@ -7,6 +7,17 @@
 namespace dingosdk::anim_studio {
 // These are observed physics states, not decoded native animation-graph phases.
 enum class MotionState { unknown, riding, air, rail, offboard };
+// Supported native physics selector values, shared by runtime and replay tests.
+// 103 is the crouch/pop preparation observed between 100 and 200. It remains
+// grounded; treating it as unavailable discards the entry before every normal pop.
+inline MotionState motion_state(std::optional<std::uint32_t> state) noexcept {
+    if (!state) return MotionState::unknown;
+    if (*state == 300 || *state >= 500) return MotionState::offboard;
+    if (*state >= 400 && *state < 500) return MotionState::rail;
+    if (*state == 200 || *state == 201) return MotionState::air;
+    if (*state == 100 || *state == 101 || *state == 103) return MotionState::riding;
+    return MotionState::unknown;
+}
 enum class EntryKind { unknown, ground, rail };
 enum class PlaybackPhase { idle, air, landing, rail_release };
 inline const char* entry_name(EntryKind value) noexcept {

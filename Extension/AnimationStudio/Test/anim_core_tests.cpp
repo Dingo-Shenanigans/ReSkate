@@ -586,6 +586,20 @@ void native_playback_contracts() {
     check(near(transition.evaluate(1.14, 1, 1, 11, b)[0].offset[0], 0, 0.001f), "A changed preset blends smoothly between deltas");
     check(near(transition.evaluate(1.15, 2, 1, 11, b)[0].offset[0], 0), "Respawn cannot carry a previous entity's edit layer");
     PlaybackEpisode episode;
+    // Real failed hardflip trace: riding -> five crouch samples -> pop -> air.
+    // Production classification must retain ground entry through state 103.
+    PlaybackEpisode crouched;
+    crouched.observe(2.20, motion_state(100));
+    for (int i = 0; i < 5; ++i) crouched.observe(2.2158 + i / 60.0, motion_state(103));
+    check(crouched.observe(2.2998, motion_state(200)) && crouched.entry == EntryKind::ground,
+          "Native 100/103/200 takeoff retains ground entry so a saved ground preset can be selected");
+    const auto crouch_episode = crouched.id;
+    check(!crouched.observe(2.3156, motion_state(201)) && crouched.id == crouch_episode && crouched.selection_open(2.3338),
+          "200/201 remains one selectable airborne episode after the crouch");
+    check(motion_state(std::nullopt) == MotionState::unknown && motion_state(102) == MotionState::unknown &&
+          motion_state(300) == MotionState::offboard && motion_state(504) == MotionState::offboard &&
+          motion_state(401) == MotionState::rail,
+          "Recognizing grounded crouch does not guess other states or confuse bails and rails");
     check(!episode.observe(0, MotionState::riding) && episode.observe(0.1, MotionState::air), "Riding to air starts a new observed episode");
     check(episode.entry == EntryKind::ground, "Ground takeoff carries a ground binding");
     episode.select(0.1);
