@@ -109,8 +109,8 @@ struct Ui {
     bool menu_hidden{};
     bool hide_joints{};          // J: the dots and the gizmo are out of the way
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
-    float clear_force{0.45f};    // how wide the body is taken to be: 0 nothing, 1 the full shapes
-    bool shove_limbs{};          // a limb that is run into gives way as well, not only what you move
+    float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
+    bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
     int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
@@ -520,7 +520,9 @@ float near_segment(const studio::Vec3& p, const studio::Vec3& a, const studio::V
 studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
     const float force = std::clamp(ui().clear_force, 0.0f, 1.0f);
     if (!ui().anti_clip || !v.has_clip || force <= 0.01f) return target;
-    const float r = joint_radius(joint) * force;
+    // Against his own body the joint is as thick as the slider says; against the deck it is always its
+    // whole self, since a shoe inside the board is wrong at every setting.
+    const float r = joint_radius(joint) * force, deck_r = joint_radius(joint);
     const int mine = limb_of(joint);
     // Two passes: pushing out of one shape can put it inside another, and twice settles it in practice.
     for (int pass = 0; pass < 2; ++pass) {
@@ -553,14 +555,14 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             bool inside = true;
             for (int i = 0; i < 3; ++i) {
                 along[static_cast<std::size_t>(i)] = dot3(from, axes[static_cast<std::size_t>(i)]);
-                inside = inside && std::abs(along[static_cast<std::size_t>(i)]) < half[static_cast<std::size_t>(i)] + r;
+                inside = inside && std::abs(along[static_cast<std::size_t>(i)]) < half[static_cast<std::size_t>(i)] + deck_r;
             }
             if (!inside) continue;
             // Out by its shallowest face, which for a deck is nearly always its top or its bottom.
             int face = 0;
             float least = 1e9f;
             for (int i = 0; i < 3; ++i) {
-                const float out = half[static_cast<std::size_t>(i)] + r - std::abs(along[static_cast<std::size_t>(i)]);
+                const float out = half[static_cast<std::size_t>(i)] + deck_r - std::abs(along[static_cast<std::size_t>(i)]);
                 if (out < least) least = out, face = i;
             }
             const float sign = along[static_cast<std::size_t>(face)] < 0 ? -1.0f : 1.0f;
