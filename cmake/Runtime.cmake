@@ -201,7 +201,7 @@ add_library(dingosdk_runtime SHARED
     Extension/AnimationStudio/anim_core.cpp
     Extension/AnimationStudio/anim_studio.cpp
     Extension/AnimationStudio/anim_commands.cpp
-    Extension/AnimationStudio/trick_intents.cpp
+    Extension/AnimationStudio/pop_grades.cpp
     Extension/AnimationStudio/studio_room.cpp
     Extension/AnimationStudio/trick_batch.cpp
     Extension/AnimationStudio/trick_gestures.cpp
