@@ -1439,6 +1439,7 @@ void on_animation(std::uintptr_t component) noexcept {
         std::size_t first = 0, last = 0; // Studio snapshots only. Gameplay publishes an edit schedule.
         std::shared_ptr<const GameplayPacket> scheduled;
         Joint board_target;
+        bool mirrored_body = false; // he is being shown the other way round, so his board is too
         Quat board_frame{0, 0, 0, 1}; // the turn of the board's start (start_frame): its keys work in it
         float board_weight = 0;
         Joint live_placement = world(l.pose, placement_joint);
@@ -1556,7 +1557,12 @@ void on_animation(std::uintptr_t component) noexcept {
             // not move and nothing that is not him is dragged along. mirror_pose_frame works the locals
             // out again against the parents as they end up, which is what makes mirroring a part of a
             // skeleton safe - doing it bone by bone in each one's own frame is what tore him up before.
-            if (snap->goofy != (shown_edits.stance == "goofy")) {
+            // The game's own clips are labelled regular, but drawn as they are the skater stands goofy:
+            // his right foot is at the nose. Measured on screen 2026-10-21, so a clip's own label is read
+            // the other way round here rather than trusted.
+            const bool clip_stands_goofy = shown_edits.stance != "goofy";
+            mirrored_body = snap->goofy != clip_stands_goofy;
+            if (mirrored_body) {
                 l.mirror_scratch.assign(l.pose.begin(), l.pose.end());
                 mirror_pose_frame(l.mirror_scratch, l.pose, true);
             }
@@ -1569,6 +1575,9 @@ void on_animation(std::uintptr_t component) noexcept {
             // The board as the recording had it, the same way the body hangs from the placement joint.
             if (Joint rel; shown->sample_board(shown_time, rel)) {
                 if (fit_preview_contact) rel = board_on_feet(*shown, shown_time, l.sampled, rel);
+                // Reflected with him: the board hangs under the placement like he does, so its nose ends
+                // up where his leading foot is rather than behind him.
+                if (mirrored_body) rel = mirror_pose(rel);
                 const auto moved = rotate(turn, rel.position);
                 for (std::size_t a = 0; a < 3; ++a) rel.position[a] = rise[a] + moved[a];
                 rel.rotation = normalised(multiply(turn, rel.rotation));
@@ -2552,6 +2561,7 @@ View view() {
     v.solo = s.solo;
     v.stance_choice = s.stance_choice;
     v.showing_goofy = s.showing_goofy;
+    v.game_stance = dingosdk::grind_exit_control::stance();
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in

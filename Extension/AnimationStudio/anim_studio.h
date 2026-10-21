@@ -61,6 +61,7 @@ struct View {
     // which that works out to right now.
     int stance_choice{};
     bool showing_goofy{};
+    int game_stance{}; // what the game's own setting says: 0 not set, 1 regular, 2 goofy
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the

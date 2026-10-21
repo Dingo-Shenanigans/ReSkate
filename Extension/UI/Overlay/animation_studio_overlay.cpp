@@ -1528,11 +1528,13 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
                         "instead of through it or over it. Key: N.",
                         [] { ui().snap = !ui().snap; }});
-        rows.push_back({"Stance", v.stance_choice == 0 ? (v.showing_goofy ? "as the game has him (goofy)" : "as the game has him (regular)")
-                                  : v.stance_choice == 1 ? "regular" : "goofy",
-                        "Which way round the skater stands on the board. A trick authored the other way is shown reflected across "
-                        "his own middle, so the foot that was at the nose is at the tail. Only his body moves: the board and anything "
-                        "hanging off him stay where they stood. A recording is saved with this stance.",
+        rows.push_back({"Stance", v.stance_choice != 0 ? (v.stance_choice == 1 ? "regular" : "goofy")
+                                  : v.game_stance == 0 ? (v.showing_goofy ? "the game's (not set: goofy)" : "the game's (not set: regular)")
+                                  : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
+                        "Which way round the skater stands on the board, and which a recording is saved as. A trick authored the "
+                        "other way is shown reflected across his own middle, his board with him, so the foot that was at the nose is "
+                        "at the tail. The game's own stance comes from the Stance setting in GRIND EXITS; until that is set it is "
+                        "taken as regular, and you can choose regular or goofy here instead.",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
         rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
                         "Front foot: a trick belongs to the front foot and the back foot, so it plays whichever way round the skater "
