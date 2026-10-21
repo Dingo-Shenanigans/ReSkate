@@ -1996,12 +1996,14 @@ void on_animation(std::uintptr_t component) noexcept {
             // The board as the recording had it, the same way the body hangs from the placement joint.
             if (Joint rel; shown->sample_board(shown_time, rel)) {
                 if (fit_preview_contact) rel = board_on_feet(*shown, shown_time, l.sampled, rel);
-                // Reflected with him: the board hangs under the placement like he does, so its nose ends
-                // up where his leading foot is rather than behind him.
-                if (mirrored_body) rel = mirror_pose(rel);
                 const auto moved = rotate(turn, rel.position);
                 for (std::size_t a = 0; a < 3; ++a) rel.position[a] = rise[a] + moved[a];
                 rel.rotation = normalised(multiply(turn, rel.rotation));
+                // Reflected with him, and in the same place he is: after the clip's turn and rise, about the
+                // placement, exactly as his body was reflected above. Reflecting it before the turn put the
+                // mirror at a different angle to his whenever the clip had turned (the casual stance has),
+                // and he stood across his board instead of on it.
+                if (mirrored_body) rel = mirror_pose(rel);
                 const auto unedited = compose(live_placement, rel);
                 const auto origin = start_frame(*shown, live_placement, (l.floor_valid ? l.floor : live_placement.position[1]) + deck, fit_preview_contact);
                 board_target = board_edited(unedited, shown_edits, shown_time, origin.rotation);
