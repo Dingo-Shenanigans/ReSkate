@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "event": "independent_reduced_host_contact_and_coupling_consistency",
+  "source_game_equivalence_claimed": false,
+  "policy_source": "Independent numerical corrections in the reduced reference host, not recovered Unity CCD or joint solver constants.",
+  "public_api": {
+    "SimulationSettings.swept_plane_normals": "false by default; true in streets_observed_v2()",
+    "Output.swept_plane_normal_mask": "normal-only plane rows admitted in this exact step",
+    "Output.swept_plane_normal_impulse": "per-wheel actual shared-budget-scaled normal impulses in N s",
+    "SuspensionSettings.unilateral_soft_limits": "false by default; true in streets_observed_v2()",
+    "CoupledSettings.coupling_iterations": "Picard budget1..96; v2 uses64; bounded fallback is additional",
+    "CoupledOutput.coupling_iterations": "total map evaluations including finite differences, line searches and certification",
+    "CoupledOutput.coupling_residual": "true residual at the exact applied admitted reaction; tolerance remains.05N/Nm"
+  },
+  "reproduced_failures": {
+    "actual_capture": "recordings/comparison-session02/demo-fast-v2c",
+    "tunneling": "Reset6,McGriddleLeft5: rear positivegap.12027017m at engine35.91 crossed to-.11162004m next100Hz tick; ordinary query skin.09m missed the plane.",
+    "nonconvergence": "Plain Picard cycles at grounded ID0/15 handoffs persisted through96 iterations. Actual ID0 traced Fy-709N to-122N and back; energy_limited=false,saturated=false. Binary radial-limit damper activation jumped from0 to19.76Ns, so no small-residual outer root existed near the switch.",
+    "rejected_candidate": "Adding damping/dt as unconditional restoring stiffness was scratch-only and rejected after a later high-energy path failed; it is not production."
+  },
+  "unchanged_guards": [
+    "100Hz controller and command clocks",
+    ".005m strict support",
+    ".09m ordinary query horizon",
+    "original suspension energy inequality",
+    "85000N net chassis force",
+    "20000Nm net chassis torque",
+    "150000N/Nm suspension budgets",
+    "15rad/s role limits",
+    ".05N/Nm true coupling tolerance",
+    "module landing/catch/rotation rules",
+    "source nominal6.4m/s four-part hop"
+  ],
+  "actual_input_replay": {
+    "actual_controller_recording": false,
+    "description": "Headless replay of sampled inputs from an actual controller/video capture; native body states are never injected.",
+    "samples": 30550,
+    "invalid_samples": 0,
+    "nonconverged_samples": 0,
+    "input_boundary": "CSV axes,quickhop,pedal/brake,device and reset are exact sampled values. Modifier bits/triggers use the previous driver transition by wall timestamp; postintegration timestamp ambiguity is retained. Baseline reproduced all226 invalid ticks at the original first failure35.92."
+  },
+  "ctest": {
+    "movement_assertions": 120079,
+    "posture_assertions": 41,
+    "joint_actuator_assertions": 46523,
+    "vehicle_IK_assertions": 26,
+    "input_holdpoint_assertions": 304,
+    "total_assertions": 166973,
+    "ctest": "5/5 passed;45.09s total under concurrent replay load;joint41.08s;120s timeout"
+  },
+  "isolated_Newton_fallback_probe": {
+    "actual_controller_recording": false,
+    "Picard_budget": 1,
+    "samples": 350,
+    "valid_converged_samples": 350,
+    "fallback_samples": 350,
+    "assertions": 703,
+    "physical_hop_parts": 4,
+    "total_chassis_hop_impulse_Ns": 256,
+    "bar_caught_events": 1,
+    "combo_landed_events": 1,
+    "description": "Forcing a one-evaluation Picard budget exercises certified Newton on every tick. Passive energy gate holds; scratch probes do not duplicate input clocks, the four physical hop parts, catches or landing commits.",
+    "library_scope": "Prior numerical-solver freeze01676c4f; no coupling solver changes in the flick update. Final44f4 tests/grid and actual-input replay are independently pinned here."
+  },
+  "independent_grid": "Final canonical58 and20short-settle timing variants are separately reported in the session headless validation manifest.",
+  "limits": [
+    "Swept rows require verified static planes and positive gaps at most.25m; arbitrary terrain CCD is not provided.",
+    "Separate unilateral finite soft limits are an independent numerical model; native hard Unity constraints are not reproduced exactly.",
+    "General nonzero target-velocity plus limit work accounting is outside the v2 passive-target claim; v2 targets use zero velocities.",
+    "Actual final controller/video validation remains separate from headless fixture/grid results."
+  ],
+  "sources": [
+    {
+      "path": "standalone\\bmx-movement\\build\\libbmx_movement.a",
+      "sha256": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07"
+    },
+    {
+      "path": "standalone\\bmx-movement\\src\\suspension.cpp",
+      "sha256": "402161a3856571339a3af6e959af3a8935c3293e86625bdc4750d8594caa03fc"
+    },
+    {
+      "path": "standalone\\bmx-movement\\src\\movement.cpp",
+      "sha256": "758a042a42915f18cf17dbda56836e75aa34e294ab20781928ddeefe4590f0a4"
+    },
+    {
+      "path": "standalone\\bmx-movement\\include\\bmx\\suspension.hpp",
+      "sha256": "3094ca8b245edfe7e52f3e6eaa4d2beac9da830b474079e19cfda77057bf539b"
+    },
+    {
+      "path": "standalone\\bmx-movement\\include\\bmx\\movement.hpp",
+      "sha256": "d69a887e0fe1af032bcc3e26ba06bc9dc8e4014e5a1caf08525648133a5e89ae"
+    },
+    {
+      "path": "standalone\\bmx-movement\\tests\\joint_actuation.cpp",
+      "sha256": "e26a14dd264730d3f08582db60a5ec47891140ef35cdb9c45bd11e676a9764f3"
+    },
+    {
+      "path": "build\\bmx-movement-current\\calibration\\live-fast-v2c-raw-fixture.csv",
+      "sha256": "b2e3a6d15895470980d2924e0a6f4afce55af35d59dcc899532bc262cee5416a"
+    },
+    {
+      "path": "build\\bmx-movement-current\\calibration\\live-fast-v2c-v2h-replay.csv",
+      "sha256": "01dff52d979fb4d5c7f3afac0106796c9fea81d33c7e0a48e987fbaf0d6676da"
+    },
+    {
+      "path": "build\\bmx-movement-current\\calibration\\replay_live_fast.cpp",
+      "sha256": "ac931e34e8f6e7f17e527ec0f8afb608d605eec9d9a7ed1454ad585b3f4ea637"
+    },
+    {
+      "path": "build\\bmx-movement-current\\calibration\\replay_live_fast_v2h.exe",
+      "sha256": "99e05598ff1de6b535117ffa6e4f5a30d0e154b020f917cdd0496b4780502eae"
+    },
+    {
+      "path": "build\\bmx-movement-current\\calibration\\test_newton_fallback.cpp",
+      "sha256": "fba4ba7257749f014ce70306a28f1b812d5eeabcbb70231de0c2e68b4f09c7f1"
+    },
+    {
+      "path": "build\\bmx-movement-current\\calibration\\test_newton_fallback.exe",
+      "sha256": "c5ff2f813b51155780e4a3af31884ed0c5f66a011d306462015d0b3fd50eb1da"
+    }
+  ]
+}

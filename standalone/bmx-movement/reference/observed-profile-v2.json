@@ -1,0 +1,175 @@
+{
+  "schema": 2,
+  "profile": "streets_observed_v2",
+  "status": "Explicit selected-rig reduction with measured actuator commands; not a Unity physics replacement",
+  "source_pair": {
+    "GameAssembly.dll": "22a4ac9cbec7d270e96dcc90b9870f69f91596dd974fbb1c874b1b5e081a94b8",
+    "global-metadata.dat": "7e1af5100b90a78c907999239bc6952dfdce2461fc4321626658f24f2815d7ea"
+  },
+  "source_observations": {
+    "seconds": 0.01,
+    "gravity": [
+      0,
+      -12.5,
+      0
+    ],
+    "Spring_mass": 80,
+    "selected_non_Spring_mass": 30,
+    "selection": "Exactly eight observed vehicle roles. Avatar, active ragdoll and hair are excluded.",
+    "inertia_reduction": "selected-rig-reduction-v2.json retains all seven non-Spring principal tensors and their parallel-axis offsets.",
+    "ground_Spring_inertia": [
+      6,
+      8,
+      6
+    ],
+    "air_Spring_inertia": [
+      150,
+      150,
+      150
+    ],
+    "inertia_consumer": "Vector MoveTowards toward the selected tensor, maximum vector distance500*fixedDeltaTime. This is an explicit parameter change, not a passive joint force.",
+    "native_jump_velocity_array": [
+      3.2,
+      3.2,
+      4.5
+    ],
+    "live_quick_hop_height_multiplier": 2,
+    "observed_last_jump_force": [
+      0,
+      6.400000095,
+      0
+    ],
+    "hop_schedule": "Four quarter VelocityChange pulses separated by WaitForFixedUpdate. Source wait0 plus one fixed yield plus JumpForceWaitTime.06 is distinct from the full observed input pipeline.",
+    "recipient_multiplicity": "ManagedRigidbodySystem.AddForce applies list item0, then enumerates all eight from index0. Chassis10 therefore receives two parts; the other selected roles receive one. The folded30kg chassis gets a4/3 velocity multiplier and the80kg Spring gets1.",
+    "extra_user_gravity": "Both legacy and new SmartData values were0. The recovered additional acceleration path uses legacy _userGravitySmartData on chassis and Spring; ordinary Physics.gravity remains separate.",
+    "target_consumer": "TuckUpTest computes joint targetPosition from animator root translation plus explicit grind/additive/shralp terms, fixed anchor(0,.35,0), and YPos. Runtime commands are exported, never reconstructed as body positions.",
+    "actuator_provenance": "observed-joint-actuation-tracks.provenance.json",
+    "actuator_coverage": "58verified native fires plus measured quickhop,pump and fullRS preload/flick/cancel benches;113timeline/phase descriptors.24actual Hold/Loop trick paths retain enter/recover commands. Prior110descriptors and key arrays are unchanged by the threeID83 additions.",
+    "actuator_decimation_maxima": {
+      "target_position_m": 0.001966,
+      "target_rotation_degrees": 0.981,
+      "inertia_component": 0.01759,
+      "drive_gain_component": 0.9982,
+      "radial_limit_m": 0.003966
+    },
+    "external_balance_PID": {
+      "p": 0.1,
+      "i": 0,
+      "d": 0.01,
+      "raw_output_limit": 8,
+      "ground_pitch_output": 480,
+      "air_pitch_output": 360,
+      "ground_roll_output": 720,
+      "air_roll_output": 360,
+      "air_P_and_D_mass_factor": 10,
+      "pitch_output_doubling": 2,
+      "air_output_doubling": 2,
+      "neutral_air_pitch_control": 0.2,
+      "neutral_ground_pitch_control": 0,
+      "application": "Rigidbody.AddRelativeTorque(Vector3), default Force (physical N m), separate external actuation with no artificial counterreaction.",
+      "source": "Current native PIDController.Update, PIDBody.Tick, VehicleBalancePID.RunPID and BMXBalanaceBehaviour.Tick recovered in rea-balance-*.json evidence; effective getters corroborated in runtime inventory."
+    },
+    "role_angular_speed_limit_rad_s": 15,
+    "observed_input_policy": "Current authored InputSystem object8112 gives deadzone min.125/max.925, corroborated by live raw.4 to processed.3464567. Bound Manny60187/Nosey55783 enter band.2..8, hold.2/.1s, two-sample input velocity<1, latched cancel outside(.2,1.1], output min(abs(processedY)+.1,1) quantized127steps. Full-stick initial travel preloads without entering a hold.",
+    "manual_physical_actuator": {
+      "source_evidence": "Current HandleStabilization plus four focused REA records; see manual-physical-policy-v2.json.",
+      "manny_and_nosey_angle_degrees": 30,
+      "torque_amount_Nm": 450,
+      "ignored_authored_unity6_response_multiplier": 0.45,
+      "response_authority": "This pinned build helper returns constant1.0; GetManualPitchTorqueAmount therefore returns450.",
+      "angle_mode": "t=clamp01(2*(abs(input-.2)-.2)); Manny=-30*(.4+.6*t); Nosey=+30*(.4+.6*t), plus7deg if airborne. Smooth dt*4 grounded or dt*6 airborne; first.15s after last hop targets0.",
+      "angle_consumer": "External PID setpoint on both source PIDBodies, never a joint target or COM teleport.",
+      "ground_pitch_control": "Neutral0; active abs(Manny+Nosey)>.25 gives1; eligible direct Manual mode gives.06.",
+      "direct_mode": "Time grounded>.25; Manny additionally requires held input>.25s. Forward Manny chassis=-450*.9*m,Spring=-450*m; backwards adds-450*.4*m to each. Nosey chassis=450*.9*1.2*n,Spring=450*1.2*n; forwards adds450*.3*n to each.",
+      "mode_source": "Authored Auto/Manual defaults are0(Auto) for both directions. Live NoseyManual=true. Startup Manny getterFalse is timer-gated and does not reveal moving runtime override.",
+      "partial_input_COM": "Active partial56/127 input is below the native special-COM threshold.5; observed Chassis localCOM(0,.3,0) andSpring(0,.8,0) stay unchanged."
+    },
+    "role_angular_drag": {
+      "neutral_ground_observed": 1,
+      "all_observed_airborne": 2.75,
+      "airborne_fixed_samples": 553,
+      "roles": [
+        "Spring Body",
+        "Chassis Body"
+      ],
+      "capture": "streets-air-v33/body-physics.jsonl",
+      "grounded_transition_values_observed": [
+        1,
+        2.75,
+        5
+      ]
+    },
+    "flick_input": {
+      "source": "flick-hop-policy-v2.json; current authored FlickIt bindings61255/52147 and native Tick/Jhop/Nollie/callback consumers",
+      "preload_threshold": 0.6,
+      "crossing_threshold": 0.45,
+      "release_timeout_seconds": 0.2,
+      "per_instance_repeat_seconds": 0.2,
+      "strict_processed_Y_predicates": "Ollie y<-.6 then y>+.45; Nollie mirrors signs. No lateral/magnitude test or minimum hold gate. Timeout accumulates only outside the preload side.",
+      "manual_assistance": "Prior-step Manny/Nosey holdpoint callback state changes the matching preload threshold to0. StageInputData ticks Nollie before Ollie, using unquantized processedY.",
+      "cross_cancellation": "An Ollie event sets only opposite Nollie.RequireZeroOut, and conversely. Pending latch/timer remain intact. Sign-relativeY must reach at least-.1 before the detector resumes.",
+      "selected_hop_velocity": 4.5,
+      "R3_selected_velocity": 6.4,
+      "Nollie_source_eligibility": "Negative hop rejects source Manny(rear-end only), uses base4.5 for Nosey(front-end only), and scales by.95 for grounded non-Nosey/non-peg Nollie. Module uses explicit strict wheel-contact reduction; native end-grounded flags are not asserted identical to wheel-only queries."
+    }
+  },
+  "independent_host_policies": {
+    "effective_input_delay_seconds": 0.11,
+    "delay_authority": "Empirical fixed input-to-pulse alignment, not a recovered coroutine constant. Native first/second raw-to-pulse delays differed.12/.19s; begin-to-pulse differed.10/.16s. Identical four-pulse impulse strength with different pre-pulse COM momentum explains much of native cross-hop height variation.",
+    "sustained_force_budget_N": 85000,
+    "sustained_torque_budget_Nm": 20000,
+    "budget_authority": "Finite reduced-host reaction budgets.20000 removes prior contact output_limit failures on measured replay without changing joint energy guards; neither budget is asserted to be a native setting.",
+    "query_horizon_m": 0.09,
+    "strict_support_tolerance_m": 0.005,
+    "contact_policy": "Positive anticipated gaps can limit future impact velocity but cannot qualify support, launch a hop or settle a trick.",
+    "joint_solver": "Bounded implicit coupled six-axis drives plus a dissipative radial soft stop. Equal/opposite internal reactions and exact lever-arm torques; explicit source acceleration-drive reference retains the original10/80kg drive gain conversion after folding followers.",
+    "radial_stop": "Native LimitedXYZ is approximated by an independent finite unilateral soft stop. V2 opts into separate projected lower/upper implicit rows: inside bounds, boundary-reaching velocity gives continuous zero-force entry; outside, the original spring ERP and damping are retained. Sign projection prevents attraction while escaping. Whole-wrench caps and original energy admission are unchanged; no recorded body-state injection or pose repair.",
+    "playback": "Command clocks start on accepted selection/input events. Enter endpoints hold until actual recovery; recover phases start on release. A trick command replaces the overlapping quickhop command instead of adding its base animation twice.",
+    "presentation": "Joint-driven chassis pitch/roll suppresses independent catalog presentation tilt. Bar/tail articulation and gameplay trick state remain available; physical wheel queries ignore authored trick tilt.",
+    "skeletal_mapping": "Spring is not an ancestor of the observed AnimatedSkeleton. Physics-to-proximal-bone retargeting is independent; full55bone observed posture tracks are separately available.",
+    "wheel_geometry_limit": "Legacy rigid-wheel contact centers remain in this model. V3.3 confirms distinct native body position, collider center, wheel COM and nominal base/contact transforms; those separately articulated geometry/query roles are not silently equated or yet reproduced by the two-body host.",
+    "stabilization": "Exact fresh neutral-air Spring PID uses.2 pitch control and flip attenuation. Native manual setpoint/direct-torque branches enable ground pitch on Spring and Chassis only while manual input is active. Ordinary Chassis PID remains disabled because its animator helper/control-bone channels are unavailable; native Chassis PID is not claimed disabled.",
+    "angular_speed_limits": "Reference host applies observed15rad/s role limits by dissipative angular-momentum scaling before orientation integration. Native-engine adapters configure these body properties separately from force outputs. Source SpinSystem12rad/s user control limit remains separate.",
+    "net_wrench_feasibility": "Contact response uses one common fraction across wheel constraints. When internal suspension reaction alone exceeds the net chassis cap, the solver intersects actual feasible force/torque/rotor intervals so an opposing contact can cancel it. Caps remain85kN/20kNm; no independent axis clipping.",
+    "rotation_judging": "Canonical separately simulated Spring orientation supplies rider spin/flip tracking. The measured selected-rig approach COM velocity is latched at accepted hop/flight and held through settled landing, so bike articulation/contact recoil cannot redefine the approach heading. Actual chassis support, up/closing quality, completion/catch and angle tolerances remain required.",
+    "manual_modes": "Explicit configurable source Manual mode for both directions. Live Nosey Manual mode is observed; moving Manny mode is an inference selected from the two recovered modes, rather than a recovered runtime setting. Auto angle-PID mode remains available by clearing manny_direct_torque/nosey_direct_torque.",
+    "manual_pitch_duplication": "V2 disables the inherited independent manual pitch target and removes its ground pitch spring/damper only during active manual/nose input, so recovered external pitch actuation is not opposed by duplicate independent assistance. Supported roll, tire impulses and caps remain unchanged; legacy/v1 defaults retain their historical behavior.",
+    "manual_lifecycle": "Manual setpoint/direct torque clear on input cancellation and body/device identity changes. Input contacts are exported exactly from the pre-integration query, separately from the reference host post-integration body.",
+    "angular_damping": "Optional use_air_angular_drag selects observed2.75 on both roles only without actual strict grounded support. Ground role drag1 remains unchanged; native transient grounded2.75/5 branches are not yet reproduced. Damping torque is already included once in returned role wrenches; hosts must not apply it twice.",
+    "swept_plane_normals": "Opt-in verified static-plane normal-only rows when a current CLEAR query gap lies above the ordinary.09m skin and at most.25m, and the exact current pre-contact prediction crosses that plane within one fixed step. Requires an accepted consecutive step, active controls, exact prediction/geometry identity and no hop reservation. Rows participate in the original alternating wheel solve and shared net budgets; they grant no friction, support, balance, hop or trick-landing qualification. Defaults/observedv1 remain off.",
+    "coupling_numerics": "64 Picard evaluations followed only when needed by at most12 safeguarded six-dimensional Newton updates, each with6 finite-difference columns (opposite-side retry if rejected) and12 true-residual backtracking trials. All trials restore the same Movement baseline; PID/actuation clocks step once. Final applied reaction is an energy-admitted suspension result independently checked at the exact applied point against the same.05N/Nm residual. CoupledOutput.coupling_iterations counts all map evaluations, including probes; CoupledSettings coupling_iterations is only the Picard budget.",
+    "flick_input_lifecycle": "Observed flick detectors are opt-in/defaultoff; v2enables both. Host focus/menu/device/body/context cancellation clears pending gestures and applies the source sign-only RequireZeroOut predicate. R3 supersedes a same-frame flick and clears pending gesture states. These ownership/R3 lifecycle choices are stronger host policy, not claimed native setter behavior.",
+    "flick_physical_actuation": "Fullnegative source Ollie preload starts ID83 ENTER and holds its endpoint until release. An accepted Ollie following this preload uses measured TRANSITION; neutral cancellation uses independently captured RECOVER. Each phase is neutral-rebased; transition/recovery starts at the previous applied command with a position/quaternion boundary offset fading to0 by its measured endpoint. This is independent command retargeting, not body-state injection or a native interpolation claim. Source gains/inertias/limits remain commands; caps/energy guards are unchanged.",
+    "flick_amplitude_and_Nollie_limit": "ID83commands are observed only for full-1\u2192+1 and an independent fullnegative\u2192neutral cancellation. Other qualifying amplitudes/partial-Manny-assisted Ollies and Nollies retain explicit generic quickhop command playback; Nollie is not mirrored from ID83. Public HopKind lets a host supply appropriate commands. Source nominal4.5 uses normalizedstrength4.5/6.4; optional no-peg wheel-support policy applies Nollie eligibility/.95 factor.",
+    "accepted_hop_ownership": "Output.hop_request_accepted marks the actual new reserved hop. Raw Actions.hop_pressed/hop_kind can report a gesture denied while a prior hop is pending. Command tracks start only for accepted requests; a rapid opposite gesture orR3 cannot restart the admitted release or duplicate its four impulses."
+  },
+  "calibration_limits": [
+    "First suspension01 hop is a fit; second hop is held out. Native rises differ across repeated captures and may not be reduced to one launch-height target.",
+    "Pump-negative capture is followed by positive input. Isolated negative-to-neutral recovery was not observed and is not fabricated.",
+    "Command tracks retain their recorded quickhop context; arbitrary flight speeds, terrain contacts and animation combinations require further validation.",
+    "The selected-rig reduction cannot reproduce native articulated wheel/headset/pedal collisions, ragdoll coupling or all Unity joint solver details.",
+    "The v1 empirical7.9m/s single-body hop and brake fit remain unchanged in v1. v2 uses the runtime6.4m/s nominal pulse and explicit recipient multiplicity.",
+    "Native manual wheel/support flags include separately simulated wheel/headset bodies and exact ray/collider query geometry. The reduced rigid-wheel host does not reproduce every Nosey rear-support transition, despite similar separate Spring pitch.",
+    "Manual source branch is implemented with real physical torque and source mode/timer rules. Moving Manny runtime mode is unobserved; Manual selection is explicit inference. Native camera-orbit/input eligibility in a stationary idle context remains outside this moving-control comparison.",
+    "Manual up-dot alone is not a pitch metric: native controls contain substantial concurrent banking. Axis-resolved Chassis/Spring pitch and exact input contact queries are reported separately.",
+    "Air angular damping2.75 is directly observed. Remaining yaw error and native transient ground damping/independent wheel rotations remain separate limits; no arbitrary yaw gain fit is applied.",
+    "The selected-rig flick still rises1.00828m/.82s versus native1.45152m/1.14002s. Pre-first-pulse rig COMvy is.43166 versus1.35458m/s; physical pulse increments already agree within~.5%. No hop speed/gain or per-kind delay fit was added. The existing.11s deterministic pipeline remains an empirical reduction, not native coroutine or minFlickTime."
+  ],
+  "validation": {
+    "movement_assertions": 120079,
+    "posture_assertions": 41,
+    "joint_actuator_assertions": 46523,
+    "ctest": "5/5 passed;45.09s total under concurrent replay load;joint41.08s;120s timeout",
+    "checks": "Legacy/v1 regression; passive energy and momentum; full inertia covariance; bounded radial travel; separate gravity; four-part hop conservation; transactional auxiliary rejection; all58 actuator numeric coverage; native vector inertia budget; lifecycle cancellation; no duplicate presentation tilt.",
+    "independent_all58_sweep": "Finalv2h44f4ef89:58/58accepted,48caught,48modulelands;37700ticks0invalid/0nonconverged. Timinggrid20cases/1160attempts/754000ticks also0/0. Actualsampled-input replay30550ticks0/0. See session02/headless-release-validation.json; module scoring is independent.",
+    "vehicle_IK_assertions": 26,
+    "input_holdpoint_assertions": 304,
+    "total_assertions": 166973,
+    "final_headless_reports": "Finalv2h measured/autonomous pilot1601valid/converged each. Shared controls32:3201ticks,zero unrequested hops/takeoffs and unchanged partialholdpoint/preload outputs. Shared suspension18:1801ticks,oneOllie plus twoR3 requests,12pulse frames; flick1.00828m/.82s, R3~1.8983m/1.12s. Numeric and actualcontroller/video evidence remain separate.",
+    "frozen_library_sha256": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07",
+    "manual_checks": "Physical moving Manny front lift with retained rear support; exact source timer/setpoint/450Nm multipliers; direct Nosey separate-body actuation; focus cancellation; bad settings rejection. FiveCTest suites pass.",
+    "air_damping_checks": "Exact once-only physical drag wrench and negative angular work, opt-out retaining configured role rates, nonfinite settings rejection; production-linked sourcegain28 yawprobe0invalid.",
+    "contact_coupling_checks": "See contact-coupling-numerics-v2.json; actual input replay30550ticks,0invalid/0nonconverged; exact failed McGriddle and nearby timings plus IDs0/15 radial handoffs are in CTest.",
+    "flick_checks": "Source strict thresholds,timer accumulation,independent cooldown,cross RequireZeroOut,prior-step manual assistance,bothgesture kinds,R3dedup,lifecycle reset; Nollie support eligibility; fullnegative neutralcancel stationary/moving; arbitrary hold durations; phase joins; pending-hop actuation ownership; no force/energy/cap changes."
+  }
+}

@@ -1,0 +1,2 @@
+# Preserve the byte hashes recorded in the module and release provenance.
+* -text whitespace=trailing-space,space-before-tab,cr-at-eol

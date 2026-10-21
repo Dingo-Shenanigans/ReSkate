@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "completed": true,
+  "event": "fresh_distribution_extract_build_test_install_consumer",
+  "archive": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement-0.3.0.zip",
+  "archive_sha256": "b510c960eec5476c65a16e488dbc5230f5151e0c069ea8124a6d0a7af8affbc3",
+  "archive_bytes": 623587602,
+  "all_manifest_files_verified": true,
+  "manifest_file_count": 368,
+  "extracted_source": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\release-v030-zip-final\\extracted\\bmx-movement",
+  "fresh_build_and_all_ctest_passed": true,
+  "installed_consumer_passed": true,
+  "installed_consumer_receipt": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\release-v030-zip-final\\verification\\installed-consumer.json",
+  "installed_consumer_receipt_sha256": "6d998a1bbc703e72ab71f3a2d52b7333dfce38400c6bd294858c2eb0e696594f",
+  "assertions": 166973,
+  "platform": "Windows x64 / MinGW GNU16.1 C++20"
+}

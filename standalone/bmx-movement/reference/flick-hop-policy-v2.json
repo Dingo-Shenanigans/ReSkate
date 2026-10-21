@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "event": "source_bound_flick_hop_policy",
+  "source_identity": {
+    "GameAssembly_sha256": "22a4ac9cbec7d270e96dcc90b9870f69f91596dd974fbb1c874b1b5e081a94b8",
+    "global_metadata_sha256": "7e1af5100b90a78c907999239bc6952dfdce2461fc4321626658f24f2815d7ea",
+    "resources_assets_sha256": "a2fc984d1b5d0aac9fcc36ac6c8f32c7f24b6f15630c122cb784b425f3338e0a",
+    "authority": "Read-only original native instructions, current metadata, exact serialized read/write roundtrips and separately recorded runtime values. No game code is required by the module."
+  },
+  "authored_bindings": {
+    "PlayerInputBehaviour_object": 58853,
+    "Ollie_FlickIt_object": 61255,
+    "Ollie_serialized_bytes": 276,
+    "Ollie_serialized_sha256": "add4f929c30ca906a16b516082c0c6234637e2365977b3690dbcc4134b4c7995",
+    "Nollie_FlickIt_object": 52147,
+    "Nollie_serialized_bytes": 276,
+    "Nollie_serialized_sha256": "5a8345d4e014e1aaa96f7d3c45c21f3b1e11533ca75fe69bf30846ce6797b968",
+    "exact_serialized_roundtrip": true,
+    "stickPreloadThreshold": 0.6000000238418579,
+    "flickThreshold": 0.44999998807907104,
+    "maxFlickTime_seconds": 0.20000000298023224,
+    "unused_minFlickTime_seconds": 0.10000000149011612,
+    "unused_maxTimeInFlickState_seconds": 0.20000000298023224,
+    "input_action": "Flick Hop:1DAxis composite, positive rightStick/up, negative rightStick/down; no authored action/composite processors.",
+    "processed_input": "Native ReadFloat value before signed-byte preload quantization. The v2 profile supplies the separately recovered stick deadzone/minimum0.125 and maximum0.925."
+  },
+  "native_detector": {
+    "Ollie": "Arm strictly y<-preload; fire strictly y>flickThreshold. Nollie mirrors signs with separate state.",
+    "crossing_timer": "While armed and not firing, accumulate dt only strictly outside the preload side. Return to preload pauses without clearing elapsed time. Cancel strictly when elapsed>maxFlickTime.",
+    "repeat_interval_seconds": 0.2,
+    "repeat_interval_scope": "Independent last-performed timestamp per instance; failed cooldown consumes that crossing and clears pending/timer.",
+    "minimum_charge_gate": false,
+    "call_order": "StageInputData ticks Nollie before Ollie with fixedDeltaTime, before updating the holdpoints for this step.",
+    "manual_assistance": "Prior-step Manny hold60187 OnPerformed/OnCancelled calls Ollie.SetMannyPreloaded(true/false); Nosey55783 similarly targets Nollie. A true flag replaces that instance's preload threshold with0.",
+    "cross_cancellation": "Firing Ollie sets Nollie.requireZeroOut; firing Nollie sets Ollie.requireZeroOut. Setter changes that bool only, preserving pending/timer.",
+    "neutral_gate": "Ollie is blocked while y<-0.1; Nollie while y>+0.1. Reaching equality or crossing clears the flag.",
+    "reset": "Native ResetToDefault clears latches/timers while preserving requireZeroOut and last-performed time.",
+    "native_air_boundary": "Tick clears latch/timer if IGrounded is false, then still runs the style branch. Module ground/air lifecycle cancellation is deliberately stronger host behavior.",
+    "named_enable_gates": ["jHopEnabled", "nollieEnabled"]
+  },
+  "native_dispatch": {
+    "InitializeInputs_RVA": "0x9436e0",
+    "Ollie_MethodInfo_usage": {
+      "RVA": "0x634e780",
+      "encoded_word": "0x600103c9",
+      "method_definition_index": 33252,
+      "token": "0x06001aed",
+      "name": "SetOllie",
+      "method_RVA": "0x9558b0",
+      "staged_jump_y": 3
+    },
+    "Nollie_MethodInfo_usage": {
+      "RVA": "0x634e610",
+      "encoded_word": "0x600103cb",
+      "method_definition_index": 33253,
+      "token": "0x06001aee",
+      "name": "SetNollie",
+      "method_RVA": "0x955860",
+      "staged_jump_y": -3
+    },
+    "velocity_selection": "GetVel(abs(size)) reads JumpVelocity[size-1]; current values[3.2,3.2,4.5] select4.5 for size3.",
+    "normal_nominal_velocity_m_per_s": 4.5,
+    "recorded_R3_nominal_velocity_m_per_s": 6.4,
+    "impulse_semantics": "Four quarter-vector velocity changes. Source recipient multiplicity is separate from this nominal velocity and retained by the reduced rig; neither value equals a guaranteed measured COM launch speed."
+  },
+  "native_nollie_eligibility": {
+    "Jump_RVA": "0x8f3d20",
+    "Manny_RVA": "0x8982d0",
+    "Nosey_RVA": "0x898470",
+    "AnyPegColliding_RVA": "0x896020",
+    "Manny_predicate": "!frontEndGrounded && backEndGrounded && !AnyPegColliding()",
+    "Nosey_predicate": "frontEndGrounded && !backEndGrounded && !AnyPegColliding()",
+    "dispatch": "Negative jump rejects while Manny(); otherwise nollie flag=negativeY&&!Nosey(). EnumJump clears that flag if !Grounded() or AnyPegColliding().",
+    "retained_nollie_multiplier": 0.95,
+    "ordinary_nollie_nominal_velocity_m_per_s": 4.275,
+    "source_limit": "Front/back-end flags refer to the native collider/contact graph, not a universal equivalence to this module's wheel contacts."
+  },
+  "implementation": {
+    "profile": "streets_observed_v2()",
+    "input_option": "InputSettings.observed_flick_hop (defaultfalse)",
+    "kind": "Actions.hop_kind:ollie/nollie; hop_strength is a dimensionless4.5/6.4 ratio in v2.",
+    "support_option": "SimulationSettings.observed_nollie_support_policy (defaultfalse, enabled in v2)",
+    "support_reduction": "At request: rear-only eligible wheel support rejects Nollie; both-wheel support scales selected velocity by0.95; front-only support retains selected4.5. No native peg/end collider equivalence is claimed. The multiplier is selected at request; native coroutine rechecking can clear its flag later if support/peg state changes. That changing-contact case is not claimed equivalent.",
+    "request_acceptance": "Output.hop_request_accepted reserves one new hop; raw actions.hop_pressed may remain true when an existing pending/active hop denies a new reservation. Actuator playback starts only on acceptance.",
+    "R3_priority": "One simultaneous R3 request supersedes the flick, clears both pending gesture states and requires neutral rearming; held R3 cannot add a second hop across takeoff/landing.",
+    "lifecycle": "Focus/menu/unavailable/invalid/device/body changes cancel stale gestures and scheduled impulses. Ground/air transitions clear gesture latches; delayed launch requires eligible support, while already accepted impulse parts continue through takeoff. These stricter ownership policies are host adaptations.",
+    "timing": "The v2 input-to-pulse delay is a configurable0.11s measured fit. Native WaitForSeconds(0), WaitForFixedUpdate and settings WaitForSeconds(0.06) have render/coroutine scheduling latency; unused minFlickTime is not an extra gesture delay."
+  },
+  "preload_actuation": {
+    "id": 83,
+    "phases": ["enter", "transition", "recover"],
+    "source_provenance": "observed-joint-actuation-tracks.provenance.json",
+    "compact_validation": "recordings/comparison-session02/analysis-suspension-v33/flick-export-validation.json",
+    "enter_and_transition_source": "streets-suspension-v33, actual full-negative RS then positive reversal",
+    "recover_source": "streets-controls-v33, separate moving full-negative RS to neutral, no hop; original recovery records remain supported with beginJump0.",
+    "boundary_position_mismatch_m": 0.056133997823509627,
+    "independent_retarget": "Join transition/recover at the preceding actual applied joint target, sampled at phase t=0. Fade only the boundary position/rotation offset to zero by the observed phase endpoint. This joining policy and arbitrary enter-endpoint holding are independent adaptations.",
+    "physical_animation_limit": "No separately observed Nollie joint-animation track. Nollie and hold-assisted flicks without an active full-preload track use the generic quick-hop actuator fallback; normal strength/contact policy does not prove physical animation parity.",
+    "body_state_replay": false
+  },
+  "evidence_ids": {
+    "Ollie_predicate": "ev_493f23f4f832e0424c925d4d051c655944777fcc587859128be22be0524d360b",
+    "Nollie_predicate": "ev_0738ed216638dab0e8ec46eb8c0c47236b9584b84a94ee55c8d66f0bf1672154",
+    "Tick": "ev_50bca07899186387fd0d3b04a32b82273cf29034599c1f52bfffec36535f7f07",
+    "StageInputData": "ev_911f5f2a7b0624457134228f0b8ccb97985d55ee1a34dc95d365472d7c0431e1",
+    "JumpSettings_GetVel": "ev_7794ad7fd9e79e59a187c6afde27d97eb7511be23360c0abfa7314257497df63"
+  },
+  "limits": [
+    "Authored settings are proven serialized values; arbitrary persisted runtime overrides are not established by that fact alone.",
+    "Predicate, dispatch and nominal command recovery do not establish full physics, Nollie animation, arbitrary terrain, ragdoll or scoring parity.",
+    "Source binaries, raw body streams and the uncompressed command dump remain in the workspace; the distribution includes numeric C++ tracks and compact provenance.",
+    "Final live comparison and test receipts are recorded separately; this policy record does not claim a completed final capture."
+  ]
+}

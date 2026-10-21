@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "event": "observed_air_damping_correction",
+  "source_native_capture": {
+    "path": "recordings/comparison-session02/streets-air-v33/body-physics.jsonl",
+    "sha256": "fd963418711e0cbeb52af6cb3e4c293c2d62251c07a2b5ba38bbb19d8906de86",
+    "airborne_samples": 553,
+    "Spring_angular_drag_values": [
+      2.75
+    ],
+    "Chassis_angular_drag_values": [
+      2.75
+    ],
+    "grounded_samples": 2015,
+    "grounded_drag_values": [
+      1,
+      2.75,
+      5
+    ]
+  },
+  "implementation": {
+    "policy": "use_air_angular_drag",
+    "rate": 2.75,
+    "selection": "Actual strict support only; anticipated positive-gap contacts never qualify grounded.",
+    "ground_drag_retained": 1,
+    "source_air_yaw_acceleration_retained": 28,
+    "old_chassis_air_yaw_torque": 0,
+    "torque_accounting": "Already included once in each returned role wrench."
+  },
+  "headless_probe": {
+    "actual_controller_recording": false,
+    "timeline": "Reset/neutral bootstrap; R3 at1.5s, LSX±1 at1.74..2.14s, netyaw1.4..6s,100Hz.",
+    "old_rate1_net_yaw_degrees": [
+      -335.033,
+      331.259
+    ],
+    "source_air_rate2_75_net_yaw_degrees": [
+      -198.819,
+      197.213
+    ],
+    "invalid_samples": 0
+  },
+  "prior_actual_controller_comparison": {
+    "native_net_yaw_degrees": [
+      -157.64,
+      167.56
+    ],
+    "old_module_net_yaw_degrees": [
+      -346.65,
+      326.7
+    ],
+    "note": "Actual post-correction controller/video evidence is recorded separately; headless values are not promoted to live measurements."
+  },
+  "limits": [
+    "Native and module input/engine pacing differ; native~.8simulationseconds perwallsecond.",
+    "Native grounded transition drag2.75/5 remains unmodeled; ground1retained as authorized.",
+    "No uniform hop boost or empirical yaw gain adopted.",
+    "Physics remains an explicit two-body reduction with independent wheel/contact approximations."
+  ],
+  "validation": {
+    "ctest": "5/5passed",
+    "assertions": 166973,
+    "library_sha256": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07",
+    "independent_all58": "58accepted/48caught/48landed_by_id/0invalid/0nonconverged",
+    "source6_4_pilot_replay": "Finalv2h measured/autonomous1601valid+converged each; exact metrics in session02/headless-release-validation.json and analysis-suspension01/replay-v2h-{measured,autonomous}.json.",
+    "contact_coupling_numerics": "contact-coupling-numerics-v2.json"
+  }
+}

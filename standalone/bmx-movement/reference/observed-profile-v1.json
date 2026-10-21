@@ -1,0 +1,383 @@
+{
+  "schema": 1,
+  "profile": "streets_observed_v1",
+  "provenance": "Current local observed runtime and independent portable reduction",
+  "source": "standalone\\bmx-movement\\recordings\\comparison-session01\\streets-clear02",
+  "source_hashes": {
+    "rider.jsonl": "0d5e35835fb54074e927a5e089cbaf07adf2e2a523463fdcf30b0b05feaff769",
+    "telemetry.csv": "7e62e3323ec19a3985bcd606c2cbb5e15cc1be0f05f7f88d2e121f2b0b19daa8",
+    "runtime-inventory.json": "b0b2f77982785a72fd5f5d0c57afbc5c9031872fb1eb94a722de9f6c0890857f"
+  },
+  "neutral_samples": 3,
+  "neutral_alignment": [
+    {
+      "elapsed": 0.2974225,
+      "body_elapsed": 0.2902984,
+      "maximum_alignment_error": 0.007124099999999967
+    },
+    {
+      "elapsed": 0.4102094,
+      "body_elapsed": 0.401009,
+      "maximum_alignment_error": 0.009200399999999997
+    },
+    {
+      "elapsed": 0.5172874,
+      "body_elapsed": 0.510108,
+      "maximum_alignment_error": 0.007179399999999947
+    }
+  ],
+  "basis": "Unity chassis-COM-local reflected X once, plus chassis center_of_mass(0,.3,0) -> module bike_root-local",
+  "measured": {
+    "seconds": 0.01,
+    "gravity": [
+      0,
+      -12.5,
+      0
+    ],
+    "wheel_radius_m": 0.26,
+    "maximum_wheel_steer_degrees": 18,
+    "upper_arm_m": 0.277304,
+    "forearm_m": 0.22767,
+    "thigh_m": 0.417477,
+    "shin_m": 0.405345,
+    "hip_joint_half_width_m": 0.097297
+  },
+  "hop": {
+    "delay_seconds": 0.07,
+    "parts": 4,
+    "nominal_getvel_if_authored_array_unchanged_m_s": 6.4,
+    "reduced_body_delta_speed_m_s": 7.9,
+    "native_first_clean_hop_rise_m": 2.3476,
+    "module_settled_hop_rise_m": 2.3385,
+    "note": "Four quarter velocity changes separated by fixed yields are native scheduling evidence. .07s delay approximates one .01s fixed yield plus .06s authored wait. Native GetVel index1 selects array[0]. The authored array[0]=3.2 and live quick-hop multiplier=2 imply nominal6.4 only if that array remains unchanged at runtime; the observer exported its type, not numeric live elements. Other joints/forces act simultaneously. The module7.9m/s is an empirical independent effective single-body fit to observed height, not recovered native velocity."
+  },
+  "brake_fit": {
+    "minimum_scale": 0.69,
+    "maximum_scale": 1.9,
+    "speed_gain_s_per_m": 0.64,
+    "calibrated_speed_m_s": [
+      0,
+      4.7
+    ],
+    "formula": "clamp(abs(measured surface-relative COM forward speed)*gain,minimum_scale,maximum_scale)",
+    "scope": "Front/rear brake torques only; no effect without brake input. Bounds clamp outside calibrated range.",
+    "provenance": "Independent reduced-model fit, not the original game brake equation.",
+    "headless_result": "recordings/comparison-session01/headless-brake-final04/brake-sweep.json",
+    "overall_speed_rmse_m_s": 0.129653383738,
+    "legacy_overall_speed_rmse_m_s": 0.754469188136,
+    "prefix_speed_rmse_m_s": 0.189998138326,
+    "legacy_prefix_speed_rmse_m_s": 0.565467862377,
+    "later_within_run_speed_rmse_m_s": 0.100405064098,
+    "legacy_later_within_run_speed_rmse_m_s": 0.810091428782,
+    "limit": "Gain selected on prefix of one sampled-input flat-brake run; later within-run holdout is not independent scenario validation. Minimum and maximum were fixed candidate values."
+  },
+  "reference_host_collision_policy": {
+    "query_horizon_m": 0.09,
+    "maximum_force_n": 85000,
+    "strict_actual_support_gap_m": 0.005,
+    "independent_landing_maximum_closing_speed_m_s": 9.5,
+    "landing_support_settle_seconds": 0.06,
+    "landing_gap_seconds": 0.04,
+    "note": "Independent reduced-host policy, not Unity contact offset or recovered native force limit. At100Hz a7.6m/s incoming body travels7.6cm per step. Wider anticipated queries and sufficient impact budget avoid penetration/rebound without treating positive query separation as actual grounded support or permitting an early hop/landing."
+  },
+  "independent": {
+    "mass_kg": 106,
+    "principal_inertia_kg_m2": [
+      26,
+      32,
+      10
+    ],
+    "note": "Selected eight vehicle bodies sum110kg but extended joint graph includes40 dynamic bodies228.761kg. Neither establishes effective single-body mass; mass/inertia and force/catch/trick tuning remain independent choices. The explicit brake and collision/scoring policies above are fitted reductions; legacy defaults are unchanged."
+  },
+  "neutral_median_joint_targets": {
+    "Hips": [
+      -0.02118348157975856,
+      0.7810809026571783,
+      -0.2065955239621554
+    ],
+    "Chest": [
+      -0.02261933067794657,
+      1.0008245044188429,
+      -0.17803309595331496
+    ],
+    "Head": [
+      -0.050671067995218824,
+      1.3289636879253934,
+      -0.030532920422677717
+    ],
+    "LeftUpperArm": [
+      0.1456951429606851,
+      1.195479715927682,
+      -0.0617934096457655
+    ],
+    "LeftLowerArm": [
+      0.28623844232961415,
+      0.9580432153712408,
+      -0.03395438411114594
+    ],
+    "LeftHand": [
+      0.2137260937064188,
+      0.9314263030064758,
+      0.17991424547166918
+    ],
+    "LeftUpperLeg": [
+      0.07523098298803113,
+      0.7263695941901656,
+      -0.19937591376836267
+    ],
+    "LeftLowerLeg": [
+      0.18479318860558586,
+      0.44651478404394707,
+      0.09038333120530141
+    ],
+    "LeftFoot": [
+      0.14597310771344194,
+      0.08236105081557596,
+      -0.0833680339527661
+    ],
+    "RightUpperArm": [
+      -0.22264864786812916,
+      1.198067424096699,
+      -0.12317696074074685
+    ],
+    "RightLowerArm": [
+      -0.3001506789675507,
+      0.9575552120816309,
+      -0.008704232406549385
+    ],
+    "RightHand": [
+      -0.22571271554655398,
+      0.9115598134293945,
+      0.20145287160619146
+    ],
+    "RightUpperLeg": [
+      -0.11756887232987279,
+      0.7292130612204125,
+      -0.2255856428498064
+    ],
+    "RightLowerLeg": [
+      -0.14293795663054354,
+      0.5608676869914305,
+      0.1555984695041823
+    ],
+    "RightFoot": [
+      -0.11723873164668167,
+      0.24955110925028468,
+      -0.10271268518882343
+    ]
+  },
+  "neutral_template_comparison": {
+    "legacy": {
+      "joint_count": 15,
+      "mean_m": 0.2106923459488558,
+      "rms_m": 0.2267461546393609,
+      "maximum_m": 0.40333881513613973,
+      "per_joint_m": {
+        "Hips": 0.23289737088312723,
+        "Chest": 0.40333881513613973,
+        "Head": 0.2777141796083962,
+        "LeftUpperArm": 0.18757181781986978,
+        "LeftLowerArm": 0.22177531296782213,
+        "LeftHand": 0.09753072563401433,
+        "LeftUpperLeg": 0.28385350230129075,
+        "LeftLowerLeg": 0.1703645911523315,
+        "LeftFoot": 0.1329648006378583,
+        "RightUpperArm": 0.23425565763031705,
+        "RightLowerArm": 0.2055897668580549,
+        "RightHand": 0.0818249730798833,
+        "RightUpperLeg": 0.2874372242495315,
+        "RightLowerLeg": 0.09873538766353261,
+        "RightFoot": 0.24453106361066795
+      },
+      "neutral_joint_positions": {
+        "Hips": [
+          0,
+          1,
+          -0.13
+        ],
+        "Chest": [
+          0,
+          1.31,
+          0.08
+        ],
+        "Head": [
+          0,
+          1.56,
+          0.115
+        ],
+        "LeftUpperArm": [
+          0.19,
+          1.31,
+          0.08
+        ],
+        "LeftLowerArm": [
+          0.4482623966366565,
+          1.0939535917051642,
+          0.03283556481424428
+        ],
+        "LeftHand": [
+          0.25888314843177795,
+          0.9532408118247986,
+          0.2635635733604431
+        ],
+        "LeftUpperLeg": [
+          0.105,
+          1,
+          -0.13
+        ],
+        "LeftLowerLeg": [
+          0.13125366266212557,
+          0.6048886835748977,
+          0.12317541908654156
+        ],
+        "LeftFoot": [
+          0.10774102061986923,
+          0.1703225076198578,
+          0.00872283335775137
+        ],
+        "RightUpperArm": [
+          -0.19,
+          1.31,
+          0.08
+        ],
+        "RightLowerArm": [
+          -0.44826239356566944,
+          1.093953583209421,
+          0.032835586914680706
+        ],
+        "RightHand": [
+          -0.25888314843177795,
+          0.9532408118247986,
+          0.2635636031627655
+        ],
+        "RightUpperLeg": [
+          -0.105,
+          1,
+          -0.13
+        ],
+        "RightLowerLeg": [
+          -0.15644101647763528,
+          0.654366163290821,
+          0.18431047189910849
+        ],
+        "RightFoot": [
+          -0.10774104297161102,
+          0.463699609041214,
+          -0.2203802466392517
+        ]
+      }
+    },
+    "observed": {
+      "joint_count": 15,
+      "mean_m": 0.05469357922041037,
+      "rms_m": 0.08747082718480635,
+      "maximum_m": 0.24453106361066795,
+      "per_joint_m": {
+        "Hips": 0.0,
+        "Chest": 0.0,
+        "Head": 0.0,
+        "LeftUpperArm": 2.2215299868541707E-16,
+        "LeftLowerArm": 0.07305349188524873,
+        "LeftHand": 0.09753072563401433,
+        "LeftUpperLeg": 6.965940288821102E-09,
+        "LeftLowerLeg": 0.10950812230417359,
+        "LeftFoot": 0.1329648006378583,
+        "RightUpperArm": 0.0,
+        "RightLowerArm": 0.0559219193000047,
+        "RightHand": 0.0818249730798833,
+        "RightUpperLeg": 6.965940283460431E-09,
+        "RightLowerLeg": 0.0250685779224238,
+        "RightFoot": 0.24453106361066795
+      },
+      "neutral_joint_positions": {
+        "Hips": [
+          -0.02118348157975856,
+          0.7810809026571783,
+          -0.2065955239621554
+        ],
+        "Chest": [
+          -0.02261933067794657,
+          1.0008245044188429,
+          -0.17803309595331496
+        ],
+        "Head": [
+          -0.050671067995218824,
+          1.3289636879253934,
+          -0.030532920422677717
+        ],
+        "LeftUpperArm": [
+          0.1456951429606851,
+          1.1954797159276822,
+          -0.06179340964576549
+        ],
+        "LeftLowerArm": [
+          0.2722356672844743,
+          0.9693079371128583,
+          0.03685409710224574
+        ],
+        "LeftHand": [
+          0.25888314843177795,
+          0.9532408118247986,
+          0.2635635733604431
+        ],
+        "LeftUpperLeg": [
+          0.07523098988974637,
+          0.7263695940883771,
+          -0.19937591283012498
+        ],
+        "LeftLowerLeg": [
+          0.22223919563925104,
+          0.5357179568757144,
+          0.1416923885399122
+        ],
+        "LeftFoot": [
+          0.10774102061986923,
+          0.1703225076198578,
+          0.00872283335775137
+        ],
+        "RightUpperArm": [
+          -0.22264864786812916,
+          1.198067424096699,
+          -0.12317696074074685
+        ],
+        "RightLowerArm": [
+          -0.28315894457665275,
+          0.9813843054680778,
+          0.03894780143215898
+        ],
+        "RightHand": [
+          -0.25888314843177795,
+          0.9532408118247986,
+          0.2635636031627655
+        ],
+        "RightUpperLeg": [
+          -0.11756887923158803,
+          0.7292130613222009,
+          -0.22558564378804405
+        ],
+        "RightLowerLeg": [
+          -0.1446144108638367,
+          0.5840797117441978,
+          0.16491646323315776
+        ],
+        "RightFoot": [
+          -0.10774104297161102,
+          0.463699609041214,
+          -0.2203802466392517
+        ]
+      }
+    }
+  },
+  "comparison_limits": [
+    "Static15-joint neutral template comparison against three low-speed zero-input pre-pedal frames. It is not full animation or physical rider parity.",
+    "The same native samples determine the fitted template and this error estimate; it is in-sample calibration, not independent validation.",
+    "Joint coordinates are matched to native humanoid joint origins; module wrist/ankle endpoints remain constrained to its independent grip/pedal geometry and crank phase0.",
+    "Pose comparison removes world translation and chassis orientation but does not rescale the native skeleton. Maximum nearest-body timestamp alignment error9.2ms.",
+    "Some authored motions exceed the shorter measured limbs reach and are projected onto reachable targets; release/trajectory/catch semantics remain procedural."
+  ],
+  "validation": {
+    "assertions": 120079,
+    "ctest": "5/5 passed (complete module; legacy and v1 included)",
+    "includes": "legacy60Hz,100Hz gravity/rest/hop,all58selections with both rider dimensions,four-part exact impulse,9cancellation causes before and after launch,full observed barspin and tailwhip catch/single settled landing without penetration or rebound,anticipated queries cannot fake support/hop/landing,brake energy and stop constraints,invalid body/contact history reset,asymmetric folded limbs with longer lower segments,invalid settings and host observations"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "note": "Independent ReSkate portable source with isolated namespace/includes. Standalone chassis admission generalized to fixed dt1/240..1/30 seconds; instantaneous hop impulse excluded from sustained force/h budget. No BMX Streets binaries or game assets included.",
+  "files": [
+    {
+      "file": "bmx_chassis_control.h",
+      "source": "Engine/Game/BMX/bmx_chassis_control.h",
+      "source_sha256": "bad169224a6db7db3378959cb5247a713d3341d0fbcd473191224c3903cf0984",
+      "bundled_sha256": "08f6706b9fd85b54e7e05b69a4444f4cd58279adc925c9ec1391173e97d173b9",
+      "standalone_changes": [
+        "Bounded variable fixed-step admission instead of native60Hz-only gate.",
+        "Explicit instantaneous hop impulse is not a sustained force budget.",
+        "Allow explicit hop_delta_speed up to15m/s for independent reduced-body fits while preserving historical4.5m/s default.",
+        "Optional bounded surface-relative brake-speed torque scale with exact fixed-torque defaults.",
+        "Allow query contact_gap up to0.10m for independently configured impact anticipation; default0.02m and actual-support tolerance0.005m unchanged.",
+        "Optional predicted hop fraction and host external impulses for coupled multi-body reactions; legacy defaults retain their original path.",
+        "When a coupled base wrench exceeds the NET output cap, intersect feasible common contact-fraction intervals; opposing support may cancel that wrench without raising force/torque caps or clipping axes independently. Historical fraction0-feasible numerical path unchanged.",
+        "Optional suppression of the independent supported manual pitch spring/damper when an external source-derived manual actuator owns pitch; defaulttrue preserves legacy behavior."
+      ]
+    },
+    {
+      "file": "bmx_contact_compliance.h",
+      "source": "Engine/Game/BMX/bmx_contact_compliance.h",
+      "source_sha256": "3cb2122afaccf6e32e6ac1aa21c24ce47794812e6d7ff33b92433635e0de51cf",
+      "bundled_sha256": "8901234c42ef15b332bee9221397ca2a00ad608df78834c2e6646f5985e75fcb"
+    },
+    {
+      "file": "bmx_coupled_brake.h",
+      "source": "Engine/Game/BMX/bmx_coupled_brake.h",
+      "source_sha256": "5f2a19d18286219a151638f5774dbb150d05879974f2b6244ce1dd3037f2f961",
+      "bundled_sha256": "420f84b5df80d23ab37dbfbed63db7ebc53905659374757f5db92a8274d8a1b1"
+    },
+    {
+      "file": "bmx_geometry.h",
+      "source": "Engine/Game/BMX/bmx_geometry.h",
+      "source_sha256": "dfac686e4e39690765da12ecd644a3ad75bb48a7e22257cfdc19db5dd39180e7",
+      "bundled_sha256": "4d25bcf2015789b30bef25b901965a4fdc691cdd09b659f541ad7f40c692926a"
+    },
+    {
+      "file": "bmx_ground_pump.h",
+      "source": "Engine/Game/BMX/bmx_ground_pump.h",
+      "source_sha256": "a823136b6538304f602e75f6ead90f61a82c6900571ab52674e800e69fd94ff2",
+      "bundled_sha256": "50a5e0eecccb884a94d5ba14be0bb4463afa9803bd8b8c0c10c5c99d61565f2b"
+    },
+    {
+      "file": "bmx_input.h",
+      "source": "Engine/Game/BMX/bmx_input.h",
+      "source_sha256": "d5b6bbe5ad67a3ac55bc39ae572667cfb444a34c79d12fded5adb836cff02269",
+      "bundled_sha256": "6870ecc5e2e9618c27abbce755abd0ad3fe936350ae3a4e7edb1f0ceee9eb201",
+      "standalone_changes": [
+        "Optional maximum stick magnitude; default1 retains legacy normalization.",
+        "Optional observed balance holdpoints with signed preload, distinct manual/nose entry times, steady-input gating and hysteresis; defaults retain legacy flick/manual path.",
+        "Observed preload quantizes separately to127 steps after holdpoints consume unquantized processed stick input; default legacy path unchanged.",
+        "Optional source Ollie/Nollie gesture predicates, authored v2 thresholds0.6/0.45/0.2s, independent0.2s cooldowns, prior-step hold assistance and exact opposite RequireZeroOut setter semantics. Generic defaults remain off; source4.5 strength is separate from R3."
+      ]
+    },
+    {
+      "file": "bmx_landing_approach.h",
+      "source": "Engine/Game/BMX/bmx_landing_approach.h",
+      "source_sha256": "d3917a64a49b3bbde177b11ebbe362b304f57882079654638028fbebbe1711bc",
+      "bundled_sha256": "8f812a309ced3331bdd843fb1bc7e46a27b4a268f56f4f31256c448c2abeafc5"
+    },
+    {
+      "file": "bmx_landing_contact_compliance.h",
+      "source": "Engine/Game/BMX/bmx_landing_contact_compliance.h",
+      "source_sha256": "8728b260d12907275d30100ab948f9f33e68bb6e41233ddb5b9b992ce42652f0",
+      "bundled_sha256": "576e073627a2f580a34214118059d5cad74abdd21ce42acbb390ac48add5c598"
+    },
+    {
+      "file": "bmx_rider_motion.h",
+      "source": "Extension/BMX/bmx_rider_motion.h",
+      "source_sha256": "c192aff82ed1d25555a0953d5d47e1b27df96529717dff3b591d15f0ac4c2b51",
+      "bundled_sha256": "6b809c3399c195f093eed5b688f19473eeb579dfeac05e95b0ccfb9007021f11"
+    },
+    {
+      "file": "bmx_rider_posture_presentation.h",
+      "source": "Engine/Game/BMX/bmx_rider_posture_presentation.h",
+      "source_sha256": "c10d17395af4e86661fde875dd53d7c21dea4726cd6a4471e1ba11f22eed2e09",
+      "bundled_sha256": "6172f45efb59d5fe6f03b60f81dedd154eee65f84b45db2196844b9738a6accb"
+    },
+    {
+      "file": "bmx_tire_dynamics.h",
+      "source": "Engine/Game/BMX/bmx_tire_dynamics.h",
+      "source_sha256": "290845b02e287988416cb1c1ed8a6894d841faf63f4173001f8aee1b0f2a2cf6",
+      "bundled_sha256": "5c41d16832a5bb1c81f03a93bf923df07aa05d293deff5670b2463bb9471feda",
+      "standalone_changes": [
+        "Optional principal-inertia orientation quaternion; identity default preserves historical diagonal body tensor."
+      ]
+    },
+    {
+      "file": "bmx_trick_catalog.h",
+      "source": "Engine/Game/BMX/bmx_trick_catalog.h",
+      "source_sha256": "243b5accafe2fa1eb32c46aee8096b97fcb49e146d2bda10e3d7794f7ab01ef5",
+      "bundled_sha256": "141952cca31ee9f16b2aff59ae1456c2f42388a785e302bcba4f917f6dc4da94"
+    },
+    {
+      "file": "bmx_tricks.h",
+      "source": "Engine/Game/BMX/bmx_tricks.h",
+      "source_sha256": "cf7a01cf0c1a7c37cf77b157eadf579342046616954a03d7e900ae96590cafbd",
+      "bundled_sha256": "ff6130bbb52f134b5ed5454fee2f62d34d0a452903cc6adbce8bae5cfe62ca54",
+      "standalone_changes": [
+        "Optional measured per-catalog enter/recover durations; zero arrays retain historical independent timing."
+      ]
+    },
+    {
+      "file": "bmx_visual.h",
+      "source": "Extension/BMX/bmx_visual.h",
+      "source_sha256": "b4de22781e0a5726a2da7ceeb352a77a4a9969c532b5c10543b9708e4d21c360",
+      "bundled_sha256": "92ec832d0543613d2b86abd6f87690bd733508c6f37b627656c8d517330bf227"
+    }
+  ]
+}

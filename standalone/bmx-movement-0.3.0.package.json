@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "version": "0.3.0",
+  "archive": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement-0.3.0.zip",
+  "bytes": 623587602,
+  "sha256": "b510c960eec5476c65a16e488dbc5230f5151e0c069ea8124a6d0a7af8affbc3",
+  "file_count": 369,
+  "all_archive_entries_verified": true,
+  "verification_sha256": "4a580e8df40f16f6f7667c14c617c81237ca10e891da15a14161ee35b4a8639a",
+  "raw_frames_jsonl_game_dlls_and_build_trees_excluded": true,
+  "fresh_extracted_build_checked": false
+}

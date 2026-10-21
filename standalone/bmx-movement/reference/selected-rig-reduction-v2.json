@@ -1,0 +1,49 @@
+{
+  "source": "standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension01\\body-physics.jsonl",
+  "source_sha256": "533fe3d6143e7f0d7e2d3a1ef66bf896d830663c703a6a5fa6057f30325b5ab4",
+  "fixed_index": 0,
+  "selected_roles": [
+    "Chassis Body",
+    "Front Wheel Front",
+    "Back Wheel Back",
+    "Headset",
+    "BB Body",
+    "Left Pedal Body",
+    "Right Pedal Body"
+  ],
+  "mass": 30,
+  "com_from_chassis_transform_module_basis": [
+    -0.0035410596600473155,
+    0.2979104485111192,
+    -0.0028531682992827116
+  ],
+  "inertia_chassis_axes": [
+    [
+      8.196195971998051,
+      -0.009021813264563706,
+      0.05699854972038142
+    ],
+    [
+      -0.009021813264563711,
+      7.7289245936639475,
+      -0.147994045881646
+    ],
+    [
+      0.05699854972038135,
+      -0.14799404588164597,
+      4.683980208614809
+    ]
+  ],
+  "principal_inertia": [
+    4.675897481766363,
+    7.735800355946515,
+    8.197402936563929
+  ],
+  "principal_orientation": [
+    -0.008153934985667407,
+    0.7009318349198123,
+    -0.02591052927366069,
+    0.7127108253793774
+  ],
+  "note": "Explicit rigid reduction of selected seven non-Spring vehicle bodies only. Spring80 remains independent. No humanoid/avatar/hair mass included. The virtual tire rotor inertia and any articulation omitted by this reduction remain separate model choices."
+}

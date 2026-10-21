@@ -1,0 +1,4676 @@
+{
+  "schema": 1,
+  "event": "bmx_generated_observed_pose_tracks",
+  "generated_cpp": "standalone\\bmx-movement\\src\\observed_pose_tracks.cpp",
+  "generated_sha256": "a5cbdf67899c427ad5e2c43c2fcad7c28ab3b24ea6dc564074b98d9337ddf696",
+  "exporter_sha256": "fe213036eb7599bba3e1175be8c517c5410af0af54871ca546161985d72368ab",
+  "header_sha256": "7422f27f7a0529d1cf9c9e523627d32a5c692edece7eb244e9b9e1ca1c041897",
+  "sources": [
+    {
+      "path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "sha256": "31d43321eb872c28bf74d0615c7a04950f6cbd2337eef350a9ef1c1e6ccd4f1d",
+      "rider_sha256": "1e25db56d8a80b2cb24dbe54e6148073bfe2270147043fc6e54b49627a3eaed0",
+      "coverage_sha256": "c9cb38904c52e8815bcc0e11b2c5b4658bbbe2d1a355289a8f4b4b0a41757f07"
+    },
+    {
+      "path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "sha256": "fa7e5fb5529623b1152c5a45db2192f03cf461595393ee4b55b8f9a01fbee092",
+      "rider_sha256": "29621610e9afe091eacd1c7a19eb6b97e9e9a7dfe907fd7532cb172197f75674",
+      "coverage_sha256": "c3b4554d1c2f983347f4f5d201320a7167fb48fca21505bb3758423fe063a760"
+    },
+    {
+      "path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "sha256": "93f71c5ce730a6436a6b42e394846ef802d67f084524944ade371af58285fdac",
+      "rider_sha256": "f1d0b76f00b4aca33bc35480ad7132370943683f325e5d234f82b10fe7038559",
+      "coverage_sha256": "77fdd70e7025509ea2628e215945a342c61ba37639845d1462aa9ecee880c7ca"
+    },
+    {
+      "path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "sha256": "d1b35b55bd77a783cd35cd3ed1fc416a739328a2024988affcbe2e50ff0b48a9",
+      "rider_sha256": "bcf2380ffc900e1d8a836c502251721487acaf885d295ec2d84da81526b73bfe",
+      "coverage_sha256": "4b14f0a9ebb38e6e26072c359b75fad7b0ca299c11285ef5662ec6a6547e6ebe"
+    },
+    {
+      "path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-mc-griddle-retry01\\pose-tracks-native.json",
+      "sha256": "1dfeeaec29b0e0037ad727f2de70cda8ebe75a1b1944742a68d66f03e3b50533",
+      "rider_sha256": "538c6150c3306db7c7bb26dd49fe1dafa31c0b71fba4fa47e547660a8f04afab",
+      "coverage_sha256": "cfff8a409cf94fc8701f4d86f07d1128556ed4697cbbfa9684328d05ceb0e5f7"
+    }
+  ],
+  "target_engine_hz": 15.0,
+  "partial_tracks_explicitly_allowed": false,
+  "excluded_tracks": [
+    {
+      "set": 1,
+      "slot": 3,
+      "source": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "reason": "Explicitly partial source window excluded from production tracks"
+    }
+  ],
+  "maximum_position_error_target_m": 0.02,
+  "maximum_rotation_error_target_degrees": 5.0,
+  "position_interpolation": "linear",
+  "rotation_interpolation": "shortest-arc quaternion SLERP",
+  "bone_enum_count": 55,
+  "tracks": [
+    {
+      "set": 0,
+      "slot": 0,
+      "module_id": 0,
+      "name": "Grand Slam Left",
+      "generated_index": 0,
+      "source_keys": 118,
+      "retained_source_keys": 30,
+      "generated_keys": 45,
+      "base_grid_keys": 24,
+      "adaptive_extra_observed_keys": 21,
+      "mean_generated_keys_per_engine_second": 31.722013886724252,
+      "engine_time_interval": [
+        -0.09704999999999586,
+        1.2899993896484374
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.5399932861328125,
+      "exit_end_seconds": 1.1399993896484375,
+      "exit_start_seconds": 0.5399932861328125,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 2.373291015625,
+          "simulation_seconds": 133.0399932861328,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 3.1219170093536377,
+          "simulation_seconds": 133.63999938964844,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 1.7073769569396973,
+        "last_wall_seconds": 7.940645933151245,
+        "first_engine_seconds": 132.40295,
+        "last_engine_seconds": 137.89514,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 1.8180768489837646,
+        "simulation_seconds": 132.5,
+        "set": 0.0,
+        "slot": 0.0,
+        "fixed_index": 116,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1560,
+        "maximum": 0.01867574925127351,
+        "rms": 0.0041348296085896834
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1560,
+        "maximum": 4.454629979167297,
+        "rms": 1.1286171926633768
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 1,
+      "module_id": 1,
+      "name": "Twix Right",
+      "generated_index": 1,
+      "source_keys": 92,
+      "retained_source_keys": 20,
+      "generated_keys": 31,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 34.528714934126825,
+      "engine_time_interval": [
+        -0.07885000000001696,
+        0.7899920654296807
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4699938964843682,
+      "exit_end_seconds": 0.6399920654296807,
+      "exit_start_seconds": 0.4699938964843682,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 10.338980913162231,
+          "simulation_seconds": 139.89999389648438,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 10.657498836517334,
+          "simulation_seconds": 140.0699920654297,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 9.707007884979248,
+        "last_wall_seconds": 15.9427649974823,
+        "first_engine_seconds": 139.35115,
+        "last_engine_seconds": 143.2192,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 9.808202981948853,
+        "simulation_seconds": 139.43,
+        "set": 0.0,
+        "slot": 1.0,
+        "fixed_index": 809,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.017957822375499116,
+        "rms": 0.003722349054653007
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 3.0723714468077077,
+        "rms": 0.6152779547751528
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 2,
+      "module_id": 2,
+      "name": "Helicopter Right",
+      "generated_index": 2,
+      "source_keys": 94,
+      "retained_source_keys": 21,
+      "generated_keys": 32,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 15,
+      "mean_generated_keys_per_engine_second": 34.618913287076296,
+      "engine_time_interval": [
+        -0.07544999999998936,
+        0.8200142724609464
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.37001122070313386,
+      "exit_end_seconds": 0.6700142724609464,
+      "exit_start_seconds": 0.37001122070313386,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 18.322937965393066,
+          "simulation_seconds": 144.72000122070312,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 18.772058963775635,
+          "simulation_seconds": 145.02000427246094,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 17.691761016845703,
+        "last_wall_seconds": 23.92753505706787,
+        "first_engine_seconds": 144.27454,
+        "last_engine_seconds": 148.23509,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 17.803030967712402,
+        "simulation_seconds": 144.34999,
+        "set": 0.0,
+        "slot": 2.0,
+        "fixed_index": 1301,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1092,
+        "maximum": 0.018158742094820098,
+        "rms": 0.0030720803361668405
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1092,
+        "maximum": 4.462614125669635,
+        "rms": 0.6794644016068097
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 3,
+      "module_id": 3,
+      "name": "Bri Flip Left",
+      "generated_index": 3,
+      "source_keys": 100,
+      "retained_source_keys": 29,
+      "generated_keys": 45,
+      "base_grid_keys": 22,
+      "adaptive_extra_observed_keys": 23,
+      "mean_generated_keys_per_engine_second": 34.84711942009863,
+      "engine_time_interval": [
+        -0.002659999999991669,
+        1.2599981689453101
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.5200018310546852,
+      "exit_end_seconds": 1.1099981689453102,
+      "exit_start_seconds": 0.5200018310546852,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 26.738929986953735,
+          "simulation_seconds": 150.0800018310547,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 27.692201852798462,
+          "simulation_seconds": 150.6699981689453,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 25.89765691757202,
+        "last_wall_seconds": 31.979219913482666,
+        "first_engine_seconds": 149.55734,
+        "last_engine_seconds": 153.90247,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 25.963631868362427,
+        "simulation_seconds": 149.56,
+        "set": 0.0,
+        "slot": 3.0,
+        "fixed_index": 1822,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1508,
+        "maximum": 0.016922341471289598,
+        "rms": 0.0024457930635072554
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1508,
+        "maximum": 1.9848549201686365,
+        "rms": 0.28146507532983
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 4,
+      "module_id": 4,
+      "name": "Willy Flip",
+      "generated_index": 4,
+      "source_keys": 107,
+      "retained_source_keys": 24,
+      "generated_keys": 36,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 19,
+      "mean_generated_keys_per_engine_second": 38.585931963248,
+      "engine_time_interval": [
+        -0.06707000000000107,
+        0.8399963378906193
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2999969482421818,
+      "exit_end_seconds": 0.6899963378906193,
+      "exit_start_seconds": 0.2999969482421818,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 34.36894392967224,
+          "simulation_seconds": 155.6999969482422,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 35.112547874450684,
+          "simulation_seconds": 156.08999633789062,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 33.72338891029358,
+        "last_wall_seconds": 39.98355293273926,
+        "first_engine_seconds": 155.33293,
+        "last_engine_seconds": 159.94127,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 33.83808183670044,
+        "simulation_seconds": 155.4,
+        "set": 0.0,
+        "slot": 4.0,
+        "fixed_index": 2406,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1248,
+        "maximum": 0.014930244819394102,
+        "rms": 0.0013838931727772933
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1248,
+        "maximum": 3.039818369310283,
+        "rms": 0.2050336962654214
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 5,
+      "module_id": 5,
+      "name": "Mc Griddle Left",
+      "generated_index": 5,
+      "source_keys": 107,
+      "retained_source_keys": 36,
+      "generated_keys": 57,
+      "base_grid_keys": 27,
+      "adaptive_extra_observed_keys": 30,
+      "mean_generated_keys_per_engine_second": 35.07447975006026,
+      "engine_time_interval": [
+        -0.066599999999994,
+        1.5300024414062476
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.5699896240234352,
+      "exit_end_seconds": 1.3800024414062477,
+      "exit_start_seconds": 0.5699896240234352,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 42.56670904159546,
+          "simulation_seconds": 162.12998962402344,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 43.573288917541504,
+          "simulation_seconds": 162.94000244140625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 41.737592935562134,
+        "last_wall_seconds": 47.97699594497681,
+        "first_engine_seconds": 161.4934,
+        "last_engine_seconds": 166.1687,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 41.840051889419556,
+        "simulation_seconds": 161.56,
+        "set": 0.0,
+        "slot": 5.0,
+        "fixed_index": 3022,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1872,
+        "maximum": 0.015191011380167091,
+        "rms": 0.0017138383956681964
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1872,
+        "maximum": 3.7447912165754023,
+        "rms": 0.3740595320118995
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 6,
+      "module_id": 6,
+      "name": "Kick Whip Left",
+      "generated_index": 6,
+      "source_keys": 106,
+      "retained_source_keys": 21,
+      "generated_keys": 32,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 15,
+      "mean_generated_keys_per_engine_second": 35.64204120007333,
+      "engine_time_interval": [
+        -0.08975999999998407,
+        0.7799993896484466
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4600012207031341,
+      "exit_end_seconds": 0.6299993896484466,
+      "exit_start_seconds": 0.4600012207031341,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 50.40862202644348,
+          "simulation_seconds": 167.97000122070312,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 50.62625288963318,
+          "simulation_seconds": 168.13999938964844,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 49.666749000549316,
+        "last_wall_seconds": 55.979203939437866,
+        "first_engine_seconds": 167.42024,
+        "last_engine_seconds": 171.87398,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 49.78937292098999,
+        "simulation_seconds": 167.51,
+        "set": 0.0,
+        "slot": 6.0,
+        "fixed_index": 3617,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1092,
+        "maximum": 0.011435102875371358,
+        "rms": 0.0018157146807356306
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1092,
+        "maximum": 1.3991361085096754,
+        "rms": 0.23165666486500547
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 0,
+      "slot": 7,
+      "module_id": 7,
+      "name": "Superman",
+      "generated_index": 7,
+      "source_keys": 101,
+      "retained_source_keys": 26,
+      "generated_keys": 42,
+      "base_grid_keys": 22,
+      "adaptive_extra_observed_keys": 20,
+      "mean_generated_keys_per_engine_second": 34.006160522475106,
+      "engine_time_interval": [
+        -0.09566999999998416,
+        1.1099938964843772
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3699975585937523,
+      "exit_end_seconds": 0.9599938964843773,
+      "exit_start_seconds": 0.3699975585937523,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 58.23812794685364,
+          "simulation_seconds": 173.55999755859375,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 58.9613299369812,
+          "simulation_seconds": 174.14999389648438,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 57.70565986633301,
+        "last_wall_seconds": 63.927294969558716,
+        "first_engine_seconds": 173.09433,
+        "last_engine_seconds": 177.5223,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 57.82486891746521,
+        "simulation_seconds": 173.19,
+        "set": 0.0,
+        "slot": 7.0,
+        "fixed_index": 4185,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1352,
+        "maximum": 0.016841350571384864,
+        "rms": 0.0019641205238702802
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1352,
+        "maximum": 2.2229654517106923,
+        "rms": 0.27204046602663023
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 0,
+      "module_id": 10,
+      "name": "Grand Slam Right",
+      "generated_index": 8,
+      "source_keys": 99,
+      "retained_source_keys": 36,
+      "generated_keys": 53,
+      "base_grid_keys": 24,
+      "adaptive_extra_observed_keys": 29,
+      "mean_generated_keys_per_engine_second": 37.576631597519295,
+      "engine_time_interval": [
+        -0.09384000000000015,
+        1.2899987792968886
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.5399926757812636,
+      "exit_end_seconds": 1.1399987792968886,
+      "exit_start_seconds": 0.5399926757812636,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 66.78235983848572,
+          "simulation_seconds": 179.17999267578125,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 67.57598900794983,
+          "simulation_seconds": 179.77999877929688,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 65.68458485603333,
+        "last_wall_seconds": 71.95679593086243,
+        "first_engine_seconds": 178.54616,
+        "last_engine_seconds": 182.60667,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 65.83295702934265,
+        "simulation_seconds": 178.64,
+        "set": 1.0,
+        "slot": 0.0,
+        "fixed_index": 4730,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1872,
+        "maximum": 0.012528122063813782,
+        "rms": 0.0019154566322871064
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1872,
+        "maximum": 1.9264623904372125,
+        "rms": 0.2959447928210118
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 1,
+      "module_id": 11,
+      "name": "Christ Air",
+      "generated_index": 9,
+      "source_keys": 112,
+      "retained_source_keys": 25,
+      "generated_keys": 37,
+      "base_grid_keys": 20,
+      "adaptive_extra_observed_keys": 17,
+      "mean_generated_keys_per_engine_second": 32.476844797705795,
+      "engine_time_interval": [
+        -0.01847999999998251,
+        1.0900020654296951
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3500057275390702,
+      "exit_end_seconds": 0.9400020654296952,
+      "exit_start_seconds": 0.3500057275390702,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 74.21035695075989,
+          "simulation_seconds": 184.47999572753906,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 75.01042795181274,
+          "simulation_seconds": 185.0699920654297,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 73.80154299736023,
+        "last_wall_seconds": 79.98189687728882,
+        "first_engine_seconds": 184.11151,
+        "last_engine_seconds": 188.91847,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 73.8625328540802,
+        "simulation_seconds": 184.12999,
+        "set": 1.0,
+        "slot": 1.0,
+        "fixed_index": 5279,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1300,
+        "maximum": 0.019608347880787417,
+        "rms": 0.00431593677289041
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1300,
+        "maximum": 3.0039225736654496,
+        "rms": 0.5403076064329814
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 2,
+      "module_id": 12,
+      "name": "Kick Whip Right",
+      "generated_index": 10,
+      "source_keys": 106,
+      "retained_source_keys": 20,
+      "generated_keys": 29,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 32.253854937218485,
+      "engine_time_interval": [
+        -0.08811000000000035,
+        0.7800032861328191
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4600051171875066,
+      "exit_end_seconds": 0.6300032861328191,
+      "exit_start_seconds": 0.4600051171875066,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 82.49834990501404,
+          "simulation_seconds": 190.6199951171875,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 82.73545098304749,
+          "simulation_seconds": 190.7899932861328,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 81.70861101150513,
+        "last_wall_seconds": 87.94335389137268,
+        "first_engine_seconds": 190.07188,
+        "last_engine_seconds": 194.59189,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 81.82843399047852,
+        "simulation_seconds": 190.15999,
+        "set": 1.0,
+        "slot": 2.0,
+        "fixed_index": 5882,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.017802391423509208,
+        "rms": 0.003072843343424073
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 3.863842848403337,
+        "rms": 1.0112580814677778
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 3,
+      "module_id": 13,
+      "name": "Mc Griddle Right",
+      "generated_index": 11,
+      "source_keys": 120,
+      "retained_source_keys": 38,
+      "generated_keys": 59,
+      "base_grid_keys": 28,
+      "adaptive_extra_observed_keys": 31,
+      "mean_generated_keys_per_engine_second": 35.450155858444624,
+      "engine_time_interval": [
+        -0.09609999999997854,
+        1.5399999999999863
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.5699926757812364,
+      "exit_end_seconds": 1.3899999999999864,
+      "exit_start_seconds": 0.5699926757812364,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 2.387686014175415,
+          "simulation_seconds": 671.4299926757812,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 3.3852570056915283,
+          "simulation_seconds": 672.25,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 1.5951180458068848,
+        "last_wall_seconds": 7.948137044906616,
+        "first_engine_seconds": 670.7639,
+        "last_engine_seconds": 676.3614,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-mc-griddle-retry01\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 1.7052419185638428,
+        "simulation_seconds": 670.86,
+        "set": 1.0,
+        "slot": 3.0,
+        "fixed_index": 142,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1976,
+        "maximum": 0.008819578118146508,
+        "rms": 0.0011163450218562839
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1976,
+        "maximum": 3.3832273835447566,
+        "rms": 0.26622330837000585
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 4,
+      "module_id": 14,
+      "name": "Bar Hug",
+      "generated_index": 12,
+      "source_keys": 91,
+      "retained_source_keys": 19,
+      "generated_keys": 23,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 6,
+      "mean_generated_keys_per_engine_second": 26.53887982413485,
+      "engine_time_interval": [
+        -0.0689700000000073,
+        0.7600024414062375
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3499926757812375,
+      "exit_end_seconds": 0.6100024414062375,
+      "exit_start_seconds": 0.369996948242175,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 98.2243058681488,
+          "simulation_seconds": 202.92999267578125,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 98.24298906326294,
+          "simulation_seconds": 202.9499969482422,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 98.60818099975586,
+          "simulation_seconds": 203.19000244140625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 97.68756484985352,
+        "last_wall_seconds": 103.99577784538269,
+        "first_engine_seconds": 202.51103,
+        "last_engine_seconds": 206.49881,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 97.80472683906555,
+        "simulation_seconds": 202.58,
+        "set": 1.0,
+        "slot": 4.0,
+        "fixed_index": 7124,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.016625272414056286,
+        "rms": 0.004468773621511254
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 3.405781154418354,
+        "rms": 0.8948154065586793
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 5,
+      "module_id": 15,
+      "name": "Bri Flip Right",
+      "generated_index": 13,
+      "source_keys": 105,
+      "retained_source_keys": 31,
+      "generated_keys": 48,
+      "base_grid_keys": 24,
+      "adaptive_extra_observed_keys": 24,
+      "mean_generated_keys_per_engine_second": 35.05908845568683,
+      "engine_time_interval": [
+        -0.080600000000004,
+        1.2599938964843829
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.519997558593758,
+      "exit_end_seconds": 1.109993896484383,
+      "exit_start_seconds": 0.519997558593758,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 106.44401788711548,
+          "simulation_seconds": 208.30999755859375,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 107.28163599967957,
+          "simulation_seconds": 208.89999389648438,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 105.67253994941711,
+        "last_wall_seconds": 111.95598292350769,
+        "first_engine_seconds": 207.7094,
+        "last_engine_seconds": 212.26839,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 105.78292202949524,
+        "simulation_seconds": 207.79,
+        "set": 1.0,
+        "slot": 5.0,
+        "fixed_index": 7645,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1612,
+        "maximum": 0.019551539804093625,
+        "rms": 0.002557847037911913
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1612,
+        "maximum": 4.654267888980587,
+        "rms": 0.713255182511987
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 6,
+      "module_id": 16,
+      "name": "Helicopter Left",
+      "generated_index": 14,
+      "source_keys": 119,
+      "retained_source_keys": 21,
+      "generated_keys": 31,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 34.39967665199721,
+      "engine_time_interval": [
+        -0.052090000000021064,
+        0.8200112207031168
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3700081689453043,
+      "exit_end_seconds": 0.6700112207031168,
+      "exit_start_seconds": 0.3700081689453043,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 114.18005204200745,
+          "simulation_seconds": 214.1699981689453,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 114.54631805419922,
+          "simulation_seconds": 214.47000122070312,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 113.69599485397339,
+        "last_wall_seconds": 119.99027705192566,
+        "first_engine_seconds": 213.7479,
+        "last_engine_seconds": 219.3359,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 113.77095103263855,
+        "simulation_seconds": 213.79999,
+        "set": 1.0,
+        "slot": 6.0,
+        "fixed_index": 8246,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1092,
+        "maximum": 0.01724327467029587,
+        "rms": 0.00390752999300305
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1092,
+        "maximum": 2.083730678694069,
+        "rms": 0.27506125003289056
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 1,
+      "slot": 7,
+      "module_id": 17,
+      "name": "Nothing",
+      "generated_index": 15,
+      "source_keys": 117,
+      "retained_source_keys": 17,
+      "generated_keys": 29,
+      "base_grid_keys": 15,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 36.61646659181293,
+      "engine_time_interval": [
+        -0.034680000000008704,
+        0.7300032861328077
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3099990136718702,
+      "exit_end_seconds": 0.5800032861328077,
+      "exit_start_seconds": 0.3099990136718702,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 122.22637701034546,
+          "simulation_seconds": 221.26998901367188,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 122.53778505325317,
+          "simulation_seconds": 221.5399932861328,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 121.77295994758606,
+        "last_wall_seconds": 127.99285101890564,
+        "first_engine_seconds": 220.92531,
+        "last_engine_seconds": 226.35237,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 121.90685701370239,
+        "simulation_seconds": 220.95999,
+        "set": 1.0,
+        "slot": 7.0,
+        "fixed_index": 8962,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 884,
+        "maximum": 0.004193314679042273,
+        "rms": 0.0009504826864471015
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 884,
+        "maximum": 0.7435629173905537,
+        "rms": 0.08344145031260228
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 0,
+      "module_id": 20,
+      "name": "Tuck No",
+      "generated_index": 16,
+      "source_keys": 114,
+      "retained_source_keys": 19,
+      "generated_keys": 28,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 33.48830192010304,
+      "engine_time_interval": [
+        -0.07627000000002226,
+        0.7299816894531205
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.33999145507812045,
+      "exit_end_seconds": 0.5799816894531205,
+      "exit_start_seconds": 0.33999145507812045,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 2.2872400283813477,
+          "simulation_seconds": 263.4599914550781,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 2.5480501651763916,
+          "simulation_seconds": 263.6999816894531,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 1.667936086654663,
+        "last_wall_seconds": 7.986104965209961,
+        "first_engine_seconds": 263.04373,
+        "last_engine_seconds": 268.15106,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 1.7859809398651123,
+        "simulation_seconds": 263.12,
+        "set": 2.0,
+        "slot": 0.0,
+        "fixed_index": 127,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.009607014515499309,
+        "rms": 0.0019020010145371345
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 1.2990684671483692,
+        "rms": 0.26125360566232236
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 1,
+      "module_id": 21,
+      "name": "Table",
+      "generated_index": 17,
+      "source_keys": 117,
+      "retained_source_keys": 20,
+      "generated_keys": 26,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 8,
+      "mean_generated_keys_per_engine_second": 28.28425030743869,
+      "engine_time_interval": [
+        -0.09390000000001919,
+        0.789984130859375
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.279998779296875,
+      "exit_end_seconds": 0.639984130859375,
+      "exit_start_seconds": 0.399993896484375,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 10.074177980422974,
+          "simulation_seconds": 270.0299987792969,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 10.249438047409058,
+          "simulation_seconds": 270.1499938964844,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 10.53476595878601,
+          "simulation_seconds": 270.3899841308594,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 9.70287013053894,
+        "last_wall_seconds": 15.988814115524292,
+        "first_engine_seconds": 269.6561,
+        "last_engine_seconds": 275.18524,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 9.817583084106445,
+        "simulation_seconds": 269.75,
+        "set": 2.0,
+        "slot": 1.0,
+        "fixed_index": 790,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.012671855811665508,
+        "rms": 0.0032341962286209958
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 3.0099572860829746,
+        "rms": 0.886346546006386
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 2,
+      "module_id": 22,
+      "name": "Invert",
+      "generated_index": 18,
+      "source_keys": 116,
+      "retained_source_keys": 20,
+      "generated_keys": 32,
+      "base_grid_keys": 19,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 32.830314733235916,
+      "engine_time_interval": [
+        -0.08427000000000362,
+        0.8599792480468637
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.28999633789061363,
+      "exit_end_seconds": 0.7099792480468636,
+      "exit_start_seconds": 0.37999267578123863,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 18.07518196105957,
+          "simulation_seconds": 277.0899963378906,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 18.179813146591187,
+          "simulation_seconds": 277.17999267578125,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 18.574190139770508,
+          "simulation_seconds": 277.5099792480469,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 17.707020044326782,
+        "last_wall_seconds": 23.988378047943115,
+        "first_engine_seconds": 276.71573,
+        "last_engine_seconds": 282.15466,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 17.8123300075531,
+        "simulation_seconds": 276.8,
+        "set": 2.0,
+        "slot": 2.0,
+        "fixed_index": 1495,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.013527170389340547,
+        "rms": 0.003647931527424314
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 2.7788695650927773,
+        "rms": 0.673801154811258
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 3,
+      "module_id": 23,
+      "name": "Turndown",
+      "generated_index": 19,
+      "source_keys": 119,
+      "retained_source_keys": 20,
+      "generated_keys": 30,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 32.45875802512839,
+      "engine_time_interval": [
+        -0.08345000000002756,
+        0.8099914550781137
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.25999755859373863,
+      "exit_end_seconds": 0.6599914550781136,
+      "exit_start_seconds": 0.36998291015623863,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 26.065613985061646,
+          "simulation_seconds": 284.05999755859375,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 26.179545164108276,
+          "simulation_seconds": 284.16998291015625,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 26.48651099205017,
+          "simulation_seconds": 284.4599914550781,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 25.709898948669434,
+        "last_wall_seconds": 31.984848022460938,
+        "first_engine_seconds": 283.71655,
+        "last_engine_seconds": 289.3162,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 25.811810970306396,
+        "simulation_seconds": 283.8,
+        "set": 2.0,
+        "slot": 3.0,
+        "fixed_index": 2195,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.008470142443947315,
+        "rms": 0.0023978730418668342
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 2.8130112008877486,
+        "rms": 0.6169876409904931
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 4,
+      "module_id": 24,
+      "name": "Suicide",
+      "generated_index": 20,
+      "source_keys": 113,
+      "retained_source_keys": 16,
+      "generated_keys": 23,
+      "base_grid_keys": 14,
+      "adaptive_extra_observed_keys": 9,
+      "mean_generated_keys_per_engine_second": 34.28210989890697,
+      "engine_time_interval": [
+        -0.04174999999997908,
+        0.5999841308593773
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.20999389648437727,
+      "exit_end_seconds": 0.4499841308593773,
+      "exit_start_seconds": 0.2999902343750023,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 34.11198806762695,
+          "simulation_seconds": 290.8999938964844,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 34.21885395050049,
+          "simulation_seconds": 290.989990234375,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 34.4035861492157,
+          "simulation_seconds": 291.1399841308594,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 33.73674917221069,
+        "last_wall_seconds": 39.95238995552063,
+        "first_engine_seconds": 290.64825,
+        "last_engine_seconds": 295.75748,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 33.87203097343445,
+        "simulation_seconds": 290.69,
+        "set": 2.0,
+        "slot": 4.0,
+        "fixed_index": 2884,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 832,
+        "maximum": 0.015995721953092977,
+        "rms": 0.004306542341390467
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 832,
+        "maximum": 3.5730032328107932,
+        "rms": 0.7115846932250304
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 5,
+      "module_id": 25,
+      "name": "Euro",
+      "generated_index": 21,
+      "source_keys": 118,
+      "retained_source_keys": 19,
+      "generated_keys": 26,
+      "base_grid_keys": 15,
+      "adaptive_extra_observed_keys": 11,
+      "mean_generated_keys_per_engine_second": 32.608450036555794,
+      "engine_time_interval": [
+        -0.06664999999998145,
+        0.70002244140627
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.29001267578127,
+      "exit_end_seconds": 0.55002244140627,
+      "exit_start_seconds": 0.29001267578127,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 42.19805097579956,
+          "simulation_seconds": 297.67999267578125,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 42.50496506690979,
+          "simulation_seconds": 297.94000244140625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 41.69363594055176,
+        "last_wall_seconds": 47.99765110015869,
+        "first_engine_seconds": 297.32333,
+        "last_engine_seconds": 302.5937,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 41.79624605178833,
+        "simulation_seconds": 297.38998,
+        "set": 2.0,
+        "slot": 5.0,
+        "fixed_index": 3554,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.01448136211385024,
+        "rms": 0.002715027464631691
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 4.156422210952367,
+        "rms": 0.8299372491559428
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 6,
+      "module_id": 26,
+      "name": "Lookback",
+      "generated_index": 22,
+      "source_keys": 117,
+      "retained_source_keys": 21,
+      "generated_keys": 34,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 17,
+      "mean_generated_keys_per_engine_second": 35.644312669439174,
+      "engine_time_interval": [
+        -0.09582000000000335,
+        0.8299938964843477
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2999890136718477,
+      "exit_end_seconds": 0.6799938964843477,
+      "exit_start_seconds": 0.2999890136718477,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 50.19230008125305,
+          "simulation_seconds": 304.5199890136719,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 50.6121711730957,
+          "simulation_seconds": 304.8999938964844,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 49.69837999343872,
+        "last_wall_seconds": 55.98658013343811,
+        "first_engine_seconds": 304.12418,
+        "last_engine_seconds": 309.3162,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 49.812719106674194,
+        "simulation_seconds": 304.22,
+        "set": 2.0,
+        "slot": 6.0,
+        "fixed_index": 4237,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1092,
+        "maximum": 0.014971430611267962,
+        "rms": 0.0031649406627825027
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1092,
+        "maximum": 1.926074451262234,
+        "rms": 0.3113123679986049
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 2,
+      "slot": 7,
+      "module_id": 27,
+      "name": "Cannon Ball",
+      "generated_index": 23,
+      "source_keys": 113,
+      "retained_source_keys": 19,
+      "generated_keys": 31,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 15,
+      "mean_generated_keys_per_engine_second": 36.02743362411609,
+      "engine_time_interval": [
+        -0.08269999999998845,
+        0.7499987792968682
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3299792480468682,
+      "exit_end_seconds": 0.5999987792968682,
+      "exit_start_seconds": 0.3299792480468682,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 58.20003700256348,
+          "simulation_seconds": 311.0099792480469,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 58.561882972717285,
+          "simulation_seconds": 311.2799987792969,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 57.70993995666504,
+        "last_wall_seconds": 63.94483208656311,
+        "first_engine_seconds": 310.5973,
+        "last_engine_seconds": 315.38452,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 57.81564116477966,
+        "simulation_seconds": 310.68,
+        "set": 2.0,
+        "slot": 7.0,
+        "fixed_index": 4883,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.010985702541699834,
+        "rms": 0.0013966521633612269
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 2.6802959874197034,
+        "rms": 0.3179643425351073
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 1,
+      "module_id": 31,
+      "name": "Tire Grab Left",
+      "generated_index": 24,
+      "source_keys": 110,
+      "retained_source_keys": 19,
+      "generated_keys": 27,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 10,
+      "mean_generated_keys_per_engine_second": 30.162840137741092,
+      "engine_time_interval": [
+        -0.10199999999997544,
+        0.7599877929687523
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2699914550781273,
+      "exit_end_seconds": 0.6099877929687523,
+      "exit_start_seconds": 0.3800073242187523,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 74.11175894737244,
+          "simulation_seconds": 323.2099914550781,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 74.22223210334778,
+          "simulation_seconds": 323.32000732421875,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 74.54119396209717,
+          "simulation_seconds": 323.54998779296875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 73.67239308357239,
+        "last_wall_seconds": 79.97055315971375,
+        "first_engine_seconds": 322.838,
+        "last_engine_seconds": 327.66647,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 73.80494904518127,
+        "simulation_seconds": 322.94,
+        "set": 3.0,
+        "slot": 1.0,
+        "fixed_index": 6109,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.015013640525018404,
+        "rms": 0.004059948428970643
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 3.919373780349351,
+        "rms": 0.6940906666653398
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 2,
+      "module_id": 32,
+      "name": "Seat Grab Left",
+      "generated_index": 25,
+      "source_keys": 117,
+      "retained_source_keys": 19,
+      "generated_keys": 31,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 36.09444138787952,
+      "engine_time_interval": [
+        -0.10116999999996779,
+        0.729982910156275
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.269985351562525,
+      "exit_end_seconds": 0.579982910156275,
+      "exit_start_seconds": 0.350002441406275,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 82.14409708976746,
+          "simulation_seconds": 329.3599853515625,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 82.1981930732727,
+          "simulation_seconds": 329.44000244140625,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 82.48227906227112,
+          "simulation_seconds": 329.66998291015625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 81.70516800880432,
+        "last_wall_seconds": 87.99686312675476,
+        "first_engine_seconds": 328.98883,
+        "last_engine_seconds": 334.1156,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 81.83603715896606,
+        "simulation_seconds": 329.09,
+        "set": 3.0,
+        "slot": 2.0,
+        "fixed_index": 6724,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.012557416894713232,
+        "rms": 0.0017821655377616848
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 3.3764089082958035,
+        "rms": 0.3839697111299187
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 3,
+      "module_id": 33,
+      "name": "Bus Driver Left",
+      "generated_index": 26,
+      "source_keys": 114,
+      "retained_source_keys": 24,
+      "generated_keys": 35,
+      "base_grid_keys": 19,
+      "adaptive_extra_observed_keys": 16,
+      "mean_generated_keys_per_engine_second": 33.93051732519599,
+      "engine_time_interval": [
+        -0.09203999999999724,
+        0.9100077929687359
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4300212207031109,
+      "exit_end_seconds": 0.7600077929687359,
+      "exit_start_seconds": 0.4300212207031109,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 90.22211813926697,
+          "simulation_seconds": 335.9700012207031,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 90.69550609588623,
+          "simulation_seconds": 336.29998779296875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 89.64957213401794,
+        "last_wall_seconds": 95.94632697105408,
+        "first_engine_seconds": 335.44794,
+        "last_engine_seconds": 340.51978,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 89.77337098121643,
+        "simulation_seconds": 335.53998,
+        "set": 3.0,
+        "slot": 3.0,
+        "fixed_index": 7369,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1248,
+        "maximum": 0.015275159972431958,
+        "rms": 0.001981284348237453
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1248,
+        "maximum": 4.70076368995137,
+        "rms": 0.7470308276061377
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 4,
+      "module_id": 34,
+      "name": "Barspin Left",
+      "generated_index": 27,
+      "source_keys": 103,
+      "retained_source_keys": 17,
+      "generated_keys": 27,
+      "base_grid_keys": 15,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 32.87152933679077,
+      "engine_time_interval": [
+        -0.08096000000000458,
+        0.7099980273437382
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.35000657226561316,
+      "exit_end_seconds": 0.5599980273437382,
+      "exit_start_seconds": 0.35000657226561316,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 98.20090794563293,
+          "simulation_seconds": 342.3299865722656,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 98.47037506103516,
+          "simulation_seconds": 342.53997802734375,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 97.72410202026367,
+        "last_wall_seconds": 103.9495370388031,
+        "first_engine_seconds": 341.89902,
+        "last_engine_seconds": 346.51324,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 97.84275197982788,
+        "simulation_seconds": 341.97998,
+        "set": 3.0,
+        "slot": 4.0,
+        "fixed_index": 8013,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 884,
+        "maximum": 0.004250382065544803,
+        "rms": 0.0009895525724331838
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 884,
+        "maximum": 2.358284165813744,
+        "rms": 0.32825252332421573
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 5,
+      "module_id": 35,
+      "name": "Toboggan Left",
+      "generated_index": 28,
+      "source_keys": 104,
+      "retained_source_keys": 17,
+      "generated_keys": 27,
+      "base_grid_keys": 15,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 37.908813498705264,
+      "engine_time_interval": [
+        -0.10586000000000695,
+        0.5799963378906
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.149997558593725,
+      "exit_end_seconds": 0.4299963378906,
+      "exit_start_seconds": 0.269992675781225,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 106.08894109725952,
+          "simulation_seconds": 348.05999755859375,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 106.2294590473175,
+          "simulation_seconds": 348.17999267578125,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 106.42112898826599,
+          "simulation_seconds": 348.3399963378906,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 105.661062002182,
+        "last_wall_seconds": 111.88498401641846,
+        "first_engine_seconds": 347.80414,
+        "last_engine_seconds": 352.2695,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 105.80605912208557,
+        "simulation_seconds": 347.91,
+        "set": 3.0,
+        "slot": 5.0,
+        "fixed_index": 8606,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 884,
+        "maximum": 0.01019254276637751,
+        "rms": 0.0019756172725203707
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 884,
+        "maximum": 3.1639740680515813,
+        "rms": 0.4656680657632312
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 6,
+      "module_id": 36,
+      "name": "One Hander Left",
+      "generated_index": 29,
+      "source_keys": 114,
+      "retained_source_keys": 17,
+      "generated_keys": 25,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 9,
+      "mean_generated_keys_per_engine_second": 32.1342538161741,
+      "engine_time_interval": [
+        -0.10687999999998965,
+        0.63998657226565
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.290004882812525,
+      "exit_end_seconds": 0.48998657226565,
+      "exit_start_seconds": 0.2999841308594,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 114.19828414916992,
+          "simulation_seconds": 354.1300048828125,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 114.20355701446533,
+          "simulation_seconds": 354.1399841308594,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 114.42240715026855,
+          "simulation_seconds": 354.3299865722656,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 113.70121717453003,
+        "last_wall_seconds": 119.95817112922668,
+        "first_engine_seconds": 353.73312,
+        "last_engine_seconds": 358.88937,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 113.82721996307373,
+        "simulation_seconds": 353.84,
+        "set": 3.0,
+        "slot": 6.0,
+        "fixed_index": 9199,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 884,
+        "maximum": 0.01797279618926829,
+        "rms": 0.0028397332247714025
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 884,
+        "maximum": 4.361243925435543,
+        "rms": 0.5107085783463323
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 3,
+      "slot": 7,
+      "module_id": 37,
+      "name": "Xup Left",
+      "generated_index": 30,
+      "source_keys": 117,
+      "retained_source_keys": 22,
+      "generated_keys": 32,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 34.09572538161574,
+      "engine_time_interval": [
+        -0.07918000000000802,
+        0.8300248828125177
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2800004687500177,
+      "exit_end_seconds": 0.6800248828125177,
+      "exit_start_seconds": 0.3000200000000177,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 122.19284415245056,
+          "simulation_seconds": 360.72998046875,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 122.20766401290894,
+          "simulation_seconds": 360.75,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 122.63800406455994,
+          "simulation_seconds": 361.1300048828125,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 121.7250030040741,
+        "last_wall_seconds": 127.94735813140869,
+        "first_engine_seconds": 360.3708,
+        "last_engine_seconds": 365.6291,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 121.83282995223999,
+        "simulation_seconds": 360.44998,
+        "set": 3.0,
+        "slot": 7.0,
+        "fixed_index": 9860,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1144,
+        "maximum": 0.019274331260650566,
+        "rms": 0.0037822830191885206
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1144,
+        "maximum": 4.102954018360576,
+        "rms": 0.8330849750329191
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 1,
+      "module_id": 41,
+      "name": "Xup Right",
+      "generated_index": 31,
+      "source_keys": 119,
+      "retained_source_keys": 24,
+      "generated_keys": 33,
+      "base_grid_keys": 20,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 31.245602094257098,
+      "engine_time_interval": [
+        -0.13415999999995165,
+        0.8899841308593978
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.27999267578127274,
+      "exit_end_seconds": 0.7399841308593977,
+      "exit_start_seconds": 0.35997924804689774,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 10.101180076599121,
+          "simulation_seconds": 407.17999267578125,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 10.19579005241394,
+          "simulation_seconds": 407.2599792480469,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 10.650989055633545,
+          "simulation_seconds": 407.6399841308594,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 9.644024133682251,
+        "last_wall_seconds": 15.986294984817505,
+        "first_engine_seconds": 406.76584,
+        "last_engine_seconds": 412.23602,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 9.788403987884521,
+        "simulation_seconds": 406.9,
+        "set": 4.0,
+        "slot": 1.0,
+        "fixed_index": 809,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1248,
+        "maximum": 0.017199932450283513,
+        "rms": 0.004599502752787554
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1248,
+        "maximum": 4.94845893766737,
+        "rms": 1.0670027345349409
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 2,
+      "module_id": 42,
+      "name": "One Hander Right",
+      "generated_index": 32,
+      "source_keys": 118,
+      "retained_source_keys": 19,
+      "generated_keys": 26,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 9,
+      "mean_generated_keys_per_engine_second": 29.576989093242474,
+      "engine_time_interval": [
+        -0.09525000000002137,
+        0.7500016894531086
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2900041308593586,
+      "exit_end_seconds": 0.6000016894531086,
+      "exit_start_seconds": 0.4099992480468586,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 18.091540098190308,
+          "simulation_seconds": 414.1399841308594,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 18.201539039611816,
+          "simulation_seconds": 414.2599792480469,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 18.408883094787598,
+          "simulation_seconds": 414.4499816894531,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 17.664502143859863,
+        "last_wall_seconds": 23.978479146957397,
+        "first_engine_seconds": 413.75473,
+        "last_engine_seconds": 419.12485,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 17.77364206314087,
+        "simulation_seconds": 413.84998,
+        "set": 4.0,
+        "slot": 2.0,
+        "fixed_index": 1504,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.01693326052974918,
+        "rms": 0.004368873473343514
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 4.921152740022394,
+        "rms": 0.815117360943583
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 3,
+      "module_id": 43,
+      "name": "Toboggan Right",
+      "generated_index": 33,
+      "source_keys": 118,
+      "retained_source_keys": 17,
+      "generated_keys": 27,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 11,
+      "mean_generated_keys_per_engine_second": 32.683426154066204,
+      "engine_time_interval": [
+        -0.10550000000000637,
+        0.6900102343750177
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.14999558593751772,
+      "exit_end_seconds": 0.5400102343750177,
+      "exit_start_seconds": 0.3800065722656427,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 25.942511081695557,
+          "simulation_seconds": 420.8499755859375,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 26.192179203033447,
+          "simulation_seconds": 421.0799865722656,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 26.370163202285767,
+          "simulation_seconds": 421.239990234375,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 25.64492416381836,
+        "last_wall_seconds": 31.959209203720093,
+        "first_engine_seconds": 420.59448,
+        "last_engine_seconds": 426.01782,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 25.769792079925537,
+        "simulation_seconds": 420.69998,
+        "set": 4.0,
+        "slot": 3.0,
+        "fixed_index": 2189,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 884,
+        "maximum": 0.010420092276733425,
+        "rms": 0.003241341615403578
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 884,
+        "maximum": 1.75616247047624,
+        "rms": 0.27124473057341186
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 4,
+      "module_id": 44,
+      "name": "Barspin Right",
+      "generated_index": 34,
+      "source_keys": 119,
+      "retained_source_keys": 26,
+      "generated_keys": 35,
+      "base_grid_keys": 22,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 28.754855220880962,
+      "engine_time_interval": [
+        -0.13242000000002463,
+        1.0499890136718704
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.35000122070312045,
+      "exit_end_seconds": 0.8999890136718705,
+      "exit_start_seconds": 0.6899975585937455,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 34.181787967681885,
+          "simulation_seconds": 427.9700012207031,
+          "from_phase": 1,
+          "to_phase": 3
+        },
+        {
+          "t": 34.576953172683716,
+          "simulation_seconds": 428.30999755859375,
+          "from_phase": 3,
+          "to_phase": 5
+        },
+        {
+          "t": 34.8347589969635,
+          "simulation_seconds": 428.5199890136719,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 33.67787218093872,
+        "last_wall_seconds": 39.94481897354126,
+        "first_engine_seconds": 427.48758,
+        "last_engine_seconds": 433.0501,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 33.79662609100342,
+        "simulation_seconds": 427.62,
+        "set": 4.0,
+        "slot": 4.0,
+        "fixed_index": 2881,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1352,
+        "maximum": 0.016659726585110703,
+        "rms": 0.00247793652799031
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1352,
+        "maximum": 4.4098945157178395,
+        "rms": 0.5109712456857968
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 5,
+      "module_id": 45,
+      "name": "Bus Driver Right",
+      "generated_index": 35,
+      "source_keys": 117,
+      "retained_source_keys": 22,
+      "generated_keys": 34,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 16,
+      "mean_generated_keys_per_engine_second": 34.96429403911828,
+      "engine_time_interval": [
+        -0.033819999999991524,
+        0.9099999999999909
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4299829101562409,
+      "exit_end_seconds": 0.7599999999999909,
+      "exit_start_seconds": 0.4299829101562409,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 42.349019050598145,
+          "simulation_seconds": 435.16998291015625,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 42.69146108627319,
+          "simulation_seconds": 435.5,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 41.72163414955139,
+        "last_wall_seconds": 47.99231314659119,
+        "first_engine_seconds": 434.70618,
+        "last_engine_seconds": 440.1471,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 41.84415602684021,
+        "simulation_seconds": 434.74,
+        "set": 4.0,
+        "slot": 5.0,
+        "fixed_index": 3593,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1144,
+        "maximum": 0.016434487528031137,
+        "rms": 0.0030891902071079583
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1144,
+        "maximum": 3.9722248810546295,
+        "rms": 0.6726419707447492
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 6,
+      "module_id": 46,
+      "name": "Seat Grab Right",
+      "generated_index": 36,
+      "source_keys": 118,
+      "retained_source_keys": 20,
+      "generated_keys": 30,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 33.07697121249811,
+      "engine_time_interval": [
+        -0.1067600000000084,
+        0.7699829101562387
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.26997680664061363,
+      "exit_end_seconds": 0.6199829101562386,
+      "exit_start_seconds": 0.39000244140623863,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 50.109090089797974,
+          "simulation_seconds": 442.0699768066406,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 50.23156404495239,
+          "simulation_seconds": 442.19000244140625,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 50.468048095703125,
+          "simulation_seconds": 442.41998291015625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 49.66637206077576,
+        "last_wall_seconds": 55.98047399520874,
+        "first_engine_seconds": 441.69324,
+        "last_engine_seconds": 447.4263,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 49.78548002243042,
+        "simulation_seconds": 441.8,
+        "set": 4.0,
+        "slot": 6.0,
+        "fixed_index": 4299,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.010677611703521541,
+        "rms": 0.003082840602004944
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 2.200060811869171,
+        "rms": 0.41631954867969584
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 4,
+      "slot": 7,
+      "module_id": 47,
+      "name": "Tire Grab Right",
+      "generated_index": 37,
+      "source_keys": 120,
+      "retained_source_keys": 22,
+      "generated_keys": 32,
+      "base_grid_keys": 19,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 32.145656115686435,
+      "engine_time_interval": [
+        -0.09435999999999467,
+        0.8700004687500155
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.27001877929689044,
+      "exit_end_seconds": 0.7200004687500154,
+      "exit_start_seconds": 0.40002366210939044,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 58.0426139831543,
+          "simulation_seconds": 449.2799987792969,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 58.24477410316467,
+          "simulation_seconds": 449.4100036621094,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 58.58176898956299,
+          "simulation_seconds": 449.72998046875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 57.66615009307861,
+        "last_wall_seconds": 63.96586513519287,
+        "first_engine_seconds": 448.91562,
+        "last_engine_seconds": 454.5428,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 57.791558027267456,
+        "simulation_seconds": 449.00998,
+        "set": 4.0,
+        "slot": 7.0,
+        "fixed_index": 5020,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1144,
+        "maximum": 0.011745147304387986,
+        "rms": 0.003965322315461451
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1144,
+        "maximum": 4.809895692925892,
+        "rms": 0.6657992415280841
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 0,
+      "module_id": 50,
+      "name": "Tuck Up",
+      "generated_index": 38,
+      "source_keys": 117,
+      "retained_source_keys": 20,
+      "generated_keys": 24,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 7,
+      "mean_generated_keys_per_engine_second": 26.588621296106908,
+      "engine_time_interval": [
+        -0.1150299999999902,
+        0.7500016894531086
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.1800187792968586,
+      "exit_end_seconds": 0.6000016894531086,
+      "exit_start_seconds": 0.3600114550781086,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 65.97854208946228,
+          "simulation_seconds": 456.2799987792969,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 66.20676517486572,
+          "simulation_seconds": 456.4599914550781,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 66.51799297332764,
+          "simulation_seconds": 456.6999816894531,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 65.6626410484314,
+        "last_wall_seconds": 71.97576713562012,
+        "first_engine_seconds": 455.98495,
+        "last_engine_seconds": 461.42395,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 65.78774213790894,
+        "simulation_seconds": 456.09998,
+        "set": 5.0,
+        "slot": 0.0,
+        "fixed_index": 5729,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.010543519200969301,
+        "rms": 0.002802600287873389
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 1.7919715632643425,
+        "rms": 0.38640468821097473
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 1,
+      "module_id": 51,
+      "name": "No Foot Can Right",
+      "generated_index": 39,
+      "source_keys": 118,
+      "retained_source_keys": 22,
+      "generated_keys": 33,
+      "base_grid_keys": 19,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 30.65764426766278,
+      "engine_time_interval": [
+        -0.103779999999972,
+        0.9400053515625132
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.40002122070313817,
+      "exit_end_seconds": 0.7900053515625132,
+      "exit_start_seconds": 0.40002122070313817,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 74.23539614677429,
+          "simulation_seconds": 463.4700012207031,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 74.66560912132263,
+          "simulation_seconds": 463.8599853515625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 73.68321418762207,
+        "last_wall_seconds": 79.94124412536621,
+        "first_engine_seconds": 462.9662,
+        "last_engine_seconds": 468.45227,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 73.79897117614746,
+        "simulation_seconds": 463.06998,
+        "set": 5.0,
+        "slot": 1.0,
+        "fixed_index": 6426,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1144,
+        "maximum": 0.01564933793366528,
+        "rms": 0.0042365864866297795
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1144,
+        "maximum": 3.5135576961472594,
+        "rms": 0.5385294347370249
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 2,
+      "module_id": 52,
+      "name": "Whip Right",
+      "generated_index": 40,
+      "source_keys": 122,
+      "retained_source_keys": 23,
+      "generated_keys": 36,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 18,
+      "mean_generated_keys_per_engine_second": 36.66152801750469,
+      "engine_time_interval": [
+        -0.14467999999999392,
+        0.8099992480468586
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4300187792968586,
+      "exit_end_seconds": 0.6599992480468586,
+      "exit_start_seconds": 0.4300187792968586,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 82.21104717254639,
+          "simulation_seconds": 470.5299987792969,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 82.48487615585327,
+          "simulation_seconds": 470.7599792480469,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 81.63319897651672,
+        "last_wall_seconds": 87.99728512763977,
+        "first_engine_seconds": 469.9553,
+        "last_engine_seconds": 475.61783,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 81.76735615730286,
+        "simulation_seconds": 470.09998,
+        "set": 5.0,
+        "slot": 2.0,
+        "fixed_index": 7129,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1196,
+        "maximum": 0.014360292417198174,
+        "rms": 0.0010293105664702577
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1196,
+        "maximum": 2.277459934672457,
+        "rms": 0.3046821407103651
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 3,
+      "module_id": 53,
+      "name": "Whopper Right",
+      "generated_index": 41,
+      "source_keys": 121,
+      "retained_source_keys": 19,
+      "generated_keys": 30,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 32.83197207867306,
+      "engine_time_interval": [
+        -0.07327999999995427,
+        0.8100053515625177
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4299943652343927,
+      "exit_end_seconds": 0.6600053515625177,
+      "exit_start_seconds": 0.4299943652343927,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 90.21987199783325,
+          "simulation_seconds": 477.6299743652344,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 90.45931506156921,
+          "simulation_seconds": 477.8599853515625,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 89.71033811569214,
+        "last_wall_seconds": 95.97667598724365,
+        "first_engine_seconds": 477.1267,
+        "last_engine_seconds": 482.71848,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 89.7890260219574,
+        "simulation_seconds": 477.19998,
+        "set": 5.0,
+        "slot": 3.0,
+        "fixed_index": 7839,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.017316258491313474,
+        "rms": 0.0030191114777119907
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 2.640988727952909,
+        "rms": 0.5815159553893803
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 4,
+      "module_id": 54,
+      "name": "Crankflip",
+      "generated_index": 42,
+      "source_keys": 111,
+      "retained_source_keys": 19,
+      "generated_keys": 25,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 9,
+      "mean_generated_keys_per_engine_second": 28.34391213110437,
+      "engine_time_interval": [
+        -0.07675000000000409,
+        0.7699926757812477
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3500036621093727,
+      "exit_end_seconds": 0.6199926757812477,
+      "exit_start_seconds": 0.3500036621093727,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 98.22781014442444,
+          "simulation_seconds": 484.6600036621094,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 98.57114601135254,
+          "simulation_seconds": 484.92999267578125,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 97.7261130809784,
+        "last_wall_seconds": 103.97549200057983,
+        "first_engine_seconds": 484.23325,
+        "last_engine_seconds": 489.3349,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 97.87314105033875,
+        "simulation_seconds": 484.31,
+        "set": 5.0,
+        "slot": 4.0,
+        "fixed_index": 8550,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.014865444358466323,
+        "rms": 0.0035065301036785786
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 3.3236846470692933,
+        "rms": 0.2911319005422203
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 5,
+      "module_id": 55,
+      "name": "Whopper Left",
+      "generated_index": 43,
+      "source_keys": 118,
+      "retained_source_keys": 19,
+      "generated_keys": 29,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 31.58910019596053,
+      "engine_time_interval": [
+        -0.07638000000002876,
+        0.8100016894531109
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4300212207031109,
+      "exit_end_seconds": 0.6600016894531109,
+      "exit_start_seconds": 0.4300212207031109,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 106.26771807670593,
+          "simulation_seconds": 491.4700012207031,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 106.54742312431335,
+          "simulation_seconds": 491.6999816894531,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 105.70503211021423,
+        "last_wall_seconds": 111.95972514152527,
+        "first_engine_seconds": 490.9636,
+        "last_engine_seconds": 496.39438,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 105.79981303215027,
+        "simulation_seconds": 491.03998,
+        "set": 5.0,
+        "slot": 5.0,
+        "fixed_index": 9223,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.015939038257056292,
+        "rms": 0.002452320848591788
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 4.299475158427085,
+        "rms": 0.7133897278461101
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 6,
+      "module_id": 56,
+      "name": "Whip Left",
+      "generated_index": 44,
+      "source_keys": 117,
+      "retained_source_keys": 20,
+      "generated_keys": 31,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 32.682787345134855,
+      "engine_time_interval": [
+        -0.10794000000004189,
+        0.8099743652343477
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.4299938964843477,
+      "exit_end_seconds": 0.6599743652343477,
+      "exit_start_seconds": 0.4299938964843477,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 114.36816120147705,
+          "simulation_seconds": 498.3999938964844,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 114.59050703048706,
+          "simulation_seconds": 498.6299743652344,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 113.69504809379578,
+        "last_wall_seconds": 119.94557499885559,
+        "first_engine_seconds": 497.86206,
+        "last_engine_seconds": 503.41476,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 113.8244001865387,
+        "simulation_seconds": 497.97,
+        "set": 5.0,
+        "slot": 6.0,
+        "fixed_index": 9916,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.014325817447604517,
+        "rms": 0.0024250024144342394
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 3.0373059561719717,
+        "rms": 0.485126683358826
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 5,
+      "slot": 7,
+      "module_id": 57,
+      "name": "No Foot Can Left",
+      "generated_index": 45,
+      "source_keys": 117,
+      "retained_source_keys": 21,
+      "generated_keys": 30,
+      "base_grid_keys": 18,
+      "adaptive_extra_observed_keys": 12,
+      "mean_generated_keys_per_engine_second": 29.55721880824092,
+      "engine_time_interval": [
+        -0.08116000000001122,
+        0.8999877929687387
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.36000366210936363,
+      "exit_end_seconds": 0.7499877929687386,
+      "exit_start_seconds": 0.36000366210936363,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 122.18843507766724,
+          "simulation_seconds": 505.4100036621094,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 122.68230819702148,
+          "simulation_seconds": 505.79998779296875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 121.72509717941284,
+        "last_wall_seconds": 127.98300004005432,
+        "first_engine_seconds": 504.96884,
+        "last_engine_seconds": 510.26044,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 121.82735204696655,
+        "simulation_seconds": 505.05,
+        "set": 5.0,
+        "slot": 7.0,
+        "fixed_index": 10624,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1092,
+        "maximum": 0.016754094863310857,
+        "rms": 0.0037865256126761635
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1092,
+        "maximum": 2.3666583780717447,
+        "rms": 0.3867185946078439
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 6,
+      "slot": 1,
+      "module_id": 61,
+      "name": "Can Left",
+      "generated_index": 46,
+      "source_keys": 114,
+      "retained_source_keys": 23,
+      "generated_keys": 34,
+      "base_grid_keys": 19,
+      "adaptive_extra_observed_keys": 15,
+      "mean_generated_keys_per_engine_second": 34.09176892415143,
+      "engine_time_interval": [
+        -0.08799999999996544,
+        0.8799755859374955
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.28997314453124545,
+      "exit_end_seconds": 0.7299755859374955,
+      "exit_start_seconds": 0.32000244140624545,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 10.22142505645752,
+          "simulation_seconds": 555.9099731445312,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 10.233726978302002,
+          "simulation_seconds": 555.9400024414062,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 10.782588005065918,
+          "simulation_seconds": 556.3499755859375,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 9.691827058792114,
+        "last_wall_seconds": 15.936746835708618,
+        "first_engine_seconds": 555.532,
+        "last_engine_seconds": 560.6979,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 9.829758882522583,
+        "simulation_seconds": 555.62,
+        "set": 6.0,
+        "slot": 1.0,
+        "fixed_index": 747,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1196,
+        "maximum": 0.013678258858126905,
+        "rms": 0.0028134064410672353
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1196,
+        "maximum": 1.4018464695167647,
+        "rms": 0.17151570374931194
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 6,
+      "slot": 2,
+      "module_id": 62,
+      "name": "Moto Left",
+      "generated_index": 47,
+      "source_keys": 120,
+      "retained_source_keys": 27,
+      "generated_keys": 36,
+      "base_grid_keys": 22,
+      "adaptive_extra_observed_keys": 14,
+      "mean_generated_keys_per_engine_second": 27.904118831684045,
+      "engine_time_interval": [
+        -0.10429999999996653,
+        1.1499951171874954
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.39995849609374545,
+      "exit_end_seconds": 0.9999951171874955,
+      "exit_start_seconds": 0.39995849609374545,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 18.22897505760193,
+          "simulation_seconds": 562.7699584960938,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 18.938122034072876,
+          "simulation_seconds": 563.3699951171875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 17.695037841796875,
+        "last_wall_seconds": 23.980393886566162,
+        "first_engine_seconds": 562.2657,
+        "last_engine_seconds": 567.8673,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 17.807565927505493,
+        "simulation_seconds": 562.37,
+        "set": 6.0,
+        "slot": 2.0,
+        "fixed_index": 1422,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1404,
+        "maximum": 0.017342974370530107,
+        "rms": 0.004580321733372133
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1404,
+        "maximum": 4.167385183739759,
+        "rms": 0.9519078230563218
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 6,
+      "slot": 3,
+      "module_id": 63,
+      "name": "Nac Left",
+      "generated_index": 48,
+      "source_keys": 118,
+      "retained_source_keys": 22,
+      "generated_keys": 34,
+      "base_grid_keys": 21,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 30.67519469516586,
+      "engine_time_interval": [
+        -0.09580000000005384,
+        0.9799877929687227
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2900097656249727,
+      "exit_end_seconds": 0.8299877929687227,
+      "exit_start_seconds": 0.4200146484374727,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 26.07708191871643,
+          "simulation_seconds": 569.760009765625,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 26.20805788040161,
+          "simulation_seconds": 569.8900146484375,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 26.71058201789856,
+          "simulation_seconds": 570.2999877929688,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 25.670215845108032,
+        "last_wall_seconds": 31.941131830215454,
+        "first_engine_seconds": 569.3742,
+        "last_engine_seconds": 574.8974,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 25.77889895439148,
+        "simulation_seconds": 569.47,
+        "set": 6.0,
+        "slot": 3.0,
+        "fixed_index": 2132,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1144,
+        "maximum": 0.012266540688363657,
+        "rms": 0.0023999720089767306
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1144,
+        "maximum": 2.6172365973417504,
+        "rms": 0.5374464190887144
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 6,
+      "slot": 5,
+      "module_id": 65,
+      "name": "Griz Air Left",
+      "generated_index": 49,
+      "source_keys": 116,
+      "retained_source_keys": 23,
+      "generated_keys": 31,
+      "base_grid_keys": 20,
+      "adaptive_extra_observed_keys": 11,
+      "mean_generated_keys_per_engine_second": 29.403046373830403,
+      "engine_time_interval": [
+        -0.10029999999994743,
+        0.920002441406291
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2800122070312909,
+      "exit_end_seconds": 0.7700024414062909,
+      "exit_start_seconds": 0.3599682617187909,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 42.12872791290283,
+          "simulation_seconds": 583.9500122070312,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 42.22410583496094,
+          "simulation_seconds": 584.0299682617188,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 42.73668193817139,
+          "simulation_seconds": 584.4400024414062,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 41.651450872421265,
+        "last_wall_seconds": 47.898929834365845,
+        "first_engine_seconds": 583.5697,
+        "last_engine_seconds": 588.6495,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 41.77087688446045,
+        "simulation_seconds": 583.67,
+        "set": 6.0,
+        "slot": 5.0,
+        "fixed_index": 3552,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1196,
+        "maximum": 0.014532983979799123,
+        "rms": 0.002614022834497375
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1196,
+        "maximum": 2.144611100446728,
+        "rms": 0.37645016079933064
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 6,
+      "slot": 6,
+      "module_id": 66,
+      "name": "One Footer Left",
+      "generated_index": 50,
+      "source_keys": 115,
+      "retained_source_keys": 19,
+      "generated_keys": 22,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 6,
+      "mean_generated_keys_per_engine_second": 24.400647189039887,
+      "engine_time_interval": [
+        -0.10064999999997326,
+        0.7599829101563046
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.33996337890630457,
+      "exit_end_seconds": 0.6099829101563046,
+      "exit_start_seconds": 0.33996337890630457,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 50.26755094528198,
+          "simulation_seconds": 590.6499633789062,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 50.586933851242065,
+          "simulation_seconds": 590.9199829101562,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 49.68971395492554,
+        "last_wall_seconds": 55.94827103614807,
+        "first_engine_seconds": 590.20935,
+        "last_engine_seconds": 595.5616,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 49.80322504043579,
+        "simulation_seconds": 590.31,
+        "set": 6.0,
+        "slot": 6.0,
+        "fixed_index": 4216,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 988,
+        "maximum": 0.01833295788152998,
+        "rms": 0.004268528311719142
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 988,
+        "maximum": 2.2392529001698485,
+        "rms": 0.439284994287559
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 6,
+      "slot": 7,
+      "module_id": 67,
+      "name": "Candy Bar Left",
+      "generated_index": 51,
+      "source_keys": 115,
+      "retained_source_keys": 23,
+      "generated_keys": 33,
+      "base_grid_keys": 20,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 31.641410734922328,
+      "engine_time_interval": [
+        -0.11135000000001583,
+        0.899982910156291
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.3199902343750409,
+      "exit_end_seconds": 0.7499829101562909,
+      "exit_start_seconds": 0.3400097656250409,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 58.183363914489746,
+          "simulation_seconds": 597.489990234375,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 58.19787788391113,
+          "simulation_seconds": 597.510009765625,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 58.626253843307495,
+          "simulation_seconds": 597.9199829101562,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 57.63720989227295,
+        "last_wall_seconds": 63.96624803543091,
+        "first_engine_seconds": 597.05865,
+        "last_engine_seconds": 602.2972,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 57.76507496833801,
+        "simulation_seconds": 597.17,
+        "set": 6.0,
+        "slot": 7.0,
+        "fixed_index": 4902,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1196,
+        "maximum": 0.01773492428706423,
+        "rms": 0.0037175264769714893
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1196,
+        "maximum": 2.777777319516881,
+        "rms": 0.39388856797529637
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 7,
+      "slot": 1,
+      "module_id": 71,
+      "name": "Candy Bar Right",
+      "generated_index": 52,
+      "source_keys": 98,
+      "retained_source_keys": 20,
+      "generated_keys": 29,
+      "base_grid_keys": 16,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 32.4353710073853,
+      "engine_time_interval": [
+        -0.06326000000001386,
+        0.7999951171874727
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2599804687499727,
+      "exit_end_seconds": 0.6499951171874727,
+      "exit_start_seconds": 0.2599804687499727,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 74.21067690849304,
+          "simulation_seconds": 609.97998046875,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 74.8776969909668,
+          "simulation_seconds": 610.3699951171875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 73.72489595413208,
+        "last_wall_seconds": 79.97361898422241,
+        "first_engine_seconds": 609.65674,
+        "last_engine_seconds": 613.7918,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 73.84390306472778,
+        "simulation_seconds": 609.72,
+        "set": 7.0,
+        "slot": 1.0,
+        "fixed_index": 6157,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.0165054493131188,
+        "rms": 0.0011082864606011408
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 1.7082509472256693,
+        "rms": 0.22006989925029977
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 7,
+      "slot": 2,
+      "module_id": 72,
+      "name": "One Footer Right",
+      "generated_index": 53,
+      "source_keys": 113,
+      "retained_source_keys": 20,
+      "generated_keys": 24,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 7,
+      "mean_generated_keys_per_engine_second": 26.594425102988218,
+      "engine_time_interval": [
+        -0.07483000000001994,
+        0.7900129101562016
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.35003488281245154,
+      "exit_end_seconds": 0.6400129101562015,
+      "exit_start_seconds": 0.36999337890620154,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 82.20969295501709,
+          "simulation_seconds": 615.3800048828125,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 82.2322289943695,
+          "simulation_seconds": 615.3999633789062,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 82.5707778930664,
+          "simulation_seconds": 615.6699829101562,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 81.67681097984314,
+        "last_wall_seconds": 87.9824948310852,
+        "first_engine_seconds": 614.95514,
+        "last_engine_seconds": 620.1094,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 81.78946900367737,
+        "simulation_seconds": 615.02997,
+        "set": 7.0,
+        "slot": 2.0,
+        "fixed_index": 6688,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1040,
+        "maximum": 0.016638390652448244,
+        "rms": 0.004250720311668127
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1040,
+        "maximum": 3.090793633684825,
+        "rms": 0.6607605191811998
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 7,
+      "slot": 3,
+      "module_id": 73,
+      "name": "Griz Air Right",
+      "generated_index": 54,
+      "source_keys": 113,
+      "retained_source_keys": 21,
+      "generated_keys": 33,
+      "base_grid_keys": 17,
+      "adaptive_extra_observed_keys": 16,
+      "mean_generated_keys_per_engine_second": 35.865808811858145,
+      "engine_time_interval": [
+        -0.0522000000000844,
+        0.8400146484374545
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.2799804687499545,
+      "exit_end_seconds": 0.6900146484374545,
+      "exit_start_seconds": 0.2799804687499545,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 90.20646691322327,
+          "simulation_seconds": 621.97998046875,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 90.75715398788452,
+          "simulation_seconds": 622.3900146484375,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 89.70946884155273,
+        "last_wall_seconds": 95.95572185516357,
+        "first_engine_seconds": 621.6478,
+        "last_engine_seconds": 626.6158,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 89.80765986442566,
+        "simulation_seconds": 621.7,
+        "set": 7.0,
+        "slot": 3.0,
+        "fixed_index": 7355,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1092,
+        "maximum": 0.016307414940336294,
+        "rms": 0.0014178328820661364
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1092,
+        "maximum": 0.9573524034375536,
+        "rms": 0.11369413794057132
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 7,
+      "slot": 5,
+      "module_id": 75,
+      "name": "Nac Right",
+      "generated_index": 55,
+      "source_keys": 114,
+      "retained_source_keys": 23,
+      "generated_keys": 35,
+      "base_grid_keys": 20,
+      "adaptive_extra_observed_keys": 15,
+      "mean_generated_keys_per_engine_second": 33.96773065587652,
+      "engine_time_interval": [
+        -0.10095000000001164,
+        0.9
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.28997802734375,
+      "exit_end_seconds": 0.75,
+      "exit_start_seconds": 0.3399658203125,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 106.16858887672424,
+          "simulation_seconds": 634.7899780273438,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 106.24964499473572,
+          "simulation_seconds": 634.8399658203125,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 106.69246006011963,
+          "simulation_seconds": 635.25,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 105.67407202720642,
+        "last_wall_seconds": 111.96193599700928,
+        "first_engine_seconds": 634.39905,
+        "last_engine_seconds": 639.259,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 105.80072593688965,
+        "simulation_seconds": 634.5,
+        "set": 7.0,
+        "slot": 5.0,
+        "fixed_index": 8635,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1196,
+        "maximum": 0.018603978861631586,
+        "rms": 0.003828609841723897
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1196,
+        "maximum": 2.4272995955464918,
+        "rms": 0.5337725561404465
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 7,
+      "slot": 6,
+      "module_id": 76,
+      "name": "Moto Right",
+      "generated_index": 56,
+      "source_keys": 109,
+      "retained_source_keys": 27,
+      "generated_keys": 36,
+      "base_grid_keys": 21,
+      "adaptive_extra_observed_keys": 15,
+      "mean_generated_keys_per_engine_second": 29.203289607165594,
+      "engine_time_interval": [
+        -0.08849999999995362,
+        1.1099951171875317
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.35995849609378183,
+      "exit_end_seconds": 0.9599951171875318,
+      "exit_start_seconds": 0.35995849609378183,
+      "hold_available": false,
+      "phase_observations": [
+        {
+          "t": 114.28913688659668,
+          "simulation_seconds": 641.0199584960938,
+          "from_phase": 1,
+          "to_phase": 5
+        },
+        {
+          "t": 115.07107996940613,
+          "simulation_seconds": 641.6199951171875,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 113.65874695777893,
+        "last_wall_seconds": 119.98158001899719,
+        "first_engine_seconds": 640.5715,
+        "last_engine_seconds": 645.2447,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 113.78262686729431,
+        "simulation_seconds": 640.66,
+        "set": 7.0,
+        "slot": 6.0,
+        "fixed_index": 9251,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1404,
+        "maximum": 0.01964108603769737,
+        "rms": 0.005502225666558108
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1404,
+        "maximum": 4.801288159045874,
+        "rms": 1.0663437830880638
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    },
+    {
+      "set": 7,
+      "slot": 7,
+      "module_id": 77,
+      "name": "Can Right",
+      "generated_index": 57,
+      "source_keys": 104,
+      "retained_source_keys": 25,
+      "generated_keys": 33,
+      "base_grid_keys": 20,
+      "adaptive_extra_observed_keys": 13,
+      "mean_generated_keys_per_engine_second": 31.711349301075185,
+      "engine_time_interval": [
+        -0.0990999999999076,
+        0.9100024414063
+      ],
+      "pose_reference": {
+        "id": -222130,
+        "name": "Animated Skeleton",
+        "kind": "nearest_rigidbody_ancestor_of_humanoid_animator",
+        "skeleton_bound": true,
+        "binding_evidence": "Observed Animator transform is this body's transform or its descendant",
+        "position_role": "Rigidbody.worldCenterOfMass"
+      },
+      "enter_end_seconds": 0.28997070312505,
+      "exit_end_seconds": 0.7600024414063,
+      "exit_start_seconds": 0.3499682617188,
+      "hold_available": true,
+      "phase_observations": [
+        {
+          "t": 122.13681197166443,
+          "simulation_seconds": 646.969970703125,
+          "from_phase": 1,
+          "to_phase": 4
+        },
+        {
+          "t": 122.24361395835876,
+          "simulation_seconds": 647.0299682617188,
+          "from_phase": 4,
+          "to_phase": 5
+        },
+        {
+          "t": 122.98387289047241,
+          "simulation_seconds": 647.4400024414062,
+          "from_phase": 5,
+          "to_phase": 0
+        }
+      ],
+      "observation_window": {
+        "partial": false,
+        "holder_identity_truncated": false,
+        "source_complete_through_attempt": true,
+        "native_exit_to_idle_observed": true,
+        "first_wall_seconds": 121.68230485916138,
+        "last_wall_seconds": 127.9814100265503,
+        "first_engine_seconds": 646.5809,
+        "last_engine_seconds": 650.95966,
+        "missing_tail_is_extrapolated": false
+      },
+      "selected_source_path": "standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+      "fire_observation": {
+        "t": 121.80697584152222,
+        "simulation_seconds": 646.68,
+        "set": 7.0,
+        "slot": 7.0,
+        "fixed_index": 9853,
+        "evidence": "Observed same-brain _timeAtLastFire advance and _lastFired tuple"
+      },
+      "available_neutral_position_bones": 52,
+      "available_neutral_rotation_bones": 52,
+      "observed_source_key_position_error_m": {
+        "samples": 1300,
+        "maximum": 0.01933870737417076,
+        "rms": 0.0027477245916162243
+      },
+      "observed_source_key_rotation_error_degrees": {
+        "samples": 1300,
+        "maximum": 3.520618083234568,
+        "rms": 0.49233369734474125
+      },
+      "source_position_keys_missing_after_resampling": 0,
+      "source_rotation_keys_missing_after_resampling": 0
+    }
+  ],
+  "limits": [
+    "Only verified native-fire exports are eligible. Partial windows are excluded unless --include-partial is explicit.",
+    "An included partial track stops at its last observed key; it cannot establish a complete native trick trajectory.",
+    "Every channel keeps separate position/rotation availability flags; missing bones are not filled.",
+    "Native X reflection is already present in both neutral and deltas and is not applied again.",
+    "Error maxima/RMS are measured against captured source key times, not mathematical bounds for unseen continuous motion.",
+    "Captured pose includes the particular quick-hop/base-animation context, not a universal extracted clip.",
+    "Actual holder-frame origin/binding must be mapped explicitly; Spring COM is not the observed skeleton reference."
+  ]
+}

@@ -1,0 +1,1511 @@
+{
+  "schema": 3,
+  "version": "0.3.0",
+  "date": "2026-10-21",
+  "event": "bmx_standalone_release_audit",
+  "completed": true,
+  "session": "recordings/comparison-session02",
+  "cxx_standard": 20,
+  "tests": [
+    {
+      "executable": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\bmx_tests.exe",
+        "bytes": 4425748,
+        "sha256": "cd7bfc2cb2e4b4e055559fb443b9efff087c36e7d91726127c6df886d0166977"
+      },
+      "exit_code": 0,
+      "assertions_passed": 120079,
+      "output": "PASS: 120079 assertions (legacy60Hz, configurable100Hz, coupled100Hz, measured rider,58 selections, rail and host rejection)\n"
+    },
+    {
+      "executable": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\bmx_pose_tests.exe",
+        "bytes": 6426560,
+        "sha256": "ae835725a83f863ba6e6a8fa83303851d270730a2fdfb4b63652ae2986b5f305"
+      },
+      "exit_code": 0,
+      "assertions_passed": 41,
+      "output": "41 posture interpolation assertions passed\n"
+    },
+    {
+      "executable": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\bmx_joint_actuation_tests.exe",
+        "bytes": 4390381,
+        "sha256": "1cdf0676c58e67522751604cafdc4e6357e299bd795f396cf4f3dd1f0348a954"
+      },
+      "exit_code": 0,
+      "assertions_passed": 46523,
+      "output": "46523 joint actuator assertions passed\n"
+    },
+    {
+      "executable": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\bmx_vehicle_pose_tests.exe",
+        "bytes": 2960861,
+        "sha256": "0c58926625092126658738c0f0fa5925ef52760a50127b9d04d87eda3e84880c"
+      },
+      "exit_code": 0,
+      "assertions_passed": 26,
+      "output": "26 vehicle transform and IK interpolation assertions passed\n"
+    },
+    {
+      "executable": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\bmx_input_holdpoint_tests.exe",
+        "bytes": 2811730,
+        "sha256": "12724f4f5502859b0bedb6d9239f4ac9c8b6ca0bb16c356352c64d02a2424136"
+      },
+      "exit_code": 0,
+      "assertions_passed": 304,
+      "output": "304 input holdpoint assertions passed\n"
+    }
+  ],
+  "assertions_passed": 166973,
+  "current_native_catalog_coverage": {
+    "ledger": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\coverage-complete-primary.json",
+      "bytes": 132044,
+      "sha256": "96ed7e96e0a23954cfebbe4383e5f226bc1db770e7afe17d0fb809d159c5fb28"
+    },
+    "available": 58,
+    "empty": 6,
+    "correct_native_fire": 58,
+    "native_exit_to_idle": 58,
+    "full_posture_window": 58,
+    "empty_no_fire": 6,
+    "native_scored_landing_proven": false,
+    "sources": [
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\coverage-native.json",
+        "bytes": 38722,
+        "sha256": "c9cb38904c52e8815bcc0e11b2c5b4658bbbe2d1a355289a8f4b4b0a41757f07"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix01b\\pose-tracks-native.json",
+        "bytes": 40979226,
+        "sha256": "31d43321eb872c28bf74d0615c7a04950f6cbd2337eef350a9ef1c1e6ccd4f1d"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\coverage-native.json",
+        "bytes": 39097,
+        "sha256": "c3b4554d1c2f983347f4f5d201320a7167fb48fca21505bb3758423fe063a760"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix02\\pose-tracks-native.json",
+        "bytes": 43642809,
+        "sha256": "fa7e5fb5529623b1152c5a45db2192f03cf461595393ee4b55b8f9a01fbee092"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\coverage-native.json",
+        "bytes": 39025,
+        "sha256": "77fdd70e7025509ea2628e215945a342c61ba37639845d1462aa9ecee880c7ca"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix03\\pose-tracks-native.json",
+        "bytes": 45239806,
+        "sha256": "93f71c5ce730a6436a6b42e394846ef802d67f084524944ade371af58285fdac"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\coverage-native.json",
+        "bytes": 36704,
+        "sha256": "4b14f0a9ebb38e6e26072c359b75fad7b0ca299c11285ef5662ec6a6547e6ebe"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-reset-matrix04\\pose-tracks-native.json",
+        "bytes": 34500634,
+        "sha256": "d1b35b55bd77a783cd35cd3ed1fc416a739328a2024988affcbe2e50ff0b48a9"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-mc-griddle-retry01\\coverage-native.json",
+        "bytes": 8793,
+        "sha256": "cfff8a409cf94fc8701f4d86f07d1128556ed4697cbbfa9684328d05ceb0e5f7"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-mc-griddle-retry01\\pose-tracks-native.json",
+        "bytes": 8997505,
+        "sha256": "1dfeeaec29b0e0037ad727f2de70cda8ebe75a1b1944742a68d66f03e3b50533"
+      }
+    ],
+    "limits": [
+      "Correct fire, animation Exit-to-Idle, posture coverage, physical recontact and landed scoring are separate observations.",
+      "A complete posture window requires the actual Exit-to-Idle transition plus at least 0.14 observed engine seconds of tail.",
+      "Native landed scoring remains unestablished when the source does not expose a scoring signal.",
+      "Repeated attempts are retained; the best observed window does not erase unsuccessful or censored attempts."
+    ]
+  },
+  "healthy_native_runs": [
+    {
+      "name": "streets-reset-matrix01b",
+      "target": "streets",
+      "scenario": "trick_matrix_reset_01",
+      "timeline_sha256": "503f47b73ec880bf6c8fafa5580c3c10ff0364fa5a4f5778d05626675617c9f6",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix01b.driver.json",
+        "bytes": 2954296,
+        "sha256": "b351d261a5362f7f08c0cb355fad36613a7e71fa5396fb00a67d06aafce872ed"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix01b\\capture-summary.json",
+        "bytes": 667,
+        "sha256": "a03d90f42fa7d274c17ce4b59486750504c78a69b1548aae9c1249ee95bd351e"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix01b\\frames.csv",
+        "bytes": 67397,
+        "sha256": "14ef7decc4f823ec868c5e6690c1884adc9f1b5289335676457d91c19cb5410d"
+      },
+      "frames": 1131,
+      "body_channel": {
+        "rows": 9569,
+        "valid_rows": 9133,
+        "invalid_rows": 436,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix01b\\body-physics.jsonl",
+          "bytes": 305231127,
+          "sha256": "2b4dd799509bd78f0e6b1fa6ea361c300dbf42f381521277748e5da88463173c"
+        }
+      },
+      "trick_channel": {
+        "rows": 9569,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix01b\\trick-states.jsonl",
+          "bytes": 42026925,
+          "sha256": "039e96730269130e152d8f4281e33d2ba8a9b6d46a4e141e5dafbc13fbeb5583"
+        }
+      },
+      "pose_channel": {
+        "rows": 2171,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix01b\\rider.jsonl",
+          "bytes": 74822481,
+          "sha256": "1e25db56d8a80b2cb24dbe54e6148073bfe2270147043fc6e54b49627a3eaed0"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-reset-matrix02",
+      "target": "streets",
+      "scenario": "trick_matrix_reset_02",
+      "timeline_sha256": "02139f2c42cab84daa4edb25b14f9fb4b357891d18c41b33a943b70c6362279c",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix02.driver.json",
+        "bytes": 2961527,
+        "sha256": "4a57444d74603cd83528c5ca25f5d76005e205e6dea5ae06be6268a7b301d1a1"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix02\\capture-summary.json",
+        "bytes": 667,
+        "sha256": "0d1c3b28b81ad643fc0a1129954b29df6449814f56cfedc8413d194515361fdf"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix02\\frames.csv",
+        "bytes": 69594,
+        "sha256": "47963a90065b25d2617e51de76e7490ec4ed15ece6248e3531b48d7780b468fa"
+      },
+      "frames": 1177,
+      "body_channel": {
+        "rows": 10558,
+        "valid_rows": 10558,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix02\\body-physics.jsonl",
+          "bytes": 351442739,
+          "sha256": "f159b807498bcd3a3d724ef9eb212dea49fa4d979e1ada33e81d40911955f7ca"
+        }
+      },
+      "trick_channel": {
+        "rows": 10558,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix02\\trick-states.jsonl",
+          "bytes": 46417165,
+          "sha256": "022e64fcd7595ba6caf03bd687ffa3949fc1c9ad70945e8a16e92200c61b2996"
+        }
+      },
+      "pose_channel": {
+        "rows": 2343,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix02\\rider.jsonl",
+          "bytes": 80775148,
+          "sha256": "29621610e9afe091eacd1c7a19eb6b97e9e9a7dfe907fd7532cb172197f75674"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-reset-matrix03",
+      "target": "streets",
+      "scenario": "trick_matrix_reset_03",
+      "timeline_sha256": "5a001c4da39bedbb9fcfa8af90ae19e4421136c5e4a3beca6fee374576ba9274",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix03.driver.json",
+        "bytes": 2993111,
+        "sha256": "bc530d163cd8c60a965a733f1812d69454501928c71409297c2328164d451295"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix03\\capture-summary.json",
+        "bytes": 668,
+        "sha256": "6bcd9224d713c7dfcb09610b58ea4e8e450ca74a353ca80a354ebf403a68a703"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix03\\frames.csv",
+        "bytes": 71450,
+        "sha256": "c4956e5fc36f5626b9855447530e6d70ad13eef8062998b7b1ea6e33776cf98c"
+      },
+      "frames": 1207,
+      "body_channel": {
+        "rows": 11316,
+        "valid_rows": 11316,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix03\\body-physics.jsonl",
+          "bytes": 376736780,
+          "sha256": "f8b89ead30c2f6ab459341b276fa97e17ebb7af9fa28d7b7701ddb49755c9c54"
+        }
+      },
+      "trick_channel": {
+        "rows": 11316,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix03\\trick-states.jsonl",
+          "bytes": 60687274,
+          "sha256": "5bd21f2343ffacffc024cb8f0614628b7c34ff54f2d04853bbee99e0d2d57dd6"
+        }
+      },
+      "pose_channel": {
+        "rows": 2426,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix03\\rider.jsonl",
+          "bytes": 85975733,
+          "sha256": "f1d0b76f00b4aca33bc35480ad7132370943683f325e5d234f82b10fe7038559"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-reset-matrix04",
+      "target": "streets",
+      "scenario": "trick_matrix_reset_04",
+      "timeline_sha256": "8e27bc74875de5bd38a25988ccec0a67fb060db3f29e6e9fd23d017014ea0ec3",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix04.driver.json",
+        "bytes": 2939489,
+        "sha256": "a848b3fb2cd12c6706a6b6c98db1f3e3c8e6c5c6afe250890f43b84b6a5c28a0"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix04\\capture-summary.json",
+        "bytes": 668,
+        "sha256": "1e3282350b02bf7b460d7d7e851d99bc727fd21ff3e1aed32e367435a84a6c6d"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix04\\frames.csv",
+        "bytes": 68696,
+        "sha256": "69af7a5775eca871185c6516f8d90d307990f5f1d5a15eeeed34e7af16252229"
+      },
+      "frames": 1172,
+      "body_channel": {
+        "rows": 10436,
+        "valid_rows": 10436,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix04\\body-physics.jsonl",
+          "bytes": 348085025,
+          "sha256": "62ea24d241bd78ada84ad31e146add188ea1787422c7cac2b9e8138670c55e19"
+        }
+      },
+      "trick_channel": {
+        "rows": 10436,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix04\\trick-states.jsonl",
+          "bytes": 59606069,
+          "sha256": "8cc8f629ac3168f9a9771acbea13223dfe90967fdc8f757e2d1ca4d75f71de17"
+        }
+      },
+      "pose_channel": {
+        "rows": 2321,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-reset-matrix04\\rider.jsonl",
+          "bytes": 83062249,
+          "sha256": "bcf2380ffc900e1d8a836c502251721487acaf885d295ec2d84da81526b73bfe"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-mc-griddle-retry01",
+      "target": "streets",
+      "scenario": "mc_griddle_right_retry",
+      "timeline_sha256": "44205946a09c8c64bba871f482e6ceaa22b176557bd50808fdd848e3657375f1",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-mc-griddle-retry01.driver.json",
+        "bytes": 561378,
+        "sha256": "ca4bc100a19238a6584b2781489a8f0d0fbbfe2f8373713a29820cb7d3f98002"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-mc-griddle-retry01\\capture-summary.json",
+        "bytes": 662,
+        "sha256": "c5b252f5e889682171d9571584ace18019be583e56d4536b7f3f6b93306f6f78"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-mc-griddle-retry01\\frames.csv",
+        "bytes": 13660,
+        "sha256": "f73cc39a7057771f99601ce4d18dca0bae85d9efaacda51ac0ef5b05739ac26f"
+      },
+      "frames": 237,
+      "body_channel": {
+        "rows": 2178,
+        "valid_rows": 2178,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-mc-griddle-retry01\\body-physics.jsonl",
+          "bytes": 72615499,
+          "sha256": "8d4a044ea228b82bc23201fc0ae8f0c8fb8e1d08e43f8f4f03c4de22636ebe2d"
+        }
+      },
+      "trick_channel": {
+        "rows": 2178,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-mc-griddle-retry01\\trick-states.jsonl",
+          "bytes": 12453165,
+          "sha256": "e9ec570c3804e299c0c2bb3af6f0c5bdf8b342146c1495f6f0ac598dec42d3e9"
+        }
+      },
+      "pose_channel": {
+        "rows": 478,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-mc-griddle-retry01\\rider.jsonl",
+          "bytes": 17106984,
+          "sha256": "538c6150c3306db7c7bb26dd49fe1dafa31c0b71fba4fa47e547660a8f04afab"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-controls-v33",
+      "target": "streets",
+      "scenario": "controls_probe",
+      "timeline_sha256": "777175c3295101ebb5938e93debba2705f97d22a9d708057d513809b72acf464",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-controls-v33.driver.json",
+        "bytes": 835230,
+        "sha256": "a55678a91403507c0d3e66a008a49c01e032a7e0a53e2c02a2b0ab77cfa0b715"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-controls-v33\\capture-summary.json",
+        "bytes": 662,
+        "sha256": "bd8fd01419c88081944bba5e7c8edc59ea1d10e331d03b8e5845f40a06cabb40"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-controls-v33\\frames.csv",
+        "bytes": 17254,
+        "sha256": "4bebb826372c18a72a0b080f1a8532b85ead6ecea34bf9ded58ba8e3f2435ba1"
+      },
+      "frames": 295,
+      "body_channel": {
+        "rows": 2532,
+        "valid_rows": 2532,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-controls-v33\\body-physics.jsonl",
+          "bytes": 167875004,
+          "sha256": "2fe2a199e793ea986e62df031c54f19c16a3bce171a74854f629440ad35eb2da"
+        }
+      },
+      "trick_channel": {
+        "rows": 2532,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-controls-v33\\trick-states.jsonl",
+          "bytes": 4469268,
+          "sha256": "0e68a7bd48349c66958658630c78c1ef34a17570ada13af5816a11b73e5c7b0c"
+        }
+      },
+      "pose_channel": {
+        "rows": 579,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-controls-v33\\rider.jsonl",
+          "bytes": 144270277,
+          "sha256": "4e7d2a1132ba66eb93fd4fcc2d134eedded70c1137526befee72ec0f20b5003f"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-air-v33",
+      "target": "streets",
+      "scenario": "air_rotation",
+      "timeline_sha256": "b97e8188704827ae62582ca53284d7e86b1836c8c8db0e6ce564395c4ffa22e8",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-air-v33.driver.json",
+        "bytes": 743385,
+        "sha256": "049b76616b04001fcce79a5ad7e02e1708b57c985f0d2952c678e847180d9ba3"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-air-v33\\capture-summary.json",
+        "bytes": 661,
+        "sha256": "a9beb46b247618fdc182109bf85c3b7d7fc9b32cf77c3a03accb5c6f340ccc5a"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-air-v33\\frames.csv",
+        "bytes": 17273,
+        "sha256": "4488c95e302eab7b619dadbdcbc2b85fe6fcbd1e4655ee2510f46b56be780110"
+      },
+      "frames": 296,
+      "body_channel": {
+        "rows": 2568,
+        "valid_rows": 2568,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-air-v33\\body-physics.jsonl",
+          "bytes": 171217407,
+          "sha256": "fd963418711e0cbeb52af6cb3e4c293c2d62251c07a2b5ba38bbb19d8906de86"
+        }
+      },
+      "trick_channel": {
+        "rows": 2568,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-air-v33\\trick-states.jsonl",
+          "bytes": 4533906,
+          "sha256": "88a43d48e8b9aa6b44b64aa5e7aa0d532215bae54693fe4a8519a12931f38574"
+        }
+      },
+      "pose_channel": {
+        "rows": 583,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-air-v33\\rider.jsonl",
+          "bytes": 145393357,
+          "sha256": "9886a965f49c629d7af56807128becc0880342d27146c42615f6d8c16a7764d8"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-visual-retry-v33",
+      "target": "streets",
+      "scenario": "visual_gap_retry",
+      "timeline_sha256": "9a82300e0afd27352dbfc37a3a0391d0f042c515aaad051f1e28c68119fccb35",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-retry-v33.driver.json",
+        "bytes": 744077,
+        "sha256": "9644c6a3b07f4b5aaad052a5cf7bbfd874d89a81b8b8d27a8281f7b5a10a8047"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-retry-v33\\capture-summary.json",
+        "bytes": 662,
+        "sha256": "7449a5c9a3d12d50328e46ad0584950a1c0aa4d16e91a5681500ce0cec5a08b6"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-retry-v33\\frames.csv",
+        "bytes": 16115,
+        "sha256": "241176a6878d8e877f40905605623bd0129f8f06bd04cb55a912d32cb6cc4c8d"
+      },
+      "frames": 276,
+      "body_channel": {
+        "rows": 2168,
+        "valid_rows": 2168,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-retry-v33\\body-physics.jsonl",
+          "bytes": 144640878,
+          "sha256": "9e7236378c04d8767dde23cd807170d46396a0a149c09f81a323d24aa9f0d22e"
+        }
+      },
+      "trick_channel": {
+        "rows": 2168,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-retry-v33\\trick-states.jsonl",
+          "bytes": 9226153,
+          "sha256": "356673f1f3cd2c28ab779d199a685f01238a60aa688b675f6a79a7453e221282"
+        }
+      },
+      "pose_channel": {
+        "rows": 531,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-retry-v33\\rider.jsonl",
+          "bytes": 133767425,
+          "sha256": "089be469cc889c9a73ed515f60238f6e389ec53818108901fb695d585c712dbd"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    },
+    {
+      "name": "streets-suspension-v33",
+      "target": "streets",
+      "scenario": "suspension",
+      "timeline_sha256": "4f0af7083326a808aebba32eb7971ad635175ee6fefbb6c2695a5c8cc217825d",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension-v33.driver.json",
+        "bytes": 420700,
+        "sha256": "effe0cc4a35b4f21aaaf379a1dc8c8e8fb057024824ab6c0ada1fb6843c4632d"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension-v33\\capture-summary.json",
+        "bytes": 662,
+        "sha256": "a02eda1802bca191ff29762d3eabe37d5201b5cc894cba0a776d089986f55c29"
+      },
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension-v33\\frames.csv",
+        "bytes": 10036,
+        "sha256": "12733095d4c6706c3b4427291c60270e91b89855e292a51e57882c6ee5cef7c8"
+      },
+      "frames": 174,
+      "body_channel": {
+        "rows": 1487,
+        "valid_rows": 1487,
+        "invalid_rows": 0,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension-v33\\body-physics.jsonl",
+          "bytes": 99389500,
+          "sha256": "a9ebbc3e0ec7ea24ae3582b08d4e30d03416154fc21d217b6069616fcef1464f"
+        }
+      },
+      "trick_channel": {
+        "rows": 1487,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension-v33\\trick-states.jsonl",
+          "bytes": 6496231,
+          "sha256": "d25a7872b382bfd11b5e666d7973e4749dbfdc27bdb08cf43edb53d642383add"
+        }
+      },
+      "pose_channel": {
+        "rows": 338,
+        "valid_rows": null,
+        "invalid_rows": null,
+        "index_gaps": 0,
+        "first_and_last_full_json_valid": true,
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-suspension-v33\\rider.jsonl",
+          "bytes": 85176302,
+          "sha256": "622e5d42bae763f87e3e46728774f93068e4982b6614206dcb79d6fe5f95b645"
+        }
+      },
+      "cleanup_verified": true,
+      "missing_vehicle_rows_are_explicit": true
+    }
+  ],
+  "visual_only_quarantine": {
+    "name": "streets-visual-matrix01",
+    "target": "streets",
+    "scenario": "trick_matrix_reset_fast",
+    "timeline_sha256": "c0081f2422e9f0c8c3fb750ac60bb9a205e8bcea14a3d388841214717144329c",
+    "role": "video_pose_ik_only",
+    "physics_coverage_valid": false,
+    "fixed_physics_claims_quarantined": true,
+    "frames": 2536,
+    "bone_samples": 5057,
+    "driver": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-matrix01.driver.json",
+      "bytes": 6893882,
+      "sha256": "06340b3c5d4b4199f5f70ed32c0e1efca905484702cc4b34aab1ca6648a93566"
+    },
+    "capture": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-matrix01\\capture-summary.json",
+      "bytes": 768,
+      "sha256": "aedbf1d5e2971d833e94f82c6e9d1ea5d36bf5152c2824f2acbb7e8999f72fd5"
+    },
+    "limitation": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-matrix01\\capture-channel-limitation.json",
+      "bytes": 3032,
+      "sha256": "4e09b5b86c3a92e047fe1dddd1718a6118777fbb9b3335f606744395a5fc3240"
+    },
+    "frame_ledger": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\streets-visual-matrix01\\frames.csv",
+      "bytes": 153328,
+      "sha256": "c88bad7f2381ffd9853eb45f8f50c5cf02a828a579d71fa81a1db5fa25e629b9"
+    },
+    "cleanup_verified": true
+  },
+  "flick_hop_provenance": {
+    "policy": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\reference\\flick-hop-policy-v2.json",
+      "bytes": 9003,
+      "sha256": "ce5456a940c06ae1e4e03d390ec84a36fa8653dc412fefb546edcdc3de8605c7"
+    },
+    "command_provenance": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\reference\\observed-joint-actuation-tracks.provenance.json",
+      "bytes": 225228,
+      "sha256": "fbd9899b049d75bcb2053b2e33d4fb3260e17b5873f933809c809c09eed6e1f3"
+    },
+    "generated_cpp": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\src\\observed_joint_actuation_tracks.cpp",
+      "bytes": 2114356,
+      "sha256": "ad6fdbc97666347f84fd3026ce650a3a7787ecac0eed22dbad7ae2ba85559ec7"
+    },
+    "compact_export_validation": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-suspension-v33\\flick-export-validation.json",
+      "bytes": 883,
+      "sha256": "b6a0faa261fca1a4b036a4f1be95897b2d02f1d3e548872443171dc215c28c7c"
+    },
+    "source_bundle": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-suspension-v33\\flick-joint-native-v2.json",
+      "bytes": 538385,
+      "sha256": "46acb4fb97ed153482f6ddf1c5a9be5b1c3a90f93718caf1a5c7613eb7974af0"
+    },
+    "actuation_phases": [
+      "enter",
+      "recover",
+      "transition"
+    ],
+    "generated_track_count": 113,
+    "source_capture_hashes_match_audited_runs": true,
+    "limits": [
+      "This checks source/export bindings; it does not establish unmeasured Nollie animation or full physics parity.",
+      "The raw command bundle remains in the workspace and is excluded from distribution."
+    ]
+  },
+  "final_demo_runs": [
+    {
+      "name": "demo-fast-v2i",
+      "target": "demo",
+      "scenario": "trick_matrix_reset_fast",
+      "timeline_sha256": "c0081f2422e9f0c8c3fb750ac60bb9a205e8bcea14a3d388841214717144329c",
+      "executable_sha256": "e0b08145aa6b1ad858a0d57448bd3ac1d4c3908f8cadb75b166aca2bf941181a",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-fast-v2i.driver.json",
+        "bytes": 6884581,
+        "sha256": "1e22996d80bbe548a8647759f3778cbe810a54506f0d530b2f10397479d7ac8b"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-fast-v2i\\capture-summary.json",
+        "bytes": 749,
+        "sha256": "cd717593e1eea871af1d06c8ec0801e4996ac80df143e55c72aa0839cb3e8b99"
+      },
+      "simulation_summary": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-fast-v2i.csv.summary.json",
+        "bytes": 137,
+        "sha256": "bc896c168e6b25a5bba89db3a607a7dac88de2ea45cc429b4dc01a89a527a859"
+      },
+      "frames": 2795,
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-fast-v2i\\frames.csv",
+        "bytes": 136171,
+        "sha256": "816af1fb82f0497e8c1ae84fe947fd6f4f3bd715fb1b7b78cd8d04aa43de0c88"
+      },
+      "physics_ticks": 29618,
+      "xinput_ticks": 28803,
+      "takeoffs": 70,
+      "landed_combos": 1,
+      "coupled_solver": {
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-fast-v2i\\coupled-physics.jsonl",
+          "bytes": 52917095,
+          "sha256": "fbbacc210f49d4bcc9ab55473678b728475d08d6b6328906ae75c78184997572"
+        },
+        "rows": 29618,
+        "valid_rows": 29618,
+        "converged_rows": 29618,
+        "nonconverged_rows": 0,
+        "maximum_coupling_residual": 0.049993061692107495,
+        "all_valid_ticks_converged": true
+      },
+      "cleanup_verified": true
+    },
+    {
+      "name": "demo-air-v2i",
+      "target": "demo",
+      "scenario": "air_rotation",
+      "timeline_sha256": "b97e8188704827ae62582ca53284d7e86b1836c8c8db0e6ce564395c4ffa22e8",
+      "executable_sha256": "e0b08145aa6b1ad858a0d57448bd3ac1d4c3908f8cadb75b166aca2bf941181a",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-air-v2i.driver.json",
+        "bytes": 746313,
+        "sha256": "67651f21e355fcce7e0d27216d08fae2ffae5e295ea18f77ef9dc51c77221632"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-air-v2i\\capture-summary.json",
+        "bytes": 748,
+        "sha256": "4a7db2c470bb8215942a784a568a37a5eaef9c1826d73c9612a100a3a6ce7930"
+      },
+      "simulation_summary": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-air-v2i.csv.summary.json",
+        "bytes": 134,
+        "sha256": "5c46255d392de04c55effe4e0c5b5355111b49c4ec6e8e19e1c22b4e9f33ba21"
+      },
+      "frames": 415,
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-air-v2i\\frames.csv",
+        "bytes": 19192,
+        "sha256": "95d0e21b2e65b504440904e36c482226d177996e0c5535833b68aaacaaf3156c"
+      },
+      "physics_ticks": 4419,
+      "xinput_ticks": 3205,
+      "takeoffs": 4,
+      "landed_combos": 0,
+      "coupled_solver": {
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-air-v2i\\coupled-physics.jsonl",
+          "bytes": 7903923,
+          "sha256": "2884d6fd7031a1f33eb7fce29049765ccec71bb2f6445ed96f540efffe4e39f7"
+        },
+        "rows": 4419,
+        "valid_rows": 4419,
+        "converged_rows": 4419,
+        "nonconverged_rows": 0,
+        "maximum_coupling_residual": 0.04967027130936055,
+        "all_valid_ticks_converged": true
+      },
+      "cleanup_verified": true
+    },
+    {
+      "name": "demo-visual-retry-v2i",
+      "target": "demo",
+      "scenario": "visual_gap_retry",
+      "timeline_sha256": "9a82300e0afd27352dbfc37a3a0391d0f042c515aaad051f1e28c68119fccb35",
+      "executable_sha256": "e0b08145aa6b1ad858a0d57448bd3ac1d4c3908f8cadb75b166aca2bf941181a",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-visual-retry-v2i.driver.json",
+        "bytes": 751794,
+        "sha256": "688829d7ebd8c64400748c3fdbdaab679ccfeb132d15605f37276345e0cd7d70"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-visual-retry-v2i\\capture-summary.json",
+        "bytes": 748,
+        "sha256": "8ded896fee7049950245d6d6fa8b01ac3cd25d39445ee2693de4a3eaa3e526e6"
+      },
+      "simulation_summary": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-visual-retry-v2i.csv.summary.json",
+        "bytes": 134,
+        "sha256": "734b6943e5b51342e91ea605f5bbc4642e7d1445b08336a9f9385935fdadad73"
+      },
+      "frames": 416,
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-visual-retry-v2i\\frames.csv",
+        "bytes": 19206,
+        "sha256": "75e962d9eabfec5dc3fc66bba34421ec6f00e1650407c4467c0b0379880bfddd"
+      },
+      "physics_ticks": 4466,
+      "xinput_ticks": 3203,
+      "takeoffs": 4,
+      "landed_combos": 1,
+      "coupled_solver": {
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-visual-retry-v2i\\coupled-physics.jsonl",
+          "bytes": 8021053,
+          "sha256": "7f264062a94d60f9542b35d7e5a7e5d2b6a4c1a8d5ccbac4e90ec3a4dbab09a8"
+        },
+        "rows": 4466,
+        "valid_rows": 4466,
+        "converged_rows": 4466,
+        "nonconverged_rows": 0,
+        "maximum_coupling_residual": 0.04991914840845303,
+        "all_valid_ticks_converged": true
+      },
+      "cleanup_verified": true
+    },
+    {
+      "name": "demo-suspension-v2i",
+      "target": "demo",
+      "scenario": "suspension",
+      "timeline_sha256": "4f0af7083326a808aebba32eb7971ad635175ee6fefbb6c2695a5c8cc217825d",
+      "executable_sha256": "e0b08145aa6b1ad858a0d57448bd3ac1d4c3908f8cadb75b166aca2bf941181a",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-suspension-v2i.driver.json",
+        "bytes": 424186,
+        "sha256": "7b0610dbe49d0687e6bb577fbe8d6fa41068062986dd5c78eb390ef01bd7888a"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-suspension-v2i\\capture-summary.json",
+        "bytes": 747,
+        "sha256": "317fb8d34ace42ba84e6aec142dcf7ad7d4b2d8a689c30b831c8af2edff91fa2"
+      },
+      "simulation_summary": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-suspension-v2i.csv.summary.json",
+        "bytes": 134,
+        "sha256": "c148cdddd39fd9383318abb6f88a1d98988c04c3a41de60957526d82767daded"
+      },
+      "frames": 248,
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-suspension-v2i\\frames.csv",
+        "bytes": 11377,
+        "sha256": "62655e5d4c34684c77f5ab28b0372da2a38fb3dd05837affda5394b999882eec"
+      },
+      "physics_ticks": 2675,
+      "xinput_ticks": 1804,
+      "takeoffs": 3,
+      "landed_combos": 0,
+      "coupled_solver": {
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-suspension-v2i\\coupled-physics.jsonl",
+          "bytes": 4840453,
+          "sha256": "3b390547141357c9bea7ad616eb4399fdfa1e6f67bbe710ebbffcd9f4010163b"
+        },
+        "rows": 2675,
+        "valid_rows": 2675,
+        "converged_rows": 2675,
+        "nonconverged_rows": 0,
+        "maximum_coupling_residual": 0.04971533262824412,
+        "all_valid_ticks_converged": true
+      },
+      "cleanup_verified": true
+    },
+    {
+      "name": "demo-controls-v2i",
+      "target": "demo",
+      "scenario": "controls_probe",
+      "timeline_sha256": "777175c3295101ebb5938e93debba2705f97d22a9d708057d513809b72acf464",
+      "executable_sha256": "e0b08145aa6b1ad858a0d57448bd3ac1d4c3908f8cadb75b166aca2bf941181a",
+      "driver": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-controls-v2i.driver.json",
+        "bytes": 749607,
+        "sha256": "753f4e7124aa930e0b957369c699df94fe77c2ee3a10a6e23a5c18c52563c1e2"
+      },
+      "capture": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-controls-v2i\\capture-summary.json",
+        "bytes": 748,
+        "sha256": "8b41e08f37d076e168737c499c76226195a45f2724556dd1c627254daac7121a"
+      },
+      "simulation_summary": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-controls-v2i.csv.summary.json",
+        "bytes": 134,
+        "sha256": "ac7057aab1403213fb512ce9da9dd5fda125a4aab2b6cb986b0253635bd63006"
+      },
+      "frames": 385,
+      "frame_ledger": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-controls-v2i\\frames.csv",
+        "bytes": 17780,
+        "sha256": "4e161ac37c726c22f982314c9ec54a607793a9147ae487db558af4f132e98520"
+      },
+      "physics_ticks": 4107,
+      "xinput_ticks": 3203,
+      "takeoffs": 0,
+      "landed_combos": 0,
+      "coupled_solver": {
+        "file": {
+          "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\demo-controls-v2i\\coupled-physics.jsonl",
+          "bytes": 7393654,
+          "sha256": "78559661cb973831d53d2285f580f656feb046f56006de9294746fadde263596"
+        },
+        "rows": 4107,
+        "valid_rows": 4107,
+        "converged_rows": 4107,
+        "nonconverged_rows": 0,
+        "maximum_coupling_residual": 0.049820772124509756,
+        "all_valid_ticks_converged": true
+      },
+      "cleanup_verified": true
+    }
+  ],
+  "matched_requested_timelines": [
+    {
+      "streets": "streets-visual-matrix01",
+      "demo": "demo-fast-v2i",
+      "timeline_sha256": "c0081f2422e9f0c8c3fb750ac60bb9a205e8bcea14a3d388841214717144329c",
+      "native_fixed_physics_available": false
+    },
+    {
+      "streets": "streets-air-v33",
+      "demo": "demo-air-v2i",
+      "timeline_sha256": "b97e8188704827ae62582ca53284d7e86b1836c8c8db0e6ce564395c4ffa22e8",
+      "native_fixed_physics_available": true
+    },
+    {
+      "streets": "streets-visual-retry-v33",
+      "demo": "demo-visual-retry-v2i",
+      "timeline_sha256": "9a82300e0afd27352dbfc37a3a0391d0f042c515aaad051f1e28c68119fccb35",
+      "native_fixed_physics_available": true
+    },
+    {
+      "streets": "streets-suspension-v33",
+      "demo": "demo-suspension-v2i",
+      "timeline_sha256": "4f0af7083326a808aebba32eb7971ad635175ee6fefbb6c2695a5c8cc217825d",
+      "native_fixed_physics_available": true
+    },
+    {
+      "streets": "streets-controls-v33",
+      "demo": "demo-controls-v2i",
+      "timeline_sha256": "777175c3295101ebb5938e93debba2705f97d22a9d708057d513809b72acf464",
+      "native_fixed_physics_available": true
+    }
+  ],
+  "supplementary_reports": {
+    "capture_tag": "v2i",
+    "files": [
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\actual-capture-quality-v2i.json",
+        "bytes": 8192,
+        "sha256": "2c2e5b5eeb64727f5e7732edbe1123872baf56f7cd66f258e02573c7ea64bedb"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\actual-controls-hop-audit-v2i.json",
+        "bytes": 889,
+        "sha256": "2e60e9d91e88ff93f5bdf27ce9137e80f7f0f3ea9de8342271dc898d52dc6983"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\session-manifest.json",
+        "bytes": 66688,
+        "sha256": "c78bf414d2f88dbe1f72b17dfdfb58e03cb4db0d3ba8c0f1ffeb8067f2063813"
+      }
+    ]
+  },
+  "comparisons": [
+    {
+      "directory": "recordings/comparison-session02/comparison-fast-v2i",
+      "report": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-fast-v2i\\comparison.json",
+        "bytes": 9191,
+        "sha256": "1499de4eb730063d5ced1379ee49c71f67f0bfb415bbe489b690794dc950da97"
+      },
+      "validation": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-fast-v2i\\comparison-video.validation.json",
+        "bytes": 2923462,
+        "sha256": "7cf098eb27ce9267a6b17f57207cfa278900929ce9df6e4b4381021ee2ab8bf5"
+      },
+      "video": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-fast-v2i\\comparison.avi",
+        "bytes": 402011818,
+        "sha256": "71121697dffb457fc50195ab776235327a3ea29036215d74e4910d986c723528"
+      },
+      "source_driver_hashes": {
+        "streets": "06340b3c5d4b4199f5f70ed32c0e1efca905484702cc4b34aab1ca6648a93566",
+        "demo": "1e22996d80bbe548a8647759f3778cbe810a54506f0d530b2f10397479d7ac8b"
+      },
+      "gif": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-fast-v2i\\comparison.gif",
+        "bytes": 7457297,
+        "sha256": "8ea2992137fa8b1440c1bd45b4ba8720ef9b23fff0427780cc6088bf6c4e60ad"
+      }
+    },
+    {
+      "directory": "recordings/comparison-session02/comparison-air-v2i",
+      "report": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-air-v2i\\comparison.json",
+        "bytes": 248892,
+        "sha256": "a0254374ee0a2d63843f0cc35ab9e0ea92826e204a0d4a75df40dad8b3c508e5"
+      },
+      "validation": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-air-v2i\\comparison-video.validation.json",
+        "bytes": 364945,
+        "sha256": "9fb05cd6c36f10e93f05a8a571f751be17c78a1eea9287ec8aca1d657beec838"
+      },
+      "video": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-air-v2i\\comparison.avi",
+        "bytes": 44897356,
+        "sha256": "e29baf8b27abfd165e7a6918a73c84589945c2c1c314da404cfa83ee1c66dea8"
+      },
+      "source_driver_hashes": {
+        "streets": "049b76616b04001fcce79a5ad7e02e1708b57c985f0d2952c678e847180d9ba3",
+        "demo": "67651f21e355fcce7e0d27216d08fae2ffae5e295ea18f77ef9dc51c77221632"
+      },
+      "gif": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-air-v2i\\comparison.gif",
+        "bytes": 7474448,
+        "sha256": "721cc7cd368e70b1e12fa1015a0207331d1d59c235348dbea3e34707a4bffd20"
+      }
+    },
+    {
+      "directory": "recordings/comparison-session02/comparison-visual-retry-v2i",
+      "report": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-visual-retry-v2i\\comparison.json",
+        "bytes": 244586,
+        "sha256": "0eedf99776aeb503e280f30b323e48e919d0976a8f05c0c183f482340b0b613b"
+      },
+      "validation": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-visual-retry-v2i\\comparison-video.validation.json",
+        "bytes": 364519,
+        "sha256": "4bef1a2a31dab8f21e9ba55b04583e2ebfec6daca0a580cf9e324a6b492ea9f9"
+      },
+      "video": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-visual-retry-v2i\\comparison.avi",
+        "bytes": 45529070,
+        "sha256": "0d2e5e9cd5ea49b72068649d29024168ee9a683648dfbe49e6acad4e029f5aad"
+      },
+      "source_driver_hashes": {
+        "streets": "9644c6a3b07f4b5aaad052a5cf7bbfd874d89a81b8b8d27a8281f7b5a10a8047",
+        "demo": "688829d7ebd8c64400748c3fdbdaab679ccfeb132d15605f37276345e0cd7d70"
+      },
+      "gif": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-visual-retry-v2i\\comparison.gif",
+        "bytes": 7419415,
+        "sha256": "1b03c253292866130ba66a12b48084acfc58bcf76aeb15834672e3444c21c3dc"
+      }
+    },
+    {
+      "directory": "recordings/comparison-session02/comparison-suspension-v2i",
+      "report": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-suspension-v2i\\comparison.json",
+        "bytes": 159933,
+        "sha256": "bf576e9b235debf245360aa9af6d5faabce306f47a5d11bab985d0f36ab944e8"
+      },
+      "validation": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-suspension-v2i\\comparison-video.validation.json",
+        "bytes": 217639,
+        "sha256": "c9ebc8b961a9557bfc370ba12e1f2dc3792ab93014724cde3ea8330b7d5bf54e"
+      },
+      "video": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-suspension-v2i\\comparison.avi",
+        "bytes": 25921546,
+        "sha256": "c1705490c8a59b90e0317613ae9013ff3eff7330ef45f9c9be686e708f229941"
+      },
+      "source_driver_hashes": {
+        "streets": "effe0cc4a35b4f21aaaf379a1dc8c8e8fb057024824ab6c0ada1fb6843c4632d",
+        "demo": "7b0610dbe49d0687e6bb577fbe8d6fa41068062986dd5c78eb390ef01bd7888a"
+      },
+      "gif": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-suspension-v2i\\comparison.gif",
+        "bytes": 7491444,
+        "sha256": "9771e8260ed1879dcf5ba43e3ebce47fb095127a6140bb1803c45e35c122ff45"
+      }
+    },
+    {
+      "directory": "recordings/comparison-session02/comparison-controls-v2i",
+      "report": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-controls-v2i\\comparison.json",
+        "bytes": 240030,
+        "sha256": "886cbb258fb6d8dc73d2013ab0a89408e1ca85bb780717ecac1ae6b87c496e7d"
+      },
+      "validation": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-controls-v2i\\comparison-video.validation.json",
+        "bytes": 357966,
+        "sha256": "598dce3c5282c80b0a8419f90af3f85e3d619698e6978c37c35eed9b7cfb839f"
+      },
+      "video": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-controls-v2i\\comparison.avi",
+        "bytes": 43829360,
+        "sha256": "8a859ed8d35c7e50be0f5bcd7c3f24a9e0c23a3bba1d9b3474725393e55bbad5"
+      },
+      "source_driver_hashes": {
+        "streets": "a55678a91403507c0d3e66a008a49c01e032a7e0a53e2c02a2b0ab77cfa0b715",
+        "demo": "753f4e7124aa930e0b957369c699df94fe77c2ee3a10a6e23a5c18c52563c1e2"
+      },
+      "gif": {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\comparison-controls-v2i\\comparison.gif",
+        "bytes": 7257146,
+        "sha256": "db6bd9d201fe06be5e07418d4cee4c277a288a8a1d4c44d9505bc8296a453b7a"
+      }
+    }
+  ],
+  "installed_consumer": {
+    "receipt": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\release-v030-v2h\\installed-consumer.json",
+      "bytes": 8214,
+      "sha256": "5e6c56656db5ef415583e369bf07b3bc6bb2cdb4e23cf4b0dc8339f81750344d"
+    },
+    "installed_library": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\release-v030-v2h\\install\\lib\\libbmx_movement.a",
+      "bytes": 6478210,
+      "sha256": "364b4ad756fa929b4b60ca9f6527bc2db76ab12bfc48285f2b375c0053048857"
+    },
+    "current_build_library": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\libbmx_movement.a",
+      "bytes": 6478210,
+      "sha256": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07"
+    },
+    "consumer": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\release-v030-v2h\\consumer-build\\consumer.exe",
+      "bytes": 9141679,
+      "sha256": "838ee5083423c1d0f3d5dba1566ac7e1f964e81324815cfdb3594474734e2643"
+    },
+    "all_installed_headers_match_current": true,
+    "installed_archive_members_match_current_build": true,
+    "installed_archive_byte_identical_to_current_build": false,
+    "archive_member_comparison": {
+      "format": "ar",
+      "members": [
+        {
+          "name": "/",
+          "bytes": 7252,
+          "mode": "0",
+          "sha256": "333eb1f4f3bde7894ef1f12b5c907f83c08b7ca5e3d18e51a727defab60330bf"
+        },
+        {
+          "name": "//",
+          "bytes": 212,
+          "mode": "",
+          "sha256": "bec6d9bb779b9e16500998ee3fe1450774e2a3a0535b1c357fe504adc0bc035d"
+        },
+        {
+          "name": "/0",
+          "bytes": 221218,
+          "mode": "100666",
+          "sha256": "d987c171c52ad0deb88bf81a49028ff3a5275f03168e01bb7189adffff11d090"
+        },
+        {
+          "name": "grind.cpp.obj/",
+          "bytes": 18321,
+          "mode": "100666",
+          "sha256": "030705555adca07eb1c0e4c782eb21fb2dbf685c676218cee4b816480c238ff2"
+        },
+        {
+          "name": "/18",
+          "bytes": 113921,
+          "mode": "100666",
+          "sha256": "0cb40222474122c3902d0e5f79f87d566a4ebae305ad9c74d567e4cd0aae5b76"
+        },
+        {
+          "name": "/38",
+          "bytes": 6882,
+          "mode": "100666",
+          "sha256": "bd72fa4218180c23e3e6b5ea162a67feb54a85f46ab33d4f3f0f9a34a6e42c29"
+        },
+        {
+          "name": "/56",
+          "bytes": 6102,
+          "mode": "100666",
+          "sha256": "617b2f4eccdcc7daa90a24ad23df7f52d1715a30e0a1e40f1e5b6fe596edc118"
+        },
+        {
+          "name": "/81",
+          "bytes": 1276537,
+          "mode": "100666",
+          "sha256": "012ad929415bf24f4503ba2bcca2d04af943dfddb220bc8dab984a8daf866ecd"
+        },
+        {
+          "name": "/122",
+          "bytes": 3468561,
+          "mode": "100666",
+          "sha256": "3e4adea0dd35ba8a3633c4f12bdc770ec1501ae9e689e193d51798f59bea1ff6"
+        },
+        {
+          "name": "/152",
+          "bytes": 1212169,
+          "mode": "100666",
+          "sha256": "1ab378d124c24dd10e6bf3ba0ea021e0c1f8f29aed638eaf236730d2034a7505"
+        },
+        {
+          "name": "/183",
+          "bytes": 146362,
+          "mode": "100666",
+          "sha256": "eefedd6babb0180df590504726ef246c062b49330144cafa4b16338a25a2d0d4"
+        }
+      ],
+      "ignored_header_fields": [
+        "timestamp",
+        "uid",
+        "gid"
+      ],
+      "special_index_and_long_names_payloads_compared": true
+    },
+    "consumer_rerun_exit_code": 0,
+    "consumer_output": "Installed bmx::movement consumer passed: quick hop, source flick and 58/754/232 tracks\n",
+    "configured_version": "0.3.0"
+  },
+  "headless_release_validation": {
+    "report": {
+      "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-release-validation.json",
+      "bytes": 8858,
+      "sha256": "506d08cc7f3f5343819fb73285b92bafc25d4d9b00b8912c991f776dbf75c906"
+    },
+    "sources": [
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\libbmx_movement.a",
+        "bytes": 6478210,
+        "sha256": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\source-manifest.json",
+        "bytes": 6674,
+        "sha256": "d3aa911b758c89e4a995a47cbe86b4508de0e0594e748b3c873bbfa64c7ac00a"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\include\\bmx\\detail\\source\\bmx_input.h",
+        "bytes": 19065,
+        "sha256": "6870ecc5e2e9618c27abbce755abd0ad3fe936350ae3a4e7edb1f0ceee9eb201"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\include\\bmx\\movement.hpp",
+        "bytes": 10272,
+        "sha256": "d69a887e0fe1af032bcc3e26ba06bc9dc8e4014e5a1caf08525648133a5e89ae"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\include\\bmx\\suspension.hpp",
+        "bytes": 9172,
+        "sha256": "3094ca8b245edfe7e52f3e6eaa4d2beac9da830b474079e19cfda77057bf539b"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\src\\movement.cpp",
+        "bytes": 26437,
+        "sha256": "758a042a42915f18cf17dbda56836e75aa34e294ab20781928ddeefe4590f0a4"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\src\\suspension.cpp",
+        "bytes": 63053,
+        "sha256": "402161a3856571339a3af6e959af3a8935c3293e86625bdc4750d8594caa03fc"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\tools\\sweep_coupled_tricks.cpp",
+        "bytes": 10686,
+        "sha256": "2b29257d30dbee547361f2e456d3d5752aa67c1e2fa8e6208ce3c45365779544"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\tools\\replay_suspension.cpp",
+        "bytes": 7507,
+        "sha256": "cb21109008cbe9c7bd70632d378eab32de170c5272f88282978115bcf9b62e96"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-all-slot-release-v2h\\summary.json",
+        "bytes": 24114,
+        "sha256": "8fb4ea210b19cfaf915252cfb96ecfb97d4e262ca054b03e5f95440deb76b680"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-all-slot-release-v2h\\samples.csv",
+        "bytes": 9444738,
+        "sha256": "048054c9efd5720e115296b52e2a11d7080319cdac9bdaf6884f40195e421183"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\production-timing-grid-v2h\\grid-summary.json",
+        "bytes": 11100,
+        "sha256": "2b9dda565421eca63d7a7e5c6930377acc52f95f52cd9f0e0a96d9d324e00864"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-suspension01\\replay-v2h-measured.json",
+        "bytes": 4378,
+        "sha256": "754a7b50550cf42dc337761ffebee12340a34b477e1b725eb30a2b27cd574348"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-suspension01\\replay-v2h-autonomous.json",
+        "bytes": 4379,
+        "sha256": "1db4a92c4826e503e337493daa1637f9259b3ba6be03c4f603af532379b8ef79"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-suspension01\\replay-v2h-measured.csv",
+        "bytes": 499692,
+        "sha256": "5a3678cc79731c089c60e2ed45eaee3fb00877fb06ef20bc5d22341de5268c71"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\analysis-suspension01\\replay-v2h-autonomous.csv",
+        "bytes": 501139,
+        "sha256": "852472a198012f31d00362feb84469344019996eaf73c5a2abf75b9a473604f2"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-controls-v2h\\summary.json",
+        "bytes": 4940,
+        "sha256": "c18582e82dca2b355e7a521fef79857ed05f30b53f0ba70aa22ca24a7af1a407"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-suspension-v2h\\summary.json",
+        "bytes": 4623,
+        "sha256": "7f892511ab320488484db95a3cb82e09af868aa7d2c0e4399095ae7f562bd37b"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-release-v2h-manifest.json",
+        "bytes": 6074,
+        "sha256": "82e4f6a5dd3378238e6b1eda242120994f8e3a408a06f3a82836ae5e6736908d"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\calibration\\live-fast-v2c-raw-fixture.csv",
+        "bytes": 1423094,
+        "sha256": "b2e3a6d15895470980d2924e0a6f4afce55af35d59dcc899532bc262cee5416a"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\calibration\\live-fast-v2c-v2h-replay.csv",
+        "bytes": 5241693,
+        "sha256": "01dff52d979fb4d5c7f3afac0106796c9fea81d33c7e0a48e987fbaf0d6676da"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\build\\Testing\\Temporary\\LastTest.log",
+        "bytes": 3730,
+        "sha256": "327c2a04fb2f70e91e49dae26c1f49147f771c093b39d7b0912ce15ddcf17887"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\reference\\contact-coupling-numerics-v2.json",
+        "bytes": 6767,
+        "sha256": "e8b4e8ed5f1807281a01f34e08125cc7de73a74f26c3239ef273430a6880e728"
+      },
+      {
+        "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\headless-suspension-v2h\\flick-pulse-localization.json",
+        "bytes": 1428,
+        "sha256": "4bbc727b153d5198f5ab8122b3ec8e586343350283b7f7dd89eeb960ae8bce3b"
+      }
+    ],
+    "counts": {
+      "attempted": 58,
+      "adopted": 58,
+      "caught": 48,
+      "module_landed_by_id": 48,
+      "invalid_samples": 0,
+      "nonconverged_samples": 0
+    },
+    "actual_controller_recording": false,
+    "all_source_hashes_match_current": true
+  },
+  "source_manifest_all_bundled_hashes_verified": true,
+  "deployment": {
+    "path": "C:\\Users\\Jeffr\\Desktop\\reskate\\standalone\\bmx-movement\\recordings\\comparison-session02\\deployment.json",
+    "bytes": 1099,
+    "sha256": "17c39c590aabd842d3b93d3d57716838a7cda09fcf87179f6d9f22e448baaf32"
+  },
+  "local_install_restoration_and_game_identity_verified": true,
+  "physical_controller_tested": false,
+  "actual_input": "Installed ViGEm virtual Xbox controller / XInput",
+  "native_scored_landing_proven": false,
+  "full_native_physics_or_animation_parity_verified": false,
+  "raw_native_streams_in_distribution": false,
+  "fresh_zip_extracted_build_verified": false,
+  "verified_files": {
+    "include/bmx/attitude.hpp": "562b66a9bd73752b41241ede1b058721dcc49e6dbffcb732516c28ded58abac6",
+    "include/bmx/grind.hpp": "b32bc26f245fbfecaf3a385a8ca7f17cad6e43c907bcbfe92e23628e0bc2e867",
+    "include/bmx/ik_track.hpp": "8e5a3737d83d64adb91e4821fa35c2577764ab8ab21ec43943e9b7065da6f1f0",
+    "include/bmx/joint_actuation.hpp": "a764837191bd52dd9854fcf21e1c9e5f90703697dd6a583bb15918bdec9bacf6",
+    "include/bmx/movement.hpp": "d69a887e0fe1af032bcc3e26ba06bc9dc8e4014e5a1caf08525648133a5e89ae",
+    "include/bmx/observed_trick_timing.hpp": "ac0eefc9f2c3c3a8c354769b6e80829066fb05a41b87a51d0997c77b5aa87818",
+    "include/bmx/pose_track.hpp": "7422f27f7a0529d1cf9c9e523627d32a5c692edece7eb244e9b9e1ca1c041897",
+    "include/bmx/suspension.hpp": "3094ca8b245edfe7e52f3e6eaa4d2beac9da830b474079e19cfda77057bf539b",
+    "include/bmx/vehicle_pose.hpp": "05a0590b9d7402ada1b3844b02ce1cd31f30abd6faab0b0b58330b60ab8eccf0",
+    "include/bmx/detail/source/bmx_chassis_control.h": "08f6706b9fd85b54e7e05b69a4444f4cd58279adc925c9ec1391173e97d173b9",
+    "include/bmx/detail/source/bmx_contact_compliance.h": "8901234c42ef15b332bee9221397ca2a00ad608df78834c2e6646f5985e75fcb",
+    "include/bmx/detail/source/bmx_coupled_brake.h": "420f84b5df80d23ab37dbfbed63db7ebc53905659374757f5db92a8274d8a1b1",
+    "include/bmx/detail/source/bmx_geometry.h": "4d25bcf2015789b30bef25b901965a4fdc691cdd09b659f541ad7f40c692926a",
+    "include/bmx/detail/source/bmx_ground_pump.h": "50a5e0eecccb884a94d5ba14be0bb4463afa9803bd8b8c0c10c5c99d61565f2b",
+    "include/bmx/detail/source/bmx_input.h": "6870ecc5e2e9618c27abbce755abd0ad3fe936350ae3a4e7edb1f0ceee9eb201",
+    "include/bmx/detail/source/bmx_landing_approach.h": "8f812a309ced3331bdd843fb1bc7e46a27b4a268f56f4f31256c448c2abeafc5",
+    "include/bmx/detail/source/bmx_landing_contact_compliance.h": "576e073627a2f580a34214118059d5cad74abdd21ce42acbb390ac48add5c598",
+    "include/bmx/detail/source/bmx_rider_motion.h": "6b809c3399c195f093eed5b688f19473eeb579dfeac05e95b0ccfb9007021f11",
+    "include/bmx/detail/source/bmx_rider_posture_presentation.h": "6172f45efb59d5fe6f03b60f81dedd154eee65f84b45db2196844b9738a6accb",
+    "include/bmx/detail/source/bmx_tire_dynamics.h": "5c41d16832a5bb1c81f03a93bf923df07aa05d293deff5670b2463bb9471feda",
+    "include/bmx/detail/source/bmx_tricks.h": "ff6130bbb52f134b5ed5454fee2f62d34d0a452903cc6adbce8bae5cfe62ca54",
+    "include/bmx/detail/source/bmx_trick_catalog.h": "141952cca31ee9f16b2aff59ae1456c2f42388a785e302bcba4f917f6dc4da94",
+    "include/bmx/detail/source/bmx_visual.h": "92ec832d0543613d2b86abd6f87690bd733508c6f37b627656c8d517330bf227",
+    "src/attitude.cpp": "e004f95e5a00d42b2fc4d98f4caba6fd0ae906f3deba363130ac0f3ca4573e89",
+    "src/grind.cpp": "ebd222f842b7c3a3397543c343b466668d26194c845f2500ff2245096a4f38db",
+    "src/joint_actuation.cpp": "7eec925f6d7347b00a76cede3554ee815b98a1dbf117f066adaf14a188c717d2",
+    "src/movement.cpp": "758a042a42915f18cf17dbda56836e75aa34e294ab20781928ddeefe4590f0a4",
+    "src/observed_ik_tracks.cpp": "003b71a0bbf84f5aa0efb8bf252697750181d8bc9712eb7556b4fbb6e06e8209",
+    "src/observed_joint_actuation_tracks.cpp": "ad6fdbc97666347f84fd3026ce650a3a7787ecac0eed22dbad7ae2ba85559ec7",
+    "src/observed_pose_tracks.cpp": "a5cbdf67899c427ad5e2c43c2fcad7c28ab3b24ea6dc564074b98d9337ddf696",
+    "src/observed_vehicle_pose.cpp": "fbdcb7d13f5260b21c97fdd0008231746bde2044d610b1fe25ea65e0b041f72e",
+    "src/suspension.cpp": "402161a3856571339a3af6e959af3a8935c3293e86625bdc4750d8594caa03fc",
+    "tests/input_holdpoints.cpp": "eebf29c7a80d4348e7421183d66f76aa592b24b5f0ad0b445fa5484db57f2c54",
+    "tests/joint_actuation.cpp": "e26a14dd264730d3f08582db60a5ec47891140ef35cdb9c45bd11e676a9764f3",
+    "tests/pose_tracks.cpp": "b3dd5290f2fef76183325302ead0d4fb63d7827e2d039b561de30be613d397f5",
+    "tests/tests.cpp": "d339608ae18f867aef458e632e854b6a493f20bbe0d5239f661ff776548b88fe",
+    "tests/vehicle_pose.cpp": "a5640c65a2627f3c7f3dc603276792d9e5a5aa440aceb3aeb4fb0c275fe9ed2d",
+    "demo/demo_win32.cpp": "5957adfdd90c929ca26511f8c17ebd1edbafdebae6973bf20d71c8879c07fc57",
+    "demo/run_observed_demo.cmd": "59bafc25bf96e8b5dd8c4dd4a5840f975c1948f72fb354deba6e810723021f41",
+    "reference/air-damping-policy-v2.json": "e4b29798fc8dbe2febfdbef3b42e2d05facf92990f41828ff50e6f350ece322a",
+    "reference/calibration-current.json": "8de3d915e599f4ee8d2154e5b011757ac4268b46ff5e794449589cae3dd0b599",
+    "reference/calibration-current.md": "78b83d676c54bf3d8b7ae262fec0171346204649b8913ac530c95faf1ea5703a",
+    "reference/comparison-v1-history.md": "053a33306302624c8c855b8009a730167d3891ae949b0705c622fc31d2af764c",
+    "reference/contact-coupling-numerics-v2.json": "e8b4e8ed5f1807281a01f34e08125cc7de73a74f26c3239ef273430a6880e728",
+    "reference/coverage.md": "8d27330f6318fd680490678aad2159c7ad1ff75e36c2b96d2f9d7f6cf1abc792",
+    "reference/current-controls.json": "a13c540176da3234d1103a43e3909033da941b7e3ad43ed190ce6464bfbed3a3",
+    "reference/current-hop-observations.md": "beeb51ecafba1b3581515204451e651b188106ad7a76f6ac0b93f96647b38cc7",
+    "reference/current-suspension-rider-observations.md": "03d067af2889e670752748082bfca56e95d302e747b72672d8de478b80b6397c",
+    "reference/current-trick-catalog-timing-v3.json": "c957db0b38f329512e972d328a4731325735a4f0fb571609ee5d2b852a266a0c",
+    "reference/evidence.json": "120feec8c008f83b5b0034ef75c2e01f5389459e21949a683e7f102b40907c5b",
+    "reference/flick-hop-policy-v2.json": "ce5456a940c06ae1e4e03d390ec84a36fa8653dc412fefb546edcdc3de8605c7",
+    "reference/manual-physical-policy-v2.json": "79b96d80a81fde548350b2f27e5bf1bbdf98bdc626abd11553a555dbb1c692ae",
+    "reference/observed-joint-actuation-tracks.provenance.json": "fbd9899b049d75bcb2053b2e33d4fb3260e17b5873f933809c809c09eed6e1f3",
+    "reference/observed-pose-tracks.provenance.json": "fb649f9e6cab863e3cf271928086c3b56c7079b39d659297036a4d77ae8c2cb1",
+    "reference/observed-profile-v1.json": "d6ffaa4474e8a042f043ebfca9720dd5b2821d5dae9d0143864bfe77d52c6383",
+    "reference/observed-profile-v2.json": "55ec97ee0b9c900621cb393f649b33d2d64961e081064e6c7b1eeea54c2fd3d8",
+    "reference/observed-trick-timing.provenance.json": "e5f20dac978d2353796af666e971e70916645e0d310d6e0dc7ffa3293c1668a4",
+    "reference/observed-vehicle-ik-tracks.provenance.json": "aa4b0ad6fda6c28506eee86d21e13a464e71abd15f2c0208b9bc857b5cdd3afb",
+    "reference/selected-rig-reduction-v2.json": "697ed275a8d2801cc9f6923830a103364c0366e94815cdc707d8e908bdc6721b",
+    "reference/trick-matrix-plan-current-v3.json": "8fe3e94b070806414b51d9a984f538f55de3ba77585f248efe6430316d9ef6ce",
+    "reference/trick-matrix-plan-current-v31.json": "2191c3d249ab74c152d10cf19ef3f1cbac0f984f31fa9b99e5cfb188e4d8f68e",
+    "reference/trick-matrix-plan.json": "5dafe0f91dd2c59d6104effe448907bdc91c13350b38736f75966f4297585df3",
+    "CMakeLists.txt": "17db87aab693679257eac1e6dd879bce788bc5e68027d1cb7b4901693467a12e",
+    "source-manifest.json": "d3aa911b758c89e4a995a47cbe86b4508de0e0594e748b3c873bbfa64c7ac00a",
+    "README.md": "c073864fefdca89e14ed3c9ae4fab35eac97f633b41bb51f1e3fae65ae3fc43f",
+    "REFERENCE.md": "7b76040f181583d834ab1f6a9f1151740c87589c17c217c1580843b50847b632",
+    "COMPARISON.md": "1a5caedbde727fee2a7db6b29139ce9ccea825141ccd7b26261a9ed31894ecd1",
+    "LICENSE": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+    "build/bmx_demo.exe": "e0b08145aa6b1ad858a0d57448bd3ac1d4c3908f8cadb75b166aca2bf941181a",
+    "build/bmx_tests.exe": "cd7bfc2cb2e4b4e055559fb443b9efff087c36e7d91726127c6df886d0166977",
+    "build/bmx_pose_tests.exe": "ae835725a83f863ba6e6a8fa83303851d270730a2fdfb4b63652ae2986b5f305",
+    "build/bmx_joint_actuation_tests.exe": "1cdf0676c58e67522751604cafdc4e6357e299bd795f396cf4f3dd1f0348a954",
+    "build/bmx_vehicle_pose_tests.exe": "0c58926625092126658738c0f0fa5925ef52760a50127b9d04d87eda3e84880c",
+    "build/bmx_input_holdpoint_tests.exe": "12724f4f5502859b0bedb6d9239f4ac9c8b6ca0bb16c356352c64d02a2424136",
+    "build/libbmx_movement.a": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07"
+  },
+  "limits": [
+    "58 actual selections, phase completion and posture windows are observed; native scored landing is not established.",
+    "V3.2 full matrix is video/pose/IK only: its missing fixed channels are quarantined.",
+    "Every fixed-row index and availability prefix is checked; first/last nested JSON are parsed. All nested values are not independently semantically verified.",
+    "Raw frames and large JSONL/trajectory inputs remain in the workspace; derived C++ tracks, hashes and reports are portable.",
+    "The coupled model is a reduced reconstruction; solver, contacts, some animation/PID controls, ragdoll and walking are not full native parity.",
+    "Actual frame samples can be repeated for video presentation; no generated intermediate motion or desktop recording is claimed.",
+    "The installed consumer is checked before packaging; a fresh ZIP extraction/build is a separate later receipt.",
+    "Windows/MinGW and virtual XInput were exercised; other platforms/engines and a physical controller were not."
+  ]
+}

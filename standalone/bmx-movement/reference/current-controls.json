@@ -1,0 +1,1533 @@
+{
+  "schema": "bmx-current-authored-controls-v1",
+  "source": "C:\\Users\\Jeffr\\Desktop\\reskate\\build\\bmx-movement-current\\source\\global-metadata.dat",
+  "source_sha256": "7e1af5100b90a78c907999239bc6952dfdce2461fc4321626658f24f2815d7ea",
+  "assets": [
+    {
+      "literal_index": 50156,
+      "file_offset": 1702776,
+      "literal_bytes": 102693,
+      "literal_sha256": "69ad1762d9c121e3b8a53181e35c3e9ff44979fd78d35881c37220480647dffd",
+      "name": "MashBox_Freerun_InputActions",
+      "maps": [
+        {
+          "name": "Tricking",
+          "id": "d962a534-116d-40b7-80fc-cbcf86f281c7",
+          "actions": [
+            {
+              "name": "LS RS",
+              "type": "Button",
+              "id": "8dbad6d4-b0e7-453c-a77c-f3d0f9f5bc47",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "RS",
+              "type": "Button",
+              "id": "e1d99250-367c-4873-9904-f5ff9096c070",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "LS",
+              "type": "Button",
+              "id": "61eaa6a7-dec5-43f0-a044-92f8203df2dc",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "LT RT",
+              "type": "Button",
+              "id": "6d936b6c-847c-49a3-b4ec-fbd33e6eaeaf",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "RT",
+              "type": "Button",
+              "id": "110c321d-4e35-4b6a-bd8a-6d85166d30d7",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "LT",
+              "type": "Button",
+              "id": "5de35771-f2ff-4e5f-a2c2-338b9cb607b5",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "LS RT",
+              "type": "Button",
+              "id": "d7a37c97-6855-40fb-b88d-a1144f9f9125",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "RS LT",
+              "type": "Button",
+              "id": "d49272a0-32e2-4b1e-8af8-1b7dbd6033fd",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": false
+            },
+            {
+              "name": "Trick Stick",
+              "type": "Value",
+              "id": "3e233e6f-b6b1-4e81-b940-61d749071594",
+              "expectedControlType": "Vector2",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            }
+          ],
+          "bindings": [
+            {
+              "name": "Gamepad",
+              "id": "9ec653e7-cc5c-42c5-977c-02a75da870fd",
+              "path": "OneModifier",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS RS",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "3d4dfe82-2026-466d-865f-931e3891b456",
+              "path": "<Gamepad>/rightShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS RS",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "c416f8b6-4fe2-49df-a5d6-a5334262440a",
+              "path": "<Gamepad>/leftShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS RS",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "5ff25402-3496-4d06-98a4-71a275117112",
+              "path": "<Gamepad>/rightShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "RS",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "02175fef-d432-452d-abf7-c6c14c18b5b1",
+              "path": "<Gamepad>/leftShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "Gamepad",
+              "id": "b6e4ac2c-1aac-45de-a9d7-78f931b38406",
+              "path": "OneModifier",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LT RT",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "b7c0d743-b695-47be-b047-94d0754d8489",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LT RT",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "92843457-47ce-44ef-81c0-ae37e98f02c3",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LT RT",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "40be01db-a75b-4251-a6ae-4cda04de0466",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "RT",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "90a8a871-ee60-4fae-8529-de71ddf639d3",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LT",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "d14d5d94-9a13-46da-b54a-525d38cdf6f1",
+              "path": "<Gamepad>/rightStick",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Trick Stick",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "Gamepad",
+              "id": "d2b8ece1-172f-4b96-8666-68a48503105b",
+              "path": "OneModifier",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS RT",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "1db222b0-cf48-4566-a08c-45ab54ca66d1",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS RT",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "765e1bf8-fe9f-41d5-9903-60186285d03b",
+              "path": "<Gamepad>/leftShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "LS RT",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Gamepad",
+              "id": "03ef4c61-e9b3-4986-9cf2-66c63c9d57aa",
+              "path": "OneModifier",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "RS LT",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "dce6ee54-1725-489f-86c3-7346fe4f1737",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "RS LT",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "68e47f56-b304-4c28-8ad3-6bfff2494763",
+              "path": "<Gamepad>/rightShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "RS LT",
+              "isComposite": false,
+              "isPartOfComposite": true
+            }
+          ]
+        },
+        {
+          "name": "BMX",
+          "id": "87642330-4da1-48da-9c8f-0640ec898e28",
+          "actions": [
+            {
+              "name": "Steer",
+              "type": "Value",
+              "id": "8a75cae3-a8e6-4651-8575-811e0b46e641",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Extra Lean",
+              "type": "Value",
+              "id": "f6af3166-da40-4cf6-8d06-54aca11241d5",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Extra Lean Stick",
+              "type": "Value",
+              "id": "edb4b8e3-bda8-48d4-9ff6-4223ec10a640",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Grind Pose",
+              "type": "Value",
+              "id": "26065418-2d51-4085-b2ba-167dc7550543",
+              "expectedControlType": "Vector2",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Trick Stick",
+              "type": "Value",
+              "id": "b8c5c3be-c059-45da-82e8-020eaa001973",
+              "expectedControlType": "Vector2",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Flip",
+              "type": "PassThrough",
+              "id": "42dece8a-01e5-4d0b-b8fd-2612e728e090",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Accelerate",
+              "type": "Value",
+              "id": "beb2e8ed-cb44-4928-b734-5b39b909ce5c",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Revert Activator",
+              "type": "Value",
+              "id": "4f6b2217-07c9-4559-a08f-79b45e1c5713",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Throttle",
+              "type": "Value",
+              "id": "451e1fc4-4af4-40ce-8611-69e5c653f8e4",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Brake",
+              "type": "Value",
+              "id": "379bcdb1-dd5f-4e9c-b1ac-940a3b3690fc",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Car Brake",
+              "type": "Value",
+              "id": "72d0da1d-1a2c-4ecb-8cc0-3d6d22e4e9a7",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Car E-Brake",
+              "type": "Value",
+              "id": "eb929daf-2cd5-4035-ae74-26f88816778f",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Shift Up",
+              "type": "Button",
+              "id": "5019dd67-27e4-4c94-80f6-ec206e15e362",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Shift Down",
+              "type": "Button",
+              "id": "dc762258-efa9-41ee-b8aa-5cb6eecec4dd",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Drift Activator",
+              "type": "Value",
+              "id": "c375dcec-161e-4ebf-b10c-ee6de781ff79",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Flick Hop",
+              "type": "PassThrough",
+              "id": "0e53c460-3fe2-4999-84ff-614a8134c864",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Quick Hop",
+              "type": "Button",
+              "id": "6dd31570-4a69-443f-b06e-71e42c934e65",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Tire Ride Hop",
+              "type": "Value",
+              "id": "f6837960-9850-4780-8776-825585f2e328",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Lateral Hop Direction",
+              "type": "Value",
+              "id": "fc54236c-7276-4ca2-b219-44c16ba2b209",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Slider",
+              "type": "Value",
+              "id": "c128f809-970c-4cd0-8c38-c9511d87bef0",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Pump",
+              "type": "Value",
+              "id": "a161461a-f328-4035-a2cf-c7fad158c615",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Preload",
+              "type": "Value",
+              "id": "99415fe3-2170-4e86-80f9-c9f821b992d1",
+              "expectedControlType": "Axis",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Manny",
+              "type": "PassThrough",
+              "id": "6779a793-31fd-4f8c-bfc0-c7dfd80926dd",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Nosey",
+              "type": "PassThrough",
+              "id": "c05b859c-40c6-406b-8db5-5410cb174fdc",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Manny Angle Control",
+              "type": "PassThrough",
+              "id": "b6bd260e-7eb3-4e34-8056-3f89e1db6297",
+              "expectedControlType": "",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Sprint",
+              "type": "Value",
+              "id": "d284feaa-1dbd-4d8d-9b52-8e8d09ad8232",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            },
+            {
+              "name": "Dismount",
+              "type": "Value",
+              "id": "16495aae-8b39-45b6-a51c-b8e7c7a914b1",
+              "expectedControlType": "Button",
+              "processors": "",
+              "interactions": "",
+              "initialStateCheck": true
+            }
+          ],
+          "bindings": [
+            {
+              "name": "Controller",
+              "id": "dd86f593-415c-4900-90f9-e200e58a6966",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Steer",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "b3048053-1242-40fc-b4c8-ccc9db20bb1b",
+              "path": "<Gamepad>/leftStick/right",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Steer",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "0f68fdc4-9131-4528-b0cd-2834c3549436",
+              "path": "<Gamepad>/leftStick/left",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Steer",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Keyboard",
+              "id": "f92b7f0a-7e97-45c2-9183-75b51a35f420",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Steer",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "ce14349b-8e30-4536-83b2-9361d147afd3",
+              "path": "<Keyboard>/d",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Steer",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "d4a5372b-66ae-4b1b-9659-041eae50ca02",
+              "path": "<Keyboard>/a",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Steer",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "d74b64d7-c0ea-4978-938e-105f55cf8166",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Manny",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "46ea7651-5bee-44ef-a6a8-610d2d226ab4",
+              "path": "<Gamepad>/rightStick/down",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Manny",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "7f0af252-bf58-4b63-9f3b-5dc117f276d2",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Nosey",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "ec15cc88-50b4-4f6f-be5c-731cbdb80055",
+              "path": "<Gamepad>/rightStick/up",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Nosey",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "dddb5497-1a03-41ed-b6e4-d38016aa0cc6",
+              "path": "<Gamepad>/buttonNorth",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Dismount",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "Controller",
+              "id": "2bb0966c-2413-4942-9486-cf68d6343958",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Pump",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "173d8145-1b8c-4ea4-b39a-3b350907dfc0",
+              "path": "<Gamepad>/leftStick/up",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Pump",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "59925149-da86-4631-8d39-8e882111c593",
+              "path": "<Gamepad>/leftStick/down",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Pump",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Keyboard",
+              "id": "7d12cd88-2030-45f8-ae3e-352c94a1fc16",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Pump",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "efe5c046-25cf-4096-8233-8ab38c4bd214",
+              "path": "<Keyboard>/w",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Pump",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "b4540575-a898-4a43-a316-ab7abd383a0c",
+              "path": "<Keyboard>/s",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Pump",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "9ef7fdb0-08f0-41f8-9d84-c6c411193f59",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Preload",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "15ccfbc3-ff47-4ad5-bd66-298c68730a99",
+              "path": "<Gamepad>/rightStick/up",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Preload",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "1f5ecc64-54cb-45b8-9681-907672485357",
+              "path": "<Gamepad>/rightStick/down",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Preload",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Keyboard",
+              "id": "6a169bea-e5af-4127-9082-429f0257117f",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Preload",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "051a9e8a-e804-46a9-bee3-fd324763b53a",
+              "path": "<Keyboard>/upArrow",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Preload",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "b8866ffe-93b2-4f62-b45a-e639ed419e09",
+              "path": "<Keyboard>/downArrow",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Preload",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "1ee1cbe2-8139-404e-af0c-f63ea5b5a8b2",
+              "path": "<Gamepad>/rightStick/y",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Manny Angle Control",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "Controller",
+              "id": "1051632e-0e72-4d2f-b20c-f779419008f5",
+              "path": "OneModifier",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Tire Ride Hop",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "4ba215b8-a254-486f-bd4d-6c556a8e405d",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Tire Ride Hop",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "d8b26bb1-caca-4302-a294-b012f5f26dba",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Tire Ride Hop",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "One Modifier",
+              "id": "9260a655-e67f-46d0-9f53-6845774cbc48",
+              "path": "OneModifier",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Sprint",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "c2947009-353f-4b51-ad20-2f631452a51a",
+              "path": "<Gamepad>/leftStick/up",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Sprint",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "8b24680b-ed5a-4e28-b776-ddb67676829d",
+              "path": "<Gamepad>/buttonSouth",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Sprint",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "a4301373-47f2-4555-8247-6cf9900708b8",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Flip",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "88a89341-497d-49c7-b7e0-e2b03635f5b0",
+              "path": "<Gamepad>/leftStick/up",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Flip",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "21ed6ab0-c5b7-4b1f-aafb-008a653766d1",
+              "path": "<Gamepad>/leftStick/down",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Flip",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "794c3c23-749d-483f-9e66-943aef6ba6bc",
+              "path": "<Gamepad>/buttonSouth",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Accelerate",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "0f96754c-b01b-47ec-b27e-2bf29839ae4e",
+              "path": "<Keyboard>/w",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Accelerate",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "74a67c37-f6f7-4adc-8777-d0caf4c46db7",
+              "path": "<Gamepad>/buttonSouth",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Revert Activator",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "633abd26-aa9b-446b-9cdb-065361e671f0",
+              "path": "<Keyboard>/w",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Revert Activator",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "fd785e1f-7b96-44ae-90dd-4d8d80befefb",
+              "path": "<Gamepad>/buttonEast",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Brake",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "a6b20162-d623-46c5-995c-0c0bc521ce4a",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Car Brake",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "6b89f44d-d392-498f-8b41-030a834ca03b",
+              "path": "<Gamepad>/buttonSouth",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Car E-Brake",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "ddd638b3-48b0-43a0-9f61-145c1f914675",
+              "path": "<Gamepad>/rightShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Shift Up",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "dc49affc-6b21-44b3-af77-b7651255f1a4",
+              "path": "<Gamepad>/leftShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Shift Down",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "02b20f11-d810-4736-a64e-15fa64303f96",
+              "path": "<Gamepad>/rightStickPress",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Quick Hop",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "Controller",
+              "id": "26f95daf-0538-4873-93b5-6fcbfaf9a831",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Lateral Hop Direction",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "a18073dd-c061-4b8c-94e6-776bccdcbfca",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Lateral Hop Direction",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "458023c6-fea3-469e-b405-36312253b89e",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Lateral Hop Direction",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "6e4e8c19-62d0-4213-8501-02ba16ded472",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Slider",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "32614de9-253e-40a2-9910-313af318e45d",
+              "path": "<Gamepad>/rightShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Slider",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "a90b5fd6-068e-42f5-9645-a3709a1e3ad9",
+              "path": "<Gamepad>/leftShoulder",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Slider",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "a76dc80a-cd97-46aa-874e-f09a461b8c66",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Flick Hop",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "802a0cfe-d254-4954-825c-c02041050322",
+              "path": "<Gamepad>/rightStick/up",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Flick Hop",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "2bdaf34c-7623-4c7a-b749-710de0eb7bf1",
+              "path": "<Gamepad>/rightStick/down",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Flick Hop",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "f3478198-6a88-4bd0-a13e-a22af3018ae5",
+              "path": "<Gamepad>/rightStick",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Grind Pose",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "42946b22-f8e0-4815-bf5d-4142c91f1fd7",
+              "path": "<Gamepad>/rightStick",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Trick Stick",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "Controller",
+              "id": "1541763f-dfd9-4a3f-ad06-aca288d543fd",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Extra Lean",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "9a452a44-7a66-42bc-af22-5a2e048ede4f",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Extra Lean",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "95ec7cb3-db53-4164-a3a3-1bb1af3a3182",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Extra Lean",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "Controller",
+              "id": "ae0fffa6-6152-4f29-a3b9-affdcf7e88bd",
+              "path": "1DAxis",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Extra Lean Stick",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "positive",
+              "id": "2497e607-9355-46d2-8e48-dcfc6084cf25",
+              "path": "<Gamepad>/rightStick/right",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Extra Lean Stick",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "negative",
+              "id": "83e3fda3-22bb-4bcd-89a7-0816f1c694dc",
+              "path": "<Gamepad>/rightStick/left",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Extra Lean Stick",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "",
+              "id": "b56db19f-a0f9-41d1-b5b0-720dde0ed8cb",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Throttle",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "",
+              "id": "e072409d-ceb8-4863-9c7a-a9cfacbbb5c0",
+              "path": "<Keyboard>/w",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Throttle",
+              "isComposite": false,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "One Modifier",
+              "id": "1207cb4f-a3b8-42c7-8c2c-a1facf2b9827",
+              "path": "OneModifier(modifiersOrder=2)",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Drift Activator",
+              "isComposite": true,
+              "isPartOfComposite": false
+            },
+            {
+              "name": "modifier",
+              "id": "e265ac32-f508-4660-a9a6-f716f29c1fd4",
+              "path": "<Gamepad>/rightTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Drift Activator",
+              "isComposite": false,
+              "isPartOfComposite": true
+            },
+            {
+              "name": "binding",
+              "id": "58cde14b-f746-45fe-868a-0b28db12e3e9",
+              "path": "<Gamepad>/leftTrigger",
+              "interactions": "",
+              "processors": "",
+              "groups": "",
+              "action": "Drift Activator",
+              "isComposite": false,
+              "isPartOfComposite": true
+            }
+          ]
+        }
+      ],
+      "control_schemes": []
+    }
+  ],
+  "summary": [
+    {
+      "map": "Tricking",
+      "actions": 9,
+      "bindings": 17,
+      "matches_historical_except_ids": true,
+      "modifier_actions": [
+        "LS RS",
+        "RS",
+        "LS",
+        "LT RT",
+        "RT",
+        "LT",
+        "LS RT",
+        "RS LT"
+      ],
+      "modifier_bindings": [
+        {
+          "action": "LS RS",
+          "path": "OneModifier",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LS RS",
+          "path": "<Gamepad>/rightShoulder",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LS RS",
+          "path": "<Gamepad>/leftShoulder",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "RS",
+          "path": "<Gamepad>/rightShoulder",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LS",
+          "path": "<Gamepad>/leftShoulder",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LT RT",
+          "path": "OneModifier",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LT RT",
+          "path": "<Gamepad>/rightTrigger",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LT RT",
+          "path": "<Gamepad>/leftTrigger",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "RT",
+          "path": "<Gamepad>/rightTrigger",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LT",
+          "path": "<Gamepad>/leftTrigger",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LS RT",
+          "path": "OneModifier",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LS RT",
+          "path": "<Gamepad>/rightTrigger",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "LS RT",
+          "path": "<Gamepad>/leftShoulder",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "RS LT",
+          "path": "OneModifier",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "RS LT",
+          "path": "<Gamepad>/leftTrigger",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "RS LT",
+          "path": "<Gamepad>/rightShoulder",
+          "processors": "",
+          "interactions": ""
+        }
+      ],
+      "trick_stick_bindings": [
+        {
+          "action": "Trick Stick",
+          "path": "<Gamepad>/rightStick",
+          "processors": "",
+          "interactions": ""
+        }
+      ],
+      "stick_bindings": [
+        {
+          "action": "Trick Stick",
+          "path": "<Gamepad>/rightStick",
+          "processors": "",
+          "interactions": ""
+        }
+      ]
+    },
+    {
+      "map": "BMX",
+      "actions": 27,
+      "bindings": 65,
+      "matches_historical_except_ids": true,
+      "modifier_actions": [],
+      "modifier_bindings": [],
+      "trick_stick_bindings": [
+        {
+          "action": "Trick Stick",
+          "path": "<Gamepad>/rightStick",
+          "processors": "",
+          "interactions": ""
+        }
+      ],
+      "stick_bindings": [
+        {
+          "action": "Steer",
+          "path": "<Gamepad>/leftStick/right",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Steer",
+          "path": "<Gamepad>/leftStick/left",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Manny",
+          "path": "<Gamepad>/rightStick/down",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Nosey",
+          "path": "<Gamepad>/rightStick/up",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Pump",
+          "path": "<Gamepad>/leftStick/up",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Pump",
+          "path": "<Gamepad>/leftStick/down",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Preload",
+          "path": "<Gamepad>/rightStick/up",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Preload",
+          "path": "<Gamepad>/rightStick/down",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Manny Angle Control",
+          "path": "<Gamepad>/rightStick/y",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Sprint",
+          "path": "<Gamepad>/leftStick/up",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Flip",
+          "path": "<Gamepad>/leftStick/up",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Flip",
+          "path": "<Gamepad>/leftStick/down",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Quick Hop",
+          "path": "<Gamepad>/rightStickPress",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Flick Hop",
+          "path": "<Gamepad>/rightStick/up",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Flick Hop",
+          "path": "<Gamepad>/rightStick/down",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Grind Pose",
+          "path": "<Gamepad>/rightStick",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Trick Stick",
+          "path": "<Gamepad>/rightStick",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Extra Lean Stick",
+          "path": "<Gamepad>/rightStick/right",
+          "processors": "",
+          "interactions": ""
+        },
+        {
+          "action": "Extra Lean Stick",
+          "path": "<Gamepad>/rightStick/left",
+          "processors": "",
+          "interactions": ""
+        }
+      ]
+    }
+  ],
+  "historical_catalog": {
+    "status": "historical_unverified_for_current_build",
+    "historical_slot_count": 58,
+    "reason": "Old DLL, metadata and serialized movement assets have different digests; current trickset bindings do not verify slot catalog or animation parity."
+  },
+  "limits": [
+    "Authored InputSystem JSON literal definitions only; active enabled action map, rebinding and runtime device interpretation remain unobserved.",
+    "Processors/interactions establish authored input transforms, not native trick-mask implementation or movement behavior.",
+    "No game DLL is imported or executed."
+  ]
+}

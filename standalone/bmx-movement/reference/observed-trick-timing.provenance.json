@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "source": "reference\\current-trick-catalog-timing-v3.json",
+  "source_sha256": "c957db0b38f329512e972d328a4731325735a4f0fb571609ee5d2b852a266a0c",
+  "generated": "include\\bmx\\observed_trick_timing.hpp",
+  "generated_sha256": "ac0eefc9f2c3c3a8c354769b6e80829066fb05a41b87a51d0997c77b5aa87818",
+  "entries": 58,
+  "master_speed": 1,
+  "limits": "Intrinsic clip duration only; actual controller transitions and scoring are independently observed."
+}

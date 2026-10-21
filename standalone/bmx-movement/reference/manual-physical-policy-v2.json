@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "event": "source_derived_manual_physical_policy_v2",
+  "source_pair": {
+    "GameAssembly.dll": "22a4ac9cbec7d270e96dcc90b9870f69f91596dd974fbb1c874b1b5e081a94b8",
+    "global-metadata.dat": "7e1af5100b90a78c907999239bc6952dfdce2461fc4321626658f24f2815d7ea"
+  },
+  "source_evidence": {
+    "HandleStabilization": "ev_78f40062a3384ce243b1ef63817adae0397fca670a9cbdbf251706a2afb60a70",
+    "GetManualPitchTorqueAmount": "ev_875b437ea3ccbf4dcb02e7c2acc1c261da1c6a82fa05484132fe7ce5ea7c1c9f",
+    "Unity6TorqueResponseMult": "ev_d45e2ec81c441b0581761a00ef691f1e3a41f07524517109169ee36821ccbcdd",
+    "IsManualMannyMode": "ev_7f2f6cc0f6bb91b29e23d2f40d03c1861de6a5849e620f428cda4690407fcf63",
+    "IsManualNoseyMode_assembly": "ev_790bd67ccf3b08f15eec45ec098152b77d3c9c659f6d7ee7303ae84129d76104"
+  },
+  "exact_mode_defaults": {
+    "manny": "Auto0",
+    "nosey": "Auto0",
+    "serialized_roundtrip_bytes": 232
+  },
+  "runtime_modes": {
+    "nosey": "Manualtrue observed",
+    "manny": "Unobserved once hold timer>.25; profileManual choice explicitly inferred"
+  },
+  "source_formula": {
+    "source_evidence": "Current HandleStabilization plus four focused REA records; see manual-physical-policy-v2.json.",
+    "manny_and_nosey_angle_degrees": 30,
+    "torque_amount_Nm": 450,
+    "ignored_authored_unity6_response_multiplier": 0.45,
+    "response_authority": "This pinned build helper returns constant1.0; GetManualPitchTorqueAmount therefore returns450.",
+    "angle_mode": "t=clamp01(2*(abs(input-.2)-.2)); Manny=-30*(.4+.6*t); Nosey=+30*(.4+.6*t), plus7deg if airborne. Smooth dt*4 grounded or dt*6 airborne; first.15s after last hop targets0.",
+    "angle_consumer": "External PID setpoint on both source PIDBodies, never a joint target or COM teleport.",
+    "ground_pitch_control": "Neutral0; active abs(Manny+Nosey)>.25 gives1; eligible direct Manual mode gives.06.",
+    "direct_mode": "Time grounded>.25; Manny additionally requires held input>.25s. Forward Manny chassis=-450*.9*m,Spring=-450*m; backwards adds-450*.4*m to each. Nosey chassis=450*.9*1.2*n,Spring=450*1.2*n; forwards adds450*.3*n to each.",
+    "mode_source": "Authored Auto/Manual defaults are0(Auto) for both directions. Live NoseyManual=true. Startup Manny getterFalse is timer-gated and does not reveal moving runtime override.",
+    "partial_input_COM": "Active partial56/127 input is below the native special-COM threshold.5; observed Chassis localCOM(0,.3,0) andSpring(0,.8,0) stay unchanged."
+  },
+  "headless_controls_replay": {
+    "actual_controller_recording": false,
+    "no_native_body_state_injection": true,
+    "source_capture": "streets-controls-v33",
+    "engine_dt_seconds": 0.01,
+    "Manny": {
+      "samples": 345,
+      "invalid": 0,
+      "module_chassis_nose_up_peak_degrees": 4.4152378506884835,
+      "module_front_query_gap_peak_m": 0.07170879094813964,
+      "native_active_chassis_nose_up_peak_degrees": 4.84585,
+      "module_spring_nose_up_peak_degrees": 7.110813443873109
+    },
+    "Nosey": {
+      "samples": 365,
+      "invalid": 0,
+      "module_chassis_pitch_extent_degrees": 0.0026113411937815517,
+      "native_active_chassis_nose_down_peak_degrees": 0.27896,
+      "module_spring_nose_down_peak_degrees": 3.3940151331195385,
+      "module_spring_nose_down_median_degrees": 3.270684111789646,
+      "native_active_spring_nose_down_peak_degrees": 3.88322
+    },
+    "isolated_command_control": "Before external manual actuation, replaying actual native joint targets/inertia reproduces banking and compression but pitch remains near0 and neither rigid wheel lifts.",
+    "mode_control": "Auto-Manny alternative reaches8.34147deg; chosen Manual mode reaches4.41524deg. Choice is a disclosed inference, not live mode recovery.",
+    "artifact_directory": "build/bmx-movement-current/calibration/manual-diagnosis"
+  },
+  "limits": [
+    "Native manual wheel/support flags include separately simulated wheel/headset bodies and exact ray/collider query geometry. The reduced rigid-wheel host does not reproduce every Nosey rear-support transition, despite similar separate Spring pitch.",
+    "Manual source branch is implemented with real physical torque and source mode/timer rules. Moving Manny runtime mode is unobserved; Manual selection is explicit inference. Native camera-orbit/input eligibility in a stationary idle context remains outside this moving-control comparison.",
+    "Manual up-dot alone is not a pitch metric: native controls contain substantial concurrent banking. Axis-resolved Chassis/Spring pitch and exact input contact queries are reported separately."
+  ],
+  "validation": {
+    "ctest": "5/5passed",
+    "assertions": 166973,
+    "all58": "58accepted/48caught/48landed_by_id/0invalid/0nonconverged",
+    "library_sha256": "44f4ef89e264a8f2e0b6d47677a8131bf9a86ac93b42fdb53cbd184c7c291f07",
+    "contact_coupling_numerics": "contact-coupling-numerics-v2.json"
+  }
+}
