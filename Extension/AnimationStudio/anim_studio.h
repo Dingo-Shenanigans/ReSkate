@@ -61,6 +61,9 @@ struct View {
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
     bool field_axes_valid{};
+    // The ground he stands or rides on. Nothing that is moved is allowed under it.
+    float floor{};
+    bool floor_valid{};
     float duration{}, takeoff{-1}, landing{-1}, time{}, speed{1};
     std::vector<JointView> joints; // the editable joints, now
     // The board without its keys, now, from where it starts: 0, 0, 0 is the board at the trick's start,

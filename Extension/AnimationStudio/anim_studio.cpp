@@ -2307,6 +2307,8 @@ View view() {
         v.field_axes = normalised(multiply(s.joints_placement.rotation, conjugate(clip_place)));
         v.field_axes_valid = finite(Joint{{1, 1, 1}, v.field_axes, {}});
     }
+    v.floor = s.floor;
+    v.floor_valid = s.floor_valid;
     v.duration = duration_locked(s);
     v.takeoff = s.clip ? s.clip->takeoff : -1;
     v.landing = s.clip ? s.clip->landing : -1;
