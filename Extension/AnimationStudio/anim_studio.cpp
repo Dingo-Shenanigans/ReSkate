@@ -122,6 +122,13 @@ std::optional<bool> left_foot_leads(std::uintptr_t base, std::uintptr_t componen
     const auto flags = context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
     return flags ? std::optional<bool>{(*flags & addr::grind_exit::left_foot_leads_mask) != 0} : std::nullopt;
 }
+// The whole byte the stance bit lives in: the other bits are not understood yet (the stance readout logs them).
+std::optional<std::uint8_t> stance_flags(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
+    if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
+    const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
+    return context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
+}
 std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto left = left_foot_leads(base, component);
     return left ? std::optional<bool>{riding_switch(*left, goofy_stance())} : std::nullopt;
@@ -1745,6 +1752,97 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     scheduled = std::move(packet);
 }
 
+// ---- stance readout --------------------------------------------------------------------------------
+// Reverse-engineering aid. The game's animation graph mirrors the whole skater when physics sets
+// Bool.Anim.Mirrored (SkaterCorePhysicsInputConfig.AnimMirrored); its clips are authored goofy, so regular
+// is the mirrored one, and fakie is NOT a mirror (same clip, plus an upper-body additive layer). Which rule
+// physics uses for Mirrored is not in the data, so this measures it: the stance byte as the game has it,
+// which foot is physically at the board's nose, and which way the board travels - logged on every change
+// and once a second, to ReSkate.Tricks/research/stance-readout.txt.
+namespace stance_readout {
+std::atomic<bool> on{};
+double started{-1}, last_line{-1};
+std::string last_key;
+Vec3 last_mount{};
+double last_mount_at{-1};
+std::size_t lines{};
+std::string fmt(float v) {
+    char t[16];
+    std::snprintf(t, sizeof(t), "%+.2f", v);
+    return t;
+}
+void write(const std::string& line) {
+    try {
+        const auto folder = library_folder() / L"research";
+        std::filesystem::create_directories(folder);
+        std::ofstream file(folder / "stance-readout.txt", std::ios::binary | std::ios::app);
+        file << line << '\n';
+    } catch (...) {}
+}
+void tick(Live& l, double at, std::uintptr_t base, std::uintptr_t component, MotionState motion) {
+    if (!on.load(std::memory_order_acquire)) return;
+    if (started < 0) started = at;
+    if (at - started > 300 || lines > 4000) {
+        on.store(false);
+        write("# stopped (5 minutes or 4000 lines)");
+        logging::log(Level::info, Channel::skater, "Animation Studio: stance readout stopped.");
+        return;
+    }
+    if (!l.board_ok || l.pose.size() < skeleton_joints) return;
+    const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+    if (!finite(mount)) return;
+    // The feet and the board's travel, in the board's own frame: x across, y up, z along it.
+    const auto in_board = [&](const Vec3& w) {
+        return rotate(conjugate(mount.rotation), Vec3{w[0] - mount.position[0], w[1] - mount.position[1], w[2] - mount.position[2]});
+    };
+    const auto left = in_board(world(l.pose, 343).position), right = in_board(world(l.pose, 10).position);
+    Vec3 travel{};
+    if (last_mount_at >= 0 && at - last_mount_at > 1e-3) {
+        const Vec3 moved{mount.position[0] - last_mount[0], mount.position[1] - last_mount[1], mount.position[2] - last_mount[2]};
+        const auto local = rotate(conjugate(mount.rotation), moved);
+        for (std::size_t i = 0; i < 3; ++i) travel[i] = static_cast<float>(local[i] / (at - last_mount_at));
+    }
+    last_mount = mount.position;
+    last_mount_at = at;
+    const auto flags = stance_flags(base, component);
+    const char* moving = motion == MotionState::riding ? "riding" : motion == MotionState::air ? "air" : motion == MotionState::rail ? "rail"
+                       : motion == MotionState::offboard ? "offboard" : "unknown";
+    // Which foot is further toward board +z, and which way along z the board is going.
+    const char* toward_plus_z = left[2] > right[2] ? "left" : "right";
+    const float speed = travel[2];
+    const char* going = std::abs(speed) < 0.5f ? "still" : speed > 0 ? "+z" : "-z";
+    char flag_text[8] = "--";
+    if (flags) std::snprintf(flag_text, sizeof(flag_text), "%02x", *flags);
+    const std::string key = std::string(flag_text) + toward_plus_z + going + moving;
+    if (key == last_key && at - last_line < 1.0) return;
+    last_key = key;
+    last_line = at;
+    ++lines;
+    const auto trick = current_trick(component);
+    write(std::format("{:7.2f}s  {:8s} flags {} (left_foot_leads {})  setting {}  foot toward +z: {:5s}  board going {:5s} ({} m/s)  "
+                      "L {} {} {}  R {} {} {}  trick {}",
+                      at - started, moving, flag_text, flags ? ((*flags & addr::grind_exit::left_foot_leads_mask) ? "yes" : "no ") : "?  ",
+                      goofy_stance() ? "goofy  " : "regular", toward_plus_z, going, fmt(speed), fmt(left[0]), fmt(left[1]), fmt(left[2]),
+                      fmt(right[0]), fmt(right[1]), fmt(right[2]), trick.empty() ? "-" : trick));
+}
+} // namespace stance_readout
+std::string toggle_stance_readout() {
+    const bool now = !stance_readout::on.load();
+    if (now) {
+        try { std::filesystem::remove(library_folder() / L"research" / "stance-readout.txt"); } catch (...) {}
+        stance_readout::started = -1;
+        stance_readout::last_key.clear();
+        stance_readout::lines = 0;
+        stance_readout::last_mount_at = -1;
+        stance_readout::write("# Animation Studio stance readout. Ride each stance for a few seconds: normal, fakie, switch, nollie.");
+        stance_readout::write("# Feet are in the board's frame (x across, y up, z along). 'board going' is its travel along its own z.");
+    } else stance_readout::write("# stopped by command");
+    stance_readout::on.store(now);
+    return now ? "Stance readout on: ride a few seconds in each stance (normal, fakie, switch, nollie), then type animstudio stance "
+                 "again. Written to ReSkate.Tricks/research/stance-readout.txt."
+               : "Stance readout off. See ReSkate.Tricks/research/stance-readout.txt.";
+}
+
 // ---- the animation thread ------------------------------------------------------------------------
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
@@ -1814,6 +1912,7 @@ void on_animation(std::uintptr_t component) noexcept {
         l.last_motion = motion;
         l.render_motion.store(motion, std::memory_order_release);
         const auto air = in_the_air(base, component);
+        if (!snap->open) stance_readout::tick(l, at, base, component, motion);
         DiagnosticSample diagnostic;
         bool diagnostic_pose = false;
         if (diagnostics_capture) {

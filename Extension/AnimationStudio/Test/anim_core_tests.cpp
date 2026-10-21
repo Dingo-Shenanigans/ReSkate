@@ -1193,6 +1193,47 @@ int main(int argc, char** argv) {
                       "Every studio parent must match the actual native AntSkeletonAsset");
             std::cout << "Native animation hierarchy: all 395 parents match\n";
         }
+        if (argc == 3 && std::string_view(argv[1]) == "--stance-check") {
+            // Where his feet and the board are, in the placement's frame, at the clip's last frame, as it is
+            // and mirrored the way the studio mirrors it. For finding why a mirrored skater is off his board.
+            std::ifstream binary(argv[2], std::ios::binary);
+            const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(binary)), std::istreambuf_iterator<char>());
+            const auto clip = clip_from_bytes(bytes);
+            std::vector<Joint> pose(clip.joints);
+            clip.sample(clip.duration(), pose);
+            Joint board;
+            const bool has_board = clip.sample_board(clip.duration(), board);
+            std::cout << "hips chain:";
+            for (int at = hips_joint; at >= 0; at = parent(static_cast<std::uint16_t>(at))) std::cout << ' ' << at;
+            std::cout << "\nboard: " << (has_board ? "yes" : "no") << '\n';
+            const auto show = [&](const char* what, const std::vector<Joint>& p, const Joint& b) {
+                const auto placed = world(p, placement_joint);
+                const auto in_placement = [&](const Vec3& w) {
+                    return rotate(conjugate(placed.rotation), Vec3{w[0] - placed.position[0], w[1] - placed.position[1], w[2] - placed.position[2]});
+                };
+                const auto v = [](const Vec3& x) {
+                    char t[64];
+                    std::snprintf(t, sizeof(t), "(%6.3f %6.3f %6.3f)", x[0], x[1], x[2]);
+                    return std::string(t);
+                };
+                std::cout << what << "\n  left foot " << v(in_placement(world(p, 343).position)) << "  right foot "
+                          << v(in_placement(world(p, 10).position)) << "\n  hips " << v(in_placement(world(p, hips_joint).position))
+                          << "  head " << v(in_placement(world(p, 42).position)) << "\n  board " << v(b.position) << "  board x "
+                          << v(rotate(b.rotation, Vec3{1, 0, 0})) << " y " << v(rotate(b.rotation, Vec3{0, 1, 0})) << " z "
+                          << v(rotate(b.rotation, Vec3{0, 0, 1})) << '\n';
+                // Each foot in the board's own frame: along it, across it, above it.
+                for (const std::uint16_t foot : {std::uint16_t{343}, std::uint16_t{10}}) {
+                    const auto f = in_placement(world(p, foot).position);
+                    const auto local = rotate(conjugate(b.rotation), Vec3{f[0] - b.position[0], f[1] - b.position[1], f[2] - b.position[2]});
+                    std::cout << "  " << (foot == 343 ? "left" : "right") << " foot in board frame " << v(local) << '\n';
+                }
+            };
+            show("as it is", pose, board);
+            std::vector<Joint> mirrored(pose.size());
+            mirror_pose_frame(pose, mirrored, true);
+            show("mirrored (body in placement frame, board mirror_pose)", mirrored, mirror_pose(board));
+            return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "--native-catalog") {
             const std::filesystem::path folder(argv[2]);
             std::ifstream in(folder / "catalog.json", std::ios::binary);

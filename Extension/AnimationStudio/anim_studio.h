@@ -101,6 +101,8 @@ View view();
 // at the pop and in the air of the next trick, and written to ReSkate.Tricks/research/live-graph-probe.txt.
 // Read only. Returns what it said.
 std::string arm_live_probe();
+// Turns the stance readout on or off (ReSkate.Tricks/research/stance-readout.txt). Returns what it said.
+std::string toggle_stance_readout();
 // Opt-in 60-second read-only trace; exported under ReSkate.Tricks/research.
 std::string research_trace(const std::string& action);
 // Cheap, any thread: whether the studio has the screen.
