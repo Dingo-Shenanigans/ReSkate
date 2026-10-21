@@ -305,6 +305,7 @@ struct Live {
     // something else. Rather than guess what it will do - its conditions are its own - the layer watches
     // what it did and lets go smoothly, limb by limb where it can tell which.
     LimbWeights limbs;
+    std::vector<Joint> mirror_scratch;  // the pose being read while his mirrored one is written
     std::vector<Joint> native_before;   // the native pose a frame ago, to see what the graph just did
     std::vector<Joint> source_before;   // and what the authored clip expected over the same frame
     double limbs_at{-1};
@@ -1549,12 +1550,15 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             apply_edits(shown_edits, shown_time, l.pose);
-            // Standing him the other way round: the body is turned half a turn about the upright through
-            // his placement, so the foot that was at the nose is at the tail. The board is composed from
-            // `live_placement` below and is left exactly where it is, so he turns and it does not.
-            if (snap->goofy != (shown_edits.stance == "goofy") && placement_joint < l.pose.size()) {
-                auto& placed = l.pose[placement_joint];
-                placed.rotation = normalised(multiply(axis_angle({0, 1, 0}, 3.14159265f), placed.rotation));
+            // Standing him the other way round: his body is reflected across its own middle, so the foot
+            // that was at the nose is at the tail and the arm that led now trails. Only the skinned body
+            // moves; the placement and everything hanging off it stay where they stood, so the board does
+            // not move and nothing that is not him is dragged along. mirror_pose_frame works the locals
+            // out again against the parents as they end up, which is what makes mirroring a part of a
+            // skeleton safe - doing it bone by bone in each one's own frame is what tore him up before.
+            if (snap->goofy != (shown_edits.stance == "goofy")) {
+                l.mirror_scratch.assign(l.pose.begin(), l.pose.end());
+                mirror_pose_frame(l.mirror_scratch, l.pose, true);
             }
             // Nothing in his hands: the game hangs props (the phone of its idle, held still while the studio is
             // open) on the hands' attach joints, so those are made tiny and what hangs on them with them.

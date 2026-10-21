@@ -879,17 +879,56 @@ Clip mirror_clip(const Clip& clip) {
     for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
     return out;
 }
+// Mirroring a pose, done where a mirror is actually a mirror. mirror_rotation and mirror_vector reflect
+// across X = 0, which is only the right thing to do in the frame that plane is defined in: the skater's
+// own, from the root down. Applied straight to a parent-local pose, as they were, every bone is reflected
+// in its own tilted frame and the error compounds along the chain - which is what tore the skater up.
+//
+// So: take the pose out to that frame, reflect it there, swap each joint for its opposite number, and put
+// it back as parent-local against the mirrored parents. Bones keep their lengths and the body stays whole
+// whatever the rest pose does, because nothing assumes the rest pose is symmetrical.
+namespace {
+Joint local_against(const Joint& parent, const Joint& world_joint) noexcept {
+    Joint out;
+    out.scale = world_joint.scale;
+    const float scale = parent.scale[0] > 1e-6f ? parent.scale[0] : 1.0f;
+    out.rotation = normalised(multiply(conjugate(parent.rotation), world_joint.rotation));
+    const Vec3 apart{world_joint.position[0] - parent.position[0], world_joint.position[1] - parent.position[1],
+                     world_joint.position[2] - parent.position[2]};
+    const auto turned = rotate(conjugate(parent.rotation), apart);
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = turned[i] / scale;
+    return out;
+}
+// One frame of a pose, mirrored. `body_only` leaves everything that is not the skinned body as it was.
+void mirror_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only) {
+    const auto count = std::min(pose.size(), out.size());
+    std::vector<Joint> in_world(count), mirrored(count);
+    for (std::size_t j = 0; j < count; ++j) in_world[j] = world(pose, static_cast<std::uint16_t>(j));
+    mirrored = in_world;
+    for (std::size_t j = 0; j < count; ++j) {
+        const auto other = mirror_joint[j];
+        if (other >= count) continue;
+        if (body_only && (!gameplay_body_joint(static_cast<std::uint16_t>(j)) || !gameplay_body_joint(other))) continue;
+        Joint turned = in_world[j];
+        turned.rotation = mirror_rotation(turned.rotation);
+        turned.position = mirror_vector(turned.position);
+        mirrored[other] = turned;
+    }
+    for (std::size_t j = 0; j < count; ++j) {
+        const auto up = parent(static_cast<std::uint16_t>(j));
+        out[j] = up >= 0 && static_cast<std::size_t>(up) < count ? local_against(mirrored[static_cast<std::size_t>(up)], mirrored[j])
+                                                                 : mirrored[j];
+    }
+}
+} // namespace
+void mirror_pose_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only) { mirror_frame(pose, out, body_only); }
 Clip mirror_body_clip(const Clip& clip) {
     if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
     Clip out = clip;
-    for (std::uint32_t joint = 0; joint < clip.joints; ++joint) {
-        const auto other = mirror_joint[joint];
-        // Both ends have to be body, or the pose would be taken off the body and put somewhere it does
-        // not belong. Everything else keeps what the clip already had.
-        if (!gameplay_body_joint(static_cast<std::uint16_t>(joint)) || !gameplay_body_joint(other)) continue;
-        for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
-            out.frames[frame * clip.joints + other] = mirror_pose(clip.frames[frame * clip.joints + joint]);
-    }
+    for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
+        mirror_frame({clip.frames.data() + frame * clip.joints, clip.joints},
+                     {out.frames.data() + frame * clip.joints, clip.joints}, true);
+    // The board is one transform under the placement, so it reflects where it stands.
     for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
     return out;
 }

@@ -1530,9 +1530,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         [] { ui().snap = !ui().snap; }});
         rows.push_back({"Stance", v.stance_choice == 0 ? (v.showing_goofy ? "as the game has him (goofy)" : "as the game has him (regular)")
                                   : v.stance_choice == 1 ? "regular" : "goofy",
-                        "Which way round the skater stands on the board: facing one way his left foot leads, facing the other his "
-                        "right does. He is turned about on the board rather than mirrored, so the board stays where it is and the foot "
-                        "that was at the nose is at the tail. A recording is saved with this stance.",
+                        "Which way round the skater stands on the board. A trick authored the other way is shown reflected across "
+                        "his own middle, so the foot that was at the nose is at the tail. Only his body moves: the board and anything "
+                        "hanging off him stay where they stood. A recording is saved with this stance.",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
         rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
                         "Front foot: a trick belongs to the front foot and the back foot, so it plays whichever way round the skater "

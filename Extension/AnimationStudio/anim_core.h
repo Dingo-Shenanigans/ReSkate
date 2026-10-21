@@ -236,6 +236,9 @@ Clip mirror_clip(const Clip& clip);
 // and the effector subtrees are left exactly as they were. The render rig parts company with the animation
 // rig after Ground (375), so mirroring every joint puts those on the wrong bones and tears the skater up.
 Clip mirror_body_clip(const Clip& clip);
+// One frame, mirrored the same way: out of the parent-local pose into the skater's own frame, reflected
+// there, each joint swapped for its opposite number, and back to parent-local against mirrored parents.
+void mirror_pose_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only = true);
 // The animation on the other side: its clip, and every track and key on the mirror joints.
 Animation mirror_animation(const Animation& animation);
 

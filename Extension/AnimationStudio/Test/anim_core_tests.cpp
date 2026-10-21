@@ -250,6 +250,72 @@ void clips_read_back_and_broken_ones_are_refused() {
 
 
 // Goofy: the mirror pairs the joints on the two sides, is its own inverse, and moves a right key to the left.
+// A mirror has to be a mirror: wherever a joint was, its opposite number has to end up at the reflection
+// of that spot, in the world. Reflecting each bone in its own parent frame - which is what was done -
+// passes a does-it-come-back test and still fails this one as soon as the rest pose is not symmetrical,
+// and that is what tore the skater up on screen.
+void mirroring_puts_each_joint_where_its_reflection_belongs() {
+    std::vector<Joint> pose(skeleton_joints);
+    for (std::size_t j = 0; j < pose.size(); ++j) {
+        // Deliberately lopsided: no two bones share a rest orientation and none is axis aligned.
+        pose[j].rotation = from_euler({17.0f + static_cast<float>(j % 11) * 7, -23.0f + static_cast<float>(j % 5) * 13,
+                                       41.0f - static_cast<float>(j % 7) * 9});
+        pose[j].position = {0.03f + 0.001f * static_cast<float>(j % 13), 0.11f, -0.02f + 0.002f * static_cast<float>(j % 9)};
+    }
+    std::vector<Joint> mirrored(pose.size());
+    mirror_pose_frame(pose, mirrored, false);
+    std::size_t checked = 0;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        const auto there = world(pose, j).position;
+        const auto here = world(mirrored, mirror_joint[j]).position;
+        check(near(here[0], -there[0], 2e-3f) && near(here[1], there[1], 2e-3f) && near(here[2], there[2], 2e-3f),
+              "Every joint's opposite number lands on its reflection");
+        ++checked;
+    }
+    check(checked == skeleton_joints, "Every joint was checked");
+    // Reflecting every bone in its own parent frame comes to the same thing, as long as every joint is
+    // done: the frames cancel along the chain. What it cannot do is mirror part of a skeleton - a joint
+    // whose parent was left alone is then reflected in a frame that was not - and that is what tore the
+    // skater up, not the arithmetic.
+    {
+        std::vector<Joint> whole(pose.size());
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) whole[mirror_joint[j]] = mirror_pose(pose[j]);
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            const auto there = world(pose, j).position, here = world(whole, mirror_joint[j]).position;
+            check(near(here[0], -there[0], 2e-3f) && near(here[1], there[1], 2e-3f), "Mirroring every joint at once comes to the same");
+        }
+    }
+    // Mirroring the body alone keeps everything that is not the body exactly as it was, and still puts the
+    // body where its reflection belongs - because the locals are worked out again against the parents as
+    // they ended up, rather than assumed.
+    {
+        std::vector<Joint> body(pose.size());
+        mirror_pose_frame(pose, body, true);
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            if (gameplay_body_joint(j) || gameplay_body_joint(mirror_joint[j])) continue;
+            // Held where it stood, in the world. Its parent-local numbers may change to keep it there,
+            // which is the point: a prop or an attachment under a mirrored bone must not be dragged along.
+            const auto before = world(pose, j).position, after = world(body, j).position;
+            check(near(after[0], before[0], 2e-3f) && near(after[1], before[1], 2e-3f) && near(after[2], before[2], 2e-3f),
+                  "What is not the body stays where it was");
+        }
+        check(gameplay_body_joint(343) && gameplay_body_joint(10), "The feet are body joints");
+        const auto left = world(pose, 343).position, right = world(body, 10).position;
+        check(near(right[0], -left[0], 3e-3f) && near(right[1], left[1], 3e-3f), "and the left foot's reflection is where the right one is");
+    }
+    // And the bones keep their lengths, so nothing is stretched on the way.
+    for (std::uint16_t j = 1; j < skeleton_joints; ++j) {
+        const auto up = parent(j);
+        if (up < 0) continue;
+        const auto span = [](const Vec3& a, const Vec3& b) {
+            return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+        };
+        const auto before = span(world(pose, j).position, world(pose, static_cast<std::uint16_t>(up)).position);
+        const auto after = span(world(mirrored, mirror_joint[j]).position,
+                                world(mirrored, mirror_joint[static_cast<std::uint16_t>(up)]).position);
+        check(std::abs(before - after) < 2e-3f, "Bones keep their lengths through a mirror");
+    }
+}
 void mirror_pairs_and_comes_back() {
     for (std::uint16_t joint = 0; joint < skeleton_joints; ++joint) {
         check(mirror_joint[mirror_joint[joint]] == joint, "Mirroring twice gives the same joint");
@@ -968,6 +1034,7 @@ int main(int argc, char** argv) {
         native_names_and_search();
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
+        mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
