@@ -418,7 +418,7 @@ Joint board_edited(const Joint& board, const Animation& edits, float seconds, co
     if (!track || track->hidden || track->keys.empty()) return board;
     auto edit = evaluate(*track, seconds);
     if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return board;
-    if (mirror) { edit.rotation = mirror_rotation(edit.rotation); edit.offset = mirror_vector(edit.offset); }
+    if (mirror) { edit.rotation = mirror_board_rotation(edit.rotation); edit.offset = mirror_board_vector(edit.offset); }
     auto out = board;
     const auto moved = rotate(ground, edit.offset);
     for (std::size_t i = 0; i < 3; ++i) out.position[i] += moved[i];
@@ -862,21 +862,40 @@ std::string file_safe(std::string_view name) {
 } // namespace dingosdk::anim_studio
 
 namespace dingosdk::anim_studio {
-Quat mirror_rotation(const Quat& q) noexcept { return {q[0], -q[1], -q[2], q[3]}; }
-Vec3 mirror_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
+// The game's mirror, measured 2026-10-22: a heelflip recorded riding normal (mirrored) matches the library's
+// heelflip reflected across the skater's Z = 0 plane exactly (median distance 0.0018), and nothing like it
+// reflected across X = 0 (0.275), which is what this used to do. Z = 0 holds the board's long axis (the
+// AITrajectory's X), so the feet keep their ends of the board, swap left for right, and he faces the other
+// side of it - regular from goofy, as the game draws it. Applied to every joint's own rotation it comes to
+// the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
+Quat mirror_rotation(const Quat& q) noexcept { return {-q[0], -q[1], q[2], q[3]}; }
+Vec3 mirror_vector(const Vec3& v) noexcept { return {v[0], v[1], -v[2]}; }
 Joint mirror_pose(const Joint& joint) noexcept {
     Joint out = joint;
     out.rotation = mirror_rotation(joint.rotation);
     out.position = mirror_vector(joint.position);
     return out;
 }
+// The board under the same mirror. The plane holds its long axis, so the board is not turned end for end:
+// reflected as a shape it is the same board, only its offset across is reflected. As a rotation that is
+// the reflected frame turned half a turn about its own up (the board is symmetrical across its middle).
+Joint mirror_board_pose(const Joint& board) noexcept {
+    Joint out = board;
+    out.rotation = normalised(multiply(mirror_rotation(board.rotation), Quat{0, 1, 0, 0}));
+    out.position = mirror_vector(board.position);
+    return out;
+}
+// A board key, which works in the board's own frame (x across, y up, z along it): the game's mirror plane is
+// the one through the board's middle along its length, so across is what reflects.
+Quat mirror_board_rotation(const Quat& q) noexcept { return {q[0], -q[1], -q[2], q[3]}; }
+Vec3 mirror_board_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
 Clip mirror_clip(const Clip& clip) {
     if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
     Clip out = clip;
     for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
         for (std::uint32_t joint = 0; joint < clip.joints; ++joint)
             out.frames[frame * clip.joints + mirror_joint[joint]] = mirror_pose(clip.frames[frame * clip.joints + joint]);
-    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
+    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_board_pose(clip.board[frame]);
     return out;
 }
 // Mirroring a pose, done where a mirror is actually a mirror. mirror_rotation and mirror_vector reflect
@@ -943,7 +962,7 @@ Clip mirror_body_clip(const Clip& clip) {
         mirror_frame({clip.frames.data() + frame * clip.joints, clip.joints},
                      {out.frames.data() + frame * clip.joints, clip.joints}, true);
     // The board is one transform under the placement, so it reflects where it stands.
-    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
+    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_board_pose(clip.board[frame]);
     return out;
 }
 // ---- which of the game's own clips is playing -----------------------------------------------------
@@ -1123,9 +1142,10 @@ Animation mirror_animation(const Animation& animation) {
     if (animation.clip.joints) out.clip = mirror_clip(animation.clip); // the profile alone has no clip
     for (auto& track : out.tracks) {
         if (track.joint < skeleton_joints) track.joint = mirror_joint[track.joint];
+        const bool board = track.joint == board_joint;
         for (auto& key : track.keys) {
-            key.rotation = mirror_rotation(key.rotation);
-            key.offset = mirror_vector(key.offset);
+            key.rotation = board ? mirror_board_rotation(key.rotation) : mirror_rotation(key.rotation);
+            key.offset = board ? mirror_board_vector(key.offset) : mirror_vector(key.offset);
         }
     }
     return out;

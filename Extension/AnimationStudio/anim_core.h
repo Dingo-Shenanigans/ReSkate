@@ -231,6 +231,11 @@ void drag_joint(Animation& animation, std::span<const Joint> native, float secon
 Quat mirror_rotation(const Quat& q) noexcept;
 Vec3 mirror_vector(const Vec3& v) noexcept;
 Joint mirror_pose(const Joint& joint) noexcept;
+// The board under the game's mirror: not turned end for end, its offset across reflected.
+Joint mirror_board_pose(const Joint& board) noexcept;
+// A board key (in the board's own frame) under the game's mirror: across is what reflects.
+Quat mirror_board_rotation(const Quat& q) noexcept;
+Vec3 mirror_board_vector(const Vec3& v) noexcept;
 // The clip on the other side: every frame, and the board. Only for a skater clip (joints == 395).
 Clip mirror_clip(const Clip& clip);
 // The same, but only across the skinned body (gameplay_body_joint): the placement, the board's own joints

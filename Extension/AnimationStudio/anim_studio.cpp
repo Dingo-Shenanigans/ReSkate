@@ -1597,9 +1597,25 @@ Joint board_on_feet(const Clip& clip, float seconds, std::span<const Joint> pose
 
 // The board where the trick starts (time 0), under the placement joint: the 0, 0, 0 of the board's
 // keys and fields. Kept per clip.
+// The board in a clip is the animation's own board joint (Skateboard_Root), and the game turns that one
+// round when it mirrors him; the board it draws comes from physics, nose along the skater's +X unless the
+// board is backwards (measured 2026-10-22 in normal, fakie, switch and after shuvits). So a clip whose board
+// starts out pointing the other way - one recorded mirrored, or with the board backwards - is turned round
+// for its whole length, and every clip shows and keys its board nose-forward, the way the game draws it.
+bool board_turned_round(const Clip& clip) noexcept {
+    Joint first;
+    return clip.sample_board(0, first) && rotate(first.rotation, Vec3{0, 0, 1})[0] < 0;
+}
+Joint nose_forward(const Clip& clip, Joint rel) noexcept {
+    if (board_turned_round(clip)) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
+    return rel;
+}
 Joint start_board(const Clip& clip, bool fit_contact) {
     Joint board;
-    if (Joint rel; clip.sample_board(0, rel)) board = fit_contact ? board_on_feet(clip, 0, clip.frame(0), rel) : rel;
+    if (Joint rel; clip.sample_board(0, rel)) {
+        rel = nose_forward(clip, rel);
+        board = fit_contact ? board_on_feet(clip, 0, clip.frame(0), rel) : rel;
+    }
     return board;
 }
 // The board's start in the world, turned only about the up axis: its keys move it along this frame's X,
@@ -2202,7 +2218,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 const auto ait = world(tmp, placement_joint);
                 ait_y = ait.position[1];
                 Joint rel;
-                return clip.sample_board(t, rel) ? lowest_point(compose(ait, fit_preview_contact ? board_on_feet(clip, t, tmp, rel) : rel), shape)
+                return clip.sample_board(t, rel) ? lowest_point(compose(ait, fit_preview_contact ? board_on_feet(clip, t, tmp, nose_forward(clip, rel))
+                                                                                             : nose_forward(clip, rel)), shape)
                                                  : world(tmp, 10).position[1] - 0.18f;
             };
             constexpr float deck = 0.087f; // the deck's mount above the floor, the board on its wheels (board_shape)
@@ -2266,6 +2283,7 @@ void on_animation(std::uintptr_t component) noexcept {
             last = layout.count;
             // The board as the recording had it, the same way the body hangs from the placement joint.
             if (Joint rel; shown->sample_board(shown_time, rel)) {
+                rel = nose_forward(*shown, rel);
                 if (fit_preview_contact) rel = board_on_feet(*shown, shown_time, l.sampled, rel);
                 const auto moved = rotate(turn, rel.position);
                 for (std::size_t a = 0; a < 3; ++a) rel.position[a] = rise[a] + moved[a];
@@ -2274,7 +2292,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // placement, exactly as his body was reflected above. Reflecting it before the turn put the
                 // mirror at a different angle to his whenever the clip had turned (the casual stance has),
                 // and he stood across his board instead of on it.
-                if (mirrored_body) rel = mirror_pose(rel);
+                if (mirrored_body) rel = mirror_board_pose(rel);
                 const auto unedited = compose(live_placement, rel);
                 const auto origin = start_frame(*shown, live_placement, (l.floor_valid ? l.floor : live_placement.position[1]) + deck, fit_preview_contact);
                 board_target = board_edited(unedited, shown_edits, shown_time, origin.rotation);
@@ -2530,6 +2548,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         if (known == l.recorded_board_frame.end()) {
                             Quat recorded{0, 0, 0, 1};
                             if (Joint rel; trick->clip->sample_board(0, rel)) {
+                                rel = nose_forward(*trick->clip, rel);
                                 const auto placed = world(trick->clip->frame(0), placement_joint);
                                 recorded = normalised(multiply(conjugate(placed.rotation), ground_turn(compose(placed, rel))));
                             }
@@ -3135,7 +3154,12 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             try {
                 const auto tricks = game_tricks();
                 const auto& list = *tricks;
-                const auto pick = std::find_if(list.begin(), list.end(), [](const GameTrick& t) { return t.trick == "ollie" && t.pop == "mid"; });
+                // The game's own ollie, not a recording of one: recordings keep the board the way round it was,
+                // and most of the old ones were made in switch with the board turned backwards (pushing from
+                // fakie does both), which put his back foot over the nose.
+                auto pick = std::find_if(list.begin(), list.end(), [](const GameTrick& t) { return t.trick == "ollie" && t.pop == "mid" && !t.recorded; });
+                if (pick == list.end())
+                    pick = std::find_if(list.begin(), list.end(), [](const GameTrick& t) { return t.trick == "ollie" && t.pop == "mid"; });
                 if (pick != list.end() || !list.empty()) {
                     auto idle = read_game_clip(pick != list.end() ? *pick : list.front());
                     std::lock_guard lock(s.mutex);

@@ -268,7 +268,7 @@ void mirroring_puts_each_joint_where_its_reflection_belongs() {
     for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
         const auto there = world(pose, j).position;
         const auto here = world(mirrored, mirror_joint[j]).position;
-        check(near(here[0], -there[0], 2e-3f) && near(here[1], there[1], 2e-3f) && near(here[2], there[2], 2e-3f),
+        check(near(here[0], there[0], 2e-3f) && near(here[1], there[1], 2e-3f) && near(here[2], -there[2], 2e-3f),
               "Every joint's opposite number lands on its reflection");
         ++checked;
     }
@@ -282,7 +282,8 @@ void mirroring_puts_each_joint_where_its_reflection_belongs() {
         for (std::uint16_t j = 0; j < skeleton_joints; ++j) whole[mirror_joint[j]] = mirror_pose(pose[j]);
         for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
             const auto there = world(pose, j).position, here = world(whole, mirror_joint[j]).position;
-            check(near(here[0], -there[0], 2e-3f) && near(here[1], there[1], 2e-3f), "Mirroring every joint at once comes to the same");
+            check(near(here[0], there[0], 2e-3f) && near(here[1], there[1], 2e-3f) && near(here[2], -there[2], 2e-3f),
+                  "Mirroring every joint at once comes to the same");
         }
     }
     // Mirroring the body alone keeps everything that is not the body exactly as it was, and still puts the
@@ -306,7 +307,7 @@ void mirroring_puts_each_joint_where_its_reflection_belongs() {
             return rotate(conjugate(at.rotation), {p[0] - at.position[0], p[1] - at.position[1], p[2] - at.position[2]});
         };
         const auto left = in_placement(world(pose, 343).position), right = in_placement(world(body, 10).position);
-        check(near(right[0], -left[0], 3e-3f) && near(right[1], left[1], 3e-3f) && near(right[2], left[2], 3e-3f),
+        check(near(right[0], left[0], 3e-3f) && near(right[1], left[1], 3e-3f) && near(right[2], -left[2], 3e-3f),
               "and the left foot's reflection is where the right one is");
     }
     // The root far from him and turned, as it is in the game: the body is mirrored where it stands, so the
@@ -323,8 +324,8 @@ void mirroring_puts_each_joint_where_its_reflection_belongs() {
             return rotate(conjugate(at.rotation), {w[0] - at.position[0], w[1] - at.position[1], w[2] - at.position[2]});
         };
         const auto hips_before = from(far, hips_joint), hips_after = from(body, hips_joint);
-        check(near(hips_after[0], -hips_before[0], 3e-3f) && near(hips_after[1], hips_before[1], 3e-3f) &&
-                  near(hips_after[2], hips_before[2], 3e-3f),
+        check(near(hips_after[0], hips_before[0], 3e-3f) && near(hips_after[1], hips_before[1], 3e-3f) &&
+                  near(hips_after[2], -hips_before[2], 3e-3f),
               "A far-off root does not throw the mirrored body off its spot");
         const auto foot_before = from(far, 343), foot_after = from(body, 10);
         check(near(foot_after[1], foot_before[1], 3e-3f), "and the feet stay on the board");
@@ -357,13 +358,24 @@ void mirror_pairs_and_comes_back() {
     animation.clip.joints = skeleton_joints;
     animation.clip.times = {0.0f};
     animation.clip.frames.assign(skeleton_joints, Joint{});
-    animation.clip.frames[8].position = {0.4f, 0, 0};
+    animation.clip.frames[8].position = {0, 0, 0.4f};
     const auto goofy = mirror_animation(animation);
-    check(goofy.clip.frames[mirror_joint[8]].position[0] == -0.4f, "A right thigh's place goes to the left, on the other side");
-    set_key(animation, 8, 0.5f, {from_euler({10, 0, 0}), {0.2f, 0, 0}});
+    check(goofy.clip.frames[mirror_joint[8]].position[2] == -0.4f, "A right thigh's place goes to the left, on the other side");
+    set_key(animation, 8, 0.5f, {from_euler({10, 0, 0}), {0, 0, 0.2f}});
     const auto goofy_key = mirror_animation(animation);
     const auto* track = goofy_key.track(mirror_joint[8]);
-    check(track && near(track->keys[0].offset[0], -0.2f), "A key on the right moves to the left, mirrored");
+    check(track && near(track->keys[0].offset[2], -0.2f), "A key on the right moves to the left, mirrored");
+    // The game's plane holds the board's long axis: a mirrored board is not turned end for end.
+    Joint board;
+    board.rotation = axis_angle({0, 1, 0}, 3.14159265f / 2); // its z along the skater's x, as the game's clips have it
+    board.position = {0.08f, -0.94f, 0.03f};
+    const auto turned = mirror_board_pose(board);
+    const auto along = rotate(turned.rotation, Vec3{0, 0, 1}), along_before = rotate(board.rotation, Vec3{0, 0, 1});
+    check(near(along[0], along_before[0], 1e-4f) && near(along[2], along_before[2], 1e-4f), "A mirrored board keeps its nose where it was");
+    check(near(turned.position[2], -0.03f) && near(turned.position[0], 0.08f), "and only its offset across reflects");
+    // A board key works across the board, so that is what a mirror reflects.
+    check(near(mirror_board_vector({0.1f, 0.2f, 0.3f})[0], -0.1f) && near(mirror_board_vector({0.1f, 0.2f, 0.3f})[2], 0.3f),
+          "A board key's sideways push is reflected, its push along the board is not");
 }
 
 
@@ -1231,7 +1243,7 @@ int main(int argc, char** argv) {
             show("as it is", pose, board);
             std::vector<Joint> mirrored(pose.size());
             mirror_pose_frame(pose, mirrored, true);
-            show("mirrored (body in placement frame, board mirror_pose)", mirrored, mirror_pose(board));
+            show("mirrored (body in placement frame, board mirror_board_pose)", mirrored, mirror_board_pose(board));
             return 0;
         }
         if (argc == 3 && std::string_view(argv[1]) == "--native-catalog") {

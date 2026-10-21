@@ -73,3 +73,16 @@ Read out of the game's own animation graph (the typed native documents the libra
   LeftFoot, 375 Ground, 376-379 ankle/wrist effectors, 380 Skateboard_Root, 390-394 deck effectors).
 - Still to check: that our mirror maths matches the game's. Every one of the 299 recordings so far was made
   unmirrored, so one recording made riding normal is needed to compare against the library.
+
+## The game's mirror plane (2026-10-22, heelflip recorded riding normal)
+
+- The recording matches the library heelflip reflected across the skater's **Z = 0** plane (AITrajectory
+  frame) exactly: median distance 0.0018, minimum 0.0000. Reflected across X = 0 (what the studio did) it
+  scores 0.275. Per joint that is rotation (x, y, z, w) -> (-x, -y, z, w), position z -> -z, left/right
+  swapped; it equals reflecting the whole skeleton (the left/right table keeps the hierarchy).
+- Z = 0 holds the board's long axis: the feet keep their ends of the board, swap, and he faces the other
+  side. The board is not turned end for end; a board key (board frame) reflects across.
+- The clip's board is the animation's Skateboard_Root, which the game turns round when mirrored; the board it
+  draws (physics) has its nose along the skater's +X unless the board is backwards. Recordings made mirrored
+  or backwards (most old ones were made in switch reached by pushing from fakie, which also sets board
+  backwards) therefore carry a board pointing the other way; the studio turns such a clip's board round.
