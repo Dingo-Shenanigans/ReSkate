@@ -61,7 +61,8 @@ struct View {
     // which that works out to right now.
     int stance_choice{};
     bool showing_goofy{};
-    bool grab_board{}; // a hand near the deck closes its fingers on it
+    bool grab_board{};   // a hand near the deck closes its fingers on it
+    bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
@@ -162,6 +163,10 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+// How a saved trick is matched to the skater doing it. On, a trick belongs to the front foot and the back
+// foot: it plays for any stance, mirrored when the other foot leads. Off, it plays only for the stance and
+// switch it was recorded in, which is what it did before.
+void set_front_foot(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();

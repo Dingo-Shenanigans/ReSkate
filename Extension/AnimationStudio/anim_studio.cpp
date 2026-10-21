@@ -113,7 +113,8 @@ struct Snapshot {
     bool open{}, play_in_game{}, armed{}, room{};
     float speed{1};
     bool goofy{}; // the way round the studio is working
-    bool grab{};  // a hand near the board closes on it
+    bool grab{};       // a hand near the board closes on it
+    bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -148,6 +149,7 @@ struct State {
     int stance_choice{};
     bool showing_goofy{};
     bool grab_board{};
+    bool front_foot{true};
     std::shared_ptr<const Clip> mirrored, mirrored_idle;
     const Clip* mirrored_of{};
     const Clip* mirrored_idle_of{};
@@ -297,6 +299,10 @@ struct Live {
     std::map<std::string, std::size_t> variant_counts;
     std::map<std::string, std::size_t> attempt_variants;
     std::string stance_fallback_trick;
+    // A trick's keys the other way round, kept so the mirror is made once rather than every frame.
+    std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
+    bool playback_front_foot{true};
+    bool played_mirrored{};
     std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
     // The studio's floor: the skater's Ground joint (375) when the studio opened, which lies on the
@@ -619,6 +625,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         s.showing_goofy = goofy;
         snap->goofy = goofy;
         snap->grab = s.grab_board;
+        snap->front_foot = s.front_foot;
         const bool clip_goofy = s.edits.stance == "goofy";
         if (s.clip && !s.clip->empty() && clip_goofy != goofy) {
             if (s.mirrored_of != s.clip.get()) {
@@ -1589,6 +1596,7 @@ void on_animation(std::uintptr_t component) noexcept {
             const bool began = l.episode.observe(at, motion);
             if (began) {
                 l.playback_goofy = goofy_stance();
+                l.playback_front_foot = snap->front_foot;
                 l.playback_switch = switch_stance(base, component);
                 l.game_trick = nullptr; l.game_tricks = snap->tricks;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
@@ -1622,8 +1630,13 @@ void on_animation(std::uintptr_t component) noexcept {
                 const CustomTrick* found = nullptr;
                 // Exact pop first; cycle eligible variants once per named trick in this attempt.
                 std::vector<const CustomTrick*> variants;
+                // By front foot: a trick is the same trick whichever way round the skater stands, and the
+                // one that already leads with the right foot is preferred so nothing is mirrored that does
+                // not have to be. Off, it is the old rule: the exact stance and switch it was recorded in.
                 const auto compatible = [&](const CustomTrick& t) {
-                    return playback_stance_compatible(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch);
+                    return l.playback_front_foot
+                               ? playback_lead_matches(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch)
+                               : playback_stance_compatible(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch);
                 };
                 int best_pop = 3;
                 for (const auto& t : *l.game_tricks) {
@@ -1636,6 +1649,10 @@ void on_animation(std::uintptr_t component) noexcept {
                 // A recorded switch variant wins over converting another stance's edits.
                 if (std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
                     std::erase_if(variants, [&](const CustomTrick* t) { return !compatible(*t); });
+                // Without front foot, a trick for another stance used to be played exactly as it was, which
+                // is what made it look wrong: the flick came off the wrong foot. It is left to the game now.
+                if (!l.playback_front_foot && !variants.empty() && !std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
+                    variants.clear();
                 if (!variants.empty()) {
                     auto choice = l.attempt_variants.find(name);
                     if (choice == l.attempt_variants.end())
@@ -1661,14 +1678,30 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             if (const auto* trick = l.game_trick) {
-                const auto& played = *trick->edits;
+                // The other foot leading means the same trick, the other way round: the keys are mirrored
+                // so the front foot does what the front foot did. Made once and kept.
+                const bool mirror_it = l.playback_front_foot && l.playback_switch.has_value() &&
+                                       !playback_lead_matches(trick->goofy, trick->edits->switch_stance, l.playback_goofy, l.playback_switch);
+                auto keys = trick->edits;
+                if (mirror_it) {
+                    auto found = l.mirrored_edits.find(trick->edits.get());
+                    if (found == l.mirrored_edits.end()) {
+                        try {
+                            found = l.mirrored_edits.emplace(trick->edits.get(),
+                                                             std::make_shared<const Animation>(mirror_animation(*trick->edits))).first;
+                        } catch (...) { found = l.mirrored_edits.end(); }
+                    }
+                    if (found != l.mirrored_edits.end()) keys = found->second;
+                }
+                l.played_mirrored = mirror_it;
+                const auto& played = *keys;
                 const auto& clip = *trick->clip;
                 const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true);
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time);
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
                 diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
-                diagnostic.retarget = false; diagnostic.mirror = false;
+                diagnostic.retarget = false; diagnostic.mirror = l.played_mirrored;
                 diagnostic.reverse_facing = false;
                 diagnostic.source_timing = true;
                 diagnostic.clip_time = sampled.time; diagnostic.weight = weight;
@@ -1678,7 +1711,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->sequence = l.animation_updates.load(); packet->epoch = gameplay_epoch.load(std::memory_order_acquire);
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
-                    packet->clip = trick->clip; packet->edits = trick->edits;
+                    packet->clip = trick->clip; packet->edits = keys;
                     packet->board_frame_local = l.board_frame_local; packet->board_frame_valid = l.board_at_takeoff_ok;
                     packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
                     scheduled = std::move(packet);
@@ -2466,6 +2499,7 @@ View view() {
     v.stance_choice = s.stance_choice;
     v.showing_goofy = s.showing_goofy;
     v.grab_board = s.grab_board;
+    v.front_foot = s.front_foot;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -2716,6 +2750,14 @@ void set_play_in_game(bool on) {
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
+    publish_locked(s);
+}
+void set_front_foot(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.front_foot = on;
+    s.status = on ? "Tricks play by front foot: any stance, mirrored when the other foot leads."
+                  : "Tricks play only for the stance they were recorded in.";
     publish_locked(s);
 }
 void set_grab(bool on) {

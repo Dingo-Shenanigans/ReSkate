@@ -477,6 +477,14 @@ void merged_library_and_timing() {
           !episode_selection_changed("360flip", "360flip", "low", "low") &&
           !episode_selection_changed("360flip", "360flip", "", "high"),
           "A late high-pop grade invalidates a low binding without cycling a generic or matching binding");
+    // Which foot leads, and what that means for a trick recorded in one stance being done in another.
+    check(leads_right(true, false) && !leads_right(false, false), "Goofy leads with the right foot, regular with the left");
+    check(leads_right(false, true) && !leads_right(true, true), "Riding switch turns that round");
+    check(playback_lead_matches(true, false, false, true), "A goofy recording suits a regular skater riding switch as it is");
+    check(playback_lead_matches(false, false, true, true), "and a regular one suits a goofy skater riding switch");
+    check(!playback_lead_matches(true, false, false, false), "A goofy recording must be mirrored for a regular skater");
+    check(!playback_lead_matches(true, false, true, true), "and for a goofy skater riding switch");
+    check(!playback_lead_matches(true, false, false, std::nullopt), "Nothing matches while the switch state is unknown");
     GameplayClipClock clock;
     check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
     check(near(clock.advance_air(10.1, 0.3f, 1, 2), 0.4f), "Air source time advances incrementally");

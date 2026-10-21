@@ -1534,6 +1534,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "never the board's own joints or the placement. The keys are left as they are, because a left-hand key is the "
                         "left hand in either stance, which is how they go on in game. A recording is saved with this stance.",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
+        rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
+                        "Front foot: a trick belongs to the front foot and the back foot, so it plays whichever way round the skater "
+                        "stands and whether he is riding switch - mirrored when the other foot leads. A goofy skater and a regular one "
+                        "riding switch both lead with the right, so they get it as it was recorded. Exact stance: it plays only for the "
+                        "stance and switch it was recorded in, and the game's own animation is used otherwise.",
+                        [v] { studio::set_front_foot(!v.front_foot); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
                         "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",
