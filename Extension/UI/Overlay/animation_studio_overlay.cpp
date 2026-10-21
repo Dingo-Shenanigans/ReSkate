@@ -1547,6 +1547,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "spread over the air actually happening, within two thirds and one and a half times the recorded pace, so a "
                         "trick over a gap or an obstacle keeps its shape instead of drifting out of step with the game's own motion.",
                         [v] { studio::set_fit_air(!v.fit_air); }});
+        rows.push_back({"Board turned for fakie", v.turn_board ? "on" : "off",
+                        "Off: the board's keys work in the board's own frame, nose to tail, which is how they are made in the studio "
+                        "and how the game plays them. On: they are turned half a turn when the board points the other way to its "
+                        "recording. It went in for a bug since found to be the stance being misread, so it is off; turn it on if a "
+                        "trick ridden fakie pushes the wrong end of the board.",
+                        [v] { studio::set_turn_board(!v.turn_board); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
                         "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",

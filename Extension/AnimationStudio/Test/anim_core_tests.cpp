@@ -571,6 +571,17 @@ void merged_library_and_timing() {
     check(!playback_lead_matches(true, false, false, false), "A goofy recording must be mirrored for a regular skater");
     check(!playback_lead_matches(true, false, true, true), "and for a goofy skater riding switch");
     check(!playback_lead_matches(true, false, false, std::nullopt), "Nothing matches while the switch state is unknown");
+    // The game tells us one thing outright - whether the left foot leads - and switch is worked out from it
+    // and the stance setting. The stance cancels out of the lead foot, so the lead foot comes out right even
+    // when the setting is wrong or was never set: a goofy skater read as regular is read as regular riding
+    // switch, which leads with the same foot. That is why matching by lead foot holds where matching by
+    // stance label does not, and why a recording's stance and switch must come from the same setting.
+    for (const bool left : {false, true})
+        for (const bool goofy : {false, true})
+            check(leads_right(goofy, riding_switch(left, goofy)) == !left, "The lead foot is the game's bit, whatever the stance setting says");
+    // Read the old way - the bit taken for a switch flag - a goofy skater came out right by luck and a
+    // regular one the wrong way round, every time. Recordings made like that need fix_regular_skater_tags.
+    check(leads_right(true, false) == !false && leads_right(false, true) != !true, "The bit read as a switch flag is wrong for regular skaters");
     GameplayClipClock clock;
     check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
     check(near(clock.advance_air(10.1, 0.3f, 1, 2), 0.4f), "Air source time advances incrementally");
@@ -671,6 +682,8 @@ void timing_and_stance_edge_cases() {
     check(!playback_stance_compatible(true, false, true, std::nullopt), "Unknown live switch state keeps native animation");
     check(playback_stance_compatible(true, std::nullopt, true, false) &&
           !playback_stance_compatible(true, std::nullopt, true, true), "Legacy recordings are normal stance only");
+    check(!riding_switch(true, false) && riding_switch(false, false), "A regular skater whose left foot leads is not switch");
+    check(riding_switch(true, true) && !riding_switch(false, true), "A goofy skater whose left foot leads is switch");
     check(near(advance_time(0, 0.25f, 1, 2, false), 0.25f), "A 250 ms render stall must not discard 150 ms of playback");
     check(near(advance_time(0.8f, 0.7f, 2, 1, true), 0.2f), "Looping handles a frame spanning multiple loops");
     check(near(advance_time(0.8f, 0.7f, 2, 1, false), 1), "Non-looping playback ends at the last frame");

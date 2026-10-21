@@ -65,6 +65,7 @@ struct View {
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     bool fit_air{};        // the keys are spread over the air that happens, not the one they were recorded in
+    bool turn_board{};     // the board's keys are turned round when the board points the other way to its recording
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
@@ -173,6 +174,10 @@ void set_front_foot(bool on);
 // were recorded at, which is how it has worked; on, they are fitted to a longer or shorter air, which is
 // what a gap or an obstacle makes.
 void set_fit_air(bool on);
+// Whether the board's keys are turned half a turn when the board points the other way to the way it did
+// in its recording. Off: the keys stay in the board's own frame, which is nose-relative both when they
+// are authored and when they are played.
+void set_turn_board(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();

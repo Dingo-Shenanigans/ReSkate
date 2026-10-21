@@ -92,17 +92,37 @@ struct CustomTrick {
     std::shared_ptr<const Animation> edits;
     bool goofy{};      // recorded goofy
 };
+// Dev only: true plays the other stance's variant when no variant matches the stance, as before
+// 2026-10-20. Keep it false while the mirroring between stances is in development.
+constexpr bool stance_fallback = false;
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
 bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
+// The stance a trick was authored in: which foot led on the body its keys were made against. That is what
+// decides whether it is played as it is or mirrored, and the studio's picture of it has to agree, or a
+// trick is shown one way round and played the other. A recording says so in its label, taken from the
+// game's stance setting as it happened. The game's own clips are labelled regular but stand goofy - his
+// right foot at the nose, seen on screen and confirmed with the stance switch on 2026-10-21 - so a trick
+// made on one of those was authored goofy, whatever its label says.
+bool authored_goofy(const Animation& animation) noexcept {
+    return animation.source.kind == "native_asset" || animation.stance == "goofy";
+}
 struct State;
-// The way round the studio is working: the game's own stance, or the one chosen in the studio.
+// The way round the studio shows him: the game's own stance, or the one chosen in the studio. This is for
+// the studio's picture only - what was recorded and what is played go by the game's stance setting
+// (goofy_stance), so the two sides of a match are worked out the same way.
 bool studio_goofy(int choice) noexcept { return choice == 0 ? goofy_stance() : choice == 2; }
-std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
+// The game's own bit: whether his left foot is forward right now. It is the one thing about stance the
+// game tells us directly; switch is worked out from it and the stance setting.
+std::optional<bool> left_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
     const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
     const auto flags = context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
-    return flags ? std::optional<bool>{(*flags & addr::grind_exit::stance_switch_mask) != 0} : std::nullopt;
+    return flags ? std::optional<bool>{(*flags & addr::grind_exit::left_foot_leads_mask) != 0} : std::nullopt;
+}
+std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto left = left_foot_leads(base, component);
+    return left ? std::optional<bool>{riding_switch(*left, goofy_stance())} : std::nullopt;
 }
 using CustomTricks = std::vector<CustomTrick>;
 struct Snapshot {
@@ -116,6 +136,7 @@ struct Snapshot {
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
     bool fit_air{};     // the keys are spread over the air that happens
+    bool turn_board{};  // the board's frame is turned round when it points the other way to its recording
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -152,6 +173,7 @@ struct State {
     bool grab_board{};
     bool front_foot{true};
     bool fit_air{};
+    bool turn_board{};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -282,7 +304,6 @@ struct Live {
     double takeoff_at{}, landing_at{};
     double last_capture{-1};
     bool recorded_goofy{}, playback_goofy{};
-    bool studio_goofy_now{}; // the stance the studio is set to, read with the snapshot
     std::optional<bool> recorded_switch, playback_switch;
     // In-game playback.
     PlaybackEpisode episode;
@@ -548,10 +569,10 @@ void read_library_locked(State& s) {
 // Every saved animation's metadata file: the ones loose in the tricks folder, and the ones in a folder of
 // their own named after them. A folder without its own .json (presets, recorded, library) is passed over.
 std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& folder) {
-    std::vector<std::filesystem::path> out;
+    std::vector<std::filesystem::path> out, loose;
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (entry.is_regular_file(error) && entry.path().extension() == L".json") out.push_back(entry.path());
+        if (entry.is_regular_file(error) && entry.path().extension() == L".json") loose.push_back(entry.path());
         else if (entry.is_directory(error)) {
             auto own = entry.path() / entry.path().filename();
             own += L".json";
@@ -559,6 +580,10 @@ std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& fold
             if (std::filesystem::is_regular_file(own, inner)) out.push_back(own);
         }
     }
+    // A trick in both places is the same trick: the folder wins, as saved_file has it. Loaded twice it
+    // would be two variants of itself and alternate with itself in game.
+    for (const auto& path : loose)
+        if (std::none_of(out.begin(), out.end(), [&](const auto& own) { return own.stem() == path.stem(); })) out.push_back(path);
     return out;
 }
 
@@ -605,7 +630,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             if (clip->joints != skeleton_joints || clip->takeoff < 0) continue;
             std::string trick;
             for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            const bool goofy = animation->stance == "goofy";
+            const bool goofy = authored_goofy(*animation);
             tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy});
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
@@ -642,6 +667,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
         snap->fit_air = s.fit_air;
+        snap->turn_board = s.turn_board;
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -889,7 +915,11 @@ void record(Live& l, double at, bool air, const std::string& trick, MotionState 
         if (air && l.recording_seen_ground) {
             l.airborne = true;
             l.takeoff_at = at;
-            l.recorded_goofy = l.studio_goofy_now;
+            // From the game's stance setting, the same one switch_stance worked the switch out against.
+            // Stance and switch are only a lead foot when both come from the same stance: they used to
+            // come from two (the studio's picture and the game's setting), and a recording made with the
+            // studio set the other way then carried the wrong lead foot.
+            l.recorded_goofy = goofy_stance();
             l.recorded_switch = switch_stance(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
             l.recorded_entry = entry_name(previous == MotionState::rail ? EntryKind::rail : previous == MotionState::riding ? EntryKind::ground : EntryKind::unknown);
             l.contact.since.reset();
@@ -1077,6 +1107,7 @@ void research_tick(std::uintptr_t base, std::uintptr_t component, bool open) {
             sample.trick = current_trick(component);
             sample.board_up_speed = board_up_speed(base, component);
             sample.switch_stance = switch_stance(base, component);
+            sample.left_foot_leads = left_foot_leads(base, component);
         }
         sample.animation_updates = live().animation_updates.load(std::memory_order_acquire);
         {
@@ -1125,8 +1156,8 @@ std::string research_trace(const std::string& action) {
         std::filesystem::create_directories(folder);
         const auto path = folder / ("transitions-" + std::to_string(GetTickCount64()) + ".csv");
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << "# animator_trace_schema=2\n# game_sha256=" << supported_build::game_sha256 << '\n';
-        out << "seconds,physics_state,phase_hint,trick_name,board_up_mps,studio_open,custom_playback_enabled,goofy_setting,recording_armed,switch_flag,animation_updates,skater_publications,board_publications,skater_age_s,board_age_s\n";
+        out << "# animator_trace_schema=3\n# game_sha256=" << supported_build::game_sha256 << '\n';
+        out << "seconds,physics_state,phase_hint,trick_name,board_up_mps,studio_open,custom_playback_enabled,goofy_setting,recording_armed,switch_stance,left_foot_leads,animation_updates,skater_publications,board_publications,skater_age_s,board_age_s\n";
         for (const auto& s : r.buffer.samples) {
             const bool air = s.physics && (*s.physics == 200 || *s.physics == 201);
             const bool rail = s.physics && *s.physics >= 400 && *s.physics < 500;
@@ -1136,6 +1167,8 @@ std::string research_trace(const std::string& action) {
             if (s.board_up_speed) out << *s.board_up_speed;
             out << ',' << s.studio_open << ',' << s.custom_enabled << ',' << s.goofy << ',' << s.recording_armed << ',';
             if (s.switch_stance) out << *s.switch_stance;
+            out << ',';
+            if (s.left_foot_leads) out << *s.left_foot_leads;
             out << ',' << s.animation_updates << ',' << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << '\n';
         }
         out.close();
@@ -1469,7 +1502,6 @@ void on_animation(std::uintptr_t component) noexcept {
         }
         // The studio shows the open trick, or with none the casual stance (the idle clip's last frame,
         // no keys).
-        l.studio_goofy_now = snap->goofy;
         const bool has_trick = snap->clip && !snap->clip->empty();
         const Clip* shown = has_trick ? snap->clip.get() : snap->idle && !snap->idle->empty() ? snap->idle.get() : nullptr;
         const float shown_time = has_trick ? snap->time : shown ? shown->duration() : 0.0f;
@@ -1565,9 +1597,11 @@ void on_animation(std::uintptr_t component) noexcept {
             // out again against the parents as they end up, which is what makes mirroring a part of a
             // skeleton safe - doing it bone by bone in each one's own frame is what tore him up before.
             // The game's own clips are labelled regular, but drawn as they are the skater stands goofy:
-            // his right foot is at the nose. Measured on screen 2026-10-21, so a clip's own label is read
-            // the other way round here rather than trusted.
-            const bool clip_stands_goofy = shown_edits.stance != "goofy";
+            // his right foot is at the nose (measured on screen 2026-10-21). That is the game's clips and
+            // the casual stance he waits in, which is one of them. A recording is labelled from the game's
+            // stance setting as it happens, so its label is true and is read as it is - reading every clip
+            // backwards, as this did, turned a regular skater's own recordings round.
+            const bool clip_stands_goofy = !has_trick || authored_goofy(shown_edits); // the casual stance is a game clip
             mirrored_body = snap->goofy != clip_stands_goofy;
             if (mirrored_body) {
                 l.mirror_scratch.assign(l.pose.begin(), l.pose.end());
@@ -1613,7 +1647,15 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.playback_goofy = goofy_stance();
                 l.playback_front_foot = snap->front_foot;
                 l.playback_switch = switch_stance(base, component);
-                l.game_trick = nullptr; l.game_tricks = snap->tricks;
+                l.game_trick = nullptr;
+                // A new set of saved tricks (one was saved, deleted, reloaded) means the mirrors and board
+                // frames worked out from the old set are for animations that no longer exist - and a new
+                // one can be given the old one's address, so a stale entry would be found and believed.
+                if (l.game_tricks != snap->tricks) {
+                    l.mirrored_edits.clear();
+                    l.recorded_board_frame.clear();
+                }
+                l.game_tricks = snap->tricks;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.native_before.clear(); l.source_before.clear(); l.limbs_at = -1;
@@ -1659,7 +1701,10 @@ void on_animation(std::uintptr_t component) noexcept {
                                     ? pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), since_takeoff_ms / 1000.0)) : 0;
             const auto graded_name = graded_pop_name(graded);
             const auto pop = !graded_name.empty() ? std::string(graded_name) : pop_of(l.predicted_air);
-            if (l.episode.entry != EntryKind::unknown && l.game_tricks &&
+            // Not while standing back: the change that started it would otherwise be taken up in this same
+            // frame and the old trick dropped at once, so the stand-back was never seen. It is taken up when
+            // the stand-back is over (gave_way_at goes back to -1 and the old trick is let go).
+            if (l.gave_way_at < 0 && l.episode.entry != EntryKind::unknown && l.game_tricks &&
                 episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
                                           l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop)) {
                 const CustomTrick* found = nullptr;
@@ -1674,20 +1719,24 @@ void on_animation(std::uintptr_t component) noexcept {
                                : playback_stance_compatible(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch);
                 };
                 int best_pop = 3;
+                // Who may be chosen at all. By front foot, any recording of the trick: one for the other foot
+                // is mirrored rather than refused. By exact stance only the matching one, unless the old raw
+                // fallback is switched on for development (stance_fallback), which plays the other stance's
+                // keys unmirrored and is what looked reversed.
+                const auto eligible = [&](const CustomTrick& t) { return l.playback_front_foot || stance_fallback || compatible(t); };
                 for (const auto& t : *l.game_tricks) {
-                    if (t.trick != name || t.edits->entry != entry_name(l.episode.entry) || !l.playback_switch.has_value()) continue;
+                    if (t.trick != name || t.edits->entry != entry_name(l.episode.entry) || !l.playback_switch.has_value() ||
+                        !eligible(t)) continue;
                     const int rank = playback_pop_rank(pop, t.edits->pop);
                     if (rank < 0) continue;
                     if (rank < best_pop) { variants.clear(); best_pop = rank; }
                     if (rank == best_pop) variants.push_back(&t);
                 }
-                // A recorded switch variant wins over converting another stance's edits.
+                // A recording already the right way round is played as it is, ahead of any that would have
+                // to be mirrored. In front-foot mode the others were let in (see `eligible`) and are mirrored
+                // when chosen; in exact-stance mode they were never let in, so this changes nothing there.
                 if (std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
                     std::erase_if(variants, [&](const CustomTrick* t) { return !compatible(*t); });
-                // Without front foot, a trick for another stance used to be played exactly as it was, which
-                // is what made it look wrong: the flick came off the wrong foot. It is left to the game now.
-                if (!l.playback_front_foot && !variants.empty() && !std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
-                    variants.clear();
                 if (!variants.empty()) {
                     auto choice = l.attempt_variants.find(name);
                     if (choice == l.attempt_variants.end())
@@ -1706,6 +1755,15 @@ void on_animation(std::uintptr_t component) noexcept {
                 if (found != l.game_trick) {
                     if (found) l.episode.select(at);
                     l.game_trick = found;
+                    if (found) {
+                        const bool lead_matches = playback_lead_matches(found->goofy, found->edits->switch_stance, l.playback_goofy, l.playback_switch);
+                        logging::log(Level::info, Channel::skater,
+                                     "Animation Studio: {} recorded {} {}, played {} {} - leading with the {} foot, {}.", found->name,
+                                     found->goofy ? "goofy" : "regular", found->edits->switch_stance.value_or(false) ? "switch" : "normal",
+                                     l.playback_goofy ? "goofy" : "regular", l.playback_switch.value_or(false) ? "switch" : "normal",
+                                     leads_right(l.playback_goofy, l.playback_switch.value_or(false)) ? "right" : "left",
+                                     !l.playback_front_foot ? "exact stance" : lead_matches ? "as recorded" : "mirrored");
+                    }
                     if (found)
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
                                      pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air, found->name,
@@ -1755,7 +1813,10 @@ void on_animation(std::uintptr_t component) noexcept {
                                 return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
                             };
                             const float by_game = moved(l.native_before[joint].rotation, l.pose[joint].rotation);
-                            const float by_clip = moved(l.source_before[joint].rotation, source_now[joint].rotation);
+                            // Played mirrored, the clip's left elbow is the one driving his right: compare like with
+                            // like, or every mirrored trick reads as the game taking limbs it has not touched.
+                            const auto source_joint = l.played_mirrored ? mirror_joint[joint] : joint;
+                            const float by_clip = moved(l.source_before[source_joint].rotation, source_now[source_joint].rotation);
                             taken = by_game - by_clip > 0.22f; // about 13 degrees in a frame the clip did not ask for
                         }
                         const float want = taken ? 0.0f : 1.0f;
@@ -1788,8 +1849,15 @@ void on_animation(std::uintptr_t component) noexcept {
                     // where they should push the tail. So the two are compared and the frame turned to
                     // match. Which foot leads is the body's business and is handled on its own; this is
                     // the board's.
+                    // Turning the board's frame round when the board points the other way to its recording.
+                    // This went in to cure tricks playing backwards for a regular skater, and that turned out
+                    // to be the stance bit being misread (fixed at its source, left_foot_leads). Read again
+                    // with that fixed, the board's keys are authored in the board's own frame (start_frame)
+                    // and played in the board's own frame (board_frame_local), both nose-relative, so they
+                    // need no turning for fakie - and turning them would put a nose key on the tail. Kept
+                    // as a setting, off, so it can be judged in the game rather than argued about.
                     Quat takeoff_frame = l.board_frame_local;
-                    if (l.board_at_takeoff_ok) {
+                    if (l.board_at_takeoff_ok && snap->turn_board) {
                         auto known = l.recorded_board_frame.find(trick->clip.get());
                         if (known == l.recorded_board_frame.end()) {
                             Quat recorded{0, 0, 0, 1};
@@ -2594,6 +2662,7 @@ View view() {
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
     v.fit_air = s.fit_air;
+    v.turn_board = s.turn_board;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -2844,6 +2913,14 @@ void set_play_in_game(bool on) {
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
+    publish_locked(s);
+}
+void set_turn_board(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.turn_board = on;
+    s.status = on ? "The board's keys are turned round when the board points the other way to its recording."
+                  : "The board's keys stay in the board's own frame.";
     publish_locked(s);
 }
 void set_fit_air(bool on) {
@@ -3314,13 +3391,23 @@ bool save(std::string& message) {
     }
     if (s.edits.name.empty()) {
         // A new animation gets a name of its own, never one already in the library.
-        const auto taken = [&](const std::string& n) { return std::find(s.library.begin(), s.library.end(), file_safe(n)) != s.library.end(); };
+        // Nor one of the tricks folder's own folders: a trick saved as "presets" would be written into the
+        // presets folder and then listed as a trick.
+        const auto taken = [&](const std::string& n) {
+            const auto safe = file_safe(n);
+            for (const char* own : {"presets", "recorded", "library", "research"})
+                if (_stricmp(safe.c_str(), own) == 0) return true;
+            return std::find(s.library.begin(), s.library.end(), safe) != s.library.end();
+        };
         std::string name = s.edits.trick.empty() ? "Trick" : s.edits.trick;
         int n = 1;
         while (taken(variation_name(file_safe(name), static_cast<unsigned>(n)))) ++n;
         s.edits.name = variation_name(file_safe(name), static_cast<unsigned>(n));
     }
-    const auto name = file_safe(s.edits.name);
+    // A typed name that is one of the tricks folder's own folders is moved aside, for the same reason.
+    auto name = file_safe(s.edits.name);
+    for (const char* own : {"presets", "recorded", "library", "research"})
+        if (_stricmp(name.c_str(), own) == 0) name = variation_name(name, 2);
     const auto folder = library_folder();
     try {
         std::filesystem::create_directories(folder);
