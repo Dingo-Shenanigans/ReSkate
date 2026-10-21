@@ -6,10 +6,15 @@ namespace dingosdk::console {
 void register_animation_studio_commands(Commands& registry) {
     // Opening it from a line, which is what the ReSkate menu's tile queues as well.
     auto open_verb = argument("action", Type::text, false);
-    open_verb.choices = {"open", "close"};
-    auto open = action("animstudio", "Open or close the Animator Studio (F8)", Group::gameplay, {open_verb});
+    open_verb.choices = {"open", "close", "probe"};
+    auto open = action("animstudio", "Open or close the Animator Studio (F8); probe looks for where the game keeps the clip it plays", Group::gameplay, {open_verb});
     open.run = [](const Model&, const Values& values, const Output& out) {
-        const bool wanted = values.empty() || std::get<std::string>(values[0]) != "close";
+        const auto verb = values.empty() ? std::string("open") : std::get<std::string>(values[0]);
+        if (verb == "probe") {
+            out(anim_studio::arm_live_probe());
+            return;
+        }
+        const bool wanted = verb != "close";
         anim_studio::request_open(wanted);
         out(wanted ? "Opening the Animator Studio." : "Closing the Animator Studio.");
     };

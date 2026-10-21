@@ -31,7 +31,9 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 namespace dingosdk::anim_studio {
@@ -1132,6 +1134,147 @@ void research_tick(std::uintptr_t base, std::uintptr_t component, bool open) {
 }
 } // namespace
 
+// ---- where the game keeps the clip it is playing --------------------------------------------------
+// The game says which trick it is doing (current_trick), never which of its own clips it is playing - and
+// most of its animation is not tricks at all: setups before the pop, loops while riding, exits, the pieces
+// the graph blends between. To edit one of those and have it show in game, the studio has to see it
+// playing, and nobody has found yet where the game keeps that. This looks.
+//
+// From the skater's animation component, and from each step of the chain the trick's name hangs off, it
+// follows pointers a few steps out. In everything it reads it looks for the names of the game's clips: as
+// text, and as the FNV-1 hash the engine names things by, in each spelling it might keep. What it finds and
+// the path to it are written out, taken riding, at the pop and in the air, so a single trick done with it
+// armed says where to read the playing clip from. Reads only, through peek, so a wrong guess about what a
+// pointer is costs nothing.
+namespace live_probe {
+std::atomic<bool> armed{};
+std::atomic<int> taken{}; // bit 0 riding, 1 at the pop, 2 in the air
+std::mutex names_mutex;
+std::shared_ptr<const std::unordered_map<std::uint32_t, std::string>> names;
+std::uint32_t fnv1(std::string_view text) noexcept {
+    std::uint32_t h = 0x811C9DC5u;
+    for (const unsigned char c : text) { h *= 0x01000193u; h ^= c; }
+    return h;
+}
+std::string lower(std::string text) {
+    for (auto& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return text;
+}
+std::string hex(std::uintptr_t value) {
+    char text[24];
+    std::snprintf(text, sizeof(text), "0x%llx", static_cast<unsigned long long>(value));
+    return text;
+}
+std::string scan(std::uintptr_t component, const std::string& when) {
+    std::shared_ptr<const std::unordered_map<std::uint32_t, std::string>> known;
+    {
+        std::lock_guard lock(names_mutex);
+        known = names;
+    }
+    struct Node {
+        std::uintptr_t at;
+        std::string path;
+        int depth;
+    };
+    std::deque<Node> queue;
+    // The chain the trick's name is read through, nearest the name first: the graph state is most likely
+    // kept there, so it is looked at before anything further out.
+    const auto holder = read<std::uintptr_t>(component + 0xa0).value_or(0);
+    const auto a = holder ? read<std::uintptr_t>(holder + 0x20).value_or(0) : 0;
+    const auto b = a ? read<std::uintptr_t>(a + 0x250).value_or(0) : 0;
+    if (b) queue.push_back({b, "component+0xa0+0x20+0x250", 0});
+    if (a) queue.push_back({a, "component+0xa0+0x20", 0});
+    if (holder) queue.push_back({holder, "component+0xa0", 0});
+    queue.push_back({component, "component", 0});
+    constexpr int deepest = 3;
+    constexpr std::size_t most_objects = 3000, span = 0x400;
+    std::unordered_set<std::uintptr_t> seen;
+    std::vector<std::uint8_t> bytes(span);
+    std::ostringstream found;
+    std::size_t objects = 0, hits = 0;
+    while (!queue.empty() && objects < most_objects) {
+        const auto node = queue.front();
+        queue.pop_front();
+        if (!seen.insert(node.at).second || !peek(node.at, bytes.data(), span)) continue;
+        ++objects;
+        if (known)
+            for (std::size_t o = 0; o + 4 <= span; o += 4) {
+                std::uint32_t value;
+                std::memcpy(&value, bytes.data() + o, 4);
+                if (value == 0) continue;
+                if (const auto hit = known->find(value); hit != known->end()) {
+                    found << node.path << " +" << hex(o) << "  hash  " << hit->second << '\n';
+                    ++hits;
+                }
+            }
+        for (std::size_t o = 0; o < span;) {
+            std::size_t end = o;
+            while (end < span && bytes[end] >= 0x20 && bytes[end] < 0x7f) ++end;
+            if (end - o >= 10) {
+                const std::string text(reinterpret_cast<const char*>(bytes.data() + o), end - o);
+                if (text.find("c_proto") != std::string::npos || text.find("animation/dingo") != std::string::npos ||
+                    text.find("_onb_") != std::string::npos || text.find("_ofb_") != std::string::npos) {
+                    found << node.path << " +" << hex(o) << "  text  " << text << '\n';
+                    ++hits;
+                }
+            }
+            o = end + 1;
+        }
+        if (node.depth < deepest)
+            for (std::size_t o = 0; o + 8 <= span; o += 8) {
+                std::uint64_t value;
+                std::memcpy(&value, bytes.data() + o, 8);
+                if (value >= 0x10000 && value <= highest_user && (value & 7) == 0 && !seen.count(static_cast<std::uintptr_t>(value)))
+                    queue.push_back({static_cast<std::uintptr_t>(value), node.path + " +" + hex(o), node.depth + 1});
+            }
+    }
+    std::ostringstream out;
+    out << "== " << when << "\n# trick the game reports: " << (current_trick(component).empty() ? "(none)" : current_trick(component))
+        << "\n# objects read: " << objects << ", clip names found: " << hits
+        << (known ? "" : "\n# no clip names to look for: the native animation index is not installed") << '\n'
+        << found.str() << '\n';
+    return out.str();
+}
+void take(std::uintptr_t component, int which, const std::string& when) {
+    if (taken.fetch_or(1 << which) & (1 << which)) return;
+    const auto report = scan(component, when);
+    try {
+        const auto folder = library_folder() / L"research";
+        std::filesystem::create_directories(folder);
+        std::ofstream file(folder / "live-graph-probe.txt", std::ios::binary | std::ios::app);
+        file << report;
+    } catch (...) {}
+    logging::log(Level::info, Channel::skater, "Animation Studio: probe taken {}; see ReSkate.Tricks/research/live-graph-probe.txt.", when);
+    if (taken.load() == 7) {
+        armed.store(false);
+        logging::log(Level::info, Channel::skater, "Animation Studio: probe done - all three taken.");
+    }
+}
+} // namespace live_probe
+std::string arm_live_probe() {
+    // The names of every clip the game has, hashed every way the engine might keep them. Done here, on the
+    // console's thread, so the animation thread only ever looks things up.
+    auto names = std::make_shared<std::unordered_map<std::uint32_t, std::string>>();
+    if (const auto assets = native_assets())
+        for (const auto& asset : *assets) {
+            const std::string& full = asset.asset;
+            const auto slash = full.rfind('/');
+            const std::string short_name = slash == std::string::npos ? full : full.substr(slash + 1);
+            for (const auto& spelling : {full, short_name, live_probe::lower(full), live_probe::lower(short_name)})
+                names->emplace(live_probe::fnv1(spelling), full);
+        }
+    {
+        std::lock_guard lock(live_probe::names_mutex);
+        live_probe::names = names;
+    }
+    try { std::filesystem::remove(library_folder() / L"research" / "live-graph-probe.txt"); } catch (...) {}
+    live_probe::taken.store(0);
+    live_probe::armed.store(true);
+    return "Probe armed with " + std::to_string(names->size()) +
+           " clip-name spellings. Ride a moment, then do any trick: it is taken riding, at the pop and in the air, "
+           "and written to ReSkate.Tricks/research/live-graph-probe.txt.";
+}
+
 std::string research_trace(const std::string& action) {
     auto& r = research();
     std::lock_guard lock(r.mutex);
@@ -1643,6 +1786,13 @@ void on_animation(std::uintptr_t component) noexcept {
             last = layout.count;
         } else if (snap->play_in_game && !snap->armed && !bailing && snap->tricks && !snap->tricks->empty()) {
             const bool began = l.episode.observe(at, motion);
+            // The probe, while armed: once riding, once on the first frame of the air (the pop's setup is
+            // still blending out then), and once well into the air, where the trick's own pieces play.
+            if (live_probe::armed.load(std::memory_order_acquire)) {
+                if (motion == MotionState::riding) live_probe::take(component, 0, "riding");
+                else if (motion == MotionState::air && at - l.episode.takeoff < 0.05) live_probe::take(component, 1, "at the pop");
+                else if (motion == MotionState::air && at - l.episode.takeoff > 0.2) live_probe::take(component, 2, "in the air");
+            }
             if (began) {
                 l.playback_goofy = goofy_stance();
                 l.playback_front_foot = snap->front_foot;
@@ -3384,7 +3534,12 @@ bool save(std::string& message) {
         message = "Record a trick before saving.";
         return false;
     }
-    if (s.edits.trick.empty() && s.clip->takeoff >= 0) {
+    // A piece of the game's own animation - a setup, a loop, an exit, a transition - has no trick to be named
+    // after, and asking for one stopped it being saved at all. It is kept by the clip it came from
+    // (source.asset) instead: saved, opened again, shared, and played in game once the studio can see that
+    // clip playing (arm_live_probe is the search for where to see it).
+    const bool native_piece = s.edits.source.kind == "native_asset" && !s.edits.source.asset.empty();
+    if (s.edits.trick.empty() && s.clip->takeoff >= 0 && !native_piece) {
         message = "Which trick is it? Type the game's trick in TRICK (ollie, kickflip...) or record it, then save.";
         s.status = message;
         return false;
@@ -3690,7 +3845,8 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.time = 0; // at its start: on the board, on the ground
         s.playing = false;
         s.dirty = false; // only an edit makes it unsaved
-        message = trick.preview_only ? "Opened " + trick.label + " for editing. Live native-phase replacement is not connected for this source; saving preserves your work without activating it in game." :
+        message = trick.preview_only ? "Opened " + trick.label + " to edit. It is a piece of the game's own animation rather than a whole trick, "
+                                       "so it is saved by the clip it came from. It plays in game once the studio can see that clip playing." :
             "Opened the game's " + trick.label + " (" + trick.pop + " pop). Native board physics and graph constraints are not included in this clip.";
         s.status = message;
         publish_locked(s);
