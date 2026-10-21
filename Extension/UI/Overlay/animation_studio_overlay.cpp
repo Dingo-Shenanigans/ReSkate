@@ -1542,6 +1542,11 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "riding switch both lead with the right, so they get it as it was recorded. Exact stance: it plays only for the "
                         "stance and switch it was recorded in, and the game's own animation is used otherwise.",
                         [v] { studio::set_front_foot(!v.front_foot); }});
+        rows.push_back({"Trick timing", v.fit_air ? "fit the air" : "as recorded",
+                        "As recorded: the keys run at the seconds they were recorded at, whatever air he gets. Fit the air: they are "
+                        "spread over the air actually happening, within two thirds and one and a half times the recorded pace, so a "
+                        "trick over a gap or an obstacle keeps its shape instead of drifting out of step with the game's own motion.",
+                        [v] { studio::set_fit_air(!v.fit_air); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
                         "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",

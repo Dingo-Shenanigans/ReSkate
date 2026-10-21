@@ -115,6 +115,7 @@ struct Snapshot {
     bool goofy{}; // the way round the studio is working
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
+    bool fit_air{};     // the keys are spread over the air that happens
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -150,6 +151,7 @@ struct State {
     bool showing_goofy{};
     bool grab_board{};
     bool front_foot{true};
+    bool fit_air{};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -639,6 +641,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->goofy = goofy;
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
+        snap->fit_air = s.fit_air;
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -1730,7 +1733,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
                 const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
                 const auto& clip = *trick->clip;
-                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true);
+                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, snap->fit_air);
                 // What the graph did this frame against what the clip says should have happened. A limb
                 // the game has taken - a grind planting the feet, a grab putting a hand on the board -
                 // moves far more than the clip does, and that is the signal: no guess about why, only
@@ -2590,6 +2593,7 @@ View view() {
     v.game_stance = dingosdk::grind_exit_control::stance();
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
+    v.fit_air = s.fit_air;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -2840,6 +2844,13 @@ void set_play_in_game(bool on) {
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
+    publish_locked(s);
+}
+void set_fit_air(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.fit_air = on;
+    s.status = on ? "Keys are spread over the air that happens." : "Keys run at the seconds they were recorded at.";
     publish_locked(s);
 }
 void set_front_foot(bool on) {

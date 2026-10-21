@@ -64,6 +64,7 @@ struct View {
     int game_stance{}; // what the game's own setting says: 0 not set, 1 regular, 2 goofy
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
+    bool fit_air{};        // the keys are spread over the air that happens, not the one they were recorded in
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
@@ -168,6 +169,10 @@ void set_grab(bool on);
 // foot: it plays for any stance, mirrored when the other foot leads. Off, it plays only for the stance and
 // switch it was recorded in, which is what it did before.
 void set_front_foot(bool on);
+// Whether the authored keys are spread over the air actually happening. Off, they run at the seconds they
+// were recorded at, which is how it has worked; on, they are fitted to a longer or shorter air, which is
+// what a gap or an obstacle makes.
+void set_fit_air(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();

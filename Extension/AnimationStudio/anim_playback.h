@@ -63,8 +63,12 @@ struct PlaybackEpisode {
     }
     bool selection_open(double now) const noexcept { return phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35; }
     void select(double now) noexcept { if (std::isfinite(now)) { selected_at = now; clock.reset(); } }
+    // `fit_air`: the authored keys are spread over the air actually happening instead of running at the
+    // seconds they were recorded at. Off by default, which is how this has worked: source seconds, because
+    // stretching the air used to discard late keys. It tells over a gap or an obstacle, where the game's
+    // own air is much longer or shorter than the one the trick was recorded in and the two drift apart.
     PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air,
-                          bool source_timing = false) noexcept {
+                          bool source_timing = false, bool fit_air = false) noexcept {
         PlaybackSample out;
         if (selected_at < 0 || up < 0 || duration <= 0 || up > duration || down > duration ||
             !std::isfinite(now) || !std::isfinite(up) || !std::isfinite(down) ||
@@ -76,7 +80,13 @@ struct PlaybackEpisode {
             // Speed is a studio preview control. Slowing only this additive
             // layer while the native trick runs at 1x desynchronizes limbs and
             // board; source-bound gameplay keys always follow source seconds.
-            out.time = static_cast<float>(std::min(static_cast<double>(duration), up + std::max(0.0, now - takeoff)));
+            // Spread over the air that is happening, within reason: never less than two thirds of the
+            // recorded pace nor more than half again, so the shape of the trick is kept and no key is
+            // hurried past or left behind.
+            float rate = 1;
+            if (fit_air && predicted_air > 0.05f && down > up)
+                rate = std::clamp((down - up) / predicted_air, 0.66f, 1.5f);
+            out.time = static_cast<float>(std::min(static_cast<double>(duration), up + std::max(0.0, now - takeoff) * rate));
             clock.observe_air(now, out.time, 1);
             const auto enter = std::clamp(static_cast<float>(now - selected_at) / 0.08f, 0.0f, 1.0f);
             const auto leave = std::clamp((duration - out.time) / 0.08f, 0.0f, 1.0f);
