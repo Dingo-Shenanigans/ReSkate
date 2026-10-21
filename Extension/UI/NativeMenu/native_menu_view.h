@@ -8,8 +8,9 @@
 
 namespace dingosdk::multiplayer::menu_view {
 enum class Sort { name, players, map };
-// The busiest servers first, until the player picks another order.
-struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; };
+// The busiest servers first, until the player picks another order. A second click on that
+// column sets reverse, which flips only that column.
+struct BrowserOptions { std::string query; bool same_map{}; Sort sort = Sort::players; bool reverse{}; };
 
 // Owned pages: Multiplayer and Mod Options (needs the overlay's tool callbacks).
 inline constexpr unsigned page_count = 2, tools_page = 1;
@@ -79,13 +80,16 @@ inline BrowserResults browse(const MultiplayerModel& model, const BrowserOptions
         if (a->official != b->official) return a->official;
         // Then where friends are.
         if (a->friends.empty() != b->friends.empty()) return !a->friends.empty();
-        if (options.sort == Sort::players && a->players != b->players) return a->players > b->players;
+        if (options.sort == Sort::players && a->players != b->players)
+            return options.reverse ? a->players < b->players : a->players > b->players;
         if (options.sort == Sort::map) {
             const auto an = fold(map_name(a->map, levels)), bn = fold(map_name(b->map, levels));
-            if (an != bn) return an < bn;
+            if (an != bn) return options.reverse ? an > bn : an < bn;
         }
         const auto an = fold(a->name), bn = fold(b->name);
-        return an != bn ? an < bn : a->id < b->id;
+        // A name or map tie stays A to Z, then by id. Reversing NAME flips the names themselves.
+        if (an != bn) return options.sort == Sort::name && options.reverse ? an > bn : an < bn;
+        return a->id < b->id;
     });
     result.total = result.lobbies.size();
     return result;

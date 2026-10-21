@@ -5,6 +5,7 @@
 #include "drone_outfit.h"
 #include "Extension/Multiplayer/Remote/native_prop.h"
 #include "Extension/Multiplayer/Remote/drone_sound.h"
+#include "Engine/Game/Skater/velocity_boost.h"
 #include <algorithm>
 #include <cstdlib>
 #include <format>
@@ -340,9 +341,31 @@ void register_movement_commands(Commands &registry) {
     };
     free_fov.reset = [](const Model &, const Output &) { request_debug(Debug::set_free_camera_fov, false, 0.0f); };
     registry.add(std::move(free_fov));
+    // Dark Pop (see dark_pop_tick in client_debug.cpp); the same switches as the menu rows.
+    auto dark_pop = variable("darkpop", "Dark Pop: catch a flip dark, press D-pad Left, Down or Right in the air, land it dark",
+        Group::movement, argument("0|1", Type::boolean));
+    dark_pop.inspect = [](const Model &m) {
+        return State{m.debug.available, m.debug.dark_pop ? "1" : "0", "Waiting for local player controls.",
+                     std::to_string(m.debug.dark_pop_count) + " pops", false};
+    };
+    dark_pop.run = [](const Model &, const Values &args, const Output &) {
+        request_debug(Debug::set_dark_pop_enabled, std::get<bool>(args[0]));
+    };
+    dark_pop.reset = [](const Model &, const Output &) { request_debug(Debug::set_dark_pop_enabled, false); };
+    registry.add(std::move(dark_pop));
+    auto dark_probe = variable("darkpopprobe", "Dark pop probe: record the game's state choices to two files in logs",
+        Group::movement, argument("0|1", Type::boolean));
+    dark_probe.inspect = [](const Model &m) {
+        return State{m.debug.available, m.debug.probe ? "1" : "0", "Waiting for local player controls.", {}, false};
+    };
+    dark_probe.run = [](const Model &, const Values &args, const Output &) {
+        request_debug(Debug::set_probe_enabled, std::get<bool>(args[0]));
+    };
+    dark_probe.reset = [](const Model &, const Output &) { request_debug(Debug::set_probe_enabled, false); };
+    registry.add(std::move(dark_probe));
     auto boost_speed_argument = argument("speed", Type::number);
-    boost_speed_argument.minimum = 1;
-    boost_speed_argument.maximum = 300;
+    boost_speed_argument.minimum = 0; // 0: off, the stock setting
+    boost_speed_argument.maximum = dingosdk::velocity_boost_speed_max; // the menu slider ends at 300
     auto boost_speed = variable("forwardvelocity", "Velocity added along the skater's forward direction", Group::movement, boost_speed_argument);
     boost_speed.aliases = {"debug.forward_velocity_speed"};
     boost_speed.inspect = [](const Model &m) {
@@ -356,11 +379,10 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::set_forward_velocity_speed, false, static_cast<float>(std::get<double>(args[0])));
     };
     boost_speed.reset = [](const Model &, const Output &) {
-        request_debug(Debug::set_forward_velocity_speed, false, 20.0f);
+        request_debug(Debug::set_forward_velocity_speed, false, 0.0f);
     };
     registry.add(std::move(boost_speed));
     auto up_speed_argument = boost_speed_argument;
-    up_speed_argument.maximum = 25;
     auto up_speed = variable("upvelocity", "Velocity added along world up", Group::movement, up_speed_argument);
     up_speed.aliases = {"debug.up_velocity_speed"};
     up_speed.inspect = [](const Model &m) {
@@ -374,7 +396,7 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::set_up_velocity_speed, false, static_cast<float>(std::get<double>(args[0])));
     };
     up_speed.reset = [](const Model &, const Output &) {
-        request_debug(Debug::set_up_velocity_speed, false, 20.0f);
+        request_debug(Debug::set_up_velocity_speed, false, 0.0f);
     };
     registry.add(std::move(up_speed));
     auto boost = action("forwardboost", "Add the configured velocity along the skater's forward direction", Group::movement);

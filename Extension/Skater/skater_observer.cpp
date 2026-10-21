@@ -102,6 +102,7 @@ bool fingerprint(std::uintptr_t address, const std::array<unsigned char, 24>& ex
                              actual.size(), &count) && count == actual.size() && actual == expected;
 }
 }
+std::uint64_t skater_creations() noexcept { return observer().counts[CreateEntered].load(); }
 bool start_skater_observer(std::uintptr_t base) noexcept {
     try {
         auto& o = observer();

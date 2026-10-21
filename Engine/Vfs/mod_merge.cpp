@@ -4,6 +4,7 @@
 #include "content_catalogs.h"
 #include "mod_item_sources.h"
 #include "mod_merge_internal.h"
+#include "mod_conflicts.h"
 #include "mod_store_copies.h"
 #include "native_db.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -118,9 +119,28 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // launch (the player is waiting on nothing else), half of them and fewer while the game runs.
         const auto cores = std::max(1U, std::thread::hardware_concurrency());
         const std::size_t readers = std::min<std::size_t>(options.live ? std::max(1U, cores / 2) : cores, options.live ? 6U : 8U);
+        // The checks before the merge say what they are doing, the bar still at its start.
+        const auto checking = [&](std::string step) {
+            if (observe) try { observe({0, 1, mods.size(), std::move(step)}); } catch (...) {}
+        };
         std::optional<std::vector<StoreCopies::Added>> itemsRead;
+        if (storeKnown) checking("Checking the mods");
         if (storeKnown && store_copy_problems(catalog, report, options.live ? options.checked : std::vector<std::string>{},
                                               readers - 1, options.live, itemsRead)) return report;
+        // Mods that conflict, found the same way before anything is built: the catalog leaves the
+        // losing ones out and merges once, where finding them in the merge took a second merge.
+        if (options.conflicts_first && !options.live) {
+            checking("Checking the mods for conflicts");
+            const auto started = Clock::now();
+            report.conflicts = ConflictChecker(catalog.data_root).check(mods, readers - 1);
+            const auto tenths = (std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count() + 50) / 100;
+            report.notes.push_back("Conflict check: " + std::to_string(report.conflicts.size()) + " conflicting pair(s) in " +
+                                   std::to_string(tenths / 10) + '.' + std::to_string(tenths % 10) + " s");
+            if (!report.conflicts.empty()) {
+                report.stopped_for_conflicts = true;
+                return report;
+            }
+        }
         // Which mod each item is from (mod_item_sources.h): what was just read, and for a mod a
         // live merge did not read again, what the launch's merge found. Read before the patch
         // folder is cleared.
@@ -425,6 +445,11 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // after another in the order they always were, which puts every byte where merging
         // them in turn would have. A merge while the game runs uses fewer threads, at a lower
         // priority: the game is using the others, and a player is waiting on this one.
+        // What reading each mod's bundles found before, while its files are as they were (ScanCache).
+        std::map<std::string, std::string, std::less<>> fingerprints;
+        for (const auto* mod : mods) fingerprints.emplace(mod->name, mod_fingerprint(mod->directory));
+        for (const auto& mod : catalog.inactive) fingerprints.emplace(mod.name, mod_fingerprint(mod.directory));
+        ScanCache scans(catalog.root / scan_cache_file, std::move(fingerprints));
         struct Job {
             std::string relative;
             std::optional<CasStore> store;   // waiting: what the merge wrote
@@ -464,7 +489,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     sources.push_back(std::move(source));
                 }
                 job.merged = combine(baseRoot / fs::path(relative), baseRoot, sources, job.report,
-                                     relative, job.used, *job.store, manifestArchive, gameRoot, grid, overrides);
+                                     relative, job.used, *job.store, manifestArchive, gameRoot, grid, overrides, scans);
                 if (job.store->holding())
                     for (std::size_t index = 0; index < job.merged.bundles.size(); ++index) {
                         auto region = fb::read_bundle_region(job.merged.bundles[index].region);
@@ -540,11 +565,23 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             report.mergedBundles += job.report.mergedBundles;
             report.mergedAssets += job.report.mergedAssets;
             report.unchangedCopies += job.report.unchangedCopies;
+            for (const auto& [level, bytes] : job.report.map_meshes) report.map_meshes[level] += bytes;
             report.notes.insert(report.notes.end(), std::make_move_iterator(job.report.notes.begin()),
                                 std::make_move_iterator(job.report.notes.end()));
             for (auto& [mod, problems] : job.report.problems) {
                 auto& list = report.problems[mod];
                 list.insert(list.end(), std::make_move_iterator(problems.begin()), std::make_move_iterator(problems.end()));
+            }
+            for (auto& row : job.report.conflicts) {
+                const auto same = std::ranges::find_if(report.conflicts, [&](const MergeReport::Conflict& held) {
+                    return held.kept == row.kept && held.lost == row.lost; });
+                if (same == report.conflicts.end()) {
+                    report.conflicts.push_back(std::move(row));
+                    continue;
+                }
+                same->assets += row.assets;
+                for (auto& area : row.areas)
+                    if (std::ranges::find(same->areas, area) == same->areas.end()) same->areas.push_back(std::move(area));
             }
             auto bytes = fb::write_patch_toc(job.merged.bundles, job.merged.chunks, job.merged.flags);
             // Read the result back before publishing it: a TOC whose perfect
@@ -573,7 +610,9 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                         report.removed_tocs.push_back(previous);
             record.tocs = superbundles;
             write_placements(placementsPath, record);
+            write_map_meshes(output / map_meshes_file, report.map_meshes);
         }
+        scans.save();
         lap("superbundles");
 
         // The layout lists every superbundle the merged layer now provides.

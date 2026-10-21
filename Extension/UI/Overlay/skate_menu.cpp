@@ -14,7 +14,10 @@
 #include <array>
 #include <cstring>
 #include <initializer_list>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace dingosdk::overlay {
 using namespace menu;
@@ -138,25 +141,64 @@ bool stepper(const char* id, Value* value, Value low, Value high, const char* fo
     static double kept_until{};
     if (kept == item && g.Time < kept_until) *value = kept_value;
     else if (kept == item) kept = 0;
+    bool changed = false;
     int direction = 0;
-    if (clicked && !disabled && hovered && g.IO.MouseReleased[0]) direction = g.IO.MousePos.x < at.x + width * .5f ? -1 : 1;
+    const bool logarithmic = (flags & ImGuiSliderFlags_Logarithmic) && low > 0 && high > low;
+    const float bar_left = at.x + px(48), bar_width = width - px(96);
+    // Where a value sits along the bar (0 low, 1 high; outside for a typed value past the ends), and back.
+    const auto fraction_of = [&](double v) {
+        if (!(high > low)) return 0.0;
+        if (logarithmic) return v > 0 ? std::log(v / low) / std::log(static_cast<double>(high) / low) : 0.0;
+        return (v - low) / (static_cast<double>(high) - low);
+    };
+    const auto value_at = [&](double f) {
+        return logarithmic ? low * std::pow(static_cast<double>(high) / low, f) : low + f * (static_cast<double>(high) - low);
+    };
+    // The mouse: a click steps (left half down, right half up, as the arrows show); press and move left or right
+    // to slide it instead. From a typed value past an end the slide starts there and is not pulled back first.
+    static ImGuiID dragging{};
+    static double drag_from{}, drag_value{};
+    static float drag_x{};
+    static bool slid_far{};
+    if (!disabled && ImGui::IsItemActivated() && g.ActiveIdSource == ImGuiInputSource_Mouse) {
+        dragging = item, drag_x = g.IO.MousePos.x, drag_value = static_cast<double>(*value), drag_from = fraction_of(drag_value), slid_far = false;
+    }
+    if (dragging == item && std::abs(g.IO.MousePos.x - drag_x) > px(4)) slid_far = true;
+    if (clicked && !disabled && hovered && !slid_far) direction = g.IO.MousePos.x < at.x + width * .5f ? -1 : 1;
+    if (dragging == item && (!ImGui::IsItemActive() || !g.IO.MouseDown[0])) dragging = 0;
+    if (dragging == item && slid_far && bar_width > 0) {
+        double next = value_at(drag_from + (g.IO.MousePos.x - drag_x) / bar_width);
+        if (flags & ImGuiSliderFlags_AlwaysClamp) next = std::clamp(next, static_cast<double>(low), static_cast<double>(high));
+        else next = std::clamp(next, std::min(static_cast<double>(low), drag_value), std::max(static_cast<double>(high), drag_value));
+        if (unit > 0) next = drag_value + std::round((next - drag_value) / unit) * unit;
+        Value slid;
+        if constexpr (std::is_integral_v<Value>) slid = static_cast<Value>(std::lround(next));
+        else slid = static_cast<Value>(next);
+        if (slid != *value) {
+            *value = slid;
+            changed = true;
+            ImGui::MarkItemEdited(item);
+        }
+        kept = item, kept_value = *value, kept_until = g.Time + 1.0;
+    }
     const bool holding = focused && !disabled && sideways_held();
+    if ((focused || hovered) && !pending_hint.empty()) focus_hint = pending_hint;
     if (focused && !disabled) {
         if (left_pressed(true)) direction = -1;
         if (right_pressed(true)) direction = 1;
         if (holding || direction) ImGui::NavMoveRequestCancel();
         if (!pending_hint.empty()) focus_hint = pending_hint;
     }
-    bool changed = false;
     if (direction) {
-        const bool logarithmic = (flags & ImGuiSliderFlags_Logarithmic) && low > 0 && high > low;
         const double speed = held_for() > 1.2f ? 4.0 : 1.0;
         double next = static_cast<double>(*value);
         if (unit > 0) next += direction * speed * unit;
         else if (logarithmic) next *= std::pow(static_cast<double>(high) / static_cast<double>(low), direction * speed / 40.0);
         else if constexpr (std::is_integral_v<Value>) next += direction * speed * std::max(1.0, std::round((static_cast<double>(high) - low) / 40.0));
         else next += direction * speed * (static_cast<double>(high) - low) / 40.0;
-        next = std::clamp(next, static_cast<double>(low), static_cast<double>(high));
+        // A typed value past an end stays where it is until a step brings it back inside.
+        if (flags & ImGuiSliderFlags_AlwaysClamp) next = std::clamp(next, static_cast<double>(low), static_cast<double>(high));
+        else next = std::clamp(next, std::min(static_cast<double>(low), static_cast<double>(*value)), std::max(static_cast<double>(high), static_cast<double>(*value)));
         Value stepped;
         if constexpr (std::is_integral_v<Value>) stepped = static_cast<Value>(std::lround(next));
         else stepped = static_cast<Value>(next);
@@ -187,14 +229,9 @@ bool stepper(const char* id, Value* value, Value low, Value high, const char* fo
     const auto size = font->CalcTextSizeA(px(17), FLT_MAX, 0, text);
     draw->AddText(font, px(17), ImVec2(at.x + (width - size.x) * .5f, at.y + (height - size.y) * .5f - px(4)), disabled ? muted : paper, text);
     // Where the value sits in its range, in steps.
-    double fraction = 0;
-    if (high > low) {
-        if ((flags & ImGuiSliderFlags_Logarithmic) && low > 0)
-            fraction = std::log(static_cast<double>(*value) / low) / std::log(static_cast<double>(high) / low);
-        else fraction = (static_cast<double>(*value) - low) / (static_cast<double>(high) - low);
-    }
+    const double fraction = fraction_of(static_cast<double>(*value));
     constexpr int ticks = 20;
-    const float bar_left = at.x + px(48), bar_width = width - px(96), tick = bar_width / ticks;
+    const float tick = bar_width / ticks;
     for (int i = 0; i < ticks && (unit <= 0 || (static_cast<double>(high) - low) / unit < 2000); ++i) {
         const bool lit = (i + 0.5) / ticks <= std::clamp(fraction, 0.0, 1.0);
         draw->AddRectFilled(ImVec2(bar_left + tick * i + px(1), end.y - px(10)), ImVec2(bar_left + tick * (i + 1) - px(1), end.y - px(6)),
@@ -347,6 +384,66 @@ void end_card() {
     }
     ImGui::EndChild();
     ImGui::Dummy(ImVec2(0, px(8)));
+}
+namespace {
+struct Folds {
+    std::map<std::string, bool, std::less<>> open;
+    std::vector<std::pair<std::string, bool>> changed;
+};
+Folds& folds() {
+    static auto* value = new Folds;
+    return *value;
+}
+}
+bool fold_open(std::string_view id, bool fallback) {
+    const auto& open = folds().open;
+    const auto found = open.find(id);
+    return found == open.end() ? fallback : found->second;
+}
+void set_fold(std::string_view id, bool open) { folds().open[std::string(id)] = open; }
+bool take_fold_change(std::string& id, bool& open) {
+    auto& changed = folds().changed;
+    if (changed.empty()) return false;
+    id = std::move(changed.back().first);
+    open = changed.back().second;
+    changed.pop_back();
+    return true;
+}
+void fold_arrow(ImVec2 at, float row_height, bool open, ImU32 colour) {
+    const float r = ImGui::GetFontSize() * 0.26f;
+    const ImVec2 c(at.x + r + px(2), at.y + row_height * 0.5f);
+    auto* draw = ImGui::GetWindowDrawList();
+    if (open) draw->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.7f), ImVec2(c.x + r, c.y - r * 0.7f), ImVec2(c.x, c.y + r * 0.8f), colour);
+    else draw->AddTriangleFilled(ImVec2(c.x - r * 0.7f, c.y - r), ImVec2(c.x - r * 0.7f, c.y + r), ImVec2(c.x + r * 0.8f, c.y), colour);
+}
+bool fold_card(SkateMenu& menu, const char* id, const char* title, const char* subtitle, bool open_by_default) {
+    begin_card(menu, id);
+    bool open = fold_open(id, open_by_default);
+    const auto at = ImGui::GetCursorScreenPos();
+    const float height = ImGui::GetFrameHeight(), width = ImGui::GetContentRegionAvail().x;
+    if (ImGui::InvisibleButton("##fold", ImVec2(width, height))) {
+        open = !open;
+        set_fold(id, open);
+        folds().changed.emplace_back(id, open);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + width, at.y + height), skate_theme::tile_light);
+        ImGui::SetTooltip(open ? "Click to fold this card away." : "Click to open this card.");
+    }
+    fold_arrow(at, height, open, muted);
+    ImGui::SetCursorScreenPos(ImVec2(at.x + ImGui::GetFontSize() * 0.9f + px(4), at.y + (height - ImGui::GetFontSize()) * 0.5f));
+    ImGui::PushFont(menu.bold);
+    ImGui::TextUnformatted(title);
+    ImGui::PopFont();
+    if (subtitle) {
+        ImGui::SameLine(0, px(10));
+        ImGui::PushStyleColor(ImGuiCol_Text, muted);
+        ImGui::TextUnformatted(subtitle);
+        ImGui::PopStyleColor();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + height));
+    ImGui::Dummy(ImVec2(0, open ? px(4) : 0.0f));
+    return open;
 }
 void field(SkateMenu&, const char* label, const char* tooltip) {
     pending_hint = tooltip ? tooltip : "";
@@ -507,8 +604,29 @@ template<class Value, class Slide, class Type>
 bool slider_with_box(const char* id, Value* value, Value low, Value high, ImGuiSliderFlags flags, const char* format, const char* box,
                      Slide slide, Type type) {
     if (console_mode) {
+        // Full screen: the stepper, and a number box beside it for a mouse and keyboard (the controller's focus
+        // skips it). A typed value may go past the stepper's ends unless the caller clamps.
+        const bool boxed = !(flags & ImGuiSliderFlags_NoInput);
+        const float total = ImGui::CalcItemWidth(), box_width = px(96), gap = ImGui::GetStyle().ItemInnerSpacing.x;
         ImGui::BeginGroup();
-        const bool changed = stepper(id, value, low, high, format, flags);
+        ImGui::SetNextItemWidth(boxed ? std::max(px(120), total - box_width - gap) : total);
+        bool changed = stepper(id, value, low, high, format, flags);
+        if (boxed) {
+            ImGui::SameLine(0, gap);
+            ImGui::PushID(id);
+            ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            ImGui::SetNextItemWidth(box_width);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.0f, (px(46) - ImGui::GetFrameHeight()) * 0.5f));
+            Value typed = *value;
+            type("##exact", &typed, box);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Type an exact value and press Enter");
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                *value = (flags & ImGuiSliderFlags_AlwaysClamp) ? std::clamp(typed, low, high) : typed;
+                changed = true;
+            }
+            ImGui::PopItemFlag();
+            ImGui::PopID();
+        }
         ImGui::EndGroup();
         return changed;
     }
@@ -702,7 +820,7 @@ bool list_row(SkateMenu& menu, const char* id, const std::string& text, const st
     return clicked && enabled;
 }
 
-void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const char*> tabs, const char* id) {
+void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> tabs, const char* id) {
     // A row of tiles like skate.'s tab bar: the selected tab is blue with black text.
     selected = std::clamp(selected, 0, static_cast<int>(tabs.size()) - 1);
     // LT / RT on a controller step the page's first row of tabs (the one drawn first each frame),
@@ -1072,7 +1190,9 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             int rows = 0, groups = 0;
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(menu, model, i)) continue;
-                rows += i == page_addons ? addon_count - 1 : 1;
+                if (i != page_addons) ++rows;
+                else
+                    for (int a = addon_drone; a < addon_count; ++a) rows += !addon_hidden(model, a);
                 if (group_of(i)) ++groups;
             }
             const float spacing = ImGui::GetStyle().ItemSpacing.y;
@@ -1109,6 +1229,7 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             ImGui::PushID(i);
             if (i == page_addons) {
                 for (int a = addon_drone; a < addon_count; ++a) {
+                    if (addon_hidden(model, a)) continue;
                     ImGui::PushID(a);
                     if (row("##addon", addon_names[static_cast<std::size_t>(a)], menu.page == page_addons && menu.addon == a, row_height, 0,
                             menu.bold, px(16)))
@@ -1363,6 +1484,10 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     io.FontGlobalScale = large ? ui_scale / large_font_ratio : ui_scale;
     menu.rail_indent = 0;
     if (trainer_page_wanted()) open_page(menu, page_sandbox);
+    if (trainer_cheats_wanted()) {
+        open_page(menu, page_skater);
+        menu.skater_tab = 2;
+    }
     if (dingosdk::drone::menu_flag().exchange(false)) open_page(menu, page_addons, addon_drone); // `dronemenu`
     menu.page = std::clamp(menu.page, 0, static_cast<int>(page_count) - 1);
     if (page_hidden(menu, model, menu.page)) menu.page = full ? page_home : page_map;

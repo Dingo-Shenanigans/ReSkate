@@ -42,6 +42,10 @@ void map_names() {
     result = browse(model, options, levels);
     check(result.lobbies[0]->id == 2 && result.lobbies[1]->id == 1 && result.lobbies[2]->id == 3,
           "Map sorting follows visible names instead of asset paths");
+    options.reverse = true;
+    result = browse(model, options, levels);
+    check(result.lobbies[0]->id == 3 && result.lobbies[1]->id == 1 && result.lobbies[2]->id == 2,
+          "Reversed map sorting follows visible names the other way");
 }
 int main() {
     try {
@@ -71,6 +75,11 @@ int main() {
         check(result.total == 14 && result.lobbies.size() == 14, "All matching lobbies remain scrollable");
         check(result.lobbies.front()->id == 100 && result.lobbies[6]->id == 112 && result.lobbies.back()->id == 113,
               "Stable ordering of duplicate names across the full list");
+        auto by_name_reversed = by_name;
+        by_name_reversed.reverse = true;
+        result = browse(model, by_name_reversed);
+        check(result.lobbies.front()->id == 101 && result.lobbies.back()->id == 112,
+              "Reversed names put Downtown first and keep equal names in id order");
         BrowserOptions options;
         options.query = "SAN VAN";
         result = browse(model, options);
@@ -79,6 +88,10 @@ int main() {
         check(browse(model, options).total == 5, "Combine name and current-map filters");
         options = {}; options.sort = Sort::players;
         check(browse(model, options).lobbies.front()->players == 14, "Most populated first");
+        options.reverse = true;
+        check(browse(model, options).lobbies.front()->id == 100 && browse(model, options).lobbies.front()->players == 1,
+              "Fewest skaters first when the column is reversed");
+        options.reverse = false;
         // The team's own servers lead the list under every sort, in that sort's order among themselves.
         model.lobbies[2].dedicated = model.lobbies[2].official = true;
         model.lobbies[5].dedicated = model.lobbies[5].official = true;

@@ -11,13 +11,19 @@
 #include "drone_flight.h"
 #include "drone_audio.h"
 #include "Engine/Game/Skater/velocity_boost.h"
+#include "reskate_version.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <optional>
 #include <utility>
 
@@ -68,6 +74,298 @@ std::array<float, 3> debug_position(SourceReader& reader, std::uintptr_t address
     for (std::size_t i = 0; i < 3; ++i)
         source_require(std::isfinite(row[i]) && std::abs(row[i]) <= 1000000.0f, "Position exceeds diagnostic bounds.");
     return {row[0], row[1], row[2]};
+}
+}
+// ---- Dark Pop ---------------------------------------------------------------------------
+// The selector hook in no_bail.cpp arms a dark-catch flight on a D-pad press, routes its landing through the game's
+// own sink-and-pop state (601) and holds off bails around it. This tick publishes the switch, its settings and the
+// board body, and reports each armed landing. Nothing is read until Dark Pop is switched on.
+namespace {
+void dark_pop_tick(InteractiveDebug& debug, const NoclipBodies& bodies, bool ready) {
+    const bool allowed = debug.dark_pop && ready && session_boosts_allowed() && !debug.noclip && !debug.park_editor;
+    dark_pop_publish_bodies(allowed && !bodies.offboard ? bodies.parts.data() : nullptr, allowed && !bodies.offboard ? bodies.parts.size() : 0);
+    dark_pop_update(allowed, allowed ? bodies.parts[0] : 0, debug.dark_pop_unpatch, debug.dark_pop_hold, debug.dark_pop_one_press,
+        static_cast<unsigned>(std::clamp(debug.dark_pop_route_stay, 0.0f, 600.0f)),
+        static_cast<unsigned>(std::clamp(debug.dark_pop_route_guard, 0.0f, 600.0f)), debug.dark_pop_keep_speed, debug.dark_pop_catch,
+        debug.dark_pop_feet, debug.dark_pop_adaptive, debug.dark_pop_timeout, std::clamp(debug.dark_pop_strength, 0.0f, 30.0f), debug.dark_pop_hold_landing,
+        debug.dark_pop_dark_exit, debug.dark_pop_full_flight, debug.dark_pop_hold_flight,
+        static_cast<unsigned>(std::clamp(debug.dark_pop_stay_physical, 0.0f, 60.0f)), debug.dark_pop_early_physics, debug.dark_pop_reaim, debug.dark_pop_hide_dpad);
+    if (!debug.dark_pop) return;
+    const auto last = dark_pop_last();
+    if (last.landings != debug.dark_pop_seen) {
+        debug.dark_pop_seen = last.landings;
+        const bool popped = last.wanted == 200;
+        if (popped) ++debug.dark_pop_count;
+        const char* outcome = last.wanted == 601 ? (last.caught ? "went to 601 (the sink; an early dismount, caught)" :
+            last.timed_out ? "went to 601 (the sink; a timed-out landing, caught)" : "went to 601 (the sink)") : popped ? "the game popped (201 timed out, no landing stage)" :
+            last.wanted >= 100 && last.wanted < 200 ? "rode away (no pop)" : last.wanted == 504 ? "dismounted (no pop)" : "bailed (no pop)";
+        logging::log(logging::Level::info, logging::Channel::skater,
+            "Dark Pop: dark landing (board up {:.2f}), unpatch {}, hold {}, 601 route {}, early-dismount catch {}, timed-out catch {}, landing hold {} -> state {}, {}",
+            last.board_up,
+            !last.unpatch ? std::string("off") : !last.unpatch_hooked ? std::string("on but not hooked") :
+                std::format("B set on {} tick(s), placement calls {} (latched before {}, after {}, forced {})",
+                    last.unpatch_ticks, last.place_calls, last.place_latched_before, last.place_latched_after, last.place_forced),
+            !last.hold ? std::string("off") : !last.hold_hooked ? std::string("on but not hooked") :
+                std::format("{} (blend at start {:.3f}, active on {} tick(s), mode-2 requests {} on bone 0x{:x})",
+                    last.hold_starts ? "started" : "not started", last.hold_blend, last.hold_ticks, last.attach_requests, last.attach_bone),
+            last.route ? std::format("bits set on {} tick(s)", last.route_ticks) : std::string("off"),
+            last.catch_dismount ? std::format("on ({} caught so far)", last.catches) : std::string("off"),
+            last.catch_timeout ? std::format("on ({} caught so far)", last.timeout_catches) : std::string("off"),
+            !last.hold_landing ? std::string("off") : std::format("bit up on {} call(s) ({} staged after a hold so far)", last.hold_landing_ticks, last.hold_landing_staged),
+            last.wanted, outcome);
+        if (last.feet)
+            logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop feet-only hold: {}",
+                !last.feet_ready ? std::string("on but its hook is not in") :
+                std::format("the footplant's attach requests cleared on {} tick(s), two-tick foot attach requested on {} tick(s) so far", last.feet_skips, last.feet_requests));
+    }
+    if (last.route_exits != debug.dark_pop_route_seen) {
+        debug.dark_pop_route_seen = last.route_exits;
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop: the sink (601) lasted {} tick(s) (sink length {}, package cleared on {}, stay bit cancelled on {}) -> state {}{}",
+            last.route_live_ticks, last.route_stay, last.route_clears, last.route_stay_clears,
+            last.route_exit,
+            last.route_let_go ? " (the window was let go: no chooser exit)" :
+            last.route_exit == 200 ? ", the pop" : last.route_exit == 201 ? ", back to the landing" : last.route_exit == 300 ? ", wipeout" : "");
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop dark exit {}; launch {}; adaptive sink {}; board freeze {}; stage probe {}",
+            !last.dark_exit ? std::format("off (board up at the exit {:.2f})", last.exit_up_before) :
+                last.exit_written ? std::format("wrote the board back as it landed (up {:.2f} -> {:.2f})", last.exit_up_before, last.exit_up_after) :
+                std::format("nothing to write (board up at the exit {:.2f})", last.exit_up_before),
+            std::format("{} armed at the exit (context velocity y {} at the landing, {} at the exit; anim jump {} at {} m/s)",
+                    last.pop_strength > 0.0f ? std::format("{:.1f} m/s", last.pop_strength) : std::string("off"),
+                    last.strength_found > 8.0f ? std::string("unread") : std::format("{:.2f}", last.strength_found),
+                    last.strength_seen > 8.0f ? std::string("unread") : std::format("{:.2f}", last.strength_seen),
+                    last.jump_ticks == 0xffffffffu ? std::string("ticks unread") : std::format("{} tick(s) ago", last.jump_ticks),
+                    last.jump_vy > 8.5f ? std::string("?") : std::format("{:.2f}", last.jump_vy)),
+            !last.adaptive ? std::string("off") : last.adaptive_tick ? std::format("ended the sink on tick {} (the board rising)", last.adaptive_tick) : std::string("did not fire"),
+            !last.feet ? std::string("off") : std::format("wrote the board's transform on {} tick(s), found held on {}, overwritten on {}", last.freeze_writes, last.freeze_held, last.freeze_lost),
+            !last.mover_ready ? std::string("hook not in") : std::format("saw the mover on {} tick(s)", last.mover_held));
+    }
+    if (last.pop_landings != debug.dark_pop_landings_seen) {
+        debug.dark_pop_landings_seen = last.pop_landings;
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop: the pop's flight lasted {:.2f} s and landed (state {}, board up {:.2f}){}; launch {}; launch record {}; full flight {}{}{}; flight hold {}; stayed physical {}; re-aim {}",
+            last.pop_seconds, last.pop_landed, last.pop_board_up, last.pop_landed >= 100 && last.pop_landed < 200 ? ", riding away" : ", not riding away",
+            last.pop_strength <= 0.0f ? std::string("off (the game's own)") : last.lift_found > 8.5f ? std::string("second tick unread") :
+                std::format("{:.1f} m/s: second tick found {:.1f}, lifted +{:.1f} on tick 2 and +{:.1f} on tick 3 ({} bodies, {} lift tick(s))",
+                    last.pop_strength, last.lift_found, last.lift_added[0], last.lift_added[1], last.lift_bodies, last.lift_ticks),
+            !last.launch_state_ok ? std::string("not found (the current state object was not the 200 one on the first call)") :
+                std::format("flag {}, velocity found ({:.2f}, {:.2f}, {:.2f}), {}", last.launch_flag, last.launch_found[0], last.launch_found[1], last.launch_found[2],
+                    last.launch_written ? std::format("y written to {:.1f}", last.pop_strength) : last.pop_strength > 0.0f ? std::string("not written") : std::string("left to the game")),
+            !last.full_flight ? std::string("off") : last.flight_total <= 0.0f ? std::string("never reached 201") :
+                std::format("launch {:.1f} m/s, ballistic {:.2f} s, countdown found {}, floored on {} call(s), {}", last.flight_v0, last.flight_total,
+                    last.flight_found > 8.0f ? std::string("unread") : std::format("{:.2f} s", last.flight_found), last.flight_floors,
+                    last.flight_stop == 1 ? "time up" : last.flight_stop == 2 ? "let go on contact" : last.flight_stop == 4 ? "launch too weak" : "left 201 first"),
+            last.route ? std::format("; guard {} tick(s), package cleared on {}; keep speed {}", last.route_guard, last.guard_clears,
+                !last.keep_speed ? std::string("off") : std::format("landing {:.1f} m/s, {:.1f} m/s added back to {} bodies, re-asserted on {} guard tick(s)", last.landing_speed, last.added_speed, last.speed_bodies, last.speed_reasserts)) : std::string(),
+            last.hold && last.hold_hooked ? std::format("; hold active on {} tick(s), mode-2 requests {}, releases so far {}", last.hold_ticks, last.attach_requests, last.releases) : std::string(),
+            !last.hold_flight ? std::string("off") : last.hold_blocks ? std::format("cleared contacts on {} call(s) (up to {} at once)", last.hold_blocks, last.hold_contacts_max) : std::string("nothing to clear"),
+            !last.stay_physical ? std::string("off") : std::format("{} tick(s), jump-fired bit hidden on {} call(s){}", last.stay_physical, last.stay_clears,
+                !last.early_jump ? std::string() : last.reaim ? std::string(" (the jump fired early: re-aimed and handed to the animation)") :
+                last.early_physics ? std::string(" (the jump fired early: a physics flight, landed from 200)") : std::string(" (the jump fired early; physics flight off)")),
+            !last.reaim ? std::string("off") : !last.early_jump ? std::string("not needed (the jump fired late, a clean pop)") :
+                last.reaim_writes ? std::format("wrote the curve on {} call(s) from tick {}: start ({:.1f}, {:.2f}, {:.1f}), velocity ({:.2f}, {:.2f}, {:.2f}) (body y {:.2f}, context y {:.2f}), {} frame(s) left, request time {:.3f} s, landed from {}",
+                    last.reaim_writes, last.reaim_tick, last.reaim_pos[0], last.reaim_pos[1], last.reaim_pos[2], last.reaim_vel[0], last.reaim_vel[1], last.reaim_vel[2], last.reaim_body_vy, last.reaim_context_vy, last.reaim_frames, last.reaim_time, last.reaim_from) :
+                std::format("nothing written ({})", last.reaim_skip));
+        if (last.feet && last.feet_ready)
+            logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop feet-only hold through the pop: attach requests cleared on {} tick(s), two-tick attaches requested on {} tick(s)", last.feet_skips, last.feet_requests);
+    }
+}
+}
+// ---- Dark pop probe -----------------------------------------------------------
+// Off unless switched on. While on it writes logs\dark-pop-probe.csv beside the game: one row per tick
+// with the physics state, the controller buttons, 40 words of the skater's request block (where the game
+// keeps "mount", "dismount" and similar requests), 64 floats of the board's first body and the skater's
+// transform. Doing a few natural dark pops (and failures) with it on shows which of those values the
+// game changes at the moment a pop happens, which is what a faithful Dark Pop needs to know.
+namespace {
+std::ofstream& probe_file() { static auto* file = new std::ofstream; return *file; }
+std::ofstream& fast_file() { static auto* file = new std::ofstream; return *file; }
+std::int64_t g_fast_base = 0;
+// Writes what the selector hook queued: logs\dark-pop-fast.csv, one row per physics-state choice with its time
+// in microseconds, the state before, the state the game wanted, the state returned, the buttons and 18 words.
+void fast_probe_flush() {
+    auto& file = fast_file();
+    if (!file.is_open()) return;
+    static FastProbeRow rows[2048];
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    if (frequency.QuadPart <= 0) return;
+    char text[24];
+    for (int pass = 0; pass < 8; ++pass) {
+        const auto count = fast_probe_drain(rows, 2048);
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto& row = rows[i];
+            if (!g_fast_base) g_fast_base = row.ticks;
+            file << (row.ticks - g_fast_base) * 1000000 / frequency.QuadPart << ',' << row.current << ',' << row.wanted << ','
+                 << row.chosen << ',' << row.buttons;
+            for (const auto word : row.words) { std::snprintf(text, sizeof text, ",%x", word); file << text; }
+            std::snprintf(text, sizeof text, ",%.3f,%u", static_cast<double>(row.board_up), row.dark_pop);
+            file << text;
+            for (const auto axis : row.axes) { std::snprintf(text, sizeof text, ",%.3f", static_cast<double>(axis)); file << text; }
+            for (const auto extra : row.extra) { std::snprintf(text, sizeof text, ",%.4g", static_cast<double>(extra)); file << text; }
+            for (const auto up : row.stage_up) { std::snprintf(text, sizeof text, ",%.3f", static_cast<double>(up)); file << text; }
+            for (const auto v : row.board_vel) { std::snprintf(text, sizeof text, ",%.3f", static_cast<double>(v)); file << text; }
+            std::snprintf(text, sizeof text, ",%.4g,%.4g,%x,%u,%x", static_cast<double>(row.gates[0]), static_cast<double>(row.gates[1]), row.word_13f8, row.contacts, row.phys_flags);
+            file << text;
+            file << '\n';
+        }
+        if (count < 2048) break;
+    }
+}
+void probe_tick(InteractiveDebug& debug, const std::array<float, 16>& transform, const NoclipBodies& bodies, bool ready) {
+    auto& file = probe_file();
+    if (!debug.probe || !ready) {
+        if (file.is_open()) file.close();
+        if (fast_file().is_open()) { fast_probe_enable(false); fast_probe_flush(); fast_file().close(); }
+        return;
+    }
+    if (!file.is_open()) {
+        wchar_t module[MAX_PATH]{};
+        const auto length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+        if (!length || length >= MAX_PATH) { debug.probe = false; return; }
+        // A new pair of files each time the probe is switched on, named by the time, so nothing is overwritten.
+        char stamp[32]{};
+        const std::time_t now_time = std::time(nullptr);
+        std::tm local{};
+        localtime_s(&local, &now_time);
+        std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &local);
+        const auto path = std::filesystem::path(module).parent_path() / "logs" / (std::string("dark-pop-probe-") + stamp + ".csv");
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        file.open(path, std::ios::out | std::ios::trunc);
+        if (!file) { debug.probe = false; return; }
+        file << "ms,state,pad";
+        for (int i = 0; i < 40; ++i) file << ",c" << i;
+        for (int i = 0; i < 64; ++i) file << ",b" << i;
+        for (int i = 0; i < 16; ++i) file << ",t" << i;
+        file << "\n";
+        auto& fast = fast_file();
+        fast.open(path.parent_path() / (std::string("dark-pop-fast-") + stamp + ".csv"), std::ios::out | std::ios::trunc);
+        if (fast) {
+            fast << "us,current,wanted,chosen,pad";
+            for (int i = 0; i < 18; ++i) fast << ",w" << i;
+            fast << ",board_up,dark_pop,a_x,a_y,a_z,u_x,u_y,u_z,c_x,c_y,c_z";
+            fast << ",plant_x,plant_y,plant_z,plant_w,pup_x,pup_y,pup_z,pup_w,stick_x,stick_z,start_x,start_y,start_z,start_w";
+            fast << ",up_pre_tick,up_post_tick,up_post_move,bv_x,bv_y,bv_z,bw_x,bw_y,bw_z,gate_18c0,gate_1838,w13f8,contacts,phys\n";
+            g_fast_base = 0;
+            fast_probe_enable(true);
+        }
+        logging::write(logging::Level::info, logging::Channel::skater, std::format("Dark pop probe: writing logs\\dark-pop-probe-{0}.csv and logs\\dark-pop-fast-{0}.csv", stamp));
+    }
+    // Guarded same-process copies of larger blocks (value<T> is limited to 16 bytes).
+    SourceReader reader;
+    std::uint32_t state{};
+    std::array<std::uint32_t, 40> words{};
+    std::array<float, 64> board{};
+    source_require(reader.raw(bodies.context + 0x1414, &state, sizeof state) &&
+                   reader.raw(bodies.context + 0x13a0, words.data(), sizeof words) &&
+                   reader.raw(bodies.parts[0], board.data(), sizeof board),
+        "Dark pop probe: the skater's data could not be read.");
+    ControllerInput pad;
+    DingoSDKOverlayReadControllerInput(&pad);
+    char text[32];
+    file << GetTickCount64() << ',' << state << ',' << (pad.available ? pad.buttons : 0u);
+    for (const auto word : words) { std::snprintf(text, sizeof text, ",%x", word); file << text; }
+    for (const auto value : board) { std::snprintf(text, sizeof text, ",%.4g", static_cast<double>(value)); file << text; }
+    for (const auto value : transform) { std::snprintf(text, sizeof text, ",%.4g", static_cast<double>(value)); file << text; }
+    file << '\n';
+    fast_probe_flush();
+    static ULONGLONG last_flush = 0;
+    if (const auto now = GetTickCount64(); now - last_flush > 1000) { file.flush(); if (fast_file().is_open()) fast_file().flush(); last_flush = now; }
+}
+}
+// ---- Revert Boost ---------------------------------------------------------------
+// Landing with the board still well out of line with the body (the game's auto revert, or a board
+// bend) adds forward speed along the direction of travel, through the same velocity write the
+// Forward Boost button uses. Clean and short 180s land with the board lined up and get nothing.
+//
+// The turn is measured in the physics selector (no_bail.cpp, every physics step) and read on the
+// step the flight ends, before the game's revert turns anything.
+// Physics states: 100-199 riding, 200-299 air.
+namespace {
+constexpr std::uint32_t revert_air_first = 200, revert_ground_first = 100;
+constexpr float revert_min_spin = 90.0f;         // degrees the skater turned in the air
+constexpr float revert_min_board_offset = 40.0f; // board out of line with the body (forward or fakie) at touchdown
+constexpr float revert_max_speed = 40.0f;        // m/s (144 km/h): no boost above this
+// Boost size (before the strength multiplier), from how far the board turned relative to the body:
+// - board bends (up to 140 degrees): +2.0 m/s at 40 degrees, rising to about +2.6 m/s at 140.
+// - auto reverts (past 140 degrees): a flat +1.5 m/s, less than any bend.
+constexpr float revert_ramp_start = 40.0f, revert_ramp_end = 360.0f; // degrees of board rotation
+constexpr float revert_ramp_low = 2.0f, revert_ramp_high = 4.0f;     // m/s along the bend line
+constexpr float revert_bend_max_rotation = 140.0f;                   // past this it is an auto revert
+constexpr float revert_auto_boost = 1.5f;                            // m/s for an auto revert
+constexpr std::uint64_t revert_min_air_ms = 250, revert_max_age_ms = 400, revert_cooldown_ms = 500;
+bool revert_is_bend(float board_rotation) { return board_rotation <= revert_bend_max_rotation; }
+float revert_boost_amount(float board_rotation) {
+    if (!revert_is_bend(board_rotation)) return revert_auto_boost;
+    const float t = std::clamp((board_rotation - revert_ramp_start) / (revert_ramp_end - revert_ramp_start), 0.0f, 1.0f);
+    return revert_ramp_low + (revert_ramp_high - revert_ramp_low) * t;
+}
+std::uintptr_t revert_transform_address(std::uintptr_t entity) {
+    // The same matrix debug_skater reads (the skater's world transform).
+    SourceReader reader;
+    const auto collection = reader.pointer(entity, 0x70);
+    source_require(reader.pointer(collection) == entity, "Skater transform owner changed.");
+    const auto count = reader.value<std::uint8_t>(collection, 8);
+    const auto first = reader.value<std::uint8_t>(collection, 9), extra = reader.value<std::uint8_t>(collection, 10);
+    source_require(count <= 128 && first <= 128 && extra <= 32, "Skater transform layout changed.");
+    reader.verify();
+    return collection + std::uintptr_t{0x10} + (std::uintptr_t{first} + 2 * std::uintptr_t{extra}) * 0x20;
+}
+void revert_boost_tick(InteractiveDebug& debug, std::uintptr_t client, std::uintptr_t entity,
+    const NoclipBodies& bodies, bool ready) {
+    auto& track = debug.revert_track;
+    // Like ReSkate's own features: nothing is read or logged until the player turns it on.
+    if (!debug.revert_boost) { track = {}; return; }
+    static bool reported_unavailable{};
+    if (!no_bail_available()) {
+        // The turn is measured in the physics hook No Bail installs; without it nothing is boosted.
+        if (!reported_unavailable)
+            logging::log(logging::Level::warning, logging::Channel::skater, "Revert Boost: the physics hook is unavailable, so no boosts.");
+        reported_unavailable = true;
+        return;
+    }
+    SourceReader reader;
+    const auto selector = reader.pointer(bodies.core, 0x440);
+    source_require(reader.pointer(selector, 8) == bodies.context, "Skater physics selector changed.");
+    const auto physics_state = reader.value<std::uint32_t>(bodies.context, 0x1414);
+    const auto velocity = reader.value<std::array<float, 3>>(bodies.parts[0], 0x70);
+    reader.verify();
+    watch_revert_spin(selector, revert_transform_address(entity), bodies.parts[0]);
+    const auto landing = last_revert_landing();
+    if (!track.primed) { track.primed = true; track.seen = landing.sequence; return; } // older landings are not ours
+    if (landing.sequence == track.seen) return;
+    track.seen = landing.sequence;
+    const auto now = GetTickCount64();
+    const float spin_degrees = std::abs(landing.spin_degrees);
+    float board_offset = std::fmod(std::abs(landing.board_offset_degrees), 180.0f);
+    board_offset = std::min(board_offset, 180.0f - board_offset); // 0 = lined up forward or fakie
+    const bool revert = landing.board_valid && spin_degrees >= revert_min_spin && board_offset >= revert_min_board_offset;
+    if (!revert) return; // clean landings, short 180s and straight airs: nothing to do or log
+    const bool on_ground = landing.to >= revert_ground_first && landing.to < revert_air_first &&
+        physics_state >= revert_ground_first && physics_state < revert_air_first;
+    const bool fresh = now >= landing.landed_at && now - landing.landed_at <= revert_max_age_ms;
+    const float speed = std::hypot(velocity[0], velocity[2]);
+    const float board_rotation = std::abs(landing.board_spin_degrees - landing.spin_degrees);
+    const bool bend = revert_is_bend(board_rotation);
+    const float wanted = revert_boost_amount(board_rotation) * debug.revert_boost_speed;
+    const float added = std::isfinite(speed) ? std::min(wanted, std::max(0.0f, revert_max_speed - speed)) : 0.0f;
+    const bool allowed = ready && session_boosts_allowed() &&
+        source_state().velocity_guard_active.load(std::memory_order_acquire) &&
+        !debug.noclip && !debug.park_editor && !bodies.offboard && !debug.forward_velocity.valid;
+    const bool fire = allowed && on_ground && fresh && landing.air_ms >= revert_min_air_ms &&
+        now >= track.cooldown_until && std::isfinite(speed) && speed >= 1.0f && added > 0.0f;
+    if (fire) {
+        const float scale = added / speed;
+        const std::array<float, 3> delta{velocity[0] * scale, 0.0f, velocity[2] * scale};
+        debug.forward_velocity = {client, entity, bodies.core, now + 1000, delta, true};
+        track.cooldown_until = now + revert_cooldown_ms;
+        ++debug.revert_boost_count;
+    }
+    const char* outcome = fire ? "" : !allowed ? "not allowed right now" : !on_ground ? "not riding"
+        : !fresh ? "late" : landing.air_ms < revert_min_air_ms ? "short flight" : now < track.cooldown_until ? "cooldown" : "speed cap";
+    logging::log(logging::Level::info, logging::Channel::skater,
+        "Revert Boost: {} after {} ms in the air, spin {:.0f} deg, board {:.0f} deg off, turned {:.0f} deg past the body, {:.1f} m/s, {}",
+        bend ? "board bend" : "auto revert", landing.air_ms, spin_degrees, board_offset, board_rotation, speed,
+        fire ? std::format("+{:.1f} m/s", added) : std::format("no boost ({})", outcome));
 }
 }
 std::array<float, 16> debug_skater(std::uintptr_t base, std::uintptr_t client, overlay::DebugModel& model) {
@@ -346,6 +644,9 @@ constexpr const char* flight_speed = "FlightSpeed";
 constexpr const char* forward_velocity = "ForwardVelocity";
 constexpr const char* up_velocity = "UpVelocity";
 constexpr const char* offboard_up_velocity = "OffboardUpVelocity";
+constexpr const char* revert_boost = "RevertBoost";
+constexpr const char* revert_boost_strength = "RevertBoost.Strength";
+constexpr const char* dark_pop = "DarkPop";
 constexpr const char* first_person_fov = "FirstPerson.Fov";
 constexpr const char* free_camera_fov = "FreeCamera.Fov";
 constexpr const char* spring = "FirstPerson.Spring";
@@ -382,6 +683,9 @@ void save_debug(InteractiveDebug& debug) noexcept {
             {saved::forward_velocity, static_cast<double>(debug.forward_velocity_speed)},
             {saved::up_velocity, static_cast<double>(debug.up_velocity_speed)},
             {saved::offboard_up_velocity, static_cast<double>(debug.offboard_up_velocity_speed)},
+            {saved::revert_boost, debug.revert_boost},
+            {saved::revert_boost_strength, static_cast<double>(debug.revert_boost_speed)},
+            {saved::dark_pop, debug.dark_pop},
             {saved::first_person_fov, static_cast<double>(debug.first_person_fov)},
             {saved::free_camera_fov, static_cast<double>(debug.free_camera_fov)},
             {saved::spring, arm.enabled}};
@@ -412,12 +716,17 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
         if (const auto speed = saved::number(saved::flight_speed);
             speed && valid_debug_speed(*speed))
             debug.flight_speed = *speed;
-        if (const auto speed = saved::number(saved::forward_velocity); speed && *speed >= 1.0f && *speed <= 300.0f)
+        if (const auto speed = saved::number(saved::forward_velocity); speed && *speed >= 0.0f && *speed <= velocity_boost_speed_max)
             debug.forward_velocity_speed = *speed;
-        if (const auto speed = saved::number(saved::up_velocity); speed && *speed >= 1.0f && *speed <= 25.0f)
+        if (const auto speed = saved::number(saved::up_velocity); speed && *speed >= 0.0f && *speed <= velocity_boost_speed_max)
             debug.up_velocity_speed = *speed;
-        if (const auto speed = saved::number(saved::offboard_up_velocity); speed && *speed >= 1.0f && *speed <= 25.0f)
+        if (const auto speed = saved::number(saved::offboard_up_velocity); speed && *speed >= 0.0f && *speed <= velocity_boost_speed_max)
             debug.offboard_up_velocity_speed = *speed;
+        if (const auto enabled = profile_runtime::local_preference(saved::revert_boost)) debug.revert_boost = *enabled;
+        if (const auto enabled = profile_runtime::local_preference(saved::dark_pop)) debug.dark_pop = *enabled;
+        if (const auto strength = saved::number(saved::revert_boost_strength);
+            strength && *strength >= revert_boost_strength_min && *strength <= revert_boost_strength_max)
+            debug.revert_boost_speed = *strength;
         if (const auto fov = saved::number(saved::first_person_fov);
             fov && *fov >= first_person_fov_min && *fov <= first_person_fov_max) {
             debug.first_person_fov = *fov;
@@ -513,7 +822,18 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         request.action == overlay::DebugAction::set_first_person_fov ||
         request.action == overlay::DebugAction::set_free_camera_fov ||
         (request.action >= overlay::DebugAction::set_first_person_spring && request.action <= overlay::DebugAction::reset_first_person_arm) ||
-        request.action == overlay::DebugAction::set_no_bail,
+        request.action == overlay::DebugAction::set_no_bail || request.action == overlay::DebugAction::set_dark_pop_unpatch ||
+        request.action == overlay::DebugAction::set_dark_pop_hold ||
+        request.action == overlay::DebugAction::set_dark_pop_one_press ||
+        request.action == overlay::DebugAction::set_dark_pop_route_stay || request.action == overlay::DebugAction::set_dark_pop_route_guard ||
+        request.action == overlay::DebugAction::set_dark_pop_keep_speed || request.action == overlay::DebugAction::set_dark_pop_catch ||
+        request.action == overlay::DebugAction::set_dark_pop_feet || request.action == overlay::DebugAction::set_dark_pop_adaptive ||
+        request.action == overlay::DebugAction::set_dark_pop_timeout || request.action == overlay::DebugAction::set_dark_pop_strength ||
+        request.action == overlay::DebugAction::set_dark_pop_hold_landing || request.action == overlay::DebugAction::set_dark_pop_dark_exit ||
+        request.action == overlay::DebugAction::set_dark_pop_full_flight || request.action == overlay::DebugAction::set_dark_pop_hold_flight ||
+        request.action == overlay::DebugAction::set_dark_pop_stay_physical || request.action == overlay::DebugAction::set_dark_pop_early_physics ||
+        request.action == overlay::DebugAction::set_dark_pop_reaim || request.action == overlay::DebugAction::set_dark_pop_hide_dpad ||
+        (request.action == overlay::DebugAction::set_dark_pop_enabled && !request.enabled),
         "Close Park Editor before changing camera or HUD modes.");
     if (request.action >= overlay::DebugAction::set_first_person_spring &&
         request.action <= overlay::DebugAction::reset_first_person_arm) {
@@ -580,18 +900,169 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         request.action == overlay::DebugAction::set_up_velocity_speed ||
         request.action == overlay::DebugAction::set_offboard_up_velocity_speed) {
         if (request.action == overlay::DebugAction::set_offboard_up_velocity_speed) {
-            source_require(std::isfinite(request.value) && request.value >= 1.0f && request.value <= 25.0f,
-                "Off-board Up Boost speed must be between 1 and 25.");
+            source_require(std::isfinite(request.value) && request.value >= 0.0f && request.value <= velocity_boost_speed_max,
+                "Off-board Up Boost speed must be between 0 (off) and 10000.");
             debug.offboard_up_velocity_speed = request.value;
             debug.status = "Off-board Up Boost speed updated.";
         } else {
             const bool up = request.action == overlay::DebugAction::set_up_velocity_speed;
-            source_require(std::isfinite(request.value) && request.value >= 1.0f && request.value <= (up ? 25.0f : 300.0f),
-                up ? "Up Boost speed must be between 1 and 25." : "Forward Boost speed must be between 1 and 300.");
+            source_require(std::isfinite(request.value) && request.value >= 0.0f && request.value <= velocity_boost_speed_max,
+                up ? "Up Boost speed must be between 0 (off) and 10000." : "Forward Boost speed must be between 0 (off) and 10000.");
             (up ? debug.up_velocity_speed : debug.forward_velocity_speed) = request.value;
             debug.status = up ? "Up Boost speed updated." : "Forward Boost speed updated.";
         }
         mark_debug_changed(debug);
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_unpatch) {
+        debug.dark_pop_unpatch = request.enabled;
+        debug.status = request.enabled ? "Dark Pop unpatch on." : "Dark Pop unpatch off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop unpatch on" : "Dark Pop unpatch off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_hold) {
+        debug.dark_pop_hold = request.enabled;
+        debug.status = request.enabled ? "Dark Pop hold on." : "Dark Pop hold off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop hold on" : "Dark Pop hold off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_one_press) {
+        debug.dark_pop_one_press = request.enabled;
+        debug.status = request.enabled ? "Dark Pop one press one pop on." : "Dark Pop one press one pop off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop one press one pop on" : "Dark Pop one press one pop off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_catch) {
+        debug.dark_pop_catch = request.enabled;
+        debug.status = request.enabled ? "Dark Pop catches early dismounts." : "Dark Pop leaves early dismounts to the game.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop early-dismount catch on" : "Dark Pop early-dismount catch off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_dark_exit) {
+        debug.dark_pop_dark_exit = request.enabled;
+        debug.status = request.enabled ? "Dark Pop dark exit on." : "Dark Pop dark exit off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop dark exit on" : "Dark Pop dark exit off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_full_flight) {
+        debug.dark_pop_full_flight = request.enabled;
+        debug.status = request.enabled ? "Dark Pop full flight on." : "Dark Pop full flight off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop full flight on" : "Dark Pop full flight off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_hide_dpad) {
+        debug.dark_pop_hide_dpad = request.enabled;
+        debug.status = request.enabled ? "Dark Pop: the D-pad is hidden from the game in the air (no Quick Drop)." : "Dark Pop D-pad hide off: the game sees the press.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop D-pad hide on" : "Dark Pop D-pad hide off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_reaim) {
+        debug.dark_pop_reaim = request.enabled;
+        debug.status = request.enabled ? "Dark Pop: an early-jump pop's flight curve is re-aimed at the handover." : "Dark Pop re-aim off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop re-aim on" : "Dark Pop re-aim off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_early_physics) {
+        debug.dark_pop_early_physics = request.enabled;
+        debug.status = request.enabled ? "Dark Pop: an early-jump pop flies on physics." : "Dark Pop physics flight off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop physics flight on" : "Dark Pop physics flight off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_stay_physical) {
+        debug.dark_pop_stay_physical = std::clamp(std::round(request.value), 0.0f, 60.0f);
+        debug.status = std::format("Dark Pop stays physical for {} tick(s) after the pop.", static_cast<unsigned>(debug.dark_pop_stay_physical));
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop stay physical {} tick(s)", static_cast<unsigned>(debug.dark_pop_stay_physical));
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_hold_flight) {
+        debug.dark_pop_hold_flight = request.enabled;
+        debug.status = request.enabled ? "Dark Pop holds the flight: no contact landing while the countdown runs." : "Dark Pop flight hold off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop hold the flight on" : "Dark Pop hold the flight off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_hold_landing) {
+        debug.dark_pop_hold_landing = request.enabled;
+        debug.status = request.enabled ? "Dark Pop holds the landing for the game to stage it." : "Dark Pop landing hold off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop landing hold on" : "Dark Pop landing hold off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_strength) {
+        debug.dark_pop_strength = std::clamp(request.value, 0.0f, 15.0f);
+        debug.status = debug.dark_pop_strength > 0.0f ? std::format("Dark Pop launch {:.1f} m/s.", debug.dark_pop_strength) : std::string("Dark Pop launch off (the game's own launch).");
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop launch {:.1f}", debug.dark_pop_strength);
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_timeout) {
+        debug.dark_pop_timeout = request.enabled;
+        debug.status = request.enabled ? "Dark Pop catches timed-out landings." : "Dark Pop leaves timed-out landings to the game.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop timed-out landing catch on" : "Dark Pop timed-out landing catch off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_adaptive) {
+        debug.dark_pop_adaptive = request.enabled;
+        debug.status = request.enabled ? "Dark Pop pops when the board starts to roll." : "Dark Pop sinks for the full sink length.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop adaptive sink on" : "Dark Pop adaptive sink off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_feet) {
+        debug.dark_pop_feet = request.enabled;
+        if (request.enabled && debug.dark_pop_route_stay < 1.0f) {
+            debug.dark_pop_route_stay = 11.0f; // a 12-tick sink, the middle of the old 8-19
+            debug.status = "Dark Pop feet-only hold on; sink length set to 11 (a 12-tick sink). Change it under Sink length.";
+        } else {
+            debug.status = request.enabled ? "Dark Pop feet-only hold on." : "Dark Pop feet-only hold off (the game's footplant attaches run in the sink).";
+        }
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop feet-only hold {} (sink length {})", request.enabled ? "on" : "off", static_cast<unsigned>(debug.dark_pop_route_stay));
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_keep_speed) {
+        debug.dark_pop_keep_speed = request.enabled;
+        debug.status = request.enabled ? "Dark Pop keep speed on." : "Dark Pop keep speed off.";
+        logging::write(logging::Level::info, logging::Channel::skater, request.enabled ? "Dark Pop keep speed on" : "Dark Pop keep speed off");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_route_guard) {
+        debug.dark_pop_route_guard = std::clamp(request.value, 0.0f, 600.0f);
+        debug.status = std::format("Dark Pop pop guard {} tick(s).", static_cast<unsigned>(debug.dark_pop_route_guard));
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop pop guard {} tick(s)", static_cast<unsigned>(debug.dark_pop_route_guard));
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_route_stay) {
+        debug.dark_pop_route_stay = std::clamp(request.value, 0.0f, 600.0f);
+        debug.status = std::format("Dark Pop sink length {} tick(s).", static_cast<unsigned>(debug.dark_pop_route_stay));
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop sink length {} tick(s)", static_cast<unsigned>(debug.dark_pop_route_stay));
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_enabled && !request.enabled) {
+        debug.dark_pop = false;
+        dark_pop_update(false, 0);
+        // Saved off as well as on, like No Bail (3.1 saved only the on, so a saved "on" came back by itself).
+        mark_debug_changed(debug);
+        debug.status = "Dark Pop disabled.";
+        logging::write(logging::Level::info, logging::Channel::skater, "Dark Pop disabled");
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_probe_enabled) {
+        debug.probe = request.enabled;
+        debug.status = request.enabled ? "Dark pop probe on: writing a new pair of files in logs, named by the time." : "Dark pop probe off.";
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_revert_boost_enabled) {
+        debug.revert_boost = request.enabled;
+        debug.revert_track = {};
+        mark_debug_changed(debug);
+        debug.status = request.enabled ? "Revert Boost on." : "Revert Boost off.";
+        // In the log (which crash reports attach) so a crash can be matched to the mod being on.
+        logging::log(logging::Level::info, logging::Channel::skater, "Revert Boost {}{}", request.enabled ? "enabled" : "disabled",
+            dingosdk::reskate_modified_build ? std::format(" (modified build {} {})", dingosdk::reskate_mod_id, dingosdk::reskate_mod_version) : std::string());
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_revert_boost_speed) {
+        source_require(std::isfinite(request.value) && request.value >= revert_boost_strength_min &&
+            request.value <= revert_boost_strength_max, "Revert Boost strength must be between x0.5 and x100.");
+        debug.revert_boost_speed = request.value;
+        mark_debug_changed(debug);
+        debug.status = "Revert Boost strength updated.";
         return;
     }
     if (request.action == overlay::DebugAction::restore_debug) {
@@ -601,13 +1072,15 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         first_person_disarm();
         debug.park_editor = false;
         debug.flight_speed = 15.0f;
-        debug.forward_velocity_speed = 20.0f;
+        debug.forward_velocity_speed = 0.0f;
         debug.forward_velocity.valid = false;
-        debug.up_velocity_speed = 20.0f;
-        debug.offboard_up_velocity_speed = 20.0f;
+        debug.up_velocity_speed = 0.0f;
+        debug.offboard_up_velocity_speed = 0.0f;
         debug.up_velocity.valid = false;
         debug.offboard_up_velocity.valid = false;
         debug.no_bail = false;
+        debug.dark_pop = false;
+        dark_pop_update(false, 0);
         debug_stop_noclip(debug);
         clear_no_bail();
         // Level loads drop temporary modes, never the player's saved choices.
@@ -660,6 +1133,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
             reader.value<std::array<float, 3>>(bodies.parts[0], 0x70);
         reader.verify();
         const float speed = offboard_boost ? debug.offboard_up_velocity_speed : (up ? debug.up_velocity_speed : debug.forward_velocity_speed);
+        source_require(speed > 0.0f, "This boost is 0 (off): set its speed in Skater > Cheats.");
         const auto velocity = velocity_boost_delta(transform, speed,
             up ? VelocityBoostDirection::up : VelocityBoostDirection::forward, board_velocity);
         source_require(velocity.has_value(), "Velocity boost direction or speed is invalid.");
@@ -695,6 +1169,15 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
             ++debug.offboard_up_velocity_updates;
             debug.status = "Off-board up velocity added.";
         } else debug.status = up ? "Up Boost queued." : "Forward Boost queued.";
+        return;
+    }
+    if (request.action == overlay::DebugAction::set_dark_pop_enabled) {
+        source_require(session_boosts_allowed(), "The host has turned off boosts in this session.");
+        debug.dark_pop = true;
+        mark_debug_changed(debug);
+        debug.status = "Dark Pop enabled. Catch a flip dark, press D-pad Left, Down or Right in the air, land it dark.";
+        logging::log(logging::Level::info, logging::Channel::skater, "Dark Pop enabled{}",
+            dingosdk::reskate_modified_build ? std::format(" (modified build {} {})", dingosdk::reskate_mod_id, dingosdk::reskate_mod_version) : std::string());
         return;
     }
     if (request.action == overlay::DebugAction::set_no_bail) {
@@ -1125,7 +1608,7 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         !state.velocity_guard_active.load(std::memory_order_acquire) ? "Off-board Up Boost is unavailable for this game build." :
         "Local skater physics could not be read.";
     try {
-        (void)debug_skater(base, client, model);
+        const auto skater_transform = debug_skater(base, client, model);
         const auto bodies = debug_noclip_bodies(base, client, model.skater_identity);
         if (debug.forward_velocity.valid && (GetTickCount64() >= debug.forward_velocity.expires ||
             debug.forward_velocity.entity != model.skater_identity || debug.forward_velocity.core != bodies.core)) {
@@ -1171,6 +1654,12 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         } else if (debug.offboard_up_velocity.valid) {
             model.offboard_up_velocity_unavailable = "Off-board Up Boost is being applied.";
         }
+        try { revert_boost_tick(debug, client, model.skater_identity, bodies, can_control); }
+        catch (...) { debug.revert_track = {}; }
+        try { dark_pop_tick(debug, bodies, can_control); }
+        catch (...) {}
+        try { probe_tick(debug, skater_transform, bodies, can_control); }
+        catch (...) {}
         model.no_bail_available = can_control && update_no_bail(client, model.skater_identity, debug.no_bail && no_bail_allowed,
             debug.noclip && debug.noclip_velocity.valid, debug.noclip_velocity.expires);
         if (model.camera_available) {
@@ -1227,6 +1716,31 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     model.offboard_up_velocity_updates = debug.offboard_up_velocity_updates;
     state.offboard_boost_core.store(debug.offboard_up_velocity.valid ? debug.offboard_up_velocity.core : 0,
         std::memory_order_release);
+    model.revert_boost = debug.revert_boost;
+    model.revert_boost_speed = debug.revert_boost_speed;
+    model.revert_boost_count = debug.revert_boost_count;
+    model.dark_pop = debug.dark_pop;
+    model.dark_pop_unpatch = debug.dark_pop_unpatch;
+    model.dark_pop_hold = debug.dark_pop_hold;
+    model.dark_pop_one_press = debug.dark_pop_one_press;
+    model.dark_pop_route_stay = debug.dark_pop_route_stay;
+    model.dark_pop_route_guard = debug.dark_pop_route_guard;
+    model.dark_pop_keep_speed = debug.dark_pop_keep_speed;
+    model.dark_pop_catch = debug.dark_pop_catch;
+    model.dark_pop_feet = debug.dark_pop_feet;
+    model.dark_pop_adaptive = debug.dark_pop_adaptive;
+    model.dark_pop_timeout = debug.dark_pop_timeout;
+    model.dark_pop_strength = debug.dark_pop_strength;
+    model.dark_pop_hold_landing = debug.dark_pop_hold_landing;
+    model.dark_pop_dark_exit = debug.dark_pop_dark_exit;
+    model.dark_pop_full_flight = debug.dark_pop_full_flight;
+    model.dark_pop_hold_flight = debug.dark_pop_hold_flight;
+    model.dark_pop_stay_physical = debug.dark_pop_stay_physical;
+    model.dark_pop_early_physics = debug.dark_pop_early_physics;
+    model.dark_pop_reaim = debug.dark_pop_reaim;
+    model.dark_pop_hide_dpad = debug.dark_pop_hide_dpad;
+    model.dark_pop_count = debug.dark_pop_count;
+    model.probe = debug.probe;
     return model;
 }
 bool client_free_camera_active() noexcept {

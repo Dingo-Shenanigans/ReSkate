@@ -10,6 +10,15 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 # Windows version information (Explorer's Details tab) for the shipped binaries. The release
 # script passes its version; local builds say 0.0.0.
 set(DINGOSDK_VERSION "0.0.0" CACHE STRING "Release version stamped into the shipped binaries")
+# Set by a modified build (a mod that replaces ReSkate.dll) so it is never mistaken for ReSkate itself.
+set(DINGOSDK_MOD_ID "" CACHE STRING "Name of the mod this build carries (letters, digits, underscores); empty for ReSkate itself")
+set(DINGOSDK_MOD_VERSION "" CACHE STRING "Version of that mod")
+if(DINGOSDK_MOD_ID AND NOT DINGOSDK_MOD_ID MATCHES "^[A-Za-z0-9_]+$")
+    message(FATAL_ERROR "DINGOSDK_MOD_ID may only use letters, digits and underscores")
+endif()
+if(DINGOSDK_MOD_VERSION AND NOT DINGOSDK_MOD_VERSION MATCHES "^[0-9A-Za-z._+-]+$")
+    message(FATAL_ERROR "DINGOSDK_MOD_VERSION may only use letters, digits and . _ + -")
+endif()
 # The same version for code to show (generated/reskate_version.h).
 string(REPLACE "\\" "\\\\" reskate_version_escaped "${DINGOSDK_VERSION}")
 string(REPLACE "\"" "\\\"" reskate_version_escaped "${reskate_version_escaped}")

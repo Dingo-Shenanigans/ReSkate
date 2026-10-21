@@ -2,7 +2,7 @@ if(WIN32)
     add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
         Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
         Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp
-        Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/game_settings.cpp
+        Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/gui_legal.cpp Launcher/game_settings.cpp
         Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp Launcher/official_mods.cpp
         Launcher/problem.h)
     target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
@@ -65,6 +65,9 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     add_executable(dingosdk_mod_merge_grid_tests Engine/Vfs/Test/mod_merge_grid_tests.cpp)
     target_link_libraries(dingosdk_mod_merge_grid_tests PRIVATE dingosdk_mods)
     add_test(NAME mod_merge_grid COMMAND dingosdk_mod_merge_grid_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    add_executable(dingosdk_mod_conflicts_tests Engine/Vfs/Test/mod_conflicts_tests.cpp)
+    target_link_libraries(dingosdk_mod_conflicts_tests PRIVATE dingosdk_mods)
+    add_test(NAME mod_conflicts COMMAND dingosdk_mod_conflicts_tests "${DINGOSDK_TEST_GAME_ROOT}")
     add_executable(dingosdk_mod_build_stamp_tests Engine/Vfs/Test/mod_build_stamp_tests.cpp)
     target_link_libraries(dingosdk_mod_build_stamp_tests PRIVATE dingosdk_mods)
     target_include_directories(dingosdk_mod_build_stamp_tests PRIVATE "${PROJECT_SOURCE_DIR}")

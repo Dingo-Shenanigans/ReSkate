@@ -274,6 +274,32 @@ void set_local_values(const std::vector<std::pair<std::string, Json>>& values) n
     } catch (...) { /* Saving is best effort; the runtime values already applied. */ }
 }
 
+// One of the game's own gameplay options as the local profile holds it (local_profile_runtime.h).
+std::optional<double> local_game_option(std::string_view key) noexcept {
+    try {
+        auto& s = local_runtime();
+        if (!s.store || !s.active.load(std::memory_order_acquire)) return {};
+        const auto saved = s.store->user_value(key);
+        if (!saved) return {};
+        if (saved->is_boolean()) return saved->get<bool>() ? 1.0 : 0.0;
+        if (saved->is_number()) return saved->get<double>();
+    } catch (...) {}
+    return {};
+}
+
+bool set_local_game_option(std::string_view key, double value, bool boolean) noexcept {
+    try {
+        auto& s = local_runtime();
+        if (!s.store || !s.active.load(std::memory_order_acquire)) return false;
+        // A value keeps the type the game saved it with (its getters answer only with a value of their own type).
+        const auto saved = s.store->user_value(key);
+        if (boolean || (saved && saved->is_boolean())) s.store->set_user_value(key, value != 0);
+        else if (saved && saved->is_number_float()) s.store->set_user_value(key, value);
+        else s.store->set_user_value(key, static_cast<std::int64_t>(value));
+        return true;
+    } catch (...) { return false; }
+}
+
 // Shared with the overlay through the model; clamped to a legible range. The window and the full
 // screen menu each keep their own (ReSkate.MenuScale, ReSkate.MenuScaleFullscreen).
 std::atomic<float>& menu_scale_cache(bool fullscreen) noexcept {

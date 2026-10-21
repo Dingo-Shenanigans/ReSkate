@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <span>
@@ -202,6 +203,66 @@ std::optional<Listing> list_bundle(const CasStore& store, const fs::path& root, 
 std::vector<std::byte> read_asset(const CasStore& store, const fs::path& root, const fs::path& baseRoot,
                                   const Listing& listing, std::size_t ebxIndex, const fs::path& gameRoot);
 
+// A map's world textures (texture group Worlds_*) flagged to stream that keep every mip with the
+// bundle, so the game loads them whole (an older Studio built maps that way: 404 MB of PQS
+// Cordoba's, 2026-10-17). Cosmetics are not touched: Studio keeps them whole. Each is made
+// to stream as the game's own world textures do: the bundle keeps the mip tail, from a 64 KB
+// block, and the sharper mips stream from the chunk its TOC (`tocChunks`) lists in full. A
+// texture is changed only when all of it can be: its chunk in this bundle whole, a block at the
+// tail, and its record in the chunk metadata. `manifest` and `files` (the region's, `first` the
+// region index of the manifest's first asset) are changed in place; the texture headers that
+// change are returned encoded, by region index, for the merged patch.
+struct StreamedTextures {
+    std::map<std::size_t, std::vector<std::byte>> headers;
+    std::uint64_t bytes{};   // what no longer stays loaded
+    std::string example;
+};
+// `only`: just these of the region's files (a ScanCache's: the textures changed before).
+StreamedTextures stream_resident_textures(const CasStore& store, const fs::path& root, fb::BinaryBundle& manifest,
+                                          std::vector<fb::BundleFileInfo>& files, std::size_t first,
+                                          const std::set<fb::Guid>& tocChunks, const fs::path& gameRoot,
+                                          const std::vector<std::uint32_t>* only = nullptr);
+
+// Which ReSkate.dll merges (its size and time): what it found reading a mod holds for it alone.
+std::string sdk_stamp();
+
+// What reading a mod's own bundles finds that its files alone decide: the EBX whose type references
+// are repaired, a map's mesh sizes, the textures made to stream. Kept between merges in
+// Mods/.reskate-scan.txt by each mod's fingerprint (mod_fingerprint) and the ReSkate that found it,
+// so a merge reads again only the mods whose files changed: checking a big map's every EBX and mesh
+// was most of a merge (a minute and more), on every merge, whichever mod had changed (2026-10-18).
+// The superbundle jobs share one (thread-safe).
+class ScanCache {
+public:
+    struct Mesh {
+        std::uint32_t chunk{};
+        std::uint16_t archive{};
+        std::uint32_t offset{};
+        std::uint64_t bytes{};
+    };
+    // One copy of a bundle, by the places of its files in the region.
+    struct Bundle {
+        std::vector<std::uint32_t> repair;     // EBX with type references to repair
+        std::vector<std::uint32_t> textures;   // textures whose header is changed so they stream
+        std::vector<Mesh> meshes;              // a map's meshes (where each lies in the mod, and its bytes)
+    };
+    // What `file` holds of the mods in `fingerprints` (folder name: mod_fingerprint) whose files are
+    // unchanged. Never throws: a missing or unreadable file holds nothing.
+    ScanCache(fs::path file, std::map<std::string, std::string, std::less<>> fingerprints) noexcept;
+    // By mod folder name and "superbundle|bundle" (lower case).
+    [[nodiscard]] std::optional<Bundle> find(const std::string& mod, const std::string& key) const;
+    void keep(const std::string& mod, const std::string& key, Bundle bundle);
+    // Writes it again, with the mods given only. Never throws.
+    void save() const noexcept;
+
+private:
+    fs::path file_;
+    std::map<std::string, std::string, std::less<>> fingerprints_;
+    mutable std::mutex mutex_;
+    std::map<std::string, std::map<std::string, Bundle, std::less<>>, std::less<>> known_;
+};
+inline constexpr wchar_t scan_cache_file[] = L".reskate-scan.txt";
+
 // The loading screens the mods add (the rows of the game's loading-screen
 // configuration each one appends). Never throws; an unreadable mod is noted.
 std::vector<MergeReport::LoadScreen> read_load_screens(const std::vector<const Mod*>& mods,
@@ -340,6 +401,6 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         std::vector<Source>& sources, MergeReport& report,
                         const std::string& relative, ArchiveUse& used, CasStore& store,
                         std::uint16_t manifestArchive, const fs::path& gameRoot, const GridPlan& grid,
-                        const AssetOverrides& overrides);
+                        const AssetOverrides& overrides, ScanCache& scans);
 
 } // namespace dingosdk::mods::detail

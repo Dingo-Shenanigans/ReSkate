@@ -14,7 +14,7 @@ inline constexpr char item_sources_file[] = "reskate-items.json";
 struct ItemSource {
     std::string mod;                     // its folder name
     std::string title, author, version;  // as its manifest gives them
-    std::string folder;                  // where it is, from Mods/ ("x" or ".reskate-official/x"), with its icon.png
+    std::string folder;                  // where it is, from Mods/ ("x"), with its icon.png
     std::vector<std::string> keys;       // the items it adds or changes, lower case
 };
 

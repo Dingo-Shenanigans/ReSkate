@@ -98,6 +98,8 @@ struct SourceCameraIdentity {
     std::uint32_t priority{};
     bool operator==(const SourceCameraIdentity&) const = default;
 };
+// Revert Boost strength multiplier range (the saved value; the menu slider ends at x5, a typed value can go higher).
+inline constexpr float revert_boost_strength_min = 0.5f, revert_boost_strength_max = 100.0f;
 struct InteractiveDebug {
     bool camera_owned{}, camera_ambiguous{}, ui_owned{};
     bool park_editor{}, editor_transition{}, editor_previous_camera{}, editor_previous_ui{}, editor_previous_noclip{};
@@ -145,11 +147,44 @@ struct InteractiveDebug {
     VelocityRequest offboard_up_velocity;
     std::uint64_t noclip_velocity_updates{}, noclip_motion_updates{};
     std::uint64_t forward_velocity_updates{};
-    float forward_velocity_speed = 20.0f;
+    float forward_velocity_speed = 0.0f; // 0: the boost is off, as the game shipped
     std::uint64_t up_velocity_updates{};
     std::uint64_t offboard_up_velocity_updates{};
-    float up_velocity_speed = 20.0f;
-    float offboard_up_velocity_speed = 20.0f;
+    float up_velocity_speed = 0.0f;
+    float offboard_up_velocity_speed = 0.0f;
+    // Revert Boost (see revert_boost_tick in client_debug.cpp). Both are saved in the local profile.
+    bool revert_boost{};
+    float revert_boost_speed = 1.0f; // strength multiplier, revert_boost_strength_min..max
+    std::uint64_t revert_boost_count{};
+    struct RevertTrack {
+        bool primed{};                  // the landing count has been read once since Revert Boost was turned on
+        std::uint64_t seen{};           // the last landing (RevertLanding::sequence) handled
+        ULONGLONG cooldown_until{};
+    } revert_track;
+    // Dark Pop (see dark_pop_tick and probe_tick in client_debug.cpp).
+    bool dark_pop{};
+    bool dark_pop_unpatch{true};   // placement entered the pre-0.32.0 way at the dark landing (no_bail.cpp)
+    bool dark_pop_hold{true};      // the old hold (foot-attach mode 2) in the landing window
+    bool dark_pop_one_press{true}; // no re-arming until the D-pad has been let go after a landing
+    float dark_pop_route_stay{0.0f};   // ticks of 601 before the stay bit is cancelled (the sink length; 1.9: 0 by default)
+    float dark_pop_route_guard{12.0f}; // pop ticks guarded after a 601 exit
+    bool dark_pop_keep_speed{true};    // the landing's horizontal speed put back at the 601 exit
+    bool dark_pop_catch{true};         // 1.0: a dismount straight from the air on an armed dark flight is routed too
+    bool dark_pop_feet{false};         // 1.7 (1.9: off by default): the plant's own foot attaches cleared in the sink, a two-tick one requested
+    bool dark_pop_adaptive{true};      // 1.7: the sink ends the tick the board starts rolling over
+    bool dark_pop_timeout{true};       // 1.9: a landing 201 timed out on (board dark, resting) is routed to the sink too
+    float dark_pop_strength{8.0f};     // 2.4: the launch (m/s) the bodies' vertical velocity is lifted to on the pop's second and third ticks; 0 = off
+    bool dark_pop_hold_landing{true};  // 2.0: +0x13cc bit 20 raised around the chooser so a timed-out landing can be staged
+    bool dark_pop_dark_exit{true};     // 2.1: the board put back as it landed on the sink's exit tick
+    bool dark_pop_full_flight{true};   // 2.1: the landing countdown floored at the ballistic time on a pop's flight
+    bool dark_pop_hold_flight{true};   // 2.3: contact landings blocked on a pop's flight while the countdown runs
+    float dark_pop_stay_physical{6.0f}; // 2.5: ticks after the exit the pop stays in the physics air state; 0 = off
+    bool dark_pop_early_physics{true};  // 2.6: a pop whose jump fired on its first ticks stays physical for the whole flight
+    bool dark_pop_reaim{true};
+    bool dark_pop_hide_dpad{true};      // 3.1: in the air the game's own polls see the D-pad let go          // 2.7: after Stay physical ticks the flight curve is re-aimed from the body and handed to the animation state
+    std::uint64_t dark_pop_route_seen{};
+    std::uint64_t dark_pop_count{}, dark_pop_seen{}, dark_pop_landings_seen{};
+    bool probe{}; // see probe_tick in client_debug.cpp
     float noclip_altitude{};
     bool noclip_altitude_valid{}, noclip_altitude_offboard{};
     // Player choices kept in the local profile (see load_saved_debug):

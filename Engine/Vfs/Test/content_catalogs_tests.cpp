@@ -28,6 +28,16 @@ int main(int argc, char** argv) {
     check(catalogs.items.at("own_bkbanks_generic_volcanolarge_00001").value("title", "") == "Volcano, L Wood",
         "item keyed by owned asset id");
     check(catalogs.items.at("own_costume_gen_dembones_00001").value("rarity_id", "") == "legendary", "item rarity");
+    // Unlocked by neighbourhood rank, though no rank record lists them as rewards.
+    check(!catalogs.reserved("own_bkrails_generic_urbanpolejamsmall_00001") &&
+        !catalogs.reserved("own_bkindustrial_generic_signstopsign_00001"), "rank unlocks are not store items");
+    // Objects nothing offers are open; ones sold, bundled or from a collab are not.
+    check(!catalogs.reserved("own_bkrails_generic_urbanpolejammedium_00001") &&
+        !catalogs.reserved("own_bkprops_generic_signnoskateboarding_00001"), "objects nothing offers are open");
+    check(catalogs.reserved("own_bkbounceable_generic_dartboard_00001"), "an object sold for hard currency");
+    check(catalogs.reserved("own_bkramps_generic_shoeboxanglednike_00001"), "an object from a store bundle");
+    check(catalogs.reserved("own_bkpads_generic_manualpadroundxgames_00001"), "a collab object");
+    check(catalogs.reserved("own_deckgraphic_gen_popsicle_00123"), "cosmetics nothing offers stay reserved");
     const auto& line = catalogs.challenges.at("Base_CH02_M02_Line01");
     check(line.value("type", "") == "Line" && line.value("neighborhood", "") == "neighbourhood_rank_historic",
         "challenge type and neighbourhood");
@@ -81,6 +91,11 @@ int main(int argc, char** argv) {
         for (const auto& id : catalogs.entitlements) dump["entitlements"].push_back(id);
         std::ofstream(argv[2], std::ios::binary) << dump.dump(1);
     }
+    // Build 24855063: 42 of 439 (28 sold for hard currency, 3 in the Nike bundle, 11 X Games).
+    std::size_t objects{}, reserved_objects{};
+    for (const auto& [key, item] : catalogs.items.items())
+        if (key.starts_with("own_bk")) { ++objects; reserved_objects += catalogs.reserved(key); }
+    std::cout << reserved_objects << " of " << objects << " objects reserved.\n";
     std::cout << catalogs.items.size() << " items, " << catalogs.challenges.size() << " challenges, "
               << catalogs.entitlements.size() << " entitlements.\n";
     return failures ? 1 : 0;

@@ -473,6 +473,11 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       "about your account is included. Needs crash reports on; the launcher picks a change up when it "
                       "next starts.",
                       settings.performance_timings);
+        ImGui::Spacing();
+        if (ImGui::Button("Privacy Policy")) ui.legal.open = Legal::privacy;
+        ImGui::SameLine();
+        if (ImGui::Button("Terms of Service")) ui.legal.open = Legal::terms;
+        setting_note("What ReSkate collects and sends, and the rules for using it and its servers.");
         break;
     }
     ImGui::EndChild();

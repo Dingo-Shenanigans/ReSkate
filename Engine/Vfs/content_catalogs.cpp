@@ -36,6 +36,9 @@ std::string lower(std::string value) {
 
 // Owned items: the presentation message (6) names the owned asset (6.10), the
 // title (6.2) and description (6.3); the rarity is field 23. First record wins.
+// Field 10 set marks an item owned from the start; field 11 names the
+// neighbourhood rank that unlocks it, which some items carry with no rank
+// record listing them as a reward.
 void add_item(Catalogs& out, const Fields& record) {
     const auto presentation = message(record, 6);
     if (!presentation) return;
@@ -45,6 +48,13 @@ void add_item(Catalogs& out, const Fields& record) {
     if (out.items.contains(key)) return;
     if (const auto* flag = protobuf::first(record, 10, Wire::varint); flag && flag->integer == 1)
         out.open_items.insert(key);
+    // E.g. Pole Jam S/L and the Stop sign: rank unlocks that add_source never
+    // sees, because no neighbourhood_rank record grants them.
+    if (text(record, 11).value_or("").starts_with("neighbourhood_rank"))
+        out.open_items.insert(key);
+    // Field 24 tags brand collabs (collab_xgames, collab_nike, ...).
+    if (text(record, 24).value_or("").starts_with("collab_"))
+        out.collab_items.insert(key);
     Json entry = Json::object();
     if (const auto description = text(*presentation, 3)) entry["description"] = *description;
     if (const auto rarity = text(record, 23)) entry["rarity_id"] = *rarity;
@@ -116,6 +126,18 @@ bool free_offer(const Fields& offer) {
     return std::none_of(prerequisites.begin(), prerequisites.end(), [](const Grant& prerequisite) {
         return lower(prerequisite.id).find("premium") != std::string::npos;
     });
+}
+// Every own-create grant in any of the record's grant lists. Deliberately broad:
+// it does not tell free from paid, so an item named by any offer, store bundle,
+// pack or reward counts as granted and keeps the store's say over it (reserved()).
+// A bytes field that is not a grant list simply parses to no grants.
+void add_granted(std::set<std::string>& granted, const Fields& record) {
+    std::set<std::uint32_t> numbers;
+    for (const auto& field : record)
+        if (field.wire == Wire::bytes) numbers.insert(field.number);
+    for (const auto number : numbers)
+        for (const auto& grant : grants(record, number))
+            if (grant.kind == "own-create" && lower(grant.id.substr(0, 4)) == "own_") granted.insert(lower(grant.id));
 }
 void add_source(std::set<std::string>& open, const std::string& id, const Fields& record) {
     const auto open_grants = [&](std::uint32_t number) {
@@ -261,6 +283,7 @@ Catalogs read_catalogs(const std::filesystem::path& folder) {
             add_object_category(out, *id, *fields);
             add_travel(out, *id, *fields);
             add_source(out.open_items, *id, *fields);
+            add_granted(out.granted_items, *fields);
         }
     }
     out.entitlements.assign(entitlements.begin(), entitlements.end());
@@ -270,6 +293,12 @@ Catalogs read_catalogs(const std::filesystem::path& folder) {
 
 bool Catalogs::reserved(const std::string& key) const {
     if (!items.contains(key) || open_items.contains(key)) return false;
+    // Build-kit objects nothing offers, sells or grants are taken as everyday
+    // park pieces; brand collabs stay with the store. Many basic objects (A
+    // frames, quarter pipes, bowl pieces, Pole Jam M) have no source record in
+    // the cache, so without this the Object Browser and park editor hid them.
+    // Cosmetics are not covered: unsourced ones include past store and pass items.
+    if (key.starts_with("own_bk") && !granted_items.contains(key) && !collab_items.contains(key)) return false;
     return !key.starts_with("dev_") && key.find("_dev_") == std::string::npos && !key.ends_with("_dev");
 }
 

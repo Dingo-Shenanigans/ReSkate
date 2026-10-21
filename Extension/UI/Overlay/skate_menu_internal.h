@@ -1,7 +1,9 @@
 #pragma once
 #include "skate_menu.h"
 #include <initializer_list>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace dingosdk::overlay::detail {
@@ -27,7 +29,10 @@ void section(SkateMenu& menu, const char* text);
 void feedback(SkateMenu& menu, const char* text);
 bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& value,
                 bool available = true, const char* unavailable = "N/A");
-void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const char*> tabs, const char* id);
+void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> tabs, const char* id);
+inline void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const char*> tabs, const char* id) {
+    category_tabs(menu, selected, std::span<const char* const>(tabs.begin(), tabs.size()), id);
+}
 
 // Page layout kit, so every page reads the same way:
 //   begin_card / end_card  a titled tile grouping related controls, sized to its
@@ -41,6 +46,18 @@ void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<const c
 //   primary_button         a card's main action: blue, full width
 void begin_card(SkateMenu& menu, const char* id, const char* title = nullptr, const char* subtitle = nullptr);
 void end_card();
+// A card that folds: a click on its title row (or A on the controller) closes it down to that row and opens it again.
+// Returns whether the body is to be drawn; end_card() follows either way:
+//     if (fold_card(menu, "id", "TITLE")) { ... }
+//     end_card();
+// Which cards are open is kept by id for as long as the game runs. The owner of a page can seed it (set_fold) and
+// collect what the player changed (take_fold_changes) to keep it for longer.
+bool fold_card(SkateMenu& menu, const char* id, const char* title, const char* subtitle = nullptr, bool open_by_default = true);
+bool fold_open(std::string_view id, bool fallback);
+void set_fold(std::string_view id, bool open);
+bool take_fold_change(std::string& id, bool& open);
+// The little arrow of a fold, drawn at the cursor's row; `open` points down.
+void fold_arrow(ImVec2 at, float row_height, bool open, ImU32 colour);
 void field(SkateMenu& menu, const char* label, const char* tooltip = nullptr);
 void info(SkateMenu& menu, const char* label, const std::string& value);
 void note(const char* text);
@@ -104,6 +121,7 @@ void multiplayer_page(SkateMenu&, const Model&, const CallbacksV3&);
 void map_page(SkateMenu&, const Model&, const CallbacksV3&);
 void build_page(SkateMenu&, const Model&, const CallbacksV3&);
 void skater_page(SkateMenu&, const Model&, const CallbacksV3&);
+void dark_pop_controls(SkateMenu&, const Model&, const CallbacksV3&); // shown on SANDBOX > TUNE > TRICKLINING
 void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
@@ -115,6 +133,7 @@ void drone_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp: the SANDBOX page (once the Trainer).
 void trainer_page(SkateMenu&, const Model&, const CallbacksV3&);
 bool trainer_page_wanted();
+bool trainer_cheats_wanted(); // `trainer open movement`: Skater > Cheats
 // Skater > CHEATS: noclip, No Bail and the boosts (skate_menu_skater.cpp).
 void cheats_tab(SkateMenu&, const Model&, const CallbacksV3&);
 // The addons' own pages (skate_menu_skater.cpp), and the ADDONS page itself (skate_menu_addons.cpp).
@@ -143,4 +162,7 @@ enum Page {
 };
 enum Addon { addon_all, addon_drone, addon_board_break, addon_road_rash, addon_hall_of_meat, addon_grind_exits, addon_music, addon_count };
 void open_page(SkateMenu&, int page, int addon = -1);
+// An addon made from an official mod whose feature did not start (the mod is turned off in the
+// launcher, or this game build cannot run it) is listed nowhere in the menu (skate_menu_addons.cpp).
+bool addon_hidden(const Model&, int addon);
 }

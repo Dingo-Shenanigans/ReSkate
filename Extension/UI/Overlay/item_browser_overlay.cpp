@@ -153,12 +153,14 @@ void draw_mod_card(ImDrawList* draw, const ItemBrowserView& view, ImFont* headin
     const float prompts_top = display.y * (1.0f - 35.0f / 720.0f) - 37 * u;   // Hide Outfit, Equip, Back
     const float card_bottom = prompts_top - 6 * u;                             // the game's item card
     const float card_left = left + width * 0.4525f, card_width = 319 * u;
-    // Its last three lines (20 each, over an 8 bottom margin), inset like its text. (The warning
-    // sign the game gives a description is taken off a mod item's: item_browser.cpp, quiet_notices.)
-    const float pad = 6 * u, icon = 46 * u;
+    // Its last three lines (20 each, over an 8 bottom margin), inset like its text. The first line
+    // keeps the info sign the game's notice shows there (item_browser.cpp, quiet_notices); this
+    // goes under it, over the other two.
+    const float pad = 6 * u, icon = 40 * u;
     const ImVec2 a(card_left + 12 * u - pad, card_bottom - 68 * u), b(card_left + card_width - 12 * u, card_bottom - 8 * u);
+    const float top = a.y + 20 * u;
     // The icon, or the title's first letter on a plain tile when the mod has none.
-    const ImVec2 i0(a.x + pad, a.y + pad), i1(i0.x + icon, i0.y + icon);
+    const ImVec2 i0(a.x + pad, top), i1(i0.x + icon, i0.y + icon);
     if (const auto texture = want_mod_icon(view.mod_icon)) {
         draw->AddImage(texture, i0, i1);
     } else {
@@ -173,7 +175,7 @@ void draw_mod_card(ImDrawList* draw, const ItemBrowserView& view, ImFont* headin
     const char* tag = view.mod_changed ? "CHANGED BY MOD" : "MOD";
     const float tag_size = 10 * u, title_size = 15 * u, line_size = 12 * u;
     const auto tag_extent = heading->CalcTextSizeA(tag_size, FLT_MAX, 0, tag);
-    const float row = a.y + pad + (icon - title_size - 5 * u - line_size) * 0.5f;
+    const float row = top + (icon - title_size - 5 * u - line_size) * 0.5f;
     const ImVec2 t0(text_x, row + (title_size - tag_extent.y - 4 * u) * 0.5f);
     const ImVec2 t1(t0.x + tag_extent.x + 10 * u, t0.y + tag_extent.y + 4 * u);
     draw->AddRectFilled(t0, t1, view.mod_changed ? skate_theme::bar : skate_theme::blue);

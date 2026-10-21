@@ -20,4 +20,6 @@ SkaterComponentSample read_skater_component(HANDLE process, std::uintptr_t image
 // Requires the validated build and an initialized Detours hook service. No native calls are
 // made by the observer except forwarding each intercepted call exactly once.
 bool start_skater_observer(std::uintptr_t image_base) noexcept;
+// How many times the game has built a skater since start (0 while the observer is not running).
+std::uint64_t skater_creations() noexcept;
 }

@@ -18,4 +18,6 @@ void capture_game_fatal(DWORD thread_id, EXCEPTION_POINTERS* exception) noexcept
 // reporting is off; too long a value is cut short.
 void set_destination(std::wstring_view destination) noexcept;
 void set_gpu(std::wstring_view name, std::wstring_view driver) noexcept;
+// Whether the GPU's breadcrumbs (DRED) are recorded this launch: the report's gpu.breadcrumbs tag.
+void set_gpu_breadcrumbs(bool on) noexcept;
 }

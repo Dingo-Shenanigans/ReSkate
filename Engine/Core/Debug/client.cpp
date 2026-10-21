@@ -132,6 +132,9 @@ void set_gpu(std::wstring_view name, std::wstring_view driver) noexcept {
         copy_cut(shared->gpu_driver, driver);
     }
 }
+void set_gpu_breadcrumbs(bool on) noexcept {
+    if (auto* const shared = report) shared->gpu_breadcrumbs = on ? 1 : 0;
+}
 void stop() noexcept {
     // An exception already using these handles owns them until process exit.
     // Never unmap its report or close its events from a concurrent shutdown.

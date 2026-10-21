@@ -295,9 +295,9 @@ std::string send_party_chat(Session &s, std::string_view typed) {
 }
 bool objects_solid(Session &s, std::uint64_t id) {
     const auto [choice, first] = s.objects_solid.try_emplace(id);
+    // Solid unless this player made that player's objects ghosts (the choice is kept per player).
     if (first) {
-        const bool server = dedicated_host(s) && id == s.host_id;
-        choice->second = profile_runtime::local_preference("SolidObjects." + std::to_string(id)).value_or(server);
+        choice->second = profile_runtime::local_preference("SolidObjects." + std::to_string(id)).value_or(true);
         set_network_object_owner_solid(id, choice->second);
     }
     return choice->second;

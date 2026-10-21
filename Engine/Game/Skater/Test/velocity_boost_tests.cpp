@@ -47,9 +47,11 @@ int main() {
     check(rising && near((*rising)[1], 45) && near((*rising)[2], 60), "Vertical motion overrode forward travel");
     const auto upward = velocity_boost_delta(transform, 25, up, {0, -100, -12});
     check(upward && *upward == std::array<float, 3>{0, 25, 0}, "Up Boost changed in fakie");
-    for (const float speed : {0.f, 301.f, std::numeric_limits<float>::quiet_NaN()})
+    for (const float speed : {0.f, 10001.f, std::numeric_limits<float>::quiet_NaN()})
         check(!velocity_boost_delta(transform, speed, forward), "Invalid forward speed accepted");
-    check(!velocity_boost_delta(transform, 26, up), "Invalid up speed accepted");
+    check(!velocity_boost_delta(transform, 10001, up), "Invalid up speed accepted");
+    check(velocity_boost_delta(transform, 500, up) && velocity_boost_delta(transform, 5000, forward), "A boost past the slider ends was refused");
+    check(!velocity_boost_delta(transform, 0, up), "A boost set to 0 (off) added velocity");
     check(!velocity_boost_delta({}, 75, forward), "Degenerate facing accepted");
     check(!velocity_boost_delta(transform, 75, forward, {0, 0, std::numeric_limits<float>::infinity()}),
         "Invalid travel velocity accepted");

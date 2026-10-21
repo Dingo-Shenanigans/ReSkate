@@ -41,6 +41,9 @@
 #include "Extension/Progression/neighborhood_unlock_override.h"
 #include "Extension/Settings/gameplay_settings_override.h"
 #include "Extension/Settings/named_settings.h"
+#include "Engine/Vfs/mod_catalog.h"
+#include "Engine/Vfs/mod_list.h"
+#include "Engine/Vfs/mod_merge.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
@@ -54,6 +57,8 @@
 #include <dxgi1_4.h>
 #include <Psapi.h>
 #include <algorithm>
+#include <cstdlib>
+#include <optional>
 #include <array>
 #include <cctype>
 #include <chrono>
@@ -306,14 +311,20 @@ std::uint32_t size_kb(std::uint64_t memory) {
 // What the pool should be for the level loading or loaded now: 0 until a load asks (the game's
 // own value is left alone), then a custom map's size, the game's own for any other.
 std::uint32_t mesh_pool_wanted_kb = 0;
+// A custom map's load whose pool is measured again once the map it leaves has gone.
+bool mesh_pool_measure_again = false;
+// The most the custom map loading needs: the game's own pool and half as much again as its own
+// meshes take, every level of detail (the merge measures them: reskate-map-meshes.json). 0 when
+// that is not known, and half of what is free is all there is to go by.
+std::uint32_t mesh_pool_map_kb = 0;
 const mesh_pool::Card& mesh_pool_card() {
     static const auto card = mesh_pool::largest_card();
     static bool reported = false;
     if (!reported) {
         reported = true;
         dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
-            "Mesh streaming pool: the game's own 520 MB for San Van; for a custom map, half the video memory free "
-            "as it loads, on {} ({:.1f} GB).",
+            "Mesh streaming pool: the game's own 520 MB for San Van; for a custom map, what its meshes need, "
+            "at most half the video memory free as it loads, on {} ({:.1f} GB).",
             card.name.empty() ? std::string("an unknown card") : card.name, static_cast<double>(card.memory) / (1ull << 30));
     }
     return card;
@@ -334,24 +345,107 @@ void set_mesh_pool(std::uint32_t kb, bool now_or_never) {
         last_result = result;
     } catch (...) {}
 }
+// A custom map's own meshes, by its level (levels/game/<folder>/<folder>), as the merge measured
+// them; 0 when not known (a patch from before, or a map the merge could not read).
+std::uint64_t map_mesh_bytes(std::string_view level) {
+    constexpr std::string_view prefix = "levels/game/";
+    std::string folder(level);
+    std::ranges::transform(folder, folder.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (!folder.starts_with(prefix)) return 0;
+    folder = folder.substr(prefix.size(), folder.find('/', prefix.size()) - prefix.size());
+    try {
+        const auto meshes = dingosdk::mods::read_map_meshes(
+            dingosdk::mods::catalog().root / dingosdk::mods::generated_folder / dingosdk::mods::map_meshes_file);
+        const auto found = meshes.find(folder);
+        return found == meshes.end() ? 0 : found->second;
+    } catch (...) {
+        return 0;
+    }
+}
+// Mesh.GlobalLodScale, which the graphics quality sets (1 to 1.5) and multiplies the distances a
+// mesh changes to a coarser level of detail at: lowered to 1 while a custom map's meshes do not
+// fit the room the card has, so coarser levels take over sooner and less of the map has to be in
+// the pool at once. The game's value is put back for the next map that fits.
+namespace lod_scale {
+constexpr char setting[] = "Mesh.GlobalLodScale";
+constexpr float lowered_value = 1.0F;
+std::optional<std::string> saved;   // the game's value while ours is set
+float value_of(const std::string& text) {
+    const auto at = text.find_first_of("0123456789.");
+    return at == std::string::npos ? 0.0F : std::strtof(text.c_str() + at, nullptr);
+}
+void lower(bool wanted, std::string_view why) {
+    try {
+        if (wanted && !saved) {
+            const auto current = dingosdk::named_setting_value(setting);
+            if (!current || value_of(*current) <= lowered_value) return;
+            if (dingosdk::change_named_setting(setting, "1", false).starts_with("error: ")) return;
+            saved = *current;
+            dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+                "Mesh detail: coarser levels from nearer for this map ({} {} -> 1): {}.", setting, *current, why);
+        } else if (!wanted && saved) {
+            (void)dingosdk::change_named_setting(setting, *saved, false);
+            dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+                "Mesh detail: {} back to {}.", setting, *saved);
+            saved.reset();
+        }
+    } catch (...) {}
+}
+// While lowered: the quality script sets the game's value again whenever settings are applied;
+// that is the value to put back, and ours goes on again.
+void keep() {
+    if (!saved) return;
+    try {
+        if (const auto current = dingosdk::named_setting_value(setting); current && value_of(*current) != lowered_value) {
+            saved = *current;
+            (void)dingosdk::change_named_setting(setting, "1", false);
+        }
+    } catch (...) {}
+}
+}
+// For a custom map with a budget: what it needs, at most half of what is free; and whether that
+// leaves it short, which brings the coarser levels of detail in sooner.
+std::uint32_t custom_pool_kb(const mesh_pool::Budget& budget, std::uint32_t current_kb, bool& short_of_room) {
+    const auto free = mesh_pool::free_kb(budget, current_kb);
+    short_of_room = mesh_pool_map_kb && free < mesh_pool_map_kb;
+    return mesh_pool_map_kb ? (std::min)(free, mesh_pool_map_kb) : free;
+}
 // Just before a level load is submitted (the pools are re-created at its start, from the setting):
-// for a custom map, half the video memory free now (or by the card's size when the driver reports
-// no budget); the game's own for any other. RESKATE_MESH_POOL_MB sets it for every load.
-void mesh_pool_for_load(bool custom) {
+// for a custom map, what its meshes need (mesh_pool_map_kb), at most half the video memory free
+// now (or by the card's size when the driver reports no budget); the game's own for any other.
+// RESKATE_MESH_POOL_MB sets it for every load.
+// Measured here, the map being left still holds its textures and meshes: from one custom map to the
+// next the pool came out smaller each time (1846 MB down to 1253 MB over five maps on an 8 GB
+// RTX 5050), until The Mashup loaded to a black screen (2026-10-17). So a custom map's pool is
+// measured again at Starting level load (mesh_pool_after_leaving), which the pools' re-creation
+// comes after: it reads the new level's own data (FUN_14507a2d0).
+// Half of what was free went to every custom map, however few meshes it has: most of the maps
+// measured had 25 to 70 MB of meshes, and reserved 1 to 2 GB of the card for them.
+void mesh_pool_for_load(bool custom, std::string_view level) {
+    mesh_pool_measure_again = false;
+    mesh_pool_map_kb = 0;
     const auto& card = mesh_pool_card();
     std::uint32_t kb = mesh_pool::override_kb();
     std::string how = "RESKATE_MESH_POOL_MB";
+    bool short_of_room = false;
     if (!kb && custom) {
+        const auto bytes = map_mesh_bytes(level);
+        if (bytes)
+            mesh_pool_map_kb = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(
+                mesh_pool::stock_kb + bytes * 3 / 2 / 1024, mesh_pool::stock_kb, mesh_pool::most_kb));
         const auto current = mesh_pool_wanted_kb ? mesh_pool_wanted_kb : mesh_pool::stock_kb;
+        const auto needs = bytes ? std::format("its meshes {} MB, ", bytes >> 20) : std::string();
         if (const auto budget = mesh_pool::budget_of(card)) {
-            kb = mesh_pool::free_kb(*budget, current);
-            how = std::format("{} MB free of a {} MB budget", (budget->budget - (std::min)(budget->budget, budget->usage)) >> 20,
-                              budget->budget >> 20);
+            kb = custom_pool_kb(*budget, current, short_of_room);
+            how = std::format("{}{} MB free of a {} MB budget", needs,
+                              (budget->budget - (std::min)(budget->budget, budget->usage)) >> 20, budget->budget >> 20);
         } else {
             kb = (std::max)(mesh_pool::size_kb(card.memory), mesh_pool::stock_kb);
-            how = "no budget reported: by the card's size";
+            if (mesh_pool_map_kb) kb = (std::min)(kb, mesh_pool_map_kb);
+            how = needs + "no budget reported: by the card's size";
         }
     }
+    lod_scale::lower(short_of_room, "its meshes need more than the card has room for");
     if (!kb) {
         // San Van and the game's other maps: its own, once a custom map has raised it.
         if (!mesh_pool_wanted_kb) return;
@@ -359,20 +453,47 @@ void mesh_pool_for_load(bool custom) {
         how = "not a custom map";
     }
     mesh_pool_wanted_kb = kb;
+    mesh_pool_measure_again = custom && how.ends_with("budget");
     dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
         "Mesh streaming pool for this load: {} MB ({}).", kb / 1024, how);
     set_mesh_pool(kb, true);
 }
+// The custom map's pool again, now that the map it left has gone: only ever larger than the first,
+// and never more than the map needs.
+void mesh_pool_after_leaving() {
+    mesh_pool_measure_again = false;
+    const auto budget = mesh_pool::budget_of(mesh_pool_card());
+    if (!budget) return;
+    bool short_of_room = false;
+    const auto kb = custom_pool_kb(*budget, mesh_pool_wanted_kb, short_of_room);
+    const auto free_mb = (budget->budget - (std::min)(budget->budget, budget->usage)) >> 20;
+    if (!short_of_room) lod_scale::lower(false, {});
+    if (kb <= mesh_pool_wanted_kb) {
+        dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+            "Mesh streaming pool stays {} MB after the last map left ({} MB free of a {} MB budget).",
+            mesh_pool_wanted_kb / 1024, free_mb, budget->budget >> 20);
+        return;
+    }
+    dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+        "Mesh streaming pool for this load: {} MB once the last map left ({} MB free of a {} MB budget).",
+        kb / 1024, free_mb, budget->budget >> 20);
+    mesh_pool_wanted_kb = kb;
+    set_mesh_pool(kb, true);
+}
 // Every tick: the graphics quality script sets the game's own value again whenever settings are
-// applied, so the wanted one is put back.
-void apply_mesh_streaming_pool() {
+// applied, so the wanted one is put back. `state` is the client state (client_state.h).
+void apply_mesh_streaming_pool(DWORD state) {
     (void)mesh_pool_card();
     if (!mesh_pool_wanted_kb) return;
+    if (mesh_pool_measure_again && state == 8) mesh_pool_after_leaving();   // Starting level load
+    // Past it without a tick there (the load is asked for while the old map is still active, 13).
+    else if (mesh_pool_measure_again && state >= 9 && state <= 12) mesh_pool_measure_again = false;
     static ULONGLONG next_check = 0;
     const auto now = GetTickCount64();
     if (now < next_check) return;
     next_check = now + 2000;
     set_mesh_pool(mesh_pool_wanted_kb, false);
+    lod_scale::keep();
 }
 void apply_throwdown_modes() {
     // The throwdowner flow picks between the mode-select page and straight Jam
@@ -441,7 +562,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     apply_performance_settings();
     apply_local_connection_timeouts();
     dingosdk::job_spin::apply_default();
-    apply_mesh_streaming_pool();
+    apply_mesh_streaming_pool(state);
     dingosdk::multiplayer::apply_throwdown_strings(r.base);
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {
@@ -1113,13 +1234,15 @@ void update_model(std::uintptr_t client, TickState& frame) {
     model.progression = dingosdk::local_profile_progression();
     model.player_card = dingosdk::local_profile_player_card();
     model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
-    model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood()};
+    model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood(),
+                       dingosdk::road_rash::turned_off()};
     const auto breakable_deck = dingosdk::board_break::deck();
     model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),
                          dingosdk::board_break::deck_label(breakable_deck)};
     {
         const auto feel = dingosdk::board_break::settings();
         auto& bb = model.board_break;
+        bb.off = dingosdk::board_break::turned_off();
         bb.always = feel.always;
         bb.rails = feel.rails;
         bb.wear = feel.wear;
@@ -1341,7 +1464,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         bool custom = selected_level->custom;
         for (const auto& level : catalog.levels)
             if (!request->lm_level.empty() && equals(level.asset, request->lm_level)) custom = custom || level.custom;
-        mesh_pool_for_load(custom);
+        mesh_pool_for_load(custom, request->lm_level);
     }
     submit_local(r.base, client, *request, selected_level->level_flag68);
 }
