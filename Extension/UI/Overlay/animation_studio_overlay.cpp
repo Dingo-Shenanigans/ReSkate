@@ -3220,7 +3220,10 @@ void draw_animation_studio() {
     auto* d = ImGui::GetWindowDrawList();
     const float timeline_h = std::min(display.y * 0.34f, 360 * k);
     const float menu_x = left + 60 * k, menu_w = 520 * k;
-    const ImVec2 view_min(u.menu_hidden ? left : menu_x + menu_w + 30 * k, 0), view_max(right, display.y - timeline_h);
+    // With everything hidden the skater has the whole screen and is aimed at the middle of it: nothing is
+    // beside him or under him to leave room for, and a clip filmed this way wants him centred.
+    const ImVec2 view_min(u.hide_ui || u.menu_hidden ? left : menu_x + menu_w + 30 * k, 0),
+        view_max(right, u.hide_ui ? display.y : display.y - timeline_h);
     // The skater stands in the free space right of the menu.
     studio::set_view_shift((display.y * 0.5f - (view_min.y + view_max.y) * 0.5f) / display.y,
                            ((view_min.x + view_max.x) * 0.5f - display.x * 0.5f) / display.y);
