@@ -151,6 +151,7 @@ struct Snapshot {
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
     bool fit_air{};     // the keys are spread over the air that happens
+    bool match_studio{true}; // a bent joint goes to the pose it was made on, as the studio shows it
     bool turn_board{};  // the board's frame is turned round when it points the other way to its recording
     std::shared_ptr<const CustomTricks> tricks;
 };
@@ -189,6 +190,7 @@ struct State {
     bool front_foot{true};
     bool fit_air{};
     bool turn_board{};
+    bool match_studio{true};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -398,6 +400,8 @@ struct GameplayPacket {
     float time{}, weight{};
     bool board_frame_valid{}, board_owned{};
     LimbWeights limbs; // a limb the game has taken is given back to it
+    bool mirrored{};   // the keys were mirrored for this stance, so the studio's pose is too
+    float match{};     // how far a bent joint goes to the pose it was made on (Match the studio)
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -700,6 +704,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
         snap->fit_air = s.fit_air;
+        snap->match_studio = s.match_studio;
         snap->turn_board = s.turn_board;
     }
     snap->room = s.room;
@@ -1762,6 +1767,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
     packet->at = at; packet->time = play.time; packet->weight = weight;
     packet->clip = play.trick->clip; packet->edits = keys;
+    packet->mirrored = play.mirrored; packet->match = snap.match_studio ? 1.0f : 0.0f;
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
     if (play.board_frame_ok && l.board_ok) {
@@ -2529,6 +2535,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
+                    packet->mirrored = l.played_mirrored; packet->match = snap->match_studio ? 1.0f : 0.0f;
                     // The board keys work in the frame the board had at takeoff. That is only the frame
                     // they were authored in if the board is pointing the way it was when they were
                     // recorded: riding fakie it is the other way round, and the keys then push the nose
@@ -2770,7 +2777,10 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
     publication.edits.restore(generation, update, layout.buffer, native);
     auto edited = native;
     if (packet) {
-        apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs);
+        std::vector<Joint> studio;
+        if (packet->match > 0 && packet->clip && packet->clip->joints == skeleton_joints)
+            studio = studio_pose(*packet->clip, packet->time, packet->mirrored);
+        apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match);
     }
     const auto desired_deltas = pose_edit_deltas(native, edited);
     edited = native;
@@ -3361,6 +3371,7 @@ View view() {
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
     v.fit_air = s.fit_air;
+    v.match_studio = s.match_studio;
     v.turn_board = s.turn_board;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
@@ -3620,6 +3631,13 @@ void set_turn_board(bool on) {
     s.turn_board = on;
     s.status = on ? "The board's keys are turned round when the board points the other way to its recording."
                   : "The board's keys stay in the board's own frame.";
+    publish_locked(s);
+}
+void set_match_studio(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.match_studio = on;
+    s.status = on ? "In game a bent joint takes the pose it has in the studio." : "In game your bends are added to whatever the game is doing.";
     publish_locked(s);
 }
 void set_fit_air(bool on) {

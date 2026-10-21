@@ -363,7 +363,7 @@ int limb_group(std::uint16_t joint) noexcept {
     return 0;
 }
 void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
-                               const LimbWeights* limbs) {
+                               const LimbWeights* limbs, std::span<const Joint> studio, float match) {
     if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
         seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
     weight = std::min(weight, 1.0f);
@@ -375,11 +375,32 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
         const auto edit = evaluate(track, seconds);
         auto& current = native[track.joint];
         if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
-            const auto wanted = normalised(multiply(current.rotation, edit.rotation));
+            auto wanted = normalised(multiply(current.rotation, edit.rotation));
+            // Matching the studio: the bend laid on the pose it was made on, as far as the joint is really
+            // bent - nothing up to 3 degrees (a key that only holds the pose), all of it from 15.
+            if (match > 0 && track.joint < studio.size()) {
+                const float bend = 2 * std::acos(std::clamp(std::abs(normalised(edit.rotation)[3]), 0.0f, 1.0f));
+                const float x = std::clamp((bend - 0.052f) / 0.21f, 0.0f, 1.0f);
+                const float how_far = std::min(match, 1.0f) * x * x * (3 - 2 * x);
+                if (how_far > 0) {
+                    const auto as_made = normalised(multiply(studio[track.joint].rotation, edit.rotation));
+                    wanted = slerp(wanted, as_made, how_far);
+                }
+            }
             current.rotation = share >= 1 ? wanted : slerp(current.rotation, wanted, share);
         }
         for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * share;
     }
+}
+std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored) {
+    std::vector<Joint> pose(clip.joints);
+    if (clip.empty()) return pose;
+    clip.sample(std::clamp(seconds, 0.0f, clip.duration()), pose);
+    if (!mirrored || pose.size() < skeleton_joints) return pose;
+    std::vector<Joint> out(pose.size());
+    for (std::size_t j = 0; j < skeleton_joints; ++j) out[mirror_joint[j]] = mirror_pose(pose[j]);
+    for (std::size_t j = skeleton_joints; j < pose.size(); ++j) out[j] = pose[j];
+    return out;
 }
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
                              std::span<Joint> native, bool mirror, float weight, bool reverse_facing) {

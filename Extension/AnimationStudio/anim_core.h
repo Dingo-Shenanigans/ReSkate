@@ -168,8 +168,13 @@ struct LimbWeights {
         return limb[0] >= 1 && limb[1] >= 1 && limb[2] >= 1 && limb[3] >= 1 && limb[4] >= 1;
     }
 };
+// `studio`, when given, is the pose the keys were made on (the clip at `seconds`, mirrored when the keys
+// are): a joint that is really bent goes towards that pose with the bend on it - what the studio shows -
+// rather than having the bend added to whatever the game is doing then. `match` (0..1) is how far.
 void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
-                               const LimbWeights* limbs = nullptr);
+                               const LimbWeights* limbs = nullptr, std::span<const Joint> studio = {}, float match = 0);
+// The clip's pose at `seconds`, mirrored the game's way when `mirrored` (for apply_authored_edit_layer).
+std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored);
 // Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.

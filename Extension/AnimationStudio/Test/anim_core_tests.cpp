@@ -1129,6 +1129,40 @@ void pieces_are_recognised_by_the_pose() {
     }
     check(found && found->mirrored, "Played the other way round, it is found mirrored");
 }
+// Matching the studio: a joint that is really bent takes the pose it was made on with the bend on it, a
+// joint whose key only holds the pose stays the game's, and the bend alone is added when matching is off.
+float angle_between(const Quat& a, const Quat& b) {
+    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
+}
+void bent_joints_match_the_studio() {
+    std::vector<Joint> native(skeleton_joints), studio(skeleton_joints);
+    native[9].rotation = from_euler({10, 0, 0});
+    studio[9].rotation = from_euler({70, 0, 0});
+    native[342].rotation = from_euler({5, 0, 0});
+    studio[342].rotation = from_euler({60, 0, 0});
+    Animation animation;
+    set_key(animation, 9, 0.0f, {from_euler({0, 0, 40}), {}});
+    set_key(animation, 342, 0.0f, {from_euler({0, 0, 1}), {}});
+    auto matched = native;
+    apply_authored_edit_layer(animation, 0, matched, 1.0f, nullptr, studio, 1.0f);
+    check(same_turn(matched[9].rotation, normalised(multiply(studio[9].rotation, from_euler({0, 0, 40})))),
+          "A bent knee takes the studio's pose with the bend on it");
+    check(angle_between(matched[342].rotation, normalised(multiply(native[342].rotation, from_euler({0, 0, 1})))) < 0.01f,
+          "A key that barely bends leaves the game's pose");
+    auto added = native;
+    apply_authored_edit_layer(animation, 0, added, 1.0f, nullptr, studio, 0.0f);
+    check(same_turn(added[9].rotation, normalised(multiply(native[9].rotation, from_euler({0, 0, 40})))),
+          "With matching off the bend is added to the game's pose");
+    // Mirrored playback reads the studio's pose mirrored, so the bend lands on the joint it now drives.
+    Clip clip;
+    clip.joints = skeleton_joints;
+    clip.times = {0.0f};
+    clip.frames.assign(skeleton_joints, Joint{});
+    clip.frames[9].rotation = from_euler({70, 0, 0});
+    const auto mirrored = studio_pose(clip, 0, true);
+    check(same_turn(mirrored[mirror_joint[9]].rotation, mirror_rotation(clip.frames[9].rotation)), "and the studio's pose is mirrored with the keys");
+}
 int main(int argc, char** argv) {
     try {
         timing_and_stance_edge_cases();
@@ -1146,6 +1180,7 @@ int main(int argc, char** argv) {
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
+        bent_joints_match_the_studio();
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
