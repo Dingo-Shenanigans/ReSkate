@@ -862,6 +862,20 @@ Clip mirror_clip(const Clip& clip) {
     for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
     return out;
 }
+Clip mirror_body_clip(const Clip& clip) {
+    if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
+    Clip out = clip;
+    for (std::uint32_t joint = 0; joint < clip.joints; ++joint) {
+        const auto other = mirror_joint[joint];
+        // Both ends have to be body, or the pose would be taken off the body and put somewhere it does
+        // not belong. Everything else keeps what the clip already had.
+        if (!gameplay_body_joint(static_cast<std::uint16_t>(joint)) || !gameplay_body_joint(other)) continue;
+        for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
+            out.frames[frame * clip.joints + other] = mirror_pose(clip.frames[frame * clip.joints + joint]);
+    }
+    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
+    return out;
+}
 Animation mirror_animation(const Animation& animation) {
     Animation out = animation;
     if (!out.stance.empty()) out.stance = out.stance == "goofy" ? "regular" : "goofy";

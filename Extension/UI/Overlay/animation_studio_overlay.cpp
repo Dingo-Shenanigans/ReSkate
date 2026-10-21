@@ -1530,9 +1530,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         [] { ui().snap = !ui().snap; }});
         rows.push_back({"Stance", v.stance_choice == 0 ? (v.showing_goofy ? "as the game has him (goofy)" : "as the game has him (regular)")
                                   : v.stance_choice == 1 ? "regular" : "goofy",
-                        "Which stance a recording is saved as. Showing a trick the other way round is not on yet: mirroring the whole "
-                        "clip tore the skater apart, because the render rig parts company with the animation rig past Ground. Record a "
-                        "trick in the stance you skate in and it is labelled with this.",
+                        "Which way round the skater stands. A trick authored the other way is mirrored to show it - the body only, "
+                        "never the board's own joints or the placement. The keys are left as they are, because a left-hand key is the "
+                        "left hand in either stance, which is how they go on in game. A recording is saved with this stance.",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
@@ -2178,13 +2178,13 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
 }
 // What the chosen row does, in its own box beside the card. It used to be written inside the card, which
 // on the pages that show a joint's numbers meant straight over them.
-void help_box(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec2 size) {
+float help_box(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec2 size) {
     auto& u = ui();
     const float k = f.k;
     const auto rows = rows_of(static_cast<Tab>(u.tab), v);
-    if (u.row < 0 || u.row >= static_cast<int>(rows.size())) return;
+    if (u.row < 0 || u.row >= static_cast<int>(rows.size())) return at.y + size.y;
     const auto& row = rows[static_cast<std::size_t>(u.row)];
-    if (row.about.empty()) return;
+    if (row.about.empty()) return at.y + size.y;
     const float fs = 14 * k, wrap = size.x - 36 * k;
     const auto measured = f.bold->CalcTextSizeA(fs, FLT_MAX, wrap, row.about.c_str());
     const float tall = std::min(size.y, measured.y + 54 * k);
@@ -2192,6 +2192,7 @@ void help_box(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 16, 18, 238), seed_of(a), k * 0.8f);
     text(d, f.heading, 13 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), blue_light, upper(row.label));
     d->AddText(f.bold, fs, ImVec2(a.x + 18 * k, a.y + 36 * k), IM_COL32(222, 222, 226, 255), row.about.c_str(), nullptr, wrap);
+    return a.y;
 }
 
 // The bottom of the screen: the whole trick from start to end, one row of keys per joint with a row
@@ -3227,6 +3228,7 @@ void draw_animation_studio() {
     // The skater stands in the free space right of the menu.
     studio::set_view_shift((display.y * 0.5f - (view_min.y + view_max.y) * 0.5f) / display.y,
                            ((view_min.x + view_max.x) * 0.5f - display.x * 0.5f) / display.y);
+    float help_top = display.y; // the top of the box that says what a row does, so nothing is written over it
     const auto project = projector(v, display);
     controller(v, project);
     viewport(d, f, v, project, view_min, view_max);
@@ -3270,7 +3272,7 @@ void draw_animation_studio() {
         const float list_bottom = display.y - timeline_h - card_h - 40 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
         card(d, f, v, ImVec2(menu_x, list_bottom + 18 * k), ImVec2(menu_w + 10 * k, card_h));
-        help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, list_bottom + 18 * k), ImVec2(330 * k, card_h));
+        help_top = help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, list_bottom + 18 * k), ImVec2(330 * k, card_h));
     }
     timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
     // What the studio last said. It used to stand there for good, so the screen kept a line about a trick
@@ -3299,7 +3301,7 @@ void draw_animation_studio() {
     if (!v.pose_seen) line = "Waiting for the skater's pose...";
     if (!line.empty()) {
         const auto w = text_size(f.bold, 15 * k, line.c_str());
-        const ImVec2 at(view_min.x + 24 * k, view_max.y - 40 * k);
+        const ImVec2 at(view_min.x + 24 * k, std::min(view_max.y - 40 * k, help_top - w.y - 26 * k));
         skate_theme::rough_rect(d, ImVec2(at.x - 14 * k, at.y - 7 * k), ImVec2(at.x + w.x + 14 * k, at.y + w.y + 7 * k), IM_COL32(16, 16, 18, 230), 41, k * 0.6f);
         text(d, f.bold, 15 * k, at, v.failure.empty() ? white : skate_theme::danger, line);
     }

@@ -220,6 +220,10 @@ Vec3 mirror_vector(const Vec3& v) noexcept;
 Joint mirror_pose(const Joint& joint) noexcept;
 // The clip on the other side: every frame, and the board. Only for a skater clip (joints == 395).
 Clip mirror_clip(const Clip& clip);
+// The same, but only across the skinned body (gameplay_body_joint): the placement, the board's own joints
+// and the effector subtrees are left exactly as they were. The render rig parts company with the animation
+// rig after Ground (375), so mirroring every joint puts those on the wrong bones and tears the skater up.
+Clip mirror_body_clip(const Clip& clip);
 // The animation on the other side: its clip, and every track and key on the mirror joints.
 Animation mirror_animation(const Animation& animation);
 
