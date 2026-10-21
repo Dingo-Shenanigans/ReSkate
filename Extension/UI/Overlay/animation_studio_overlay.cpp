@@ -113,6 +113,7 @@ struct Ui {
     int tab{0}, row{1};
     bool menu_hidden{};
     bool hide_joints{};          // J: the dots and the gizmo are out of the way
+    bool hide_ui{};              // H: nothing but the skater and the room, for filming and pictures
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
     float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
     bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
@@ -1480,6 +1481,16 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
                         "instead of through it or over it. Key: N.",
                         [] { ui().snap = !ui().snap; }});
+        rows.push_back({"Stance", v.stance_choice == 0 ? (v.showing_goofy ? "as the game has him (goofy)" : "as the game has him (regular)")
+                                  : v.stance_choice == 1 ? "regular" : "goofy",
+                        "Which way round the skater stands in the studio. A trick authored the other way round is mirrored to show it, "
+                        "and the keys are left as they are, because a left-hand key is the left hand in either stance - which is how "
+                        "they go on in game. Record a trick in the stance you skate in.",
+                        [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
+        rows.push_back({"Hide everything", u.hide_ui ? "hidden" : "H",
+                        "Takes the whole studio off the screen - tabs, timeline, dots and all - leaving the skater and the room. For "
+                        "filming a trick or taking a picture of it. H brings it back.",
+                        [] { ui().hide_ui = true; say("Hidden. H brings it back."); }});
         rows.push_back({"Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name,
                         "A set camera angle to work in: close, on the board, cinematic, the filmer's follow, or over the skater. "
                         "It follows him while you pose and while it plays. Moving the camera yourself goes back to free. Key: V.",
@@ -2439,7 +2450,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     const bool inside = !u.menu_open && mouse.x >= area_min.x && mouse.y >= area_min.y && mouse.x <= area_max.x && mouse.y <= area_max.y;
     // Out of the way while it plays or is scrubbed, so the motion can be watched, and on J whenever you
     // want the skater plain.
-    const bool joints_hidden = u.hide_joints || v.playing || u.scrubbing || u.dragging_playhead || u.bracket_drag != 0;
+    const bool joints_hidden = u.hide_ui || u.hide_joints || v.playing || u.scrubbing || u.dragging_playhead || u.bracket_drag != 0;
     std::optional<std::uint16_t> hovered;
     float best = 22 * k;
     if (!u.pad_mode && !joints_hidden)
@@ -2599,6 +2610,10 @@ void keyboard(const studio::View& v) {
         say(u.anti_clip ? "Keep clear on: what you move stays out of the body and off the deck." : "Keep clear off.");
     }
     if (!ctrl && pressed(ImGuiKey_V)) next_shot(v, io.KeyShift ? -1 : 1);
+    if (!ctrl && pressed(ImGuiKey_H)) {
+        u.hide_ui = !u.hide_ui;
+        if (u.hide_ui) say("Hidden. H brings it back.");
+    }
     if (!ctrl && pressed(ImGuiKey_J)) {
         u.hide_joints = !u.hide_joints;
         say(u.hide_joints ? "Joints hidden. J shows them again." : "Joints shown.");
@@ -2691,6 +2706,7 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
                 {std::nullopt, "S", v.solo ? "Solo on" : "Solo off"},
                 {std::nullopt, "N", u.snap ? "Snapping on" : "Snapping off"},
                 {std::nullopt, "J", u.hide_joints ? "Joints hidden" : "Hide joints"},
+                {std::nullopt, "H", "Hide everything"},
                 {std::nullopt, "C", u.anti_clip ? "Keep clear on" : "Keep clear off"},
                 {std::nullopt, "V", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name},
                 {std::nullopt, "UP DN", "Choose"},
@@ -3063,6 +3079,12 @@ void draw_animation_studio() {
     const auto project = projector(v, display);
     controller(v, project);
     viewport(d, f, v, project, view_min, view_max);
+    if (u.hide_ui) {
+        // Only the skater and the room he stands in: for filming a trick or taking a picture of it. The
+        // camera and the playhead still answer, so a trick can be played and watched clean.
+        keyboard(v);
+        return;
+    }
     shot_strip(d, f, v, view_min, view_max);
     if (!u.menu_hidden) {
         page_title(d, f, ImVec2(menu_x, 40 * k));

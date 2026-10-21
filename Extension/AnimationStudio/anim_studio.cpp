@@ -94,6 +94,9 @@ struct CustomTrick {
 };
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
 bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
+struct State;
+// The way round the studio is working: the game's own stance, or the one chosen in the studio.
+bool studio_goofy(int choice) noexcept { return choice == 0 ? goofy_stance() : choice == 2; }
 std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
@@ -109,6 +112,7 @@ struct Snapshot {
     float time{};
     bool open{}, play_in_game{}, armed{}, room{};
     float speed{1};
+    bool goofy{}; // the way round the studio is working
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -138,6 +142,13 @@ struct State {
     bool playing{}, play_in_game{true}, room{true};
     bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
     std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
+    // The studio's stance (0 as the game has him, 1 regular, 2 goofy) and the clip turned the other way
+    // round, kept so it is mirrored once rather than every frame.
+    int stance_choice{};
+    bool showing_goofy{};
+    std::shared_ptr<const Clip> mirrored, mirrored_idle;
+    const Clip* mirrored_of{};
+    const Clip* mirrored_idle_of{};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -268,6 +279,7 @@ struct Live {
     double takeoff_at{}, landing_at{};
     double last_capture{-1};
     bool recorded_goofy{}, playback_goofy{};
+    bool studio_goofy_now{}; // the stance the studio is set to, read with the snapshot
     std::optional<bool> recorded_switch, playback_switch;
     // In-game playback.
     PlaybackEpisode episode;
@@ -557,6 +569,33 @@ void publish_locked(State& s, bool edits_changed = true) {
     snap->time = s.time;
     snap->open = s.open;
     snap->play_in_game = s.play_in_game && !s.manual_recording;
+    // The skater stands the way the studio is set to. A clip authored the other way round is shown
+    // mirrored; the keys are left alone, because they are anatomical and go on either stance as they are.
+    {
+        const bool goofy = studio_goofy(s.stance_choice);
+        s.showing_goofy = goofy;
+        snap->goofy = goofy;
+        const bool clip_goofy = s.edits.stance == "goofy";
+        if (s.clip && !s.clip->empty() && clip_goofy != goofy) {
+            if (s.mirrored_of != s.clip.get()) {
+                try {
+                    s.mirrored = std::make_shared<const Clip>(mirror_clip(*s.clip));
+                    s.mirrored_of = s.clip.get();
+                } catch (...) { s.mirrored = nullptr; s.mirrored_of = nullptr; }
+            }
+            if (s.mirrored) snap->clip = s.mirrored;
+        }
+        // The casual stance he waits in is one of the game's own, which are authored regular.
+        if (goofy && s.idle_clip && !s.idle_clip->empty()) {
+            if (s.mirrored_idle_of != s.idle_clip.get()) {
+                try {
+                    s.mirrored_idle = std::make_shared<const Clip>(mirror_clip(*s.idle_clip));
+                    s.mirrored_idle_of = s.idle_clip.get();
+                } catch (...) { s.mirrored_idle = nullptr; s.mirrored_idle_of = nullptr; }
+            }
+            if (s.mirrored_idle) snap->idle = s.mirrored_idle;
+        }
+    }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
     snap->speed = s.edits.speed;
@@ -803,7 +842,7 @@ void record(Live& l, double at, bool air, const std::string& trick, MotionState 
         if (air && l.recording_seen_ground) {
             l.airborne = true;
             l.takeoff_at = at;
-            l.recorded_goofy = goofy_stance();
+            l.recorded_goofy = l.studio_goofy_now;
             l.recorded_switch = switch_stance(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
             l.recorded_entry = entry_name(previous == MotionState::rail ? EntryKind::rail : previous == MotionState::riding ? EntryKind::ground : EntryKind::unknown);
             l.contact.since.reset();
@@ -1305,6 +1344,7 @@ void on_animation(std::uintptr_t component) noexcept {
         }
         // The studio shows the open trick, or with none the casual stance (the idle clip's last frame,
         // no keys).
+        l.studio_goofy_now = snap->goofy;
         const bool has_trick = snap->clip && !snap->clip->empty();
         const Clip* shown = has_trick ? snap->clip.get() : snap->idle && !snap->idle->empty() ? snap->idle.get() : nullptr;
         const float shown_time = has_trick ? snap->time : shown ? shown->duration() : 0.0f;
@@ -2297,6 +2337,8 @@ View view() {
     v.play_in_game = s.play_in_game;
     v.room = s.room;
     v.solo = s.solo;
+    v.stance_choice = s.stance_choice;
+    v.showing_goofy = s.showing_goofy;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -2546,6 +2588,15 @@ void set_play_in_game(bool on) {
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
+    publish_locked(s);
+}
+void set_stance(int choice) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.stance_choice = std::clamp(choice, 0, 2);
+    const bool goofy = studio_goofy(s.stance_choice);
+    s.status = s.stance_choice == 0 ? (goofy ? "Stance: as the game has him, goofy." : "Stance: as the game has him, regular.")
+               : goofy ? "Stance: goofy." : "Stance: regular.";
     publish_locked(s);
 }
 void set_solo(bool on) {
