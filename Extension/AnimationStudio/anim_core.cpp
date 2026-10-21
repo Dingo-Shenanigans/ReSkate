@@ -946,6 +946,177 @@ Clip mirror_body_clip(const Clip& clip) {
     for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
     return out;
 }
+// ---- which of the game's own clips is playing -----------------------------------------------------
+namespace {
+constexpr std::uint16_t piece_body_joints = 375; // the body: everything below Ground
+constexpr float piece_window = 0.25f;            // seconds of the live pose compared at once
+constexpr float piece_enter = 0.03f, piece_leave = 0.045f, piece_margin = 0.004f, piece_moving = 0.008f;
+float pose_distance(const Quat& a, const Quat& b) noexcept {
+    return 1 - std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+}
+} // namespace
+void PieceTracker::set_pieces(const std::vector<const Clip*>& clips) {
+    models_.clear();
+    reset();
+    for (std::size_t piece = 0; piece < clips.size(); ++piece) {
+        const auto* clip = clips[piece];
+        if (!clip || clip->empty() || clip->joints < piece_body_joints || clip->times.size() < 4) continue;
+        // The joints that say most about this piece: the twenty that move most over it.
+        const auto& mid = clip->frame(clip->times.size() / 2);
+        std::vector<std::pair<float, std::uint16_t>> moved;
+        for (std::uint16_t j = 2; j < piece_body_joints; ++j) {
+            float sum = 0;
+            for (std::size_t f = 0; f < clip->times.size(); ++f) sum += pose_distance(clip->frame(f)[j].rotation, mid[j].rotation);
+            moved.push_back({sum / static_cast<float>(clip->times.size()), j});
+        }
+        std::sort(moved.begin(), moved.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<std::uint16_t> picked;
+        for (const auto& [amount, j] : moved)
+            if (picked.size() < 20 && amount > 0.0005f) picked.push_back(j);
+        if (picked.size() < 6) continue;
+        for (const bool mirrored : {false, true}) {
+            Model model;
+            model.piece = piece;
+            model.mirrored = mirrored;
+            model.times = clip->times;
+            for (const auto j : picked) model.joints.push_back(mirrored ? mirror_joint[j] : j);
+            if (std::any_of(model.joints.begin(), model.joints.end(), [](std::uint16_t j) { return j >= piece_body_joints; })) continue;
+            model.frames.reserve(clip->times.size() * picked.size());
+            for (std::size_t f = 0; f < clip->times.size(); ++f)
+                for (const auto j : picked) {
+                    const auto& q = clip->frame(f)[j].rotation;
+                    model.frames.push_back(mirrored ? mirror_rotation(q) : q);
+                }
+            models_.push_back(std::move(model));
+        }
+    }
+}
+void PieceTracker::reset() noexcept {
+    history_.clear();
+    last_at_ = -1;
+    locked_ = candidate_ = -1;
+    streak_ = 0;
+}
+PieceTracker::Fit PieceTracker::fit(const Model& m, const std::array<const Sample*, 8>& window, const std::array<float, 8>& ages) const {
+    Fit out;
+    const auto frames = m.times.size(), picked = m.joints.size();
+    // How far each sample of the window is from each frame of the piece.
+    std::vector<float> d(window.size() * frames);
+    for (std::size_t h = 0; h < window.size(); ++h)
+        for (std::size_t f = 0; f < frames; ++f) {
+            float sum = 0;
+            for (std::size_t j = 0; j < picked; ++j) sum += pose_distance(window[h]->rotation[m.joints[j]], m.frames[f * picked + j]);
+            d[h * frames + f] = sum / static_cast<float>(picked);
+        }
+    // Holding one frame still: what standing in a similar pose scores.
+    for (std::size_t f = 0; f < frames; ++f) {
+        float sum = 0;
+        for (std::size_t h = 0; h < window.size(); ++h) sum += d[h * frames + f];
+        out.still = std::min(out.still, sum / static_cast<float>(window.size()));
+    }
+    // Moving through it in step, at the game's speed or a little either side of it.
+    const auto at_time = [&](float t) {
+        const auto it = std::lower_bound(m.times.begin(), m.times.end(), t);
+        if (it == m.times.end()) return frames - 1;
+        const auto i = static_cast<std::size_t>(it - m.times.begin());
+        return i > 0 && t - m.times[i - 1] < *it - t ? i - 1 : i;
+    };
+    for (const float speed : {0.85f, 1.0f, 1.15f})
+        for (std::size_t k = 0; k < frames; ++k) {
+            const float end = m.times[k];
+            if (end - speed * ages.back() < m.times.front()) continue;
+            float sum = 0;
+            for (std::size_t h = 0; h < window.size(); ++h) sum += d[h * frames + at_time(end - speed * ages[h])];
+            const float score = sum / static_cast<float>(window.size());
+            if (score < out.score) {
+                out.score = score;
+                out.time = end;
+            }
+        }
+    if (out.time >= 0) {
+        // The stretch of the piece the window covered has to be one where it moves.
+        const auto first = at_time(out.time - ages.back()), last = at_time(out.time);
+        float sum = 0;
+        for (std::size_t j = 0; j < picked; ++j) sum += pose_distance(m.frames[first * picked + j], m.frames[last * picked + j]);
+        out.moving = sum / static_cast<float>(picked) > piece_moving;
+    }
+    return out;
+}
+std::optional<PieceMatch> PieceTracker::update(double at, std::span<const Joint> pose) {
+    if (models_.empty() || pose.size() < piece_body_joints) return std::nullopt;
+    if (last_at_ >= 0 && (at - last_at_ > 0.2 || at < last_at_)) reset();
+    const double step = last_at_ >= 0 ? at - last_at_ : 0;
+    last_at_ = at;
+    Sample sample;
+    sample.at = at;
+    sample.rotation.resize(piece_body_joints);
+    for (std::uint16_t j = 0; j < piece_body_joints; ++j) sample.rotation[j] = pose[j].rotation;
+    history_.push_back(std::move(sample));
+    while (history_.size() > 2 && at - history_.front().at > piece_window + 0.15) history_.pop_front();
+    if (at - history_.front().at < piece_window) return std::nullopt;
+    // Eight samples spread over the window, oldest first.
+    std::array<const Sample*, 8> window{};
+    std::array<float, 8> ages{};
+    for (std::size_t i = 0; i < window.size(); ++i) {
+        const double want = at - piece_window * (1.0 - static_cast<double>(i) / 7.0);
+        const Sample* best = &history_.back();
+        for (const auto& s : history_)
+            if (std::abs(s.at - want) < std::abs(best->at - want)) best = &s;
+        window[i] = best;
+    }
+    // `fit` takes them newest first, each with how long ago it was.
+    std::array<const Sample*, 8> newest_first{};
+    for (std::size_t i = 0; i < window.size(); ++i) {
+        newest_first[i] = window[window.size() - 1 - i];
+        ages[i] = static_cast<float>(at - newest_first[i]->at);
+    }
+    const auto good = [](const Fit& f) { return f.time >= 0 && f.score < piece_enter && f.score < f.still - piece_margin && f.moving; };
+    if (locked_ >= 0) {
+        const auto& m = models_[static_cast<std::size_t>(locked_)];
+        const auto f = fit(m, newest_first, ages);
+        if (f.time > last_fit_time_ + 0.005f) {
+            advanced_at_ = at;
+            last_fit_time_ = f.time;
+        }
+        // Let go when it stops fitting, or stops moving on through the piece.
+        if (f.time < 0 || f.score > piece_leave || at - advanced_at_ > 0.15) {
+            locked_ = -1;
+            candidate_ = -1;
+            streak_ = 0;
+            return std::nullopt;
+        }
+        const float predicted = play_time_ + static_cast<float>(step);
+        play_time_ = std::abs(f.time - predicted) < 0.12f ? predicted + 0.3f * (f.time - predicted) : f.time;
+        play_time_ = std::clamp(play_time_, m.times.front(), m.times.back());
+        return PieceMatch{m.piece, m.mirrored, play_time_, f.score};
+    }
+    int best = -1;
+    Fit best_fit;
+    for (std::size_t i = 0; i < models_.size(); ++i) {
+        const auto f = fit(models_[i], newest_first, ages);
+        if (good(f) && f.score < best_fit.score) {
+            best = static_cast<int>(i);
+            best_fit = f;
+        }
+    }
+    // Taken up after three frames in a row on the same piece, moving forward through it.
+    if (best >= 0 && best == candidate_ && best_fit.time >= candidate_last_ && best_fit.time - candidate_last_ < 0.12f) {
+        ++streak_;
+        candidate_last_ = best_fit.time;
+    } else {
+        candidate_ = best;
+        streak_ = best >= 0 ? 1 : 0;
+        candidate_from_ = candidate_last_ = best_fit.time;
+    }
+    if (candidate_ >= 0 && streak_ >= 3 && candidate_last_ - candidate_from_ >= 0.03f) {
+        locked_ = candidate_;
+        play_time_ = last_fit_time_ = candidate_last_;
+        advanced_at_ = at;
+        const auto& m = models_[static_cast<std::size_t>(locked_)];
+        return PieceMatch{m.piece, m.mirrored, play_time_, best_fit.score};
+    }
+    return std::nullopt;
+}
 Animation mirror_animation(const Animation& animation) {
     Animation out = animation;
     if (!out.stance.empty()) out.stance = out.stance == "goofy" ? "regular" : "goofy";

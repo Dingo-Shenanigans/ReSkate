@@ -1338,7 +1338,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             for (const auto& t : list) {
                 if (t.trick != u.open_trick || t.pop != want) continue;
                 const std::string pop = t.preview_only ? "Edit this piece" : t.pop == "low" ? "Low pop" : t.pop == "mid" ? "Mid pop" : t.pop == "high" ? "High pop" : "Native clip";
-                Row row{pop, t.preview_only ? "Piece" : t.recorded ? "Recorded" : "Native", t.preview_only ? "A piece of the game's own animation - a setup, a loop, an exit - rather than a whole trick. It opens and saves like any other; it is kept by the clip it came from, and plays in game once the studio can see that clip playing, which the game does not tell it yet." :
+                Row row{pop, t.preview_only ? "Piece" : t.recorded ? "Recorded" : "Native", t.preview_only ? "A piece of the game's own animation - a setup, a loop, an exit - rather than a whole trick. It opens and saves like any other and is kept by the clip it came from. In game your edit plays whenever the game plays this piece: the game never says which piece it plays, so the studio knows it by the skater's pose, about a quarter of a second in. A piece that barely moves (a held pose) cannot be told apart from standing still." :
                         "Opens the game's " + t.label + " with a " + t.pop + " pop to change it. Native board physics and graph constraints are not included.",
                         [t] {
                             std::string m;

@@ -326,6 +326,20 @@ struct Live {
     bool playback_front_foot{true};
     bool played_mirrored{};
     double probe_riding_since{-1}; // the live probe takes riding once he has been riding a while
+    // Edited pieces of the game's own animation, played when the game is seen playing them (PieceTracker).
+    PieceTracker pieces;
+    std::shared_ptr<const CustomTricks> pieces_for; // the saved tricks the tracker was set up from
+    std::vector<const CustomTrick*> piece_tricks;   // the tracker's piece index -> the saved piece
+    struct PiecePlay {
+        const CustomTrick* trick{};
+        bool mirrored{};
+        float time{}, weight{};
+        double at{-1};
+        std::uint64_t episode{};
+        Quat board_frame{0, 0, 0, 1};
+        bool board_frame_ok{};
+    } piece_play;
+    std::uint64_t piece_episodes{};
     // Giving way to the game. The native graph goes on underneath the authored layer the whole time, and
     // it changes its mind: a trick is refined, a grind is taken, an obstacle turns the transition into
     // something else. Rather than guess what it will do - its conditions are its own - the layer watches
@@ -630,7 +644,10 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             std::ifstream clip_in(clip_path, std::ios::binary);
             const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
             auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
-            if (clip->joints != skeleton_joints || clip->takeoff < 0) continue;
+            // A piece of the game's animation (a setup, a loop, the clip a trick is blended from) has no
+            // pop of its own: it is found by its pose while it plays, not by a takeoff.
+            const bool piece = animation->trick.starts_with("native:");
+            if (clip->joints != skeleton_joints || (clip->takeoff < 0 && !piece)) continue;
             std::string trick;
             for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const bool goofy = authored_goofy(*animation);
@@ -1634,6 +1651,100 @@ float lowest_point(const Joint& board, const BoardShape& shape) noexcept {
     return low;
 }
 
+// Edited pieces of the game's own animation. The game never says which of its clips it is playing, so
+// each saved piece is looked for in the skater's pose (PieceTracker): when the body is seen moving
+// through one in step, its edits are laid over the game's pose at the time it has got to, exactly as a
+// trick's are, and let go when it stops fitting. A named trick that is playing comes first.
+void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generation, std::uintptr_t component,
+                 const Joint& live_placement, std::shared_ptr<const GameplayPacket>& scheduled, Joint& board_target,
+                 float& board_weight) {
+    if (l.pieces_for != snap.tricks) {
+        l.pieces_for = snap.tricks;
+        l.piece_tricks.clear();
+        std::vector<const Clip*> clips;
+        if (snap.tricks)
+            for (const auto& t : *snap.tricks)
+                if (t.trick.starts_with("native:") && t.clip) {
+                    l.piece_tricks.push_back(&t);
+                    clips.push_back(t.clip.get());
+                }
+        l.pieces.set_pieces(clips);
+        l.piece_play = {};
+        if (!clips.empty())
+            logging::log(Level::info, Channel::skater, "Animation Studio: watching for {} edited piece{} of the game's animation ({} that move enough to be recognised, each both ways round).",
+                         clips.size(), clips.size() == 1 ? "" : "s", l.pieces.looking_for() / 2);
+    }
+    auto& play = l.piece_play;
+    if (l.piece_tricks.empty()) return;
+    const float dt = play.at >= 0 ? static_cast<float>(std::clamp(at - play.at, 0.0, 0.1)) : 0.0f;
+    if (play.at >= 0 && at - play.at > 0.2) play = {};
+    play.at = at;
+    std::optional<PieceMatch> match;
+    if (!l.game_trick && !scheduled) match = l.pieces.update(at, l.pose);
+    else l.pieces.reset();
+    if (match && match->piece < l.piece_tricks.size()) {
+        const auto* trick = l.piece_tricks[match->piece];
+        if (trick != play.trick || match->mirrored != play.mirrored || play.weight <= 0) {
+            play.episode = (std::uint64_t{1} << 63) | ++l.piece_episodes;
+            play.weight = 0;
+            // The board's keys work in the frame the board has now, as a trick's do from its takeoff.
+            play.board_frame_ok = false;
+            if (l.board_ok) {
+                const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                if (finite(mount)) {
+                    play.board_frame = normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount)));
+                    play.board_frame_ok = true;
+                }
+            }
+            logging::log(Level::info, Channel::skater, "Animation Studio: the game is playing {}{} ({:.2f} s in); playing your {}.",
+                         trick->trick.substr(7), match->mirrored ? ", mirrored" : "", match->time, trick->name);
+        }
+        play.trick = trick;
+        play.mirrored = match->mirrored;
+        play.time = match->time;
+        play.weight = std::min(1.0f, play.weight + (dt > 0 ? dt / 0.12f : 0.25f));
+    } else if (play.trick) {
+        // Let go over 150 ms, carrying on through the piece meanwhile.
+        play.time += dt;
+        play.weight -= dt > 0 ? dt / 0.15f : 0.25f;
+        if (play.weight <= 0 || play.time > play.trick->clip->duration()) {
+            play = {};
+            play.at = at;
+            return;
+        }
+    }
+    if (!play.trick || play.weight <= 0 || scheduled) return;
+    auto keys = play.trick->edits;
+    if (play.mirrored) {
+        auto found = l.mirrored_edits.find(play.trick->edits.get());
+        if (found == l.mirrored_edits.end()) {
+            try {
+                found = l.mirrored_edits.emplace(play.trick->edits.get(), std::make_shared<const Animation>(mirror_animation(*play.trick->edits))).first;
+            } catch (...) { found = l.mirrored_edits.end(); }
+        }
+        if (found == l.mirrored_edits.end()) return;
+        keys = found->second;
+    }
+    const float weight = play.weight * animation_window_weight(*keys, play.time);
+    if (weight <= 0) return;
+    auto packet = std::make_shared<GameplayPacket>();
+    packet->generation = generation; packet->episode = play.episode;
+    packet->sequence = l.animation_updates.load(); packet->epoch = gameplay_epoch.load(std::memory_order_acquire);
+    packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
+    packet->at = at; packet->time = play.time; packet->weight = weight;
+    packet->clip = play.trick->clip; packet->edits = keys;
+    packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
+    packet->board_owned = true;
+    if (play.board_frame_ok && l.board_ok) {
+        Joint frame;
+        frame.rotation = normalised(multiply(live_placement.rotation, play.board_frame));
+        const auto native_board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+        board_target = board_edited(native_board, *keys, play.time, ground_turn(frame));
+        board_weight = weight;
+    }
+    scheduled = std::move(packet);
+}
+
 // ---- the animation thread ------------------------------------------------------------------------
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
@@ -2173,6 +2284,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 if (sampled.finished) l.game_trick = nullptr;
             }
+            play_pieces(l, *snap, at, generation, component, live_placement, scheduled, board_target, board_weight);
         }
         publish_gameplay_packet(std::move(scheduled));
         if (diagnostics_capture) {
@@ -3980,7 +4092,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.playing = false;
         s.dirty = false; // only an edit makes it unsaved
         message = trick.preview_only ? "Opened " + trick.label + " to edit. It is a piece of the game's own animation rather than a whole trick, "
-                                       "so it is saved by the clip it came from. It plays in game once the studio can see that clip playing." :
+                                       "so it is saved by the clip it came from. In game it plays whenever the game plays that piece: the studio knows it by the skater's pose, about a quarter of a second after it starts." :
             "Opened the game's " + trick.label + " (" + trick.pop + " pop). Native board physics and graph constraints are not included in this clip.";
         s.status = message;
         publish_locked(s);

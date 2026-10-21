@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <span>
 #include <string>
 #include <string_view>
@@ -249,6 +250,57 @@ std::string to_json(const Animation& animation);
 Animation from_json(std::string_view text); // without the clip
 std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
+// ---- which of the game's own clips is playing -----------------------------------------------------
+// The game says which trick it is doing, never which of its clips it plays - and most of what it plays is
+// not a trick at all (setups, loops, exits, the pieces a trick is blended from). Nothing in its memory was
+// found to name the playing clip (two probes, 2026-10-21), so it is recognised the way a person would: by
+// the skater's pose. A piece is playing when the body has been moving through it, in step, for the last
+// quarter of a second. Looking like one frame of it is not enough - riding looks like the first frame of
+// half the tricks - so the window has to move through the piece, keep in time with it, and fit better
+// than holding any one of its frames still. Tried offline on 38 recordings: it found the kickflip pieces in
+// the kickflips, at the right time, and nothing in the rest.
+struct PieceMatch {
+    std::size_t piece{}; // index into the clips given to set_pieces
+    bool mirrored{};     // the piece is playing the other way round
+    float time{};        // where in the piece, seconds
+    float score{};       // how far the pose is from it: 0 is exact
+};
+class PieceTracker {
+public:
+    // The clips to look for, each as it is and mirrored. A clip that barely moves cannot be told from
+    // standing still and is left out (looking_for says how many are looked for).
+    void set_pieces(const std::vector<const Clip*>& clips);
+    // One frame of the game's own pose (before any edit). The piece playing now, if one is.
+    std::optional<PieceMatch> update(double at, std::span<const Joint> pose);
+    void reset() noexcept;
+    std::size_t looking_for() const noexcept { return models_.size(); }
+
+private:
+    struct Model {
+        std::size_t piece{};
+        bool mirrored{};
+        std::vector<std::uint16_t> joints;
+        std::vector<Quat> frames; // times.size() * joints.size()
+        std::vector<float> times;
+    };
+    struct Sample {
+        double at{};
+        std::vector<Quat> rotation; // the body joints, below Ground
+    };
+    struct Fit {
+        float score{1}, still{1}, time{-1};
+        bool moving{};
+    };
+    Fit fit(const Model& model, const std::array<const Sample*, 8>& window, const std::array<float, 8>& ages) const;
+    std::vector<Model> models_;
+    std::deque<Sample> history_;
+    double last_at_{-1};
+    int locked_{-1}, candidate_{-1};
+    int streak_{};
+    float candidate_from_{}, candidate_last_{};
+    float play_time_{}, last_fit_time_{};
+    double advanced_at_{};
+};
 // A name safe as a file name ("Kickflip 2"): letters, digits, space, - and _ only.
 std::string file_safe(std::string_view name);
 } // namespace dingosdk::anim_studio

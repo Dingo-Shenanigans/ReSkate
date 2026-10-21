@@ -1057,6 +1057,66 @@ void native_playback_contracts() {
     select_presets(presets, {});
     check(presets[0].active && presets[1].active, "Fixed selection preserves separate ground and rail-exit presets");
 }
+// The game's own clips are recognised by the pose: a piece is found when the body moves through it in
+// step, at the right time, the other way round too - and not when he only stands in a pose like it.
+void pieces_are_recognised_by_the_pose() {
+    const auto make = [](float fa, float fb, float spread) {
+        Clip clip;
+        clip.joints = skeleton_joints;
+        for (int f = 0; f <= 60; ++f) clip.times.push_back(static_cast<float>(f) / 30.0f);
+        clip.frames.resize(clip.times.size() * clip.joints);
+        for (std::size_t f = 0; f < clip.times.size(); ++f)
+            for (std::uint16_t j = 2; j < 60; ++j) {
+                const float t = clip.times[f];
+                clip.frames[f * clip.joints + j].rotation =
+                    from_euler({70.0f * std::sin(fa * t + spread * j), 45.0f * std::cos(fb * t + 0.11f * j), 10.0f});
+            }
+        return clip;
+    };
+    const auto piece = make(9.0f, 7.0f, 0.37f), other = make(5.0f, 12.0f, 1.3f);
+    PieceTracker tracker;
+    tracker.set_pieces({&piece});
+    check(tracker.looking_for() == 2, "A moving piece is looked for as it is and mirrored");
+    std::vector<Joint> pose(skeleton_joints);
+    // Standing in its first pose for a second: never taken for it.
+    double at = 0;
+    bool fired = false;
+    for (int i = 0; i < 60; ++i, at += 1.0 / 60) {
+        for (std::size_t j = 0; j < pose.size(); ++j) pose[j] = piece.frame(0)[j];
+        fired |= tracker.update(at, pose).has_value();
+    }
+    check(!fired, "Holding a pose like the piece's is not playing it");
+    // Then playing it, at 60 frames a second.
+    std::optional<PieceMatch> found;
+    double found_at = -1, played_from = at;
+    for (; at - played_from < 1.8; at += 1.0 / 60) {
+        piece.sample(static_cast<float>(at - played_from), pose);
+        const auto m = tracker.update(at, pose);
+        if (m && !found) found_at = at;
+        if (m) found = m;
+    }
+    check(found.has_value() && found_at - played_from < 0.45, "Playing the piece is found within half a second");
+    check(found && !found->mirrored && std::abs(found->time - static_cast<float>(at - 1.0 / 60 - played_from)) < 0.08f,
+          "at the time it has got to");
+    // Something else moving is not it.
+    tracker.reset();
+    fired = false;
+    for (double t = 0; t < 1.8; t += 1.0 / 60, at += 1.0 / 60) {
+        other.sample(static_cast<float>(t), pose);
+        fired |= tracker.update(at, pose).has_value();
+    }
+    check(!fired, "Another motion is not taken for the piece");
+    // Played the other way round, it is found mirrored.
+    tracker.reset();
+    found.reset();
+    std::vector<Joint> straight(skeleton_joints);
+    for (double t = 0; t < 1.8; t += 1.0 / 60, at += 1.0 / 60) {
+        piece.sample(static_cast<float>(t), straight);
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) pose[mirror_joint[j]] = mirror_pose(straight[j]);
+        if (const auto m = tracker.update(at, pose)) found = m;
+    }
+    check(found && found->mirrored, "Played the other way round, it is found mirrored");
+}
 int main(int argc, char** argv) {
     try {
         timing_and_stance_edge_cases();
@@ -1073,6 +1133,7 @@ int main(int argc, char** argv) {
         native_names_and_search();
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
+        pieces_are_recognised_by_the_pose();
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
