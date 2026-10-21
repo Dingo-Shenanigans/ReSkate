@@ -601,6 +601,7 @@ std::string to_json(const Animation& animation) {
     root["version"] = 1;
     root["name"] = animation.name;
     root["trick"] = animation.trick;
+    if (!animation.author.empty()) root["author"] = animation.author;
     root["speed"] = animation.speed;
     root["loop"] = animation.loop;
     root["pop"] = animation.pop;
@@ -647,6 +648,7 @@ Animation from_json(std::string_view text) {
     Animation result;
     result.name = root.value("name", "");
     result.trick = root.value("trick", "");
+    result.author = root.value("author", "");
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
     result.pop = root.value("pop", "");

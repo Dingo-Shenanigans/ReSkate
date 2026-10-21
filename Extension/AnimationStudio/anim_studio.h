@@ -49,7 +49,7 @@ struct View {
     float fov{};
     bool camera_valid{};
     // The animation being edited.
-    std::string name, trick;
+    std::string name, trick, author;
     std::string source_kind, source_asset, entry;
     std::string source_position_codec;
     std::size_t source_pose_count{};
@@ -220,6 +220,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message);
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
 void set_trick(const std::string& trick);
+void set_author(const std::string& author); // whose trick it is, kept with it and shared with it
 // Camera.
 void set_orbit(const Orbit& orbit);
 void focus_joint(std::uint16_t joint); // the orbit centres on it, or comes off it when it is on it already

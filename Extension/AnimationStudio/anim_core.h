@@ -121,7 +121,8 @@ struct AnimationSource {
 };
 struct Animation {
     std::string name;  // the profile's name, also its file name
-    std::string trick; // what the player says it is (Kickflip, Heelflip ...)
+    std::string trick;  // what the player says it is (Kickflip, Heelflip ...)
+    std::string author; // who made it, kept with it so a shared trick says whose it is
     Clip clip;
     std::vector<Track> tracks;
     float speed{1}; // Studio preview speed; gameplay source seconds stay at 1x.

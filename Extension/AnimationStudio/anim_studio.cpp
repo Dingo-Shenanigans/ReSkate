@@ -435,6 +435,21 @@ Live& live() {
     return *l;
 }
 
+// Where a saved animation's files are. One saved now has a folder of its own named after it, holding its
+// .json and .clip, so a trick is one folder to share. The ones saved before that are loose in the tricks
+// folder and are read exactly where they lie: nothing is moved underneath anybody.
+std::filesystem::path library_folder();
+std::filesystem::path saved_file(const std::string& name, const wchar_t* extension) {
+    const auto folder = library_folder();
+    std::error_code error;
+    const auto own = folder / name / (name + (extension[1] == 'j' ? ".json" : ".clip"));
+    if (std::filesystem::is_regular_file(own, error)) return own;
+    const auto loose = folder / (name + (extension[1] == 'j' ? ".json" : ".clip"));
+    if (std::filesystem::is_regular_file(loose, error)) return loose;
+    return own; // where a new one goes
+}
+std::filesystem::path saved_json(const std::string& name) { return saved_file(name, L".json"); }
+std::filesystem::path saved_clip(const std::string& name) { return saved_file(name, L".clip"); }
 std::filesystem::path library_folder() {
     std::array<wchar_t, 32768> buffer{};
     if (const auto length = GetEnvironmentVariableW(L"RESKATE_ANIMATION_STUDIO_DIR", buffer.data(), static_cast<DWORD>(buffer.size()));
@@ -478,14 +493,22 @@ void read_library_locked(State& s) {
     std::error_code error;
     const auto folder = library_folder();
     if (folder.empty() || !std::filesystem::is_directory(folder, error)) return;
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error))
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
         if (entry.is_regular_file(error) && entry.path().extension() == L".json") s.library.push_back(entry.path().stem().string());
+        else if (entry.is_directory(error)) {
+            // A trick's own folder, named after it, holding its .json beside its .clip.
+            const auto name = entry.path().filename().string();
+            std::error_code inner;
+            if (std::filesystem::is_regular_file(entry.path() / (name + ".json"), inner)) s.library.push_back(name);
+        }
+    }
     std::sort(s.library.begin(), s.library.end());
+    s.library.erase(std::unique(s.library.begin(), s.library.end()), s.library.end());
     try {
         s.pack = current_pack();
         for (const auto& name : s.library) {
             try {
-                std::ifstream in(folder / (name + ".json"), std::ios::binary);
+                std::ifstream in(saved_json(name), std::ios::binary);
                 auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
                 if (!animation.trick.empty()) s.presets.push_back({name, animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
@@ -499,6 +522,23 @@ void read_library_locked(State& s) {
     } catch (const std::exception& e) { s.status = e.what(); }
 }
 
+// Every saved animation's metadata file: the ones loose in the tricks folder, and the ones in a folder of
+// their own named after them. A folder without its own .json (presets, recorded, library) is passed over.
+std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& folder) {
+    std::vector<std::filesystem::path> out;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (entry.is_regular_file(error) && entry.path().extension() == L".json") out.push_back(entry.path());
+        else if (entry.is_directory(error)) {
+            auto own = entry.path() / entry.path().filename();
+            own += L".json";
+            std::error_code inner;
+            if (std::filesystem::is_regular_file(own, inner)) out.push_back(own);
+        }
+    }
+    return out;
+}
+
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
 std::shared_ptr<const CustomTricks> read_custom_tricks() {
     auto tricks = std::make_shared<CustomTricks>();
@@ -508,17 +548,16 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
     // Select from small JSON metadata before expanding clips.
     // An inactive pack variant must not consume full animation memory or block a pack switch.
     std::vector<Preset> requested;
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (!entry.is_regular_file(error) || entry.path().extension() != L".json") continue;
+    for (const auto& entry : saved_jsons(folder)) {
         try {
-            std::ifstream in(entry.path(), std::ios::binary);
+            std::ifstream in(entry, std::ios::binary);
             const auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
-            auto clip_path = entry.path();
+            auto clip_path = entry;
             clip_path.replace_extension(L".clip");
             if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error))
-                requested.push_back({entry.path().stem().string(), animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
+                requested.push_back({entry.stem().string(), animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
         } catch (const std::exception& e) {
-            logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.path().filename().string(), e.what());
+            logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.filename().string(), e.what());
         }
     }
     try { select_presets(requested, current_pack()); }
@@ -526,17 +565,16 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
         logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
         return tricks;
     }
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (!entry.is_regular_file(error) || entry.path().extension() != L".json") continue;
+    for (const auto& entry : saved_jsons(folder)) {
         if (std::none_of(requested.begin(), requested.end(), [&](const Preset& p) {
-            return p.active && p.name == entry.path().stem().string();
+            return p.active && p.name == entry.stem().string();
         })) continue;
         try {
-            std::ifstream json_in(entry.path(), std::ios::binary);
+            std::ifstream json_in(entry, std::ios::binary);
             const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
             auto animation = std::make_shared<Animation>(from_json(text));
             if (animation->trick.empty()) continue;
-            auto clip_path = entry.path();
+            auto clip_path = entry;
             clip_path.replace_extension(L".clip");
             std::ifstream clip_in(clip_path, std::ios::binary);
             const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
@@ -545,9 +583,9 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             std::string trick;
             for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const bool goofy = animation->stance == "goofy";
-            tricks->push_back({trick, entry.path().stem().string(), clip, std::move(animation), goofy});
+            tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy});
         } catch (const std::exception& e) {
-            logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.path().filename().string(), e.what());
+            logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
         }
     }
     std::sort(tricks->begin(), tricks->end(), [](const CustomTrick& a, const CustomTrick& b) { return a.name < b.name; });
@@ -2323,6 +2361,7 @@ View view() {
     v.camera_valid = s.camera_valid;
     v.name = s.edits.name;
     v.trick = s.edits.trick;
+    v.author = s.edits.author;
     v.source_kind = s.edits.source.kind; v.source_asset = s.edits.source.asset; v.entry = s.edits.entry;
     v.source_position_codec = s.edits.source.position_codec;
     if (s.clip) {
@@ -2442,14 +2481,15 @@ bool copy_to_pops(std::string& message) {
             const auto stem = base.substr(0, 48 - suffix.size()) + suffix;
             copy.name = stem;
             unsigned number = 2;
-            while (std::filesystem::exists(folder / (copy.name + ".json")) || std::filesystem::exists(folder / (copy.name + ".clip")))
+            while (std::filesystem::exists(folder / copy.name) || std::filesystem::exists(folder / (copy.name + ".json")))
                 copy.name = variation_name(stem, number++);
+            std::filesystem::create_directories(folder / copy.name);
             copy.clip.times = {0, clip->duration()};
             copy.clip.takeoff = clip->takeoff;
             copy.clip.landing = clip->landing;
             const auto json = to_json(copy);
-            write_preset_file(folder / (copy.name + ".clip"), binary);
-            write_preset_file(folder / (copy.name + ".json"), json);
+            write_preset_file(folder / copy.name / (copy.name + ".clip"), binary);
+            write_preset_file(folder / copy.name / (copy.name + ".json"), json);
         }
     } catch (const std::exception& e) {
         message = std::string("Copying failed: ") + e.what();
@@ -2929,7 +2969,7 @@ bool save_preset_copy(std::string& message) {
         int number = 2;
         std::string name;
         do { name = variation_name(base, static_cast<unsigned>(number++)); }
-        while (std::filesystem::exists(library_folder() / (name + ".json")) || std::filesystem::exists(library_folder() / (name + ".clip")));
+        while (std::filesystem::exists(library_folder() / name) || std::filesystem::exists(library_folder() / (name + ".json")));
         s.edits.name = name;
         s.dirty = true;
     }
@@ -3054,7 +3094,8 @@ bool save(std::string& message) {
         const auto json = to_json(full);
         const auto bytes = clip_bytes(*s.clip);
         // Written beside the old files, then moved over them: a failed save never leaves half a profile.
-        const auto json_path = folder / (name + ".json"), clip_path = folder / (name + ".clip");
+        std::filesystem::create_directories(folder / name);
+        const auto json_path = folder / name / (name + ".json"), clip_path = folder / name / (name + ".clip");
         for (const auto& [path, data, size] : {std::tuple{json_path, static_cast<const void*>(json.data()), json.size()},
                                                std::tuple{clip_path, static_cast<const void*>(bytes.data()), bytes.size()}}) {
             auto temporary = path;
@@ -3342,11 +3383,11 @@ bool load(const std::string& name, std::string& message) {
     const auto folder = library_folder();
     try {
         const auto safe = file_safe(name);
-        std::ifstream json_in(folder / (safe + ".json"), std::ios::binary);
+        std::ifstream json_in(saved_json(safe), std::ios::binary);
         if (!json_in) throw std::runtime_error("it is not in the library");
         const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
         auto animation = from_json(text);
-        std::ifstream clip_in(folder / (safe + ".clip"), std::ios::binary);
+        std::ifstream clip_in(saved_clip(safe), std::ios::binary);
         if (!clip_in) throw std::runtime_error("its recorded trick is missing");
         const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
         auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
@@ -3381,8 +3422,10 @@ bool remove(const std::string& name, std::string& message) {
     const auto folder = library_folder();
     const auto safe = file_safe(name);
     std::error_code error;
-    std::filesystem::remove(folder / (safe + ".json"), error);
-    std::filesystem::remove(folder / (safe + ".clip"), error);
+    // Whichever way it was saved: its own folder, or loose from before there were folders.
+    std::filesystem::remove(saved_json(safe), error);
+    std::filesystem::remove(saved_clip(safe), error);
+    std::filesystem::remove(folder / safe, error); // the folder itself, once it is empty
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.tricks_read = false;
@@ -3485,6 +3528,15 @@ void set_trick(const std::string& trick) {
     s.dirty = true;
     ++s.revision;
 }
+void set_author(const std::string& author) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.edits.author == author) return;
+    s.edits.author = author.substr(0, 48);
+    s.dirty = true;
+    changed_locked(s);
+}
+
 void set_orbit(const Orbit& orbit) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

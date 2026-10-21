@@ -86,7 +86,7 @@ struct Ui {
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
 
-    std::array<char, 64> name{}, trick{};
+    std::array<char, 64> name{}, trick{}, author{};
     std::array<char, 64> pack_name{};
     std::uint64_t names_for{};
     std::string message;
@@ -121,9 +121,10 @@ struct Ui {
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
     bool zoom_to_playhead{};
-    std::array<float, 5> list_scroll{};
-    std::array<int, 5> list_followed{-1, -1, -1, -1, -1}; // the row the list last scrolled to, per tab
-    std::string open_trick; // TRICKS: the trick whose pops are shown ("" = the list of tricks)
+    std::array<float, 4> list_scroll{};
+    std::array<int, 4> list_followed{-1, -1, -1, -1}; // the row the list last scrolled to, per tab
+    std::string open_trick;    // TRICKS: the trick whose pops are shown ("" = the list of tricks)
+    std::string trick_category; // TRICKS: the kind of trick being looked through ("" = the kinds)
     bool browse_assets{};
     bool asset_ready_only{}, asset_inspect{};
     std::array<char, 64> asset_query{};
@@ -1038,8 +1039,8 @@ void save_now() {
 }
 
 // ---- the menu: skate.'s own list menu (Trick List), with tabs ---------------------------------------
-enum class Tab { tricks, animations, joints, keys, playback };
-constexpr std::array<const char*, 5> tab_names{"TRICKS", "SAVED", "JOINTS", "KEYS", "PLAYBACK"};
+enum class Tab { tricks, joints, keys, settings };
+constexpr std::array<const char*, 4> tab_names{"TRICKS", "JOINTS", "KEYS", "SETTINGS"};
 // Back, one step, in the TRICKS tab: out of a trick's pops, or up the native asset tree. True when it
 // went back, so Esc and B only fall through to anything else when there was nowhere to go.
 bool go_back_in_tricks() {
@@ -1047,6 +1048,12 @@ bool go_back_in_tricks() {
     if (static_cast<Tab>(u.tab) != Tab::tricks) return false;
     if (!u.open_trick.empty()) {
         u.open_trick.clear();
+        u.row = u.trick_row;
+        u.message.clear();
+        return true;
+    }
+    if (!u.trick_category.empty()) {
+        u.trick_category.clear();
         u.row = u.trick_row;
         u.message.clear();
         return true;
@@ -1337,65 +1344,61 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                 [] { ui().browse_assets = true; ui().row = 0; }, !assets->empty()});
             break;
         }
-        // Your own trick: you do it, and it comes into the studio with the board as the game drew it.
-        record_entries();
-        asset_entry();
-        rows.push_back({"TRICKS TO EDIT", "", "Recorded takes replace matching native trick/pop slots. Other native clips and grind previews stay available.", {}, false});
-        std::string category, trick;
-        for (const auto& t : list) {
-            if (t.category != category) {
-                category = t.category;
-                rows.push_back({upper(category), "", "", {}, false});
+        // The tricks in their own folders. Hundreds of them in one list is not a list anybody reads: the
+        // kinds are the top of it, and a kind opens to the tricks in it.
+        if (!u.trick_category.empty()) {
+            rows.push_back({"< Back", "", "Back to the kinds of trick.", [] {
+                                auto& state = ui();
+                                state.trick_category.clear();
+                                state.row = state.trick_row;
+                            }});
+            rows.push_back({upper(u.trick_category), "", "", {}, false});
+            std::string trick;
+            for (const auto& t : list) {
+                if (t.category != u.trick_category || t.trick == trick) continue; // each trick once
+                trick = t.trick;
+                const int index = static_cast<int>(rows.size());
+                Row row{t.label, ">", "Choose the pop next: low, mid or high.", [name = t.trick, index] {
+                            auto& state = ui();
+                            state.open_trick = name;
+                            state.trick_row = index;
+                            state.row = 2; // the first pop, under the trick's heading
+                        }};
+                row.on = v.trick == t.trick;
+                rows.push_back(std::move(row));
             }
-            if (t.trick == trick) continue; // each trick once
-            trick = t.trick;
-            const int index = static_cast<int>(rows.size());
-            Row row{t.label, ">", "Choose the pop next: low, mid or high.", [name = t.trick, index] {
-                        auto& ui_state = ui();
-                        ui_state.open_trick = name;
-                        ui_state.trick_row = index;
-                        ui_state.row = 2; // the first pop, under the trick's heading
-                    }};
-            row.on = v.trick == t.trick;
-            rows.push_back(std::move(row));
+            break;
         }
+        rows.push_back({"Record", "", "", {}, false});
+        record_entries();
+        rows.push_back({"Tricks to edit", "", "", {}, false});
+        // Each kind once, with how many tricks are in it, in the order the catalog has them.
+        {
+            std::vector<std::pair<std::string, std::size_t>> kinds;
+            std::string seen_trick;
+            for (const auto& t : list) {
+                if (t.trick == seen_trick) continue;
+                seen_trick = t.trick;
+                const auto found = std::find_if(kinds.begin(), kinds.end(), [&](const auto& kind) { return kind.first == t.category; });
+                if (found == kinds.end()) kinds.emplace_back(t.category, 1);
+                else ++found->second;
+            }
+            for (const auto& [name, count] : kinds) {
+                Row row{upper(name), std::to_string(count) + " >", "Open this kind of trick.", [name, index = static_cast<int>(rows.size())] {
+                            auto& state = ui();
+                            state.trick_category = name;
+                            state.trick_row = index;
+                            state.row = 2; // the first trick, under the heading
+                        }};
+                row.on = !v.trick.empty() && std::any_of(list.begin(), list.end(),
+                                                         [&](const auto& t) { return t.trick == v.trick && t.category == name; });
+                rows.push_back(std::move(row));
+            }
+        }
+        rows.push_back({"Everything else", "", "", {}, false});
+        asset_entry();
         break;
     }
-    case Tab::animations:
-        rows.push_back({"PACKS", "", "", {}, false});
-        rows.push_back({"Active pack", v.active_pack.empty() ? "All saved (fixed)" : v.active_pack,
-                        "Choose a pack. Each pack keeps its own selection of saved animations.", [v] {
-                            std::string next;
-                            const auto found = std::find(v.packs.begin(), v.packs.end(), v.active_pack);
-                            if (v.active_pack.empty() && !v.packs.empty()) next = v.packs.front();
-                            else if (found != v.packs.end() && std::next(found) != v.packs.end()) next = *std::next(found);
-                            std::string m; studio::use_preset_pack(next, m); say(m);
-                        }});
-        rows.push_back({"Create a new pack", u.pack_name.data(), "Type a pack name in the details panel (for example Steezy), then choose this row. Copies current choices; an existing pack is never overwritten.", [] {
-                            std::string m; studio::create_preset_pack(m, ui().pack_name.data()); say(m);
-                        }});
-        rows.push_back({"Variant playback", v.alternate_variants ? "Alternate" : "Fixed",
-                        "Fixed uses the chosen variant. Alternate cycles the included variants of each trick between attempts.", [v] {
-                            std::string m; studio::set_pack_alternation(!v.alternate_variants, m); say(m);
-                        }, !v.active_pack.empty()});
-        rows.push_back({"SAVED ANIMATIONS", "", "", {}, false});
-        if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
-        for (const auto& name : v.library) {
-            Row row{name, name == v.name ? "open" : "", "A saved animation: choose it to open it. Delete takes it out of the library (press it twice).",
-                    [name] {
-                        std::string m;
-                        studio::load(name, m);
-                        say(m);
-                        ui().names_for = 0;
-                    }};
-            row.on = name == v.name;
-            const auto preset = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
-            if (preset != v.presets.end()) row.value += preset->active ? "  active" : preset->included ? "  in pack" : "";
-            row.library = name;
-            if (u.confirm_delete == name) row.value = "delete again";
-            rows.push_back(std::move(row));
-        }
-        break;
     case Tab::joints:
         // The force field is a row like the joints are, since it is what happens to them when they are
         // moved. Pressing it steps through off and the quarters; C turns it off and on where it stood.
@@ -1513,7 +1516,8 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Redo", "", "", [] { studio::redo(); }, v.can_redo});
         break;
     }
-    case Tab::playback:
+    case Tab::settings: {
+        rows.push_back({"The animation", "", "", {}, false});
         rows.push_back({"Save as new variation", "", "Saves a separate copy of this animation and its edits, keeping the original.", [] {
                             std::string m; studio::save_preset_copy(m); say(m); ui().names_for = 0;
                         }, v.has_clip});
@@ -1572,7 +1576,42 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }, v.has_clip});
         rows.push_back({"Save", v.dirty ? "not saved" : "", "Saves the animation in the library.", [] { save_now(); }, v.has_clip});
         rows.push_back({"Close the studio", "", "Back to skating. The camera and the game's HUD come back.", [] { studio::request_close(); }});
+        rows.push_back({"Saved animations", "", "", {}, false});
+        rows.push_back({"PACKS", "", "", {}, false});
+        rows.push_back({"Active pack", v.active_pack.empty() ? "All saved (fixed)" : v.active_pack,
+                        "Choose a pack. Each pack keeps its own selection of saved animations.", [v] {
+                            std::string next;
+                            const auto found = std::find(v.packs.begin(), v.packs.end(), v.active_pack);
+                            if (v.active_pack.empty() && !v.packs.empty()) next = v.packs.front();
+                            else if (found != v.packs.end() && std::next(found) != v.packs.end()) next = *std::next(found);
+                            std::string m; studio::use_preset_pack(next, m); say(m);
+                        }});
+        rows.push_back({"Create a new pack", u.pack_name.data(), "Type a pack name in the details panel (for example Steezy), then choose this row. Copies current choices; an existing pack is never overwritten.", [] {
+                            std::string m; studio::create_preset_pack(m, ui().pack_name.data()); say(m);
+                        }});
+        rows.push_back({"Variant playback", v.alternate_variants ? "Alternate" : "Fixed",
+                        "Fixed uses the chosen variant. Alternate cycles the included variants of each trick between attempts.", [v] {
+                            std::string m; studio::set_pack_alternation(!v.alternate_variants, m); say(m);
+                        }, !v.active_pack.empty()});
+        rows.push_back({"SAVED ANIMATIONS", "", "", {}, false});
+        if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
+        for (const auto& name : v.library) {
+            Row row{name, name == v.name ? "open" : "", "A saved animation: choose it to open it. Delete takes it out of the library (press it twice).",
+                    [name] {
+                        std::string m;
+                        studio::load(name, m);
+                        say(m);
+                        ui().names_for = 0;
+                    }};
+            row.on = name == v.name;
+            const auto preset = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
+            if (preset != v.presets.end()) row.value += preset->active ? "  active" : preset->included ? "  in pack" : "";
+            row.library = name;
+            if (u.confirm_delete == name) row.value = "delete again";
+            rows.push_back(std::move(row));
+        }
         break;
+    }
     }
     return rows;
 }
@@ -1602,6 +1641,14 @@ void switch_tab(int delta) {
 void move_row(const studio::View& v, int delta) {
     auto& u = ui();
     if (static_cast<Tab>(u.tab) == Tab::joints) {
+        // Row 0 is the force field, above the joints; the joints are the rest.
+        if (u.row <= 0 && delta < 0) return;
+        if (u.row <= 1 && delta < 0) { u.row = 0; return; }
+        if (u.row == 0) {
+            u.row = 1;
+            u.selected = studio::editable_joints()[0].index;
+            return;
+        }
         select_row(delta);
         return;
     }
@@ -1683,7 +1730,7 @@ void controller(const studio::View& v, const Projector& p) {
     if ((released & pad_rb) && !u.shoulder_shifted) switch_tab(1);
     if (pressed & pad_a) activate_row(v);
     if (pressed & pad_x) {
-        if (static_cast<Tab>(u.tab) == Tab::animations) delete_row(v);
+        if (static_cast<Tab>(u.tab) == Tab::settings) delete_row(v);
         else delete_key(v);
     }
     if (pressed & pad_y) studio::set_playing(!v.playing);
@@ -1864,6 +1911,18 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         const float y = at.y + i * (row_h + gap) - scroll;
         if (y + row_h < at.y || y > at.y + size.y) continue;
         const ImVec2 a(at.x, y), b(at.x + size.x - 24 * k, y + row_h);
+        // A row with nothing to do is a heading over the rows under it: the game's own settings pages are
+        // read that way, and a heading that looks like a button is a button you cannot press.
+        if (!row.act && !row.enabled) {
+            const float fs = 15 * k;
+            text(d, f.heading, fs, ImVec2(a.x + 8 * k, b.y - fs - 6 * k), blue_light, upper(row.label));
+            d->AddRectFilled(ImVec2(a.x + 8 * k, b.y - 3 * k), ImVec2(b.x - 8 * k, b.y - 1.5f * k), IM_COL32(255, 255, 255, 36));
+            if (!row.value.empty()) {
+                const auto t = text_size(f.bold, 13 * k, row.value.c_str());
+                text(d, f.bold, 13 * k, ImVec2(b.x - t.x - 10 * k, b.y - fs - 4 * k), soft, row.value);
+            }
+            continue;
+        }
         ImGui::SetCursorScreenPos(a);
         ImGui::PushID(static_cast<int>(i));
         const bool clicked = ImGui::InvisibleButton("##row", ImVec2(b.x - a.x, b.y - a.y)) && y >= at.y - 1;
@@ -1886,11 +1945,10 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         }
         if (row.on && !here) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 4 * k, b.y - 6 * k), blue);
         if (clicked) {
-            if (tab == Tab::joints) u.selected = studio::editable_joints()[i].index;
-            else {
-                u.row = static_cast<int>(i);
-                if (row.enabled && row.act) row.act();
-            }
+            u.row = static_cast<int>(i);
+            // In JOINTS every row but the first is a joint, and choosing it is what the click means.
+            if (tab == Tab::joints && i > 0) u.selected = studio::editable_joints()[i - 1].index;
+            else if (row.enabled && row.act) row.act();
         }
     }
     d->PopClipRect();
@@ -2004,11 +2062,12 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         }
         return;
     }
-    if (tab == Tab::animations) {
+    if (tab == Tab::settings) {
         // The name and trick of the one being edited, typed here.
         if (u.names_for != v.revision && !ImGui::IsAnyItemActive()) {
             std::snprintf(u.name.data(), u.name.size(), "%s", v.name.c_str());
             std::snprintf(u.trick.data(), u.trick.size(), "%s", v.trick.c_str());
+            std::snprintf(u.author.data(), u.author.size(), "%s", v.author.c_str());
             u.names_for = v.revision;
         }
         const float w = (size.x - 60 * k) / 2;
@@ -2029,9 +2088,16 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         ImGui::SetNextItemWidth(w);
         if (ImGui::InputText("##trick", u.trick.data(), u.trick.size(), ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::IsItemDeactivatedAfterEdit())
             studio::set_trick(u.trick.data());
-        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 62 * k), ink_soft, "NEW PACK NAME");
+        // Who made it. Kept with the trick and shared with it, so a trick passed on says whose it is.
+        text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 62 * k), ink_soft, "MADE BY");
         ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, y + 80 * k));
-        ImGui::SetNextItemWidth(size.x - 44 * k);
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::InputTextWithHint("##author", "your name", u.author.data(), u.author.size(), ImGuiInputTextFlags_EnterReturnsTrue) ||
+            ImGui::IsItemDeactivatedAfterEdit())
+            studio::set_author(u.author.data());
+        text(d, f.bold, 13 * k, ImVec2(at.x + 38 * k + w, y + 62 * k), ink_soft, "NEW PACK NAME");
+        ImGui::SetCursorScreenPos(ImVec2(at.x + 38 * k + w, y + 80 * k));
+        ImGui::SetNextItemWidth(w);
         ImGui::InputTextWithHint("##packname", "e.g. Steezy", u.pack_name.data(), u.pack_name.size());
         ImGui::PopFont();
         ImGui::PopStyleVar();
@@ -2623,7 +2689,7 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_F)) studio::focus_joint(u.selected);
     if (!ctrl && pressed(ImGuiKey_K) && v.has_clip) key_joint();
     if (pressed(ImGuiKey_Delete)) {
-        if (static_cast<Tab>(u.tab) == Tab::animations) delete_row(v);
+        if (static_cast<Tab>(u.tab) == Tab::settings) delete_row(v);
         else if (!u.picked.empty()) delete_picked();
         else delete_key(v);
     }
@@ -3105,6 +3171,7 @@ void draw_animation_studio() {
                 // tree, which on an install without that index built is empty, so every search read as
                 // nothing found even when the trick was right there in the list.
                 u.open_trick.clear();
+                u.trick_category.clear(); // a search looks through every kind
                 u.asset_page = 0; u.row = 0;
                 u.list_scroll[static_cast<std::size_t>(u.tab)] = 0;
                 u.list_followed[static_cast<std::size_t>(u.tab)] = -1;
