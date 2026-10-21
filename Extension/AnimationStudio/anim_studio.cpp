@@ -150,9 +150,6 @@ struct State {
     bool showing_goofy{};
     bool grab_board{};
     bool front_foot{true};
-    std::shared_ptr<const Clip> mirrored, mirrored_idle;
-    const Clip* mirrored_of{};
-    const Clip* mirrored_idle_of{};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -626,37 +623,17 @@ void publish_locked(State& s, bool edits_changed = true) {
     snap->time = s.time;
     snap->open = s.open;
     snap->play_in_game = s.play_in_game && !s.manual_recording;
-    // The skater stands the way the studio is set to: a clip authored the other way round is shown
-    // mirrored. Only the skinned body is mirrored, never the placement, the board's own joints or the
-    // effector subtrees - mirroring all 395 put the joints past Ground (375) on the wrong bones and tore
-    // him up on screen. The keys are left alone, being anatomical: a left-hand key is the left hand in
-    // either stance, which is how gameplay lays them over the native pose. Each mirror is made once.
+    // The stance the studio is set to. Standing him the other way round is done by turning him about on
+    // the board, not by mirroring the clip: mirroring was tried twice, over all 395 joints and over the
+    // body alone, and both tore the skater up on screen. Turning the placement cannot do that - it is one
+    // joint's rotation - and it is also what the stance is: the same body at the other end of the board,
+    // the left foot where the right one was.
     {
         const bool goofy = studio_goofy(s.stance_choice);
         s.showing_goofy = goofy;
         snap->goofy = goofy;
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
-        const bool clip_goofy = s.edits.stance == "goofy";
-        if (s.clip && !s.clip->empty() && clip_goofy != goofy) {
-            if (s.mirrored_of != s.clip.get()) {
-                try {
-                    s.mirrored = std::make_shared<const Clip>(mirror_body_clip(*s.clip));
-                    s.mirrored_of = s.clip.get();
-                } catch (...) { s.mirrored = nullptr; s.mirrored_of = nullptr; }
-            }
-            if (s.mirrored) snap->clip = s.mirrored;
-        }
-        // The casual stance he waits in is one of the game's own, which are authored regular.
-        if (goofy && s.idle_clip && !s.idle_clip->empty()) {
-            if (s.mirrored_idle_of != s.idle_clip.get()) {
-                try {
-                    s.mirrored_idle = std::make_shared<const Clip>(mirror_body_clip(*s.idle_clip));
-                    s.mirrored_idle_of = s.idle_clip.get();
-                } catch (...) { s.mirrored_idle = nullptr; s.mirrored_idle_of = nullptr; }
-            }
-            if (s.mirrored_idle) snap->idle = s.mirrored_idle;
-        }
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -1572,6 +1549,13 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             apply_edits(shown_edits, shown_time, l.pose);
+            // Standing him the other way round: the body is turned half a turn about the upright through
+            // his placement, so the foot that was at the nose is at the tail. The board is composed from
+            // `live_placement` below and is left exactly where it is, so he turns and it does not.
+            if (snap->goofy != (shown_edits.stance == "goofy") && placement_joint < l.pose.size()) {
+                auto& placed = l.pose[placement_joint];
+                placed.rotation = normalised(multiply(axis_angle({0, 1, 0}, 3.14159265f), placed.rotation));
+            }
             // Nothing in his hands: the game hangs props (the phone of its idle, held still while the studio is
             // open) on the hands' attach joints, so those are made tiny and what hangs on them with them.
             for (const std::uint16_t attach : {right_hand_attach, left_hand_attach})
