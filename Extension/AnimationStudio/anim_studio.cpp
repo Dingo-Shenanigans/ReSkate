@@ -305,6 +305,10 @@ struct Live {
     // something else. Rather than guess what it will do - its conditions are its own - the layer watches
     // what it did and lets go smoothly, limb by limb where it can tell which.
     LimbWeights limbs;
+    // Which way a recording's board was pointing, in its own skater's frame, worked out once per trick.
+    // Riding fakie the board is the other way round to the way it was recorded, and its keys have to be
+    // read that way round too or they push the wrong end of it.
+    std::map<const Clip*, Quat> recorded_board_frame;
     std::vector<Joint> mirror_scratch;  // the pose being read while his mirrored one is written
     std::vector<Joint> native_before;   // the native pose a frame ago, to see what the graph just did
     std::vector<Joint> source_before;   // and what the authored clip expected over the same frame
@@ -1775,7 +1779,29 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
-                    packet->board_frame_local = l.board_frame_local; packet->board_frame_valid = l.board_at_takeoff_ok;
+                    // The board keys work in the frame the board had at takeoff. That is only the frame
+                    // they were authored in if the board is pointing the way it was when they were
+                    // recorded: riding fakie it is the other way round, and the keys then push the nose
+                    // where they should push the tail. So the two are compared and the frame turned to
+                    // match. Which foot leads is the body's business and is handled on its own; this is
+                    // the board's.
+                    Quat takeoff_frame = l.board_frame_local;
+                    if (l.board_at_takeoff_ok) {
+                        auto known = l.recorded_board_frame.find(trick->clip.get());
+                        if (known == l.recorded_board_frame.end()) {
+                            Quat recorded{0, 0, 0, 1};
+                            if (Joint rel; trick->clip->sample_board(0, rel)) {
+                                const auto placed = world(trick->clip->frame(0), placement_joint);
+                                recorded = normalised(multiply(conjugate(placed.rotation), ground_turn(compose(placed, rel))));
+                            }
+                            known = l.recorded_board_frame.emplace(trick->clip.get(), recorded).first;
+                        }
+                        const auto along = [](const Quat& q) { return rotate(q, Vec3{0, 0, 1}); };
+                        const auto live = along(takeoff_frame), as_recorded = along(known->second);
+                        if (live[0] * as_recorded[0] + live[2] * as_recorded[2] < 0)
+                            takeoff_frame = normalised(multiply(axis_angle({0, 1, 0}, 3.14159265f), takeoff_frame));
+                    }
+                    packet->board_frame_local = takeoff_frame; packet->board_frame_valid = l.board_at_takeoff_ok;
                     packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
                     scheduled = std::move(packet);
                     // Diagnostic prediction only. The renderer evaluates these edits again over its
@@ -1784,7 +1810,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         apply_authored_edit_layer(played, sampled.time, l.pose, weight, &l.limbs);
                     }
                     if (scheduled->board_owned && scheduled->board_frame_valid && l.board_ok) {
-                        Joint frame; frame.rotation = normalised(multiply(live_placement.rotation, l.board_frame_local));
+                        Joint frame; frame.rotation = normalised(multiply(live_placement.rotation, takeoff_frame));
                         const auto native_board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
                         board_target = board_edited(native_board, played, sampled.time, ground_turn(frame));
                         board_weight = weight;
