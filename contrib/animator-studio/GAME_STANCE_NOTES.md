@@ -58,3 +58,18 @@ Read out of the game's own animation graph (the typed native documents the libra
 - In the pose after the animation update the regular rider's left foot is on placement +X (mirrored) in
   normal, fakie and after shuvits. Recordings, taken from the pose at render time, almost all show the
   right foot on +X. Readout v3 logs both at once to see whether the game mirrors between the two.
+
+## Readout v3 (2026-10-22): the mirror is the 0x20 bit after all
+
+- Both copies of the pose (after the animation update, and at render) agree on the side, one frame apart.
+  The game does not mirror between them.
+- Riding switch (reached by pushing while fakie) the 0x20 bit is clear and the right foot is on +X
+  (unmirrored); normal and fakie have it set and the left foot on +X (mirrored). So 0x20 at context+0x13c4
+  IS the game's mirror for a regular rider, as Norms read it. The first readout was misread: what looked
+  like switch there was the board turned backwards. Entering switch the game also sets board backwards and
+  the body-relative speed changes sign: the body turns round on the board.
+- The skeleton has `MirrorByBehavior: false`: the engine mirrors by reflection, not by copying channels.
+- Joint names are in the skeleton's NameTable (0 Reference, 1 AITrajectory, 7 Hips, 10 RightFoot, 343
+  LeftFoot, 375 Ground, 376-379 ankle/wrist effectors, 380 Skateboard_Root, 390-394 deck effectors).
+- Still to check: that our mirror maths matches the game's. Every one of the 299 recordings so far was made
+  unmirrored, so one recording made riding normal is needed to compare against the library.

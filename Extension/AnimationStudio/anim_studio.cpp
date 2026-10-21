@@ -1898,6 +1898,123 @@ std::string toggle_stance_readout() {
                : "Stance readout off. See ReSkate.Tricks/research/stance-readout.txt.";
 }
 
+// ---- studio snapshot -------------------------------------------------------------------------------
+// Written by itself 1.5 s after the studio shows a stance (on opening, and whenever the stance shown
+// changes): where the studio put his body and board, and what the skater buffer holds later in the same
+// frame, after the board is drawn. For finding why the studio's picture of him is off his board.
+namespace studio_snapshot {
+std::mutex mutex;
+bool armed{};
+double due{-1};
+int last_key{-1};
+std::vector<Joint> desired;
+Joint desired_board, placement;
+bool mirrored{}, goofy{}, clip_goofy{}, has_board{};
+std::vector<Joint> late;
+Joint late_board;
+bool late_ok{};
+void write_report() {
+    static const std::array<std::pair<std::uint16_t, const char*>, 16> joints{{
+        {7, "Hips"}, {42, "Spine"}, {10, "RightFoot"}, {343, "LeftFoot"}, {9, "RightLeg"}, {342, "LeftLeg"},
+        {48, "RightForeArm"}, {277, "LeftForeArm"}, {376, "LeftAnkleEffectorAux"}, {377, "RightAnkleEffectorAux"},
+        {390, "LeftAnkleEffDeck"}, {391, "RightAnkleEffDeck"}, {394, "HipsEffDeck"}, {375, "Ground"},
+        {380, "Skateboard_Root"}, {1, "AITrajectory"}}};
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3);
+    out << "# Animation Studio snapshot: studio stance " << (goofy ? "goofy" : "regular") << ", clip stands "
+        << (clip_goofy ? "goofy" : "regular") << ", body mirrored by the studio: " << (mirrored ? "yes" : "no") << "\n";
+    const auto in_frame = [&](const Joint& frame, const Joint& w) {
+        Joint r;
+        r.position = rotate(conjugate(frame.rotation), Vec3{w.position[0] - frame.position[0], w.position[1] - frame.position[1], w.position[2] - frame.position[2]});
+        r.rotation = normalised(multiply(conjugate(frame.rotation), w.rotation));
+        return r;
+    };
+    const auto v = [&](const Vec3& x) {
+        std::ostringstream t;
+        t << std::fixed << std::setprecision(3) << '(' << x[0] << ' ' << x[1] << ' ' << x[2] << ')';
+        return t.str();
+    };
+    const auto table = [&](const char* title, const std::vector<Joint>& pose, const Joint& board, bool board_ok) {
+        out << "== " << title << " (positions in that pose's AITrajectory frame)\n";
+        if (pose.size() < skeleton_joints) {
+            out << "   (none)\n";
+            return;
+        }
+        const auto frame = world(pose, placement_joint);
+        for (const auto& [j, name] : joints) {
+            const auto w = world(pose, j);
+            out << "   " << std::setw(3) << j << ' ' << std::left << std::setw(22) << name << std::right << v(in_frame(frame, w).position)
+                << "  local rot (" << pose[j].rotation[0] << ' ' << pose[j].rotation[1] << ' ' << pose[j].rotation[2] << ' ' << pose[j].rotation[3] << ")\n";
+        }
+        if (board_ok) {
+            const auto b = in_frame(frame, board);
+            out << "   board mount " << v(b.position) << "  long axis (its z) " << v(rotate(b.rotation, Vec3{0, 0, 1})) << "  up (its y) "
+                << v(rotate(b.rotation, Vec3{0, 1, 0})) << '\n';
+            for (const auto& [j, name] : {std::pair<std::uint16_t, const char*>{343, "LeftFoot"}, {10, "RightFoot"}}) {
+                const auto w = world(pose, j).position;
+                const auto f = rotate(conjugate(board.rotation), Vec3{w[0] - board.position[0], w[1] - board.position[1], w[2] - board.position[2]});
+                out << "   " << name << " in the board's frame (x across, y up, z along) " << v(f) << '\n';
+            }
+        }
+    };
+    table("the pose the studio built", desired, desired_board, has_board);
+    table("the skater buffer later in the frame, after the board was drawn", late, late_board, late_ok);
+    try {
+        const auto folder = library_folder() / L"research";
+        std::filesystem::create_directories(folder);
+        std::ofstream file(folder / (std::string("studio-snapshot-") + (goofy ? "goofy" : "regular") + ".txt"), std::ios::binary | std::ios::trunc);
+        file << out.str();
+    } catch (...) {}
+    logging::log(Level::info, Channel::skater, "Animation Studio: studio snapshot written ({}).", goofy ? "goofy" : "regular");
+}
+// Animation thread, each studio frame with no trick open.
+void studio_frame(double at, bool goofy_now, bool clip_goofy_now, bool mirrored_now, const std::vector<Joint>& pose, const Joint& placed,
+                  const std::optional<Joint>& board) {
+    std::lock_guard lock(mutex);
+    const int key = (goofy_now ? 1 : 0) | (mirrored_now ? 2 : 0);
+    if (key != last_key) {
+        last_key = key;
+        due = at + 1.5;
+        armed = false;
+        late_ok = false;
+    }
+    if (due < 0 || at < due || armed) return;
+    desired = pose;
+    placement = placed;
+    goofy = goofy_now;
+    clip_goofy = clip_goofy_now;
+    mirrored = mirrored_now;
+    has_board = board.has_value();
+    if (board) desired_board = *board;
+    armed = true; // the board render takes the late read, then writes the report
+}
+void closed() {
+    std::lock_guard lock(mutex);
+    last_key = -1;
+    due = -1;
+    armed = false;
+}
+// Board render thread: after the board is put where the studio wants it.
+void late_read(std::uintptr_t base, std::uintptr_t component, const Joint& board_drawn) {
+    std::lock_guard lock(mutex);
+    if (!armed) return;
+    armed = false;
+    due = -1;
+    late.clear();
+    if (component) {
+        if (const auto holder = read<std::uintptr_t>(component + 0xa0); holder && *holder) {
+            const auto layout = multiplayer::read_native_pose_layout(peek, base, *holder, 512);
+            std::vector<NativeBone> bones(layout.count);
+            if (layout.buffer && layout.count == skeleton_joints && peek(layout.buffer, bones.data(), bones.size() * sizeof(NativeBone)))
+                for (const auto& b : bones) late.push_back(joint_of(b));
+        }
+    }
+    late_board = board_drawn;
+    late_ok = finite(board_drawn) && late.size() == skeleton_joints;
+    write_report();
+}
+} // namespace studio_snapshot
+
 // ---- the animation thread ------------------------------------------------------------------------
 void on_animation(std::uintptr_t component) noexcept {
     auto& l = live();
@@ -2534,6 +2651,10 @@ void on_animation(std::uintptr_t component) noexcept {
             if (board_weight > 0 && finite(board_target)) board = board_target;
             else if (l.board_ok) board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
             publish_joints(l.pose, live_placement, board, board_frame);
+            if (!(snap->clip && !snap->clip->empty()))
+                studio_snapshot::studio_frame(at, snap->goofy, true, mirrored_body, l.pose, live_placement, board);
+        } else {
+            studio_snapshot::closed();
         }
     } catch (const std::exception& e) {
         invalidate_outputs();
@@ -2873,6 +2994,8 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
                             shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
                             shot.edited_board_sequence = packet->sequence; shot.edited_board_presentation = presentation;
                         }
+                        studio_snapshot::late_read(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire),
+                                                   compose(board_parent(b), joint_of(b[board_mount])));
                     }
                 }
             }
