@@ -1496,6 +1496,10 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "and the keys are left as they are, because a left-hand key is the left hand in either stance - which is how "
                         "they go on in game. Record a trick in the stance you skate in.",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
+        rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
+                        "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
+                        "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",
+                        [v] { studio::set_grab(!v.grab_board); }});
         rows.push_back({"Hide everything", u.hide_ui ? "hidden" : "H",
                         "Takes the whole studio off the screen - tabs, timeline, dots and all - leaving the skater and the room. For "
                         "filming a trick or taking a picture of it. H brings it back.",

@@ -67,6 +67,16 @@ float on_a_frame(float seconds) noexcept;
 // game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and
 // snapping puts a foot on the deck at this height in the air.
 inline constexpr float feet_above_board = 0.104f;
+// The fingers, read off the skeleton's own parent table (animation_skeleton.h): each hand carries five
+// chains, the thumb and four fingers, and an attach joint the game hangs props on which is not one of
+// them. They are not edited - there is no row for them - but the studio closes them on the board.
+inline constexpr std::uint16_t right_hand_joint = 49, left_hand_joint = 278;
+inline constexpr std::array<std::array<std::uint16_t, 4>, 5> right_fingers{{
+    {51, 52, 53, 0}, {54, 55, 56, 57}, {58, 59, 60, 61}, {62, 63, 64, 65}, {66, 67, 68, 69},
+}};
+inline constexpr std::array<std::array<std::uint16_t, 4>, 5> left_fingers{{
+    {279, 280, 281, 282}, {284, 285, 286, 287}, {288, 289, 290, 291}, {292, 293, 294, 295}, {296, 297, 298, 0},
+}};
 // How long the board takes to go from under the feet to the clip's own at the pop, and back at the
 // landing. Inside this much of either, the board is part way between the two.
 inline constexpr float board_blend = 0.06f;

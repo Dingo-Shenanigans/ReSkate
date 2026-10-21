@@ -113,6 +113,7 @@ struct Snapshot {
     bool open{}, play_in_game{}, armed{}, room{};
     float speed{1};
     bool goofy{}; // the way round the studio is working
+    bool grab{};  // a hand near the board closes on it
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -146,6 +147,7 @@ struct State {
     // round, kept so it is mirrored once rather than every frame.
     int stance_choice{};
     bool showing_goofy{};
+    bool grab_board{};
     std::shared_ptr<const Clip> mirrored, mirrored_idle;
     const Clip* mirrored_of{};
     const Clip* mirrored_idle_of{};
@@ -613,6 +615,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         const bool goofy = studio_goofy(s.stance_choice);
         s.showing_goofy = goofy;
         snap->goofy = goofy;
+        snap->grab = s.grab_board;
         const bool clip_goofy = s.edits.stance == "goofy";
         if (s.clip && !s.clip->empty() && clip_goofy != goofy) {
             if (s.mirrored_of != s.clip.get()) {
@@ -1141,6 +1144,83 @@ std::string research_trace(const std::string& action) {
 // The board's edit at `seconds`, in the frame of its start (`ground`, that frame's turn): moved along its X, Y
 // and Z, and turned about them, whatever the board does in the trick.
 
+// A hand that comes near the deck closes on it. The fingers are bent about the axis their own knuckles
+// turn on, worked out from the hand itself rather than assumed, and the way round is settled by trying it:
+// whichever way brings the fingertip nearer the board is the way a hand closes. Nothing here is keyed, so
+// a grab is what the studio shows, never something saved into the animation.
+//
+// The deck, in its mount's frame: flat between the trucks, rising to the nose and the tail.
+constexpr float deck_half_across = 0.105f, deck_half_thick = 0.020f, deck_half_along = 0.430f;
+constexpr float deck_flat_to = 0.26f, deck_kick = 0.075f;
+Vec3 nearest_on_deck(const Joint& board, const Vec3& point) {
+    std::array<Vec3, 3> axes{};
+    for (int i = 0; i < 3; ++i) {
+        Vec3 e{};
+        e[static_cast<std::size_t>(i)] = 1;
+        axes[static_cast<std::size_t>(i)] = rotate(board.rotation, e);
+    }
+    const Vec3 from{point[0] - board.position[0], point[1] - board.position[1], point[2] - board.position[2]};
+    std::array<float, 3> along{};
+    for (int i = 0; i < 3; ++i) {
+        const auto& a = axes[static_cast<std::size_t>(i)];
+        along[static_cast<std::size_t>(i)] = from[0] * a[0] + from[1] * a[1] + from[2] * a[2];
+    }
+    const float out = std::clamp((std::abs(along[2]) - deck_flat_to) / std::max(deck_half_along - deck_flat_to, 1e-3f), 0.0f, 1.0f);
+    const float kick = out * out * deck_kick;
+    along[0] = std::clamp(along[0], -deck_half_across, deck_half_across);
+    along[1] = std::clamp(along[1], -deck_half_thick, deck_half_thick + kick);
+    along[2] = std::clamp(along[2], -deck_half_along, deck_half_along);
+    Vec3 on = board.position;
+    for (int i = 0; i < 3; ++i)
+        for (int c = 0; c < 3; ++c) on[c] += axes[static_cast<std::size_t>(i)][c] * along[static_cast<std::size_t>(i)];
+    return on;
+}
+float apart(const Vec3& a, const Vec3& b) noexcept {
+    return std::hypot(std::hypot(a[0] - b[0], a[1] - b[1]), a[2] - b[2]);
+}
+// Turns every joint of a finger about `axis` by `radians`, in the world, leaving the pose parent-local.
+void bend_finger(std::span<Joint> pose, const std::array<std::uint16_t, 4>& finger, const Vec3& axis, float radians) {
+    const auto turn = axis_angle(axis, radians);
+    for (const auto joint : finger) {
+        if (!joint || joint >= pose.size()) continue;
+        const auto up = parent(joint);
+        if (up < 0) continue;
+        const auto parent_world = world(pose, static_cast<std::uint16_t>(up)).rotation;
+        pose[joint].rotation = normalised(multiply(multiply(conjugate(parent_world), multiply(turn, parent_world)), pose[joint].rotation));
+    }
+}
+void close_hand(std::span<Joint> pose, std::uint16_t hand, const std::array<std::array<std::uint16_t, 4>, 5>& fingers,
+                const Joint& board) {
+    if (hand >= pose.size()) return;
+    const auto hand_at = world(pose, hand).position;
+    const auto near_board = nearest_on_deck(board, hand_at);
+    // Open at arm's length, closed when the hand is on it.
+    constexpr float reach = 0.26f, held = 0.09f;
+    const float amount = std::clamp((reach - apart(hand_at, near_board)) / (reach - held), 0.0f, 1.0f);
+    if (amount <= 0.01f) return;
+    for (const auto& finger : fingers) {
+        std::uint16_t tip = 0;
+        for (const auto joint : finger) if (joint && joint < pose.size()) tip = joint;
+        if (!finger[0] || !tip || finger[0] >= pose.size()) continue;
+        const auto root = world(pose, finger[0]).position;
+        const auto tip_at = world(pose, tip).position;
+        const Vec3 bone{tip_at[0] - root[0], tip_at[1] - root[1], tip_at[2] - root[2]};
+        const Vec3 to_board{near_board[0] - tip_at[0], near_board[1] - tip_at[1], near_board[2] - tip_at[2]};
+        // The knuckles turn about the line across the finger: along neither the bone nor the way it must go.
+        Vec3 axis{bone[1] * to_board[2] - bone[2] * to_board[1], bone[2] * to_board[0] - bone[0] * to_board[2],
+                  bone[0] * to_board[1] - bone[1] * to_board[0]};
+        const float length = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+        if (length < 1e-5f) continue;
+        for (auto& c : axis) c /= length;
+        // Which way round closes it: the way that brings the tip nearer the board.
+        const float step = 0.35f * amount;
+        std::vector<Joint> tried(pose.begin(), pose.end());
+        bend_finger(tried, finger, axis, step);
+        const float closer = apart(world(tried, tip).position, near_board);
+        bend_finger(pose, finger, axis, closer < apart(tip_at, near_board) ? step : -step);
+    }
+}
+
 // The board under the feet, as when riding. The game's clips leave the board where the animators had
 // it, and the game's foot placement puts the feet on it: before the pop and after the landing their
 // feet sink into the board or float over it by up to 6 cm (measured 2026-10-18 in the kickflip and
@@ -1492,6 +1572,10 @@ void on_animation(std::uintptr_t component) noexcept {
                 std::lock_guard base_lock(st.mutex);
                 st.board_base = relative(origin, unedited);
                 st.board_base_valid = has_trick && finite(st.board_base);
+                if (snap->grab && finite(board_target)) {
+                    close_hand(l.pose, right_hand_joint, right_fingers, board_target);
+                    close_hand(l.pose, left_hand_joint, left_fingers, board_target);
+                }
             }
         } else if (snap->open) {
             // No trick loaded yet: the live pose, with the edits of the start of the timeline.
@@ -2378,6 +2462,7 @@ View view() {
     v.solo = s.solo;
     v.stance_choice = s.stance_choice;
     v.showing_goofy = s.showing_goofy;
+    v.grab_board = s.grab_board;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -2628,6 +2713,13 @@ void set_play_in_game(bool on) {
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
     s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
+    publish_locked(s);
+}
+void set_grab(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.grab_board = on;
+    s.status = on ? "Hands close on the board when they come near it." : "Hands stay as they are.";
     publish_locked(s);
 }
 void set_stance(int choice) {
