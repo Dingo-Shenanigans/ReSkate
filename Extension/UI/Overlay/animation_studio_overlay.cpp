@@ -2094,15 +2094,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 if (turned) studio::set_offset(u.selected, {studio::from_euler(euler), {0, 0, 0}});
             } else studio::set_offset(u.selected, {studio::from_euler(euler), position});
         }
-        if (tab == Tab::keys) {
-            // Wrapped inside the card, from low enough that three lines still sit on it: it used to run
-            // off the right edge in one line and across the skater.
-            const auto rows = rows_of(tab, v);
-            if (u.row >= 0 && u.row < static_cast<int>(rows.size()))
-                d->AddText(f.bold, 13 * k, ImVec2(at.x + 22 * k, at.y + size.y - 62 * k), ink_soft,
-                           rows[static_cast<std::size_t>(u.row)].about.c_str(), nullptr, size.x - 44 * k);
-        }
-        return;
+        return; // what the chosen row does is said beside the card, in help_box
     }
     if (tab == Tab::settings) {
         // The name and trick of the one being edited, typed here.
@@ -2146,12 +2138,23 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         ImGui::PopStyleColor(5);
         y += 124 * k;
     }
-    const auto rows = rows_of(tab, v);
-    if (u.row >= 0 && u.row < static_cast<int>(rows.size())) {
-        // Wrapped to the card's width, the game's body type in dark ink.
-        const auto& about = rows[static_cast<std::size_t>(u.row)].about;
-        d->AddText(f.bold, 19 * k, ImVec2(at.x + 22 * k, y), ink, about.c_str(), nullptr, size.x - 44 * k);
-    }
+}
+// What the chosen row does, in its own box beside the card. It used to be written inside the card, which
+// on the pages that show a joint's numbers meant straight over them.
+void help_box(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec2 size) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto rows = rows_of(static_cast<Tab>(u.tab), v);
+    if (u.row < 0 || u.row >= static_cast<int>(rows.size())) return;
+    const auto& row = rows[static_cast<std::size_t>(u.row)];
+    if (row.about.empty()) return;
+    const float fs = 14 * k, wrap = size.x - 36 * k;
+    const auto measured = f.bold->CalcTextSizeA(fs, FLT_MAX, wrap, row.about.c_str());
+    const float tall = std::min(size.y, measured.y + 54 * k);
+    const ImVec2 a(at.x, at.y + size.y - tall), b(at.x + size.x, at.y + size.y);
+    skate_theme::rough_rect(d, a, b, IM_COL32(16, 16, 18, 238), seed_of(a), k * 0.8f);
+    text(d, f.heading, 13 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), blue_light, upper(row.label));
+    d->AddText(f.bold, fs, ImVec2(a.x + 18 * k, a.y + 36 * k), IM_COL32(222, 222, 226, 255), row.about.c_str(), nullptr, wrap);
 }
 
 // The bottom of the screen: the whole trick from start to end, one row of keys per joint with a row
@@ -3227,6 +3230,7 @@ void draw_animation_studio() {
         const float list_bottom = display.y - timeline_h - card_h - 40 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
         card(d, f, v, ImVec2(menu_x, list_bottom + 18 * k), ImVec2(menu_w + 10 * k, card_h));
+        help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, list_bottom + 18 * k), ImVec2(330 * k, card_h));
     }
     timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
     // What the studio last said. It used to stand there for good, so the screen kept a line about a trick
