@@ -843,6 +843,41 @@ void draw_gizmo(ImDrawList* d, const Gizmo& g, int hot, float k) {
                              ImVec2(tip.x - ux * size * 2 + uy * size, tip.y - uy * size * 2 - ux * size), colour);
     }
 }
+// The board never goes into the ground. Its lowest point is the bottom of a wheel, or the tip of a kick
+// when it is stood on its tail, so the whole shape is measured rather than its mount: the eight corners of
+// the deck and the wheels hanging under it, whichever sits lowest once the board is turned the way it is.
+// The board is moved by its own keys rather than by the IK, so keeping clear never saw it.
+float board_lowest_under(const studio::Quat& turn) {
+    std::array<studio::Vec3, 3> axes{};
+    for (int i = 0; i < 3; ++i) {
+        studio::Vec3 e{};
+        e[static_cast<std::size_t>(i)] = 1;
+        axes[static_cast<std::size_t>(i)] = studio::rotate(turn, e);
+    }
+    constexpr float across = 0.105f, over = 0.020f, under = 0.087f, along = 0.430f;
+    float lowest = 0;
+    for (const float sx : {-across, across})
+        for (const float sy : {-under, over})
+            for (const float sz : {-along, along})
+                lowest = std::min(lowest, axes[0][1] * sx + axes[1][1] * sy + axes[2][1] * sz);
+    return lowest;
+}
+// Lifts the board's keys by however much of it has gone under the floor.
+void keep_board_up(const studio::View& v, studio::Offset& next) {
+    auto& u = ui();
+    if (!v.floor_valid || !u.anti_clip) return;
+    const auto* sel = joint_view(v, studio::board_joint);
+    if (!sel) return;
+    studio::Vec3 moved{};
+    for (int i = 0; i < 3; ++i) moved[i] = next.offset[i] - u.drag_offset.offset[i];
+    auto at = studio::rotate(u.drag_parent, moved); // its keys move it in the frame it starts in
+    for (int i = 0; i < 3; ++i) at[i] += u.drag_point[i];
+    const float lowest = at[1] + board_lowest_under(sel->rotation);
+    if (lowest >= v.floor) return;
+    const auto lift = studio::rotate(studio::conjugate(u.drag_parent), studio::Vec3{0, v.floor - lowest, 0});
+    for (int i = 0; i < 3; ++i) next.offset[i] += lift[i];
+}
+
 // One axis of the gizmo: `amount` is metres to move along it or radians to turn about it, measured off the
 // mouse by drag_gizmo.
 void apply_axis(const studio::View& v, int a, float amount, bool move) {
@@ -906,6 +941,7 @@ void apply_axis(const studio::View& v, int a, float amount, bool move) {
             next.rotation = studio::normalised(studio::multiply(ground, u.drag_offset.rotation));
         }
     }
+    if (u.selected == studio::board_joint) keep_board_up(v, next);
     studio::set_offset(u.selected, next);
 }
 // The mouse against the handle it holds: along an arrow, how far it has gone in metres; round a ring, the
@@ -965,7 +1001,7 @@ void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
     studio::drag_limb(ui().selected, keep_clear(v, ui().selected, on_the_deck(v, ui().selected, target)));
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
-void apply_turn(const Projector& p, float dx, float dy, bool move) {
+void apply_turn(const studio::View& v, const Projector& p, float dx, float dy, bool move) {
     auto& u = ui();
     const auto* e = studio::editable(u.selected);
     studio::Offset next = u.drag_offset;
@@ -1003,6 +1039,7 @@ void apply_turn(const Projector& p, float dx, float dy, bool move) {
             next.rotation = studio::normalised(studio::multiply(ground_turn, u.drag_offset.rotation));
         }
     }
+    if (u.selected == studio::board_joint) keep_board_up(v, next);
     studio::set_offset(u.selected, next);
 }
 
@@ -1818,7 +1855,7 @@ void controller(const studio::View& v, const Projector& p) {
         if (u.stick_turning && p.valid) {
             u.stick_dx += lx * 300.0f * dt;
             u.stick_dy -= ly * 300.0f * dt;
-            apply_turn(p, u.stick_dx, u.stick_dy, u.move_mode);
+            apply_turn(v, p, u.stick_dx, u.stick_dy, u.move_mode);
         }
         u.stick_idle_since = now;
     } else if (u.stick_turning && now - u.stick_idle_since > 0.25) u.stick_turning = false;
@@ -2644,7 +2681,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             // A hand or a foot in MOVE goes where the mouse is over the board, the limb bending to reach;
             // anything else turns, as a free drag always has.
             if (u.move_mode && limb_end(u.selected)) drag_limb_to(v, project, mouse);
-            else apply_turn(project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
+            else apply_turn(v, project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
         }
     }
     auto orbit = v.orbit;
