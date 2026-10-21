@@ -573,7 +573,7 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             // A deck is not a slab: it kicks up at the nose and the tail. Past the trucks the top of it
             // rises towards the tip, so a foot put on the tail sits on the kick and a hand reaching the
             // nose meets it where it really is.
-            constexpr float flat_to = 0.26f, kick_rise = 0.075f;
+            constexpr float flat_to = 0.165f, kick_rise = 0.075f;
             std::array<studio::Vec3, 3> axes{};
             for (int i = 0; i < 3; ++i) {
                 studio::Vec3 e{};
@@ -1361,7 +1361,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             rows.push_back({upper(u.trick_category), "", "", {}, false});
             std::string trick;
             for (const auto& t : list) {
-                if (t.category != u.trick_category || t.trick == trick) continue; // each trick once
+                if (t.preview_only || t.category != u.trick_category || t.trick == trick) continue; // each trick once
                 trick = t.trick;
                 const int index = static_cast<int>(rows.size());
                 Row row{t.label, ">", "Choose the pop next: low, mid or high.", [name = t.trick, index] {
@@ -1375,15 +1375,16 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             }
             break;
         }
-        rows.push_back({"Record", "", "", {}, false});
         record_entries();
         rows.push_back({"Tricks to edit", "", "", {}, false});
         // Each kind once, with how many tricks are in it, in the order the catalog has them.
         {
+            // The ones that can be opened and changed. The native tree's thousands of previews are not
+            // tricks to edit and have their own way in, below.
             std::vector<std::pair<std::string, std::size_t>> kinds;
             std::string seen_trick;
             for (const auto& t : list) {
-                if (t.trick == seen_trick) continue;
+                if (t.preview_only || t.trick == seen_trick) continue;
                 seen_trick = t.trick;
                 const auto found = std::find_if(kinds.begin(), kinds.end(), [&](const auto& kind) { return kind.first == t.category; });
                 if (found == kinds.end()) kinds.emplace_back(t.category, 1);
@@ -1492,9 +1493,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         [] { ui().snap = !ui().snap; }});
         rows.push_back({"Stance", v.stance_choice == 0 ? (v.showing_goofy ? "as the game has him (goofy)" : "as the game has him (regular)")
                                   : v.stance_choice == 1 ? "regular" : "goofy",
-                        "Which way round the skater stands in the studio. A trick authored the other way round is mirrored to show it, "
-                        "and the keys are left as they are, because a left-hand key is the left hand in either stance - which is how "
-                        "they go on in game. Record a trick in the stance you skate in.",
+                        "Which stance a recording is saved as. Showing a trick the other way round is not on yet: mirroring the whole "
+                        "clip tore the skater apart, because the render rig parts company with the animation rig past Ground. Record a "
+                        "trick in the stance you skate in and it is labelled with this.",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
@@ -1921,11 +1922,42 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         const float y = at.y + i * (row_h + gap) - scroll;
         if (y + row_h < at.y || y > at.y + size.y) continue;
         const ImVec2 a(at.x, y), b(at.x + size.x - 24 * k, y + row_h);
+        // The force field, at the head of the joints: a paper row like the card below, filled across to how
+        // far it is turned up, dragged anywhere along it.
+        if (tab == Tab::joints && i == 0) {
+            ImGui::SetCursorScreenPos(a);
+            ImGui::PushID(9001);
+            ImGui::InvisibleButton("##force", ImVec2(b.x - a.x, b.y - a.y));
+            const bool over = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
+            ImGui::PopID();
+            const float inset = 20 * k;
+            if (held) {
+                const float along = (ImGui::GetIO().MousePos.x - (a.x + inset)) / std::max(1.0f, (b.x - a.x) - 2 * inset);
+                u.clear_force = std::clamp(along, 0.0f, 1.0f);
+                u.anti_clip = u.clear_force > 0.005f;
+                u.row = 0;
+            }
+            const bool on = u.anti_clip && u.clear_force > 0.005f;
+            const float force = on ? u.clear_force : 0.0f;
+            constexpr ImU32 paper = IM_COL32(234, 234, 232, 250), ink = IM_COL32(20, 20, 22, 255);
+            skate_theme::rough_rect(d, a, b, over || held ? IM_COL32(246, 246, 244, 252) : paper, seed_of(a), k);
+            if (force > 0.005f) {
+                d->PushClipRect(a, ImVec2(a.x + inset + ((b.x - a.x) - 2 * inset) * force, b.y), true);
+                skate_theme::rough_rect(d, a, b, blue, seed_of(a), k);
+                d->PopClipRect();
+            }
+            const float fs = 21 * k;
+            text(d, f.bold, fs, ImVec2(a.x + 30 * k, a.y + row_h * 0.5f - 12 * k), on && force > 0.25f ? white : ink, "Force field");
+            const std::string value = on ? std::format("{:.0f}%", force * 100) : "OFF";
+            const auto vw = text_size(f.bold, 16 * k, value.c_str());
+            text(d, f.bold, 16 * k, ImVec2(b.x - vw.x - 22 * k, a.y + row_h * 0.5f - 9 * k), on && force > 0.92f ? white : ink, value);
+            continue;
+        }
         // A row with nothing to do is a heading over the rows under it: the game's own settings pages are
         // read that way, and a heading that looks like a button is a button you cannot press.
         if (!row.act && !row.enabled) {
             const float fs = 15 * k;
-            text(d, f.heading, fs, ImVec2(a.x + 8 * k, b.y - fs - 6 * k), blue_light, upper(row.label));
+            text(d, f.heading, fs, ImVec2(a.x + 8 * k, b.y - fs - 6 * k), white, upper(row.label));
             d->AddRectFilled(ImVec2(a.x + 8 * k, b.y - 3 * k), ImVec2(b.x - 8 * k, b.y - 1.5f * k), IM_COL32(255, 255, 255, 36));
             if (!row.value.empty()) {
                 const auto t = text_size(f.bold, 13 * k, row.value.c_str());
@@ -3157,8 +3189,12 @@ void draw_animation_studio() {
     viewport(d, f, v, project, view_min, view_max);
     if (u.hide_ui) {
         // Only the skater and the room he stands in: for filming a trick or taking a picture of it. The
-        // camera and the playhead still answer, so a trick can be played and watched clean.
+        // camera and the playhead still answer, so a trick can be played and watched clean. The window is
+        // closed the same way as below: leaving it open here left ImGui with a window it was never given
+        // back, and it said so on the screen.
         keyboard(v);
+        ImGui::End();
+        ImGui::PopStyleVar(2);
         return;
     }
     shot_strip(d, f, v, view_min, view_max);

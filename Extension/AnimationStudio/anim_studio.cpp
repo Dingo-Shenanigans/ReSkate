@@ -609,33 +609,22 @@ void publish_locked(State& s, bool edits_changed = true) {
     snap->time = s.time;
     snap->open = s.open;
     snap->play_in_game = s.play_in_game && !s.manual_recording;
-    // The skater stands the way the studio is set to. A clip authored the other way round is shown
-    // mirrored; the keys are left alone, because they are anatomical and go on either stance as they are.
+    // The stance the studio is set to. Showing a clip the other way round is not on: mirroring a whole
+    // clip tore the skater apart and did not turn him round either, because the mirror permutes all 395
+    // joints while the render rig parts company with the animation rig past Ground (375). A mirror of the
+    // body alone (gameplay_body_joint) is the way to do it, watched in game. The stance names a recording
+    // in the meantime, which is true and harmless.
     {
         const bool goofy = studio_goofy(s.stance_choice);
         s.showing_goofy = goofy;
         snap->goofy = goofy;
         snap->grab = s.grab_board;
-        const bool clip_goofy = s.edits.stance == "goofy";
-        if (s.clip && !s.clip->empty() && clip_goofy != goofy) {
-            if (s.mirrored_of != s.clip.get()) {
-                try {
-                    s.mirrored = std::make_shared<const Clip>(mirror_clip(*s.clip));
-                    s.mirrored_of = s.clip.get();
-                } catch (...) { s.mirrored = nullptr; s.mirrored_of = nullptr; }
-            }
-            if (s.mirrored) snap->clip = s.mirrored;
-        }
-        // The casual stance he waits in is one of the game's own, which are authored regular.
-        if (goofy && s.idle_clip && !s.idle_clip->empty()) {
-            if (s.mirrored_idle_of != s.idle_clip.get()) {
-                try {
-                    s.mirrored_idle = std::make_shared<const Clip>(mirror_clip(*s.idle_clip));
-                    s.mirrored_idle_of = s.idle_clip.get();
-                } catch (...) { s.mirrored_idle = nullptr; s.mirrored_idle_of = nullptr; }
-            }
-            if (s.mirrored_idle) snap->idle = s.mirrored_idle;
-        }
+        // Showing a clip the other way round is off. Mirroring the whole clip tore the skater apart on
+        // screen and did not even turn him round: the mirror permutes all 395 joints, and the render rig
+        // parts company with the animation rig after Ground (375), so the joints past it landed on the
+        // wrong bones. A mirror that moves the body alone (gameplay_body_joint) is the way to do it, and
+        // it needs watching in game to get right. Until then the stance names the recording and nothing
+        // more, which is true and harmless.
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -1151,7 +1140,7 @@ std::string research_trace(const std::string& action) {
 //
 // The deck, in its mount's frame: flat between the trucks, rising to the nose and the tail.
 constexpr float deck_half_across = 0.105f, deck_half_thick = 0.020f, deck_half_along = 0.430f;
-constexpr float deck_flat_to = 0.26f, deck_kick = 0.075f;
+constexpr float deck_flat_to = 0.165f, deck_kick = 0.075f;
 Vec3 nearest_on_deck(const Joint& board, const Vec3& point) {
     std::array<Vec3, 3> axes{};
     for (int i = 0; i < 3; ++i) {
