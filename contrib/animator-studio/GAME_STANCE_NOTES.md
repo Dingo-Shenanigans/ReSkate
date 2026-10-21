@@ -48,3 +48,13 @@ Read out of the game's own animation graph (the typed native documents the libra
   the board under the feet. Neither changes which foot the game treats as front, so neither may mirror.
 - Next readout (v2) logs the feet in the placement frame (where the game mirrors the body) and snapshots
   the physics context, to find the game's own Mirrored / RidingFakie / BoardBackwards flags.
+
+## Found in physics memory 2026-10-22 (readout v2, physics context = core+0x3c0)
+
+- `context+0x13c5` bit `0x20`: **board backwards**. Set exactly between two pop shuvits, clear otherwise.
+  Bit `0x40` of the same byte: in the air.
+- `context+0x17fc` float: **forward speed relative to the body**. Negative when riding fakie, including
+  with the board backwards (where the board itself travels nose-first). So fakie = this < 0.
+- In the pose after the animation update the regular rider's left foot is on placement +X (mirrored) in
+  normal, fakie and after shuvits. Recordings, taken from the pose at render time, almost all show the
+  right foot on +X. Readout v3 logs both at once to see whether the game mirrors between the two.

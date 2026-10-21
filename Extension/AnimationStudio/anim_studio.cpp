@@ -1828,17 +1828,42 @@ void tick(Live& l, double at, std::uintptr_t base, std::uintptr_t component, Mot
     char flag_text[8] = "--";
     if (flags) std::snprintf(flag_text, sizeof(flag_text), "%02x", *flags);
     const char* placed_side = pr[0] > pl[0] ? "R+x" : "L+x";
-    const std::string key = std::string(flag_text) + toward_plus_z + going + moving + placed_side;
+    // The same test on the pose as the renderer has it - where the recorder reads and where gameplay
+    // edits are written. If the two disagree, the game mirrors between them.
+    std::string render_side = "?  ";
+    {
+        auto& shot = render_shot();
+        std::lock_guard shot_lock(shot.mutex);
+        if (shot.skater.size() == skeleton_joints && at - shot.at < 0.1) {
+            std::vector<Joint> drawn;
+            drawn.reserve(shot.skater.size());
+            for (const auto& bone : shot.skater) drawn.push_back(joint_of(bone));
+            const auto at_place = world(drawn, placement_joint);
+            const auto side = [&](std::uint16_t foot) {
+                const auto w = world(drawn, foot).position;
+                return rotate(conjugate(at_place.rotation), Vec3{w[0] - at_place.position[0], w[1] - at_place.position[1], w[2] - at_place.position[2]})[0];
+            };
+            render_side = side(10) > side(343) ? "R+x" : "L+x";
+        }
+    }
+    // The game's own board-backwards bit and body-relative forward speed (found 2026-10-22, readout v2).
+    std::string backwards = "?", forward = "?";
+    if (const auto context = physics_context(base, component)) {
+        if (const auto b = read<std::uint8_t>(context + 0x13c5)) backwards = (*b & 0x20) ? "yes" : "no ";
+        if (const auto f = read<float>(context + 0x17fc)) forward = fmt(*f);
+    }
+    const std::string key = std::string(flag_text) + toward_plus_z + going + moving + placed_side + render_side + backwards +
+                            (forward.size() && forward[0] == '-' ? "-" : "+");
     if (key == last_key && at - last_line < 1.0) return;
     last_key = key;
     last_line = at;
     ++lines;
     const auto trick = current_trick(component);
     write(std::format("{:7.2f}s  {:8s} flags {} (left_foot_leads {})  setting {}  foot toward +z: {:5s}  board going {:5s} ({} m/s)  "
-                      "L {} {} {}  R {} {} {}  | placement: {} (L x {} R x {}) board +z along ({} {} {})  trick {}",
+                      "L {} {} {}  R {} {} {}  | placement: {} (L x {} R x {}) render: {}  backwards {}  forward {}  board +z along ({} {} {})  trick {}",
                       at - started, moving, flag_text, flags ? ((*flags & addr::grind_exit::left_foot_leads_mask) ? "yes" : "no ") : "?  ",
                       goofy_stance() ? "goofy  " : "regular", toward_plus_z, going, fmt(speed), fmt(left[0]), fmt(left[1]), fmt(left[2]),
-                      fmt(right[0]), fmt(right[1]), fmt(right[2]), placed_side, fmt(pl[0]), fmt(pr[0]), fmt(board_along[0]),
+                      fmt(right[0]), fmt(right[1]), fmt(right[2]), placed_side, fmt(pl[0]), fmt(pr[0]), render_side, backwards, forward, fmt(board_along[0]),
                       fmt(board_along[1]), fmt(board_along[2]), trick.empty() ? "-" : trick));
     // The physics context around the stance byte, for finding the game's own mirror, fakie and
     // board-backwards flags by what changes with them. Appended as fixed-size records, one per line.
@@ -1864,7 +1889,7 @@ std::string toggle_stance_readout() {
         stance_readout::last_key.clear();
         stance_readout::lines = 0;
         stance_readout::last_mount_at = -1;
-        stance_readout::write("# Animation Studio stance readout v2. Ride each for a few seconds: normal, fakie, switch, switch fakie; then a pop shuvit and ride.");
+        stance_readout::write("# Animation Studio stance readout v3. Ride normal, then fakie, then push while fakie (that puts you in switch) and ride switch.");
         stance_readout::write("# Feet are in the board's frame (x across, y up, z along). 'board going' is its travel along its own z.");
     } else stance_readout::write("# stopped by command");
     stance_readout::on.store(now);
