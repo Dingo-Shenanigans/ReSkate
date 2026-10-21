@@ -61,6 +61,22 @@ cmake --build --preset linux-release -j$(nproc)
 
 Binary: `build/linux/ReSkateServer` (ELF, `OUTPUT_NAME ReSkateServer`).
 
+### The server window (optional)
+
+Where SDL3 is installed, the same build also makes `build/linux/ReSkateServerGUI`: the Windows
+server's window (the same panels) on SDL3 and OpenGL 3. `ReSkateServer` stays console only, so
+VPSes, hosting panels and `systemd` need neither SDL nor a display.
+
+```sh
+sudo pacman -S sdl3            # Arch/CachyOS
+sudo apt install libsdl3-dev   # Debian 13+, Ubuntu 25.04+
+```
+
+Configure again after installing it (`cmake --preset linux-x64`). The window needs X11 or Wayland
+and an OpenGL 3.2 driver (Mesa is enough). Like `ReSkateServer.exe`, it opens the window unless
+given `--headless` (or `--cli`, `--no-gui`); closing it, Ctrl+C and `SIGTERM` stop the server.
+It needs the same Steam `.so` files beside it as `ReSkateServer`.
+
 Portable tests:
 
 ```sh
