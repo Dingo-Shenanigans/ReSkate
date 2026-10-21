@@ -185,6 +185,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
             }
             if (!control && wp == 'F') item_browser_key(ItemBrowserKey::favorite);
             if (!control && wp == 'X') item_browser_key(ItemBrowserKey::filter);
+            if (!control && wp == 'V') item_browser_key(ItemBrowserKey::turnaround);
+        } else if (key && wp == 'V' && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0 && !interactive_visible(s) &&
+                   !(GetKeyState(VK_MENU) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000)) {
+            // V with no grid open: the skater turnaround on the Skaters screen (it starts only in a game
+            // menu, and says so when it is not that screen). The key still goes to the game.
+            item_browser_key(ItemBrowserKey::turnaround);
         }
         // T opens the chat, the key the game itself reserves for it
         // (Processor_Keyboard_Gameplay_Chat), while in a session and nothing

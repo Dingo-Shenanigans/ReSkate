@@ -141,6 +141,7 @@ void board_break_addon(SkateMenu&, const Model&, const CallbacksV3&);
 void road_rash_addon(SkateMenu&, const Model&, const CallbacksV3&);
 void hall_of_meat_addon(SkateMenu&, const Model&, const CallbacksV3&);
 void grind_exits_addon(SkateMenu&, const Model&, const CallbacksV3&);
+void turnaround_addon(SkateMenu&, const Model&, const CallbacksV3&);
 void addons_page(SkateMenu&, const Model&, const CallbacksV3&);
 // The time of day the menu shows: the one last asked for while the game is still changing to it
 // (skate_menu_world.cpp). Setting it from a menu control goes through set_time_of_day, `quiet`
@@ -160,7 +161,7 @@ enum Page {
     page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_online, page_progress, page_mods,
     page_settings, page_developer, page_count
 };
-enum Addon { addon_all, addon_drone, addon_board_break, addon_road_rash, addon_hall_of_meat, addon_grind_exits, addon_music, addon_count };
+enum Addon { addon_all, addon_drone, addon_board_break, addon_road_rash, addon_hall_of_meat, addon_grind_exits, addon_turnaround, addon_music, addon_count };
 void open_page(SkateMenu&, int page, int addon = -1);
 // An addon made from an official mod whose feature did not start (the mod is turned off in the
 // launcher, or this game build cannot run it) is listed nowhere in the menu (skate_menu_addons.cpp).

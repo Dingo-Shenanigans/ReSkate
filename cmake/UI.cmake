@@ -9,6 +9,8 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/overlay_console.cpp
     Extension/UI/Overlay/overlay_input.cpp
     Extension/UI/Overlay/item_browser_overlay.cpp
+    Extension/UI/Overlay/frame_grab.cpp
+    Extension/UI/Overlay/depth_probe.cpp
     Extension/UI/Overlay/overlay_notices.cpp
     Extension/UI/Overlay/chat_overlay.cpp
     Extension/UI/Overlay/map_download_card.cpp
@@ -26,6 +28,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/skate_menu.cpp
     Extension/UI/Overlay/skate_menu_world.cpp
     Extension/UI/Overlay/skate_menu_addons.cpp
+    Extension/UI/Overlay/skate_menu_turnaround.cpp
     Extension/UI/Overlay/menu_map_pictures.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp

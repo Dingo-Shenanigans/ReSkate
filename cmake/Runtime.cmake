@@ -16,6 +16,10 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/drone_outfit.cpp
     Extension/Multiplayer/console_commands.cpp
     Extension/Customization/console_commands.cpp
+    Extension/Rendering/Turnaround/turnaround_commands.cpp
+    Extension/Rendering/Turnaround/turnaround_research.cpp
+    Extension/Rendering/Turnaround/turnaround.cpp
+    Extension/Rendering/Turnaround/turnaround_stage.cpp
     Extension/Multiplayer/Session/session.cpp
     Extension/Multiplayer/Session/session_view.cpp
     Extension/Multiplayer/Session/session_send.cpp
@@ -389,3 +393,4 @@ if(EXISTS "${dingosdk_startup_art}")
         "STARTUP_SPLASH RCDATA \"${dingosdk_startup_art_native}\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/startup_art.rc")
 endif()
+target_link_libraries(dingosdk_runtime PRIVATE dingosdk_turnaround)

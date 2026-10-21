@@ -81,6 +81,24 @@ std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
     static std::atomic<dingosdk::overlay::GamepadFilter> value{};
     return value;
 }
+// A pad ReSkate is driving (DingoSDKOverlaySetVirtualPad): the first controller reads as connected
+// even when none is, and every read as a fresh packet, so the game takes the filter's stick as
+// it moves. The board turnaround turns the board this way, for players on mouse and keyboard too.
+std::atomic<bool>& virtual_pad() {
+    static std::atomic<bool> value{};
+    return value;
+}
+std::atomic<DWORD>& virtual_packet() {
+    static std::atomic<DWORD> value{};
+    return value;
+}
+// After a read of the first controller: a stand-in for it when it is not there, while driven.
+DWORD drive_pad(bool outer, bool capture, DWORD user, XINPUT_STATE* output, DWORD result) noexcept {
+    if (!outer || capture || user != 0 || !output || !virtual_pad().load(std::memory_order_acquire)) return result;
+    if (result != ERROR_SUCCESS) *output = {};
+    output->dwPacketNumber = virtual_packet().fetch_add(1, std::memory_order_relaxed) + 1;
+    return ERROR_SUCCESS;
+}
 // Full Bluetooth reports have a CRC over the 0xA1 input prefix and payload.
 // A stale checksum makes the native reader discard a changed report.
 void refresh_bluetooth_crc(std::uint8_t* bytes, DWORD size) noexcept {
@@ -381,6 +399,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
+    result = drive_pad(outer, capture, user, output, result);
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         output->dwPacketNumber ^= 0x80000000u;
@@ -790,6 +809,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    result = drive_pad(game_poll, capture, user, output, result);
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
@@ -1143,4 +1163,10 @@ extern "C" std::uint64_t DingoSDKOverlayGrindStickMirrored() noexcept {
 }
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
     dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
+}
+extern "C" dingosdk::overlay::GamepadFilter DingoSDKOverlayGamepadFilter() {
+    return dingosdk::overlay::detail::gamepad_filter().load(std::memory_order_acquire);
+}
+extern "C" void DingoSDKOverlaySetVirtualPad(bool driven) {
+    dingosdk::overlay::detail::virtual_pad().store(driven, std::memory_order_release);
 }

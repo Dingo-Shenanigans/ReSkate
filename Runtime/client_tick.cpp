@@ -21,6 +21,8 @@
 #include "Extension/BoardBreak/board_break_audio.h"
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
 #include "Extension/Skater/grind_exit_control.h"
+#include "Extension/Rendering/Turnaround/turnaround.h"
+#include "Extension/Rendering/Turnaround/turnaround_session.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
@@ -57,6 +59,7 @@
 #include <dxgi1_4.h>
 #include <Psapi.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <array>
@@ -1259,6 +1262,22 @@ void update_model(std::uintptr_t client, TickState& frame) {
                         dingosdk::grind_exit_control::strength()};
     model.keyframe_smoothing = {dingosdk::replay_keyframes::available(), dingosdk::replay_keyframes::on(),
                                 dingosdk::replay_keyframes::smoothness()};
+    {
+        const auto turnaround_options = dingosdk::turnaround::current_options();
+        auto& turnaround_model = model.turnaround;
+        turnaround_model.available = true;
+        turnaround_model.busy = dingosdk::turnaround::exporting();
+        turnaround_model.format = turnaround_options.format == dingosdk::turnaround::Format::apng ? 1 : turnaround_options.format == dingosdk::turnaround::Format::webm ? 2 : 0;
+        turnaround_model.transparent = turnaround_options.transparent;
+        turnaround_model.parts = turnaround_options.parts;
+        turnaround_model.matte = turnaround_options.matte;
+        turnaround_model.speed = static_cast<int>(std::lround(std::abs(turnaround_options.spin) * 100));
+        turnaround_model.spin_left = turnaround_options.spin < 0;
+        turnaround_model.seconds = static_cast<int>(std::lround(turnaround_options.seconds));
+        turnaround_model.size = static_cast<int>(turnaround_options.size);
+        turnaround_model.fps = static_cast<int>(turnaround_options.fps);
+        turnaround_model.status = dingosdk::turnaround::last_message();
+    }
     model.bindings = dingosdk::local_profile_controller_bindings();
     model.parks = dingosdk::local_profile_parks();
     model.world = dingosdk::local_profile_world_layers();
@@ -1557,6 +1576,7 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             } catch (...) {}
         }
         dingosdk::spotify_station::set_music_screen(menu);
+        dingosdk::turnaround::set_game_menu(menu); // V on the Skaters screen
     }
     dingosdk::spotify_station::tick();
     dingosdk::music_inject::tick();

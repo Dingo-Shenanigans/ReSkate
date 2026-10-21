@@ -84,6 +84,9 @@ void all_addons(SkateMenu& menu, const Model& model) {
     addon_tile(menu, "addon-grind-exits", "GRIND EXITS", "Press LT or RT while grinding to pick the side you pop out to.",
                on_off(grind.available, grind.enabled), colour(grind.available, grind.enabled), addon_grind_exits);
     next();
+    addon_tile(menu, "addon-turnaround", "FIT CHECK", "Show off your boards, outfits and mods: press V on the Board or Skaters screen to save them spinning.",
+               model.turnaround.busy ? "SAVING" : nullptr, skate_theme::good, addon_turnaround);
+    next();
     addon_tile(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
                nullptr, 0, addon_music);
 }
@@ -100,7 +103,7 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     // (LT / RT on a controller), without the hidden ones.
     if (menu.fullscreen_drawn) {
         static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "DRONE", "BOARD BREAK", "ROAD RASH", "HALL OF MEAT",
-                                                                    "GRIND EXITS", "MUSIC"};
+                                                                    "GRIND EXITS", "FIT CHECK", "MUSIC"};
         std::vector<const char*> labels;
         std::vector<int> shown;
         for (int a = 0; a < addon_count; ++a)
@@ -119,6 +122,7 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
         else if (menu.addon == addon_road_rash) road_rash_addon(menu, model, callbacks);
         else if (menu.addon == addon_hall_of_meat) hall_of_meat_addon(menu, model, callbacks);
         else if (menu.addon == addon_grind_exits) grind_exits_addon(menu, model, callbacks);
+        else if (menu.addon == addon_turnaround) turnaround_addon(menu, model, callbacks);
         else all_addons(menu, model);
         ImGui::EndChild();
         break;

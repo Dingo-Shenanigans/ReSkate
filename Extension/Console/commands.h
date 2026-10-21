@@ -25,6 +25,7 @@ void register_perf_commands(Commands &);
 // perf_commands.cpp: starts `perf memory`'s trace with the game when RESKATE_MEMORY_TRACE asks for it.
 void start_memory_trace_from_environment() noexcept;
 void register_item_commands(Commands &);
+void register_turnaround_commands(Commands &);
 void register_trainer_commands(Commands &);
 void register_hall_of_meat_commands(Commands &);
 void register_road_rash_commands(Commands &);

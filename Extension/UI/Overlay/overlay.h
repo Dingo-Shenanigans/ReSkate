@@ -305,6 +305,19 @@ struct GrindExitModel {
     int strength = 100; // pop-out strength, percent (10-100)
 };
 
+// Board turnarounds (Extension/Rendering/Turnaround): the choices the next one is made with, as
+// the Addons page shows them, and what the last one said.
+struct TurnaroundModel {
+    bool available = false, busy = false;
+    int format = 0; // 0 GIF, 1 APNG, 2 WebM
+    bool transparent = true, parts = true;
+    std::array<std::uint8_t, 3> matte{24, 25, 28};
+    int speed = 50;      // percent of the stick
+    bool spin_left = false;
+    int seconds = 4, size = 512, fps = 30;
+    std::string status;
+};
+
 // Keyframe smoothing (Extension/ReplayKeyframes/replay_keyframes.h): started, switched on, and how
 // smooth (0..1) when on.
 struct KeyframeSmoothingModel {
@@ -336,6 +349,7 @@ struct Model {
     RoadRashModel road_rash;
     BoardBreakModel board_break;
     GrindExitModel grind_exit;
+    TurnaroundModel turnaround;
     KeyframeSmoothingModel keyframe_smoothing;
     ObjectPersistenceModel object_persistence;
     ParkEditorModel editor;
@@ -531,6 +545,7 @@ struct ItemBrowserView {
     std::string search, filter; // the search text and the filter's name
     unsigned shown{}, total{};  // tiles in the grid that has the focus
     bool focused_favorite{};    // the highlighted item is a favorite
+    bool board{};               // the grid is one of the Board tabs: V makes a turnaround
     // The mod the highlighted item is from (empty title: the game's own), for its card: its icon
     // file (UTF-8), how many items it has, and whether it only changes one of the game's.
     std::string mod_title, mod_author, mod_version, mod_icon;
@@ -542,9 +557,37 @@ struct ItemBrowserHost {
     void (*toggle_favorite)(){};
     void (*set_search)(const char *text){};
     void (*cycle_filter)(){};
+    void (*turnaround)(){};
 };
 // `host` must stay valid for the life of the process.
 void set_item_browser(const ItemBrowserHost *host) noexcept;
+// A presented frame as the game drew it, before ReSkate's own UI goes on top: 8-bit RGBA rows
+// (BGRA when `bgra`), `pitch` bytes apart. Valid only during the call it is handed to.
+struct GrabbedFrame {
+    const std::uint8_t *data{};
+    std::uint32_t width{}, height{}, pitch{};
+    bool bgra{};
+    // The game's depth for the same frame, when it was found (depth_probe.cpp): 32-bit floats,
+    // reversed (1 near, 0 at the far plane), `depth_pitch` bytes a row, the size of the frame.
+    const std::uint8_t *depth{};
+    std::uint32_t depth_pitch{};
+};
+// Board turnarounds (Extension/Rendering/Turnaround): asked on every presented frame, on the
+// render thread, whether they want its pixels, and handed them when they do. While `active` says
+// so the overlay keeps working even with nothing of its own on screen.
+struct FrameGrabHost {
+    bool (*active)() noexcept {};
+    bool (*wants_frame)() noexcept {};
+    void (*take_frame)(const GrabbedFrame &frame) noexcept {};
+    // The banner shown while one is being made: false for none; otherwise its line, and whether it
+    // is still recording (a red dot) rather than saving.
+    bool (*banner)(char *text, std::size_t size, bool *recording) noexcept {};
+};
+// `host` must stay valid for the life of the process.
+void set_frame_grab(const FrameGrabHost *host) noexcept;
+// Research aid for Fit Check (`fitcheck depth`): the game's depth buffers over the next two frames
+// are copied and written to `folder` as pictures, with depth-probe.txt (depth_probe.cpp).
+void request_depth_probe(const wchar_t *folder) noexcept;
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);
@@ -673,6 +716,11 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys();
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* input, bool allow_menu = false);
 // Installs (or, with nullptr, removes) the one gamepad filter. Any thread.
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter);
+// The filter installed now (to put back after borrowing the slot).
+extern "C" dingosdk::overlay::GamepadFilter DingoSDKOverlayGamepadFilter();
+// While driven, the first XInput controller reads as connected (a neutral pad when there is none)
+// and each read as a new packet, so the gamepad filter's values reach the game. Any thread.
+extern "C" void DingoSDKOverlaySetVirtualPad(bool driven);
 
 // Optional direct integration for a host that already knows its exact pair.
 struct IDXGISwapChain;

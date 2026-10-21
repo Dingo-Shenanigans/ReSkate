@@ -1,5 +1,6 @@
 #include "runtime_internal.h"
 #include "Extension/Customization/item_browser.h"
+#include "Extension/Rendering/Turnaround/turnaround.h"
 #include "bootstrap.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
@@ -245,6 +246,22 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::set_hub_callbacks(native_callbacks);
         dingosdk::overlay::set_ui_sound(dingosdk::multiplayer::queue_ui_sound);
         dingosdk::overlay::set_item_browser(dingosdk::item_browser::overlay_host());
+        dingosdk::overlay::set_frame_grab(dingosdk::turnaround::frame_grab());
+        dingosdk::turnaround::set_console_queue([](const char* command) {
+            std::array<char, 256> result{};
+            return dingosdk::runtime::detail::queue_console_command(nullptr, command, result.data(), result.size());
+        });
+        // V on a Board tab, or on the Skaters screen: through the console, so the turnaround starts on
+        // the game thread (it reads the selected preset there).
+        dingosdk::item_browser::set_turnaround_request([] {
+            if (dingosdk::turnaround::exporting()) {
+                dingosdk::turnaround::cancel_export(); // V again: stop
+                return;
+            }
+            dingosdk::turnaround::Subject subject{};
+            if (!dingosdk::turnaround::v_turnaround(subject)) return;
+            dingosdk::turnaround::queue_console(subject == dingosdk::turnaround::Subject::skater ? "turnaround export skater" : "turnaround export");
+        });
         dingosdk::overlay::set_game_text_feed(dingosdk::multiplayer::skate_debug_text);
         dingosdk::overlay::set_skate_hud_feed(dingosdk::multiplayer::skate_hud);
         dingosdk::overlay::set_nametag_feed(dingosdk::multiplayer::custom_nametags);
