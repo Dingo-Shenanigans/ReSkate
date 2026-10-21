@@ -8,6 +8,7 @@
 #include "Extension/Assets/live_mods.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Extension/UI/skate_theme.h"
+#include "deck_preview.h"
 #include "Engine/Core/Log/logging.h"
 
 #include <Windows.h>
@@ -110,10 +111,13 @@ void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV
         return std::to_string(place) + " " + name;
     };
     const auto in_play = mods::board_break_in_play();
-    begin_card(menu, "board-break-decks", "BOARD BREAK DECK", in_play.empty() ? "none in the game" : label(in_play).c_str());
+    begin_card(menu, "board-break-decks", "BOARD BREAK DECK", in_play.empty() ? "none active" : nullptr);
     const bool busy = live_mods::busy();
+    // The carousel's panel, the preview's backdrop: darker than the card, as the menu's sidebar.
+    constexpr ImU32 panel = IM_COL32(32, 32, 33, 255);
     if (menu::console_style()) {
-        // Full screen: one row, left / right to a deck and A to put it in the game.
+        // Full screen: one row, left / right to a deck and A to put it in the game; the model of the
+        // deck on the row turns under it.
         static int staged = -1;
         static std::string staged_from;
         std::vector<std::string> names;
@@ -133,25 +137,274 @@ void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV
             if (!there(deck)) menu::feedback(menu, "That deck is not installed.");
             else if (deck != in_play) send_console(menu, callbacks, "boardbreak deck " + deck);
         }
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float full = ImGui::GetContentRegionAvail().x;
+        const float tall = std::clamp(full * 0.45f, px(240), px(420));
+        deck_preview::draw(ImGui::GetWindowDrawList(), at, ImVec2(at.x + full, at.y + tall),
+                           staged >= 0 ? decks[static_cast<std::size_t>(staged)] : in_play, panel);
+        ImGui::Dummy(ImVec2(full, tall));
     } else {
-    const float gap = ImGui::GetStyle().ItemSpacing.x;
-    const float width = (ImGui::GetContentRegionAvail().x - gap * 3) / 4;
-    for (std::size_t i = 0; i < decks.size(); ++i) {
-        if (i % 4) ImGui::SameLine();
-        const auto& deck = decks[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::BeginDisabled(!there(deck) || busy || deck == in_play || !callbacks.queue_console_command);
-        if (ImGui::Button((label(deck) + (deck == in_play ? " *" : "")).c_str(), ImVec2(width, 0)))
-            send_console(menu, callbacks, "boardbreak deck " + deck);
-        ImGui::EndDisabled();
-        ImGui::PopID();
-    }
+        // In a window: a carousel. The deck's name between two arrows, the decks either side of it
+        // under them, and its model turning below; the arrows, the names either side or left /
+        // right over the panel go through the decks without loading anything, and the button
+        // under the panel puts the deck shown in the game.
+        static int browse = -1;
+        static std::string browse_from;
+        const int count = static_cast<int>(decks.size());
+        int playing = 0;
+        for (int i = 0; i < count; ++i)
+            if (decks[static_cast<std::size_t>(i)] == in_play) playing = i;
+        if (browse < 0 || browse >= count || browse_from != in_play) browse = playing, browse_from = in_play;
+        const auto wrap = [&](int i) { return static_cast<std::size_t>(((i % count) + count) % count); };
+        // The carousel's names without the numbers `boardbreak deck` knows them by.
+        const auto name_of = [&](const std::string& deck) {
+            auto text = label(deck);
+            const auto space = text.find(' ');
+            return space == std::string::npos ? text : text.substr(space + 1);
+        };
+
+        // The swipe: when the deck changes, every name slides out the way the carousel turned and
+        // the new one slides in after it (the arrows fade out meanwhile, and back once it is over).
+        struct Swipe {
+            int from = -1, dir = 0;
+            float t = 1.0f, arrows = 1.0f;
+        };
+        static Swipe swipe;
+        constexpr float swipe_time = 0.26f, arrows_out = 0.08f, arrows_in = 0.18f;
+        const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.1f);
+        if (swipe.t < 1.0f) swipe.t = std::min(1.0f, swipe.t + dt / swipe_time);
+        const bool swiping = swipe.t < 1.0f && swipe.from >= 0 && swipe.from < count;
+        swipe.arrows = swiping ? std::max(0.0f, swipe.arrows - dt / arrows_out) : std::min(1.0f, swipe.arrows + dt / arrows_in);
+        const auto go = [&](int to, int dir) {
+            to = static_cast<int>(wrap(to));
+            if (to == browse) return;
+            swipe.from = browse, swipe.dir = dir, swipe.t = 0.0f;
+            browse = to;
+        };
+        const float eased = 1.0f - std::pow(1.0f - swipe.t, 3.0f); // ease out
+        const auto faded = [](ImU32 colour, float alpha) {
+            const auto a = static_cast<float>((colour >> IM_COL32_A_SHIFT) & 0xff) * std::clamp(alpha, 0.0f, 1.0f);
+            return (colour & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a + 0.5f) << IM_COL32_A_SHIFT);
+        };
+
+        auto* draw = ImGui::GetWindowDrawList();
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float full = ImGui::GetContentRegionAvail().x;
+        const float pad = px(14), gap = px(8);
+        const float pill_h = ImGui::GetFrameHeight() + px(12), side_h = ImGui::GetFrameHeight();
+        const float view_h = std::clamp(full * 0.62f, px(260), px(440));
+        const float total_h = pad + pill_h + gap + side_h + gap + view_h + pad;
+        const ImVec2 end(at.x + full, at.y + total_h);
+        draw->AddRectFilled(at, end, panel);
+        int step = 0;
+        // The mark of the deck in the game: a blue asterisk after its name, wherever it shows.
+        const auto asterisk = [&](ImDrawList* list, ImVec2 centre, ImU32 colour) {
+            const float r = px(5.5f), thick = px(2.2f);
+            for (int k = 0; k < 3; ++k) {
+                const float angle = 3.14159265f * (0.5f + k / 3.0f);
+                const ImVec2 d(std::cos(angle) * r, std::sin(angle) * r);
+                list->AddLine(ImVec2(centre.x - d.x, centre.y - d.y), ImVec2(centre.x + d.x, centre.y + d.y), colour, thick);
+            }
+        };
+        const float mark_w = px(16);
+        const auto text_at = [&](ImFont* font, ImVec2 a, ImVec2 z, const std::string& text, ImU32 colour, float shift, bool active) {
+            ImGui::PushFont(font);
+            const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+            const float wide = size.x + (active ? mark_w : 0.0f);
+            const ImVec2 where(std::max(a.x + px(6), (a.x + z.x - wide) * 0.5f) + shift, (a.y + z.y - size.y) * 0.5f);
+            draw->PushClipRect(a, z, true);
+            draw->AddText(where, colour, text.c_str());
+            if (active) {
+                const float alpha = static_cast<float>((colour >> IM_COL32_A_SHIFT) & 0xff) / 255.0f;
+                asterisk(draw, ImVec2(where.x + size.x + mark_w * 0.62f, (a.y + z.y) * 0.5f), faded(skate_theme::blue, alpha));
+            }
+            draw->PopClipRect();
+            ImGui::PopFont();
+        };
+        // The carousel itself: five boxes on a wheel (the deck shown in the big box in the middle,
+        // its neighbours in the smaller boxes under the arrows, and one more hidden past each end).
+        // On a swipe every box rolls to its neighbour's place, growing, shrinking and changing colour
+        // on the way: the one coming in from past the end fades in, the one going out fades away.
+        const float arrow_w = pill_h;
+        const float pill_w = std::clamp(full - 2 * pad - 2 * (arrow_w + gap), px(120), px(320));
+        const float y = at.y + pad;
+        const ImVec2 pill_a(at.x + (full - pill_w) * 0.5f, y), pill_z(pill_a.x + pill_w, y + pill_h);
+        const float side_w = std::min((full - 2 * pad - gap) * 0.5f, px(240));
+        const float side_y = pill_z.y + gap;
+        const ImVec2 left_a(at.x + pad, side_y), right_a(end.x - pad - side_w, side_y);
+        struct Look {
+            ImVec2 a, z;
+            float big, alpha; // 1 for the middle box, 0 for a small one; how much it shows
+        };
+        const auto slot = [&](int k) {
+            k = std::clamp(k, -2, 2);
+            if (k == 0) return Look{pill_a, pill_z, 1.0f, 1.0f};
+            const float shove = k == -2 ? -(side_w + gap) : k == 2 ? side_w + gap : 0.0f;
+            const ImVec2 base = k < 0 ? left_a : right_a;
+            return Look{ImVec2(base.x + shove, base.y), ImVec2(base.x + shove + side_w, base.y + side_h), 0.0f,
+                        std::abs(k) == 2 ? 0.0f : 1.0f};
+        };
+        const auto mix = [](float p, float q, float t) { return p + (q - p) * t; };
+        const auto mix_colour = [&](ImU32 p, ImU32 q, float t) {
+            ImU32 out = 0;
+            for (const int shift : {IM_COL32_R_SHIFT, IM_COL32_G_SHIFT, IM_COL32_B_SHIFT, IM_COL32_A_SHIFT}) {
+                const float value = mix(static_cast<float>((p >> shift) & 0xff), static_cast<float>((q >> shift) & 0xff), t);
+                out |= static_cast<ImU32>(std::clamp(value, 0.0f, 255.0f) + 0.5f) << shift;
+            }
+            return out;
+        };
+        const bool listing = ImGui::IsPopupOpen("##deck-list");
+        const bool hover_big = !swiping && (listing || ImGui::IsMouseHoveringRect(pill_a, pill_z));
+        const bool hover_left = !swiping && count > 1 && ImGui::IsMouseHoveringRect(left_a, ImVec2(left_a.x + side_w, left_a.y + side_h));
+        const bool hover_right = !swiping && count > 1 && ImGui::IsMouseHoveringRect(right_a, ImVec2(right_a.x + side_w, right_a.y + side_h));
+        struct Box {
+            Look look;
+            int deck;
+        };
+        std::vector<Box> boxes;
+        for (int k = -2; k <= 2; ++k) {
+            if (count < 2 && k != 0) continue;
+            if (count < 3 && std::abs(k) == 2) continue;
+            Look look = slot(k);
+            if (swiping) {
+                const Look from = slot(k + swipe.dir);
+                look = Look{ImVec2(mix(from.a.x, look.a.x, eased), mix(from.a.y, look.a.y, eased)),
+                            ImVec2(mix(from.z.x, look.z.x, eased), mix(from.z.y, look.z.y, eased)), mix(from.big, look.big, eased),
+                            mix(from.alpha, look.alpha, eased)};
+            }
+            if (look.alpha > 0.002f) boxes.push_back({look, static_cast<int>(wrap(browse + k))});
+        }
+        std::sort(boxes.begin(), boxes.end(), [](const Box& p, const Box& q) { return p.look.big < q.look.big; });
+        draw->PushClipRect(at, end, true);
+        for (const auto& box : boxes) {
+            const auto& item = decks[static_cast<std::size_t>(box.deck)];
+            const auto& l = box.look;
+            const bool hovered = l.big > 0.99f ? hover_big : (l.a.x < pill_a.x ? hover_left : hover_right) && l.big < 0.01f;
+            ImU32 bg = mix_colour(hovered ? IM_COL32(54, 54, 56, 255) : IM_COL32(44, 44, 45, 255),
+                                  hovered ? IM_COL32(72, 72, 74, 255) : IM_COL32(63, 63, 64, 255), l.big);
+            bg = faded(bg, l.alpha);
+            draw->AddRectFilled(l.a, l.z, bg);
+            if (item == in_play)
+                draw->AddRectFilled(ImVec2(l.a.x, l.z.y - px(3)), l.z, faded(skate_theme::blue, l.alpha * l.big));
+            const ImU32 text = there(item) ? mix_colour(IM_COL32(150, 152, 158, 255), skate_theme::white, l.big)
+                                           : mix_colour(IM_COL32(95, 96, 100, 255), skate_theme::grey_text, l.big);
+            const float inset = px(24) * l.big; // room for the list's chevron in the big box
+            text_at(menu.bold, ImVec2(l.a.x + inset, l.a.y), ImVec2(l.z.x - inset, l.z.y), name_of(item), faded(text, l.alpha), 0.0f,
+                    item == in_play);
+        }
+        draw->PopClipRect();
+
+        // The arrows (faded out while the wheel turns), and what the boxes do when clicked: the big
+        // one opens the list of every deck, the small ones turn the wheel to their deck.
+        const auto arrow = [&](const char* id, float x, bool left) {
+            ImGui::SetCursorScreenPos(ImVec2(x, y));
+            const bool pressed = ImGui::InvisibleButton(id, ImVec2(arrow_w, pill_h));
+            const ImU32 colour = faded(ImGui::IsItemHovered() && swipe.arrows > 0.99f ? skate_theme::white : IM_COL32(145, 145, 145, 255),
+                                       swipe.arrows);
+            const ImVec2 m(x + arrow_w * 0.5f, y + pill_h * 0.5f);
+            const float r = pill_h * 0.26f;
+            if (left) draw->AddTriangleFilled(ImVec2(m.x - r, m.y), ImVec2(m.x + r * 0.7f, m.y - r), ImVec2(m.x + r * 0.7f, m.y + r), colour);
+            else draw->AddTriangleFilled(ImVec2(m.x + r, m.y), ImVec2(m.x - r * 0.7f, m.y + r), ImVec2(m.x - r * 0.7f, m.y - r), colour);
+            return pressed && !swiping;
+        };
+        if (arrow("##deck-previous", pill_a.x - gap - arrow_w, true)) step = -1;
+        if (arrow("##deck-next", pill_z.x + gap, false)) step = 1;
+        const auto& deck = decks[static_cast<std::size_t>(browse)];
+        ImGui::SetCursorScreenPos(pill_a);
+        if (ImGui::InvisibleButton("##deck-name", ImVec2(pill_w, pill_h)) && !swiping) ImGui::OpenPopup("##deck-list");
+        {
+            // The list's mark: a small chevron at the big box's right end, pointing up while it is
+            // open; it fades with the arrows.
+            const float r = px(4.5f), cx = pill_z.x - px(16), cy = (pill_a.y + pill_z.y) * 0.5f;
+            const ImU32 c = faded(IM_COL32(150, 152, 158, 255), swipe.arrows);
+            if (listing) draw->AddTriangleFilled(ImVec2(cx - r, cy + r * 0.5f), ImVec2(cx, cy - r * 0.6f), ImVec2(cx + r, cy + r * 0.5f), c);
+            else draw->AddTriangleFilled(ImVec2(cx - r, cy - r * 0.5f), ImVec2(cx + r, cy - r * 0.5f), ImVec2(cx, cy + r * 0.6f), c);
+        }
+        if (count > 1) {
+            ImGui::SetCursorScreenPos(left_a);
+            if (ImGui::InvisibleButton("##deck-before", ImVec2(side_w, side_h)) && !swiping) step = -1;
+            ImGui::SetCursorScreenPos(right_a);
+            if (ImGui::InvisibleButton("##deck-after", ImVec2(side_w, side_h)) && !swiping) step = 1;
+        }
+
+        // The list: every deck, the one in the game marked; picking one only goes to it.
+        ImGui::SetNextWindowPos(ImVec2(pill_a.x, pill_z.y + px(2)));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(pill_w, 0), ImVec2(pill_w, px(340)));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, IM_COL32(40, 40, 42, 250));
+        ImGui::PushStyleColor(ImGuiCol_Header, IM_COL32(63, 63, 64, 255));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(72, 72, 74, 255));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(82, 82, 84, 255));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(6), px(6)));
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0.0f);
+        if (ImGui::BeginPopup("##deck-list")) {
+            for (int i = 0; i < count; ++i) {
+                const auto& item = decks[static_cast<std::size_t>(i)];
+                ImGui::PushID(i);
+                ImGui::PushStyleColor(ImGuiCol_Text, there(item) ? skate_theme::white : skate_theme::grey_text);
+                const ImVec2 row = ImGui::GetCursorScreenPos();
+                if (ImGui::Selectable("##deck", i == browse, 0, ImVec2(0, ImGui::GetFrameHeight()))) {
+                    // The way round that is shorter decides which way the names swipe.
+                    const int ahead = static_cast<int>(wrap(i - browse));
+                    go(i, ahead <= count / 2 ? 1 : -1);
+                }
+                auto* list = ImGui::GetWindowDrawList();
+                const float row_h = ImGui::GetFrameHeight();
+                ImGui::PushFont(menu.bold);
+                const float text_y = row.y + (row_h - ImGui::GetTextLineHeight()) * 0.5f;
+                const auto item_name = name_of(item);
+                list->AddText(ImVec2(row.x + px(12), text_y), there(item) ? skate_theme::white : skate_theme::grey_text, item_name.c_str());
+                if (item == in_play)
+                    asterisk(list, ImVec2(row.x + px(12) + ImGui::CalcTextSize(item_name.c_str()).x + mark_w * 0.62f, row.y + row_h * 0.5f),
+                             skate_theme::blue);
+                if (!there(item)) {
+                    const float w = ImGui::CalcTextSize("NOT INSTALLED").x;
+                    list->AddText(ImVec2(row.x + ImGui::GetContentRegionAvail().x - w - px(8), text_y), skate_theme::warning, "NOT INSTALLED");
+                }
+                ImGui::PopFont();
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(4);
+
+        // The model.
+        const ImVec2 view_a(at.x + pad, at.y + pad + pill_h + gap + side_h + gap), view_z(end.x - pad, view_a.y + view_h);
+        deck_preview::draw(draw, view_a, view_z, deck, panel);
+        const float inset = px(10);
+        if (!there(deck)) {
+            ImGui::PushFont(menu.bold);
+            draw->AddText(ImVec2(view_a.x + inset, view_a.y + inset), skate_theme::warning, "NOT INSTALLED");
+            ImGui::PopFont();
+        }
+        if (there(deck) && deck_preview::showing_stand_in())
+            draw->AddText(ImVec2(view_a.x + inset, view_z.y - inset - ImGui::GetTextLineHeight()), IM_COL32(110, 112, 118, 255),
+                          "No preview.obj in this deck's folder: a plain deck stands in.");
+        if (!swiping && !listing && ImGui::IsMouseHoveringRect(at, end) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) step = -1;
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) step = 1;
+        }
+        if (step) go(browse + step, step);
+        ImGui::SetCursorScreenPos(ImVec2(at.x, end.y + px(8)));
+        ImGui::Dummy(ImVec2(full, 0));
+
+        // Putting it in the game: the level loads again.
+        const auto& shown = decks[static_cast<std::size_t>(browse)];
+        if (shown == in_play) {
+            primary_button(menu, "ACTIVE", false);
+        } else if (!there(shown)) {
+            primary_button(menu, "NOT INSTALLED", false);
+        } else if (primary_button(menu, ("USE " + name_of(shown) + "  (the level loads again)").c_str(),
+                                  !busy && callbacks.queue_console_command)) {
+            send_console(menu, callbacks, "boardbreak deck " + shown);
+        }
     }
     if (busy) note("Applying mods...");
     else if (!in_play.empty() && chosen != in_play && there(chosen))
         note((label(chosen) + " is chosen and shows once the level has loaded again.").c_str());
-    note("The deck every board in the game has, and the one that breaks. Picking another loads the level again; "
-         "decks that are not installed are greyed out.");
+    note("The deck every board in the game has, and the one that breaks. Going through the decks loads nothing; "
+         "putting one in the game loads the level again. Decks that are not installed are greyed out.");
     end_card();
 }
 }

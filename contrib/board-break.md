@@ -190,6 +190,43 @@ number. Any other deck that follows the recipe works, with no change to ReSkate:
   `Board_Break_<Name>` folder): `label = Old School`, its name in the menus, and `axle = 1.17`, how
   far apart its wheels sit against a standard board's (0.8 to 1.6), for a deck wider or narrower
   than the standard one.
+- A deck may bring a preview of itself for the BOARD BREAK DECK card's carousel, beside its
+  `deck.ini`: `preview.obj`, its mesh as a Wavefront OBJ (triangles or polygons, with or without
+  texture coordinates and normals), and `preview.png`, optional, its colour texture by the OBJ's
+  texture coordinates (at most 2048 pixels a side; scaled to 512 for the preview). Any axes do: the
+  longest extent is the length, the shortest the thickness, and the side the ends turn up to is the
+  grip. A first line `# reskate-preview` says the file is in the game's axes (x across, y along with
+  the nose toward -y, z up out of the grip) instead. SVG to deck writes both into its Board Break
+  folder. A deck without them shows a plain popsicle in the preview. They are read again every few
+  seconds while the card shows, so a re-exported deck shows its new shape without a restart.
+
+## The deck preview
+
+The BOARD BREAK DECK card is a carousel in a window: the deck's name in a big box between two
+arrows, the decks either side of it in smaller boxes under them, and the deck's model turning below
+(`deck_preview.cpp`). The arrows, the small boxes or left / right over the panel turn the wheel: every
+box rolls to its neighbour's place (growing, shrinking and changing colour on the way; one comes in
+from past an end and one goes out), and the arrows fade out until it has stopped. A click on the big
+box opens a list of every deck to jump to. A blue asterisk marks the deck that is active (in the
+game), in the carousel and the list. Going through the decks loads nothing; the button under the
+panel puts the deck shown in the game, which loads the level again as before. Full screen keeps its
+one row (left / right, then A), with the model of the deck on the row under it.
+
+The model is drawn with HLSL on the overlay's command list, just before ImGui's draws, into a 4x
+MSAA target with a depth buffer of its own that is resolved into the SRV heap's fifth slot (its
+texture, `preview.png`, is in the sixth); ImGui then draws that texture as an image. One root
+signature (48 root constants and a texture), two pipelines: a backdrop, a soft glow in ReSkate blue
+behind the deck that falls off to exactly the panel's colour at the window's edges, and the deck,
+lit by a key and a fill light with a blue rim, its grip matt with glinting grit, its underside
+maple with a clear coat (or the texture), its edge seven plies with a dyed core. The shaders are
+built with D3DCompile the first time the card shows; should that or anything after it fail, the
+log says why and the model is drawn flat with ImGui's own triangles instead.
+
+The model turns at one steady speed and its turn is never reset. Choosing another deck fades the
+model out (0.16 s), swaps it while it cannot be seen, and fades the new one in (0.3 s); the fade is
+done in the shader, against the backdrop, so the glow stays while the deck changes. The files are
+read on a thread of their own (the deck shown first, then every installed deck, so going through
+them shows each at once), never on the render thread.
 
 ## Seen working in game
 

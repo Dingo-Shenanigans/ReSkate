@@ -272,6 +272,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp);
 
 // Swapchain selection, device objects and the per-frame draw (overlay_render.cpp).
 bool completed(UINT64 value, DWORD timeout_ms);
+struct CardPixels;
+// Pixels made into a texture in the SRV heap's slot `slot`, on the frame's command list (0 if not).
+ImTextureID upload_image(State& s, const CardPixels& pixels, UINT slot, ComPtr<ID3D12Resource>& texture_out,
+                         ComPtr<ID3D12Resource>& upload_out);
 void destroy_graphics();
 ComPtr<IUnknown> object_identity(IUnknown* object);
 Binding* find_binding(IUnknown* identity);

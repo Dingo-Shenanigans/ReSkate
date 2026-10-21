@@ -40,6 +40,8 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/progression_menu.cpp
     Extension/UI/Overlay/atmosphere_menu.cpp
     Extension/UI/Overlay/modding_menu.cpp
+    Extension/UI/Overlay/deck_preview.cpp
+    Extension/UI/Overlay/deck_preview_model.cpp
     Extension/UI/Overlay/multiplayer_menu.cpp
     Extension/UI/Overlay/multiplayer_lobbies.cpp
     Extension/UI/Overlay/multiplayer_session.cpp
