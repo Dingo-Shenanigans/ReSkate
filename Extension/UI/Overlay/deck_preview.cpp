@@ -261,7 +261,7 @@ float3 plies(float ply, float3 lp) {
     float k = saturate(ply) * 7.0;
     float band = min(floor(k), 6.0), f = frac(k);
     float3 c = fmod(band, 2.0) < 1.0 ? float3(0.89, 0.75, 0.56) : float3(0.63, 0.46, 0.31);
-    if (band == 3.0) c = float3(0.02, 0.45, 0.92); // the dyed core ply
+    if (band == 3.0) c = float3(0.46, 0.31, 0.19); // the core ply, a shade darker
     c *= lerp(0.6, 1.0, smoothstep(0.0, 0.1, f) * smoothstep(1.0, 0.9, f));
     c *= 0.9 + 0.2 * noise3(lp * float3(45, 3, 45));
     return to_linear(c);
@@ -299,7 +299,7 @@ float4 ps_deck(DeckOut i) : SV_Target {
         spec_amount = 0.35;
     }
     float3 L1 = normalize(float3(0.45, 0.65, 0.85)), C1 = float3(1.0, 0.95, 0.88) * 2.3;
-    float3 L2 = normalize(float3(-0.8, -0.15, 0.45)), C2 = float3(0.55, 0.65, 0.9) * 0.65;
+    float3 L2 = normalize(float3(-0.8, -0.15, 0.45)), C2 = float3(0.62, 0.64, 0.7) * 0.6;
     float3 ambient = lerp(float3(0.05, 0.05, 0.06), float3(0.2, 0.21, 0.24), N.y * 0.5 + 0.5);
     float3 colour = albedo * (ambient + C1 * saturate(dot(N, L1)) + C2 * saturate(dot(N, L2)));
     float nv = saturate(dot(N, V));
@@ -307,7 +307,10 @@ float4 ps_deck(DeckOut i) : SV_Target {
     float3 H1 = normalize(L1 + V), H2 = normalize(L2 + V);
     colour += C1 * pow(saturate(dot(N, H1)), spec_power) * (spec_amount * (0.3 + fresnel) + sparkle * 1.8);
     colour += C2 * pow(saturate(dot(N, H2)), spec_power) * spec_amount * 0.5;
-    colour += to_linear(glow.rgb) * pow(1.0 - nv, 3.0) * 1.7; // the rim, lit from behind
+    // The rim, lit from behind: only the very edge, and not on the grip (matt tape catches none;
+    // seen side on, a kick's grip faces away and would turn blue all over).
+    float rim = pow(1.0 - nv, 8.0) * (top > 0.5 ? 0.0 : 1.0);
+    colour += to_linear(glow.rgb) * rim * 0.4;
     colour = colour / (1.0 + colour) * 1.1;
     float3 shown = to_display(colour);
     if (glow.w > 0.5) {
@@ -320,7 +323,7 @@ float4 ps_deck(DeckOut i) : SV_Target {
         float shade = 0.72 + 0.34 * saturate(dot(N, L1)) + 0.08 * saturate(dot(N, L2));
         float3 lit = art * shade;
         lit += to_display(C1 * pow(saturate(dot(N, H1)), spec_power) * spec_amount * (0.3 + fresnel)) * 0.6;
-        lit += glow.rgb * pow(1.0 - nv, 3.0) * 0.55;
+        lit += glow.rgb * rim * 0.25;
         shown = saturate(lit);
     }
     return float4(lerp(backdrop(i.pos.xy), shown, back.w), 1);
