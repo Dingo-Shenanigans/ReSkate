@@ -122,6 +122,12 @@ std::optional<bool> left_foot_leads(std::uintptr_t base, std::uintptr_t componen
     const auto flags = context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
     return flags ? std::optional<bool>{(*flags & addr::grind_exit::left_foot_leads_mask) != 0} : std::nullopt;
 }
+// The physics context the stance byte lives in (0 when it cannot be found).
+std::uintptr_t physics_context(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
+    if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return 0;
+    return read<std::uintptr_t>(core + 0x3c0).value_or(0);
+}
 // The whole byte the stance bit lives in: the other bits are not understood yet (the stance readout logs them).
 std::optional<std::uint8_t> stance_flags(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
@@ -1804,6 +1810,14 @@ void tick(Live& l, double at, std::uintptr_t base, std::uintptr_t component, Mot
     }
     last_mount = mount.position;
     last_mount_at = at;
+    // The feet in the skater's own frame (the placement, joint 1): the game mirrors his body in it, so the
+    // side each foot is on says whether it is playing his clips mirrored.
+    const auto placed = world(l.pose, placement_joint);
+    const auto in_placed = [&](const Vec3& w) {
+        return rotate(conjugate(placed.rotation), Vec3{w[0] - placed.position[0], w[1] - placed.position[1], w[2] - placed.position[2]});
+    };
+    const auto pl = in_placed(world(l.pose, 343).position), pr = in_placed(world(l.pose, 10).position);
+    const auto board_along = rotate(conjugate(placed.rotation), rotate(mount.rotation, Vec3{0, 0, 1}));
     const auto flags = stance_flags(base, component);
     const char* moving = motion == MotionState::riding ? "riding" : motion == MotionState::air ? "air" : motion == MotionState::rail ? "rail"
                        : motion == MotionState::offboard ? "offboard" : "unknown";
@@ -1813,28 +1827,44 @@ void tick(Live& l, double at, std::uintptr_t base, std::uintptr_t component, Mot
     const char* going = std::abs(speed) < 0.5f ? "still" : speed > 0 ? "+z" : "-z";
     char flag_text[8] = "--";
     if (flags) std::snprintf(flag_text, sizeof(flag_text), "%02x", *flags);
-    const std::string key = std::string(flag_text) + toward_plus_z + going + moving;
+    const char* placed_side = pr[0] > pl[0] ? "R+x" : "L+x";
+    const std::string key = std::string(flag_text) + toward_plus_z + going + moving + placed_side;
     if (key == last_key && at - last_line < 1.0) return;
     last_key = key;
     last_line = at;
     ++lines;
     const auto trick = current_trick(component);
     write(std::format("{:7.2f}s  {:8s} flags {} (left_foot_leads {})  setting {}  foot toward +z: {:5s}  board going {:5s} ({} m/s)  "
-                      "L {} {} {}  R {} {} {}  trick {}",
+                      "L {} {} {}  R {} {} {}  | placement: {} (L x {} R x {}) board +z along ({} {} {})  trick {}",
                       at - started, moving, flag_text, flags ? ((*flags & addr::grind_exit::left_foot_leads_mask) ? "yes" : "no ") : "?  ",
                       goofy_stance() ? "goofy  " : "regular", toward_plus_z, going, fmt(speed), fmt(left[0]), fmt(left[1]), fmt(left[2]),
-                      fmt(right[0]), fmt(right[1]), fmt(right[2]), trick.empty() ? "-" : trick));
+                      fmt(right[0]), fmt(right[1]), fmt(right[2]), placed_side, fmt(pl[0]), fmt(pr[0]), fmt(board_along[0]),
+                      fmt(board_along[1]), fmt(board_along[2]), trick.empty() ? "-" : trick));
+    // The physics context around the stance byte, for finding the game's own mirror, fakie and
+    // board-backwards flags by what changes with them. Appended as fixed-size records, one per line.
+    if (const auto context = physics_context(base, component)) {
+        std::array<std::uint8_t, 0x3000> bytes{};
+        if (peek(context, bytes.data(), bytes.size())) {
+            try {
+                std::ofstream dump(library_folder() / L"research" / "stance-memory.bin", std::ios::binary | std::ios::app);
+                const auto line = static_cast<std::uint32_t>(lines);
+                dump.write(reinterpret_cast<const char*>(&line), 4);
+                dump.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            } catch (...) {}
+        }
+    }
 }
 } // namespace stance_readout
 std::string toggle_stance_readout() {
     const bool now = !stance_readout::on.load();
     if (now) {
         try { std::filesystem::remove(library_folder() / L"research" / "stance-readout.txt"); } catch (...) {}
+        try { std::filesystem::remove(library_folder() / L"research" / "stance-memory.bin"); } catch (...) {}
         stance_readout::started = -1;
         stance_readout::last_key.clear();
         stance_readout::lines = 0;
         stance_readout::last_mount_at = -1;
-        stance_readout::write("# Animation Studio stance readout. Ride each stance for a few seconds: normal, fakie, switch, nollie.");
+        stance_readout::write("# Animation Studio stance readout v2. Ride each for a few seconds: normal, fakie, switch, switch fakie; then a pop shuvit and ride.");
         stance_readout::write("# Feet are in the board's frame (x across, y up, z along). 'board going' is its travel along its own z.");
     } else stance_readout::write("# stopped by command");
     stance_readout::on.store(now);

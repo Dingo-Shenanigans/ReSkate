@@ -38,3 +38,13 @@ Read out of the game's own animation graph (the typed native documents the libra
 - Open question, measured by `animstudio stance` (writes `research/stance-readout.txt`): which physical
   fact physics uses for `AnimMirrored`, and whether our stance bit (`grind_exit::left_foot_leads_mask`)
   flips when riding fakie. If it does, it is not the mirror bit and must not decide mirroring on its own.
+
+## Measured 2026-10-22 (stance readout, regular setting)
+
+- The bit we used as "left foot leads" (stance byte `0x20` at context+0x13c4) is NOT the stance. It stayed
+  set riding normal, fakie and switch alike, and only cleared during some pushes from switch or fakie
+  (byte `10`/`50`). `0x10` and `0x40` come and go while pushing. Nothing should decide mirroring from it.
+- Riding fakie the feet stay at the same ends of the board and only the travel reverses; a 180 shuvit turns
+  the board under the feet. Neither changes which foot the game treats as front, so neither may mirror.
+- Next readout (v2) logs the feet in the placement frame (where the game mirrors the body) and snapshots
+  the physics context, to find the game's own Mirrored / RidingFakie / BoardBackwards flags.
