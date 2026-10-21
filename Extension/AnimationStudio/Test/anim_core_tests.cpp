@@ -577,6 +577,8 @@ void timing_and_stance_edge_cases() {
     check(!playback_stance_compatible(true, false, true, std::nullopt), "Unknown live switch state keeps native animation");
     check(playback_stance_compatible(true, std::nullopt, true, false) &&
           !playback_stance_compatible(true, std::nullopt, true, true), "Legacy recordings are normal stance only");
+    check(!riding_switch(true, false) && riding_switch(false, false), "A regular skater whose left foot leads is not switch");
+    check(riding_switch(true, true) && !riding_switch(false, true), "A goofy skater whose left foot leads is switch");
     check(near(advance_time(0, 0.25f, 1, 2, false), 0.25f), "A 250 ms render stall must not discard 150 ms of playback");
     check(near(advance_time(0.8f, 0.7f, 2, 1, true), 0.2f), "Looping handles a frame spanning multiple loops");
     check(near(advance_time(0.8f, 0.7f, 2, 1, false), 1), "Non-looping playback ends at the last frame");

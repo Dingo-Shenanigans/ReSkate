@@ -200,7 +200,7 @@ void on_step(const NoBailSkater& skater, float, bool) noexcept {
     const auto now = qpc_now();
     std::uint8_t flags{};
     if (memory::peek(skater.context + gx::stance_flags_offset, flags))
-        c.switch_stance.store((flags & gx::stance_switch_mask) != 0, std::memory_order_relaxed);
+        c.switch_stance.store((flags & gx::left_foot_leads_mask) != 0, std::memory_order_relaxed);
     if (grind_state(state)) {
         if (!grind_state(c.last_state)) c.grind_start.store(now, std::memory_order_release);
         std::array<float, 3> v{};

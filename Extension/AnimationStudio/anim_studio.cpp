@@ -92,14 +92,21 @@ struct CustomTrick {
     std::shared_ptr<const Animation> edits;
     bool goofy{};      // recorded goofy
 };
+// Dev only: true plays the other stance's variant when no variant matches the stance, as before
+// 2026-10-20. Keep it false while the mirroring between stances is in development.
+constexpr bool stance_fallback = false;
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
 bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
-std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
+std::optional<bool> left_foot_leads(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
     const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
     const auto flags = context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
-    return flags ? std::optional<bool>{(*flags & addr::grind_exit::stance_switch_mask) != 0} : std::nullopt;
+    return flags ? std::optional<bool>{(*flags & addr::grind_exit::left_foot_leads_mask) != 0} : std::nullopt;
+}
+std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto left = left_foot_leads(base, component);
+    return left ? std::optional<bool>{riding_switch(*left, goofy_stance())} : std::nullopt;
 }
 using CustomTricks = std::vector<CustomTrick>;
 struct Snapshot {
@@ -991,6 +998,7 @@ void research_tick(std::uintptr_t base, std::uintptr_t component, bool open) {
             sample.trick = current_trick(component);
             sample.board_up_speed = board_up_speed(base, component);
             sample.switch_stance = switch_stance(base, component);
+            sample.left_foot_leads = left_foot_leads(base, component);
         }
         sample.animation_updates = live().animation_updates.load(std::memory_order_acquire);
         {
@@ -1039,8 +1047,8 @@ std::string research_trace(const std::string& action) {
         std::filesystem::create_directories(folder);
         const auto path = folder / ("transitions-" + std::to_string(GetTickCount64()) + ".csv");
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << "# animator_trace_schema=2\n# game_sha256=" << supported_build::game_sha256 << '\n';
-        out << "seconds,physics_state,phase_hint,trick_name,board_up_mps,studio_open,custom_playback_enabled,goofy_setting,recording_armed,switch_flag,animation_updates,skater_publications,board_publications,skater_age_s,board_age_s\n";
+        out << "# animator_trace_schema=3\n# game_sha256=" << supported_build::game_sha256 << '\n';
+        out << "seconds,physics_state,phase_hint,trick_name,board_up_mps,studio_open,custom_playback_enabled,goofy_setting,recording_armed,switch_stance,left_foot_leads,animation_updates,skater_publications,board_publications,skater_age_s,board_age_s\n";
         for (const auto& s : r.buffer.samples) {
             const bool air = s.physics && (*s.physics == 200 || *s.physics == 201);
             const bool rail = s.physics && *s.physics >= 400 && *s.physics < 500;
@@ -1050,6 +1058,8 @@ std::string research_trace(const std::string& action) {
             if (s.board_up_speed) out << *s.board_up_speed;
             out << ',' << s.studio_open << ',' << s.custom_enabled << ',' << s.goofy << ',' << s.recording_armed << ',';
             if (s.switch_stance) out << *s.switch_stance;
+            out << ',';
+            if (s.left_foot_leads) out << *s.left_foot_leads;
             out << ',' << s.animation_updates << ',' << s.skater_publications << ',' << s.board_publications << ',' << s.skater_age << ',' << s.board_age << '\n';
         }
         out.close();
@@ -1462,15 +1472,17 @@ void on_animation(std::uintptr_t component) noexcept {
                 };
                 int best_pop = 3;
                 for (const auto& t : *l.game_tricks) {
-                    if (t.trick != name || t.edits->entry != entry_name(l.episode.entry) || !l.playback_switch.has_value()) continue;
+                    if (t.trick != name || t.edits->entry != entry_name(l.episode.entry) || !l.playback_switch.has_value() ||
+                        (!stance_fallback && !compatible(t))) continue;
                     const int rank = playback_pop_rank(pop, t.edits->pop);
                     if (rank < 0) continue;
                     if (rank < best_pop) { variants.clear(); best_pop = rank; }
                     if (rank == best_pop) variants.push_back(&t);
                 }
-                // A recorded switch variant wins over converting another stance's edits.
-                if (std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
-                    std::erase_if(variants, [&](const CustomTrick* t) { return !compatible(*t); });
+                if constexpr (stance_fallback) {
+                    if (std::any_of(variants.begin(), variants.end(), [&](const CustomTrick* t) { return compatible(*t); }))
+                        std::erase_if(variants, [&](const CustomTrick* t) { return !compatible(*t); });
+                }
                 if (!variants.empty()) {
                     auto choice = l.attempt_variants.find(name);
                     if (choice == l.attempt_variants.end())

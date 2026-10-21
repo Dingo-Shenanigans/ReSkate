@@ -58,6 +58,7 @@ inline bool episode_selection_changed(std::string_view selected, std::string_vie
     // when the native grade refines an estimate; generic bindings remain stable.
     return !reported.empty() && (selected != reported || (!selected_pop.empty() && selected_pop != wanted_pop));
 }
+inline bool riding_switch(bool left_foot_leads, bool goofy) noexcept { return left_foot_leads == goofy; }
 inline bool playback_stance_compatible(bool recorded_goofy, std::optional<bool> recorded_switch,
                                       bool live_goofy, std::optional<bool> live_switch) noexcept {
     // Equal lead feet are not enough: regular switch and goofy normal have different

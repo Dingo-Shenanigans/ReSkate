@@ -78,14 +78,31 @@ PLAYBACK > Save as new variation preserves the original file. Include saved vari
 changes membership; Choose this fixed variation changes that slot's preferred choice. These
 actions use the saved animation, so save edits first. A new variation is not automatically added
 to an existing pack. Each base stance/switch combination has its own fixed choice. Gameplay
-prefers recordings with matching base stance and takeoff switch state. In another stance it
-transfers authored joint edits onto the native pose instead of copying recorded bones. Edits
-are converted through source and target placement-relative joint frames, with reflected deltas
-when lead feet differ. Native bone positions/scales are retained except for explicitly authored
+plays only recordings with the same base stance and switch state at takeoff. In another stance the
+trick keeps its native animation, because the mirroring between stances is in development.
+Native bone positions/scales are retained except for explicitly authored
 offsets; board keys are added over the native board in the placement frame (and stay native
 on rails). This transfers edits, not all of
 the recorded base motion. Unknown live switch state keeps native animation. Legacy recordings
 without switch metadata are treated as normal stance.
+
+To know if the skater is riding switch, the studio compares two things:
+
+- which foot leads right now, read from the game (`left_foot_leads_mask` in `grind_exit.h`)
+- the skater's own stance, from the stance setting (`grindexit stance goofy|regular`, unset counts as
+  regular)
+
+When the two differ, the skater is riding switch.
+
+Recordings made for regular-footed skaters before 2026-10-20 carry inverted switch tags. Record them
+again, or fix them (about 1 minute):
+
+1. Run `python contrib/animator-studio/fix_regular_skater_tags.py --tricks ReSkate.Tricks --output NEW_FOLDER`
+2. Check `fix-regular-skater-tags-report.txt` in `NEW_FOLDER`
+3. Close the game and back up `ReSkate.Tricks`
+4. Replace `ReSkate.Tricks` with `NEW_FOLDER`
+
+The script never changes `ReSkate.Tricks` itself.
 
 SAVED > NEW PACK NAME accepts a pack name such as Steezy; Create a new pack creates and selects
 it without replacing an existing pack. These are local packs, not an online marketplace.
