@@ -899,20 +899,34 @@ Joint local_against(const Joint& parent, const Joint& world_joint) noexcept {
     for (std::size_t i = 0; i < 3; ++i) out.position[i] = turned[i] / scale;
     return out;
 }
+Joint placed_in(const Joint& frame, const Joint& local) noexcept {
+    Joint out = local;
+    const float scale = frame.scale[0] > 1e-6f ? frame.scale[0] : 1.0f;
+    const auto moved = rotate(frame.rotation, {local.position[0] * scale, local.position[1] * scale, local.position[2] * scale});
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = frame.position[i] + moved[i];
+    out.rotation = normalised(multiply(frame.rotation, local.rotation));
+    return out;
+}
 // One frame of a pose, mirrored. `body_only` leaves everything that is not the skinned body as it was.
+// The whole skeleton is reflected in the root's frame. The body alone is reflected in the placement's:
+// that is where he stands on his board (and where the board's own mirror is done), whereas the root can
+// be anywhere in the world - reflecting across the root's middle line threw him off the board and into
+// the air whenever the root was not right under him, which in the game it never is.
 void mirror_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only) {
     const auto count = std::min(pose.size(), out.size());
     std::vector<Joint> in_world(count), mirrored(count);
     for (std::size_t j = 0; j < count; ++j) in_world[j] = world(pose, static_cast<std::uint16_t>(j));
     mirrored = in_world;
+    const bool about_placement = body_only && placement_joint < count;
+    const Joint about = about_placement ? in_world[placement_joint] : Joint{};
     for (std::size_t j = 0; j < count; ++j) {
         const auto other = mirror_joint[j];
         if (other >= count) continue;
         if (body_only && (!gameplay_body_joint(static_cast<std::uint16_t>(j)) || !gameplay_body_joint(other))) continue;
-        Joint turned = in_world[j];
+        Joint turned = about_placement ? local_against(about, in_world[j]) : in_world[j];
         turned.rotation = mirror_rotation(turned.rotation);
         turned.position = mirror_vector(turned.position);
-        mirrored[other] = turned;
+        mirrored[other] = about_placement ? placed_in(about, turned) : turned;
     }
     for (std::size_t j = 0; j < count; ++j) {
         const auto up = parent(static_cast<std::uint16_t>(j));

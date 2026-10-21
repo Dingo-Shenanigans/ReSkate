@@ -300,8 +300,34 @@ void mirroring_puts_each_joint_where_its_reflection_belongs() {
                   "What is not the body stays where it was");
         }
         check(gameplay_body_joint(343) && gameplay_body_joint(10), "The feet are body joints");
-        const auto left = world(pose, 343).position, right = world(body, 10).position;
-        check(near(right[0], -left[0], 3e-3f) && near(right[1], left[1], 3e-3f), "and the left foot's reflection is where the right one is");
+        // Reflected about where he stands - the placement - not about the root, which can be anywhere.
+        const auto at = world(pose, placement_joint);
+        const auto in_placement = [&](const Vec3& p) {
+            return rotate(conjugate(at.rotation), {p[0] - at.position[0], p[1] - at.position[1], p[2] - at.position[2]});
+        };
+        const auto left = in_placement(world(pose, 343).position), right = in_placement(world(body, 10).position);
+        check(near(right[0], -left[0], 3e-3f) && near(right[1], left[1], 3e-3f) && near(right[2], left[2], 3e-3f),
+              "and the left foot's reflection is where the right one is");
+    }
+    // The root far from him and turned, as it is in the game: the body is mirrored where it stands, so the
+    // hips do not move away from the placement and the feet stay as high above it as they were.
+    {
+        auto far = pose;
+        far[0].position = {37.0f, -4.0f, 12.0f};
+        far[0].rotation = from_euler({0.0f, 73.0f, 0.0f});
+        std::vector<Joint> body(far.size());
+        mirror_pose_frame(far, body, true);
+        const auto at = world(far, placement_joint);
+        const auto from = [&](const std::vector<Joint>& p, std::uint16_t j) {
+            const auto w = world(p, j).position;
+            return rotate(conjugate(at.rotation), {w[0] - at.position[0], w[1] - at.position[1], w[2] - at.position[2]});
+        };
+        const auto hips_before = from(far, hips_joint), hips_after = from(body, hips_joint);
+        check(near(hips_after[0], -hips_before[0], 3e-3f) && near(hips_after[1], hips_before[1], 3e-3f) &&
+                  near(hips_after[2], hips_before[2], 3e-3f),
+              "A far-off root does not throw the mirrored body off its spot");
+        const auto foot_before = from(far, 343), foot_after = from(body, 10);
+        check(near(foot_after[1], foot_before[1], 3e-3f), "and the feet stay on the board");
     }
     // And the bones keep their lengths, so nothing is stretched on the way.
     for (std::uint16_t j = 1; j < skeleton_joints; ++j) {
