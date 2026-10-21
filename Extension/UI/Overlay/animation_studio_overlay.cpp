@@ -570,6 +570,10 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
         // The deck: a thin flat box about the board's mount, pushed out whichever of its faces is nearest.
         if (const auto* board = joint_view(v, studio::board_joint)) {
             constexpr std::array<float, 3> half{0.105f, 0.020f, 0.430f}; // across, thick, along
+            // A deck is not a slab: it kicks up at the nose and the tail. Past the trucks the top of it
+            // rises towards the tip, so a foot put on the tail sits on the kick and a hand reaching the
+            // nose meets it where it really is.
+            constexpr float flat_to = 0.26f, kick_rise = 0.075f;
             std::array<studio::Vec3, 3> axes{};
             for (int i = 0; i < 3; ++i) {
                 studio::Vec3 e{};
@@ -578,11 +582,12 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             }
             const studio::Vec3 from{target[0] - board->position[0], target[1] - board->position[1], target[2] - board->position[2]};
             std::array<float, 3> along{};
-            bool inside = true;
-            for (int i = 0; i < 3; ++i) {
-                along[static_cast<std::size_t>(i)] = dot3(from, axes[static_cast<std::size_t>(i)]);
-                inside = inside && std::abs(along[static_cast<std::size_t>(i)]) < half[static_cast<std::size_t>(i)] + deck_r;
-            }
+            for (int i = 0; i < 3; ++i) along[static_cast<std::size_t>(i)] = dot3(from, axes[static_cast<std::size_t>(i)]);
+            // How far up the kick is here: nothing between the trucks, rising to the tips.
+            const float out_along = std::clamp((std::abs(along[2]) - flat_to) / std::max(half[2] - flat_to, 1e-3f), 0.0f, 1.0f);
+            const float kick = out_along * out_along * kick_rise;
+            bool inside = std::abs(along[0]) < half[0] + deck_r && std::abs(along[2]) < half[2] + deck_r &&
+                          along[1] < half[1] + deck_r + kick && along[1] > -half[1] - deck_r;
             if (!inside) continue;
             // A foot comes out of the top of the deck and nowhere else. He stands on his board: pushing it
             // out by whichever face is nearest put the foot under the deck whenever it had got a little
@@ -591,7 +596,7 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
                 // Just under the height the game holds the feet at while riding, so a foot sits on the
                 // deck rather than in its top face, and snapping can still take it the rest of the way.
                 constexpr float on_top = studio::feet_above_board - 0.012f;
-                const float up = on_top - along[1];
+                const float up = on_top + kick - along[1]; // on the tail, that is up on the kick
                 if (up > 0) for (int i = 0; i < 3; ++i) target[i] += axes[1][i] * up;
                 continue;
             }
@@ -599,7 +604,8 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             int face = 0;
             float least = 1e9f;
             for (int i = 0; i < 3; ++i) {
-                const float out = half[static_cast<std::size_t>(i)] + deck_r - std::abs(along[static_cast<std::size_t>(i)]);
+                const float reach = half[static_cast<std::size_t>(i)] + deck_r + (i == 1 ? kick : 0.0f);
+                const float out = reach - std::abs(along[static_cast<std::size_t>(i)]);
                 if (out < least) least = out, face = i;
             }
             const float sign = along[static_cast<std::size_t>(face)] < 0 ? -1.0f : 1.0f;
