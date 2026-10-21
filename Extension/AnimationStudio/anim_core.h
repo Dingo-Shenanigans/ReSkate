@@ -156,7 +156,19 @@ struct Animation {
 // Puts the animation's edits at `seconds` on `pose` (already holding the base pose).
 void apply_edits(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
 // Same anatomical joint and local edit axes as F8; stance never swaps authored limbs.
-void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight);
+// Which limb a joint belongs to: 1 left arm, 2 right arm, 3 left leg, 4 right leg, 0 the rest of him.
+// The authored layer can be let go of a limb at a time, so a grind can take the feet while the arms keep
+// what was posed for them.
+int limb_group(std::uint16_t joint) noexcept;
+struct LimbWeights {
+    std::array<float, 5> limb{{1, 1, 1, 1, 1}}; // [0] is everything that is not a limb
+    float of(std::uint16_t joint) const noexcept { return limb[static_cast<std::size_t>(limb_group(joint))]; }
+    bool whole() const noexcept {
+        return limb[0] >= 1 && limb[1] >= 1 && limb[2] >= 1 && limb[3] >= 1 && limb[4] >= 1;
+    }
+};
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
+                               const LimbWeights* limbs = nullptr);
 // Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.

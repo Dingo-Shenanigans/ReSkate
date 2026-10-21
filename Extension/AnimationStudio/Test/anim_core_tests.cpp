@@ -477,6 +477,26 @@ void merged_library_and_timing() {
           !episode_selection_changed("360flip", "360flip", "low", "low") &&
           !episode_selection_changed("360flip", "360flip", "", "high"),
           "A late high-pop grade invalidates a low binding without cycling a generic or matching binding");
+    // A limb can be given back to the game on its own: a weight each, and the joints below a shoulder or
+    // a thigh go with their limb, fingers included.
+    check(limb_group(277) == 1 && limb_group(278) == 1 && limb_group(292) == 1, "The left arm, its hand and its fingers are one limb");
+    check(limb_group(48) == 2 && limb_group(49) == 2 && limb_group(62) == 2, "and so are the right");
+    check(limb_group(342) == 3 && limb_group(343) == 3, "The left leg and its foot");
+    check(limb_group(9) == 4 && limb_group(10) == 4, "and the right");
+    check(limb_group(7) == 0 && limb_group(44) == 0 && limb_group(103) == 0, "The hips, the chest and the head are not a limb");
+    {
+        Animation layered;
+        Track t{10, {}, false, false};
+        Key k; k.time = 0; k.offset = {0, 0.2f, 0}; t.keys.push_back(k);
+        layered.tracks.push_back(t);
+        t.joint = 278; layered.tracks.push_back(t);
+        std::vector<Joint> pose(skeleton_joints);
+        LimbWeights limbs;
+        limbs.limb[4] = 0; // the right leg has been taken by the game
+        apply_authored_edit_layer(layered, 0, pose, 1.0f, &limbs);
+        check(near(pose[10].position[1], 0), "A limb given back takes none of the authored move");
+        check(near(pose[278].position[1], 0.2f), "while the others keep all of it");
+    }
     // Which foot leads, and what that means for a trick recorded in one stance being done in another.
     check(leads_right(true, false) && !leads_right(false, false), "Goofy leads with the right foot, regular with the left");
     check(leads_right(false, true) && !leads_right(true, true), "Riding switch turns that round");

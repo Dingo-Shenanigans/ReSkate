@@ -303,6 +303,16 @@ struct Live {
     std::map<const Animation*, std::shared_ptr<const Animation>> mirrored_edits;
     bool playback_front_foot{true};
     bool played_mirrored{};
+    // Giving way to the game. The native graph goes on underneath the authored layer the whole time, and
+    // it changes its mind: a trick is refined, a grind is taken, an obstacle turns the transition into
+    // something else. Rather than guess what it will do - its conditions are its own - the layer watches
+    // what it did and lets go smoothly, limb by limb where it can tell which.
+    LimbWeights limbs;
+    std::vector<Joint> native_before;   // the native pose a frame ago, to see what the graph just did
+    std::vector<Joint> source_before;   // and what the authored clip expected over the same frame
+    double limbs_at{-1};
+    double gave_way_at{-1};             // the whole layer standing back after the trick changed under it
+    std::string gave_way_from;
     std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
     // The studio's floor: the skater's Ground joint (375) when the studio opened, which lies on the
@@ -332,6 +342,7 @@ struct GameplayPacket {
     double at{};
     float time{}, weight{};
     bool board_frame_valid{}, board_owned{};
+    LimbWeights limbs; // a limb the game has taken is given back to it
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -1600,6 +1611,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.playback_switch = switch_stance(base, component);
                 l.game_trick = nullptr; l.game_tricks = snap->tricks;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
+                l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
+                l.native_before.clear(); l.source_before.clear(); l.limbs_at = -1;
                 l.board_at_takeoff_ok = false;
                 if (l.board_ok) {
                     const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
@@ -1616,7 +1629,25 @@ void on_animation(std::uintptr_t component) noexcept {
                 l.predicted_air = vy && *vy > 0.3f
                     ? static_cast<float>(std::clamp(2 * (*vy + 9.81 * elapsed) / 9.81 - elapsed, 0.15, 3.0)) : -1.0f;
             }
-            const auto name = l.episode.selection_open(at) ? current_trick(component) : std::string{};
+            // The game's trick, read for as long as he is in the air rather than only just after takeoff.
+            // A name arriving late used to be ignored, so a trick that turned into another one kept the
+            // first one's keys at full weight all the way down, which is what looked wrong.
+            const bool airborne = l.episode.phase == PlaybackPhase::air || l.episode.phase == PlaybackPhase::landing;
+            const auto name = airborne ? current_trick(component) : std::string{};
+            // A change after we had settled on one is the game doing something else: the layer stands back
+            // over 120 ms, and only then takes up the new trick, so nothing jumps between the two.
+            if (!name.empty() && l.game_trick && l.episode.phase == PlaybackPhase::air && !l.episode.selection_open(at) &&
+                l.game_trick->trick != name && l.gave_way_at < 0) {
+                l.gave_way_at = at;
+                l.gave_way_from = l.game_trick->trick;
+                logging::log(Level::info, Channel::skater, "Animation Studio: the game turned {} into {}; standing back.",
+                             l.gave_way_from, name);
+            }
+            if (l.gave_way_at >= 0 && at - l.gave_way_at >= 0.12) {
+                l.game_trick = nullptr; // let it be chosen again, for whatever the game is doing now
+                l.gave_way_at = -1;
+                l.limbs = {};
+            }
             // PopHeight can arrive after the trick name. A refined grade must
             // invalidate a mismatched explicit binding without rewinding time.
             const auto since_takeoff_ms = static_cast<std::uint64_t>(std::max(0.0, at - l.episode.takeoff) * 1000);
@@ -1695,9 +1726,44 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 l.played_mirrored = mirror_it;
                 const auto& played = *keys;
+                // Standing back after the trick changed: the whole layer, over the same 120 ms.
+                const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
                 const auto& clip = *trick->clip;
                 const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true);
-                const float weight = sampled.weight * animation_window_weight(played, sampled.time);
+                // What the graph did this frame against what the clip says should have happened. A limb
+                // the game has taken - a grind planting the feet, a grab putting a hand on the board -
+                // moves far more than the clip does, and that is the signal: no guess about why, only
+                // that it did. It is given back, and taken up again when it settles.
+                {
+                    const float dt = l.limbs_at > 0 ? static_cast<float>(std::clamp(at - l.limbs_at, 0.0, 0.1)) : 0.0f;
+                    l.limbs_at = at;
+                    std::vector<Joint> source_now(trick->clip->joints);
+                    trick->clip->sample(std::clamp(sampled.time, 0.0f, trick->clip->duration()), source_now);
+                    const bool have_before = l.native_before.size() >= skeleton_joints && l.source_before.size() >= skeleton_joints;
+                    // One joint speaks for each limb: the elbow and the knee, which every grind and grab moves.
+                    constexpr std::array<std::uint16_t, 5> speaks_for{0, 277, 48, 342, 9};
+                    for (std::size_t limb = 1; limb < speaks_for.size(); ++limb) {
+                        bool taken = false;
+                        if (have_before && dt > 0) {
+                            const auto joint = speaks_for[limb];
+                            const auto moved = [](const Quat& a, const Quat& b) {
+                                const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+                                return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
+                            };
+                            const float by_game = moved(l.native_before[joint].rotation, l.pose[joint].rotation);
+                            const float by_clip = moved(l.source_before[joint].rotation, source_now[joint].rotation);
+                            taken = by_game - by_clip > 0.22f; // about 13 degrees in a frame the clip did not ask for
+                        }
+                        const float want = taken ? 0.0f : 1.0f;
+                        const float step = dt > 0 ? (taken ? dt / 0.10f : dt / 0.30f) : 1.0f; // let go quickly, come back slowly
+                        auto& held = l.limbs.limb[limb];
+                        held += std::clamp(want - held, -step, step);
+                        held = std::clamp(held, 0.0f, 1.0f);
+                    }
+                    l.native_before.assign(l.pose.begin(), l.pose.begin() + std::min<std::size_t>(l.pose.size(), skeleton_joints));
+                    l.source_before = std::move(source_now);
+                }
+                const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
                 diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
@@ -1711,14 +1777,14 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->sequence = l.animation_updates.load(); packet->epoch = gameplay_epoch.load(std::memory_order_acquire);
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
-                    packet->clip = trick->clip; packet->edits = keys;
+                    packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
                     packet->board_frame_local = l.board_frame_local; packet->board_frame_valid = l.board_at_takeoff_ok;
                     packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
                     scheduled = std::move(packet);
                     // Diagnostic prediction only. The renderer evaluates these edits again over its
                     // fresh post-physics native pose; no body/board snapshot is queued for gameplay.
                     if (diagnostic_pose) {
-                        apply_authored_edit_layer(played, sampled.time, l.pose, weight);
+                        apply_authored_edit_layer(played, sampled.time, l.pose, weight, &l.limbs);
                     }
                     if (scheduled->board_owned && scheduled->board_frame_valid && l.board_ok) {
                         Joint frame; frame.rotation = normalised(multiply(live_placement.rotation, l.board_frame_local));
@@ -1918,7 +1984,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
     publication.edits.restore(generation, update, layout.buffer, native);
     auto edited = native;
     if (packet) {
-        apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight);
+        apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs);
     }
     const auto desired_deltas = pose_edit_deltas(native, edited);
     edited = native;

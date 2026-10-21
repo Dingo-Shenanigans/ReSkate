@@ -348,20 +348,37 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
         }
     }
 }
-void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight) {
+int limb_group(std::uint16_t joint) noexcept {
+    // The arms and legs by their own chains, read off the skeleton: everything hanging under the shoulder
+    // or the thigh belongs to that limb, including the hands and the fingers.
+    for (int at = joint; at >= 0; at = parent(static_cast<std::uint16_t>(at))) {
+        switch (at) {
+        case 275: return 1; // left shoulder and below
+        case 46: return 2;  // right shoulder and below
+        case 341: return 3; // left thigh and below
+        case 8: return 4;   // right thigh and below
+        default: break;
+        }
+    }
+    return 0;
+}
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
+                               const LimbWeights* limbs) {
     if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
         seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
     weight = std::min(weight, 1.0f);
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || track.joint >= skeleton_joints ||
             track.joint >= native.size() || !editable(track.joint)) continue;
+        const float share = limbs ? weight * std::clamp(limbs->of(track.joint), 0.0f, 1.0f) : weight;
+        if (share <= 0) continue; // this limb has been given back to the game
         const auto edit = evaluate(track, seconds);
         auto& current = native[track.joint];
         if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
             const auto wanted = normalised(multiply(current.rotation, edit.rotation));
-            current.rotation = weight >= 1 ? wanted : slerp(current.rotation, wanted, weight);
+            current.rotation = share >= 1 ? wanted : slerp(current.rotation, wanted, share);
         }
-        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * weight;
+        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * share;
     }
 }
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
