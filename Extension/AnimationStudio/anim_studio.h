@@ -140,7 +140,7 @@ void request_close();                 // closes, or asks first when there are un
 enum class CloseAnswer { save, discard, cancel };
 void answer_close(CloseAnswer answer);
 void set_pop(const std::string& pop); // which pop this animation is for ("" any)
-bool copy_to_pops(std::string& message); // saves a low, a mid and a high copy of it
+bool copy_to_pops(std::string& message); // saves a low, a mid and a high copy of it, in the packs it is in
 void advance(float seconds);          // playback, by the render frame's time
 void set_time(float seconds);
 void set_playing(bool playing);
@@ -242,6 +242,11 @@ bool save_pack(std::string& message);                                           
 // The name a saved animation is shown by in MY TRICKS and the packs; empty takes it off. Its file keeps its
 // name, so the packs it is in keep it.
 bool set_label(const std::string& animation, const std::string& label, std::string& message);
+// A saved trick's pop: "" any (it plays on every pop the game does that has no trick of its own for that pop),
+// or only "low", "mid" or "high". The packs it is in file it under its new pop.
+bool set_saved_pop(const std::string& animation, const std::string& pop, std::string& message);
+// A low, a mid and a high copy of a saved trick, put in every pack it is in.
+bool copy_saved_to_pops(const std::string& animation, std::string& message);
 bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
 // A pack (saved first if it has changes), or every saved animation for "", as
 // ReSkate.Tricks/exports/<name>.zip, laid out like the tricks folder so it can be unzipped straight into it.

@@ -3988,9 +3988,11 @@ void set_pop(const std::string& pop) {
     s.dirty = true;
     ++s.revision;
 }
+namespace { int add_copies_to_packs_locked(State& s, const std::string& original, const std::vector<std::string>& copies); } // below
 bool copy_to_pops(std::string& message) {
     std::shared_ptr<const Clip> clip;
     Animation edits;
+    std::string original; // the saved animation it was opened from, whose packs the copies go into
     {
         auto& s = state();
         std::lock_guard lock(s.mutex);
@@ -4000,9 +4002,11 @@ bool copy_to_pops(std::string& message) {
         }
         clip = s.clip;
         edits = s.edits;
+        original = s.saved_as;
     }
-    // The same keys for each pop: in game the air of each is stretched to its own, so pop and landing
+    // The same keys for each pop: in game each follows the game's own clip of its pop, so pop and landing
     // fall where they should. Each copy can then be changed on its own.
+    std::vector<std::string> copies;
     std::string base = file_safe(edits.trick);
     const auto folder = library_folder();
     try {
@@ -4025,6 +4029,7 @@ bool copy_to_pops(std::string& message) {
             const auto json = to_json(copy);
             write_preset_file(folder / copy.name / (copy.name + ".clip"), binary);
             write_preset_file(folder / copy.name / (copy.name + ".json"), json);
+            copies.push_back(copy.name);
         }
     } catch (const std::exception& e) {
         message = std::string("Copying failed: ") + e.what();
@@ -4033,8 +4038,11 @@ bool copy_to_pops(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     read_library_locked(s);
+    // In the packs the original is in, so a pack that is on plays them at once.
+    const int packs = original.empty() ? 0 : add_copies_to_packs_locked(s, original, copies);
     s.tricks_read = false;
-    message = "Saved new low, mid and high variations of " + base + "; existing animations were preserved.";
+    message = "Saved new low, mid and high variations of " + base + (packs ? ", put in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
+              "; existing animations were preserved.";
     s.status = message;
     return true;
 }
@@ -4620,6 +4628,24 @@ void write_pack_drafts_locked(State& s) {
     read_library_locked(s);
     s.tricks_read = false;
 }
+// Caller holds the mutex, the library read with the copies in it. Copies of `original` go into every pack it is
+// in, each filed under its own trick and pop. Returns how many packs.
+int add_copies_to_packs_locked(State& s, const std::string& original, const std::vector<std::string>& copies) {
+    int joined = 0;
+    const auto packs = s.packs;
+    for (const auto& saved : packs) {
+        if (!saved.has(original)) continue;
+        auto& pack = pack_draft_locked(s, saved.name);
+        for (const auto& copy : copies) {
+            const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == copy; });
+            if (found == s.presets.end() || pack.has(copy)) continue;
+            pack.slots[preset_slot(found->trick, found->pop)].push_back(copy);
+        }
+        ++joined;
+    }
+    if (joined) write_pack_drafts_locked(s);
+    return joined;
+}
 // Caller holds the mutex: `change` is made to the pack and it is saved, and what plays read again.
 template <class Change>
 bool change_pack_locked(State& s, const std::string& name, std::string& message, Change&& change) {
@@ -4788,6 +4814,103 @@ bool set_label(const std::string& animation, const std::string& label_in, std::s
         if (s.saved_as == safe) s.edits.label = label;
         message = label.empty() ? animation + " is shown by its own name again." : animation + " is labelled " + label + ".";
         read_library_locked(s);
+        s.status = message;
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+namespace {
+// A saved animation's file, read whole; checked to be one.
+std::string saved_text(const std::string& safe) {
+    std::ifstream in(saved_json(safe), std::ios::binary);
+    if (!in) throw std::runtime_error(safe + " is not in your tricks.");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    (void)from_json(text);
+    return text;
+}
+} // namespace
+bool set_saved_pop(const std::string& animation, const std::string& pop_in, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        const std::string pop = pop_in == "low" || pop_in == "mid" || pop_in == "high" ? pop_in : std::string{};
+        const auto safe = file_safe(animation);
+        const auto text = saved_text(safe);
+        auto root = Json::parse(text);
+        if (!root.is_object()) throw std::runtime_error(animation + " is not a saved animation.");
+        const std::string trick = root.value("trick", "");
+        if (trick.empty()) throw std::runtime_error(animation + " has no trick, so it has no pop: it plays as a piece of the game's animation.");
+        // Only the pop changes in the file, and not when it was saved (which of a kind plays goes by that).
+        root["pop"] = pop;
+        const auto path = saved_json(safe);
+        std::error_code error;
+        const auto saved_when = std::filesystem::last_write_time(path, error);
+        write_preset_file(path, root.dump(2));
+        if (!error) std::filesystem::last_write_time(path, saved_when, error);
+        if (s.saved_as == safe) s.edits.pop = pop;
+        read_library_locked(s);
+        // Filed under its new pop in every pack it is in (keeping Fixed or Alternate and its place in the cycle).
+        const auto packs = s.packs;
+        bool moved = false;
+        for (const auto& saved : packs) {
+            if (!saved.has(safe)) continue;
+            auto& pack = pack_draft_locked(s, saved.name);
+            for (auto& [slot, names] : pack.slots) std::erase(names, safe);
+            std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
+            pack.slots[preset_slot(trick, pop)].push_back(safe);
+            moved = true;
+        }
+        if (moved) write_pack_drafts_locked(s);
+        s.tricks_read = false;
+        message = pop.empty() ? animation + " plays on any pop (where you have no trick for that pop)." : animation + " plays on " + pop + " pops only.";
+        s.status = message;
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+bool copy_saved_to_pops(const std::string& animation, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        const auto safe = file_safe(animation);
+        const auto text = saved_text(safe);
+        auto root = Json::parse(text);
+        if (!root.is_object()) throw std::runtime_error(animation + " is not a saved animation.");
+        if (root.value("trick", "").empty()) throw std::runtime_error(animation + " has no trick, so it has no pop to copy to.");
+        std::string clip;
+        {
+            std::ifstream in(saved_clip(safe), std::ios::binary);
+            if (!in) throw std::runtime_error(animation + "'s recording is missing.");
+            clip.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        // "Kickflip high" copies to "Kickflip low", "Kickflip mid", "Kickflip high 2".
+        std::string base = safe;
+        for (const char* word : {" low", " mid", " high", " any"})
+            if (base.size() > std::strlen(word) && base.ends_with(word)) { base.resize(base.size() - std::strlen(word)); break; }
+        const std::string label = root.value("label", "");
+        const auto folder = library_folder();
+        std::vector<std::string> copies;
+        for (const char* pop : {"low", "mid", "high"}) {
+            const std::string suffix = std::string(" ") + pop;
+            const auto stem = base.substr(0, 48 - suffix.size()) + suffix;
+            std::string name = stem;
+            unsigned number = 2;
+            while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json")))
+                name = variation_name(stem, number++);
+            auto copy = root;
+            copy["name"] = name;
+            copy["pop"] = pop;
+            if (!label.empty()) copy["label"] = (label.substr(0, 48 - suffix.size()) + suffix);
+            std::filesystem::create_directories(folder / name);
+            write_preset_file(folder / name / (name + ".clip"), clip);
+            write_preset_file(folder / name / (name + ".json"), copy.dump(2));
+            copies.push_back(name);
+        }
+        read_library_locked(s);
+        const int packs = add_copies_to_packs_locked(s, safe, copies);
+        s.tricks_read = false;
+        message = "Made " + copies[0] + ", " + copies[1] + " and " + copies[2] + (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
+                  ". Each plays on its own pop.";
         s.status = message;
         publish_locked(s, false);
         return true;

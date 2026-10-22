@@ -1730,6 +1730,17 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             if (!label.empty())
                 rows.push_back({"Take the label off", "", "Shows it by its own name again: " + name + ".",
                                 [name] { std::string m; studio::set_label(name, "", m); say(m); ui().label_for.clear(); }});
+            const std::string pop = preset ? preset->pop : std::string{};
+            rows.push_back({"Pop", pop.empty() ? "any" : pop + " only",
+                            "Which pops it plays on. Any: every pop the game does, low, mid or high - unless you have a trick of the "
+                            "same kind saved for that exact pop, which goes first. Low (mid, high) only: it plays only when the game "
+                            "does a low (mid, high) pop. Choose it to step through. The packs it is in follow.",
+                            [name, pop] { std::string m; studio::set_saved_pop(name, pop.empty() ? "low" : pop == "low" ? "mid" : pop == "mid" ? "high" : "", m); say(m); },
+                            preset != nullptr});
+            rows.push_back({"Copy to low, mid and high pop", "",
+                            "Makes three copies of it with its keys, one for each pop height, so each pop plays its own and you can "
+                            "change each on its own. They go into every pack it is in.",
+                            [name] { std::string m; studio::copy_saved_to_pops(name, m); say(m); }, preset != nullptr});
             rows.push_back({"In your packs", v.packs.empty() ? "no packs yet" : "", "", {}, false});
             if (v.packs.empty()) rows.push_back(info_row("No packs yet", "", "Make one in PACKS: type its name in NEW PACK NAME and choose Create a new pack."));
             for (const auto& pack : v.packs) {
@@ -1892,10 +1903,13 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Save as new variation", "", "Saves a separate copy of this animation and its edits, keeping the original.", [] {
                             std::string m; studio::save_preset_copy(m); say(m); ui().names_for = 0;
                         }, v.has_clip});
-        rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
-                        "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
+        rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop + " only",
+                        "Which pops this plays on. Any: every pop the game does - unless you have a trick of the same kind saved for "
+                        "that exact pop, which goes first. Low (mid, high) only: only when the game does that pop. Choose it to step "
+                        "through, then Save.",
                         [pop = v.pop] { studio::set_pop(pop.empty() ? "low" : pop == "low" ? "mid" : pop == "mid" ? "high" : ""); }, v.has_clip});
-        rows.push_back({"Copy to low, mid and high pop", "", "Saves this animation with its keys three times, one for each pop height, so it plays on every pop.",
+        rows.push_back({"Copy to low, mid and high pop", "", "Saves this animation with its keys three times, one for each pop height, so each pop "
+                        "plays its own. They go into every pack this one is in.",
                         [] {
                             std::string m;
                             studio::copy_to_pops(m);
