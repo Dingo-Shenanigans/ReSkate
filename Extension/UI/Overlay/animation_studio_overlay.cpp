@@ -58,6 +58,7 @@ struct Ui {
     // Channels: joints whose rows are opened in the timeline into rotation X, Y, Z (and location X, Y, Z).
     std::vector<std::uint16_t> opened;
     std::uint16_t rows_reveal{0xffff};  // a joint just opened: the timeline scrolls to show its channels
+    double held_said_until{};           // Joint limits holding an edit back was said until then
     std::uint16_t channel_joint{0xffff};
     int channel{-1};                    // the channel row chosen last (-1 none)
     struct ChannelDrag {
@@ -296,12 +297,26 @@ void diamond(ImDrawList* d, ImVec2 c, float r, ImU32 colour) {
 // A joint opened in the timeline shows a row for each number of its keys: the turn about X, Y and Z and,
 // for what can be moved (the hips, the board), the move along X, Y and Z.
 int channel_count(std::uint16_t joint) {
+    // A hand or a foot is placed by the limb above it bending to reach (its position fields in the card), not
+    // by a move of its own, so it has its turn channels only.
     const auto* e = studio::editable(joint);
-    return e && e->moves ? 6 : 3;
+    return e && e->moves && studio::limb_chain(joint) == 0 ? 6 : 3;
 }
 bool channels_open(std::uint16_t joint) {
     const auto& o = ui().opened;
     return std::find(o.begin(), o.end(), joint) != o.end();
+}
+// A channel edit that Joint limits held back is said, once in a while, so a number that will not move is
+// explained rather than looking broken.
+void note_held(const studio::View& v, std::uint16_t joint, int channel, float wanted) {
+    if (!v.limits) return;
+    float apart = studio::channel_value(studio::offset_of(joint), channel) - wanted;
+    if (channel < 3) apart = std::remainder(apart, 360.0f);
+    if (std::abs(apart) <= (channel < 3 ? 0.5f : 0.002f)) return;
+    auto& u = ui();
+    if (ImGui::GetTime() < u.held_said_until) return;
+    u.held_said_until = ImGui::GetTime() + 4;
+    say("Held by Joint limits: switch them off in JOINTS to push it further.");
 }
 // Opens or closes a joint's channels. One joint at a time, unless `keep_others` (Ctrl + click).
 void toggle_channels(std::uint16_t joint, bool keep_others) {
@@ -2596,7 +2611,10 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     u.channel_joint = joint.index;
                     u.channel = c;
                 }
-                if (changed && !locked) studio::set_offset(joint.index, studio::with_channel(studio::evaluate(curve, v.time), c, value));
+                if (changed && !locked) {
+                    studio::set_offset(joint.index, studio::with_channel(studio::evaluate(curve, v.time), c, value));
+                    note_held(v, joint.index, c, value);
+                }
                 ImGui::PopFont();
                 ImGui::PopStyleVar();
                 ImGui::PopStyleColor(4);
@@ -2643,7 +2661,10 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 d->AddPolyline(points.data(), static_cast<int>(points.size()), track && track->hidden ? faint : axis_colour[static_cast<std::size_t>(c % 3)], 0, 1.6f * k);
                 for (const auto& key : track->keys) {
                     if (bracket_key(key.time)) continue;
-                    const float kx = x_of(key.time);
+                    // While a key is dragged sideways it is shown where it is going, as on the joint's own row.
+                    const bool dragged_with = u.key_joint && is_picked(joint.index, key.time) && is_picked(*u.key_joint, u.key_from);
+                    const float kx = x_of(u.key_joint == joint.index && std::abs(key.time - u.key_from) < 1e-4f ? u.key_to
+                                          : dragged_with ? key.time + (u.key_to - u.key_from) : key.time);
                     // Its value on the curve as drawn (unwrapped like the samples round it).
                     float value = studio::channel_value(studio::Offset{key.rotation, key.offset}, c);
                     if (turn && !values.empty()) {
@@ -2827,7 +2848,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     drag.began = true;
                 }
                 const float per_pixel = (drag.channel < 3 ? 0.25f : 0.0015f) * (io.KeyShift ? 0.2f : 1.0f);
-                studio::set_offset(drag.joint, studio::with_channel(drag.base, drag.channel, drag.start - dy * per_pixel));
+                const float wanted = drag.start - dy * per_pixel;
+                studio::set_offset(drag.joint, studio::with_channel(drag.base, drag.channel, wanted));
+                note_held(v, drag.joint, drag.channel, wanted);
             } else if (drag.mode == 2) {
                 u.key_joint = drag.joint;
                 u.key_from = drag.time;
