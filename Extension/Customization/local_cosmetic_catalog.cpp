@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Extension/Customization/steam_avatar_cards.h"
 #include "local_cosmetic_catalog.h"
 #include "local_customization_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
@@ -191,6 +192,11 @@ CosmeticShared make_cosmetic_catalog(const profile::Snapshot& snapshot) {
             const auto placement = objects::object_placement(key, content_cache::catalogs(), groups);
             metadata["group"] = placement.group ? placement.group->id : key;
             metadata["browser_category"] = placement.category ? placement.category->id : info.category;
+        }
+        // The "Steam picture" card icon is listed by what it shows (steam_avatar_cards.h).
+        if (key == steam_avatar_cards::icon_key) {
+            metadata["title"] = std::string(steam_avatar_cards::icon_title);
+            metadata["description"] = std::string(steam_avatar_cards::icon_description);
         }
         // A mod's item (or one of the game's own a mod changes, unless it has a description of
         // its own) keeps three empty lines where the game shows a description: room at the
