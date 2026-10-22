@@ -580,6 +580,37 @@ void several_packs_play_together() {
     const auto back = read_pack_json(pack_json(one));
     check(back.made_by == "22sh" && back.members().size() == 2, "A pack says who made it after it is shared");
 }
+void packs_on_together_and_their_rules() {
+    std::vector<Preset> presets{{"Renz kick", "kickflip", "mid"}, {"Steezy kick", "kickflip", "mid"}, {"Heel", "heelflip", "low"}};
+    PresetPack renz, steezy;
+    renz.name = "Renz";
+    renz.slots["kickflip|mid"] = {"Renz kick"};
+    renz.slots["heelflip|low"] = {"Heel"};
+    steezy.name = "Steezy";
+    steezy.slots["kickflip|mid"] = {"Steezy kick"};
+    steezy.slots["heelflip|low"] = {"Heel"}; // the same animation in both: not a choice
+    const std::vector<PresetPack> both{renz, steezy};
+    auto conflicts = pack_conflicts(presets, both);
+    check(conflicts.size() == 1 && conflicts[0].slot == "kickflip|mid" && conflicts[0].packs.size() == 2 && conflicts[0].choice.empty(),
+          "Two packs on with a kickflip of their own each: one duplicate, found; one animation in both is not one");
+    select_presets(presets, both, nullptr);
+    check(presets[0].active && presets[1].active && presets[2].active, "Left as it is, both kickflips play (at random)");
+    ConflictChoices choices{{"kickflip|mid", "Steezy"}};
+    select_presets(presets, both, &choices);
+    check(!presets[0].active && presets[1].active && presets[2].active, "Chosen: only Steezy's kickflip plays");
+    check(pack_conflicts(presets, both, choices)[0].choice == "Steezy", "and the choice reads back");
+    // Pack rules: a pop for the whole pack.
+    std::vector<Preset> one{{"Low kick", "kickflip", "low"}};
+    PresetPack ruled;
+    ruled.slots["kickflip|low"] = {"Low kick"};
+    ruled.pop_rule = "any";
+    select_presets(one, std::vector<PresetPack>{ruled}, nullptr);
+    check(one[0].active && one[0].pack_pop && one[0].pack_pop->empty(), "A pack set to any pop plays its low kickflip on every pop");
+    ruled.pop_rule = "high";
+    select_presets(one, std::vector<PresetPack>{ruled}, nullptr);
+    check(one[0].pack_pop && *one[0].pack_pop == "high", "and one set to high plays it on high pops only");
+    check(read_pack_json(pack_json(ruled)).pop_rule == "high", "The pack's rules come back from its file");
+}
 void pack_slots_are_fixed_or_alternate() {
     std::vector<Preset> presets{{"Kick A", "kickflip", "mid"}, {"Kick B", "kickflip", "mid"}, {"Kick C", "kickflip", "mid"},
                                 {"Heel A", "heelflip", "mid"}, {"Heel B", "heelflip", "mid"}};
@@ -1582,6 +1613,7 @@ int main(int argc, char** argv) {
         packs_select_variants_without_filesystem_order();
     several_packs_play_together();
     pack_slots_are_fixed_or_alternate();
+    packs_on_together_and_their_rules();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         native_names_and_search();

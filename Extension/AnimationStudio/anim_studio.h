@@ -89,7 +89,15 @@ struct View {
         bool on{}, alternate{}, unsaved{};
         std::vector<std::string> members;
         PresetPack pack; // its slots, which are Fixed or Alternate, and what is left out of a cycle
+        std::string thumbnail;        // its picture (presets/<pack>.png, thumbnail_side square), "" none
+        std::int64_t thumbnail_stamp{}; // when that was last written: a new one is read again
     };
+    std::vector<PackConflict> conflicts; // tricks more than one pack that is on has, and what plays them
+    // Where packs are exported to and imported from: as set (SETTINGS > Packs), or "" for ReSkate.Tricks\exports and \import.
+    std::string export_folder, import_folder;
+    std::string export_path, import_path; // and where that is, in full
+    std::string test_trick;    // Test in game: the trick played in game until the studio opens again
+    std::string test_returned; // back from testing it: the studio says something about it (clear_test_returned)
     std::vector<PackView> packs;
     std::string open_pack; // the pack open in PACKS
     std::string your_name; // MADE BY, remembered for new recordings and packs
@@ -256,6 +264,23 @@ bool set_pack_fixed(const std::string& pack, const std::string& animation, std::
 bool set_pack_linked(const std::string& pack, const std::string& animation, bool linked, std::string& message);
 bool link_pack_slot(const std::string& pack, const std::string& slot, std::string& message); // all into the cycle
 bool save_pack(std::string& message);                                              // the open pack
+// Packs' pictures: a square this many pixels a side, saved as presets/<pack>.png beside the pack.
+inline constexpr unsigned thumbnail_side = 512;
+// A picture for a pack: PNG bytes of a thumbnail_side square (empty takes it off). It is exported with the pack.
+bool set_pack_thumbnail(const std::string& pack, const std::string& png, std::string& message);
+// The pack's name changed (its file, its picture, and wherever it is on or chosen with it).
+bool rename_pack(const std::string& from, const std::string& to, std::string& message);
+// Pack rules: the pop every trick in the pack plays on: "" each its own, "any", or "low", "mid" or "high" only.
+bool set_pack_pop_rule(const std::string& pack, const std::string& rule, std::string& message);
+// A trick more than one pack that is on has (its slot): "" play them at random, or the pack whose plays it.
+bool set_conflict_choice(const std::string& slot, const std::string& pack, std::string& message);
+// Where packs are exported to and imported from ("" the defaults); open_folder shows it in Explorer.
+void set_pack_folder(bool exporting, const std::string& path);
+void open_pack_folder(bool exporting);
+// Test in game: the studio closes and this saved trick plays in game, on any pop and over any pack, until the
+// studio is opened again; then View::test_returned names it, until clear_test_returned.
+bool test_in_game(const std::string& animation, std::string& message);
+void clear_test_returned();
 // The name a saved animation is shown by in MY TRICKS and the packs; empty takes it off. Its file keeps its
 // name, so the packs it is in keep it.
 bool set_label(const std::string& animation, const std::string& label, std::string& message);

@@ -24,6 +24,7 @@
 #include "Extension/Skater/grind_exit_control.h"
 #include "Extension/BoardBreak/board_break_model.h"
 #include <Windows.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -36,6 +37,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -272,6 +274,10 @@ struct State {
     std::map<std::string, PresetPack> pack_drafts; // packs changed in PACKS and not saved yet
     std::string open_pack;                         // the pack open in PACKS
     std::string your_name;                         // MADE BY, remembered for new recordings and packs
+    std::vector<PackConflict> conflicts;           // tricks more than one pack that is on has (pack_conflicts)
+    std::string export_folder, import_folder;      // where packs go out to and come in from, "" the defaults
+    std::string test_trick;                        // Test in game: played in game until the studio opens again
+    std::string test_returned;                     // back from testing it: the studio says something about it
     bool library_read{};
     std::shared_ptr<const Snapshot> snapshot;
     std::shared_ptr<const Animation> published_edits;
@@ -648,6 +654,8 @@ void load_settings(State& s) {
         s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
         s.grab_board = root.value("grab_board", s.grab_board);
         s.your_name = root.value("made_by", s.your_name.c_str()).substr(0, 48);
+        s.export_folder = root.value("export_folder", "");
+        s.import_folder = root.value("import_folder", "");
         if (root.contains("crossfade") && root.at("crossfade").is_number())
             s.crossfade = std::clamp(static_cast<float>(root.at("crossfade").get<double>()), 0.1f, 0.8f);
     } catch (...) {}
@@ -662,6 +670,8 @@ void save_settings_locked(const State& s) {
         root["stance"] = s.stance_choice;
         root["grab_board"] = s.grab_board;
         root["crossfade"] = s.crossfade;
+        if (!s.export_folder.empty()) root["export_folder"] = s.export_folder;
+        if (!s.import_folder.empty()) root["import_folder"] = s.import_folder;
         if (!s.your_name.empty()) root["made_by"] = s.your_name;
         write_preset_file(library_folder() / settings_file, root.dump(2));
     } catch (...) {}
@@ -678,6 +688,30 @@ std::vector<std::string> pack_names_on() {
     return out;
 }
 std::filesystem::path pack_file(const std::string& name) { return library_folder() / L"presets" / (name + ".json"); }
+std::filesystem::path pack_thumbnail_file(const std::string& name) { return library_folder() / L"presets" / (name + ".png"); }
+// Where packs are exported to and imported from: as set in SETTINGS, or ReSkate.Tricks\exports and \import.
+std::filesystem::path pack_export_folder(const State& s) {
+    if (!s.export_folder.empty()) return std::filesystem::path(std::u8string(s.export_folder.begin(), s.export_folder.end()));
+    return library_folder() / L"exports";
+}
+std::filesystem::path pack_import_folder(const State& s) {
+    if (!s.import_folder.empty()) return std::filesystem::path(std::u8string(s.import_folder.begin(), s.import_folder.end()));
+    return library_folder() / L"import";
+}
+// What plays a trick more than one pack that is on has (set_conflict_choice): presets/conflicts.json.
+std::filesystem::path conflicts_file() { return library_folder() / L"presets" / L"conflicts.json"; }
+ConflictChoices read_conflict_choices() {
+    ConflictChoices out;
+    try {
+        std::ifstream in(conflicts_file(), std::ios::binary);
+        if (!in) return out;
+        const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+        if (!root.is_object()) return out;
+        for (const auto& [slot, choice] : root.items())
+            if (choice.is_string() && choice.string().size() <= 64 && slot.size() <= 128) out[slot] = choice.string();
+    } catch (...) {}
+    return out;
+}
 PresetPack read_pack_file(const std::string& name) {
     std::ifstream in(pack_file(name), std::ios::binary);
     if (!in) throw std::runtime_error("The pack " + name + " is missing.");
@@ -830,7 +864,9 @@ void read_library_locked(State& s) {
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
         }
-        select_presets(s.presets, s.packs_on);
+        const auto choices = read_conflict_choices();
+        select_presets(s.presets, s.packs_on, &choices);
+        s.conflicts = pack_conflicts(s.presets, s.packs_on, choices);
         const auto packs = folder / L"presets";
         if (std::filesystem::is_directory(packs, error))
             for (const auto& entry : std::filesystem::directory_iterator(packs, error))
@@ -848,7 +884,7 @@ void read_library_locked(State& s) {
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 namespace {
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
-std::shared_ptr<const CustomTricks> read_custom_tricks() {
+std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_trick) {
     auto tricks = std::make_shared<CustomTricks>();
     std::error_code error;
     const auto folder = library_folder();
@@ -872,11 +908,21 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.filename().string(), e.what());
         }
     }
-    try { select_presets(requested, packs_on()); }
-    catch (const std::exception& e) {
+    try {
+        const auto choices = read_conflict_choices();
+        select_presets(requested, packs_on(), &choices);
+    } catch (const std::exception& e) {
         logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
         return tricks;
     }
+    // Test in game: that trick plays, on any pop, over whatever else there is of it.
+    if (!test_trick.empty())
+        if (const auto t = std::find_if(requested.begin(), requested.end(), [&](const Preset& p) { return p.name == test_trick; }); t != requested.end()) {
+            for (auto& p : requested) if (p.trick == t->trick && p.name != t->name) p.active = false;
+            t->active = true;
+            t->pack_pop = std::string{};
+            logging::log(Level::info, Channel::skater, "Animation Studio: testing {} in game.", t->name);
+        }
     std::map<std::string, std::shared_ptr<const Clip>> library_clips; // read once for every saved trick of a kind
     for (const auto& entry : saved_jsons(folder)) {
         if (std::none_of(requested.begin(), requested.end(), [&](const Preset& p) {
@@ -887,6 +933,10 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
             auto animation = std::make_shared<Animation>(from_json(text));
             if (animation->trick.empty()) continue;
+            // The pop its pack's rules (or a test) say it plays on.
+            if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
+                p != requested.end() && p->pack_pop)
+                animation->pop = *p->pack_pop;
             auto clip_path = entry;
             clip_path.replace_extension(L".clip");
             std::ifstream clip_in(clip_path, std::ios::binary);
@@ -2808,8 +2858,20 @@ void on_animation(std::uintptr_t component) noexcept {
                 for (const auto i : choose_stance_variants(described, live, l.playback_front_foot)) variants.push_back(candidates[i]);
                 if (!variants.empty()) {
                     auto choice = l.attempt_variants.find(name);
-                    if (choice == l.attempt_variants.end())
-                        choice = l.attempt_variants.emplace(name, l.variant_counts[name + "|" + entry_name(l.episode.entry)]++).first;
+                    if (choice == l.attempt_variants.end()) {
+                        // Which plays this attempt: any of them at random, but not the one that played last.
+                        // (previous is the one that played last, plus one: 0 when none has yet.)
+                        auto& previous = l.variant_counts[name + "|" + entry_name(l.episode.entry)];
+                        std::size_t pick = 0;
+                        if (variants.size() > 1) {
+                            static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
+                            const bool avoid = previous > 0 && previous <= variants.size();
+                            pick = std::uniform_int_distribution<std::size_t>(0, variants.size() - (avoid ? 2 : 1))(random);
+                            if (avoid && pick >= previous - 1) ++pick;
+                        }
+                        previous = pick + 1;
+                        choice = l.attempt_variants.emplace(name, pick).first;
+                    }
                     found = variants[choice->second % variants.size()];
                 } else if (!name.empty() && l.stance_fallback_trick != name &&
                            std::any_of(l.game_tricks->begin(), l.game_tricks->end(), [&](const CustomTrick& t) {
@@ -3720,6 +3782,10 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         if (room_flag.exchange(room_now, std::memory_order_acq_rel) && !room_now)
             room_restore_until.store(now_seconds() + 3, std::memory_order_release);
         if (s.open != open) {
+            if (open && !s.test_trick.empty()) {
+                s.test_returned = std::exchange(s.test_trick, {});
+                s.tricks_read = false;
+            }
             if (open && s.manual_recording) {
                 s.manual_recording = false;
                 s.recording = Recording::off;
@@ -3766,7 +3832,12 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             s.tricks_read = true;
         }
         if (read) {
-            auto tricks = read_custom_tricks();
+            std::string test;
+            {
+                std::lock_guard lock(s.mutex);
+                test = s.test_trick;
+            }
+            auto tricks = read_custom_tricks(test);
             std::lock_guard lock(s.mutex);
             s.tricks = std::move(tricks);
             publish_locked(s);
@@ -4022,8 +4093,20 @@ View view() {
         const auto& pack = draft != s.pack_drafts.end() ? draft->second : saved;
         const bool on = std::any_of(s.packs_on.begin(), s.packs_on.end(), [&](const PresetPack& p) { return p.name == saved.name; });
         v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, draft != s.pack_drafts.end(), pack.members(), pack});
+        std::error_code error;
+        if (const auto picture = pack_thumbnail_file(saved.name); std::filesystem::is_regular_file(picture, error)) {
+            v.packs.back().thumbnail = picture.string();
+            v.packs.back().thumbnail_stamp = static_cast<std::int64_t>(std::filesystem::last_write_time(picture, error).time_since_epoch().count());
+        }
     }
     v.open_pack = s.open_pack;
+    v.conflicts = s.conflicts;
+    v.export_folder = s.export_folder;
+    v.import_folder = s.import_folder;
+    v.export_path = pack_export_folder(s).string();
+    v.import_path = pack_import_folder(s).string();
+    v.test_trick = s.test_trick;
+    v.test_returned = s.test_returned;
     v.your_name = s.your_name;
     v.recording = s.recording;
     v.bracket_start = s.edits.start;
@@ -4845,10 +4928,9 @@ bool set_pack_on(const std::string& name, bool on, std::string& message) {
         if (name != file_safe(name) || !std::filesystem::exists(pack_file(name))) throw std::runtime_error("There is no pack called " + name + ".");
         auto names = pack_names_on();
         std::erase(names, name);
-        const bool others = !names.empty();
-        if (on) names = {name}; // one pack at a time
+        if (on) names.push_back(name); // any number on at once; tricks more than one has are chosen between (conflicts)
         write_pack_names_on(names);
-        message = on ? name + " is on: its tricks play" + (others ? " (the other pack is off)." : ".") : name + " is off.";
+        message = on ? name + " is on: its tricks play." : name + " is off.";
         if (names.empty()) message += " No pack is on, so all your saved tricks play.";
         packs_changed_locked(s, message);
         return true;
@@ -5074,6 +5156,8 @@ bool delete_pack(const std::string& name, std::string& message) {
     try {
         if (name != file_safe(name)) throw std::runtime_error("There is no pack called " + name + ".");
         std::filesystem::remove(pack_file(name));
+        std::error_code gone;
+        std::filesystem::remove(pack_thumbnail_file(name), gone);
         auto names = pack_names_on();
         if (std::erase(names, name)) write_pack_names_on(names);
         s.pack_drafts.erase(name);
@@ -5082,6 +5166,133 @@ bool delete_pack(const std::string& name, std::string& message) {
         packs_changed_locked(s, message);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
+}
+bool set_pack_thumbnail(const std::string& pack, const std::string& png, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (pack.empty() || pack != file_safe(pack) || !std::filesystem::exists(pack_file(pack))) throw std::runtime_error("There is no pack called " + pack + ".");
+        if (png.empty()) {
+            std::error_code gone;
+            std::filesystem::remove(pack_thumbnail_file(pack), gone);
+            message = pack + " has no picture now.";
+        } else {
+            if (png.size() > 4 * 1024 * 1024 || png.compare(0, 8, "\x89PNG\r\n\x1a\n") != 0) throw std::runtime_error("That picture could not be used.");
+            write_preset_file(pack_thumbnail_file(pack), png);
+            message = pack + " has its picture.";
+        }
+        s.status = message;
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+bool rename_pack(const std::string& from, const std::string& to_in, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        const auto to = file_safe(to_in);
+        if (from.empty() || from != file_safe(from) || !std::filesystem::exists(pack_file(from))) throw std::runtime_error("There is no pack called " + from + ".");
+        if (to.empty()) throw std::runtime_error("Give the pack a name: letters, numbers, spaces, - and _.");
+        if (to == from) { message = "It is called that already."; s.status = message; publish_locked(s, false); return true; }
+        if (std::filesystem::exists(pack_file(to)) && _stricmp(to.c_str(), from.c_str()) != 0) throw std::runtime_error("There is a pack called " + to + " already.");
+        if (const auto draft = s.pack_drafts.find(from); draft != s.pack_drafts.end()) {
+            write_preset_file(pack_file(from), pack_json(draft->second).dump(2));
+            s.pack_drafts.erase(draft);
+        }
+        auto pack = read_pack_file(from);
+        pack.name = to;
+        write_preset_file(pack_file(to), pack_json(pack).dump(2));
+        if (_stricmp(to.c_str(), from.c_str()) != 0) std::filesystem::remove(pack_file(from));
+        std::error_code error;
+        if (std::filesystem::exists(pack_thumbnail_file(from), error)) std::filesystem::rename(pack_thumbnail_file(from), pack_thumbnail_file(to), error);
+        auto names = pack_names_on();
+        for (auto& name : names) if (name == from) name = to;
+        write_pack_names_on(names);
+        auto choices = read_conflict_choices();
+        bool changed = false;
+        for (auto& [slot, choice] : choices) if (choice == from) { choice = to; changed = true; }
+        if (changed) {
+            Json root = Json::object();
+            for (const auto& [slot, choice] : choices) root[slot] = choice;
+            write_preset_file(conflicts_file(), root.dump(2));
+        }
+        if (s.open_pack == from) s.open_pack = to;
+        message = "Renamed " + from + " to " + to + ".";
+        packs_changed_locked(s, message);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
+}
+bool set_pack_pop_rule(const std::string& pack_name, const std::string& rule_in, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const std::string rule = rule_in == "any" || rule_in == "low" || rule_in == "mid" || rule_in == "high" ? rule_in : std::string{};
+    message = rule.empty() ? pack_name + ": each trick plays on the pop it was saved for." : rule == "any" ? pack_name + ": every trick plays on any pop."
+                                                                                     : pack_name + ": every trick plays on " + rule + " pops only.";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) { pack.pop_rule = rule; });
+}
+bool set_conflict_choice(const std::string& slot, const std::string& pack, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        auto choices = read_conflict_choices();
+        if (pack.empty()) choices.erase(slot);
+        else choices[slot] = pack;
+        Json root = Json::object();
+        for (const auto& [key, choice] : choices) root[key] = choice;
+        write_preset_file(conflicts_file(), root.dump(2));
+        message = pack.empty() ? "Those play at random, a different one each time." : pack + "'s plays it.";
+        packs_changed_locked(s, message);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
+}
+void set_pack_folder(bool exporting, const std::string& path_in) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    std::string path = path_in;
+    while (!path.empty() && (path.back() == ' ' || path.back() == '"' || path.back() == '\\' || path.back() == '/')) path.pop_back();
+    while (!path.empty() && (path.front() == ' ' || path.front() == '"')) path.erase(path.begin());
+    (exporting ? s.export_folder : s.import_folder) = path;
+    save_settings_locked(s);
+    s.status = path.empty() ? std::string(exporting ? "Packs are exported to ReSkate.Tricks\\exports." : "Packs are imported from ReSkate.Tricks\\import.")
+                            : std::string(exporting ? "Packs are exported to " : "Packs are imported from ") + path + ".";
+    publish_locked(s, false);
+}
+void open_pack_folder(bool exporting) {
+    std::filesystem::path folder;
+    {
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        folder = exporting ? pack_export_folder(s) : pack_import_folder(s);
+    }
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+bool test_in_game(const std::string& animation, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto name = file_safe(animation);
+    if (name.empty() || !std::filesystem::exists(saved_json(name))) {
+        message = "Save it first, then test it in game.";
+        s.status = message;
+        publish_locked(s, false);
+        return false;
+    }
+    s.test_trick = name;
+    s.play_in_game = true;
+    s.tricks_read = false;
+    s.open_requested = false; // the studio closes: go and skate it
+    s.open_request_pending = true;
+    message = "Testing " + name + " in game: do the trick. Open the studio again (F8) when you are done.";
+    s.status = message;
+    publish_locked(s, false);
+    return true;
+}
+void clear_test_returned() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.test_returned.clear();
+    publish_locked(s, false);
 }
 // ---- sharing packs --------------------------------------------------------------------------------
 // A pack goes out as one zip laid out exactly like the tricks folder - presets/<pack>.json and each
@@ -5136,6 +5347,9 @@ bool export_pack(const std::string& pack_name, std::string& message) {
             const auto pack = read_pack_file(pack_name);
             title = pack.name;
             files.emplace_back("presets/" + title + ".json", read_whole(pack_file(title)));
+            std::error_code picture_error;
+            if (std::filesystem::is_regular_file(pack_thumbnail_file(title), picture_error))
+                files.emplace_back("presets/" + title + ".png", read_whole(pack_thumbnail_file(title)));
             names = pack.members();
         } else {
             title = "All saved animations";
@@ -5152,10 +5366,12 @@ bool export_pack(const std::string& pack_name, std::string& message) {
         }
         if (!animations) throw std::runtime_error("There is nothing saved in this pack to export.");
         files.emplace_back("README.txt", share_readme);
-        const auto zip = folder / L"exports" / (file_safe(title) + ".zip");
+        const auto out_folder = pack_export_folder(s);
+        const auto zip = out_folder / (file_safe(title) + ".zip");
         write_whole(zip, stored_zip(files));
-        message = std::format("{}{} ({} animation{}) to ReSkate.Tricks\\exports\\{}.zip.", saved_first.empty() ? "Exported " : saved_first, title,
-                              animations, animations == 1 ? "" : "s", file_safe(title));
+        message = std::format("{}{} ({} animation{}) to {}.", saved_first.empty() ? "Exported " : saved_first, title,
+                              animations, animations == 1 ? "" : "s", zip.string());
+        ShellExecuteW(nullptr, L"open", out_folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // there it is
         if (!saved_first.empty()) read_library_locked(s);
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
@@ -5173,14 +5389,14 @@ bool import_packs(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     const auto folder = library_folder();
-    const auto inbox = folder / L"import";
+    const auto inbox = pack_import_folder(s);
     std::error_code error;
     std::filesystem::create_directories(inbox, error);
     std::vector<std::filesystem::path> zips;
     for (const auto& entry : std::filesystem::directory_iterator(inbox, error))
         if (entry.is_regular_file(error) && entry.path().extension() == L".zip") zips.push_back(entry.path());
     if (zips.empty()) {
-        message = "Nothing to import: put a pack's .zip in ReSkate.Tricks\\import first.";
+        message = "Nothing to import: put a pack's .zip in " + inbox.string() + " first.";
         s.status = message;
         publish_locked(s);
         return false;
@@ -5200,6 +5416,7 @@ bool import_packs(std::string& message) {
             };
             std::map<std::string, std::pair<std::string, std::string>, NoCase> found; // animation -> json, clip
             std::vector<std::pair<std::string, std::string>> pack_files;     // pack name -> json
+            std::map<std::string, std::string> pack_pictures;                  // pack name -> png
             const auto count = mz_zip_reader_get_num_files(&zip);
             for (mz_uint i = 0; i < count; ++i) {
                 mz_zip_archive_file_stat stat{};
@@ -5212,7 +5429,8 @@ bool import_packs(std::string& message) {
                 const auto dot = file.rfind('.');
                 if (dot == std::string::npos || stat.m_uncomp_size > 64ull * 1024 * 1024) continue;
                 const std::string stem = file.substr(0, dot), ext = file.substr(dot);
-                if (ext != ".json" && ext != ".clip") continue;
+                if (ext != ".json" && ext != ".clip" && ext != ".png") continue;
+                if (ext == ".png" && stat.m_uncomp_size > 4ull * 1024 * 1024) continue;
                 if (stem != file_safe(stem)) continue; // only the names the studio itself makes
                 size_t size = 0;
                 void* bytes = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
@@ -5220,6 +5438,10 @@ bool import_packs(std::string& message) {
                 std::string content(static_cast<const char*>(bytes), size);
                 mz_free(bytes);
                 const auto last_dir = dir.substr(dir.rfind('/') == std::string::npos ? 0 : dir.rfind('/') + 1);
+                if (ext == ".png") {
+                    if (last_dir == "presets" && content.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0) pack_pictures[stem] = std::move(content);
+                    continue;
+                }
                 if (last_dir == "presets" && ext == ".json") pack_files.emplace_back(stem, std::move(content));
                 else if (ext == ".json") found[stem].first = std::move(content);
                 else found[stem].second = std::move(content);
@@ -5278,6 +5500,8 @@ bool import_packs(std::string& message) {
                 }
                 pack.name = target;
                 write_preset_file(folder / L"presets" / (target + ".json"), pack_json(pack).dump(2));
+                if (const auto picture = pack_pictures.find(pack_name); picture != pack_pictures.end())
+                    write_preset_file(pack_thumbnail_file(target), picture->second);
                 ++packs;
             }
             // Out of the way, so the next Import does not take it in again.
