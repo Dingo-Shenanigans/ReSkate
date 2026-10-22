@@ -25,6 +25,7 @@ struct State {
     std::mutex mutex;
     Transform current, previous; // the local skater this tick and last tick
     bool have_current{}, have_previous{};
+    Clock::time_point noted;
     Profile profile;
     Clock::time_point observed;
     unsigned samples{};
@@ -48,6 +49,15 @@ void note_local_skater(const Transform &root) noexcept {
     s.have_previous = s.have_current;
     s.current = root;
     s.have_current = true;
+    s.noted = Clock::now();
+}
+
+bool latest_local_skater(Transform &root, unsigned max_age_ms) noexcept {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.have_current || Clock::now() - s.noted > std::chrono::milliseconds(max_age_ms)) return false;
+    root = s.current;
+    return true;
 }
 
 void observe_gameplay_camera(std::uintptr_t base, const GameView &view) noexcept {

@@ -53,6 +53,8 @@ add_library(dingosdk_overlay STATIC
     Extension/Trainer/trainer_page.cpp
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
+    Extension/Filmer/filmer_view.cpp
+    Extension/Filmer/filmer_page.cpp
     Extension/UI/Overlay/screen_look.cpp
 )
 target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)

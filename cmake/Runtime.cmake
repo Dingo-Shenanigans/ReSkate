@@ -191,6 +191,12 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_classes.cpp
     Extension/Trainer/trainer_gamestate.cpp
     Extension/Trainer/trainer_commands.cpp
+    Extension/Filmer/filmer.cpp
+    Extension/Filmer/filmer_rig.cpp
+    Extension/Filmer/filmer_hold.cpp
+    Extension/Filmer/filmer_held.cpp
+    Extension/Filmer/filmer_outfit.cpp
+    Extension/Filmer/filmer_commands.cpp
     Extension/Trainer/trainer_session.cpp
     Extension/Trainer/trainer_waypoint.cpp
     Extension/Skater/offboard_flight.cpp

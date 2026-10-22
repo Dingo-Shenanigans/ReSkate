@@ -232,6 +232,7 @@ const Commands &game_commands() {
         register_replay_keyframes_commands(*result);
         register_plugin_commands(*result);
         return result;
+        register_filmer_commands(*result);
     }();
     return *registry;
 }

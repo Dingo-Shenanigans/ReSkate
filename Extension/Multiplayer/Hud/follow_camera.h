@@ -18,4 +18,6 @@ void observe_gameplay_camera(std::uintptr_t base, const GameView &view) noexcept
 // The camera for spectating `id` standing at `root` this frame (world matrix rows: right, up,
 // back, position), and the FOV to give it.
 std::array<float, 16> follow_camera(std::uint64_t id, const Transform &root, float &fov) noexcept;
+// The local skater as note_local_skater last saw them, if that was within `max_age_ms`.
+bool latest_local_skater(Transform &root, unsigned max_age_ms = 250) noexcept;
 } // namespace dingosdk::multiplayer

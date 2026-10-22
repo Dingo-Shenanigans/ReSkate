@@ -99,11 +99,12 @@ constexpr int action_bind(std::string_view key) {
         if (action_binds[i].key == key) return 10 + static_cast<int>(i);
     return 0;
 }
-const std::array<BindGroup, 4> bind_groups{{
+const std::array<BindGroup, 5> bind_groups{{
     {"GENERAL", {action_bind("reskate_menu"), action_bind("hide_hud"), action_bind("challenges"), action_bind("time_of_day")}},
     {"CAMERA", {2, 1, 6, action_bind("first_person")}},
     {"CHEATS AND BOOSTS", {3, action_bind("no_bail"), 4, 5, 7}},
     {"ONLINE", {action_bind("voice_chat"), action_bind("nametags"), action_bind("nametag_dots"), 8, 9}},
+    {"FILMER", {action_bind("filmer"), action_bind("lens_slap"), action_bind("filmer_switch_side")}},
 }};
 const char* bind_name(int action) {
     switch (action) {

@@ -45,7 +45,8 @@ bool key_down(int virtual_key) noexcept;
 int take_mouse_wheel() noexcept;
 // The mouse since the last call, whatever the game does with it: raw counts right and down, and the
 // wheel in 120 a notch (away from you positive). False and zeros while the game is not in front or a
-// menu, the console or chat is open (what moved meanwhile is dropped). One reader: the plugin runtime.
+// menu, the console or chat is open (what moved meanwhile is dropped). Readers: the plugin runtime
+// and the Filmer (each takes what moved, so only one should be steering a camera with it).
 struct MouseLook {
     long x = 0, y = 0, wheel = 0;
 };
@@ -718,8 +719,14 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys();
 // allow_menu is used only by the Binds page while recording. Focus and lifetime
 // gates still apply. Gameplay callers leave it false.
 extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* input, bool allow_menu = false);
-// Installs (or, with nullptr, removes) the one gamepad filter. Any thread.
+// Installs (or, with nullptr, removes) the gamepad filter in slot 0 (pad_hide.cpp). Any thread.
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter);
+// The same for another feature's own slot (1: the Filmer). Filters run in slot order. Any thread.
+extern "C" void DingoSDKOverlaySetGamepadFilterSlot(unsigned slot, dingosdk::overlay::GamepadFilter filter);
+// The whole pad as it is (sticks too), past every filter: what the player is doing, not what the
+// game is told. False and zeros while the game is not in front, a menu is open or no pad is there.
+// Client update thread.
+extern "C" bool DingoSDKOverlayReadGamepad(dingosdk::overlay::GamepadValues* pad);
 
 // Optional direct integration for a host that already knows its exact pair.
 struct IDXGISwapChain;

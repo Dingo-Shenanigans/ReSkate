@@ -561,6 +561,26 @@ extern "C" void DingoSDKOverlayReadControllerInput(dingosdk::ControllerInput* ou
     if (pad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) output->buttons |= 0x20000;
 }
 
+extern "C" bool DingoSDKOverlayReadGamepad(dingosdk::overlay::GamepadValues* output) {
+    if (!output) return false;
+    struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
+    *output = {};
+    const auto& s = state();
+    const HWND window = s.window.load();
+    if (!window || s.stop.load() || s.failed.load() || interactive_visible(s) || !game_window_foreground(window)) return false;
+    const auto sample = read_controller_sample();
+    if (!sample.device) return false;
+    const auto& pad = sample.pad;
+    output->buttons = pad.wButtons;
+    output->left_trigger = pad.bLeftTrigger;
+    output->right_trigger = pad.bRightTrigger;
+    output->left_x = pad.sThumbLX;
+    output->left_y = pad.sThumbLY;
+    output->right_x = pad.sThumbRX;
+    output->right_y = pad.sThumbRY;
+    return true;
+}
+
 // Raw mouse packets arrived recently enough to trust the tracked buttons.
 static bool raw_mouse_live(const State& s) {
     const auto time = s.raw_mouse_time.load();

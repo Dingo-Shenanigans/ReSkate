@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace dingosdk::multiplayer {
 struct PartyPlayer {
@@ -72,6 +73,13 @@ void set_native_challenge_coop(bool coop) noexcept;
 // Shared interpreter interception: the profile runtime already owns both VM hooks.
 void execute_native_party_expression(std::uintptr_t vm, std::uint32_t pc, std::uintptr_t profiler,
                                     void (*runner)(std::uintptr_t, std::uint32_t, std::uintptr_t));
+// The other skaters in the session with a fresh position, for the Filmer (Extension/Filmer). Game thread.
+struct FilmablePlayer {
+    std::uint64_t id{};
+    std::string name;
+    Transform root;
+};
+std::vector<FilmablePlayer> filmable_players() noexcept;
 // Runs at the same verified client/camera phase as native debug camera controls.
 void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase) noexcept;
 } // namespace dingosdk::multiplayer

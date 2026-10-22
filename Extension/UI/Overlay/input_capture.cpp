@@ -112,8 +112,11 @@ BOOLEAN __stdcall captured_hid_attributes(HANDLE file, PHIDD_ATTRIBUTES attribut
     SetLastError(error);
     return result;
 }
-std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
-    static std::atomic<dingosdk::overlay::GamepadFilter> value{};
+// One filter per feature that changes what the game reads (DingoSDKOverlaySetGamepadFilterSlot):
+// slot 0 pad_hide.cpp's, slot 1 the Filmer's. They run in slot order.
+constexpr std::size_t gamepad_filter_slots = 4;
+std::array<std::atomic<dingosdk::overlay::GamepadFilter>, gamepad_filter_slots>& gamepad_filters() {
+    static std::array<std::atomic<dingosdk::overlay::GamepadFilter>, gamepad_filter_slots> value{};
     return value;
 }
 // Full Bluetooth reports have a CRC over the 0xA1 input prefix and payload.
@@ -199,8 +202,10 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
 // filter changed (triggers, left stick X) is written back in the report's own layout.
 inline constexpr unsigned hid_filter_slot = 3; // the filter's pad slot for native PlayStation pads
 void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
-    const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter || !read.buffer || !size || size > read.capacity) return;
+    auto& filters = gamepad_filters();
+    bool any = false;
+    for (const auto& slot : filters) any = any || slot.load(std::memory_order_acquire) != nullptr;
+    if (!any || !read.buffer || !size || size > read.capacity) return;
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     const bool bluetooth = playstation_bluetooth(size);
     const auto parsed = parse_playstation_report(read.kind, bluetooth, bytes, size);
@@ -208,7 +213,8 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     const dingosdk::overlay::GamepadValues before{parsed->buttons, parsed->left_trigger, parsed->right_trigger,
         parsed->left_x, parsed->left_y, parsed->right_x, parsed->right_y};
     auto pad = before;
-    filter(hid_filter_slot, pad);
+    for (const auto& slot : filters)
+        if (const auto filter = slot.load(std::memory_order_acquire)) filter(hid_filter_slot, pad);
     if (pad.left_trigger == before.left_trigger && pad.right_trigger == before.right_trigger && pad.left_x == before.left_x) return;
     // Where parse_playstation_report found them: sticks (left X first), the shoulder byte (L2 0x04,
     // R2 0x08 digital bits) and the two analog triggers.
@@ -394,11 +400,14 @@ std::string xinput_entry_owners() {
 // read already being answered (Steam's hook going on to XInput runs inside OverlayInputAccess).
 void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     if (!outer || !output) return;
-    const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter) return;
+    auto& filters = gamepad_filters();
+    bool any = false;
+    for (const auto& slot : filters) any = any || slot.load(std::memory_order_acquire) != nullptr;
+    if (!any) return;
     auto& g = output->Gamepad;
     dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    filter(static_cast<unsigned>(user), pad);
+    for (const auto& slot : filters)
+        if (const auto filter = slot.load(std::memory_order_acquire)) filter(static_cast<unsigned>(user), pad);
     g.wButtons = pad.buttons;
     g.bLeftTrigger = pad.left_trigger;
     g.bRightTrigger = pad.right_trigger;
@@ -1260,5 +1269,10 @@ extern "C" std::uint64_t DingoSDKOverlayGrindStickMirrored() noexcept {
     return dingosdk::overlay::detail::grind_stick_mirrored().load(std::memory_order_relaxed);
 }
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
-    dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
+    dingosdk::overlay::detail::gamepad_filters()[0].store(filter, std::memory_order_release);
+}
+
+extern "C" void DingoSDKOverlaySetGamepadFilterSlot(unsigned slot, dingosdk::overlay::GamepadFilter filter) {
+    auto& filters = dingosdk::overlay::detail::gamepad_filters();
+    if (slot < filters.size()) filters[slot].store(filter, std::memory_order_release);
 }

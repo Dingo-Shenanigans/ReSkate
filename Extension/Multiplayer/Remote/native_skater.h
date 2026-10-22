@@ -37,19 +37,29 @@ void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
 // Called after the native animation update of every skater component that is
 // not a remote peer, once its output pose for this update is written. Requires
 // install_entity_hooks. Runs on the thread that evaluates animation.
+// Each slot holds one listener (0: first person, 1: the Filmer's arm holding its camera), called in
+// slot order.
 using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
-void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+inline constexpr std::size_t animation_listener_slots = 2;
+void set_animation_evaluated_listener(AnimationEvaluated listener, std::size_t slot = 0) noexcept;
 // Runs on the client thread with the pose capture_local is about to return: a feature may change
 // what other players receive of the local skater.
 using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;
 void set_local_pose_filter(LocalPoseFilter filter) noexcept;
+// Then, with the whole pose capture_local returns (the skater and the board), so a change made only
+// as the pose is drawn (the Filmer's arm holding its camera, its board out of sight) is in what the
+// others see too. One listener; nullptr for none. Client thread.
+using LocalSentPoseFilter = void (*)(std::uintptr_t component, Pose &pose) noexcept;
+void set_local_sent_pose_filter(LocalSentPoseFilter filter) noexcept;
 // A pose override of the local skater (Extension/Skater/skater_animation.cpp): called after the
 // listener above, so it sees (and may change) the pose first person left.
 void set_pose_override_listener(AnimationEvaluated listener) noexcept;
 // Called after a skeleton's pose is handed to the renderer, with
 // its animation interface (animation holder + 0xc0), on the calling thread.
+// Each slot holds one listener (0: first person, 1: the Filmer's arm), called in slot order.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
-void set_render_pose_listener(RenderPosePublished listener) noexcept;
+inline constexpr std::size_t render_listener_slots = 2;
+void set_render_pose_listener(RenderPosePublished listener, std::size_t slot = 0) noexcept;
 // The pose override again, when a pose is handed to the renderer (after the listener above): what it
 // writes then is what is drawn. And for the board, before the listener above, with the render data
 // the pose was handed over in.

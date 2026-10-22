@@ -339,8 +339,9 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
     // A pose override's board (skater_animation.cpp), with the renderer's own pointer to the pose.
     if (const auto listener = shared().override_board_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface, render_data);
-    if (const auto listener = shared().render_listener.load(std::memory_order_acquire); result && listener)
-        listener(animation_interface);
+    if (result)
+        for (const auto &slot : shared().render_listener)
+            if (const auto listener = slot.load(std::memory_order_acquire)) listener(animation_interface);
     // A board holder's animation interface is holder + 0xc0.
     if (const auto slot = result && animation_interface > 0xc0
                               ? watching(watched().board_holder, animation_interface - 0xc0)
@@ -387,8 +388,8 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
         return;
     }
     shared().original_animation(component, update);
-    if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
-        listener(component);
+    for (const auto &slot : shared().evaluated_listener)
+        if (const auto listener = slot.load(std::memory_order_acquire)) listener(component);
     if (const auto listener = shared().override_listener.load(std::memory_order_acquire))
         listener(component);
 }
@@ -560,6 +561,13 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
         cache = {};
         frame.detail = e.what();
     }
+    // The pose as it is sent, after anyone who changes only what is drawn (the Filmer's arm) has had it.
+    if (capture_pose && frame.ready && !frame.pose.skater.empty())
+        if (const auto filter = shared().sent_pose_filter.load(std::memory_order_acquire)) {
+            try {
+                filter(ptr(frame.entity, 0x628), frame.pose);
+            } catch (...) {}
+        }
     return frame;
 }
 NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client) {
@@ -606,11 +614,14 @@ void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
     hidden.joint = joint;
     hidden.scale = scale;
 }
-void set_render_pose_listener(RenderPosePublished listener) noexcept {
-    shared().render_listener.store(listener, std::memory_order_release);
+void set_render_pose_listener(RenderPosePublished listener, std::size_t slot) noexcept {
+    if (slot < render_listener_slots) shared().render_listener[slot].store(listener, std::memory_order_release);
 }
-void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
-    shared().evaluated_listener.store(listener, std::memory_order_release);
+void set_animation_evaluated_listener(AnimationEvaluated listener, std::size_t slot) noexcept {
+    if (slot < animation_listener_slots) shared().evaluated_listener[slot].store(listener, std::memory_order_release);
+}
+void set_local_sent_pose_filter(LocalSentPoseFilter filter) noexcept {
+    shared().sent_pose_filter.store(filter, std::memory_order_release);
 }
 void set_local_pose_filter(LocalPoseFilter filter) noexcept {
     shared().pose_filter.store(filter, std::memory_order_release);

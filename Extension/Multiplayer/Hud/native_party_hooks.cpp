@@ -886,6 +886,28 @@ bool party_spectating() noexcept {
     auto &s = state();
     return s.spectating.load(std::memory_order_acquire) != 0 || s.camera_owned;
 }
+std::vector<FilmablePlayer> filmable_players() noexcept {
+    std::vector<FilmablePlayer> result;
+    try {
+        const auto published = state().published.load(std::memory_order_acquire);
+        if (!published) return result;
+        for (const auto &record : published->records) {
+            if (!record.handle || record.player.local || record.player.slot >= max_remote_players) continue;
+            if (std::any_of(result.begin(), result.end(), [&](const FilmablePlayer &seen) { return seen.id == record.player.id; }))
+                continue;
+            Position position;
+            {
+                std::lock_guard lock(state().position_mutex);
+                position = state().positions[record.player.slot];
+            }
+            if (!record.player.present || !position.valid || GetTickCount64() - position.sampled >= 1000) continue;
+            result.push_back({record.player.id, record.player.name, position.root});
+        }
+    } catch (...) {
+        result.clear();
+    }
+    return result;
+}
 void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase) noexcept {
     auto &s = state();
     if (!s.installed.load(std::memory_order_acquire)) return;

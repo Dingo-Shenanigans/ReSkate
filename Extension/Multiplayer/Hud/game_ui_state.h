@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 
 // The game's own menu and HUD visibility (UI/Foundations/State/DelMar_UI_ScreenData), which
@@ -10,6 +11,9 @@ struct GameUiState {
     bool ui_hidden{};         // the game's UI is hidden (captures)
     bool nametags_hidden{};   // the game's nametag setting is off
     bool indicators_hidden{}; // the game's player indicator setting is off
+    // The first bytes of the screen data as read (for telling its other flags apart: research).
+    std::array<std::uint8_t, 128> raw{};
+    bool raw_valid{};
 };
 
 // Client thread only (it takes the UI model lock): reads the state at most every 100 ms and

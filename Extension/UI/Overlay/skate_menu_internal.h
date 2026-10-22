@@ -112,6 +112,8 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4;
 void multiplayer_display_settings(SkateMenu&, const Model&);
 void special_page(SkateMenu&, const Model&, const CallbacksV3&);
+// The Filmer (Extension/Filmer/filmer_page.cpp).
+void filmer_page(SkateMenu&, const Model&, const CallbacksV3&);
 void multiplayer_network_page(SkateMenu&, const Model&, const CallbacksV3&);
 void atmosphere_menu(SkateMenu&, const Model&, const CallbacksV3&);
 void progression_page(SkateMenu&, const Model&, const CallbacksV3&);
@@ -158,6 +160,6 @@ enum Page {
     page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_plugins, page_online, page_progress, page_mods,
     page_settings, page_developer, page_count
 };
-enum Addon { addon_all, addon_music, addon_count, addon_first = addon_music };
+enum Addon { addon_all, addon_music, addon_filmer, addon_count, addon_first = addon_music };
 void open_page(SkateMenu&, int page, int addon = -1);
 }

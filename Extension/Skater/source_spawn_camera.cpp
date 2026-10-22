@@ -121,10 +121,25 @@ std::array<float, 16> debug_view_matrix(const SourceTrial& trial, const SourceCa
 namespace dingosdk {
 using namespace client_source::detail;
 
-bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
-    const std::array<float, 16>* transform, std::string& detail, float fov) noexcept {
-    struct Lease { bool owned{}, uncertain{}; SourceCameraIdentity identity; DWORD thread{}; float saved_fov{}; };
-    static Lease lease;
+namespace {
+// A native camera held for one of ReSkate's own cameras that follow something every tick (the party's
+// Spectate, the Filmer). Each has its own lease; only one can hold the camera at a time, because a
+// lease is only taken from the game's own camera (mode zero).
+struct CameraLease { bool owned{}, uncertain{}; SourceCameraIdentity identity; DWORD thread{}; float saved_fov{}; };
+struct CameraLeaseText {
+    const char* thread;      // waiting for the client thread
+    const char* phase;       // waiting for the camera phase
+    const char* replaced;    // the game replaced the camera
+    const char* unavailable; // no valid transform
+    const char* unverified;  // an earlier activation was not verified
+    const char* busy;        // another camera mode is in use
+    const char* activation;  // activation not verified
+    const char* taken;       // another camera took the view
+    const char* held;        // success
+    const char* failed;      // anything else
+};
+bool update_leased_camera(CameraLease& lease, const CameraLeaseText& text, std::uintptr_t base, std::uintptr_t client,
+    bool ready, bool phase, const std::array<float, 16>* transform, std::string& detail, float fov) noexcept {
     SourceLastError error;
     auto& s = source_state();
     if (!transform && !lease.owned) return true;
@@ -132,19 +147,18 @@ bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready,
     SourceBusyScope busy{s.busy};
     try {
         auto& trial = s.trial;
-        source_require(base == trial.base && (!lease.thread || lease.thread == GetCurrentThreadId()),
-                       "Spectate is waiting for the native client thread.");
+        source_require(base == trial.base && (!lease.thread || lease.thread == GetCurrentThreadId()), text.thread);
         lease.thread = GetCurrentThreadId();
         SourceReader reader;
         // A destroyed world owns its old camera. Forget that lease without
         // touching freed memory or changing a new world's selected camera.
         if (lease.owned && reader.pointer(client, 8) != lease.identity.context) lease = {};
         if (!transform && !lease.owned) return true;
-        source_require(phase, "Spectate is waiting for the native camera phase.");
+        source_require(phase, text.phase);
         auto camera = source_camera_snapshot(trial, client);
         if (lease.owned && camera.identity != lease.identity) {
             lease = {};
-            source_require(!transform, "The spectate camera was replaced by the game.");
+            source_require(!transform, text.replaced);
             return true;
         }
         if (!transform) {
@@ -157,29 +171,61 @@ bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready,
             }
             lease = {}; detail = "Original camera restored."; return true;
         }
-        source_require(ready && valid_flight_transform(*transform), "Spectate target is unavailable on this map.");
-        source_require(!lease.uncertain, "Spectate camera activation was not verified; exit Spectate to restore it.");
+        source_require(ready && valid_flight_transform(*transform), text.unavailable);
+        source_require(!lease.uncertain, text.unverified);
         if (!lease.owned) {
             source_require(!trial.debug.camera_owned && !trial.debug.noclip && camera.mode == 0 &&
-                           camera.view_enabled && !camera.input_active,
-                           "Exit Freecam or Noclip before spectating a party member.");
+                           camera.view_enabled && !camera.input_active, text.busy);
             lease.identity = camera.identity; lease.owned = lease.uncertain = true;
             lease.saved_fov = reader.value<float>(camera.identity.camera, camera_fov_offset);
             if (!std::isfinite(lease.saved_fov) || lease.saved_fov <= 1 || lease.saved_fov >= 175) lease.saved_fov = 0;
             trial.camera_mode(camera.identity.controller, 1);
             camera = source_camera_snapshot(trial, client);
             source_require(camera.identity == lease.identity && camera.mode == 1 &&
-                           camera.active == lease.identity.camera, "Native spectate camera activation could not be verified.");
+                           camera.active == lease.identity.camera, text.activation);
             lease.uncertain = false;
         }
-        source_require(camera.mode == 1 && camera.active == lease.identity.camera,
-                       "Another native camera has taken control of the view.");
+        source_require(camera.mode == 1 && camera.active == lease.identity.camera, text.taken);
         trial.camera_transform(lease.identity.camera, transform);
         if (fov > 1 && fov < 175) (void)first_person_write_fov(lease.identity.camera, fov);
-        detail = "Spectating party member."; return true;
+        detail = text.held; return true;
     } catch (const SourceGuard& issue) { detail = issue.message; }
-      catch (...) { detail = "Native spectate camera is unavailable."; }
+      catch (...) { detail = text.failed; }
     return false;
+}
+}
+
+bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
+    const std::array<float, 16>* transform, std::string& detail, float fov) noexcept {
+    static CameraLease lease;
+    static constexpr CameraLeaseText text{
+        "Spectate is waiting for the native client thread.",
+        "Spectate is waiting for the native camera phase.",
+        "The spectate camera was replaced by the game.",
+        "Spectate target is unavailable on this map.",
+        "Spectate camera activation was not verified; exit Spectate to restore it.",
+        "Exit Freecam, Noclip or the Filmer before spectating a party member.",
+        "Native spectate camera activation could not be verified.",
+        "Another native camera has taken control of the view.",
+        "Spectating party member.",
+        "Native spectate camera is unavailable."};
+    return update_leased_camera(lease, text, base, client, ready, phase, transform, detail, fov);
+}
+bool update_filmer_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
+    const std::array<float, 16>* transform, std::string& detail, float fov) noexcept {
+    static CameraLease lease;
+    static constexpr CameraLeaseText text{
+        "The Filmer is waiting for the native client thread.",
+        "The Filmer is waiting for the native camera phase.",
+        "The game replaced the camera; the Filmer let it go.",
+        "Nobody to film here yet.",
+        "The Filmer's camera was not verified; turn the Filmer off to restore it.",
+        "Exit Freecam, Noclip, First person or Spectate before filming.",
+        "The Filmer's camera could not be verified.",
+        "Another camera has taken control of the view.",
+        "Filming.",
+        "The native camera is unavailable."};
+    return update_leased_camera(lease, text, base, client, ready, phase, transform, detail, fov);
 }
 bool read_local_camera_transform(std::uintptr_t base, std::uintptr_t client, std::array<float, 16>& transform) noexcept {
     SourceLastError error;

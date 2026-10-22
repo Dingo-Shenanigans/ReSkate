@@ -15,6 +15,9 @@ inline constexpr std::uint32_t keyboard_binding_tag = 0x80000000u;
 inline constexpr std::uint32_t keyboard_chord_tag = 0x40000000u;
 // Yes and No in a server's vote until the player binds them otherwise: F1 and F2.
 inline constexpr std::uint32_t default_vote_yes_binding = keyboard_binding_tag | 0x70u, default_vote_no_binding = keyboard_binding_tag | 0x71u;
+// The Filmer's lens slap until the player binds it otherwise: LB (taken from the game only while the
+// Filmer has the camera).
+inline constexpr std::uint32_t default_lens_slap_binding = 0x0100u;
 inline constexpr std::uint8_t keyboard_key_id(std::uint32_t key) noexcept {
     if (key >= '0' && key <= '9') return static_cast<std::uint8_t>(key - '0' + 1);
     if (key >= 'A' && key <= 'Z') return static_cast<std::uint8_t>(key - 'A' + 11);
@@ -89,7 +92,7 @@ struct ControllerInput {
 struct ActionBind {
     std::string_view key, name, label, command;
 };
-inline constexpr std::array<ActionBind, 9> action_binds{{
+inline constexpr std::array<ActionBind, 19> action_binds{{
     {"reskate_menu", "reskatemenu", "Open the ReSkate menu", "menu"},
     {"first_person", "firstperson", "First person", "firstperson toggle"},
     {"hide_hud", "hidehud", "Hide HUD", "hideui toggle"},
@@ -99,6 +102,16 @@ inline constexpr std::array<ActionBind, 9> action_binds{{
     {"challenges", "challenges", "Show / hide challenges", "challenges toggle"},
     {"nametags", "nametags", "Player nametags", "mp nametags toggle"},
     {"nametag_dots", "nametagdots", "Player dots", "mp nametag-dots toggle"},
+    {"filmer", "filmer", "Filmer on / off", "filmer toggle"},
+    {"lens_slap", "lensslap", "Filmer: slap the lens (end the clip)", "filmer slap"},
+    {"filmer_switch_side", "filmerswitchside", "Filmer: switch side (left / right)", "filmer switchside"},
+    {"filmer_cruise", "filmercruise", "Filmer: cruise control on / off", "filmer cruise"},
+    {"filmer_zoom_in", "filmerzoomin", "Filmer: zoom in (long lens, held still)", "filmer zoom in"},
+    {"filmer_zoom_out", "filmerzoomout", "Filmer: zoom out (long lens, held still)", "filmer zoom out"},
+    {"filmer_angle_next", "filmeranglenext", "Filmer: next angle (auto, behind, side)", "filmer angle next"},
+    {"filmer_angle_auto", "filmerangleauto", "Filmer: angle auto", "filmer angle auto"},
+    {"filmer_angle_behind", "filmeranglebehind", "Filmer: angle behind", "filmer angle behind"},
+    {"filmer_angle_side", "filmerangleside", "Filmer: angle side", "filmer angle side"},
 }};
 struct ControllerBindingsModel {
     bool available{};

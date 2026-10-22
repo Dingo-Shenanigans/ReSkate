@@ -30,6 +30,7 @@ void register_capture_commands(Commands &);
 void register_trainer_commands(Commands &);
 void register_replay_keyframes_commands(Commands &);
 void register_plugin_commands(Commands &);
+void register_filmer_commands(Commands &);
 // Runtime adapters. Invoked only by the verified game-thread dispatcher.
 void request_debug(overlay::DebugAction, bool enabled = false, float value = 0);
 void request_feature(overlay::OfflineFeatureGroup, bool enabled);

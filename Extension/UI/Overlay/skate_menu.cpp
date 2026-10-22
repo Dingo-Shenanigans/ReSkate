@@ -934,8 +934,8 @@ constexpr std::array<const char*, page_count> page_subtitles{
     "Everything, a button away.", "Pick your spot. Set the vibe.", "Make the park yours.", "Ride it your way.",
     "Tune it. Drill it.", "What ReSkate adds to skate.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
     "Bring your own.", "Your controls, your screen.", "Under the hood."};
-constexpr std::array<const char*, addon_count> addon_names{"ADDONS", "MUSIC"};
-constexpr std::array<const char*, addon_count> addon_subtitles{"What ReSkate adds to skate.", "Your sound, in the game."};
+constexpr std::array<const char*, addon_count> addon_names{"ADDONS", "MUSIC", "FILMER"};
+constexpr std::array<const char*, addon_count> addon_subtitles{"What ReSkate adds to skate.", "Your sound, in the game.", "Roll tape."};
 // The side rail's groups: the heading above the page that starts each.
 const char* group_of(int page) {
     switch (page) {

@@ -485,7 +485,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     // each frame.
     std::vector<NametagPlayer> nametags;
     const bool bubbles = s.chat_bubbles;
-    const bool labels = s.nametags || bubbles;
+    const bool names = s.nametags && !nametags_held_off.load(std::memory_order_relaxed);
+    const bool labels = s.nametags || bubbles; // (published even while names are held off, so none linger)
     if (labels) refresh_friends(s);
     // The newest chat lines from `sender` still inside the bubble duration, oldest first,
     // filtered the same way the chat panel filters them, each with the opacity it has left
@@ -821,7 +822,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     if (labels)
         publish_custom_nametags(s.base, std::move(nametags),
                                 local.ready ? std::optional(local.pose.root.position) : std::nullopt,
-                                s.nametags, bubbles, s.chat_bubbles_distance, s.nametag_distance,
+                                names, bubbles, s.chat_bubbles_distance, s.nametag_distance,
                                 s.nametag_dots);
 }
 } // namespace

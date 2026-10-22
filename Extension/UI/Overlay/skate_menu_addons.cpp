@@ -55,6 +55,9 @@ void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* 
 void all_addons(SkateMenu& menu) {
     addon_tile(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
                nullptr, 0, addon_music);
+    if (console_style()) ImGui::SameLine(0, px(12));
+    addon_tile(menu, "addon-filmer", "FILMER", "Skate videos the VX1000 way: an AI filmer rides with you, or you film a friend.",
+               nullptr, 0, addon_filmer);
 }
 }
 
@@ -64,7 +67,7 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     // A window lists the addons in its side rail; full screen has no rail, so they are tabs here
     // (LT / RT on a controller).
     if (menu.fullscreen_drawn) {
-        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC"};
+        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC", "FILMER"};
         std::vector<const char*> labels(names.begin(), names.end());
         category_tabs(menu, menu.addon, labels, "addon-tabs");
         menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
@@ -72,6 +75,7 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     ImGui::PushID(menu.addon);
     switch (menu.addon) {
     case addon_music: music_page(menu, model, callbacks); break;
+    case addon_filmer: filmer_page(menu, model, callbacks); break;
     default:
         ImGui::BeginChild("addon", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
         all_addons(menu);

@@ -135,6 +135,10 @@ std::uintptr_t client_free_camera_view() noexcept;
 // `fov` is applied to the spectate camera while it is held; its own comes back after.
 bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
     const std::array<float, 16>* transform, std::string& detail, float fov = 0) noexcept;
+// The same, held for the Filmer (Extension/Filmer/filmer.cpp). Its own lease: it can only be
+// taken while nothing else (Freecam, Noclip, First person, Spectate) has the camera.
+bool update_filmer_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase,
+    const std::array<float, 16>* transform, std::string& detail, float fov = 0) noexcept;
 // The local skater's animation component (what the pose hooks are called with), or 0. Client thread.
 std::uintptr_t local_skater_component(std::uintptr_t base, std::uintptr_t client) noexcept;
 bool read_local_camera_transform(std::uintptr_t base, std::uintptr_t client, std::array<float, 16>& transform) noexcept;

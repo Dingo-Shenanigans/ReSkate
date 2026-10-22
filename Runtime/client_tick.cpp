@@ -21,6 +21,7 @@
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
+#include "Extension/Filmer/filmer.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Boot/discord_presence.h"
@@ -1708,6 +1709,16 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/AI skaters");
             dingosdk::ai_skaters::tick(r.base,client,multiplayer_ready);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/filmer");
+            // After the session placed the other skaters and the trainer measured the local one: the
+            // Filmer's camera follows them, so it runs every client tick, and also out of play, to give
+            // the camera back.
+            dingosdk::filmer::tick(r.base, client,
+                r.spectate_ready && r.spectate_client == client && (state == 13 || state == 21), camera_phase, static_cast<int>(state));
+            // Your arm holding the camera (Extension/Filmer/filmer_held.h).
+            dingosdk::filmer::tick_held(r.base, client, multiplayer_ready);
         }
         {
             DINGO_PROFILE_ZONE("tick/world objects");
