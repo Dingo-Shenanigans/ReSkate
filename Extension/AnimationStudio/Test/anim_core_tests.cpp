@@ -1154,6 +1154,13 @@ void bent_joints_match_the_studio() {
     apply_authored_edit_layer(animation, 0, added, 1.0f, nullptr, studio, 0.0f);
     check(same_turn(added[9].rotation, normalised(multiply(native[9].rotation, from_euler({0, 0, 40})))),
           "With matching off the bend is added to the game's pose");
+    // Whole body: a joint with no key at all follows the studio's pose too.
+    native[343].rotation = from_euler({0, 30, 0});
+    studio[343].rotation = from_euler({0, -20, 0});
+    auto whole = native;
+    apply_authored_edit_layer(animation, 0, whole, 1.0f, nullptr, studio, 1.0f, 1.0f);
+    check(same_turn(whole[343].rotation, studio[343].rotation), "With the whole body matched an unkeyed foot follows the recording");
+    check(same_turn(whole[9].rotation, normalised(multiply(studio[9].rotation, from_euler({0, 0, 40})))), "and the keys still go on top");
     // Mirrored playback reads the studio's pose mirrored, so the bend lands on the joint it now drives.
     Clip clip;
     clip.joints = skeleton_joints;

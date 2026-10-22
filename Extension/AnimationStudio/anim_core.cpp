@@ -363,10 +363,19 @@ int limb_group(std::uint16_t joint) noexcept {
     return 0;
 }
 void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
-                               const LimbWeights* limbs, std::span<const Joint> studio, float match) {
+                               const LimbWeights* limbs, std::span<const Joint> studio, float match, float match_rest) {
     if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
         seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
     weight = std::min(weight, 1.0f);
+    // The whole body to the studio's pose first; the keys then go on top of it.
+    if (match_rest > 0 && studio.size() >= skeleton_joints && native.size() >= skeleton_joints) {
+        const float rest = std::min(match_rest, 1.0f) * weight;
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            if (!gameplay_body_joint(j) || !editable(j)) continue;
+            const float share = limbs ? rest * std::clamp(limbs->of(j), 0.0f, 1.0f) : rest;
+            if (share > 0) native[j].rotation = slerp(native[j].rotation, studio[j].rotation, share);
+        }
+    }
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || track.joint >= skeleton_joints ||
             track.joint >= native.size() || !editable(track.joint)) continue;

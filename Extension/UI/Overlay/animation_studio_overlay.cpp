@@ -1547,12 +1547,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "spread over the air actually happening, within two thirds and one and a half times the recorded pace, so a "
                         "trick over a gap or an obstacle keeps its shape instead of drifting out of step with the game's own motion.",
                         [v] { studio::set_fit_air(!v.fit_air); }});
-        rows.push_back({"Match the studio", v.match_studio ? "on" : "off",
-                        "On: in game, a joint you bent takes the pose it has here - your recording with your key on it - so "
-                        "the trick looks like it does in the studio. Joints you did not touch stay the game's. Off: your bends "
-                        "are added to whatever the game is doing at that moment, which moves with the game's own kickflip, "
-                        "pop and air but can come out quite different from what you see here.",
-                        [v] { studio::set_match_studio(!v.match_studio); }});
+        rows.push_back({"Match the studio", v.match_studio == 2 ? "whole body" : v.match_studio == 1 ? "bent joints" : "off",
+                        "Bent joints: in game, a joint you bent takes the pose it has here - your recording with your key on "
+                        "it - and the joints you did not touch stay the game's (its own flick still shows). Whole body: the "
+                        "whole skater plays your recording with your keys on it, so it looks just like the studio. Off: your "
+                        "bends are added to whatever the game is doing, which can come out quite different from here.",
+                        [v] { studio::set_match_studio((v.match_studio + 1) % 3); }});
         rows.push_back({"Board turned for fakie", v.turn_board ? "on" : "off",
                         "Off: the board's keys work in the board's own frame, nose to tail, which is how they are made in the studio "
                         "and how the game plays them. On: they are turned half a turn when the board points the other way to its "
