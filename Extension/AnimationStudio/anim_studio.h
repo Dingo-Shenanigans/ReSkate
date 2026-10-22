@@ -106,7 +106,7 @@ struct View {
     // A rail to grind on, drawn in the studio for grind and slide tricks (set_rail): the line along its top, in the
     // world, and how thick it is. rail_choice -1 automatic, 0 off, 1 along the board, 2 across it; rail_mode is
     // what that comes to for the trick open.
-    int rail_choice{-1}, rail_mode{};
+    int rail_choice{0}, rail_mode{};
     bool rail_valid{};
     Vec3 rail_a{}, rail_b{};
     float rail_radius{0.025f};

@@ -214,7 +214,7 @@ struct State {
     bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
     std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
     // The studio's rail (set_rail, place_rail): placed under the board when a trick opens or when asked.
-    int rail_choice{-1};
+    int rail_choice{0}; // off unless chosen (SETTINGS > View); the game's own Skatepedia rail is what is wanted
     std::uint64_t rail_request{}, rail_done{~std::uint64_t{0}}, rail_serial{~std::uint64_t{0}};
     int rail_mode{};
     bool rail_valid{};
