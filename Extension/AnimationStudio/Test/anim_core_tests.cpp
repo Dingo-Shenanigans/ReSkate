@@ -581,6 +581,17 @@ void pack_slots_are_fixed_or_alternate() {
     check(back.alternates("kickflip|mid") && !back.alternates("heelflip|mid") && back.unlinked.contains("Kick C") && back.unlinked.size() == 1 &&
               back.slots.at("kickflip|mid").front() == "Kick B",
           "Fixed or Alternate per trick, the cycle and the order come back from the file");
+    {
+        // A variant saved leading with the other foot is a stance slot of its own: unlinked, it still never plays.
+        std::vector<Preset> stances{{"Shuv", "popshuvit", "mid"}, {"Shuv 2", "popshuvit", "mid"}};
+        stances[1].stance = "goofy";
+        PresetPack cycle;
+        cycle.slots["popshuvit|mid"] = {"Shuv", "Shuv 2"};
+        cycle.slot_alternate["popshuvit|mid"] = true;
+        cycle.unlinked = {"Shuv 2"};
+        select_presets(stances, std::vector<PresetPack>{cycle});
+        check(stances[0].active && !stances[1].active, "An unlinked variant in another stance does not play while one is linked");
+    }
     PresetPack old;
     old.alternate = true;
     old.slots["kickflip|mid"] = {"Kick A", "Kick B"};

@@ -78,6 +78,15 @@ inline std::optional<std::size_t> pack_place(const PresetPack& pack, const std::
 inline void select_presets(std::span<Preset> presets, std::span<const PresetPack> packs) {
     std::map<std::string, std::pair<Preset*, std::size_t>> selected; // pack and stance slot -> the pick, its place
     std::set<std::string> cycling; // pack and stance slots with at least one variant in their cycle
+    // Pack and trick slots with anything linked into their cycle: an unlinked variant of one never plays, in
+    // any stance (one saved leading with the other foot is a stance slot of its own, and was played there).
+    std::set<std::string> linked;
+    for (const auto& p : presets)
+        for (std::size_t k = 0; k < packs.size(); ++k) {
+            const auto filed = packs[k].slot_of(p.name);
+            if (!filed.empty() && packs[k].alternates(filed) && !packs[k].unlinked.contains(p.name))
+                linked.insert(std::to_string(k) + "|" + filed);
+        }
     for (auto& p : presets) {
         p.active = p.included = false;
         const auto slot = preset_slot(p.trick, p.pop);
@@ -95,10 +104,14 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
             if (!place) continue;
             p.included = true;
             const auto key = std::to_string(k) + "|" + compatible_slot;
-            if (packs[k].alternates(packs[k].slot_of(p.name)) && !packs[k].unlinked.contains(p.name)) {
-                p.active = true;
-                cycling.insert(key);
-                continue;
+            const auto filed = packs[k].slot_of(p.name);
+            if (packs[k].alternates(filed)) {
+                if (!packs[k].unlinked.contains(p.name)) {
+                    p.active = true;
+                    cycling.insert(key);
+                    continue;
+                }
+                if (linked.contains(std::to_string(k) + "|" + filed)) continue; // unlinked, and others are in the cycle
             }
             auto& [picked, at] = selected[key];
             if (!picked || *place < at) { picked = &p; at = *place; }

@@ -4707,12 +4707,16 @@ bool set_label(const std::string& animation, const std::string& label_in, std::s
             if (!in) throw std::runtime_error(animation + " is not in your tricks.");
             text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
-        auto animation_file = from_json(text);
-        animation_file.label = label;
+        // Only the label changes in the file. (Read into an animation and written back, it lost the clip's
+        // length, pop and landing, which live in the .clip, and no longer loaded.)
+        (void)from_json(text); // it has to be a saved animation
+        auto root = Json::parse(text);
+        if (!root.is_object()) throw std::runtime_error(animation + " is not a saved animation.");
+        root["label"] = label;
         // A label is not a save: which of a kind plays goes by when it was saved.
         std::error_code error;
         const auto saved_when = std::filesystem::last_write_time(path, error);
-        write_preset_file(path, to_json(animation_file));
+        write_preset_file(path, root.dump(2));
         if (!error) std::filesystem::last_write_time(path, saved_when, error);
         if (s.saved_as == safe) s.edits.label = label;
         message = label.empty() ? animation + " is shown by its own name again." : animation + " is labelled " + label + ".";
