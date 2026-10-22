@@ -22,6 +22,7 @@
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/grind_exit_control.h"
+#include "Extension/BoardBreak/board_break_model.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -328,6 +329,26 @@ Joint joint_of(const NativeBone& b) noexcept {
 }
 // The frame bone 2 hangs in, in the world.
 Joint board_parent(const std::array<NativeBone, board_bones>& b) noexcept { return compose(joint_of(b[0]), joint_of(b[1])); }
+// The trucks upright on the deck, as they are at rest (board_break_model.h), with their baseplates on the deck as
+// Board Break keeps them. In the studio the game goes on steering its trucks from its own board, lying wherever it
+// is, so the trucks of the board drawn in the studio turned about by themselves. Each truck keeps where the game
+// has it (a wide deck's sit further out); only its lean and steer are taken off. Bones 4 and 8 the trucks, 5 and
+// 9 their baseplates.
+void hold_trucks_at_rest(std::array<NativeBone, board_bones>& b) noexcept {
+    struct Truck { std::size_t truck, plate; const board_break::TruckRest* rest; };
+    for (const Truck t : {Truck{4, 5, &board_break::back_truck_rest}, Truck{8, 9, &board_break::front_truck_rest}}) {
+        const Quat facing = normalised(Quat{t.rest->facing.x, t.rest->facing.y, t.rest->facing.z, t.rest->facing.w});
+        const Vec3 at{b[t.truck].position[0], b[t.truck].position[1], b[t.truck].position[2]};
+        const Vec3 rest_at{t.rest->at.x, t.rest->at.y, t.rest->at.z};
+        const auto effector = rotate(facing, Vec3{t.rest->effector.x, t.rest->effector.y, t.rest->effector.z});
+        const auto plate = rotate(conjugate(facing), Vec3{rest_at[0] + effector[0] - at[0], rest_at[1] + effector[1] - at[1],
+                                                          rest_at[2] + effector[2] - at[2]});
+        if (!finite(Joint{{1, 1, 1}, facing, plate})) continue;
+        for (std::size_t k = 0; k < 4; ++k) b[t.truck].rotation[k] = facing[k];
+        b[t.plate].rotation = {0, 0, 0, 1};
+        for (std::size_t k = 0; k < 3; ++k) b[t.plate].position[k] = plate[k];
+    }
+}
 
 // The animation thread's own, never touched elsewhere.
 struct Live {
@@ -3536,6 +3557,11 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
                         std::memcpy(r.position.data(), root_local.position.data(), 12);
                         if (!poke(layout.buffer + sizeof(NativeBone), &r, sizeof(NativeBone)))
                             throw std::runtime_error("Cannot publish studio board");
+                        // The trucks at rest on the deck, not steered by the game's own board.
+                        hold_trucks_at_rest(b);
+                        for (const std::size_t bone : {std::size_t{4}, std::size_t{5}, std::size_t{8}, std::size_t{9}})
+                            if (!poke(layout.buffer + bone * sizeof(NativeBone), &b[bone], sizeof(NativeBone)))
+                                throw std::runtime_error("Cannot publish studio trucks");
                         if (diagnostics_capture) {
                             auto& shot = render_shot(); std::lock_guard lock(shot.mutex);
                             shot.edited_board = compose(board_parent(b), joint_of(b[board_mount]));
