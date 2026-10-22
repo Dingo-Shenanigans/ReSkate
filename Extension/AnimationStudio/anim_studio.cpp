@@ -4776,7 +4776,7 @@ bool save(std::string& message) {
     // clip playing (arm_live_probe is the search for where to see it).
     const bool native_piece = s.edits.source.kind == "native_asset" && !s.edits.source.asset.empty();
     if (s.edits.trick.empty() && s.clip->takeoff >= 0 && !native_piece) {
-        message = "Which trick is it? Type the game's trick in TRICK (ollie, kickflip...) or record it, then save.";
+        message = "The game did not say which trick this was, so it could never play. Record it again (TRICKS > Record a trick) or open the game's own trick in TRICKS.";
         s.status = message;
         return false;
     }
@@ -5254,14 +5254,6 @@ void rename(const std::string& name) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.edits.name = name;
-    s.dirty = true;
-    ++s.revision;
-}
-void set_trick(const std::string& trick) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.edits.trick = trick;
-    if (s.edits.name.empty()) s.edits.name = trick;
     s.dirty = true;
     ++s.revision;
 }

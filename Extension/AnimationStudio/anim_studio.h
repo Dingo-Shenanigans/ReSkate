@@ -259,7 +259,6 @@ bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
-void set_trick(const std::string& trick);
 void set_author(const std::string& author); // whose trick it is, kept with it and shared with it
 // Camera.
 void set_orbit(const Orbit& orbit);

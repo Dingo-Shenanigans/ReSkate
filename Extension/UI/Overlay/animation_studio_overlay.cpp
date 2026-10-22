@@ -111,7 +111,7 @@ struct Ui {
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
 
-    std::array<char, 64> name{}, trick{}, author{};
+    std::array<char, 64> name{}, author{};
     std::array<char, 64> pack_name{};
     int pack_row{}; // the row of the pack that was opened in PACKS, to come back to
     std::uint64_t names_for{};
@@ -2358,7 +2358,6 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         // The name and trick of the one being edited, typed here.
         if (u.names_for != v.revision && !ImGui::IsAnyItemActive()) {
             std::snprintf(u.name.data(), u.name.size(), "%s", v.name.c_str());
-            std::snprintf(u.trick.data(), u.trick.size(), "%s", v.trick.c_str());
             std::snprintf(u.author.data(), u.author.size(), "%s", v.author.c_str());
             u.names_for = v.revision;
         }
@@ -2376,10 +2375,15 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         ImGui::SetNextItemWidth(w);
         if (ImGui::InputText("##name", u.name.data(), u.name.size(), ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::IsItemDeactivatedAfterEdit())
             studio::rename(u.name.data());
-        ImGui::SetCursorScreenPos(ImVec2(at.x + 38 * k + w, y + 18 * k));
-        ImGui::SetNextItemWidth(w);
-        if (ImGui::InputText("##trick", u.trick.data(), u.trick.size(), ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::IsItemDeactivatedAfterEdit())
-            studio::set_trick(u.trick.data());
+        // The trick it plays on is the one the game said it was (recorded, or the game's own trick opened): shown,
+        // not typed, since a name the game does not use would never play.
+        {
+            const ImVec2 box(at.x + 38 * k + w, y + 18 * k), end(box.x + w, box.y + ImGui::GetFrameHeight());
+            d->AddRectFilled(box, end, IM_COL32(222, 222, 220, 255));
+            const std::string shown = v.trick.empty() ? std::string("none - record it in TRICKS") : v.trick;
+            const auto t = text_size(f.bold, ImGui::GetFontSize(), shown.c_str());
+            text(d, f.bold, ImGui::GetFontSize(), ImVec2(box.x + 8 * k, box.y + (end.y - box.y - t.y) * 0.5f), v.trick.empty() ? ink_soft : ink, shown);
+        }
         // Who made it. Kept with the trick and shared with it, so a trick passed on says whose it is.
         text(d, f.bold, 13 * k, ImVec2(at.x + 22 * k, y + 62 * k), ink_soft, "MADE BY");
         ImGui::SetCursorScreenPos(ImVec2(at.x + 22 * k, y + 80 * k));
