@@ -3808,10 +3808,15 @@ void draw_animation_studio() {
             }
             list_top += 70 * k;
         }
-        const float list_bottom = display.y - timeline_h - card_h - 40 * k;
+        // The white card only where it has something: the joint's numbers (JOINTS, KEYS) and the
+        // animation's name, trick and maker (PACKS). Elsewhere the list runs down to the timeline.
+        const auto tab = static_cast<Tab>(u.tab);
+        const bool has_card = tab == Tab::joints || tab == Tab::keys || tab == Tab::packs;
+        const float card_top = display.y - timeline_h - card_h - 22 * k;
+        const float list_bottom = has_card ? card_top - 18 * k : display.y - timeline_h - 24 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
-        card(d, f, v, ImVec2(menu_x, list_bottom + 18 * k), ImVec2(menu_w + 10 * k, card_h));
-        help_top = help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, list_bottom + 18 * k), ImVec2(330 * k, card_h));
+        if (has_card) card(d, f, v, ImVec2(menu_x, card_top), ImVec2(menu_w + 10 * k, card_h));
+        help_top = help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, card_top), ImVec2(330 * k, card_h));
     }
     timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
     // What the studio last said. It used to stand there for good, so the screen kept a line about a trick
