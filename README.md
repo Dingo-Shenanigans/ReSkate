@@ -38,6 +38,149 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - Checks that you have the supported game build, and can download exactly that build with your Steam
     account.
   - Keeps ReSkate itself up to date.
+- **BMX prototype on this branch.** Native bike rendering, rider posing, bike/skateboard switching,
+  Streets-style controls and physics experiments. See [BMX development](#bmx-development-bmx-branch)
+  below for setup, controls and the current limits.
+
+## BMX development (`BMX` branch)
+
+This branch adds BMX directly to ReSkate's runtime, with a generated native bike content pack and
+development tools. It is an **experimental offline prototype**. Handling, ramp riding, landings,
+collisions, rider animation and equipment transitions are still being developed. The normal
+ReSkate release download does not contain this branch's complete BMX setup.
+
+### What has been added
+
+| Area | Work included on this branch |
+|---|---|
+| Native bike | Eight articulated world entities: frame, fork, handlebars, front/rear wheels, cranks and separate pedals. Shared geometry anchors connect steering, grips, wheels, pedals and carry placement. The active bike uses the game's world renderer. |
+| Rider | Posing on the existing Skate skeleton, grip and pedal targets, crank-synchronized feet, preload, weight-shift and airborne posture cues. Native pose timing, contact alignment and clothing fit remain under investigation. |
+| Riding | Independent native chassis control, wheel/surface queries, tire contact and braking, speed-sensitive steering, balance, manuals/nose manuals, pumping, hops and airborne control. Ramp approach, contact compliance and landing response have dedicated experiments and regression fixtures. |
+| Tricks | Stick/shoulder/trigger input mapping, barspin and tailwhip articulation, a named trick catalog, rider release/pose cues, catch/landing policies and separate BMX trick/combo tallies. Catalog entries and successful unit tests do not establish that every trick looks or lands correctly in game. |
+| Equipment | Bike/skateboard switching, nearby-bike mounting and dismounting, parked-bike state, carrying and grounded set-down. Readiness, speed, ground clearance and input ownership checks guard transitions; remounting and native board handoff remain active work. |
+| Falls and recovery | Impact/bail detection, bike/rider lifecycle handling, native fall/GetUp investigations and post-fall remount diagnostics. Complete rider separation, natural ragdoll motion and reliable recovery are unfinished. |
+| Physics integration | Adapters for the standalone movement library and an opt-in coupled bike/rider backend. The coupled backend has separate native bodies, force/impulse accounting, render-phase rider binding and a private ten-second trial; normal force adoption remains disabled. |
+| Development support | Isolated game/profile launch scripts, input and body-ownership diagnostics, regression tests, ramp/equipment/fall rehearsals, recorder gates, video capture receipts, virtual-controller scenarios and an independent visual-review rubric. |
+
+### Riding and equipment controls
+
+The layout keeps the **left stick for handlebars/steering**, the **right stick for rear-wheel
+control and tricks**, and **Skate's D-pad mappings**. Xbox / PlayStation button names are shown
+together. These are the in-game prototype bindings; the standalone module has its own host controls.
+
+| Input | Action |
+|---|---|
+| Left stick | Steer the handlebars/front weight shift; airborne yaw/pitch control |
+| Right stick | Rear-wheel control; partial down/up for manual/nose manual; down then up for a grounded hop gesture |
+| A / Cross | Pedal |
+| B / Circle | Brake |
+| R3 | Quick hop |
+| LB / L1 + right stick down, airborne | Left barspin request |
+| RB / R1 + right stick down, airborne | Right barspin request |
+| Both triggers + right stick left/right, airborne | Tailwhip request |
+| Return right stick to neutral | Catch/rearm after a trick request |
+| LB / L1 + a fresh Y / Triangle press | Contextual bike/skateboard switch; release both afterward |
+| Tap Y / Triangle, or F7 | Get on/off a nearby bike |
+| Hold Y / Triangle, or F8 | Pick up/set down a nearby bike |
+| F6 | Request a bike/skateboard switch |
+| D-pad | Existing Skate actions |
+
+Stop on clear ground before switching out of riding, and approach a parked bike before mounting
+or carrying it. Center the sticks and release buttons to rearm gestures; menus, lost focus and
+controller changes clear pending input. Physical-controller transition behavior still needs testing.
+The optional human native-board handoff currently uses XInput.
+
+Use the ReSkate console (**~**) for `bmx controls`, `bmx status`, `bmx diagnose`, `bmx toggle`,
+`bmx mount`, `bmx dismount`, `bmx interact` and `bmx carry`. `bmx controls` also lists the no-pad
+keyboard bindings. Diagnostic commands and automated rehearsals have additional private-profile
+requirements; see the [BMX development tools](contrib/bmx-lab/README.md).
+
+### Running the local prototype
+
+Build this branch using the [Windows source-build instructions](#building-from-source). The local
+ride helper expects a supported game copy and the generated `Mods/BMX_Prototype` pack already
+prepared under `build/bmx-game/`. It copies the selected launcher/runtime into that isolated game;
+it does not download the game or generate the bike pack.
+
+With the game closed, run from the repository root:
+
+```powershell
+.\contrib\bmx-lab\Start-BmxGame.ps1 -Ride -NativeChassis -HumanNativeSwitch `
+  -ProfileName bmx-user-data-working-profile
+```
+
+This uses a separate offline development profile under `build/`. The normal Steam installation
+and ordinary saves remain separate. Close menus, focus the game and return controls to neutral
+before riding. See [native prototype setup](contrib/bmx-lab/native-prototype.md) for the longer
+setup and diagnostic history.
+
+The current local bike pack uses the supplied `bmx-free` model, converted into native parts.
+The game loads the prepared pack; it does not read an FBX from a player's Downloads folder.
+The conversion tools and attribution notes are in [the bike asset documentation](assets/models/bmx/README.md).
+Clean-install packaging of a distributable bike pack is still pending. Locally extracted BMX
+Streets geometry is private reference material and is excluded from the committed assets.
+
+### Standalone BMX Streets reverse-engineering work
+
+[`standalone/bmx-movement/`](standalone/bmx-movement/README.md) contains the **BMX Streets
+reverse-engineering research and its independent C++20 movement reconstruction**. It includes
+recovered control/physics policies, measured runtime observations, rider/bike/IK tracks, a reusable
+library, a runnable Windows demo, tests and comparison tooling. The library runs independently of
+ReSkate, Unity, Steam and a BMX Streets installation.
+
+| Folder/file | Contents |
+|---|---|
+| `standalone/bmx-movement/include/bmx/` | Public C++ interfaces for movement, suspension, posture, bike articulation, IK and rail-contact helpers |
+| `standalone/bmx-movement/src/` | Physics/controller implementations and observed command/presentation tracks |
+| `standalone/bmx-movement/demo/` | Windows reference demo with a simple rider and flat-plane host |
+| `standalone/bmx-movement/tests/` | Numerical, input, posture and integration-contract tests |
+| `standalone/bmx-movement/tools/` | Observation, extraction, reference verification, controller driving and comparison tools |
+| `standalone/bmx-movement/reference/` | Calibration, provenance and documented reconstruction policies |
+| `standalone/bmx-movement/recordings/` | Local original-game/demo captures, controller logs, comparisons and audit reports; large generated media is excluded from Git |
+| [README](standalone/bmx-movement/README.md), [REFERENCE](standalone/bmx-movement/REFERENCE.md), [COMPARISON](standalone/bmx-movement/COMPARISON.md) | Library usage, recovered evidence, actual comparisons and remaining fidelity gaps |
+
+The standalone library covers **58 observed available trick selections**, coupled bike/rider
+motion, steering, braking, manuals, flick/quick hops, air control, posture and bike/IK playback.
+Its reference host supplies a flat plane. ReSkate must supply real world contacts, collisions,
+body ownership and animation retargeting. Reconstruction coverage and fitted tracks do not prove
+matching handling or complete in-game trick support. Full rig collisions, bail/ragdoll, walking
+and general engine integration remain outside the standalone demo's validation.
+
+Build/test the library separately from the repository root:
+
+```powershell
+cmake -S standalone/bmx-movement -B build/standalone-bmx -DBMX_BUILD_DEMO=ON
+cmake --build build/standalone-bmx --config Release
+ctest --test-dir build/standalone-bmx -C Release --output-on-failure
+```
+
+The ReSkate adapters use `DINGOSDK_BMX_STANDALONE_MOVEMENT`; the private two-body backend also
+requires `DINGOSDK_BMX_NATIVE_COUPLED`. Both default to **OFF**, and enabling them at build time
+does not automatically activate a native physics trial. `DINGOSDK_BMX_MOVEMENT_SOURCE` can select
+a pinned library source cut; by default it uses `standalone/bmx-movement/`. Build it with the same
+compiler/toolchain as ReSkate rather than linking a supplied MinGW archive into MSVC.
+
+### Tests, capture and current limits
+
+Enable BMX C++ regression fixtures with `-DDINGOSDK_BUILD_BMX_TESTS=ON`, build, then run CTest as
+described below. The [BMX lab](contrib/bmx-lab/README.md) also provides a standalone synthetic
+controls viewer, serial native rehearsals and recording helpers. The synthetic viewer is separate
+from the movement library's 3D demo and does not establish native riding physics.
+
+[`Bmx-VirtualGamepad.py`](contrib/bmx-lab/Bmx-VirtualGamepad.py) and the
+[coupled virtual-controller harness](contrib/bmx-lab/coupled-virtual-test.md) drive bounded input
+scenarios against an explicitly identified private test process, with neutral release and
+disconnect cleanup. Driver setup is a separate development step. Capture readiness, actual input
+consumption, native body/pose receipts and visible gameplay must all be checked separately.
+Passing fake-host/unit tests does not qualify real-controller transport or riding quality.
+
+The [visual-review rubric](contrib/bmx-lab/judging/rubric-v1.json) requires current-build footage,
+independent judges, at least **9.5/10 in every category**, and human-controller feedback. This is
+the acceptance target, not the current score. The remaining work includes stable ramp/landing
+physics, upright/collision behavior, natural rider motion, dependable falls/remounting and clean
+equipment transitions. BMX multiplayer, native Skate scoring/challenges and replay fidelity are
+unvalidated. The [feature plan](contrib/bmx-plan.md) separates the prototype from the intended
+release scope; items in that plan are not all implemented.
 
 ## Getting started
 
@@ -262,6 +405,10 @@ Useful launcher flags:
 | `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
 | `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
 | `DINGOSDK_TEST_GAME_ROOT` | empty | a Skate folder, for the tests that read real game data |
+| `DINGOSDK_BUILD_BMX_TESTS` | `OFF` | build BMX input, physics-policy, rider, equipment and lifecycle regression fixtures |
+| `DINGOSDK_BMX_STANDALONE_MOVEMENT` | `OFF` | compile/link the standalone BMX movement adapters |
+| `DINGOSDK_BMX_NATIVE_COUPLED` | `OFF` | compile the isolated experimental native bike/rider backend; runtime opt-in is also required |
+| `DINGOSDK_BMX_MOVEMENT_SOURCE` | `standalone/bmx-movement` in this checkout | choose the library source used by the BMX adapters, including a pinned development source cut |
 
 ### Tests
 
@@ -297,6 +444,10 @@ The source tree loosely follows Frostbite's own layout.
 | `External/` | third-party libraries, pinned and hashed (see [External/README.md](External/README.md)) |
 | `assets/`, `config/` | files built into the binaries: launcher art, emotes, default profile settings |
 | `cmake/` | the build, split by area |
+| `Engine/Game/BMX/`, `Extension/BMX/` | BMX input/physics policies, native bike/rider integration, equipment lifecycle and regression fixtures |
+| `standalone/bmx-movement/` | independent C++ movement library and BMX Streets reverse-engineering/reference work |
+| `contrib/bmx-lab/`, `contrib/bmx-plan.md` | BMX launch, capture, controller/testing tools, research notes and feature plan |
+| `assets/models/bmx/` | native bike conversion/validation tools and asset provenance; generated/extracted reference assets stay local |
 
 ### Supporting a new game build
 
