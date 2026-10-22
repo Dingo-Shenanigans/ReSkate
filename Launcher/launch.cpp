@@ -1,4 +1,5 @@
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Vfs/initfs.h"
@@ -451,6 +452,9 @@ RemoteModule inject_dll(HANDLE process, const fs::path& dll) {
     address << L"Starting ordinary LoadLibraryW injection at 0x" << std::hex << loader;
     dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::launcher, address.str());
     const auto loader_result = run_remote_thread(process, loader, remote_path.get(), L"LoadLibraryW");
+    std::wostringstream loader_finished;
+    loader_finished << L"LoadLibraryW thread finished with low result 0x" << std::hex << loader_result;
+    dingosdk::logging::write(dingosdk::logging::Level::debug, dingosdk::logging::Channel::launcher, loader_finished.str());
     // A thread exit code is only 32 bits and cannot carry an x64 HMODULE. Confirm
     // success and obtain the full module base from the target's module list.
     const auto module = find_remote_module(process, dll);
@@ -746,14 +750,17 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     if (initialize_rva >= dll_info.image_size)
         throw std::runtime_error("DingoSDKDebugInitialize is outside the DLL image");
 
+    if (user_data::development_requested()) {
+        const auto data = initfs::data_directory(paths.directory, options.game_arguments);
+        if (!user_data::detail::within(user_data::detail::canonical(data), user_data::detail::canonical(paths.directory)))
+            throw std::runtime_error("An isolated launch requires -dataPath to stay inside its separate game installation");
+    }
+
     // Park thumbnails are read from the game's own data now; the pack older
     // launchers downloaded is no longer used.
     {
-        std::array<wchar_t, 32768> local{};
-        const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
         std::error_code ignored;
-        if (length && length < local.size())
-            fs::remove(fs::path(local.data()) / L"ReSkate" / L"profiles" / L"offline" / L"ReSkate-Object-Previews.bin", ignored);
+        fs::remove(user_data::root() / L"profiles" / L"offline" / L"ReSkate-Object-Previews.bin", ignored);
     }
     // Catalogues (item names, challenges, entitlements) are read from the live
     // game's content cache for this build, installed once into Local AppData.

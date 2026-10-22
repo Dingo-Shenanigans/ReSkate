@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Debug/crash_report.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/game_fatal_dump.h"
 #include "Extension/UI/Overlay/gpu_diagnostics.h"
@@ -32,7 +33,19 @@ BOOL WINAPI write_dump(HANDLE process, DWORD process_id, HANDLE file, MINIDUMP_T
             overlay::note_gpu_stopped(record->ExceptionCode);
         crash_report::capture_game_fatal(exception->ThreadId, exception->ExceptionPointers);
     }
-    return original_write.load(std::memory_order_acquire)(process, process_id, file, type, exception, streams, callback);
+    auto local_type = type;
+    wchar_t references[2]{};
+    if (exception && process_id == GetCurrentProcessId() &&
+        GetEnvironmentVariableW(L"RESKATE_BMX_DUMP_REFERENCES", references, 2) == 1 && references[0] == L'1') {
+        try {
+            // Explicit local development diagnostics only. Include heap pages
+            // referenced by crash stacks, while retaining the game's dump path
+            // and the existing crash-reporting preference.
+            if (user_data::development_requested() && user_data::override_root())
+                local_type = static_cast<MINIDUMP_TYPE>(type | MiniDumpWithIndirectlyReferencedMemory);
+        } catch (...) {}
+    }
+    return original_write.load(std::memory_order_acquire)(process, process_id, file, local_type, exception, streams, callback);
 }
 
 // The slot holds the export it was bound to: MiniDumpWriteDump of the module that address is in.

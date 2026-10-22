@@ -1,4 +1,5 @@
 #include "crash_report.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "protocol.h"
 #include "crash_report_config.h"
 #include <algorithm>
@@ -65,9 +66,8 @@ StartResult start(const std::filesystem::path& log_directory) noexcept {
         // before exiting, so those faults never reach our last-chance filter. The
         // game's LocalAppData is redirected to ReSkate\Game (Extension/Boot/user_data_redirect.cpp).
         if (_wcsicmp(shared->application.data(), L"Skate.exe") == 0) {
-            const auto local = environment(L"LOCALAPPDATA");
-            if (!local.empty() && !copy(shared->native_directory,
-                    (std::filesystem::path(local) / L"ReSkate" / L"Game" / L"Skate" / L"CrashDumps").wstring()))
+            if (!copy(shared->native_directory,
+                    (user_data::root() / L"Game" / L"Skate" / L"CrashDumps").wstring()))
                 return StartResult::failed;
         }
 

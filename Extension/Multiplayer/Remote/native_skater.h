@@ -43,6 +43,32 @@ void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
 void set_render_pose_listener(RenderPosePublished listener) noexcept;
+// Additional process-lifetime observers, independent of the legacy setter slots.
+// Idempotent add; false for null/full. Animation edits run before the legacy
+// first-person observer captures the head. Render edits run before its observer;
+// Board Break remains last. Remove does not wait for an in-flight callback, so
+// callbacks must recheck their own active owner. No callback runs under a registry lock.
+inline constexpr std::size_t pose_listener_slots = 4;
+bool add_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+void remove_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+bool add_render_pose_listener(RenderPosePublished listener) noexcept;
+void remove_render_pose_listener(RenderPosePublished listener) noexcept;
+// Independent detailed callbacks at the same native-return edge, before the
+// legacy render observers. Inspect borrowed render_data only synchronously,
+// with guarded reads; never retain or dereference it in another tick.
+// The original has already returned true. This does not prove GPU completion.
+using RenderPosePublishedData = void (*)(std::uintptr_t animation_interface, std::uintptr_t render_data) noexcept;
+bool add_render_pose_data_listener(RenderPosePublishedData listener) noexcept;
+void remove_render_pose_data_listener(RenderPosePublishedData listener) noexcept;
+// Private diagnostic only: opt in once after the caller verifies its isolated
+// development profile. The borrowed context exists only during detailed render
+// listener dispatch on this thread; nested dispatch restores the previous value.
+// A return address identifies an immediate CPU caller, never render completion.
+struct RenderPoseCallsite {
+    std::uintptr_t return_address{}, animation_interface{}, render_data{};
+};
+void enable_render_pose_callsite_probe() noexcept;
+RenderPoseCallsite render_pose_callsite() noexcept;
 // Far-player savings (puppet_cost.cpp): native work a remote player's skater and skateboard
 // skip while far away. Within 200 m of the local skater or the camera nothing changes.
 // Each is on by default; the setter is thread-safe and applies at each player's next

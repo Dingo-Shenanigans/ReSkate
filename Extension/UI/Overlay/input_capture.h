@@ -1,6 +1,9 @@
 #pragma once
 #include <Windows.h>
 #include <string>
+#include "Engine/Game/BMX/bmx_native_input_handoff.h"
+#include "Engine/Game/BMX/bmx_human_native_handoff.h"
+#include "Engine/Game/BMX/bmx_human_native_return.h"
 namespace dingosdk::overlay::detail {
 extern thread_local unsigned overlay_input_access;
 struct OverlayInputAccess {
@@ -12,6 +15,12 @@ struct OverlayInputAccess {
 // through GetRawInputData is then not noted a second time.
 extern thread_local HRAWINPUT noted_raw_input;
 bool block_polled_input();
+bool bmx_input_capture_active() noexcept;
+// Raw BMX lease status; other overlay capture owners remain independent.
+bool bmx_interaction_capture_active() noexcept;
+// Allows only recognized raw PS D-pad reports through the window-message gate;
+// the polled raw/HID hooks still remove every non-D-pad riding control.
+bool bmx_dpad_raw_message(HRAWINPUT handle) noexcept;
 // How the game read its controllers while a card held its input (prompt_input_active), for the
 // log when the hold ends: which of the ways the overlay can keep input from it the game used.
 struct PromptReads {
@@ -26,6 +35,41 @@ std::string xinput_entry_owners();
 // there is nothing to do; called about once a second while a controller is being read.
 void keep_xinput_capture_first();
 bool install_input_capture();
+// Explicit, once-per-process XInput slot0 experiment; requires fresh passive
+// NativeOnly, deferred observer arming and the private flag present at install.
+bool queue_private_native_board_input() noexcept;
+void cancel_private_native_board_input() noexcept;
+std::string private_native_board_input_status();
+// Distinct latched one-shot post-BMX trial; no fallback to the NativeOnly helper.
+bool private_bmx_native_input_handoff_requested() noexcept;
+bool begin_private_bmx_native_input_handoff(const bmx::native_input_handoff::Ticket&,std::uint64_t now) noexcept;
+void cancel_private_bmx_native_input_handoff(const char* reason) noexcept;
+void update_private_bmx_native_input_handoff(bmx::native_input_handoff::Sample) noexcept;
+bmx::native_input_handoff::Phase private_bmx_native_input_handoff_phase() noexcept;
+std::string private_bmx_native_input_handoff_status();
+// Explicit human Ride prototype; actual original XInput source is required.
+bool human_native_handoff_requested() noexcept;
+bool human_native_handoff_active() noexcept;
+bool human_native_handoff_complete() noexcept;
+std::uint64_t human_native_handoff_deadline() noexcept;
+bool admit_human_native_handoff(std::uint64_t,unsigned,const bmx::native_input_handoff::Owner&) noexcept;
+bool admit_human_native_handoff(bmx::human_native_handoff::AdmissionContext) noexcept;
+bool resume_human_native_handoff(bmx::human_native_handoff::AdmissionContext) noexcept;
+bmx::human_native_handoff::AdmissionWaitResult poll_human_native_admission(bmx::human_native_handoff::AdmissionContext) noexcept;
+bool human_native_admission_waiting() noexcept;
+void cancel_human_native_admission(const char*) noexcept;
+bool transfer_human_native_handoff(const bmx::native_input_handoff::Ticket&,std::uint64_t) noexcept;
+void cancel_human_native_handoff(const char*) noexcept;
+void guard_human_native_handoff(bmx::human_native_handoff::Guard) noexcept;
+void update_human_native_handoff(bmx::native_input_handoff::Sample,bmx::human_native_handoff::Guard) noexcept;
+std::string human_native_handoff_status();
+// Reverse transport is available only through the same explicit human opt-in.
+bool begin_human_native_return(bmx::native_input_handoff::Sample,bmx::human_native_handoff::AdmissionContext) noexcept;
+void update_human_native_return(bmx::native_input_handoff::Sample,bmx::human_native_handoff::Guard,bool sdk_chord_held) noexcept;
+void cancel_human_native_return(const char*) noexcept;
+bool human_native_return_active() noexcept;
+bool human_native_return_complete() noexcept;
+std::uint64_t human_native_return_deadline() noexcept;
 // Skate's controller mode registers the mouse with RIDEV_NOLEGACY, which stops
 // the Windows cursor from moving. While the overlay owns the pointer the mouse
 // is registered without it; the game's own registration returns on close.

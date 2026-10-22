@@ -550,6 +550,10 @@ bool keyboard_shortcuts_allowed() noexcept;
 // draws. They take no input and never open the menu.
 enum class NoticeLevel { info, warning, error };
 void notify(NoticeLevel level, std::string title, std::string text = {}) noexcept;
+// Replace only a notice in this explicit status slot. Ordinary notify() cards
+// keep their normal independent queue entries, including matching titles.
+enum class NoticeSlot { bmx_status };
+void notify_latest(NoticeSlot slot, NoticeLevel level, std::string title, std::string text = {}) noexcept;
 }
 
 // Call outside DllMain, before the game's first DXGI factory is created. No
@@ -595,6 +599,22 @@ inline std::atomic<bool>& menu_open_flag() {
     static std::atomic<bool> value{false};
     return value;
 }
+// BMX reads one normalized source sample, including source-set identity and gates. The
+// sampler can see through BMX's own capture; other menus/captures always take priority.
+// Keyboard fallback (only with no pad): WASD front, IJKL rear, E pedal, Q brake.
+struct BmxInputSample {
+    bool available{}, focused{}, overlay_ready{}, menu_blocked{}, capture_blocked{};
+    bool keyboard{}, capturing{}, menu_requested{};
+    std::uint32_t device{};
+    ControllerStyle style{};
+    float left_x{}, left_y{}, right_x{}, right_y{}, pedal{}, brake{};
+    unsigned buttons{};
+    std::uint64_t sampled_ms{};
+    bool quick_hop{}, dismount_requested{};
+    float left_trigger{},right_trigger{};
+    bool left_shoulder{},right_shoulder{};
+};
+BmxInputSample read_bmx_input(bool keyboard_fallback = true) noexcept;
 // Reads of a controller between these two calls see the real device even while ReSkate keeps
 // the game from reading it (freecam or drone controller capture). Same thread, paired.
 // The FPV drone reads its controller this way (Skater/drone_radio.h).
@@ -611,6 +631,18 @@ extern "C" __declspec(dllexport) void DingoSDKOverlayGetStatus(dingosdk::overlay
 // surface is open, the game is unfocused, or the overlay has stopped.
 extern "C" void DingoSDKOverlayReadFlightInput(dingosdk::overlay::FlightInput* input, bool flight_active, bool player_flight = false);
 extern "C" void DingoSDKOverlaySetFreecamInputCapture(bool active);
+// Independent BMX lease: refresh true each mounted client tick; false releases only BMX.
+// Expires after 250 ms without refresh, and is inactive on overlay stop/failure. Does not
+// install or replace a gamepad filter, move the cursor, or acquire a camera. Native Start/
+// Back or Escape are reported as BmxInputSample::menu_requested: the rider must release
+// this lease and suspend riding to let the native menu consume that held request.
+extern "C" void DingoSDKOverlaySetBmxInputCapture(bool active);
+// Short independent off-bike lease. Reserves only Y/North; native walking,
+// other buttons and D-pad stay live. Mounted/menu/freecam/prompt captures win.
+extern "C" void DingoSDKOverlaySetBmxInteractionCapture(bool active);
+// Independent 250 ms North-only equipment-chord lease. Existing nearby-bike
+// cleanup cannot release it; menu/freecam/prompt/bypass priority stays unchanged.
+extern "C" void DingoSDKOverlaySetBmxQuickSwitchCapture(bool active);
 // The same hold on the game's input while a card asks something of the player and a
 // controller answers it (the map download's): the buttons that answer must not also skate.
 extern "C" void DingoSDKOverlaySetPromptInputCapture(bool active);

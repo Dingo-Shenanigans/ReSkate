@@ -2,6 +2,7 @@
 #include "Engine/Game/World/location_travel.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/World/loading_screen.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include <cstdio>
 
 namespace dingosdk::runtime::detail {
@@ -162,21 +163,50 @@ bool queue_location_travel(const char* map) {
 }
 bool queue_menu_bam() {
     auto& r = runtime();
+    bool delayed{};
+    struct DelayLog {
+        bool started{},expired{};
+        ~DelayLog(){try {
+            if(started)record("{\"event\":\"bmx_native_startup_delay\",\"phase\":\"waiting\",\"duration_ms\":45000}");
+            if(expired)record("{\"event\":\"bmx_native_startup_delay\",\"phase\":\"expired\",\"duration_ms\":45000}");
+        }catch(...){}}
+    } delay_log; // Logs after the inner runtime lock has been released, even on rejection.
     {
         std::lock_guard lock(r.mutex);
         if (!r.menu_splash_ready || r.observer_failed) return false;
-        if (r.menu_load_queued && r.requests.loading()) return true;
-        if (!r.requests.can_load(request_context(r), GetCurrentThreadId())) return false;
-        Request request;
-        for (const auto& level : r.model.levels) {
-            if (!level.can_load) continue;
-            if (equals(level.asset, "Levels/Game/DingoLevel_Root/DingoLevel_Root")) request.asset = level.asset;
-            if (equals(level.asset, "levels/game/BAM_LevelRoot/BAM_LevelRoot")) request.lm_level = level.asset;
+        // One isolated, explicitly requested timing experiment. This shared
+        // queue gates both proactive startup and the session-failure fallback;
+        // a deferred fallback returns false so its native modal still runs.
+        struct NativeStartupDelay {
+            bool enabled{},started{},expired{};ULONGLONG began{};
+            NativeStartupDelay() {
+                std::array<wchar_t,2> value{};
+                enabled=user_data::development_requested()&&user_data::override_root()&&
+                    GetEnvironmentVariableW(L"RESKATE_BMX_NATIVE_STARTUP_DELAY",value.data(),static_cast<DWORD>(value.size()))==1&&value[0]==L'1';
+            }
+        };
+        static NativeStartupDelay delay; // All mutable fields use r.mutex.
+        if(delay.enabled){
+            const auto now=GetTickCount64();
+            if(!delay.started){delay.started=true;delay.began=now;delay_log.started=true;}
+            delayed=now-delay.began<45000;
+            if(!delayed&&!delay.expired){delay.expired=true;delay_log.expired=true;}
         }
-        if (request.asset.empty() || request.lm_level.empty()) return false;
-        if (!r.requests.enqueue(std::move(request), request_context(r), GetCurrentThreadId())) return false;
-        r.menu_load_queued = true;
+        if(!delayed){
+            if (r.menu_load_queued && r.requests.loading()) return true;
+            if (!r.requests.can_load(request_context(r), GetCurrentThreadId())) return false;
+            Request request;
+            for (const auto& level : r.model.levels) {
+                if (!level.can_load) continue;
+                if (equals(level.asset, "Levels/Game/DingoLevel_Root/DingoLevel_Root")) request.asset = level.asset;
+                if (equals(level.asset, "levels/game/BAM_LevelRoot/BAM_LevelRoot")) request.lm_level = level.asset;
+            }
+            if (request.asset.empty() || request.lm_level.empty()) return false;
+            if (!r.requests.enqueue(std::move(request), request_context(r), GetCurrentThreadId())) return false;
+            r.menu_load_queued = true;
+        }
     }
+    if(delayed)return false;
     // Once accepted, even a log allocation failure must not show the error modal.
     try {
         activity_line(dingosdk::ConsoleSource::level, "Starting San Vansterdam.");

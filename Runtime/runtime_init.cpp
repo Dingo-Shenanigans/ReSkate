@@ -36,6 +36,9 @@
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/Progression/entitlement_request_hook.h"
 #include "Extension/Skater/skater_observer.h"
+#include "Extension/BMX/bmx_spawn_diagnostics.h"
+#include "Extension/BMX/bmx_prepare_diagnostics.h"
+#include "Extension/BMX/bmx_local_profile.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/ui_sound.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
@@ -142,6 +145,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         } startup_window;
         dingosdk::initialize_client_source_spawn(r.base);
         if (!dingosdk::runtime::initialize_bootstrap(r.base)) return FALSE;
+        (void)dingosdk::bmx::initialize_local_profile(r.base);
 
         // Skate imports its graphics factory from the sibling Streamline
         // interposer. Load that ordinary dependency while the game is still
@@ -441,6 +445,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             std::string(global_offline_hook && progression_guard_armed ? "true" : "false") + "}");
         const bool skater_hooks = dingosdk::start_skater_observer(r.base);
         record("{\"event\":\"skater_hooks_initialized\",\"active\":" + std::string(skater_hooks ? "true" : "false") + "}");
+        (void)dingosdk::bmx::initialize_spawn_diagnostics(r.base);
+        (void)dingosdk::bmx::initialize_prepare_diagnostics(r.base);
         const bool camera_hook = dingosdk::start_camera_observer(r.base);
         record("{\"event\":\"camera_observer_initialized\",\"active\":" + std::string(camera_hook ? "true" : "false") + "}");
         (void)dingosdk::start_no_bail(r.base);

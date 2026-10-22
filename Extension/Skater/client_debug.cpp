@@ -1,4 +1,5 @@
 #include "client_source_spawn.h"
+#include "Extension/BMX/bmx_grip_projection_trace.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
 #include "offboard_flight.h"
@@ -1004,13 +1005,23 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
     bool camera_phase_observed, const overlay::DebugRequest* request, const overlay::FlightInput* flight_input) {
     SourceLastError error;
     overlay::DebugModel model;
+    namespace camera_trace=bmx::grip_projection_trace;
+    using CameraReason=camera_trace::CameraReason;
+    auto camera_diagnostic=camera_trace::begin_camera_diagnostic(base,client,can_control,camera_phase_observed);
+    bool camera_diagnostic_finished=false;
+    const auto camera_note=[&](CameraReason reason,const char* issue=nullptr) noexcept {
+        if(camera_diagnostic_finished)return;camera_diagnostic_finished=true;
+        if(camera_diagnostic)camera_trace::finish_camera_diagnostic(*camera_diagnostic,reason,issue);
+    };
+    auto camera_stage=CameraReason::skater_read;
     auto& state = source_state();
     model.free_camera = state.free_camera_active.load(std::memory_order_acquire);
-    if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return model;
+    const bool debug_initialized=state.initialized.load(std::memory_order_acquire);
+    if (!debug_initialized || state.busy.test_and_set(std::memory_order_acquire)) {camera_note(debug_initialized?CameraReason::source_busy:CameraReason::source_uninitialized);return model;}
     SourceBusyScope scope{state.busy};
     auto& trial = state.trial;
     auto& debug = trial.debug;
-    if (base != trial.base || (debug.thread && debug.thread != GetCurrentThreadId())) return model;
+    if (base != trial.base || (debug.thread && debug.thread != GetCurrentThreadId())) {camera_note(base!=trial.base?CameraReason::source_base:CameraReason::source_thread);return model;}
     debug.thread = GetCurrentThreadId();
     if (!debug.saved_loaded) {
         debug.saved_loaded = true;
@@ -1126,7 +1137,43 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
         "Local skater physics could not be read.";
     try {
         (void)debug_skater(base, client, model);
+        camera_stage=CameraReason::body_read;
         const auto bodies = debug_noclip_bodies(base, client, model.skater_identity);
+        if(camera_diagnostic){camera_diagnostic->body_chain_read=true;camera_diagnostic->ambiguous=debug.camera_ambiguous;camera_diagnostic->park_editor=debug.park_editor;}
+        // Explicit private observation only. Reuse the already validated local
+        // body and established raw camera reader; no native query/setter call.
+        CameraReason camera_outcome=CameraReason::unreported;
+        if(const auto capture=camera_trace::camera_request(base,
+            {client,model.skater_identity,bodies.core,bodies.context,bodies.rig_wrapper},
+            can_control&&camera_phase_observed&&!debug.camera_ambiguous&&!debug.park_editor,&camera_outcome)) {
+            if(camera_diagnostic)camera_diagnostic->body_owner_verified=true;
+            try {
+                camera_stage=CameraReason::snapshot_before;
+                const auto before=source_camera_snapshot(trial,client);
+                if(before.mode==0&&before.view_enabled&&!before.input_active) {
+                    camera_stage=CameraReason::view_matrix;
+                    const auto view=debug_view_matrix(trial,before);SourceReader camera_reader;
+                    camera_stage=CameraReason::fov_read;
+                    const auto fov=camera_reader.value<float>(before.active,0xac);
+                    camera_stage=CameraReason::snapshot_after;
+                    const auto after=source_camera_snapshot(trial,client);
+                    camera_stage=CameraReason::reader_verify;camera_reader.verify();
+                    if(before.identity==after.identity&&before.active==after.active&&before.mode==after.mode&&
+                       before.view_enabled==after.view_enabled&&before.input_active==after.input_active) {
+                        if(camera_diagnostic){
+                            camera_diagnostic->camera_values_observed=true;
+                            camera_diagnostic->observed_camera_world=view;
+                            camera_diagnostic->observed_camera_fov=fov;
+                        }
+                        camera_trace::publish_camera(*capture,before.active,view,fov,&camera_outcome);
+                        camera_note(camera_outcome);
+                    }else camera_note(CameraReason::identity_changed);
+                }else camera_note(before.mode!=0?CameraReason::mode_not_gameplay:
+                    !before.view_enabled?CameraReason::view_disabled:CameraReason::input_active);
+            }catch(const SourceGuard& guard){camera_note(camera_stage,guard.message);}
+             catch(...){camera_note(camera_stage,"Unknown camera diagnostic exception.");}
+            // Diagnostic failure never changes the existing debug/flight model.
+        }else camera_note(camera_outcome);
         if (debug.forward_velocity.valid && (GetTickCount64() >= debug.forward_velocity.expires ||
             debug.forward_velocity.entity != model.skater_identity || debug.forward_velocity.core != bodies.core)) {
             debug.forward_velocity.valid = false;
@@ -1184,11 +1231,13 @@ overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t cli
             }
         }
     } catch (const SourceGuard& guard) {
+        camera_note(camera_stage,guard.message);
         if (model.camera_available) model.noclip_unavailable = guard.message;
         model.forward_velocity_unavailable = guard.message;
         model.up_velocity_unavailable = guard.message;
         model.offboard_up_velocity_unavailable = guard.message;
     } catch (...) {
+        camera_note(camera_stage,"Unknown skater diagnostic exception.");
         if (model.camera_available) model.noclip_unavailable = "Local skater physics could not be read.";
         model.forward_velocity_unavailable = "Local skater physics could not be read.";
         model.up_velocity_unavailable = "Local skater physics could not be read.";

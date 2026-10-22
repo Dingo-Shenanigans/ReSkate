@@ -194,6 +194,8 @@ LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
     };
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         const std::wstring_view argument(arguments[index]);
+        if (argument == L"--dev-data-root" || argument.starts_with(L"--dev-data-root="))
+            fail("--dev-data-root must be provided to the launcher at startup, not as a game argument");
         if (argument == L"--no-loose-files") { options.loose_files = false; continue; }
         if (argument == L"-offline" || argument == L"--offline") { options.offline = true; continue; }
         if (argument == L"-wconsole") { options.window_console = true; continue; }

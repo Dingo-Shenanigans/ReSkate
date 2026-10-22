@@ -1,4 +1,5 @@
 #include "trainer.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "trainer_classes.h"
 #include "trainer_jump.h"
 #include "trainer_presets.h"
@@ -19,6 +20,7 @@
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Skater/physics_tuning.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/BMX/bmx_runtime.h"
 #include <mutex>
 #include <thread>
 #include <windows.h>
@@ -150,6 +152,7 @@ struct State {
     bool wipeouts_known{}; // the wipeout count the session started with was read
     int open_tab{};
     std::uint32_t pad_previous{};
+    bool pad_rearm_required{}; // transient input ownership; never saved
     // The pause map's waypoint. The registry is read only while the player has a use for the
     // answer (the TELEPORT card is on screen, or `trainer waypoint`), and the waypoint is
     // forgotten on a new level: it belonged to the old one.
@@ -202,12 +205,7 @@ void say(logging::Level level, const std::string &text) { logging::write(level, 
 
 // ---- storage ---------------------------------------------------------------------------
 std::filesystem::path data_directory() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"trainer";
-    if (raw) CoTaskMemFree(raw);
-    return result;
+    return user_data::known_folder_root() / L"trainer";
 }
 std::filesystem::path game_directory() {
     std::vector<wchar_t> exe(32768);
@@ -1022,6 +1020,10 @@ void enter_map(const std::string &level) {
 }
 MapData &current_map() { return state().maps[state().map]; }
 bool teleport_allowed(std::string &why) {
+    if (bmx::mounted()) {
+        why = "Dismount BMX before using Trainer teleports.";
+        return false;
+    }
     if (multiplayer_session_active() && !session_noclip_allowed()) {
         why = "The host has turned off teleporting in this session.";
         return false;
@@ -1337,6 +1339,12 @@ void shortcuts() {
     ControllerInput input;
     DingoSDKOverlayReadControllerInput(&input);
     const auto buttons = input.available ? input.buttons : 0;
+    if (s.pad_rearm_required) {
+        s.pad_previous = buttons;
+        // An unavailable/menu-suppressed sample is not evidence of physical release.
+        if (input.available && buttons == 0) s.pad_rearm_required = false;
+        return;
+    }
     const auto pressed = buttons & ~s.pad_previous;
     s.pad_previous = buttons;
     if (!s.pad_shortcuts || (buttons & (xinput_lb | xinput_rb)) != (xinput_lb | xinput_rb)) return;
@@ -1537,6 +1545,35 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         auto &s = state();
         const auto now = GetTickCount64();
         if (!s.loaded) load_store();
+        const bool bmx_mounted = bmx::mounted();
+        if (bmx_mounted) {
+            // Do not save/restore user preferences to arbitrate movement. Discard only
+            // transient skate actions, so unmounting cannot replay a queued teleport,
+            // jump boost or pre-mount shortcut into the BMX rider's current location.
+            s.return_at = 0;
+            s.landing = {};
+            s.boost_factor = 0;
+            s.boost_until = 0;
+            s.offboard_grounded = false;
+            s.last_state = 0;
+            s.wipeouts_known = false;
+            s.motion = {};
+            s.telemetry.skater = false;
+            s.entity = 0;
+            s.pad_previous = 0;
+            s.pad_rearm_required = true;
+            if (s.test.step) {
+                // The self-test temporarily changes one untouched tuning field before
+                // its teleport phase. Undo that temporary value only if it is still
+                // the test's value; a later explicit user edit must keep its value.
+                if (s.test.step == 2 && s.test.entry < s.entries.size()) {
+                    auto& entry = s.entries[s.test.entry];
+                    if (entry.value == s.test.target) set_entry(entry, s.test.before);
+                }
+                s.test = {};
+                say(logging::Level::info, "Trainer self test cancelled while BMX owns movement.");
+            }
+        }
         s.base = base;
         sync_session();
         s.boosts = boosts_in_force();
@@ -1552,7 +1589,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
             s.waypoint_next_read = now + 250;
             refresh_waypoint();
         }
-        if (playing) {
+        if (playing && !bmx_mounted) {
             observe(base, client, now);
             shortcuts();
             update_landing(now);
@@ -1591,14 +1628,16 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         // The speeds pushes aim for are the push class's (value_links ties them to the tuning's top
         // pushing speed, which only gates whether a push may start).
         const auto *top_speed = find_entry("physicspush.maxpushablespeed");
-        set_push_speed(client, s.entity, 1.0f, top_speed ? static_cast<float>(top_speed->stock) : 0.0f, s.boosts.cruise);
+        // The previous skate push lease expires on its own while BMX is mounted.
+        if (!bmx_mounted)
+            set_push_speed(client, s.entity, 1.0f, top_speed ? static_cast<float>(top_speed->stock) : 0.0f, s.boosts.cruise);
         for (TrickLaunch launch; take_trick_launch(launch);)
             if (launch.factor != 1.0f)
                 say(logging::Level::info, std::format("Trainer trick: {} launched at {:.2f} m/s up, x{:.2f}.",
                                                       launch.trick == Trick::boneless ? "boneless" : "no comply", launch.up_speed, launch.factor));
         hold(now);
         if (s.extras_due) publish_extras();
-        run_selftest(now);
+        if (!bmx_mounted) run_selftest(now);
         publish(s.telemetry);
         if (s.view_due) build_view();
         if (s.save_due && now >= s.next_save) save_store();
@@ -1875,6 +1914,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::format("Wrote {} values to {}.", s.entries.size(), path_utf8(directory / L"tuning-values.txt"));
     }
     if (v == "selftest") {
+        if (bmx::mounted()) return "error: dismount BMX before running the Trainer self test.";
         if (s.test.step) return "The self test is already running.";
         s.test = {};
         s.test.step = 1;

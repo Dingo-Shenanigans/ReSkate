@@ -1,5 +1,6 @@
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
+#include "Engine/Core/Profiling/profiler.h"
 #include "no_bail.h"
 #include "offboard_flight.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -8,6 +9,9 @@
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/offboard_flight.h"
 #include "free_flight.h"
+#include "Extension/BMX/bmx_native_motion.h"
+#include "Extension/BMX/bmx_skeleton_phase_probe.h"
+#include "Extension/BMX/bmx_runtime.h"
 #include <cmath>
 
 namespace dingosdk::client_source::detail {
@@ -235,6 +239,7 @@ JumpScale& jump_scale() { static auto* value = new JumpScale; return *value; }
 void trainer_apply_jump_scale(std::uintptr_t core) noexcept {
     auto& j = jump_scale();
     if (!j.pending.load(std::memory_order_acquire) || j.core != core) return;
+    if (bmx::mounted()) { j.pending.store(false, std::memory_order_release); j.outcome.store(-3); return; }
     SourceLastError error;
     auto& state = source_state();
     if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return;
@@ -350,6 +355,7 @@ void noclip_physics_update(std::uintptr_t core) {
     noclip_apply_velocity(core);
     trainer_apply_jump_scale(core);
     trainer_push_speed(core);
+    bmx::apply_native_velocity(core);
 }
 bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::array<float,16>& target) noexcept {
@@ -433,8 +439,20 @@ void noclip_skater_motion(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::uint8_t flags) {
     const auto original = source_state().motion_original.load(std::memory_order_acquire);
     alignas(16) std::array<float,16> target{};
-    const auto* motion = noclip_motion_target(rig, context, supplied, target) ? &target : supplied;
-    if (original) original(rig, context, motion, flags);
+    const bool bmx_target=bmx::native_motion_target(rig, context, supplied, target);
+    const auto* motion = (bmx_target || noclip_motion_target(rig, context, supplied, target)) ? &target : supplied;
+    if (original) {
+        if(bmx_target) {
+            const auto error=GetLastError();
+            DINGO_PROFILE_ZONE("native/BMX/rider motion");
+            SetLastError(error);
+            bmx::skeleton_phase_probe::detail::invoke_call_observed(
+                [&]{original(rig,context,motion,flags);},
+                [&]() noexcept {return bmx::skeleton_phase_probe::before_motion(rig,context,target,flags);},
+                [](bmx::skeleton_phase_probe::ProducerCookie cookie) noexcept {bmx::skeleton_phase_probe::after_producer(cookie);},
+                []() noexcept {return GetLastError();},[](DWORD value) noexcept {SetLastError(value);});
+        } else original(rig, context, motion, flags);
+    }
     if (source_state().offboard_boost_core.load(std::memory_order_acquire)) {
         std::uintptr_t core{};
         if (memory::peek(rig + 0x4630, core) &&

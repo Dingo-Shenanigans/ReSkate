@@ -57,7 +57,7 @@ GameUiState read(Address base, State &s) {
     const auto at = context.address(s.screen);
     if (!at) return {};
     const auto flag = [&](std::uint32_t offset) { return menu_data::read<std::uint8_t>(at + offset) != 0; };
-    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset)};
+    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset), true};
 }
 } // namespace
 
@@ -70,5 +70,12 @@ GameUiState sample_game_ui_state(std::uintptr_t base) noexcept {
         try { s.latest = read(base, s); } catch (...) { s.screen = {}; s.latest = {}; }
     }
     return s.latest;
+}
+GameUiState read_game_ui_state(std::uintptr_t base) noexcept {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!base) return s.latest = {};
+    try { return s.latest = read(base, s); }
+    catch (...) { s.screen = {}; return s.latest = {}; }
 }
 } // namespace dingosdk::multiplayer

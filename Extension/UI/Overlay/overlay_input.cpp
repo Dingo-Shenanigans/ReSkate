@@ -5,6 +5,7 @@
 #include "input_capture.h"
 #include "playstation_input.h"
 #include "cursor.h"
+#include "Engine/Game/Input/bmx_input_sample.h"
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -283,9 +284,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         }
         const bool capture = owns_pointer();
         const bool freecam_capture = s.freecam_controller_active.load(std::memory_order_relaxed) ||
-                                     s.prompt_input_active.load(std::memory_order_relaxed);
+                                     s.prompt_input_active.load(std::memory_order_relaxed) || bmx_input_capture_active();
         if (freecam_capture) release_game_buttons(window, previous);
-        if ((capture || freecam_capture) && is_input(message)) {
+        if ((capture || freecam_capture) && is_input(message) &&
+            !(message==WM_INPUT&&bmx_dpad_raw_message(reinterpret_cast<HRAWINPUT>(lp)))) {
             // Foreground raw-input packets still need DefWindowProc cleanup.
             return message == WM_INPUT ? DefWindowProcW(window, message, wp, lp) : 0;
         }
@@ -464,6 +466,52 @@ Gamepad read_gamepad() {
     out.left_trigger = static_cast<float>(sample.pad.bLeftTrigger) / 255.0f;
     out.right_trigger = static_cast<float>(sample.pad.bRightTrigger) / 255.0f;
     out.buttons = sample.pad.wButtons;
+    return out;
+}
+BmxInputSample read_bmx_input(bool keyboard_fallback) noexcept {
+    struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
+    BmxInputSample out;
+    const auto& s = state();
+    const HWND window = s.window.load(std::memory_order_relaxed);
+    out.sampled_ms = GetTickCount64();
+    out.overlay_ready = window && s.started.load(std::memory_order_relaxed) &&
+        s.input_attached.load(std::memory_order_relaxed) && !s.stop.load(std::memory_order_relaxed) &&
+        !s.failed.load(std::memory_order_relaxed);
+    out.focused = out.overlay_ready && game_window_foreground(window);
+    out.menu_blocked = interactive_visible(s) || s.hub_pointer.load(std::memory_order_relaxed);
+    out.capture_blocked = s.freecam_controller_active.load(std::memory_order_relaxed) ||
+        s.prompt_input_active.load(std::memory_order_relaxed);
+    out.capturing = bmx_input_capture_active();
+    if (!input::bmx_input_allowed({out.overlay_ready, out.focused, out.menu_blocked, out.capture_blocked})) return out;
+
+    // One pad poll preserves the overlay's existing merged-XInput / native-PlayStation
+    // source identity. OverlayInputAccess inside this read bypasses only native filtering.
+    const auto sample = read_controller_sample();
+    std::array<std::uint64_t, 4> keys{};
+    const bool have_keys = sampled_keys(window, keys);
+    OverlayInputAccess access;
+    const auto held = [&](unsigned key) {
+        return have_keys ? ((keys[key / 64] >> (key % 64)) & 1) != 0 : (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) != 0;
+    };
+    out.menu_requested = input::bmx_menu_requested(held(VK_ESCAPE), sample.pad.wButtons);
+    input::BmxAxes axes;
+    if (sample.device) {
+        const auto& pad = sample.pad;
+        axes = input::bmx_pad_axes(pad.sThumbLX, pad.sThumbLY, pad.sThumbRX, pad.sThumbRY,
+            pad.wButtons,pad.bLeftTrigger,pad.bRightTrigger);
+        out.device = sample.device; out.style = sample.style; out.buttons = pad.wButtons;
+    } else if (keyboard_fallback) {
+        axes = input::bmx_keyboard_axes({held('W'), held('A'), held('S'), held('D'),
+            held('I'), held('J'), held('K'), held('L'), held('E'), held('Q'),
+            held('Z'),held('C'),held('1'),held('3')});
+        out.keyboard = true; out.device = input::bmx_keyboard_device;
+    } else return out;
+    out.available = true;
+    out.left_x = axes.left_x; out.left_y = axes.left_y; out.right_x = axes.right_x; out.right_y = axes.right_y;
+    out.pedal = axes.pedal; out.brake = axes.brake;
+    out.quick_hop = axes.quick_hop; out.dismount_requested = axes.dismount_requested;
+    out.left_trigger=axes.left_trigger;out.right_trigger=axes.right_trigger;
+    out.left_shoulder=axes.left_shoulder;out.right_shoulder=axes.right_shoulder;
     return out;
 }
 } // namespace dingosdk::overlay

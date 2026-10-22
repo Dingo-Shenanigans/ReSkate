@@ -1,4 +1,5 @@
 #include "grind_exit_control.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
 #include "Engine/Core/Log/logging.h"
@@ -139,12 +140,7 @@ bool grinding_now(const Control& c, std::int64_t now) noexcept {
 
 // ---- settings ------------------------------------------------------------------------------
 std::filesystem::path settings_file() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"grindexit" / L"control.txt";
-    if (raw) CoTaskMemFree(raw);
-    return result;
+    return user_data::known_folder_root() / L"grindexit" / L"control.txt";
 }
 void load_settings(Control& c) {
     if (c.settings_path.empty()) return;

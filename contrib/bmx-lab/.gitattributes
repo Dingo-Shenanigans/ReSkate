@@ -1,0 +1,2 @@
+# Keep the approved controller source hash stable across checkouts.
+Bmx-VirtualGamepad.py -text

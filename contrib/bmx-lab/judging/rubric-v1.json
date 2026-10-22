@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "purpose": "Independent evidence-based review of BMX in the current isolated ReSkate build",
+  "requested_target": 9.5,
+  "scale": "0 to 10; half-point increments; 9.5 is near release quality with no reproducible material fault in the covered scenarios",
+  "current_gameplay_scores": null,
+  "current_score_status": "Unrated until current-build gameplay footage covers every category. Test counts, source review, telemetry and older footage cannot substitute for viewing the current game.",
+  "acceptance": {
+    "minimum_independent_judges": 2,
+    "implementation_authors_must_not_judge_own_changes": true,
+    "all_judges_must_score_each_category_at_least": 9.5,
+    "aggregate": "Minimum score across judges and categories; averaging cannot hide a weak category",
+    "missing_coverage": "Unrated; does not pass",
+    "disagreement": "Preserve both scores and cited timestamps, reproduce the disputed scenario, repair or obtain additional evidence; never lower the target to close a disagreement",
+    "human_controller_gate": "The owner must confirm steering, braking, hopping, trick timing and recovery feel good with their physical controller. An AI footage review cannot certify tactile feel or input latency by itself.",
+    "iteration": "Freeze source and runtime hashes, record all planned trials including failures, judge independently, fix named failures, then recapture changed categories plus a continuous regression ride. Preserve prior reports."
+  },
+  "score_anchors": [
+    {"score": "0-3", "meaning": "Missing or routinely unusable; severe visible faults dominate"},
+    {"score": "4-6", "meaning": "Core behavior exists but frequent disruptive faults prevent credible riding"},
+    {"score": "7-8", "meaning": "Usable prototype; recognizable BMX with repeatable rough transitions or limitations"},
+    {"score": "9", "meaning": "Strong and consistent; small but noticeable defects remain"},
+    {"score": "9.5", "meaning": "Natural, predictable and coherent throughout the required trials; only negligible cosmetic imperfections remain"},
+    {"score": "10", "meaning": "No meaningful issue observed across complete evidence; this is bounded by the tested conditions, not a guarantee of perfection"}
+  ],
+  "hard_failures": [
+    "Process crash, unresponsive game, indefinite stuck state, or unintended reset during a judged trial",
+    "Bike or rider passes through the map, explodes, teleports, or remains inverted without a justified crash response",
+    "Bike vanishes during an ordinary fall or the game silently changes equipment to skateboard",
+    "Input mapping contradicts the requested left-stick handlebars/steering, right-stick rear-wheel tricks, or changes Skate Dpad mappings",
+    "Recovery leaves sticky input, rider control attached to a remote bike, invisible equipment, or motion continuing after release"
+  ],
+  "hard_failure_policy": "Any hard failure fails the build and caps each directly affected category at 4 until reproduced, repaired and re-recorded. Record unrelated category scores separately; do not manufacture a total pass.",
+  "categories": [
+    {
+      "id": "riding_steering",
+      "name": "Riding and steering",
+      "judge": ["Steering direction and response", "Smooth acceleration, braking and coasting", "Predictable low- and high-speed balance", "Coherent lean, wheel rotation and rider response", "No visible jumpiness or artificial slow motion"],
+      "scenarios": ["S01: 30 seconds on flat ground: start, coast, brake to rest, restart; three trials", "S02: left/right slalom at low and higher speed, a full turn each direction, steering release to center; three trials", "S03: low curb and uneven terrain approach at two speeds, then stop; three trials"],
+      "9_5_requirement": "Every trial is controllable and visually continuous with correctly directed steering, stable straight riding, smooth braking and no repeated unintended bail. Physical-controller feel remains a separate owner gate."
+    },
+    {
+      "id": "ramps_landings",
+      "name": "Ramps and landings",
+      "judge": ["Natural ramp entry and exit", "Momentum retained without snapping or hovering", "Wheel-first contact, compression and recovery", "Reasonable acceptance of aligned landings", "Clear distinction between a recoverable landing and a crash"],
+      "scenarios": ["S04: ride a shallow ramp up and down at two speeds, no jump input; three trials", "S05: bunny-hop a flat gap and land with aligned wheels; three trials", "S06: ledge or stairs drop including the previously reported stair-edge landing, aligned and slightly off-axis approaches; three trials each"],
+      "9_5_requirement": "Aligned landings remain stable and flow into riding. Minor contact-edge changes do not command abrupt sideways lean. Invalid impacts produce a coherent fall rather than tunneling, snapping or instant equipment replacement."
+    },
+    {
+      "id": "tricks",
+      "name": "Tricks and controls",
+      "judge": ["Trick recognizable from full-speed animation", "Requested stick/button mapping", "Release and catch timing", "Combinations and interruption behavior", "Landing completion consistent with the visible trick"],
+      "scenarios": ["S07: hop, manual and nose manual; three attempts each", "S08: barspin both directions and tailwhip both directions; three attempts each", "S09: 180/360, one hand release, one foot release, tuck and extended body move; three attempts each", "S10: two-trick combo, early release/interruption and incomplete catch landing; three trials each"],
+      "catalog_coverage": "Every trick claimed implemented needs at least one clear current-build clip for identity/release/catch and one successful landing; representatives alone cannot certify the entire catalog. Keep an explicit tested, failed and untested trick list.",
+      "9_5_requirement": "Viewed tricks are distinct, physically coherent and responsive, with no body discontinuity or false success on incomplete catches. The full claimed catalog must be covered before this category can pass."
+    },
+    {
+      "id": "rider_movement",
+      "name": "Rider movement and bike attachment",
+      "judge": ["Natural torso, hip, elbow, knee and wrist shape", "Hands on grips and feet on pedals while held", "Pedaling, preload, hop, landing compression and lean", "Intentional limb releases only", "No clipping, detached grips or uncontrolled bone stretching"],
+      "scenarios": ["S11: stationary and slow ride viewed from front, side, rear and three-quarter angles", "S12: pedal, brake, steer, preload, hop and compress on landing at full speed", "S13: close view of barspin/tailwhip release/catch and extended body move, followed by normal riding"],
+      "9_5_requirement": "The rider reads as riding a bike throughout; no persistent deep crouch, elbows hanging beneath the grips, sharply bent wrists or obvious sliding contacts. Close views and ordinary gameplay views both remain coherent."
+    },
+    {
+      "id": "falls_recovery",
+      "name": "Falls, collisions and recovery",
+      "judge": ["Impact-appropriate separation and native fall animation", "Bike remains visible and collides with the world", "No rider envelope pulling the separated bike", "Readable settle and recovery", "Reliable intentional remount without instant re-crash"],
+      "scenarios": ["S14: deliberate low-speed side impact and high-speed frontal impact; three trials each", "S15: sideways and inverted failed landings; three trials each", "S16: let bike/rider settle, walk to bike, pick up/remount and ride away; three trials", "S17: pause/focus change during recovery, then resume; two trials"],
+      "9_5_requirement": "The rider falls naturally, bike and rider remain physically coherent, and recovery works repeatedly without disappearance, map clipping, unintended skateboard equip, uncontrolled motion, stale state or a remount crash loop."
+    },
+    {
+      "id": "equipment_transitions",
+      "name": "Bike, skateboard, mounting and carrying",
+      "judge": ["Clear intentional equipment switch", "Mount and dismount continuity", "Carry and set-down placement", "Control ownership and retained Skate Dpad mappings", "No ghost equipment or leftover bike force"],
+      "scenarios": ["S18: bike to skateboard to bike, then skate and perform a native skateboard action; five complete cycles", "S19: get off, walk away/back, mount and ride; three cycles", "S20: pick up, carry while walking/turning, stop, set down and remount on flat and gently sloped ground; three cycles each", "S21: switch after a fall and after carrying; two cycles each"],
+      "9_5_requirement": "Each intentional action has a clear, smooth visual result and reliable controls; no unexpected board, floating bike, disappearing rider, abrupt pose snap, continued off-bike motor force or remount rejection on valid ground."
+    }
+  ],
+  "evidence_manifest_required": [
+    "Run ID, UTC start/end, source manifest SHA256 and runtime DLL SHA256",
+    "Isolated executable path and SHA256, map/spawn/route, bike model manifest SHA256, profile, test mode and control mapping",
+    "Clip SHA256, byte size, codec, dimensions, duration, frame count, nominal and average frame rate, first/last timestamps, monotonic PTS and decode errors",
+    "Recording type: live renderer or native replay; replay requires proof custom bike/rider state matches live gameplay",
+    "Video-to-telemetry synchronization marker and uncertainty; preserve real-time and simulation-time measurements",
+    "Every scenario/trial and exact clip time range; retain failures, exclusions and recording interruptions",
+    "Physical controller versus synthetic input; full-speed original versus explicitly labeled slow-motion diagnostic",
+    "Judge ID, independent unshared initial report, category score, timestamped observations, confidence and coverage gaps"
+  ],
+  "recording_requirements": [
+    "Current frozen build; no use of old footage as evidence for new fixes",
+    "Continuous ordinary third-person gameplay at normal speed, preferably 60 frames per second, with input annotations tied to telemetry",
+    "No selective removal of bad trials; archive complete originals and index useful segments",
+    "Include close side/front views for anatomy and contacts in addition to the default riding view",
+    "Do not claim elapsed simulation time is wall-clock performance; frame pacing and encoder slowdown must be reported",
+    "Do not run heavy reverse engineering or builds during evidence recording",
+    "Unit/native telemetry tests supplement footage and catch ownership regressions; they never earn visual gameplay scores"
+  ],
+  "judge_report_fields": ["judge_id", "build_sha256", "evidence_sha256", "category_id", "score_or_null", "covered_scenarios", "observations_with_timestamps", "hard_failures", "confidence", "unverified_items", "required_fixes"]
+}

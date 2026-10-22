@@ -1,0 +1,33 @@
+include_guard(GLOBAL)
+option(DINGOSDK_BMX_STANDALONE_MOVEMENT "Compile developer-only standalone BMX movement adapters" OFF)
+
+# Reusable by native presentation adapters. Options are locally shadowed, not
+# forced into cache: standalone's own top-level demo/test options stay intact.
+function(dingosdk_require_bmx_movement source_root)
+    if(TARGET bmx::movement)
+        return()
+    endif()
+    set(DINGOSDK_BMX_MOVEMENT_SOURCE "${source_root}/standalone/bmx-movement" CACHE PATH
+        "BMX Movement source; a pinned build-cut may be used for development")
+    if(NOT EXISTS "${DINGOSDK_BMX_MOVEMENT_SOURCE}/CMakeLists.txt")
+        message(FATAL_ERROR "BMX Movement source is unavailable: ${DINGOSDK_BMX_MOVEMENT_SOURCE}")
+    endif()
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0077 NEW)
+    set(BMX_BUILD_DEMO OFF)
+    set(BMX_BUILD_TESTS OFF)
+    add_subdirectory("${DINGOSDK_BMX_MOVEMENT_SOURCE}" "${CMAKE_BINARY_DIR}/bmx-movement" EXCLUDE_FROM_ALL)
+    cmake_policy(POP)
+endfunction()
+
+function(dingosdk_configure_bmx_standalone_movement target source_root)
+    if(NOT DINGOSDK_BMX_STANDALONE_MOVEMENT)
+        return()
+    endif()
+    dingosdk_require_bmx_movement("${source_root}")
+    target_compile_definitions(${target} PRIVATE DINGOSDK_BMX_STANDALONE_MOVEMENT=1)
+    target_link_libraries(${target} PRIVATE bmx::movement)
+    if(DINGOSDK_BMX_NATIVE_COUPLED)
+        target_sources(${target} PRIVATE "${source_root}/Extension/BMX/bmx_coupled_ride.cpp")
+    endif()
+endfunction()

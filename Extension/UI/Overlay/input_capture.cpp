@@ -3,6 +3,11 @@
 #include "input_capture.h"
 #include "held_input.h"
 #include "Engine/Game/Input/playstation_report.h"
+#include "Engine/Game/Input/bmx_input_sample.h"
+#include "Engine/Game/Input/bmx_native_board_bridge.h"
+#include "Extension/BMX/bmx_board_handoff_trace.h"
+#include "cursor.h"
+#include <cstdlib>
 #include <hidsdi.h>
 #include <atomic>
 #include <format>
@@ -20,6 +25,9 @@ namespace dingosdk::overlay::detail {
 thread_local HRAWINPUT noted_raw_input = nullptr;
 namespace {
 std::atomic<unsigned> prompt_xinput{}, prompt_direct{}, prompt_hid{}, prompt_raw{};
+std::atomic<std::uint64_t> bmx_capture_until{};
+std::atomic<std::uint64_t> bmx_interaction_until{};
+std::atomic<std::uint64_t> bmx_quick_switch_until{};
 // A read the game made while a card held its input: counted, by the way it read.
 void note_prompt_read(std::atomic<unsigned>& count) {
     if (!overlay_input_access && state().prompt_input_active.load(std::memory_order_relaxed)) count.fetch_add(1, std::memory_order_relaxed);
@@ -28,12 +36,293 @@ void note_prompt_read(std::atomic<unsigned>& count) {
 PromptReads take_prompt_reads() noexcept {
     return {prompt_xinput.exchange(0), 0, prompt_direct.exchange(0), prompt_hid.exchange(0), prompt_raw.exchange(0)};
 }
-bool block_polled_input() {
+input::BmxNativeCapture polled_capture() {
     const auto error = GetLastError();
-    const bool capture = !overlay_input_access && (owns_menu_cursor(state()) || state().freecam_controller_active.load(std::memory_order_relaxed) ||
-                                                    state().prompt_input_active.load(std::memory_order_relaxed));
+    const auto capture = input::bmx_native_capture(overlay_input_access != 0, owns_menu_cursor(state()),
+        state().freecam_controller_active.load(std::memory_order_relaxed),
+        state().prompt_input_active.load(std::memory_order_relaxed), bmx_input_capture_active(),
+        bmx_interaction_capture_active());
     SetLastError(error);
     return capture;
+}
+// BEGIN PRIVATE NATIVE BOARD INPUT BRIDGE
+namespace bridge_policy = input::native_board_bridge;
+struct PrivateBoardInputReport {
+    std::uint64_t wall{},ordinal{};unsigned phase{};DWORD user{},before_packet{},after_packet{};
+    bridge_policy::Pad before_pad{},after_pad{};std::uint32_t physics{};
+    bool pulse_offer{},packet_translated{},terminal{},physics_observed{};
+};
+struct PrivateBoardReadinessCount {std::uint64_t count{},deferred{},first_ms{},last_ms{};};
+struct PrivateBoardInputBridge {
+    std::atomic<bool> bound{},requested{};
+    SRWLOCK lock=SRWLOCK_INIT;
+    bridge_policy::Pulse pulse;
+    std::array<PrivateBoardReadinessCount,static_cast<unsigned>(bridge_policy::ReadinessReason::count)> readiness_counts{};
+    bridge_policy::ReadinessReason last_readiness=bridge_policy::ReadinessReason::not_evaluated;
+    const char* last_readiness_stage="not_evaluated";
+    bool last_readiness_identity{},last_readiness_focused{},last_readiness_ready{},last_readiness_armable{};
+    std::atomic<std::uint64_t> queue_lock_refusals{},queue_last_attempt_ms{};
+    std::atomic<const char*> queue_issue{"not_requested"};
+    bridge_policy::PacketContinuity packets;
+    std::array<std::uintptr_t,6> owner{};
+    static constexpr std::size_t pulse_report_capacity=128;
+    // One extra reserved row records the first actual terminal return, even
+    // when the pulse ledger itself filled. Later physical returns are counted
+    // and the latest is retained; no unbounded full-session ledger is claimed.
+    std::array<PrivateBoardInputReport,pulse_report_capacity+1> reports{};std::size_t count{};
+    std::uint64_t translated_returns{},terminal_returns{};
+    bool terminal_emitted{};PrivateBoardInputReport last_terminal{};
+};
+PrivateBoardInputBridge& private_board_input_bridge() {static PrivateBoardInputBridge value;return value;}
+bool bridge_environment_one(const wchar_t* name) noexcept {
+    wchar_t value[2]{};return GetEnvironmentVariableW(name,value,2)==1&&value[0]==L'1';
+}
+bool bridge_environment_exact(const wchar_t* name,std::wstring_view expected) noexcept {
+    wchar_t value[32]{};const auto n=GetEnvironmentVariableW(name,value,32);
+    return n<32&&std::wstring_view(value,n)==expected;
+}
+void bind_private_bmx_native_input_handoff() noexcept;
+void bind_human_native_handoff() noexcept;
+void bind_private_board_input_bridge() noexcept {
+    bind_private_bmx_native_input_handoff();
+    bind_human_native_handoff();
+    auto& bridge=private_board_input_bridge();
+    if(!bridge.bound.exchange(true,std::memory_order_acq_rel))
+        bridge.requested.store(bridge_environment_one(L"RESKATE_BMX_NATIVE_BOARD_INPUT_BRIDGE"),std::memory_order_release);
+}
+struct BridgeReadiness {
+    bool identity{},focused{},ready{},armable{},physics_available{};std::uint32_t physics{};
+    std::array<std::uintptr_t,6> owner{};
+    bridge_policy::ReadinessReason reason=bridge_policy::ReadinessReason::not_evaluated;
+};
+BridgeReadiness private_board_input_readiness(const std::array<std::uintptr_t,6>* expected=nullptr) noexcept {
+    using Reason=bridge_policy::ReadinessReason;
+    BridgeReadiness result;
+    const auto fail=[&](Reason reason){result.reason=reason;return result;};
+    auto& bridge=private_board_input_bridge();
+    if(!bridge.requested.load(std::memory_order_acquire))return fail(Reason::bridge_not_latched);
+    if(private_bmx_native_input_handoff_requested()||!bridge_environment_one(L"RESKATE_BMX_NATIVE_BOARD_INPUT_BRIDGE"))return fail(Reason::bridge_flag_changed);
+    if(!bridge_environment_one(L"RESKATE_BMX_NATIVE_CHASSIS"))return fail(Reason::native_chassis_flag_changed);
+    if(!bridge_environment_exact(L"RESKATE_BMX_LAUNCH_MODE",L"human-ride"))return fail(Reason::launch_mode_changed);
+    const auto& overlay_state=state();const auto window=overlay_state.window.load(std::memory_order_relaxed);
+    if(!window)return fail(Reason::window_unavailable);
+    if(!overlay_state.started.load(std::memory_order_relaxed)||!overlay_state.input_attached.load(std::memory_order_relaxed)||
+       overlay_state.stop.load(std::memory_order_relaxed)||overlay_state.failed.load(std::memory_order_relaxed))return fail(Reason::overlay_not_running);
+    if(!game_window_foreground(window))return fail(Reason::foreground_lost);
+    bool escape{};{OverlayInputAccess access;escape=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0;}
+    if(escape)return fail(Reason::escape_held);
+    result.focused=true;
+    namespace trace=bmx::board_handoff_trace;
+    if(!trace::store.enabled.load(std::memory_order_acquire))return fail(Reason::trace_not_initialized);
+    if(trace::store.mode!=trace::Mode::native_only)return fail(Reason::trace_not_native_only);
+    if(trace::store.automated_native_board)return fail(Reason::trace_automated_control);
+    if(!trace::store.deferred_native_board_arm)return fail(Reason::trace_deferred_arm_disabled);
+    if(!trace::selected())return fail(Reason::trace_scope_revalidation_failed);
+    if(trace::store.sealed.load(std::memory_order_acquire))return fail(Reason::trace_sealed);
+    NoBailSkater skater;std::uintptr_t client{};
+    // This existing nonblocking owner API conflates publication contention and
+    // invalid ownership. Do NOT guess that its failure is safe to defer.
+    if(!try_no_bail_skater(0,skater,client))return fail(Reason::owner_unavailable);
+    bool protected_now{};NoBailSkater rechecked;
+    if(!inspect_no_bail_owner(client,skater.entity,rechecked,protected_now))return fail(Reason::owner_validation_failed);
+    if(protected_now)return fail(Reason::owner_protected);
+    if(rechecked.base!=skater.base||rechecked.entity!=skater.entity||rechecked.core!=skater.core||
+       rechecked.context!=skater.context||rechecked.rig!=skater.rig)return fail(Reason::owner_chain_changed);
+    result.owner={skater.base,client,skater.entity,skater.core,skater.context,skater.rig};
+    if(expected&&result.owner!=*expected)return fail(Reason::owner_changed);
+    trace::ClientState sdk;bool armed{},lease_active{};
+    {
+        trace::TryGuard guard;if(!guard.held)return fail(Reason::trace_busy);
+        sdk=trace::store.sdk;armed=trace::store.armed.load(std::memory_order_acquire);
+        result.armable=!trace::store.ever_armed&&!trace::store.control_arm_requested.load(std::memory_order_acquire);
+        if(armed){
+            bool found{};
+            for(auto n=trace::store.count;n;--n)if(trace::store.rows[n-1].kind==trace::Kind::client){
+                const auto& row=trace::store.rows[n-1];const auto now=GetTickCount64();
+                if(now<row.wall_ms)return fail(Reason::client_row_clock_future);
+                if(now-row.wall_ms>250)return fail(Reason::client_row_stale);
+                lease_active=row.lease.active;found=true;break;
+            }
+            if(!found)return fail(Reason::client_row_missing);
+        }
+    }
+    const auto now=GetTickCount64();
+    if(!sdk.sampled_ms)return fail(Reason::client_snapshot_missing);
+    if(now<sdk.sampled_ms)return fail(Reason::client_snapshot_clock_future);
+    if(now-sdk.sampled_ms>250)return fail(Reason::client_snapshot_stale);
+    if(sdk.active||sdk.pending||sdk.stepping_off||sdk.board_pending||sdk.capture||sdk.parts||sdk.motion_updates||
+       sdk.pose_updates||sdk.render_updates||sdk.board_hide_updates||sdk.chassis_allocations||sdk.chassis_mounts||lease_active)
+        return fail(Reason::bmx_activity_or_lease);
+    if(!sdk.gameplay)return fail(Reason::client_gameplay_false);
+    if(!sdk.solo)return fail(Reason::client_not_solo);
+    // Preserve a current canonical owner/protection and physics check AFTER
+    // the copied observer/client gates, not merely the earlier retry screen.
+    NoBailSkater final_owner;bool final_protected{};
+    if(!inspect_no_bail_owner(client,skater.entity,final_owner,final_protected))return fail(Reason::owner_revalidation_failed);
+    if(final_protected)return fail(Reason::owner_revalidation_protected);
+    if(final_owner.base!=skater.base||final_owner.entity!=skater.entity||final_owner.core!=skater.core||
+       final_owner.context!=skater.context||final_owner.rig!=skater.rig)return fail(Reason::owner_revalidation_changed);
+    if(!memory::peek(skater.context+0x1414,result.physics))return fail(Reason::physics_unavailable);
+    result.physics_available=true;
+    result.identity=true;
+    // SDK focus includes source availability; console capture deliberately
+    // leaves that sample unavailable even with the game window foreground.
+    // Treat it as a preparation readiness wait AFTER owner/physics identity.
+    // Pulse::poll still aborts any lost readiness after its first offer.
+    if(!sdk.focused)return fail(Reason::client_focus_false);
+    if(!armed)return fail(Reason::waiting_observer_arm);
+    if(sdk.menu)return fail(Reason::waiting_menu);
+    if(!sdk.native_control_input_allowed)return fail(Reason::waiting_native_input);
+    if(polled_capture()!=input::BmxNativeCapture::none)return fail(Reason::waiting_capture);
+    result.ready=true;result.reason=Reason::ready;return result;
+}
+void note_private_board_readiness(PrivateBoardInputBridge& bridge,const BridgeReadiness& readiness,const char* stage) noexcept {
+    const auto now=GetTickCount64();const auto index=static_cast<unsigned>(readiness.reason);
+    auto& count=bridge.readiness_counts[index];if(!count.count)count.first_ms=now;
+    ++count.count;count.last_ms=now;
+    if(!bridge.pulse.begun&&bridge_policy::preparation_retryable(readiness.reason))++count.deferred;
+    bridge.last_readiness=readiness.reason;bridge.last_readiness_stage=stage;
+    bridge.last_readiness_identity=readiness.identity;bridge.last_readiness_focused=readiness.focused;
+    bridge.last_readiness_ready=readiness.ready;bridge.last_readiness_armable=readiness.armable;
+}
+bool queue_private_native_board_input() noexcept {
+    struct Preserve {DWORD value=GetLastError();~Preserve(){SetLastError(value);}} preserve;
+    auto& bridge=private_board_input_bridge();
+    bridge.queue_last_attempt_ms=GetTickCount64();
+    if(!TryAcquireSRWLockExclusive(&bridge.lock)){++bridge.queue_lock_refusals;bridge.queue_issue="queue_lock_busy";return false;}
+    bool accepted{};
+    try {
+        const auto readiness=private_board_input_readiness();
+        note_private_board_readiness(bridge,readiness,"queue");
+        bridge.queue_issue=bridge_policy::name(readiness.reason);
+        // The console is intentionally still open. The passive observer arms
+        // only after it closes; no scenario report is emitted while waiting.
+        if(readiness.identity&&readiness.focused&&readiness.physics==504&&readiness.armable) {
+            accepted=bridge.pulse.queue(GetTickCount64(),0); // Explicit private slot0 only.
+            if(accepted){bridge.owner=readiness.owner;bridge.queue_issue="queued";}
+            else bridge.queue_issue="one_shot_already_used_or_invalid_queue_time";
+        }else if(readiness.identity&&readiness.focused)bridge.queue_issue=readiness.physics!=504?
+            "queue_native_state_not_504":"queue_observer_already_armed_or_requested";
+    }catch(...){bridge.queue_issue="queue_exception";}
+    ReleaseSRWLockExclusive(&bridge.lock);return accepted;
+}
+void cancel_private_native_board_input() noexcept {
+    auto& bridge=private_board_input_bridge();AcquireSRWLockExclusive(&bridge.lock);
+    if(bridge.pulse.live())bridge.pulse.abort("explicit_cancel");
+    ReleaseSRWLockExclusive(&bridge.lock);
+}
+bridge_policy::Pad private_board_pad(const XINPUT_GAMEPAD& p) noexcept {
+    return {p.wButtons,p.bLeftTrigger,p.bRightTrigger,p.sThumbLX,p.sThumbLY,p.sThumbRX,p.sThumbRY};
+}
+void apply_private_native_board_input(bool outer,DWORD user,const XINPUT_GAMEPAD& raw,XINPUT_STATE* output) noexcept {
+    if(!outer||!output||user!=0)return;
+    auto& bridge=private_board_input_bridge();if(!bridge.requested.load(std::memory_order_acquire))return;
+    struct Preserve {DWORD value=GetLastError();~Preserve(){SetLastError(value);}} preserve;
+    // Never fail open for one poll and then resume Y: that would introduce an
+    // unrecorded release/re-press. All opted-in slot0 returns share one ordering
+    // point. Lock holders do not call XInput or acquire the game's UI model.
+    AcquireSRWLockExclusive(&bridge.lock);
+    const auto before_packet=output->dwPacketNumber;const auto before_pad=private_board_pad(output->Gamepad);
+    bridge_policy::Result result;std::uint32_t physics{};bool physics_observed{};
+    if(bridge.pulse.live()&&bridge.count>=bridge.pulse_report_capacity)
+        bridge.pulse.abort("report_capacity_exhausted");
+    if(bridge.pulse.live()) {
+        const auto readiness=private_board_input_readiness(&bridge.owner);
+        const bool quiet=(raw.wButtons&~0x0fu)==0&&raw.bLeftTrigger<=12&&raw.bRightTrigger<=12&&
+            std::abs(int(raw.sThumbLX))<=1638&&std::abs(int(raw.sThumbLY))<=1638&&
+            std::abs(int(raw.sThumbRX))<=1638&&std::abs(int(raw.sThumbRY))<=1638;
+        note_private_board_readiness(bridge,readiness,bridge.pulse.begun?"transaction":"preparation");
+        physics=readiness.physics;physics_observed=readiness.physics_available;
+        result=bridge.pulse.poll(GetTickCount64(),user,readiness.identity,
+            readiness.focused,readiness.ready,quiet,readiness.physics,
+            bridge_policy::preparation_retryable(readiness.reason),bridge_policy::name(readiness.reason));
+        if(result.rewrite) {
+            // Keep every existing filter result, including D-pad. Never
+            // forge a connected slot or change ReSkate's own bypass reads.
+            auto& pad=output->Gamepad;
+            pad.wButtons=static_cast<WORD>((pad.wButtons&~0x8000u)|(result.north?0x8000u:0));
+        }
+    }
+    if(bridge.packets.active||result.rewrite) {
+        const auto after_pad=private_board_pad(output->Gamepad);
+        output->dwPacketNumber=bridge.packets.translate(before_packet,after_pad);
+        const bool terminal=!bridge.pulse.live();
+        const PrivateBoardInputReport report{GetTickCount64(),++bridge.translated_returns,
+            static_cast<unsigned>(bridge.pulse.phase),user,before_packet,output->dwPacketNumber,
+            before_pad,after_pad,physics,result.rewrite,true,terminal,physics_observed};
+        if(result.rewrite)bridge.reports[bridge.count++]=report;
+        if(terminal) {
+            ++bridge.terminal_returns;bridge.last_terminal=report;
+            if(!bridge.terminal_emitted) {
+                bridge.reports[bridge.count++]=report;bridge.terminal_emitted=true;
+            }
+        }
+    }
+    ReleaseSRWLockExclusive(&bridge.lock);
+}
+std::string private_native_board_input_status() {
+    auto& bridge=private_board_input_bridge();AcquireSRWLockShared(&bridge.lock);
+    auto reports=bridge.reports;const auto count=bridge.count;const auto owner=bridge.owner;
+    const auto pulse=bridge.pulse;const auto packets=bridge.packets;
+    const auto translated_returns=bridge.translated_returns,terminal_returns=bridge.terminal_returns;
+    const auto terminal_emitted=bridge.terminal_emitted;const auto last_terminal=bridge.last_terminal;
+    const auto requested=bridge.requested.load(std::memory_order_acquire);
+    const auto readiness_counts=bridge.readiness_counts;const auto last_readiness=bridge.last_readiness;
+    const auto last_stage=bridge.last_readiness_stage;
+    const auto last_identity=bridge.last_readiness_identity,last_focused=bridge.last_readiness_focused;
+    const auto last_ready=bridge.last_readiness_ready,last_armable=bridge.last_readiness_armable;
+    const auto queue_issue=bridge.queue_issue.load();const auto queue_lock_refusals=bridge.queue_lock_refusals.load();
+    const auto queue_last_attempt_ms=bridge.queue_last_attempt_ms.load();
+    ReleaseSRWLockShared(&bridge.lock);
+    const auto pad_json=[](const bridge_policy::Pad& p){return Json::array({p.buttons,p.left_trigger,p.right_trigger,
+        p.left_x,p.left_y,p.right_x,p.right_y});};
+    const auto report_json=[&](const PrivateBoardInputReport& r){return Json{
+        {"wall_ms",r.wall},{"ordinal",r.ordinal},{"phase",r.phase},{"xinput_slot",r.user},{"before_packet",r.before_packet},
+        {"after_packet",r.after_packet},{"before_pad",pad_json(r.before_pad)},{"after_pad",pad_json(r.after_pad)},
+        {"observed_physics",r.physics_observed?Json(r.physics):Json(nullptr)},
+        {"pulse_offer",r.pulse_offer},{"packet_translated",r.packet_translated},
+        {"terminal_physical_passthrough",r.terminal}};};
+    Json rows=Json::array();for(std::size_t i=0;i<count;++i)rows.push_back(report_json(reports[i]));
+    Json readiness=Json::array();for(unsigned i=0;i<readiness_counts.size();++i){const auto& r=readiness_counts[i];if(r.count)readiness.push_back(Json{
+        {"reason",bridge_policy::name(static_cast<bridge_policy::ReadinessReason>(i))},{"count",r.count},
+        {"preparation_retryable_observations",r.deferred},{"first_ms",r.first_ms},{"last_ms",r.last_ms}});}
+    return Json{{"schema",3},{"event","bmx_private_native_board_input"},{"enabled_at_install",requested},
+        {"phase",static_cast<unsigned>(pulse.phase)},{"issue",pulse.issue},{"owner",owner},
+        {"queue_issue",queue_issue},{"queue_lock_refusals",queue_lock_refusals},{"queue_last_attempt_ms",queue_last_attempt_ms},
+        {"last_readiness_reason",bridge_policy::name(last_readiness)},{"last_readiness_stage",last_stage},
+        {"last_readiness_identity",last_identity},{"last_readiness_focused",last_focused},
+        {"last_readiness_ready",last_ready},{"last_readiness_armable",last_armable},{"readiness_counts",std::move(readiness)},
+        {"preparation_retry_policy","classified observer unavailable reads only, before first offer; original preparation deadline unchanged"},
+        {"xinput_slot",0},{"scope","private_XInput_only_not_native_PlayStation_HID"},
+        {"queued_ms",pulse.queued},{"started_ms",pulse.started},{"preparation_limit_ms",bridge_policy::preparation_ms},
+        {"transaction_limit_ms",bridge_policy::transaction_ms},{"press_reports",pulse.press_reports},
+        {"release_reports",pulse.release_reports},{"rows",std::move(rows)},
+        {"packet_domain_persistent",packets.active},{"latest_packet",packets.packet},
+        {"translated_returns",translated_returns},{"terminal_physical_returns",terminal_returns},
+        {"terminal_report_emitted",terminal_emitted},{"last_terminal_return",terminal_emitted?report_json(last_terminal):Json(nullptr)},
+        {"terminal_history_scope","first and latest retained; intervening returns counted, not fully recorded"},
+        {"input_consumed",nullptr},{"native_quality",nullptr}}.dump();
+}
+// END PRIVATE NATIVE BOARD INPUT BRIDGE
+#include "private_bmx_native_input_handoff.inl"
+#include "human_bmx_native_handoff.inl"
+
+bool block_polled_input() {
+    const auto capture=polled_capture();
+    return capture==input::BmxNativeCapture::all||capture==input::BmxNativeCapture::controls;
+}
+bool bmx_input_capture_active() noexcept {
+    const auto& s = state();
+    return input::bmx_capture_live(bmx_capture_until.load(std::memory_order_acquire), GetTickCount64(),
+        s.started.load(std::memory_order_relaxed) && !s.stop.load(std::memory_order_relaxed) &&
+        !s.failed.load(std::memory_order_relaxed));
+}
+bool bmx_interaction_capture_active() noexcept {
+    const auto& s=state();
+    return input::bmx_north_capture_live(bmx_interaction_until.load(std::memory_order_acquire),
+        bmx_quick_switch_until.load(std::memory_order_acquire),GetTickCount64(),
+        s.started.load(std::memory_order_relaxed)&&!s.stop.load(std::memory_order_relaxed)&&
+        !s.failed.load(std::memory_order_relaxed));
 }
 
 void note_input_record(const RAWINPUT& record) noexcept;
@@ -58,7 +347,10 @@ struct InputCaptureHooks {
     // describe callable addresses, not the CreateDevice interface index.
     static constexpr std::size_t device_slots = 8;
     std::array<Hook, device_slots> device_state, device_data, device_format;
-    struct Format { DWORD size{}; std::vector<DIOBJECTDATAFORMAT> objects; };
+    struct Format {
+        DWORD size{}; std::vector<DIOBJECTDATAFORMAT> objects;
+        bool gamepad{};std::vector<DWORD> north_offsets;
+    };
     std::mutex formats_mutex;
     std::map<void*, Format> formats;
 };
@@ -96,7 +388,8 @@ void refresh_bluetooth_crc(std::uint8_t* bytes, DWORD size) noexcept {
     std::memcpy(bytes + size - 4, &crc, sizeof(crc));
 }
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
-    if (!block_polled_input() || !read.buffer || size > read.capacity) return;
+    const auto capture=polled_capture();
+    if (capture==input::BmxNativeCapture::none || !read.buffer || size > read.capacity) return;
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     // USB or Bluetooth decides where the buttons are in a report with id 1. It is the device's
     // report length that tells them apart, and Windows pads every read to that length, so it
@@ -105,25 +398,45 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     // here, and placed a session marker whenever a menu took the input. (Nothing is asked of
     // the game's handle for this: 2.0.4 did, as the pad was first read.)
     const bool bluetooth = playstation_bluetooth(size);
-    if (!parse_playstation_report(read.kind, bluetooth, bytes, size)) return;
-    const bool sense_full = read.kind == PlayStationPad::dualsense &&
-        (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
-    const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
-    auto* data = bytes + offset;
-    std::fill_n(data, 4, std::uint8_t{128});
-    if (sense_full) {
-        data[4] = data[5] = 0; // triggers; retain report sequence at +6
-        data[7] = 8; data[8] = data[9] = 0;
-    } else {
-        data[4] = 8; data[5] = 0; data[6] &= 0xfc; // retain DS4 sequence bits
-        data[7] = data[8] = 0;
-    }
-    refresh_bluetooth_crc(bytes, size);
+    if(!input::bmx_filter_playstation_report(read.kind,bluetooth,bytes,size,capture))return;
     static std::atomic<bool> reported{};
     if (!reported.exchange(true)) logging::printf(logging::Level::info, logging::Channel::input,
         "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s, report 0x%02x of %lu bytes, "
         "the game's buffer %lu.)", read.kind == PlayStationPad::dualsense ? "DualSense" : "DualShock 4",
         bluetooth ? "Bluetooth" : "USB", bytes[0], size, read.capacity);
+}
+// Raw HID uses a device handle, not the ReadFile enumeration handle. Only the
+// already supported Sony report layouts may pass; unknown devices stay blocked.
+enum class RawHidFilter { unrecognized, filtered, invalid };
+RawHidFilter filter_bmx_raw_hid(RAWINPUT& raw,UINT available,input::BmxNativeCapture capture) noexcept {
+    struct Error {DWORD value=GetLastError();~Error(){SetLastError(value);}} error;
+    constexpr auto payload=offsetof(RAWINPUT,data)+offsetof(RAWHID,bRawData);
+    if(raw.header.dwType!=RIM_TYPEHID||available<payload||raw.header.dwSize< payload||
+       raw.header.dwSize>available||!raw.data.hid.dwSizeHid||raw.data.hid.dwSizeHid>547||
+       !raw.data.hid.dwCount||raw.data.hid.dwCount>64||
+       raw.data.hid.dwCount>(raw.header.dwSize-payload)/raw.data.hid.dwSizeHid)return RawHidFilter::invalid;
+    RID_DEVICE_INFO info{};info.cbSize=sizeof(info);UINT size=sizeof(info);
+    if(GetRawInputDeviceInfoW(raw.header.hDevice,RIDI_DEVICEINFO,&info,&size)==UINT(-1)||
+       info.dwType!=RIM_TYPEHID||info.hid.usUsagePage!=1||info.hid.usUsage!=5||
+       info.hid.dwVendorId>0xffff||info.hid.dwProductId>0xffff)return RawHidFilter::unrecognized;
+    const auto kind=playstation_pad(static_cast<std::uint16_t>(info.hid.dwVendorId),static_cast<std::uint16_t>(info.hid.dwProductId));
+    if(kind==PlayStationPad::none)return RawHidFilter::unrecognized;
+    for(DWORD i=0;i<raw.data.hid.dwCount;++i)
+        if(!input::bmx_filter_playstation_report(kind,playstation_bluetooth(raw.data.hid.dwSizeHid),
+            raw.data.hid.bRawData+i*raw.data.hid.dwSizeHid,raw.data.hid.dwSizeHid,capture))return RawHidFilter::invalid;
+    return RawHidFilter::filtered;
+}
+bool bmx_dpad_raw_message(HRAWINPUT handle) noexcept {
+    const auto error=GetLastError();
+    const auto permitted=[&] {
+        if(polled_capture()!=input::BmxNativeCapture::controls)return false;
+        alignas(RAWINPUT) std::array<std::byte,4096> bytes{};UINT size=static_cast<UINT>(bytes.size());
+        UINT got{};
+        {OverlayInputAccess access;got=GetRawInputData(handle,RID_INPUT,bytes.data(),&size,sizeof(RAWINPUTHEADER));}
+        if(got==UINT(-1)||got>bytes.size()||got<sizeof(RAWINPUTHEADER))return false;
+        return filter_bmx_raw_hid(*reinterpret_cast<RAWINPUT*>(bytes.data()),got,input::BmxNativeCapture::controls)==RawHidFilter::filtered;
+    }();
+    SetLastError(error);return permitted;
 }
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation
 // reads, as filter_pad applies it to XInput: a DualShock 4 or DualSense read without Steam Input
@@ -171,8 +484,12 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
 // A finished native PlayStation read of the game's: neutral while a menu holds the input, else
 // through the gamepad filter.
 void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
-    if (block_polled_input()) neutral_hid(read, size);
-    else filter_hid(read, size);
+    const auto capture=polled_capture();
+    if(capture==input::BmxNativeCapture::none)filter_hid(read,size);
+    else {
+        if(capture==input::BmxNativeCapture::interaction)filter_hid(read,size);
+        neutral_hid(read,size);
+    }
 }
 void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished) {
     auto& h = input_hooks();
@@ -197,7 +514,7 @@ BOOL WINAPI captured_read_file(HANDLE file, LPVOID buffer, DWORD size, LPDWORD b
             std::lock_guard lock(h.hid_mutex);
             known = h.hid_devices.contains(file);
         }
-        if (!known && size >= 10 && size <= 512) {
+        if (!known && size >= 10 && size <= 547) {
             const auto error = GetLastError();
             HIDD_ATTRIBUTES attributes{sizeof(attributes)};
             const auto okay = original<decltype(&HidD_GetAttributes)>(h.hid_attributes)(file, &attributes);
@@ -345,7 +662,7 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
 // then, so the capture is in front of it again.
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
-    const bool capture = block_polled_input();
+    const auto capture = polled_capture();
     const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
@@ -353,11 +670,21 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
-    if (result == ERROR_SUCCESS && output && capture) {
-        output->Gamepad = {};
-        output->dwPacketNumber ^= 0x80000000u;
+    const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
+    const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
+    note_private_bmx_original_xinput(user,result,output);
+    note_human_native_original(outer,user,result,output);
+    if (result == ERROR_SUCCESS && output && capture!=input::BmxNativeCapture::none) {
+        if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
+        input::bmx_filter_native_pad(output->Gamepad,capture);
+        output->dwPacketNumber ^= input::bmx_native_packet_tag(capture);
     } else if (result == ERROR_SUCCESS) {
         filter_pad(outer, user, output);
+    }
+    if(result==ERROR_SUCCESS&&output) {
+        apply_private_native_board_input(outer,user,raw_pad,output);
+        apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
+        apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
     }
     return result;
 }
@@ -414,8 +741,13 @@ UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT 
         const bool mouse = raw->header.dwType == RIM_TYPEMOUSE && result >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
         const bool keyboard =
             raw->header.dwType == RIM_TYPEKEYBOARD && result >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
-        if (!block_polled_input()) {
+        const auto capture=polled_capture();
+        if (capture==input::BmxNativeCapture::none||
+            (capture==input::BmxNativeCapture::interaction&&(mouse||keyboard))) {
             if ((mouse || keyboard) && !overlay_input_access) held_input().seen(*raw);
+        } else if(capture==input::BmxNativeCapture::interaction) {
+            if(raw->header.dwType==RIM_TYPEHID&&result>=offsetof(RAWINPUT,data)+8&&
+                filter_bmx_raw_hid(*raw,result,capture)==RawHidFilter::invalid)raw->data.hid.dwCount=0;
         } else if ((mouse || keyboard) && held_input().release_only(*raw)) {
             // A key or button the game holds still comes up; presses stay blocked.
         } else if (mouse)
@@ -425,8 +757,10 @@ UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT 
             raw->data.keyboard.VKey = 255; // documented discard packet; never synthesize a key press
             raw->data.keyboard.Flags = RI_KEY_BREAK;
             raw->data.keyboard.Message = WM_KEYUP;
-        } else if (raw->header.dwType == RIM_TYPEHID && result >= offsetof(RAWINPUT, data) + 8)
-            raw->data.hid.dwCount = 0;
+        } else if (raw->header.dwType == RIM_TYPEHID && result >= offsetof(RAWINPUT, data) + 8) {
+            if(capture!=input::BmxNativeCapture::controls||
+                filter_bmx_raw_hid(*raw,result,capture)!=RawHidFilter::filtered)raw->data.hid.dwCount=0;
+        }
     }
     return result;
 }
@@ -502,7 +836,7 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
     // replays when it closes and nothing pressed before it stays stuck.
     const auto result = original<UINT(WINAPI*)(PRAWINPUT, PUINT, UINT)>(
         input_hooks().raw_buffer)(data, size, header_size);
-    const bool capture = result != UINT(-1) && data && block_polled_input();
+    const auto capture = result != UINT(-1) && data ? polled_capture() : input::BmxNativeCapture::none;
     note_prompt_read(prompt_raw);
     if (result != UINT(-1) && data && header_size == sizeof(RAWINPUTHEADER)) {
         // Skate drains its mouse here; read the packets on the way past.
@@ -519,7 +853,14 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
             const bool mouse = record->header.dwType == RIM_TYPEMOUSE && bytes >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
             const bool keyboard =
                 record->header.dwType == RIM_TYPEKEYBOARD && bytes >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
-            if (!capture) {
+            if(capture==input::BmxNativeCapture::interaction) {
+                if((mouse||keyboard)&&!overlay_input_access)held_input().seen(*record);
+                if(record->header.dwType!=RIM_TYPEHID||
+                    filter_bmx_raw_hid(*record,bytes,capture)!=RawHidFilter::invalid) {
+                    if(write!=reinterpret_cast<std::uintptr_t>(record))std::memmove(reinterpret_cast<void*>(write),record,bytes);
+                    write=align(write+bytes);++kept;
+                }
+            } else if (capture==input::BmxNativeCapture::none) {
                 if ((mouse || keyboard) && !overlay_input_access) held_input().seen(*record);
             } else if ((mouse || keyboard) && held_input().release_only(*record)) {
                 // Kept records move forward over the dropped ones, in the same layout.
@@ -527,12 +868,16 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
                     std::memmove(reinterpret_cast<void*>(write), record, bytes);
                 write = align(write + bytes);
                 ++kept;
+            } else if(capture==input::BmxNativeCapture::controls&&
+                filter_bmx_raw_hid(*record,bytes,capture)==RawHidFilter::filtered) {
+                if(write!=reinterpret_cast<std::uintptr_t>(record))std::memmove(reinterpret_cast<void*>(write),record,bytes);
+                write=align(write+bytes);++kept;
             }
             record = reinterpret_cast<RAWINPUT*>(next);
         }
-        if (capture) return kept;
+        if (capture!=input::BmxNativeCapture::none) return kept;
     }
-    return capture ? 0 : result;
+    return capture!=input::BmxNativeCapture::none ? 0 : result;
 }
 // The game's latest mouse registration, and whether the overlay has replaced
 // it with a cursor-moving one.
@@ -647,7 +992,7 @@ BOOL WINAPI captured_cursor_position(LPPOINT output) {
 template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
-    const bool capture = block_polled_input();
+    const auto capture = polled_capture();
     const bool outer = overlay_input_access == 0;
     note_prompt_read(prompt_xinput);
     DWORD result;
@@ -655,13 +1000,23 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
-    if (result == ERROR_SUCCESS && output && capture) {
-        output->Gamepad = {};
+    const auto raw_pad=result==ERROR_SUCCESS&&output?output->Gamepad:XINPUT_GAMEPAD{};
+    const auto raw_packet=result==ERROR_SUCCESS&&output?output->dwPacketNumber:0;
+    note_private_bmx_original_xinput(user,result,output);
+    note_human_native_original(outer,user,result,output);
+    if (result == ERROR_SUCCESS && output && capture!=input::BmxNativeCapture::none) {
+        if(capture==input::BmxNativeCapture::interaction)filter_pad(outer,user,output);
+        input::bmx_filter_native_pad(output->Gamepad,capture);
         // The game must notice a neutral state even if the physical packet did
         // not change between opening the menu and its next controller poll.
-        output->dwPacketNumber ^= 0x80000000u;
+        output->dwPacketNumber ^= input::bmx_native_packet_tag(capture);
     } else if (result == ERROR_SUCCESS) {
         filter_pad(outer, user, output);
+    }
+    if(result==ERROR_SUCCESS&&output) {
+        apply_private_native_board_input(outer,user,raw_pad,output);
+        apply_private_bmx_native_input_handoff(outer,user,raw_packet,raw_pad,output);
+        apply_human_native_handoff(outer,user,raw_packet,raw_pad,output);
     }
     return result;
 }
@@ -669,7 +1024,9 @@ template<std::size_t I>
 DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE output) {
     const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, PXINPUT_KEYSTROKE)>(
         input_hooks().xinput_keystroke[I])(user, reserved, output);
-    if (result == ERROR_SUCCESS && output && block_polled_input()) { *output = {}; return ERROR_EMPTY; }
+    if (result == ERROR_SUCCESS && output && !input::bmx_native_dpad_keystroke(output->VirtualKey,polled_capture())) {
+        *output = {}; return ERROR_EMPTY;
+    }
     return result;
 }
 
@@ -682,7 +1039,18 @@ HRESULT STDMETHODCALLTYPE captured_device_format(void* device, const DIDATAFORMA
         (!format->dwNumObjs || format->rgodf)) {
         InputCaptureHooks::Format copy;
         copy.size = format->dwDataSize;
-        for (DWORD i = 0; i < format->dwNumObjs; ++i) copy.objects.push_back(format->rgodf[i]);
+        bool absolute_axis=false,pov=false;
+        for (DWORD i = 0; i < format->dwNumObjs; ++i) {
+            const auto& object=format->rgodf[i];copy.objects.push_back(object);
+            absolute_axis=absolute_axis||(object.dwType&DIDFT_ABSAXIS)!=0;
+            pov=pov||(object.dwType&DIDFT_POV)!=0;
+            if(object.pguid&&IsEqualGUID(*object.pguid,GUID_Button)&&
+                input::bmx_north_button((object.dwType&DIDFT_BUTTON)!=0,DIDFT_GETINSTANCE(object.dwType)))
+                copy.north_offsets.push_back(object.dwOfs);
+        }
+        // Typed joystick axes+POV distinguish a pad from keyboard scan-code
+        // buttons and relative mouse buttons. No state-size-only inference.
+        copy.gamepad=absolute_axis&&pov;
         std::lock_guard lock(input_hooks().formats_mutex);
         input_hooks().formats[device] = std::move(copy);
     }
@@ -693,10 +1061,31 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPVOID)>(
         input_hooks().device_state[I])(device, size, data);
     note_prompt_read(prompt_direct);
-    if (SUCCEEDED(result) && data && block_polled_input()) {
-        std::memset(data, 0, size);
+    const auto capture=polled_capture();
+    if (SUCCEEDED(result) && data && capture!=input::BmxNativeCapture::none) {
         std::lock_guard lock(input_hooks().formats_mutex);
         const auto found = input_hooks().formats.find(device);
+        if(capture==input::BmxNativeCapture::interaction) {
+            if(found!=input_hooks().formats.end()&&found->second.gamepad&&found->second.size==size)
+                for(const auto offset:found->second.north_offsets)(void)input::bmx_clear_north_byte(data,size,offset);
+            return result;
+        }
+        // Four POVs are the standard DIJOYSTATE/2 layout. Preserve only typed
+        // POV values; buttons/axes/padding always receive the normal neutral.
+        std::array<std::pair<DWORD,DWORD>,4> povs{};std::size_t pov_count{};
+        if(capture==input::BmxNativeCapture::controls) {
+            const auto remember=[&](DWORD offset) {
+                if(offset>size||size-offset<sizeof(DWORD)||pov_count==povs.size())return;
+                DWORD value{};std::memcpy(&value,static_cast<std::byte*>(data)+offset,sizeof(value));
+                povs[pov_count++]={offset,input::bmx_native_pov(value,capture)};
+            };
+            if(found!=input_hooks().formats.end()&&found->second.size==size) {
+                for(const auto& object:found->second.objects)if(object.dwType&DIDFT_POV)remember(object.dwOfs);
+            } else if(size==sizeof(DIJOYSTATE)||size==sizeof(DIJOYSTATE2)) {
+                for(DWORD i=0;i<4;++i)remember(static_cast<DWORD>(offsetof(DIJOYSTATE,rgdwPOV))+i*sizeof(DWORD));
+            }
+        }
+        std::memset(data, 0, size);
         if (found != input_hooks().formats.end() && found->second.size == size) {
             for (const auto& object : found->second.objects) {
                 if (object.dwOfs > size || size - object.dwOfs < 4) continue;
@@ -725,15 +1114,52 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
             for (std::size_t offset = 8 * sizeof(DWORD); offset < 12 * sizeof(DWORD); offset += sizeof(DWORD))
                 std::memcpy(bytes + offset, &released_pov, sizeof(released_pov));
         }
+        for(std::size_t i=0;i<pov_count;++i)std::memcpy(static_cast<std::byte*>(data)+povs[i].first,&povs[i].second,sizeof(DWORD));
     }
     return result;
 }
 template<std::size_t I>
 HRESULT STDMETHODCALLTYPE captured_device_data(void* device, DWORD size, LPDIDEVICEOBJECTDATA data, LPDWORD count, DWORD flags) {
-    const bool capture = block_polled_input();
+    const auto capture = polled_capture();
+    const auto capacity=count?*count:0;
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD)>(
-        input_hooks().device_data[I])(device, size, data, count, capture ? flags & ~DIGDD_PEEK : flags);
-    if (SUCCEEDED(result) && capture && count) *count = 0;
+        input_hooks().device_data[I])(device, size, data, count,
+            capture!=input::BmxNativeCapture::none&&capture!=input::BmxNativeCapture::interaction?flags&~DIGDD_PEEK:flags);
+    if (SUCCEEDED(result) && capture!=input::BmxNativeCapture::none && count) {
+        if(capture==input::BmxNativeCapture::interaction) {
+            if(data&&*count<=capacity&&*count<=1024&&(size==sizeof(DIDEVICEOBJECTDATA)||size==4*sizeof(DWORD))) {
+                std::lock_guard lock(input_hooks().formats_mutex);
+                const auto found=input_hooks().formats.find(device);
+                if(found!=input_hooks().formats.end()&&found->second.gamepad)for(DWORD i=0;i<*count;++i) {
+                    auto* record=reinterpret_cast<std::byte*>(data)+i*size;DWORD offset{};
+                    std::memcpy(&offset,record,sizeof(offset));
+                    const bool north=offset<found->second.size&&
+                        std::find(found->second.north_offsets.begin(),found->second.north_offsets.end(),offset)!=found->second.north_offsets.end();
+                    if(north){const DWORD released=0;std::memcpy(record+sizeof(DWORD),&released,sizeof(released));}
+                }
+            }
+            return result;
+        }
+        DWORD kept{};
+        if(capture==input::BmxNativeCapture::controls&&data&&*count<=capacity&&*count<=1024&&
+           (size==sizeof(DIDEVICEOBJECTDATA)||size==4*sizeof(DWORD))) {
+            std::lock_guard lock(input_hooks().formats_mutex);
+            const auto found=input_hooks().formats.find(device);
+            if(found!=input_hooks().formats.end())for(DWORD i=0;i<*count;++i) {
+                auto* record=reinterpret_cast<std::byte*>(data)+i*size;DWORD offset{},value{};
+                std::memcpy(&offset,record,sizeof(offset));
+                const bool pov=std::any_of(found->second.objects.begin(),found->second.objects.end(),[&](const auto& object) {
+                    return (object.dwType&DIDFT_POV)&&object.dwOfs==offset&&offset<=found->second.size&&found->second.size-offset>=sizeof(DWORD);
+                });
+                if(!pov)continue;
+                std::memcpy(&value,record+sizeof(DWORD),sizeof(value));value=input::bmx_native_pov(value,capture);
+                auto* target=reinterpret_cast<std::byte*>(data)+kept*size;
+                if(target!=record)std::memmove(target,record,size);
+                std::memcpy(target+sizeof(DWORD),&value,sizeof(value));++kept;
+            }
+        }
+        *count=kept;
+    }
     return result;
 }
 bool install_device_capture(void* device) {
@@ -883,6 +1309,7 @@ void sync_raw_mouse_registration(bool overlay_owns_pointer) {
 }
 
 bool install_input_capture() {
+    bind_private_board_input_bridge();
     auto& h = input_hooks();
     const auto hid = LoadLibraryExW(L"hid.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     const auto kernel = GetModuleHandleW(L"kernel32.dll");
@@ -957,4 +1384,31 @@ bool install_input_capture() {
 
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
     dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);
+}
+
+extern "C" void DingoSDKOverlaySetBmxInputCapture(bool active) {
+    using namespace dingosdk::overlay::detail;
+    const auto& s = state();
+    const bool alive = s.started.load(std::memory_order_relaxed) && !s.stop.load(std::memory_order_relaxed) &&
+        !s.failed.load(std::memory_order_relaxed);
+    bmx_capture_until.store(active && alive ? GetTickCount64() + dingosdk::input::bmx_capture_lease_ms : 0,
+        std::memory_order_release);
+}
+
+extern "C" void DingoSDKOverlaySetBmxInteractionCapture(bool active) {
+    using namespace dingosdk::overlay::detail;
+    const auto& s=state();
+    const bool alive=s.started.load(std::memory_order_relaxed)&&!s.stop.load(std::memory_order_relaxed)&&
+        !s.failed.load(std::memory_order_relaxed);
+    bmx_interaction_until.store(active&&alive?GetTickCount64()+dingosdk::input::bmx_capture_lease_ms:0,
+        std::memory_order_release);
+}
+
+extern "C" void DingoSDKOverlaySetBmxQuickSwitchCapture(bool active) {
+    using namespace dingosdk::overlay::detail;
+    const auto& s=state();
+    const bool alive=s.started.load(std::memory_order_relaxed)&&!s.stop.load(std::memory_order_relaxed)&&
+        !s.failed.load(std::memory_order_relaxed);
+    bmx_quick_switch_until.store(active&&alive?GetTickCount64()+dingosdk::input::bmx_capture_lease_ms:0,
+        std::memory_order_release);
 }

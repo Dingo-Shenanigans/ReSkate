@@ -1,4 +1,5 @@
 #include "gui_internal.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "gui_renderer.h"
 #include "official_mods.h"
 
@@ -57,10 +58,7 @@ std::vector<ts::Package> fetch_listing(const std::string& community, const std::
 }
 
 fs::path icon_cache() {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"thunderstore" / L"icons";
+    return user_data::root() / L"thunderstore" / L"icons";
 }
 
 // Icon URLs end in Namespace-Name-1.2.3.png, so a file name keyed on that never goes stale.

@@ -1,4 +1,5 @@
 #include "logging_internal.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include <ShlObj.h>
 #include <array>
 #include <algorithm>
@@ -25,6 +26,10 @@ std::filesystem::path log_directory(const std::filesystem::path& game_directory)
         CloseHandle(probe);
         return path;
     };
+    if (const auto isolated = user_data::override_root()) {
+        if (auto path = attempt(*isolated / L"logs"); !path.empty()) return path;
+        throw std::runtime_error("Cannot create the isolated log directory");
+    }
     if (auto path = attempt(game_directory / L"logs"); !path.empty()) return path;
     PWSTR local{};
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, nullptr, &local))) {
@@ -37,7 +42,8 @@ std::filesystem::path log_directory(const std::filesystem::path& game_directory)
 Options options_from_environment() {
     detail::PreserveError preserve;
     Options options;
-    options.directory = environment(L"RESKATE_LOG_DIRECTORY");
+    if (const auto isolated = user_data::override_root()) options.directory = *isolated / L"logs";
+    else options.directory = environment(L"RESKATE_LOG_DIRECTORY");
     if (options.directory.empty()) {
         options.truncate_file = true;
         std::array<wchar_t, 32768> module{};

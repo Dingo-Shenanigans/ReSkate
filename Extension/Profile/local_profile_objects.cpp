@@ -2,11 +2,40 @@
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
+#include "Extension/Objects/ParkEditor/park_editor_picking.h"
 #include <cmath>
+#include <chrono>
 #include "Extension/World/local_world_layers.h"
 
 namespace dingosdk {
 using namespace profile_runtime;
+namespace {
+struct SurfacePicking {
+    std::uintptr_t base{};
+    editor::NativePickingApi api;
+};
+SurfacePicking& surface_picking() { static SurfacePicking value; return value; }
+bool surface_probe_body(std::uintptr_t world, std::uint32_t index, std::uintptr_t data, editor::SurfaceBody& body) {
+    const auto& api = surface_picking().api;
+    if (!api.ready) return false;
+    alignas(16) const std::array<std::uint64_t, 3> hit{world, index, data};
+    alignas(16) editor::SurfaceBody resolved{};
+    api.hit_body(hit.data(), resolved.data());
+    if (resolved[0] != world || !api.body_valid(resolved.data())) return false;
+    body = resolved;
+    return true;
+}
+std::uint64_t surface_probe_entity(std::uintptr_t world, std::uint32_t index, std::uintptr_t data) {
+    alignas(16) editor::SurfaceBody body{};
+    if (!surface_probe_body(world, index, data, body)) return 0;
+    alignas(16) std::array<std::uint64_t, 2> entity{}, root{};
+    surface_picking().api.body_entity(entity.data(), body.data());
+    auto& placements = placements_runtime();
+    if (!entity[0] || !placements.resolve || !placements.valid) return 0;
+    placements.resolve(root.data(), entity[0], false);
+    return placements.valid(root.data()) ? root[0] : 0;
+}
+}
 ObjectPersistenceModel local_profile_object_persistence() {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
@@ -100,6 +129,96 @@ std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>
     const auto hit = editor::cast_surface(api, world, {from[0], from[1], from[2]}, {to[0], to[1], to[2]});
     if (!hit) return {};
     return std::array<float, 3>{(*hit)[0], (*hit)[1], (*hit)[2]};
+}
+LocalSurfaceProbe probe_local_surface(const std::array<float, 3>& from, const std::array<float, 3>& to,
+    std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    LocalSurfaceProbe result;
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.context || ignored_bodies.size() > 4096) return result;
+    for (const auto point : {from, to})
+        for (const float value : point)
+            if (!std::isfinite(value) || std::abs(value) > 1e5f) return result;
+    static std::uintptr_t api_base{};
+    static editor::NativeSurfaceApi api;
+    if (api_base != local_runtime().base) { api = editor::surface_api(local_runtime().base); api_base = local_runtime().base; }
+    if (!api.ready) return result;
+    // The authoritative server context's world is null in this client query path.
+    // Resolve the current client TLS context instead of keeping an address across unloads.
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    result.context = context[0];
+    if (!context[0]) return result;
+    result.world = api.world(context[0]);
+    if (!result.world) return result;
+    for (const auto& body : ignored_bodies)
+        if (body[0] != result.world || !body[1]) return result;
+    auto& picking = surface_picking();
+    if (picking.base != local_runtime().base) {
+        picking.api = editor::picking_api(local_runtime().base);
+        picking.base = local_runtime().base;
+    }
+    if (ignore_local_entity && (!picking.api.ready || !r.resolve || !r.valid)) return result;
+    const std::array<std::uint64_t, 1> ignored{ignore_local_entity};
+    const auto cast = editor::cast_surface_probe(api, result.world, from, to, ignored_bodies,
+        picking.api.ready ? &surface_probe_entity : nullptr,
+        ignore_local_entity ? std::span<const std::uint64_t>(ignored) : std::span<const std::uint64_t>{},
+        picking.api.ready ? &surface_probe_body : nullptr);
+    result.available = cast.available;
+    result.hit = cast.hit;
+    result.position = cast.position;
+    result.fraction = cast.fraction;
+    result.hit_entity = cast.entity;
+    result.hit_body = cast.body;
+    result.excluded_bodies = cast.excluded_bodies;
+    return result;
+}
+BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float, 3>& from, const std::array<float, 3>& to,
+    unsigned maximum_casts, std::span<const std::array<std::uint64_t, 2>> ignored_bodies, std::uint64_t ignore_local_entity) {
+    BoundedLocalSurfaceProbe result;const auto began=std::chrono::steady_clock::now();
+    const auto finish=[&] {result.elapsed_microseconds=static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-began).count());return result;};
+    if(maximum_casts<1||maximum_casts>2)return finish();
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.context || ignored_bodies.size() > 4096) return finish();
+    for (const auto point : {from, to})
+        for (const float value : point)
+            if (!std::isfinite(value) || std::abs(value) > 1e5f) return finish();
+    static std::uintptr_t api_base{};
+    static editor::NativeSurfaceApi api;
+    if (api_base != local_runtime().base) { api = editor::surface_api(local_runtime().base); api_base = local_runtime().base; }
+    if (!api.ready) return finish();
+    // The authoritative server context's world is null in this client query path.
+    // Resolve the current client TLS context instead of keeping an address across unloads.
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    result.surface.context = context[0];
+    if (!context[0]) return finish();
+    result.surface.world = api.world(context[0]);
+    if (!result.surface.world) return finish();
+    for (const auto& body : ignored_bodies)
+        if (body[0] != result.surface.world || !body[1]) return finish();
+    auto& picking = surface_picking();
+    if (picking.base != local_runtime().base) {
+        picking.api = editor::picking_api(local_runtime().base);
+        picking.base = local_runtime().base;
+    }
+    if (ignore_local_entity && (!picking.api.ready || !r.resolve || !r.valid)) return finish();
+    const std::array<std::uint64_t, 1> ignored{ignore_local_entity};
+    const auto cast = editor::cast_surface_probe_bounded(api, result.surface.world, from, to, maximum_casts, ignored_bodies,
+        picking.api.ready ? &surface_probe_entity : nullptr,
+        ignore_local_entity ? std::span<const std::uint64_t>(ignored) : std::span<const std::uint64_t>{},
+        picking.api.ready ? &surface_probe_body : nullptr);
+    result.native_casts=cast.native_casts;result.budget_exhausted=cast.budget_exhausted;
+    result.surface.available = cast.surface.available;
+    result.surface.hit = cast.surface.hit;
+    result.surface.position = cast.surface.position;
+    result.surface.fraction = cast.surface.fraction;
+    result.surface.hit_entity = cast.surface.entity;
+    result.surface.hit_body = cast.surface.body;
+    result.surface.excluded_bodies = cast.surface.excluded_bodies;
+    return finish();
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

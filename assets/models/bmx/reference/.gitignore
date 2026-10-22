@@ -1,0 +1,4 @@
+# Local reference assets from the user's installed game are not distribution assets.
+*
+!.gitignore
+!README.md

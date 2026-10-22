@@ -10,9 +10,12 @@ struct GameUiState {
     bool ui_hidden{};         // the game's UI is hidden (captures)
     bool nametags_hidden{};   // the game's nametag setting is off
     bool indicators_hidden{}; // the game's player indicator setting is off
+    bool available{};         // false until the native screen model was actually resolved
 };
 
 // Client thread only (it takes the UI model lock): reads the state at most every 100 ms and
 // returns the latest. Before the model is found it reports no menu and nothing hidden.
 GameUiState sample_game_ui_state(std::uintptr_t base) noexcept;
+// Movement ownership needs a current menu state, rather than the HUD's 100 ms cache.
+GameUiState read_game_ui_state(std::uintptr_t base) noexcept;
 } // namespace dingosdk::multiplayer

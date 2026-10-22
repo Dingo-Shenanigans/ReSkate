@@ -21,6 +21,10 @@ struct ObjectRuntime {
 ObjectRuntime& object_runtime();
 
 bool local_object_browser_ready() noexcept;
+// Development-only bounded observation; never changes a graph's online result.
+std::string bmx_flow_diagnostics();
+void bmx_flow_expression_started(std::uintptr_t vm,std::uint32_t pc) noexcept;
+void bmx_flow_expression_finished(std::uintptr_t vm,std::uint32_t pc=0xffffffffu) noexcept;
 
 void initialize_object_functions(std::uintptr_t base);
 

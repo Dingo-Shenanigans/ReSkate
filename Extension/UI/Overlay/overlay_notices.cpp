@@ -1,6 +1,7 @@
 #include "overlay_internal.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "reskate_version.h"
+#include <optional>
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -11,6 +12,7 @@ struct Notice {
     dingosdk::overlay::NoticeLevel level{};
     std::string title, text;
     std::chrono::steady_clock::time_point start{};
+    std::optional<dingosdk::overlay::NoticeSlot> slot{};
 };
 std::mutex notices_mutex;
 std::deque<Notice> notices;
@@ -98,5 +100,19 @@ void dingosdk::overlay::notify(NoticeLevel level, std::string title, std::string
         std::lock_guard lock(notices_mutex);
         while (notices.size() >= maximum_notices) notices.pop_front();
         notices.push_back({level, std::move(title), std::move(text), {}});
+    } catch (...) {}
+}
+
+void dingosdk::overlay::notify_latest(NoticeSlot slot, NoticeLevel level, std::string title, std::string text) noexcept {
+    try {
+        std::lock_guard lock(notices_mutex);
+        for (auto& notice : notices) {
+            if (notice.slot == slot) {
+                notice = {level, std::move(title), std::move(text), {}, slot};
+                return;
+            }
+        }
+        while (notices.size() >= maximum_notices) notices.pop_front();
+        notices.push_back({level, std::move(title), std::move(text), {}, slot});
     } catch (...) {}
 }

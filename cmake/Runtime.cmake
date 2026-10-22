@@ -13,6 +13,25 @@ add_library(dingosdk_runtime SHARED
     Extension/Console/perf_commands.cpp
     Extension/Console/memory_ledger.cpp
     Extension/Skater/console_commands.cpp
+    Extension/BMX/bmx_commands.cpp
+    Extension/BMX/bmx_runtime.cpp
+    Extension/BMX/bmx_native_motion.cpp
+    Extension/BMX/bmx_skeleton_phase_probe.cpp
+    Extension/BMX/bmx_chassis_probe.cpp
+    Extension/BMX/bmx_native_chassis.cpp
+    Extension/BMX/bmx_chassis_ride.cpp
+    Extension/BMX/bmx_bail.cpp
+    Extension/BMX/bmx_binding_observer.cpp
+    Extension/BMX/bmx_intent_observer.cpp
+    Extension/BMX/bmx_ramp_test.cpp
+    Extension/BMX/bmx_spawn_diagnostics.cpp
+    Extension/BMX/bmx_prepare_diagnostics.cpp
+    Extension/BMX/bmx_player_startup.cpp
+    Extension/BMX/bmx_ecs_diagnostics.cpp
+    Extension/BMX/bmx_local_profile.cpp
+    Extension/BMX/bmx_visual.cpp
+    Extension/BMX/bmx_world.cpp
+    Extension/BMX/bmx_rider.cpp
     Extension/Skater/drone_outfit.cpp
     Extension/Multiplayer/console_commands.cpp
     Extension/Customization/console_commands.cpp
@@ -307,16 +326,16 @@ set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.png")
 if(NOT EXISTS "${dingosdk_startup_art}")
     set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 endif()
-if(EXISTS "${PROJECT_SOURCE_DIR}/assets")
-    # Adding or removing the picture re-runs the configure step.
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/assets")
-endif()
+# Watch candidate files, including ones not present yet, without directory file dependencies.
+file(GLOB dingosdk_startup_art_candidates CONFIGURE_DEPENDS LIST_DIRECTORIES false
+    "${PROJECT_SOURCE_DIR}/assets/startup_splash.png"
+    "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 # Chat emotes (Better Chat's pack format; Extension/UI/Overlay/chat_emotes.h), built into
 # ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png.
 set(dingosdk_emotes "${PROJECT_SOURCE_DIR}/assets/emotes")
-if(EXISTS "${dingosdk_emotes}")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_emotes}")
-endif()
+file(GLOB dingosdk_emote_candidates CONFIGURE_DEPENDS LIST_DIRECTORIES false
+    "${dingosdk_emotes}/emotes.json"
+    "${dingosdk_emotes}/emotes.png")
 if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes.png")
     file(TO_NATIVE_PATH "${dingosdk_emotes}" dingosdk_emotes_native)
     string(REPLACE "\\" "\\\\" dingosdk_emotes_native "${dingosdk_emotes_native}")
@@ -360,6 +379,19 @@ if(dingosdk_builtin_rc)
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/builtin_packs.rc")
     set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/builtin_packs.rc" APPEND PROPERTY OBJECT_DEPENDS "${dingosdk_builtin_packs}")
 endif()
+# Optional local BMX Streets extraction. Binary geometry avoids optimizing a huge C++ initializer.
+set(dingosdk_bmx_geometry "${PROJECT_SOURCE_DIR}/assets/models/bmx/reference/bike_geometry.bin")
+file(GLOB dingosdk_bmx_geometry_candidates CONFIGURE_DEPENDS LIST_DIRECTORIES false
+    "${dingosdk_bmx_geometry}")
+if(EXISTS "${dingosdk_bmx_geometry}")
+    set_property(SOURCE Extension/BMX/bmx_visual.cpp APPEND PROPERTY COMPILE_DEFINITIONS DINGOSDK_BMX_REFERENCE_RESOURCE=1)
+    file(TO_NATIVE_PATH "${dingosdk_bmx_geometry}" dingosdk_bmx_geometry_native)
+    string(REPLACE "\\" "\\\\" dingosdk_bmx_geometry_native "${dingosdk_bmx_geometry_native}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/bmx_geometry.rc"
+        "BMX_REFERENCE_GEOMETRY RCDATA \"${dingosdk_bmx_geometry_native}\"\n")
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/bmx_geometry.rc")
+    set_property(SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/bmx_geometry.rc" APPEND PROPERTY OBJECT_DEPENDS "${dingosdk_bmx_geometry}")
+endif()
 # The music sources' setup page (Extension/Music/spotify_dashboard.h).
 file(TO_NATIVE_PATH "${PROJECT_SOURCE_DIR}/Extension/Music/setup_page.html" dingosdk_music_page_native)
 string(REPLACE "\\" "\\\\" dingosdk_music_page_native "${dingosdk_music_page_native}")
@@ -387,4 +419,10 @@ if(EXISTS "${dingosdk_startup_art}")
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/startup_art.rc"
         "STARTUP_SPLASH RCDATA \"${dingosdk_startup_art_native}\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/startup_art.rc")
+endif()
+
+# Development-only genuine two-body backend; no runtime selection by default.
+option(DINGOSDK_BMX_NATIVE_COUPLED "Build the isolated native coupled-body backend" OFF)
+if(DINGOSDK_BMX_NATIVE_COUPLED)
+    target_compile_definitions(dingosdk_runtime PRIVATE DINGOSDK_BMX_NATIVE_COUPLED=1)
 endif()

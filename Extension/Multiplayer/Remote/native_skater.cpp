@@ -1,16 +1,21 @@
 #include "native_skater_internal.h"
 #include "native_prop.h"
 #include "native_pose_layout.h"
+#include "Engine/Game/BMX/pose_listener_set.h"
 #include "puppet_cost.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
 #include "Extension/BoardBreak/board_break.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Profiling/profiler.h"
+#include "Extension/BMX/bmx_rider.h"
+#include "Extension/BMX/bmx_skeleton_phase_probe.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include <algorithm>
 #include <cstring>
 #include <span>
+#include <intrin.h>
 
 namespace dingosdk::multiplayer {
 using namespace native_skater_detail;
@@ -110,6 +115,30 @@ void place_board(std::uintptr_t base, std::uintptr_t entity, const Transform &ro
 }
 } // namespace native_skater_detail
 namespace {
+std::atomic<bool> render_callsite_enabled{};
+thread_local RenderPoseCallsite current_render_callsite{};
+struct RenderCallsiteScope {
+    RenderPoseCallsite previous;
+    explicit RenderCallsiteScope(RenderPoseCallsite value) noexcept : previous(current_render_callsite) {
+        current_render_callsite=value;
+    }
+    ~RenderCallsiteScope() { current_render_callsite=previous; }
+    RenderCallsiteScope(const RenderCallsiteScope&)=delete;
+    RenderCallsiteScope& operator=(const RenderCallsiteScope&)=delete;
+};
+bmx::PoseListenerSet<AnimationEvaluated, pose_listener_slots>& animation_listeners() {
+    static auto* listeners = new bmx::PoseListenerSet<AnimationEvaluated, pose_listener_slots>;
+    return *listeners;
+}
+bmx::PoseListenerSet<RenderPosePublished, pose_listener_slots>& render_listeners() {
+    static auto* listeners = new bmx::PoseListenerSet<RenderPosePublished, pose_listener_slots>;
+    return *listeners;
+}
+bmx::PoseListenerSet<RenderPosePublishedData, pose_listener_slots>& render_data_listeners() {
+    static auto* listeners = new bmx::PoseListenerSet<RenderPosePublishedData, pose_listener_slots>;
+    return *listeners;
+}
+
 template <std::size_t N>
 void prefix(std::uintptr_t base, std::uintptr_t rva, const std::array<std::uint8_t, N> &expected) {
     std::array<std::uint8_t, 32> bytes{};
@@ -335,9 +364,24 @@ void observe_destruction(std::uintptr_t entity) {
     }
 }
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
-    const bool result = shared().original_render_pose(animation_interface, render_data);
-    if (const auto listener = shared().render_listener.load(std::memory_order_acquire); result && listener)
-        listener(animation_interface);
+    // Direct intrinsic in the actual hook, before the native original. No helper
+    // stack frame or native memory read participates in this borrowed address.
+    const bool capture_callsite=render_callsite_enabled.load(std::memory_order_acquire);
+    const auto caller=capture_callsite?reinterpret_cast<std::uintptr_t>(_ReturnAddress()):0;
+    bool result{};
+    if(bmx::rider::profiling_active()) {
+        const auto error=GetLastError();
+        DINGO_PROFILE_ZONE("native/BMX/render publication");
+        SetLastError(error);
+        result=shared().original_render_pose(animation_interface, render_data);
+    } else result=shared().original_render_pose(animation_interface, render_data);
+    if (result) {
+        if(capture_callsite) {
+            const RenderCallsiteScope scope({caller,animation_interface,render_data});
+            render_data_listeners().dispatch(nullptr, animation_interface, render_data);
+        } else render_data_listeners().dispatch(nullptr, animation_interface, render_data);
+    }
+    if (result) render_listeners().dispatch(shared().render_listener.load(std::memory_order_acquire), animation_interface);
     // A board holder's animation interface is holder + 0xc0.
     if (const auto slot = result && animation_interface > 0xc0
                               ? watching(watched().board_holder, animation_interface - 0xc0)
@@ -362,7 +406,12 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
                               now >= r.next_native_animation;
         if (evaluate) {
             const auto started = now_us();
-            shared().original_animation(component, update);
+            if(bmx::rider::profiling_active()) {
+                const auto error=GetLastError();
+                DINGO_PROFILE_ZONE("native/BMX/animation evaluation");
+                SetLastError(error);
+                shared().original_animation(component, update);
+            } else shared().original_animation(component, update);
             r.native_evaluation_us.fetch_add(now_us() - started, std::memory_order_relaxed);
             r.native_evaluated.fetch_add(1, std::memory_order_relaxed);
             // Each slot keeps its own phase of the 50 ms interval, so the remote
@@ -379,9 +428,20 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
         r.apply_us.fetch_add(now_us() - started, std::memory_order_relaxed);
         return;
     }
-    shared().original_animation(component, update);
-    if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
-        listener(component);
+    const auto native_animation=[&] {
+        bmx::skeleton_phase_probe::detail::invoke_call_observed(
+            [&]{shared().original_animation(component,update);},
+            [&]() noexcept {return bmx::skeleton_phase_probe::before_animation(component);},
+            [](bmx::skeleton_phase_probe::ProducerCookie cookie) noexcept {bmx::skeleton_phase_probe::after_producer(cookie);},
+            []() noexcept {return GetLastError();},[](DWORD value) noexcept {SetLastError(value);});
+    };
+    if(bmx::rider::profiling_active()) {
+        const auto error=GetLastError();
+        DINGO_PROFILE_ZONE("native/BMX/animation evaluation");
+        SetLastError(error);
+        native_animation();
+    } else native_animation();
+    animation_listeners().dispatch(shared().evaluated_listener.load(std::memory_order_acquire), component);
 }
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
     // Other SDK-created actors share this hook; they must forget the entity
@@ -400,6 +460,8 @@ void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
 } // namespace
 namespace native_skater_detail {
 void install(std::uintptr_t base) {
+    // Construct the new registry before enabling the native hook, not inside it.
+    (void)render_data_listeners();
     if (shared().hooks) {
         require(shared().base == base, "Native image changed.");
         return;
@@ -603,4 +665,12 @@ void set_render_pose_listener(RenderPosePublished listener) noexcept {
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
     shared().evaluated_listener.store(listener, std::memory_order_release);
 }
+bool add_animation_evaluated_listener(AnimationEvaluated listener) noexcept { return animation_listeners().add(listener); }
+void remove_animation_evaluated_listener(AnimationEvaluated listener) noexcept { animation_listeners().remove(listener); }
+bool add_render_pose_listener(RenderPosePublished listener) noexcept { return render_listeners().add(listener); }
+void remove_render_pose_listener(RenderPosePublished listener) noexcept { render_listeners().remove(listener); }
+bool add_render_pose_data_listener(RenderPosePublishedData listener) noexcept { return render_data_listeners().add(listener); }
+void remove_render_pose_data_listener(RenderPosePublishedData listener) noexcept { render_data_listeners().remove(listener); }
+void enable_render_pose_callsite_probe() noexcept { render_callsite_enabled.store(true,std::memory_order_release); }
+RenderPoseCallsite render_pose_callsite() noexcept { return current_render_callsite; }
 } // namespace dingosdk::multiplayer

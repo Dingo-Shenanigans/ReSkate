@@ -51,8 +51,14 @@
 #include "Extension/Skater/drone_outfit.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/BMX/bmx_runtime.h"
+#include "Extension/BMX/bmx_chassis_probe.h"
+#include "Extension/BMX/bmx_ramp_test.h"
+#include "Extension/BMX/bmx_binding_observer.h"
+#include "Extension/BMX/bmx_intent_observer.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
+#include "startup_recording_gate.h"
 #include <Windows.h>
 #include <dxgi1_4.h>
 #include <Psapi.h>
@@ -67,9 +73,131 @@
 #include <sstream>
 #include <format>
 #include <thread>
+#include <filesystem>
 
 namespace dingosdk::runtime::detail {
 namespace {
+// Development-only acknowledgement barrier. The native tick never waits or
+// sleeps: one bounded local receipt read at 4 Hz, and status writes only on
+// transitions. Rendering/loading and all ordinary tick work keep running.
+struct StartupRecordingGate {
+    bool configured{}, valid{}, started{}, failed{}, coupled_required{};
+    std::wstring directory;
+    std::string nonce;
+    std::uint64_t creation{}, next_poll{}, released_tick{};
+    recording_gate::Gate gate;
+    static std::wstring environment(const wchar_t* key) {
+        std::wstring value(32768, L'\0');
+        const auto count = GetEnvironmentVariableW(key, value.data(), static_cast<DWORD>(value.size()));
+        if (!count || count >= value.size()) return {};
+        value.resize(count); return value;
+    }
+    StartupRecordingGate() {
+        directory = environment(L"RESKATE_BMX_CAPTURE_GATE_DIRECTORY");
+        const auto wide_nonce = environment(L"RESKATE_BMX_CAPTURE_GATE_NONCE");
+        const auto timeout = environment(L"RESKATE_BMX_CAPTURE_GATE_TIMEOUT_SECONDS");
+        configured = !directory.empty() || !wide_nonce.empty() || !timeout.empty();
+        if (!configured) return;
+        for (auto c : wide_nonce) nonce.push_back(c < 128 ? static_cast<char>(c) : '?');
+        wchar_t* end{};
+        const auto seconds = std::wcstoul(timeout.c_str(), &end, 10);
+        FILETIME created{}, exited{}, kernel{}, user{};
+        const bool automated = environment(L"RESKATE_BMX_AUTOMATED_RIDE") == L"1" ||
+            environment(L"RESKATE_BMX_AUTOMATED_SWITCH") == L"1" || environment(L"RESKATE_BMX_RAMP_TEST") == L"1";
+        const bool native_board_control = recording_gate::native_board_control_selected({
+            environment(L"RESKATE_BMX_NATIVE_BOARD_CONTROL"), environment(L"RESKATE_BMX_BOARD_HANDOFF_TRACE"),
+            environment(L"RESKATE_BMX_BOARD_HANDOFF_MODE"), environment(L"RESKATE_BMX_NATIVE_CHASSIS"),
+            environment(L"RESKATE_BMX_LAUNCH_MODE"), environment(L"RESKATE_DATA_ROOT"),
+            environment(L"RESKATE_BMX_LOCAL_PROFILE"),
+            !automated && environment(L"RESKATE_BMX_QUICK_SWITCH_TEST") != L"1"});
+#if defined(DINGOSDK_BMX_NATIVE_COUPLED) && defined(DINGOSDK_BMX_STANDALONE_MOVEMENT)
+        constexpr bool coupled_features = true;
+#else
+        constexpr bool coupled_features = false;
+#endif
+        const std::array<std::wstring,8> coupled_values{
+            environment(L"RESKATE_BMX_NATIVE_COUPLED"), environment(L"RESKATE_BMX_COUPLED_RIDE"),
+            environment(L"RESKATE_BMX_COUPLED_CONTROLLER_TRIAL"), environment(L"RESKATE_BMX_COUPLED_FORCE_PROBE"),
+            environment(L"RESKATE_BMX_COUPLED_CALIBRATION"), environment(L"RESKATE_BMX_LAUNCH_MODE"),
+            environment(L"RESKATE_DATA_ROOT"), environment(L"RESKATE_BMX_LOCAL_PROFILE")};
+        const recording_gate::CoupledRideSelection coupled{
+            coupled_values[0],coupled_values[1],coupled_values[2],coupled_values[3],
+            coupled_values[4],coupled_values[5],coupled_values[6],coupled_values[7],coupled_features,
+            !automated && !native_board_control && environment(L"RESKATE_BMX_QUICK_SWITCH_TEST") != L"1" &&
+            environment(L"RESKATE_BMX_NATIVE_CHASSIS") != L"1" && environment(L"RESKATE_BMX_CHASSIS_PROBE") != L"1" &&
+            environment(L"RESKATE_BMX_BOARD_HANDOFF_TRACE") != L"1" && environment(L"RESKATE_BMX_NATIVE_BOARD_CONTROL") != L"1" &&
+            environment(L"RESKATE_BMX_HUMAN_NATIVE_SWITCH") != L"1" && environment(L"RESKATE_BMX_FLOW_DIAGNOSTICS") != L"1"};
+        coupled_required = coupled_features && recording_gate::coupled_ride_requested(coupled);
+        // A coupled request cannot fall through a coactivated legacy selector.
+        const bool selected = coupled_required ? recording_gate::coupled_ride_selected(coupled) : (automated || native_board_control);
+        valid = selected && environment(L"RESKATE_BMX_LOCAL_PROFILE") == L"1" &&
+            recording_gate::valid_nonce(nonce) && !timeout.empty() && end && !*end && seconds >= 30 && seconds <= 600 &&
+            std::filesystem::path(directory).is_absolute() &&
+            GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user);
+        creation = (std::uint64_t{created.dwHighDateTime} << 32) | created.dwLowDateTime;
+        valid = valid && creation;
+        gate.timeout_ms = seconds * 1000ull;
+    }
+    bool status(std::string_view state) const {
+        SYSTEMTIME utc{}; GetSystemTime(&utc);
+        const auto text = std::format("{{\"schema_version\":1,\"event\":\"bmx_recording_startup_gate\",\"state\":\"{}\","
+            "\"nonce\":\"{}\",\"process_id\":{},\"process_creation_filetime\":\"{}\","
+            "\"observed_utc\":\"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z\",\"started_tick_ms\":{},\"elapsed_ms\":{}}}\n",
+            state, nonce, GetCurrentProcessId(), creation, utc.wYear, utc.wMonth, utc.wDay,
+            utc.wHour, utc.wMinute, utc.wSecond, utc.wMilliseconds, gate.started_ms, GetTickCount64() - gate.started_ms);
+        const auto temporary = directory + L"\\recording-gate.status.tmp";
+        const auto destination = directory + L"\\recording-gate.status.json";
+        const auto file = CreateFileW(temporary.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        DWORD written{};
+        const bool complete = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) && written == text.size();
+        CloseHandle(file);
+        if (!complete || !MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileW(temporary.c_str()); return false;
+        }
+        dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::runtime,
+            "BMX recording startup gate {}: PID {}; creation FILETIME {}; nonce {}; elapsed {} ms.",
+            state, GetCurrentProcessId(), creation, nonce, GetTickCount64() - gate.started_ms);
+        return true;
+    }
+    bool receipt() const {
+        const auto path = directory + L"\\recording-gate.ready";
+        const auto file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        BY_HANDLE_FILE_INFORMATION info{}; char buffer[257]{}; DWORD count{};
+        const bool read = GetFileInformationByHandle(file, &info) && !(info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) &&
+            !info.nFileSizeHigh && info.nFileSizeLow <= 256 && ReadFile(file, buffer, sizeof(buffer), &count, nullptr);
+        CloseHandle(file);
+        return read && recording_gate::matches_receipt(std::string_view(buffer, count), nonce, GetCurrentProcessId(), creation);
+    }
+    bool permit_coupled_tick(bool world_ready) {
+        if (!configured || !coupled_required) return true;
+        if (recording_gate::released_for_coupled_cleanup(valid, failed, gate.state)) return true;
+        bool discard{}; return permit(world_ready, discard);
+    }
+    bool permit(bool world_ready, bool& discard_commands) {
+        if (!configured) return true;
+        if (!valid || failed) { discard_commands = true; return false; }
+        if (!world_ready) return false;
+        const auto now = GetTickCount64();
+        if (!started) {
+            started = true; gate.started_ms = now;
+            if (!status("waiting")) { failed = true; discard_commands = true; return false; }
+        }
+        if (gate.state == recording_gate::State::released) return true;
+        if (gate.state == recording_gate::State::timed_out) { discard_commands = true; return false; }
+        if (now < next_poll) return false;
+        next_poll = now + 250;
+        const auto state = gate.observe(now, receipt());
+        if (state == recording_gate::State::waiting) return false;
+        if (!status(state == recording_gate::State::released ? "released" : "timed_out")) failed = true;
+        if(!failed&&state==recording_gate::State::released)released_tick=GetTickCount64();
+        discard_commands = failed || state == recording_gate::State::timed_out;
+        return !discard_commands;
+    }
+};
+StartupRecordingGate& startup_recording_start() { static StartupRecordingGate value; return value; }
 using HostedSelector = bool (*)(const char*);
 const char* state_name(DWORD state) { return dingosdk::client_state_name(state); }
 // What update_model learned about this tick's client, reused by the rest of the
@@ -598,7 +726,28 @@ void update_model(std::uintptr_t client, TickState& frame) {
                 }
             }
         }
-        if (!startup_commands->empty() && named_context_ready) {
+        auto& recording_start = startup_recording_start();
+        bool startup_permitted = true;
+        if (!startup_commands->empty()) {
+            auto front = startup_commands->front();
+            for (auto& c : front) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            // Let the launcher's initial map load create the world/window before
+            // asking a recorder to acknowledge it. Every following wait/action
+            // remains queued until that exact process receipt is accepted.
+            if (!front.starts_with("load ")) {
+                bool discard{};
+                bool world_ready{};
+                { std::lock_guard lock(r.mutex); world_ready = named_context_ready && r.model.can_queue_load &&
+                    !r.requests.loading() && !r.requests.pending_load(); }
+                startup_permitted = recording_start.permit(world_ready, discard);
+                if (discard) {
+                    startup_commands->clear();
+                    dingosdk::logging::log(dingosdk::logging::Level::error, dingosdk::logging::Channel::runtime,
+                        "BMX recording startup gate failed closed; remaining startup test commands discarded.");
+                }
+            }
+        }
+        if (!startup_commands->empty() && named_context_ready && startup_permitted) {
             std::lock_guard lock(r.mutex);
             const auto& text = startup_commands->front();
             const auto lower = [](std::string value) {
@@ -729,7 +878,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // (The card that asks has the pointer, as a menu does: it is still read for.)
         DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote || message_up);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
-        if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
+        if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed ||
+            (dingosdk::bmx::mounted() && dingosdk::action_binds[i].key == "first_person"))) {
             std::array<char, 256> result{};
             const std::string command(dingosdk::action_binds[i].command);
             if (queue_console_command(nullptr, command.c_str(), result.data(), result.size()))
@@ -804,14 +954,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
             record("{\"event\":\"controller_binding_triggered\",\"action\":\"poll_answer\"}");
     }
     
-    if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
+    if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, dingosdk::bmx::mounted() || r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
         if (dingosdk::set_local_freecam_controller(!freecam_controller))
             freecam_controller = !freecam_controller;
         DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"freecam_controller\"}");
     }
     
-    if (r.tp_to_freecam_bind_latch.update(tp_to_freecam_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera || !r.debug_model.camera_position_valid || debug_request.has_value())) {
+    if (r.tp_to_freecam_bind_latch.update(tp_to_freecam_combo, controller, dingosdk::bmx::mounted() || r.observer_failed || controller_busy || !r.debug_model.free_camera || !r.debug_model.camera_position_valid || debug_request.has_value())) {
         if (dingosdk::teleport_local_skater(r.debug_model.camera_position)) {
             std::lock_guard lock(r.mutex);
             const dingosdk::overlay::DebugRequest request{dingosdk::overlay::DebugAction::set_free_camera, false};
@@ -821,7 +971,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"tp_to_freecam\"}");
     }
     
-    const bool freecam_bind_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+    const bool freecam_bind_blocked = dingosdk::bmx::mounted() || r.observer_failed || controller_busy || debug_request.has_value() ||
         (state != 13 && state != 21) || !r.debug_model.camera_available ||
         (freecam_combo && !camera_phase_ready());
     if (r.freecam_bind_latch.update(freecam_combo, controller, freecam_bind_blocked)) {
@@ -834,7 +984,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"freecam\"}");
     }
 
-    const bool bind_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+    const bool bind_blocked = dingosdk::bmx::mounted() || r.observer_failed || controller_busy || debug_request.has_value() ||
         (state != 13 && state != 21) || !r.debug_model.noclip_available ||
         (noclip_combo && !camera_phase_ready());
     const bool noclip_triggered = r.noclip_bind_latch.update(noclip_combo, controller, bind_blocked);
@@ -847,7 +997,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         }
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"noclip\"}");
     }
-    const bool forward_velocity_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+    const bool forward_velocity_blocked = dingosdk::bmx::mounted() || r.observer_failed || controller_busy || debug_request.has_value() ||
         (r.debug_model.offboard_up_velocity_available && forward_velocity_combo == offboard_up_velocity_combo) ||
         (r.debug_model.free_camera && freecam_controller) ||
         (state != 13 && state != 21) || !r.debug_model.forward_velocity_available ||
@@ -861,7 +1011,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         }
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"forward_velocity\"}");
     }
-    const bool up_velocity_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+    const bool up_velocity_blocked = dingosdk::bmx::mounted() || r.observer_failed || controller_busy || debug_request.has_value() ||
         (r.debug_model.offboard_up_velocity_available && up_velocity_combo == offboard_up_velocity_combo) ||
         (r.debug_model.free_camera && freecam_controller) ||
         (state != 13 && state != 21) || !r.debug_model.up_velocity_available ||
@@ -875,7 +1025,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         }
     }
 
-    const bool offboard_up_velocity_blocked = r.observer_failed || controller_busy || debug_request.has_value() ||
+    const bool offboard_up_velocity_blocked = dingosdk::bmx::mounted() || r.observer_failed || controller_busy || debug_request.has_value() ||
         (r.debug_model.free_camera && freecam_controller) ||
         (state != 13 && state != 21) || !r.debug_model.offboard_up_velocity_available ||
         (offboard_up_velocity_combo && offboard_up_velocity_combo == noclip_combo);
@@ -1498,12 +1648,17 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
     dingosdk::camera_tick_native_return();
     dingosdk::poll_level_loading(client);
     try {
+        // Flush passive startup lookups even before a local rider/BMX is ready.
+        (void)dingosdk::bmx::binding_observer::poll();
         TickState tick_state;
         {
             DINGO_PROFILE_ZONE("tick/update_model");
             update_model(client, tick_state);
         }
         if (r.engine_thread.load() != GetCurrentThreadId()) return;
+        if (dingosdk::bmx::intent_observer::requested())
+            (void)dingosdk::bmx::intent_observer::poll(
+                dingosdk::bmx::read_native_frame(r.base, client));
         DWORD state{},game_type{};
         bool loading{};
         { std::lock_guard lock(r.mutex); loading=r.requests.loading(); }
@@ -1560,6 +1715,23 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
     }
     dingosdk::spotify_station::tick();
     dingosdk::music_inject::tick();
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/BMX");
+            auto& recording_start = startup_recording_start();
+            bool coupled_permitted = true;
+            if (recording_start.configured && recording_start.coupled_required) {
+                bool world_ready{};
+                { std::lock_guard lock(r.mutex); world_ready = multiplayer_ready && r.named_context_ready && r.model.can_queue_load &&
+                    !r.requests.loading() && !r.requests.pending_load(); }
+                coupled_permitted = recording_start.permit_coupled_tick(world_ready);
+            }
+            // Do not start the private operator/entry clock before recorder ACK.
+            // Original native/render/model work above continues while waiting.
+            if (coupled_permitted) dingosdk::bmx::tick(r.base, client, multiplayer_ready);
+            dingosdk::bmx::tick_chassis_probe(r.base, client, multiplayer_ready);
+            if (dingosdk::bmx::ramp_test::enabled() && dingosdk::bmx::enable_native_motion(r.base))
+                dingosdk::bmx::ramp_test::tick(r.base, dingosdk::bmx::read_native_frame(r.base, client), multiplayer_ready);
         }
         dingosdk::multiplayer::refresh_identity_lists();
         // How much memory the game holds, beside what a session adds to it: said when it has
@@ -1703,5 +1875,17 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         ++r.model_revision;
         r.requests.fault();
     }
+}
+}
+
+namespace dingosdk::runtime::recording_gate {
+CaptureIdentity coupled_capture_identity() noexcept {
+    const auto error=GetLastError();CaptureIdentity out;try {
+        auto& s=detail::startup_recording_start();
+        if(s.configured&&s.coupled_required&&s.valid&&!s.failed&&s.gate.state==State::released&&s.released_tick&&valid_nonce(s.nonce)) {
+            out.released=true;out.process_id=GetCurrentProcessId();out.creation_filetime=s.creation;out.released_tick_ms=s.released_tick;
+            std::copy(s.nonce.begin(),s.nonce.end(),out.nonce.begin());
+        }
+    }catch(...){}SetLastError(error);return out;
 }
 }

@@ -2,6 +2,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "local_customization_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
+#include "Extension/BMX/bmx_ecs_diagnostics.h"
 #include "Engine/Vfs/content_catalogs.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -286,6 +287,7 @@ void initialize_starter_from_expression(std::uintptr_t vm, std::uint32_t pc) noe
             !read(resource + 0x20, layout) ||
             layout != std::array<std::uint32_t, 10>{48,232,10,123,3,0,1,10,0,0} ||
             !read(instance + 48, constants) || !constants) return;
+        dingosdk::bmx::observe_recipe_initializer_context();
         std::lock_guard lock(s.native_mutex);
         std::vector<CosmeticNativeRecipe> recipes(3);
         for (std::size_t i = 0; i < recipes.size(); ++i) {

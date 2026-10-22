@@ -1,5 +1,6 @@
 #include "mod_catalog.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "builtin_packs.h"
 
 #include "mod_merge.h"
@@ -106,10 +107,7 @@ bool changes_the_deck(const fs::path& mod) {
 // The player's choice of deck is kept beside ReSkate's other files for the user, so that it is
 // there before the profile is: the mods are put together as the game starts.
 fs::path board_break_deck_file() {
-    std::array<wchar_t, 1024> text{};
-    const auto size = GetEnvironmentVariableW(L"LOCALAPPDATA", text.data(), static_cast<DWORD>(text.size()));
-    if (!size || size >= text.size()) return {};
-    return fs::path(std::wstring(text.data(), size)) / L"ReSkate" / L"BoardBreak.deck";
+    return user_data::root() / L"BoardBreak.deck";
 }
 // A deck's name is a folder name's end: letters, digits and underscores.
 bool deck_name(std::string_view name) {

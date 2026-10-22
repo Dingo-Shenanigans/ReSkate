@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 #include "Engine/Game/World/park_rotation.h"
@@ -93,6 +94,27 @@ std::optional<float> local_ground_height(float x, float z, float top, float bott
 // client physics world. Empty when the line is clear, collision is still streaming, or the query
 // is unavailable. Client update thread.
 std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>& from, const std::array<float, 3>& to);
+struct LocalSurfaceProbe {
+    bool available{}, hit{};
+    std::array<float, 3> position{};
+    float fraction{};
+    std::uintptr_t context{}, world{}; // diagnostics: the client TLS context and resolved world
+    std::uint64_t hit_entity{};
+    std::array<std::uint64_t, 2> hit_body{};
+    unsigned excluded_bodies{};
+};
+// Client update thread. A clear ray is not proof that collision for the entire region has
+// streamed. Optional native body references must be independently verified for this world;
+// ignore_local_entity is a verified current local entity pointer, resolved through the same
+// native picking/root contracts as Park Editor; it never guesses rigid-body offsets.
+LocalSurfaceProbe probe_local_surface(const std::array<float, 3>& from, const std::array<float, 3>& to,
+    std::span<const std::array<std::uint64_t, 2>> ignored_bodies = {}, std::uint64_t ignore_local_entity = 0);
+// Separate bounded geometry diagnostic; existing LocalSurfaceProbe/API remain unchanged.
+struct BoundedLocalSurfaceProbe {
+    LocalSurfaceProbe surface;unsigned native_casts{};std::uint64_t elapsed_microseconds{};bool budget_exhausted{};
+};
+BoundedLocalSurfaceProbe probe_local_surface_bounded(const std::array<float,3>& from,const std::array<float,3>& to,
+    unsigned maximum_casts,std::span<const std::array<std::uint64_t,2>> ignored_bodies={},std::uint64_t ignore_local_entity=0);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

@@ -1,4 +1,5 @@
 #include "board_break.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "board_break_model.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -409,12 +410,7 @@ Feel& feel() {
     return *value;
 }
 std::filesystem::path settings_path() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"BoardBreak.settings";
-    if (raw) CoTaskMemFree(raw);
-    return result;
+    return user_data::known_folder_root() / L"BoardBreak.settings";
 }
 std::string trimmed(std::string_view text) {
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.remove_prefix(1);

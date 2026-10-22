@@ -2,6 +2,7 @@
 #include "gpu_diagnostics.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Debug/crash_report.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 
 #include <dxgi1_4.h>
 #include <ShlObj.h>
@@ -36,12 +37,7 @@ Log& log() { static auto* value = new Log; return *value; }
 constexpr int breadcrumb_launches = 3;
 // %LOCALAPPDATA%\ReSkate\gpu-breadcrumbs.txt: how many launches are still to record them.
 std::filesystem::path breadcrumbs_note() {
-    PWSTR local{};
-    std::filesystem::path path;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, nullptr, &local)))
-        path = std::filesystem::path(local) / L"ReSkate" / L"gpu-breadcrumbs.txt";
-    CoTaskMemFree(local);
-    return path;
+    return user_data::known_folder_root() / L"gpu-breadcrumbs.txt";
 }
 int breadcrumbs_left() {
     const auto path = breadcrumbs_note();

@@ -2,6 +2,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
+#include "Extension/BMX/bmx_grip_projection_trace.h"
 #include "Extension/Trainer/trainer_page.h"
 #include "Extension/Skater/drone_flight.h"
 #include "Extension/HallOfMeat/hall_of_meat_overlay.h"
@@ -743,6 +744,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
+    const bool bmx_request_hud_frame = bmx::grip_projection_trace::pending();
     if (trainer_open_requested()) s.visible.store(true);
     if (dingosdk::drone::menu_flag().load()) s.visible.store(true); // `dronemenu`: the menu opens on its DRONE page
     if (dingosdk::overlay::menu_open_flag().exchange(false)) s.visible.store(true); // `menu`, or its controller bind
@@ -762,7 +764,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !drone_hud_frame && !skate_hud_frame &&
-            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame) return;
+            !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame && !bmx_request_hud_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -820,6 +822,16 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
+    if(const auto requested=bmx::grip_projection_trace::draw_packet(ImGui::GetIO().DisplaySize.x,ImGui::GetIO().DisplaySize.y)) {
+        auto* draw=ImGui::GetBackgroundDrawList();
+        draw->AddText(ImVec2(12,92),IM_COL32(255,255,255,255),requested->text.data());
+        if(requested->record.spatial_available) {
+            constexpr std::array<const char*,4> labels{"CPU GL","CPU GR","AXLE R","AXLE F"};
+            for(unsigned i=0;i<labels.size();++i){const auto& p=requested->record.points[i];
+                const auto color=i<2?IM_COL32(0,255,255,255):IM_COL32(255,230,0,255);
+                draw->AddCircle(ImVec2(p.x,p.y),4,color,12,1.5f);draw->AddText(ImVec2(p.x+6,p.y+3),color,labels[i]);}
+        }
+    }
     draw_notices();
     draw_item_browser();
     draw_chat();

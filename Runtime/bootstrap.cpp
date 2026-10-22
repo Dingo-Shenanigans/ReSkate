@@ -24,6 +24,9 @@
 #include "Extension/World/world_pool_usage.h"
 #include "Extension/World/physics_world_size.h"
 #include "Extension/World/spatial_cull_ids.h"
+#include "Extension/BMX/bmx_binding_observer.h"
+#include "Extension/BMX/bmx_intent_observer.h"
+#include "Extension/BMX/bmx_skeleton_phase_probe.h"
 #include <string>
 
 namespace dingosdk::runtime {
@@ -46,6 +49,16 @@ bool initialize_bootstrap(std::uintptr_t base) {
         return false;
     }
     logging::write(logging::Level::info, Channel::hooks, "Microsoft Detours hook service ready.");
+    // Explicit isolated diagnostic only; install before authored graph binding.
+    // Returned descriptors are recorded, never invoked by this observer.
+    if (bmx::binding_observer::initialize(base))
+        logging::write(logging::Level::info, Channel::runtime, "BMX passive binding observer initialized.");
+    if (bmx::intent_observer::initialize(base))
+        logging::write(logging::Level::info, Channel::runtime, "BMX passive authored intent observer initialized.");
+    if (bmx::intent_observer::enable_riding_falls(base))
+        logging::write(logging::Level::info, Channel::runtime, "BMX native riding fall adapter initialized.");
+    // Explicit private read-only ordering diagnostic; disabled by default.
+    (void)bmx::skeleton_phase_probe::initialize(base);
     // The memory ledger, when RESKATE_MEMORY_TRACE asks for it: here, while the game is still
     // suspended and before the pools below are enlarged, so it sees who makes all of them.
     console::start_memory_trace_from_environment();

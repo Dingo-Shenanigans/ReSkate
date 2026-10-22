@@ -1,4 +1,5 @@
 #include "updater.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -172,13 +173,6 @@ RemoteFile parse_file(const Json& root, std::string_view key, bool required) {
     if (!is_sha256(file.sha256)) fail(std::format("Launcher config \"{}.sha256\" must be 64 lowercase hex digits", key));
     if (!file.size || file.size > max_download_bytes) fail(std::format("Launcher config \"{}.size\" is out of range", key));
     return file;
-}
-
-fs::path local_app_data() {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) fail("LOCALAPPDATA is unavailable");
-    return fs::path(local.data());
 }
 
 struct Zip {
@@ -712,7 +706,7 @@ void remove_replaced_files(const fs::path& directory) noexcept {
 }
 
 fs::path ensure_depot_downloader(const RemoteFile& file, const Progress& progress) {
-    const auto directory = local_app_data() / L"ReSkate" / L"tools" / L"DepotDownloader" / widen(file.sha256.substr(0, 16));
+    const auto directory = user_data::root() / L"tools" / L"DepotDownloader" / widen(file.sha256.substr(0, 16));
     const auto executable = directory / L"DepotDownloader.exe";
     std::error_code error;
     if (fs::is_regular_file(executable, error)) return executable;

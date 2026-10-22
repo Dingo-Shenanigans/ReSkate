@@ -1,4 +1,5 @@
 #include "gui_internal.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 
 #include "depot_output.h"
 #include "official_mods.h"
@@ -33,7 +34,7 @@ std::string format_bytes(std::uint64_t bytes) {
 }
 
 fs::path settings_path(const launcher_app::Session& session) {
-    return session.self.parent_path() / L"ReSkateLauncher.settings.json";
+    return user_data::launcher_settings(session.self.parent_path());
 }
 
 Settings load_settings(const fs::path& path) {
@@ -566,7 +567,7 @@ void apply_crash_report_setting() noexcept {
         const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
         if (!length || length >= path.size()) return;
         path.resize(length);
-        const auto settings = detail::load_settings(std::filesystem::path(path).parent_path() / L"ReSkateLauncher.settings.json");
+        const auto settings = detail::load_settings(user_data::launcher_settings(std::filesystem::path(path).parent_path()));
         if (!settings.crash_reports) SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"0");
         // A RESKATE_TRACING already set (to test with, or to refuse) is left alone.
         if (settings.performance_timings && !GetEnvironmentVariableW(L"RESKATE_TRACING", nullptr, 0))
