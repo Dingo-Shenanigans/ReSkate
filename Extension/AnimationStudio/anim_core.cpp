@@ -657,6 +657,14 @@ float turn_apart(const Quat& a, const Quat& b) noexcept {
     const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
     return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
 }
+// How far a smoothed key is drawn towards the line between its neighbours.
+constexpr float smooth_pull = 0.35f;
+void pull_towards_neighbours(Key& key, const Key& before, const Key& here, const Key& after) noexcept {
+    const float span = after.time - before.time;
+    const float u = span > 1e-6f ? (here.time - before.time) / span : 0.5f;
+    key.offset = lerp(here.offset, lerp(before.offset, after.offset, u), smooth_pull);
+    key.rotation = slerp(here.rotation, slerp(before.rotation, after.rotation, u), smooth_pull);
+}
 } // namespace
 
 std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept {
@@ -695,12 +703,7 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
         const auto was = keys;
         for (std::size_t i = 1; i + 1 < keys.size(); ++i) {
             if (pinned(keys[i])) continue;
-            const Key &before = was[i - 1], &after = was[i + 1];
-            const float span = after.time - before.time;
-            const float u = span > 1e-6f ? (was[i].time - before.time) / span : 0.5f;
-            constexpr float pull = 0.35f;
-            keys[i].offset = lerp(was[i].offset, lerp(before.offset, after.offset, u), pull);
-            keys[i].rotation = slerp(was[i].rotation, slerp(before.rotation, after.rotation, u), pull);
+            pull_towards_neighbours(keys[i], was[i - 1], was[i], was[i + 1]);
             ++changed;
         }
     }
@@ -723,6 +726,27 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
         } else ++i;
     }
     for (auto& k : keys) k.smooth = true;
+    return changed;
+}
+std::size_t smooth_keys_at(Track& track, std::span<const float> times, float keep_start, float keep_end) noexcept {
+    auto& keys = track.keys;
+    const auto chosen = [&](float t) { return std::any_of(times.begin(), times.end(), [&](float c) { return std::abs(c - t) < 1e-3f; }); };
+    const auto pinned = [&](const Key& k) {
+        return std::abs(k.time - keep_start) < 1.0f / 60 || std::abs(k.time - keep_end) < 1.0f / 60;
+    };
+    const auto was = keys; // neighbours as they were, so smoothing two keys side by side does not compound
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (!chosen(keys[i].time)) continue;
+        if (keys[i].ease != Ease::smooth || !keys[i].smooth) {
+            keys[i].ease = Ease::smooth;
+            keys[i].smooth = true;
+            ++changed;
+        }
+        if (i == 0 || i + 1 >= keys.size() || pinned(keys[i])) continue;
+        pull_towards_neighbours(keys[i], was[i - 1], was[i], was[i + 1]);
+        ++changed;
+    }
     return changed;
 }
 

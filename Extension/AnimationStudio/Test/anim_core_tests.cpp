@@ -415,6 +415,26 @@ void dragged_foot_reaches_the_drag() {
 }
 
 // Smooth keys: a key that says nothing goes, the rest ease smoothly and are marked, and the brackets stay.
+// Smoothing chosen keys (KEYS, a double-click, the chosen-keys strip): only those keys change, each is
+// drawn towards its neighbours and shows round; the first and last only show round.
+void smoothing_chosen_keys() {
+    Track track;
+    track.joint = 342;
+    for (const auto& [t, y] : std::vector<std::pair<float, float>>{{0.0f, 0.0f}, {0.5f, 0.3f}, {1.0f, 0.0f}, {1.5f, 0.3f}, {2.0f, 0.0f}}) {
+        Key key;
+        key.time = t;
+        key.offset = {0, y, 0};
+        track.keys.push_back(key);
+    }
+    const std::array<float, 2> chosen{0.5f, 2.0f};
+    const auto changed = smooth_keys_at(track, chosen, -1.0f, -1.0f);
+    check(changed > 0, "Smoothing chosen keys changes them");
+    check(track.keys[1].offset[1] < 0.3f - 1e-3f && track.keys[1].smooth, "A chosen key is drawn towards its neighbours and shows round");
+    check(near(track.keys[3].offset[1], 0.3f) && !track.keys[3].smooth, "A key that was not chosen is left alone");
+    check(near(track.keys[4].offset[1], 0.0f) && track.keys[4].smooth, "The last key has no neighbour after it: it only shows round");
+    const auto again = smooth_keys_at(track, std::array<float, 1>{4.0f}, -1.0f, -1.0f);
+    check(again == 0, "A time with no key changes nothing");
+}
 void smoothing_tidies_a_track() {
     Track track;
     track.joint = 343;
@@ -1300,6 +1320,7 @@ int main(int argc, char** argv) {
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
+        smoothing_chosen_keys();
         solo_turn_holds_the_joints_below();
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();

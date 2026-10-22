@@ -101,6 +101,7 @@ struct View {
     std::uint64_t clip_serial{};
 };
 View view();
+Recording recording_state(); // the one value the overlay checks every frame while the studio is closed
 // Arms a one-off search of the running game for where it keeps the clip it is playing. It is taken riding,
 // at the pop and in the air of the next trick, and written to ReSkate.Tricks/research/live-graph-probe.txt.
 // Read only. Returns what it said.
@@ -207,6 +208,8 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);
 void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);
+// Smooths the given keys (joint, time): each eases into its neighbours and shows round. Call begin_change first.
+bool smooth_chosen_keys(std::span<const std::pair<std::uint16_t, float>> chosen, std::string& message);
 // Smooths the keys of one joint, or of every joint when `joint` is `all_joints`. Call begin_change first.
 inline constexpr std::uint16_t all_joints = 0xffff;
 void smooth_keys(std::uint16_t joint);

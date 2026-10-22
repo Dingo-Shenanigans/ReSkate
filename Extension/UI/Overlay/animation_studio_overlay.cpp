@@ -60,6 +60,7 @@ struct Ui {
     enum class View { free, fit, region };
     View timeline_view{View::fit};
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
+    float bracket_dragged_to{-1}; // the frame the held bracket was last moved to
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
@@ -78,6 +79,7 @@ struct Ui {
     ImVec2 drag_start{};
     int axis{-1}; // -1 free, 0 X, 1 Y, 2 Z
     bool local_axes{true}, move_mode{};
+    std::uint16_t joint_row_for{0xffff}; // the joint JOINTS last showed as chosen
     // The gizmo on the chosen joint: three arrows to move along an axis, three rings to turn about one.
     int gizmo_handle{-1};      // the one being dragged: 0 to 2 the arrows, 3 to 5 the rings, -1 none
     int gizmo_hot{-1};         // the one under the mouse
@@ -170,14 +172,19 @@ void pick_all(const studio::View& v) {
     say(u.picked.empty() ? "There are no keys yet." : std::to_string(u.picked.size()) + " keys chosen: drag one to move them all, Delete takes them off.");
 }
 // The chosen keys moved by `by` seconds, as one undo step: the far end first, so none lands on another.
-void move_picked(float by) {
+void move_picked(float by, float duration) {
     auto& u = ui();
-    if (std::abs(by) < 1e-4f || u.picked.empty()) return;
+    if (u.picked.empty()) return;
+    // The group moves as one and stops at the ends of the clip, so no key is pushed onto another there.
+    float first = u.picked.front().second, last = first;
+    for (const auto& [joint, time] : u.picked) first = std::min(first, time), last = std::max(last, time);
+    by = std::clamp(by, -first, std::max(0.0f, duration - last));
+    if (std::abs(by) < 1e-4f) return;
     auto keys = u.picked;
     std::sort(keys.begin(), keys.end(), [by](const auto& a, const auto& b) { return by > 0 ? a.second > b.second : a.second < b.second; });
     studio::begin_change();
     for (auto& [joint, time] : keys) {
-        const float to = std::max(0.0f, time + by);
+        const float to = time + by;
         studio::move_key(joint, time, to);
         time = to;
     }
@@ -271,7 +278,6 @@ bool button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 siz
 void diamond(ImDrawList* d, ImVec2 c, float r, ImU32 colour) {
     d->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), colour);
 }
-// A key marker: round when it has been smoothed, a diamond otherwise.
 // Where each key was drawn this frame, for the box that picks them out.
 struct DrawnKey {
     std::uint16_t joint;
@@ -282,15 +288,19 @@ std::vector<DrawnKey>& drawn_keys() {
     static std::vector<DrawnKey> keys;
     return keys;
 }
-// The chosen keys ease smoothly. This is the chosen keys and nothing else: KEYS has Smooth keys for
-// tidying a whole track, which also drops keys and moves them onto frames.
+// The chosen keys are smoothed: each eases into its neighbours and shows round. This is the chosen keys
+// and nothing else: KEYS has Smooth keys for tidying a whole track, which also drops keys and moves them
+// onto frames.
 void smooth_picked() {
     auto& u = ui();
     if (u.picked.empty()) return;
     studio::begin_change();
-    for (const auto& [joint, time] : u.picked) studio::set_ease(joint, time, studio::Ease::smooth);
-    say(std::to_string(u.picked.size()) + " keys ease smoothly.");
+    std::string m;
+    studio::smooth_chosen_keys(u.picked, m);
+    say(m);
 }
+// A key marker: round when it has been smoothed, a diamond otherwise (a Linear or Step key is never round).
+bool round_key(const studio::KeyView& key) noexcept { return key.smooth && key.ease == studio::Ease::smooth; }
 void key_mark(ImDrawList* d, ImVec2 c, float r, ImU32 colour, bool smooth) {
     if (smooth) d->AddCircleFilled(c, r * 0.92f, colour, 18);
     else diamond(d, c, r, colour);
@@ -1067,15 +1077,6 @@ void jump_key(const studio::View& v, int direction) {
     }
     if (best) studio::set_time(*best);
 }
-void select_row(int delta) {
-    auto& u = ui();
-    const auto joints = studio::editable_joints();
-    int index = 0;
-    for (std::size_t i = 0; i < joints.size(); ++i) if (joints[i].index == u.selected) index = static_cast<int>(i);
-    index = std::clamp(index + delta, 0, static_cast<int>(joints.size()) - 1);
-    u.selected = joints[static_cast<std::size_t>(index)].index;
-    u.row = index + 1; // row 0 is the force field
-}
 void save_now() {
     std::string m;
     studio::save(m);
@@ -1120,7 +1121,18 @@ struct Row {
     std::function<void()> act;
     bool enabled{true}, on{};
     std::string library; // a saved animation's name (Delete takes it out)
+    std::optional<std::uint16_t> joint; // JOINTS: the joint this row chooses
+    bool slider{};       // JOINTS: Keep clear, drawn as a slider
+    bool info{};         // information: it can be chosen to read its help, and does nothing
 };
+// A row that only tells you something. Unlike a heading it can be chosen, so its help can be read.
+Row info_row(std::string label, std::string value, std::string about) {
+    Row row{std::move(label), std::move(value), std::move(about), {}, false};
+    row.info = true;
+    return row;
+}
+// What can be chosen in a list: anything but a heading.
+bool selectable(const Row& row) noexcept { return static_cast<bool>(row.act) || row.info; }
 // ---- the shots ------------------------------------------------------------------------------------
 // Set camera angles to work in, the ones a skate part is actually shot from. Each is the orbit the studio
 // already drives - turned and tilted about the skater, at a distance - and what it holds in the middle, so
@@ -1444,87 +1456,25 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         asset_entry();
         break;
     }
-    case Tab::joints:
-        // The force field is a row like the joints are, since it is what happens to them when they are
-        // moved. Pressing it steps through off and the quarters; C turns it off and on where it stood.
-        rows.push_back({"Force field", !u.anti_clip || u.clear_force <= 0.005f ? "off" : std::format("{:.0f}%", u.clear_force * 100),
-                        "How wide his body and his board are taken to be when something you move is pushed clear of them. Low keeps "
-                        "the limbs close and stops only the worst of it, high holds them well apart, off lets everything through. "
-                        "The deck is never softened by it: a shoe inside the board is wrong at any setting.",
-                        [] {
-                            auto& state = ui();
-                            const float steps[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
-                            float next = steps[0];
-                            const float now = state.anti_clip ? state.clear_force : 0.0f;
-                            for (const float step : steps) if (step > now + 0.01f) { next = step; break; }
-                            state.clear_force = next;
-                            state.anti_clip = next > 0.005f;
-                        }});
-        for (const auto& j : studio::editable_joints()) {
-            const auto* t = track_view(v, j.index);
-            const auto count = t ? t->keys.size() : 0;
-            Row row{std::string(j.label), count ? std::to_string(count) + (count == 1 ? " key" : " keys") : "", "", [index = j.index] { ui().selected = index; }};
-            if (t && t->hidden) row.value += "  off";
-            if (t && t->locked) row.value += "  locked";
-            rows.push_back(std::move(row));
-        }
-        break;
-    case Tab::keys: {
-        const auto* key = key_here(v, u.selected);
-        const auto* track = track_view(v, u.selected);
-        const bool locked = track && track->locked;
-        const auto joint = upper(label_of(u.selected));
-        rows.push_back({"Key this frame", joint, "Keys the joint as it is now on this frame.", [] { key_joint(); }, v.has_clip && !locked});
-        rows.push_back({"Delete key", "", "Takes the joint's key on this frame off.", [v] { delete_key(v); }, key && !locked});
-        rows.push_back({"Select all keys", u.picked.empty() ? "Ctrl A" : std::to_string(u.picked.size()),
-                        "Chooses every key of every joint and the board: drag one to move them all, Delete takes them off. Shift + click adds or takes one key; Esc lets go.",
-                        [v] { pick_all(v); }, v.has_clip});
-        rows.push_back({"Delete chosen keys", "", "Takes every chosen key off.", [] { delete_picked(); }, !u.picked.empty()});
-        rows.push_back({"Smooth chosen keys", "", "The chosen keys ease smoothly into the next. Drag a box over the timeline with the right "
-                        "button to choose a group of them; Shift adds to what is chosen.", [] { smooth_picked(); }, !u.picked.empty()});
-        rows.push_back({"Previous key", "", "The playhead to the joint's key before this frame.", [v] { jump_key(v, -1); }, track && !track->keys.empty()});
-        rows.push_back({"Next key", "", "The playhead to the joint's key after this frame.", [v] { jump_key(v, 1); }, track && !track->keys.empty()});
-        if (key) {
-            const char* names[] = {"Smooth", "Linear", "Step"};
-            const int ease = static_cast<int>(key->ease);
-            const float time = key->time;
-            rows.push_back({"Blend into the next key", names[ease],
-                            "Smooth eases in and out, Linear goes straight, Step holds this key until the next.", [time, ease] {
-                                studio::begin_change();
-                                studio::set_ease(ui().selected, time, static_cast<studio::Ease>((ease + 1) % 3));
-                            }, !locked});
-        }
-        rows.push_back({"Smooth keys", "", "Smooths this joint's keys: they all ease smoothly, keys that say nothing are dropped, "
-                                            "and the rest are drawn towards their neighbours. Smoothed keys show round.",
-                        [] {
-                            studio::begin_change();
-                            studio::smooth_keys(ui().selected);
-                        }, v.has_clip && !locked});
-        rows.push_back({"Smooth every joint", "", "The same, over every joint's keys at once.", [] {
-                            studio::begin_change();
-                            studio::smooth_keys(studio::all_joints);
-                        }, v.has_clip});
-        rows.push_back({"Turn about", u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "any axis",
-                        "Which axis a drag or the left stick turns the joint about.", [] { ui().axis = ui().axis >= 2 ? -1 : ui().axis + 1; }});
-        rows.push_back({"Gizmo alignment", u.local_axes ? "Object" : "World",
-                        "Which way the gizmo's arrows and rings lie: along the joint's own X, Y and Z (Object), or the world's "
-                        "(World). The board's own is the ground it starts on, because that is the frame its keys are in. Key: L.",
+    case Tab::joints: {
+        // How a drag or the stick poses the chosen joint, what keeps it clear, then the joints themselves.
+        rows.push_back({"Posing", "", "", {}, false});
+        rows.push_back({"Move or turn", u.move_mode ? "move" : "turn",
+                        "Turn: a drag or the left stick turns the joint. Move: it moves the hips or the board, and pulls a hand or "
+                        "a foot to where you drag it, the limb bending to follow. Keys: R turns, G moves.",
+                        [] { ui().move_mode = !ui().move_mode; ui().axis = -1; }});
+        rows.push_back({"Axis", u.axis == 0 ? "X" : u.axis == 1 ? "Y" : u.axis == 2 ? "Z" : "any",
+                        "The one axis a drag or the left stick turns the joint about (or moves it along), or any. Keys: X, Y, Z.",
+                        [] { ui().axis = ui().axis >= 2 ? -1 : ui().axis + 1; }});
+        rows.push_back({"Gizmo alignment", u.local_axes ? "object" : "world",
+                        "Which way the gizmo's arrows and rings lie: along the joint's own X, Y and Z (object), or the world's "
+                        "(world). The board's own is the ground it starts on, because that is the frame its keys are in. Key: L.",
                         [] { ui().local_axes = !ui().local_axes; }});
         rows.push_back({"Solo", v.solo ? "on" : "off",
                         "On: a turn moves that joint alone. The joints hanging off it are turned back by as much, so the limb below "
                         "keeps the way it faces instead of swinging with its parent. Bones are rigid, so it still travels with the "
                         "joint. Key: S.",
-                        [v] { studio::set_solo(!v.solo); }});
-        rows.push_back({"Keep clear", u.anti_clip ? "on" : "off",
-                        "On: what you move is kept out of the body and off the deck, and a limb it runs into is shoved aside - its "
-                        "hand or foot is moved by the overlap and the rest of it bends to follow. How wide his body is taken to be is "
-                        "the slider under the joint in JOINTS. Key: C.",
-                        [] { ui().anti_clip = !ui().anti_clip; }});
-        rows.push_back({"Push limbs aside", u.shove_limbs ? "on" : "off",
-                        "On: a limb that the one you are moving runs into gives way too - its hand or foot moves by the overlap and "
-                        "the rest bends to follow. Off, only what you move is kept clear, which is steadier. His two legs never push "
-                        "each other, since they belong close together.",
-                        [] { ui().shove_limbs = !ui().shove_limbs; }});
+                        [on = v.solo] { studio::set_solo(!on); }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
                         "instead of through it or over it. Key: N.",
@@ -1533,49 +1483,109 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "On: knees and elbows bend one way and every joint stays in the range the game's own animation "
                         "uses, while you pose and in game. Off: joints go wherever you push them, in the studio and in "
                         "game alike. Kept between sessions.",
-                        [v] { studio::set_joint_limits(!v.limits); }});
-        rows.push_back({"Stance", v.stance_choice != 0 ? (v.stance_choice == 1 ? "regular" : "goofy")
-                                  : v.game_stance == 0 ? (v.showing_goofy ? "the game's (not set: goofy)" : "the game's (not set: regular)")
-                                  : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
-                        "Which foot leads while you edit: regular (left) or goofy (right). A trick made leading with the other foot "
-                        "is mirrored into this stance the way the game mirrors its own animation, so the leg you grab is the leg "
-                        "that moves. Where it plays once saved is up to Trick matching. The game's: the Stance setting in "
-                        "GRIND EXITS (taken as regular until it is set).",
-                        [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
-        rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
-                        "Front foot: plays in every stance (regular, goofy, switch, fakie), mirrored onto your front foot when "
-                        "the other foot leads, as the game does. The closest recording wins: same pop, then rolling the same way, "
-                        "then the same foot. Exact stance: only one made on the foot that leads now, rolling the same way; the "
-                        "game's own animation otherwise. Nollie tricks need their own recording.",
-                        [v] { studio::set_front_foot(!v.front_foot); }});
-        rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
-                        "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
-                        "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",
-                        [v] { studio::set_grab(!v.grab_board); }});
-        rows.push_back({"Hide everything", u.hide_ui ? "hidden" : "H",
-                        "Takes the whole studio off the screen - tabs, timeline, dots and all - leaving the skater and the room. For "
-                        "filming a trick or taking a picture of it. H brings it back.",
-                        [] { ui().hide_ui = true; say("Hidden. H brings it back."); }});
-        rows.push_back({"Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name,
-                        "A set camera angle to work in: close, on the board, cinematic, the filmer's follow, or over the skater. "
-                        "It follows him while you pose and while it plays. Moving the camera yourself goes back to free. Key: V.",
-                        [v] { next_shot(v, 1); }});
-        rows.push_back({"Follow joint", "", "The camera keeps the joint in the middle (again: the whole skater).", [] { studio::focus_joint(ui().selected); }});
-        rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame.", [] { studio::copy_pose(); }});
-        rows.push_back({"Paste pose", "", "Keys the remembered pose on this frame.", [] {
+                        [on = v.limits] { studio::set_joint_limits(!on); }});
+        rows.push_back({"Collisions", "", "", {}, false});
+        {
+            // Pressing it steps through off and the quarters; C turns it off and on where it stood.
+            Row clear{"Keep clear", !u.anti_clip || u.clear_force <= 0.005f ? "off" : std::format("{:.0f}%", u.clear_force * 100),
+                      "What you move is kept out of his body and off the deck. How wide his body and board are taken to be: "
+                      "low keeps the limbs close and stops only the worst of it, high holds them well apart, off lets "
+                      "everything through. Drag along it, or choose it to step through the quarters. The deck is never "
+                      "softened: a shoe inside the board is wrong at any setting. Key: C turns it off and on.",
+                      [] {
+                          auto& state = ui();
+                          const float steps[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+                          float next = steps[0];
+                          const float now = state.anti_clip ? state.clear_force : 0.0f;
+                          for (const float step : steps) if (step > now + 0.01f) { next = step; break; }
+                          state.clear_force = next;
+                          state.anti_clip = next > 0.005f;
+                      }};
+            clear.slider = true;
+            rows.push_back(std::move(clear));
+        }
+        rows.push_back({"Push limbs aside", u.shove_limbs ? "on" : "off",
+                        "On: a limb that the one you are moving runs into gives way too - its hand or foot moves by the overlap and "
+                        "the rest bends to follow. Off, only what you move is kept clear, which is steadier. His two legs never push "
+                        "each other, since they belong close together.",
+                        [] { ui().shove_limbs = !ui().shove_limbs; }});
+        const auto joints = studio::editable_joints();
+        rows.push_back({"Joints", std::to_string(joints.size()), "", {}, false});
+        for (const auto& j : joints) {
+            const auto* t = track_view(v, j.index);
+            const auto count = t ? t->keys.size() : 0;
+            Row row{std::string(j.label), count ? std::to_string(count) + (count == 1 ? " key" : " keys") : "",
+                    "Choose the joint, then drag it on the skater or use the left stick. Enter (A) keys it on this frame.",
+                    [index = j.index] { ui().selected = index; }};
+            if (t && t->hidden) row.value += "  muted";
+            if (t && t->locked) row.value += "  locked";
+            row.joint = j.index;
+            rows.push_back(std::move(row));
+        }
+        break;
+    }
+    case Tab::keys: {
+        const auto* key = key_here(v, u.selected);
+        const auto* track = track_view(v, u.selected);
+        const bool locked = track && track->locked;
+        const auto joint = upper(label_of(u.selected));
+        rows.push_back({"This frame", joint, "", {}, false});
+        rows.push_back({"Key this frame", "", "Keys the chosen joint as it is now, on this frame. Key: K.", [] { key_joint(); }, v.has_clip && !locked});
+        rows.push_back({"Delete key", "", "Takes the chosen joint's key on this frame off. Key: Del (X on a controller).", [&v] { delete_key(v); }, key && !locked});
+        {
+            // Always here, so the rows under it do not move as the playhead passes keys.
+            const char* names[] = {"smooth", "linear", "step"};
+            const int ease = key ? static_cast<int>(key->ease) : 0;
+            const float time = key ? key->time : 0.0f;
+            rows.push_back({"Blend into the next key", key ? names[ease] : "",
+                            "How the key on this frame blends into the next: smooth curves through the keys, linear goes straight, "
+                            "step holds this key until the next. A linear or step key is never round.", [time, ease] {
+                                studio::begin_change();
+                                studio::set_ease(ui().selected, time, static_cast<studio::Ease>((ease + 1) % 3));
+                            }, key && !locked});
+        }
+        rows.push_back({"Previous key", "", "The playhead to the chosen joint's key before this frame.", [&v] { jump_key(v, -1); }, track && !track->keys.empty()});
+        rows.push_back({"Next key", "", "The playhead to the chosen joint's key after this frame.", [&v] { jump_key(v, 1); }, track && !track->keys.empty()});
+        rows.push_back({"Chosen keys", u.picked.empty() ? "" : std::to_string(u.picked.size()), "", {}, false});
+        rows.push_back({"Select all keys", "", "Chooses every key of every joint and the board: drag one to move them all. Shift + click "
+                        "adds or takes one key; a box dragged with the right button chooses a group. Key: Ctrl+A.",
+                        [&v] { pick_all(v); }, v.has_clip});
+        rows.push_back({"Smooth chosen keys", "", "The chosen keys ease into their neighbours (each is drawn a little towards them) and "
+                        "show round. Double-click a key to smooth just that one.", [] { smooth_picked(); }, !u.picked.empty()});
+        rows.push_back({"Delete chosen keys", "", "Takes every chosen key off. Key: Del.", [] { delete_picked(); }, !u.picked.empty()});
+        rows.push_back({"Let go of chosen keys", "", "No key is chosen any more. Key: Esc.", [] {
+                            ui().picked.clear();
+                            say("No keys chosen.");
+                        }, !u.picked.empty()});
+        rows.push_back({"Joint's keys", joint, "", {}, false});
+        rows.push_back({"Smooth joint's keys", "", "Smooths every key of the chosen joint: they all ease smoothly, keys that say nothing "
+                        "are dropped, and the rest are drawn towards their neighbours and put on whole frames. Smoothed keys show round.",
+                        [] {
                             studio::begin_change();
-                            studio::paste_pose();
+                            studio::smooth_keys(ui().selected);
+                        }, v.has_clip && !locked});
+        rows.push_back({"Smooth every joint", "", "The same, over every joint's keys at once.", [] {
+                            studio::begin_change();
+                            studio::smooth_keys(studio::all_joints);
                         }, v.has_clip});
-        rows.push_back({"Reset joint", joint, "Takes all of the joint's keys off.", [] {
+        rows.push_back({"Delete joint's keys", "", "Takes all of the chosen joint's keys off.", [] {
                             studio::begin_change();
                             studio::reset_joint(ui().selected);
                         }, track && !locked});
-        rows.push_back({"Hide joint's keys", track && track->hidden ? "hidden" : "", "Plays the trick as if the joint had no keys.",
-                        [hidden = track && track->hidden, locked] { studio::set_track_flags(ui().selected, !hidden, locked); }});
-        rows.push_back({"Lock joint", locked ? "locked" : "", "A locked joint's keys cannot be changed.",
-                        [hidden = track && track->hidden, locked] { studio::set_track_flags(ui().selected, hidden, !locked); }});
-        rows.push_back({"Undo", "", "", [] { studio::undo(); }, v.can_undo});
-        rows.push_back({"Redo", "", "", [] { studio::redo(); }, v.can_redo});
+        rows.push_back({"Mute joint's keys", track && track->hidden ? "muted" : "off",
+                        "Muted: the trick plays as if the chosen joint had no keys. They are kept, and come back when it is unmuted.",
+                        [hidden = track && track->hidden, locked] { studio::set_track_flags(ui().selected, !hidden, locked); }, track != nullptr});
+        rows.push_back({"Lock joint's keys", locked ? "locked" : "off", "Locked: the chosen joint's keys cannot be changed.",
+                        [hidden = track && track->hidden, locked] { studio::set_track_flags(ui().selected, hidden, !locked); }, track != nullptr});
+        rows.push_back({"Pose", "", "", {}, false});
+        rows.push_back({"Copy pose", "", "Remembers every joint's edit on this frame. Key: Ctrl+C.", [] { studio::copy_pose(); }, v.has_clip});
+        rows.push_back({"Paste pose", "", "Keys the remembered pose on this frame. Key: Ctrl+V.", [] {
+                            studio::begin_change();
+                            studio::paste_pose();
+                        }, v.has_clip});
+        rows.push_back({"History", "", "", {}, false});
+        rows.push_back({"Undo", "", "Takes back the last change. Key: Ctrl+Z (B on a controller).", [] { studio::undo(); }, v.can_undo});
+        rows.push_back({"Redo", "", "Puts back what Undo took back. Key: Ctrl+Y.", [] { studio::redo(); }, v.can_redo});
         break;
     }
     case Tab::packs: {
@@ -1600,7 +1610,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                 ui().confirm_delete.clear();
                             }});
             if (pack == v.packs.end()) {
-                rows.push_back({"This pack is gone", "", "", {}, false});
+                rows.push_back(info_row("This pack is gone", "", "It was deleted. Back takes you to your packs."));
                 break;
             }
             const auto name = pack->name;
@@ -1609,12 +1619,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                             "On: the tricks in this pack play in game. Several packs can be on at once (when two have the same "
                             "trick they take turns). With no pack on, all your saved tricks play.",
                             [name, on = pack->on] { std::string m; studio::set_pack_on(name, !on, m); say(m); }});
-            rows.push_back({"Variant playback", pack->alternate ? "Alternate" : "Fixed",
+            rows.push_back({"Variation playback", pack->alternate ? "alternate" : "fixed",
                             "When the pack has more than one of a trick: Fixed plays the first one added, Alternate plays a "
                             "different one each attempt.",
                             [on = pack->alternate] { std::string m; studio::set_pack_alternate(!on, m); say(m); }});
             rows.push_back({"Save pack", pack->unsaved ? "not saved" : "saved",
-                            "Keeps the tricks you put in or took out, and Variant playback. Until then the pack plays as it was "
+                            "Keeps the tricks you put in or took out, and Variation playback. Until then the pack plays as it was "
                             "last saved.",
                             [] { std::string m; studio::save_pack(m); say(m); }, pack->unsaved});
             rows.push_back({"Export pack", name + ".zip",
@@ -1635,7 +1645,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             for (const auto& trick : v.library)
                 (std::find(pack->members.begin(), pack->members.end(), trick) != pack->members.end() ? in : out).push_back(trick);
             rows.push_back({"Tricks in this pack", std::to_string(in.size()), "", {}, false});
-            if (in.empty()) rows.push_back({"None yet", "", "", {}, false});
+            if (in.empty()) rows.push_back(info_row("None yet", "", "Put your tricks in it from the list below."));
             for (const auto& trick : in) {
                 Row row{trick, trick_of(trick), "In the pack: choose it to take it out (Save pack keeps that)." + made_by(trick),
                         [trick] { std::string m; studio::set_pack_member(trick, false, m); say(m); }};
@@ -1643,7 +1653,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 rows.push_back(std::move(row));
             }
             rows.push_back({"Add your tricks", std::to_string(out.size()), "", {}, false});
-            if (out.empty()) rows.push_back({"All your tricks are in it", "", "", {}, false});
+            if (out.empty()) rows.push_back(info_row("All your tricks are in it", "", "Every trick you saved is in this pack."));
             for (const auto& trick : out)
                 rows.push_back({trick, trick_of(trick), "Choose it to put it in the pack (Save pack keeps that)." + made_by(trick),
                                 [trick] { std::string m; studio::set_pack_member(trick, true, m); say(m); }, preset_of(trick) != nullptr});
@@ -1657,7 +1667,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }, v.has_clip});
         rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
                         "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
-                        [v] { studio::set_pop(v.pop.empty() ? "low" : v.pop == "low" ? "mid" : v.pop == "mid" ? "high" : ""); }, v.has_clip});
+                        [pop = v.pop] { studio::set_pop(pop.empty() ? "low" : pop == "low" ? "mid" : pop == "mid" ? "high" : ""); }, v.has_clip});
         rows.push_back({"Copy to low, mid and high pop", "", "Saves this animation with its keys three times, one for each pop height, so it plays on every pop.",
                         [] {
                             std::string m;
@@ -1667,7 +1677,20 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         std::size_t packs_on = 0;
         for (const auto& pack : v.packs) packs_on += pack.on;
         rows.push_back({"Your packs", packs_on ? std::to_string(packs_on) + " on" : "none on: all your tricks play", "", {}, false});
-        if (v.packs.empty()) rows.push_back({"No packs yet", "", "", {}, false});
+        rows.push_back({"Create a new pack", u.pack_name[0] ? std::string(u.pack_name.data()) : "type its name below",
+                        "Type the pack's name in NEW PACK NAME below (for example Steezy), then choose this. It starts empty "
+                        "and off: put your tricks in it, Save pack, and switch it on.", [] {
+                            std::string m;
+                            if (studio::create_preset_pack(m, ui().pack_name.data())) {
+                                ui().pack_name.fill(0);
+                                ui().row = 2;
+                            }
+                            say(m);
+                        }});
+        rows.push_back({"Import packs", "", "Takes in other people's packs: put their zip in ReSkate.Tricks\\import first. Everything "
+                        "in it is checked, a name already used gets the next number, and animations from older builds are "
+                        "brought up to date.", [] { std::string m; studio::import_packs(m); say(m); }});
+        if (v.packs.empty()) rows.push_back(info_row("No packs yet", "", "Create one above: type its name in NEW PACK NAME first."));
         for (const auto& pack : v.packs) {
             std::size_t count = 0;
             for (const auto& member : pack.members) count += std::find(v.library.begin(), v.library.end(), member) != v.library.end();
@@ -1682,28 +1705,15 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                 ui().row = 2; // Switched on
                             }});
         }
-        rows.push_back({"Create a new pack", u.pack_name[0] ? std::string(u.pack_name.data()) : "type its name below",
-                        "Type the pack's name in NEW PACK NAME below (for example Steezy), then choose this. It starts empty "
-                        "and off: put your tricks in it, Save pack, and switch it on.", [] {
-                            std::string m;
-                            if (studio::create_preset_pack(m, ui().pack_name.data())) {
-                                ui().pack_name.fill(0);
-                                ui().row = 2;
-                            }
-                            say(m);
-                        }});
-        rows.push_back({"Import packs", "", "Takes in other people's packs: put their zip in ReSkate.Tricks\\import first. Everything "
-                        "in it is checked, a name already used gets the next number, and animations from older builds are "
-                        "brought up to date.", [] { std::string m; studio::import_packs(m); say(m); }});
+        rows.push_back({"Your tricks", std::to_string(v.library.size()), "", {}, false});
         rows.push_back({"Export all your tricks", "All saved animations.zip", "Every saved animation in one zip in "
                         "ReSkate.Tricks\\exports, to share or keep.", [] { std::string m; studio::export_pack("", m); say(m); }});
-        rows.push_back({"Your tricks", std::to_string(v.library.size()), "", {}, false});
-        if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
+        if (v.library.empty()) rows.push_back(info_row("Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here."));
         for (const auto& name : v.library) {
             std::size_t in = 0;
             for (const auto& pack : v.packs) in += std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
             Row row{name, name == v.name ? "open" : trick_of(name) + (in ? ", " + std::to_string(in) + (in == 1 ? " pack" : " packs") : ""),
-                    "One of your saved tricks: choose it to open it and change it. Delete takes it out of your tricks (press it twice)." + made_by(name),
+                    "One of your saved tricks: choose it to open it and change it. Del (X on a controller) twice deletes it." + made_by(name),
                     [name] {
                         std::string m;
                         studio::load(name, m);
@@ -1719,46 +1729,77 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     }
     case Tab::settings: {
         rows.push_back({"Playback", "", "", {}, false});
-        rows.push_back({v.playing ? "Pause" : "Play", "", "Plays the trick with your keys.", [v] { studio::set_playing(!v.playing); }, v.has_clip});
-        rows.push_back({"Loop", v.loop ? "on" : "off", "Repeat the timeline. A source whose end differs from its start can visibly reset when looped.", [v] { studio::set_loop(!v.loop); }});
-        rows.push_back({"Preview speed", std::format("{:.2f}x", v.speed), "Slows the studio preview down to edit. In game the trick is fitted to the air that happens.", [v] {
+        rows.push_back({v.playing ? "Pause" : "Play", "", "Plays the trick with your keys. Key: Space (Y on a controller).", [on = v.playing] { studio::set_playing(!on); }, v.has_clip});
+        rows.push_back({"Loop", v.loop ? "on" : "off", "Repeat the timeline. A source whose end differs from its start can visibly reset when looped.", [on = v.loop] { studio::set_loop(!on); }});
+        rows.push_back({"Preview speed", std::format("{:.2f}x", v.speed), "Slows the studio preview down to edit. In game the trick is fitted to the air that happens.", [speed = v.speed] {
                             const float speeds[] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
                             float next = speeds[0];
-                            for (const float s : speeds) if (s > v.speed + 0.01f) { next = s; break; }
+                            for (const float step : speeds) if (step > speed + 0.01f) { next = step; break; }
                             studio::set_speed(next);
                         }});
-        rows.push_back({"This animation", "", "", {}, false});
-        rows.push_back({"Source", v.source_kind == "native_asset" ? (v.source_position_codec == "native-piec-v1-extent" ? "Native clip" : "Unverified native clip") : v.source_kind == "render_capture" ? "In-game capture" : "Legacy / unknown",
-                        "Where this animation came from. In game the whole skater and the board play it with your keys, as the studio shows it.", {}, false});
-        rows.push_back({"In game", "Whole body",
-                        "The skater and the board play this animation with your keys. When the other foot leads it is mirrored "
-                        "onto the front foot (Trick matching in KEYS); with the deck turned round under him the board turns with it. "
-                        "With Joint limits on (KEYS), joints stay in their natural range.", {}, false});
-        rows.push_back({"In-game timing", "Fitted to the air",
-                        "Takeoff meets the recording's takeoff and the landing meets the game's, so a longer or shorter air "
-                        "stretches the trick to fit. The trick is known only after takeoff, so nothing plays before it. A low, "
-                        "mid or high pop binding plays only on that pop; Any plays on all.", {}, false});
-        if (v.has_clip && v.source_pose_count > 1) {
-            const float hz = v.duration > 0 ? static_cast<float>(v.source_pose_count - 1) / v.duration : 0;
-            const bool sparse = v.source_max_sample_gap > 0.05f;
-            rows.push_back({"Source sampling", std::format("{} poses / {:.0f} Hz{}", v.source_pose_count, hz, sparse ? " (sparse)" : ""),
-                            sparse ? "This source has widely spaced poses. Interpolation cannot restore missing motion; use a full-rate recording for a finished animation." :
-                                     "The source poses available to the timeline. Slower playback does not add missing source frames.", {}, false});
-        }
-        if (v.source_kind == "native_asset" && v.source_position_codec != "native-piec-v1-extent")
-            rows.push_back({"Source needs updating", "Reopen from TRICKS", "This saved source predates the position decoder correction. Your saved keys remain intact; use the updated native library to inspect the corrected source.", {}, false});
-        rows.push_back({"Entry binding", v.entry, "Ground and rail-exit recordings are separate presets. Entry is captured when recording.", {}, false});
-        rows.push_back({"Studio", "", "", {}, false});
+        rows.push_back({"View", "", "", {}, false});
+        rows.push_back({"Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name,
+                        "A set camera angle to work in: close, on the board, cinematic, the filmer's follow, or over the skater. "
+                        "It follows him while you pose and while it plays. Moving the camera yourself goes back to free. Key: V "
+                        "(1 to 5 and 0 look from fixed sides).",
+                        [&v] { next_shot(v, 1); }});
+        rows.push_back({"Follow joint", "", "The camera keeps the chosen joint in the middle (again: the whole skater). Key: F.",
+                        [] { studio::focus_joint(ui().selected); }});
+        rows.push_back({"Hide joints", u.hide_joints ? "hidden" : "shown", "Takes the dots and the gizmo off the skater, to see the "
+                        "pose clean. Key: J.", [] { ui().hide_joints = !ui().hide_joints; }});
+        rows.push_back({"Hide everything", "", "Takes the whole studio off the screen - tabs, timeline, dots and all - leaving the "
+                        "skater and the room, for filming a trick or taking a picture of it. Key: H brings it back.",
+                        [] { ui().hide_ui = true; say("Hidden. H brings it back."); }});
+        rows.push_back({"Hide the menu", "", "Takes this menu away to give the skater more room; the timeline stays. Key: Tab "
+                        "brings it back.", [] { ui().menu_hidden = true; say("Menu hidden. Tab brings it back."); }});
+        rows.push_back({"Stance", v.stance_choice != 0 ? (v.stance_choice == 1 ? "regular" : "goofy")
+                                  : v.game_stance == 0 ? (v.showing_goofy ? "the game's (not set: goofy)" : "the game's (not set: regular)")
+                                  : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
+                        "Which foot leads while you edit: regular (left) or goofy (right). A trick made leading with the other foot "
+                        "is mirrored into this stance the way the game mirrors its own animation, so the leg you grab is the leg "
+                        "that moves. Where it plays once saved is up to Trick matching. The game's: the Stance setting in the "
+                        "ReSkate menu, Addons > GRIND EXITS (taken as regular until it is set).",
+                        [choice = v.stance_choice] { studio::set_stance((choice + 1) % 3); }});
+        rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
+                        "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
+                        "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",
+                        [on = v.grab_board] { studio::set_grab(!on); }});
+        rows.push_back({"In game", "", "", {}, false});
         rows.push_back({"Custom tricks in game", v.play_in_game ? "on" : "off",
-                        "On: your saved animations play in game in place of the game's own. Off: every trick plays as the game has it.",
-                        [v] { studio::set_play_in_game(!v.play_in_game); }});
+                        "On: your saved tricks play in game in place of the game's own. The whole skater and the board play the "
+                        "recording with your keys, as the studio shows it, and the trick is fitted to the air that happens: its "
+                        "takeoff meets the recording's and its landing the game's. Off: every trick plays as the game has it.",
+                        [on = v.play_in_game] { studio::set_play_in_game(!on); }});
+        rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
+                        "Front foot: plays in every stance (regular, goofy, switch, fakie), mirrored onto your front foot when "
+                        "the other foot leads, as the game does. The closest recording wins: same pop, then rolling the same way, "
+                        "then the same foot. Exact stance: only one made on the foot that leads now, rolling the same way; the "
+                        "game's own animation otherwise. Nollie tricks need their own recording.",
+                        [on = v.front_foot] { studio::set_front_foot(!on); }});
+        rows.push_back({"Studio", "", "", {}, false});
         rows.push_back({"Studio room", v.room ? "on" : "off",
                         "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where you are. Takes effect the next time it opens.",
-                        [v] { studio::set_room(!v.room); }});
+                        [on = v.room] { studio::set_room(!on); }});
         rows.push_back({"Export diagnostics", "Last 15 seconds", "Reproduce the bug, open F8, then export. Captures native/modified poses, switch/stance, timings, board and selected presets as local text files. Gameplay history freezes while the studio is open.", [] {
                             std::string m; studio::export_diagnostics(m); say(m);
                         }});
-        rows.push_back({"Close the studio", "", "Back to skating. The camera and the game's HUD come back.", [] { studio::request_close(); }});
+        rows.push_back({"Close the studio", "", "Back to skating. The camera and the game's HUD come back. Key: F8.", [] { studio::request_close(); }});
+        rows.push_back({"About this animation", "", "", {}, false});
+        rows.push_back(info_row("Source", v.source_kind == "native_asset" ? (v.source_position_codec == "native-piec-v1-extent" ? "native clip" : "unverified native clip")
+                                          : v.source_kind == "render_capture" ? "in-game capture" : "legacy / unknown",
+                                "Where this animation came from: one of the game's own clips, or a trick you recorded in game."));
+        if (v.has_clip && v.source_pose_count > 1) {
+            const float hz = v.duration > 0 ? static_cast<float>(v.source_pose_count - 1) / v.duration : 0;
+            const bool sparse = v.source_max_sample_gap > 0.05f;
+            rows.push_back(info_row("Source sampling", std::format("{} poses / {:.0f} Hz{}", v.source_pose_count, hz, sparse ? " (sparse)" : ""),
+                            sparse ? "This source has widely spaced poses. Interpolation cannot restore missing motion; use a full-rate recording for a finished animation." :
+                                     "The source poses available to the timeline. Slower playback does not add missing source frames."));
+        }
+        if (v.source_kind == "native_asset" && v.source_position_codec != "native-piec-v1-extent")
+            rows.push_back(info_row("Source needs updating", "reopen from TRICKS", "This saved source predates the position decoder "
+                                    "correction. Your saved keys remain intact; use the updated native library to inspect the corrected source."));
+        rows.push_back(info_row("Entry", v.entry, "Where the trick starts from: the ground or a rail. Ground and rail-exit recordings are "
+                                "kept apart, and the entry is taken when recording."));
         break;
     }
     }
@@ -1783,42 +1824,33 @@ bool repeats(unsigned bit, unsigned buttons, unsigned pressed, double now) {
 void switch_tab(int delta) {
     auto& u = ui();
     u.tab = (u.tab + delta + static_cast<int>(tab_names.size())) % static_cast<int>(tab_names.size());
-    u.row = static_cast<Tab>(u.tab) == Tab::tricks ? (u.open_trick.empty() ? 1 : 2) : 0; // Record a trick, or the first pop
+    // Record a trick, or the first pop; in JOINTS the chosen joint (list() finds its row).
+    u.row = static_cast<Tab>(u.tab) == Tab::tricks ? (u.open_trick.empty() ? 1 : 2) : static_cast<Tab>(u.tab) == Tab::joints ? -1 : 0;
     u.confirm_delete.clear();
 }
 // Up / down in the list: in JOINTS the list is the joints themselves.
 void move_row(const studio::View& v, int delta) {
     auto& u = ui();
-    if (static_cast<Tab>(u.tab) == Tab::joints) {
-        // Row 0 is the force field, above the joints; the joints are the rest.
-        if (u.row <= 0 && delta < 0) return;
-        if (u.row <= 1 && delta < 0) { u.row = 0; return; }
-        if (u.row == 0) {
-            u.row = 1;
-            u.selected = studio::editable_joints()[0].index;
-            return;
-        }
-        select_row(delta);
-        return;
-    }
     const auto rows = rows_of(static_cast<Tab>(u.tab), v);
     const int count = static_cast<int>(rows.size());
-    // Headings (rows that do nothing) are stepped over.
-    int at = u.row;
+    // Headings are stepped over. In JOINTS going onto a joint's row chooses that joint.
+    int at = std::clamp(u.row, 0, std::max(0, count - 1));
     for (int step = 0; step < count; ++step) {
         at = std::clamp(at + delta, 0, std::max(0, count - 1));
-        if (rows[static_cast<std::size_t>(at)].act || at == 0 || at == count - 1) break;
+        if (selectable(rows[static_cast<std::size_t>(at)]) || at == 0 || at == count - 1) break;
     }
-    if (count && !rows[static_cast<std::size_t>(at)].act) at = u.row; // only headings that way: stay
+    if (count && !selectable(rows[static_cast<std::size_t>(at)])) at = u.row; // only headings that way: stay
     u.row = at;
+    if (at >= 0 && at < count && rows[static_cast<std::size_t>(at)].joint) u.selected = *rows[static_cast<std::size_t>(at)].joint;
 }
 void activate_row(const studio::View& v) {
     auto& u = ui();
-    if (static_cast<Tab>(u.tab) == Tab::joints) {
+    auto rows = rows_of(static_cast<Tab>(u.tab), v);
+    // On a joint's row, Enter (A) keys that joint on this frame.
+    if (u.row >= 0 && u.row < static_cast<int>(rows.size()) && rows[static_cast<std::size_t>(u.row)].joint) {
         key_joint();
         return;
     }
-    auto rows = rows_of(static_cast<Tab>(u.tab), v);
     if (u.row >= 0 && u.row < static_cast<int>(rows.size()) && rows[static_cast<std::size_t>(u.row)].enabled && rows[static_cast<std::size_t>(u.row)].act)
         rows[static_cast<std::size_t>(u.row)].act();
 }
@@ -1870,7 +1902,6 @@ void controller(const studio::View& v, const Projector& p) {
         }
         return;
     }
-    // The close warning takes the buttons: A save and close, X close without saving, B back.
     if (v.confirm_close) return; // the close warning's card takes the buttons
     // LB and RB change tab on a tap. Held with a stick they carry a bracket instead (below), so the tab
     // only changes when the shoulder is let go without having carried anything.
@@ -2015,7 +2046,7 @@ void tab_row(ImDrawList* d, const Fonts& f, ImVec2 at, float width) {
         ImGui::PushID(i);
         if (ImGui::InvisibleButton("##tab", ImVec2(b.x - a.x, b.y - a.y))) {
             u.tab = i;
-            u.row = 0;
+            u.row = static_cast<Tab>(i) == Tab::joints ? -1 : 0; // list() moves off a heading
         }
         ImGui::PopID();
         const bool chosen = u.tab == i;
@@ -2038,13 +2069,22 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
     const auto tab = static_cast<Tab>(u.tab);
     const auto rows = rows_of(tab, v);
     int chosen = u.row;
-    if (tab == Tab::joints && u.row != 0) {
-        // The joints follow the chosen one; row 0 is the force field, which is chosen on its own.
-        const auto joints = studio::editable_joints();
-        for (std::size_t i = 0; i < joints.size(); ++i) if (joints[i].index == u.selected) chosen = static_cast<int>(i) + 1;
+    if (tab == Tab::joints) {
+        // On the joints the highlight follows the chosen joint, and so does a joint chosen on the skater even
+        // when an option row was highlighted.
+        const bool joint_changed = u.joint_row_for != u.selected;
+        u.joint_row_for = u.selected;
+        const bool on_joint = u.row < 0 || u.row >= static_cast<int>(rows.size()) || rows[static_cast<std::size_t>(u.row)].joint;
+        if (on_joint || joint_changed)
+            for (std::size_t i = 0; i < rows.size(); ++i)
+                if (rows[i].joint && *rows[i].joint == u.selected) chosen = static_cast<int>(i);
     }
     chosen = std::clamp(chosen, 0, std::max(0, static_cast<int>(rows.size()) - 1));
-    u.row = tab == Tab::joints ? u.row : chosen;
+    // A heading cannot be chosen: the first row under it that does something is.
+    if (!rows.empty() && !selectable(rows[static_cast<std::size_t>(chosen)]))
+        for (int i = chosen; i < static_cast<int>(rows.size()); ++i)
+            if (selectable(rows[static_cast<std::size_t>(i)])) { chosen = i; break; }
+    u.row = chosen;
     skate_theme::rough_rect(d, ImVec2(at.x - 18 * k, at.y - 10 * k), ImVec2(at.x + size.x + 18 * k, at.y + size.y + 10 * k), IM_COL32(48, 50, 56, 150), 61, k);
     const float content = rows.size() * (row_h + gap);
     float& scroll = u.list_scroll[static_cast<std::size_t>(u.tab)];
@@ -2065,9 +2105,9 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         const float y = at.y + i * (row_h + gap) - scroll;
         if (y + row_h < at.y || y > at.y + size.y) continue;
         const ImVec2 a(at.x, y), b(at.x + size.x - 24 * k, y + row_h);
-        // The force field, at the head of the joints: a paper row like the card below, filled across to how
-        // far it is turned up, dragged anywhere along it.
-        if (tab == Tab::joints && i == 0) {
+        // Keep clear: a paper row like the card below, filled across to how far it is turned up, dragged
+        // anywhere along it.
+        if (row.slider) {
             ImGui::SetCursorScreenPos(a);
             ImGui::PushID(9001);
             ImGui::InvisibleButton("##force", ImVec2(b.x - a.x, b.y - a.y));
@@ -2078,7 +2118,7 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 const float along = (ImGui::GetIO().MousePos.x - (a.x + inset)) / std::max(1.0f, (b.x - a.x) - 2 * inset);
                 u.clear_force = std::clamp(along, 0.0f, 1.0f);
                 u.anti_clip = u.clear_force > 0.005f;
-                u.row = 0;
+                u.row = static_cast<int>(i);
             }
             const bool on = u.anti_clip && u.clear_force > 0.005f;
             const float force = on ? u.clear_force : 0.0f;
@@ -2090,15 +2130,15 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 d->PopClipRect();
             }
             const float fs = 21 * k;
-            text(d, f.bold, fs, ImVec2(a.x + 30 * k, a.y + row_h * 0.5f - 12 * k), on && force > 0.25f ? white : ink, "Force field");
-            const std::string value = on ? std::format("{:.0f}%", force * 100) : "OFF";
+            text(d, f.bold, fs, ImVec2(a.x + 30 * k, a.y + row_h * 0.5f - 12 * k), on && force > 0.25f ? white : ink, row.label);
+            const std::string value = on ? std::format("{:.0f}%", force * 100) : "off";
             const auto vw = text_size(f.bold, 16 * k, value.c_str());
             text(d, f.bold, 16 * k, ImVec2(b.x - vw.x - 22 * k, a.y + row_h * 0.5f - 9 * k), on && force > 0.92f ? white : ink, value);
             continue;
         }
         // A row with nothing to do is a heading over the rows under it: the game's own settings pages are
         // read that way, and a heading that looks like a button is a button you cannot press.
-        if (!row.act && !row.enabled) {
+        if (!row.act && !row.enabled && !row.info) {
             const float fs = 15 * k;
             text(d, f.heading, fs, ImVec2(a.x + 8 * k, b.y - fs - 6 * k), white, upper(row.label));
             d->AddRectFilled(ImVec2(a.x + 8 * k, b.y - 3 * k), ImVec2(b.x - 8 * k, b.y - 1.5f * k), IM_COL32(255, 255, 255, 36));
@@ -2122,7 +2162,7 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             skate_theme::rough_rect(d, a, b, hovered ? IM_COL32(40, 41, 44, 246) : IM_COL32(24, 24, 26, 246), seed_of(a), k);
             d->AddRectFilled(ImVec2(a.x + 2 * k, b.y), ImVec2(b.x - 2 * k, b.y + 3 * k), IM_COL32(0, 0, 0, 120)); // its shadow
         }
-        const ImU32 ink = row.enabled ? white : faint;
+        const ImU32 ink = row.info ? soft : row.enabled ? white : faint;
         text(d, f.bold, 21 * k, ImVec2(a.x + 30 * k, a.y + row_h * 0.5f - 12 * k), ink, row.label);
         if (!row.value.empty()) {
             const auto t = text_size(f.bold, 16 * k, row.value.c_str());
@@ -2131,9 +2171,7 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         if (row.on && !here) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 4 * k, b.y - 6 * k), blue);
         if (clicked) {
             u.row = static_cast<int>(i);
-            // In JOINTS every row but the first is a joint, and choosing it is what the click means.
-            if (tab == Tab::joints && i > 0) u.selected = studio::editable_joints()[i - 1].index;
-            else if (row.enabled && row.act) row.act();
+            if (row.enabled && row.act) row.act(); // a joint's row chooses its joint
         }
     }
     d->PopClipRect();
@@ -2429,7 +2467,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     for (const auto& t : v.tracks)
         for (const auto& key : t.keys)
             if (!bracket_key(key.time))
-                    key_mark(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft, key.smooth);
+                    key_mark(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft, round_key(key));
     d->PopClipRect();
     // Rows, one per joint.
     const auto joints = studio::editable_joints();
@@ -2487,9 +2525,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 const bool close_to = lane_hovered && std::abs(ImGui::GetIO().MousePos.x - c.x) < 9 * k;
                 const bool in_pick = is_picked(joint.index, key.time);
                 drawn_keys().push_back({joint.index, key.time, c});
-                if ((current && chosen) || in_pick) key_mark(d, c, 13 * k, in_pick ? blue : blue_dim, key.smooth);
+                if ((current && chosen) || in_pick) key_mark(d, c, 13 * k, in_pick ? blue : blue_dim, round_key(key));
                 key_mark(d, c, (close_to ? 10.5f : 9) * k, track->hidden ? faint : in_pick || (current && chosen) ? blue_light : white,
-                         key.smooth);
+                         round_key(key));
                 if (key.ease == studio::Ease::step) d->AddLine(ImVec2(c.x, c.y - 4 * k), ImVec2(c.x, c.y + 4 * k), IM_COL32(40, 40, 40, 255), 2 * k);
                 if (close_to && lane_clicked && !track->locked && ImGui::GetIO().KeyShift) {
                     on_key = true;
@@ -2499,6 +2537,18 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     });
                     if (found != picked.end()) picked.erase(found);
                     else picked.emplace_back(joint.index, key.time);
+                } else if (close_to && lane_clicked && !track->locked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    // Double-click: the key (or the chosen group it is in) is smoothed and shows round.
+                    on_key = true;
+                    studio::begin_change();
+                    std::string m;
+                    if (in_pick && u.picked.size() > 1) studio::smooth_chosen_keys(u.picked, m);
+                    else {
+                        const std::array<std::pair<std::uint16_t, float>, 1> one{{{joint.index, key.time}}};
+                        studio::smooth_chosen_keys(one, m);
+                    }
+                    say(m);
+                    u.key_joint.reset(); // not a drag
                 } else if (close_to && lane_clicked && !track->locked) {
                     on_key = true;
                     if (!in_pick) u.picked.clear();
@@ -2547,7 +2597,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             u.key_to = to;
         } else {
             if (u.key_moved && std::abs(u.key_to - u.key_from) > 1e-4f) {
-                if (is_picked(*u.key_joint, u.key_from) && u.picked.size() > 1) move_picked(u.key_to - u.key_from);
+                if (is_picked(*u.key_joint, u.key_from) && u.picked.size() > 1) move_picked(u.key_to - u.key_from, v.duration);
                 else {
                     studio::begin_change();
                     studio::move_key(*u.key_joint, u.key_from, u.key_to);
@@ -2648,9 +2698,20 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             d->AddLine(ImVec2(x, at.y + size.y - 4 * k), ImVec2(x + dir * 7 * k, at.y + size.y - 4 * k), colour, weight * k);
             ++which;
         }
-        if (near_bracket && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.bracket_drag = near_bracket;
+        // One drag of a bracket is one change to undo, and it only moves when it reaches another frame.
+        if (near_bracket && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            u.bracket_drag = near_bracket;
+            u.bracket_dragged_to = -1;
+            studio::begin_change();
+        }
         if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
-        if (u.bracket_drag) studio::move_bracket(u.bracket_drag, std::round(t_of(io.MousePos.x) * fps) / fps);
+        if (u.bracket_drag) {
+            const float to = std::round(t_of(io.MousePos.x) * fps) / fps;
+            if (std::abs(to - u.bracket_dragged_to) > 0.5f / fps) {
+                u.bracket_dragged_to = to;
+                studio::move_bracket(u.bracket_drag, to);
+            }
+        }
     }
     if (v.has_clip) {
         const float x = x_of(v.time);
@@ -2695,7 +2756,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         // A trick is open: the joints are what you want next, not the list you picked it from.
         if (v.has_clip) {
             u.tab = static_cast<int>(Tab::joints);
-            u.row = 1; // the first joint, under the force field
+            u.row = -1; // the chosen joint's row (list() finds it)
         }
         // The camera keeps whichever shot you chose, but is told again whether to travel with him, since
         // the studio starts out carrying him along and nothing has said otherwise yet.
@@ -2903,7 +2964,10 @@ void keyboard(const studio::View& v) {
     else if (pressed(ImGuiKey_5)) orbit.yaw = 0.6f, orbit.pitch = 0.18f;
     else if (pressed(ImGuiKey_0)) orbit = studio::Orbit{};
     else set = false;
-    if (set) studio::set_orbit(orbit);
+    if (set) {
+        studio::set_orbit(orbit);
+        u.camera_shot = 0;
+    }
     if (any || std::hypot(io.MousePos.x - u.last_mouse.x, io.MousePos.y - u.last_mouse.y) > 4 || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.pad_mode = false;
     u.last_mouse = io.MousePos;
 }
@@ -3125,7 +3189,7 @@ bool animation_studio_loading_pending() { return studio::loading().alpha > 0 || 
 // While a trick is being recorded (the studio steps out so you can skate): a strip across the top in the
 // studio's look, and Esc (Back on a controller) goes back to the studio without one.
 bool animation_studio_recording_pending() {
-    return !studio::batch::active() && !studio::is_open() && studio::view().recording != studio::Recording::off;
+    return !studio::batch::active() && !studio::is_open() && studio::recording_state() != studio::Recording::off;
 }
 void draw_animation_studio_recording() {
     if (!animation_studio_recording_pending() || studio::loading().alpha > 0.99f) return;
@@ -3266,7 +3330,7 @@ void draw_animation_studio_loading() {
             "Save your trick and do it in game: your version plays on that trick.",
             "Copy to low, mid and high pop in PACKS to fit every pop.",
             "Packs group your tricks: switch them on and off, and share them, in PACKS.",
-            "On a controller: the left stick turns, RT and LT step frames, A keys."};
+            "On a controller: the left stick turns, the D-pad steps frames, RT and LT scrub, A keys."};
         const auto tip = tips[static_cast<std::size_t>(l.seconds / 4.0f) % tips.size()];
         const ImVec2 ta(0.034f * display.x, H - 0.115f * H);
         text(d, heading, 0.022f * H, ta, fade(skate_theme::blue), "TIP");

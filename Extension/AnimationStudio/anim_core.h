@@ -111,7 +111,7 @@ struct Key {
     Quat rotation{0, 0, 0, 1};
     Vec3 offset{};
     Ease ease{Ease::smooth};
-    bool smooth{}; // smoothed by the Smooth keys pass: the timeline draws it round instead of a diamond
+    bool smooth{}; // smoothed (Smooth keys, Smooth chosen keys, a double-click): the timeline draws it round
 };
 struct Track {
     std::uint16_t joint{};
@@ -235,6 +235,10 @@ std::size_t move_key(Track& track, std::size_t index, float to, float duration) 
 // at `keep_start` and `keep_end` (the brackets) are never moved or dropped. Returns how many keys it
 // changed or removed; they are all marked `smooth`.
 std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept;
+// Smooths only the keys at `times`: each eases smoothly, is drawn a little towards its neighbours (as
+// smooth_track draws them) and is marked round. Keys on the brackets keep their pose. Returns how many
+// keys changed.
+std::size_t smooth_keys_at(Track& track, std::span<const float> times, float keep_start, float keep_end) noexcept;
 
 // ---- skeleton -------------------------------------------------------------------------------------
 // The world transform of `joint` composed from the root through its animation-rig parents,

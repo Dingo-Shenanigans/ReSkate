@@ -25,6 +25,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <deque>
 #include <filesystem>
@@ -34,6 +35,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -162,7 +164,7 @@ using CustomTricks = std::vector<CustomTrick>;
 // the menu to show why, so they are fixed: the whole skater and the board play the recording with its keys,
 // as the studio shows it, and the keys are spread over the air that really happens, so the landing meets the
 // game's. A deck turned round under him is taken from the game's own board-backwards flag. Joint limits is a
-// setting (KEYS): it holds in the studio and in game alike, so what is posed is what plays.
+// setting (JOINTS): it holds in the studio and in game alike, so what is posed is what plays.
 constexpr float match_bent_joints = 1; // a joint with a key takes the pose it has in the studio
 constexpr float match_whole_body = 1;  // and so does every other joint, and the board
 constexpr bool fit_keys_to_air = true;
@@ -212,7 +214,7 @@ struct State {
     bool showing_goofy{};
     bool grab_board{};
     bool front_foot{true};
-    bool limits{true}; // Joint limits (KEYS): keyed joints stay inside the range the game's own animation uses
+    bool limits{true}; // Joint limits (JOINTS): keyed joints stay inside the range the game's own animation uses
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -406,6 +408,7 @@ struct Live {
     std::shared_ptr<const Clip> floor_clip;
     bool preview_own_jump{};
     std::uint64_t failures{};
+    bool failure_shown{}; // a failure is on screen: it is taken off after the next clean pass
     bool logged_layout{};
 };
 // The pose to draw, from the animation thread to the render publication (engine thread).
@@ -583,6 +586,7 @@ void load_settings(State& s) {
         s.your_name = root.value("made_by", s.your_name.c_str()).substr(0, 48);
     } catch (...) {}
 }
+void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
 // Caller holds the mutex.
 void save_settings_locked(const State& s) {
     try {
@@ -592,10 +596,7 @@ void save_settings_locked(const State& s) {
         root["stance"] = s.stance_choice;
         root["grab_board"] = s.grab_board;
         if (!s.your_name.empty()) root["made_by"] = s.your_name;
-        const auto path = library_folder() / settings_file;
-        std::filesystem::create_directories(path.parent_path());
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << root.dump(2);
+        write_preset_file(library_folder() / settings_file, root.dump(2));
     } catch (...) {}
 }
 // The packs switched on: presets/current.txt, one name a line (a file from before holds one). A name whose
@@ -1893,6 +1894,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                  float& board_weight) {
     if (l.pieces_for != snap.tricks) {
         l.pieces_for = snap.tricks;
+        l.mirrored_edits.clear(); // an address can be reused by a new animation
         l.piece_tricks.clear();
         std::vector<const Clip*> clips;
         if (snap.tricks)
@@ -2131,6 +2133,15 @@ std::string toggle_stance_readout() {
 // changes): where the studio put his body and board, and what the skater buffer holds later in the same
 // frame, after the board is drawn. For finding why the studio's picture of him is off his board.
 namespace studio_snapshot {
+// Research only (RESKATE_STUDIO_RESEARCH=1): what the studio drew against what the game drew, per stance,
+// written to ReSkate.Tricks/research. Off, nothing is written.
+bool on() {
+    static const bool enabled = [] {
+        wchar_t flag[4]{};
+        return GetEnvironmentVariableW(L"RESKATE_STUDIO_RESEARCH", flag, 4) == 1 && flag[0] == L'1';
+    }();
+    return enabled;
+}
 std::mutex mutex;
 bool armed{};
 double due{-1};
@@ -2824,10 +2835,16 @@ void on_animation(std::uintptr_t component) noexcept {
             if (board_weight > 0 && finite(board_target)) board = board_target;
             else if (l.board_ok) board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
             publish_joints(l.pose, live_placement, board, board_frame);
-            if (!(snap->clip && !snap->clip->empty()))
+            if (studio_snapshot::on() && !(snap->clip && !snap->clip->empty()))
                 studio_snapshot::studio_frame(at, snap->goofy, true, mirrored_body, l.pose, live_placement, board);
-        } else {
+        } else if (studio_snapshot::on()) {
             studio_snapshot::closed();
+        }
+        if (l.failure_shown) {
+            auto& s = state();
+            std::lock_guard lock(s.mutex);
+            s.failure.clear();
+            l.failure_shown = false;
         }
     } catch (const std::exception& e) {
         invalidate_outputs();
@@ -2835,6 +2852,7 @@ void on_animation(std::uintptr_t component) noexcept {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.failure = e.what();
+        l.failure_shown = true;
     } catch (...) {
         invalidate_outputs();
     }
@@ -3341,8 +3359,9 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
                             shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
                             shot.edited_board_sequence = packet->sequence; shot.edited_board_presentation = presentation;
                         }
-                        studio_snapshot::late_read(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire),
-                                                   compose(board_parent(b), joint_of(b[board_mount])));
+                        if (studio_snapshot::on())
+                            studio_snapshot::late_read(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire),
+                                                       compose(board_parent(b), joint_of(b[board_mount])));
                     }
                 }
             }
@@ -3737,6 +3756,11 @@ View view() {
 // Keys sit on whole frames of the timeline (30 a second), never between two.
 float frame_time(float seconds) { return std::round(seconds * 30.0f) / 30.0f; }
 namespace { void write_pack_drafts_locked(State& s); } // with the packs, below
+Recording recording_state() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return s.recording;
+}
 void request_close() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -4246,11 +4270,31 @@ void set_ease(std::uint16_t joint, float time, Ease ease) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (auto* t = s.edits.track(joint); t && !t->locked)
-        for (auto& k : t->keys)
-            if (std::abs(k.time - time) < 1e-3f) {
-                k.ease = ease;
-                changed_locked(s);
-            }
+        for (auto& k : t->keys) {
+            if (std::abs(k.time - time) >= 1e-3f) continue;
+            const bool round = k.smooth && ease == Ease::smooth; // a Linear or Step key is never round
+            if (k.ease == ease && k.smooth == round) continue;
+            k.ease = ease;
+            k.smooth = round;
+            changed_locked(s);
+        }
+}
+bool smooth_chosen_keys(std::span<const std::pair<std::uint16_t, float>> chosen, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const float end = s.edits.end < 0 ? (s.clip ? s.clip->duration() : 0.0f) : s.edits.end;
+    std::map<std::uint16_t, std::vector<float>> by_joint;
+    for (const auto& [joint, time] : chosen) by_joint[joint].push_back(time);
+    std::size_t changed = 0;
+    for (const auto& [joint, times] : by_joint)
+        if (auto* t = s.edits.track(joint); t && !t->locked) changed += anim_studio::smooth_keys_at(*t, times, s.edits.start, end);
+    message = !changed ? std::string("Those keys are smooth already. Ctrl+Z takes smoothing back.")
+              : chosen.size() == 1 ? std::string("The key is smoothed: it eases into its neighbours and shows round.")
+                                   : std::format("Smoothed {} keys: they ease into their neighbours and show round.", chosen.size());
+    s.status = message;
+    if (changed) changed_locked(s);
+    else publish_locked(s);
+    return changed > 0;
 }
 void smooth_keys(std::uint16_t joint) {
     auto& s = state();
@@ -4259,7 +4303,11 @@ void smooth_keys(std::uint16_t joint) {
     std::size_t changed = 0, tracks = 0;
     for (auto& t : s.edits.tracks) {
         if (t.locked || (joint != all_joints && t.joint != joint)) continue;
-        if (const auto n = anim_studio::smooth_track(t, s.edits.start, end)) {
+        // A key that only now shows round is a change too (it is saved with the animation).
+        auto n = static_cast<std::size_t>(std::count_if(t.keys.begin(), t.keys.end(), [](const Key& k) { return !k.smooth || k.ease != Ease::smooth; }));
+        n += anim_studio::smooth_track(t, s.edits.start, end);
+        for (auto& k : t.keys) { k.ease = Ease::smooth; k.smooth = true; } // a track too short to smooth still shows it
+        if (n) {
             changed += n;
             ++tracks;
         }
@@ -4333,6 +4381,7 @@ void new_animation() {
     std::lock_guard lock(s.mutex);
     s.edits = {};
     s.clip.reset();
+    ++s.clip_serial;
     s.saved_as.clear();
     s.undo.clear();
     s.redo.clear();
@@ -4393,7 +4442,8 @@ bool create_preset_pack(std::string& message, const std::string& name) {
         if (!s.library_read) read_library_locked(s);
         PresetPack pack;
         pack.made_by = s.your_name;
-        const auto wanted = file_safe(name);
+        const bool unnamed = std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isspace(c); });
+        const auto wanted = unnamed ? std::string{} : file_safe(name);
         if (wanted.empty()) {
             int number = 1;
             do { pack.name = "Pack " + std::to_string(number++); } while (std::filesystem::exists(pack_file(pack.name)));
@@ -4512,6 +4562,7 @@ void write_whole(const std::filesystem::path& path, const std::string& data) {
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(data.data(), static_cast<std::streamsize>(data.size()));
+        out.close();
         if (!out) throw std::runtime_error("could not write " + path.filename().string());
     }
     std::error_code error;
@@ -4639,15 +4690,22 @@ bool import_packs(std::string& message) {
             }
             // A name already taken by a different animation gets the next free variation, and the pack
             // that names it is told.
+            // A name is taken by a saved animation, by one already given out in this zip, or by another of
+            // the zip's own animations (its "Kickflip 2" is not free for a renamed "Kickflip").
             std::map<std::string, std::string> rename;
+            std::set<std::string> claimed;
             for (const auto& [name, pair] : found) {
                 std::string target = name;
                 for (unsigned n = 2;; ++n) {
-                    const auto json = saved_json(target), clip = saved_clip(target);
-                    if (!std::filesystem::exists(json, error)) break;
-                    if (read_whole(json) == pair.first && std::filesystem::exists(clip, error) && read_whole(clip) == pair.second) break; // already here
+                    const bool zip_own = target != name && found.contains(target);
+                    if (!claimed.contains(target) && !zip_own) {
+                        const auto json = saved_json(target), clip = saved_clip(target);
+                        if (!std::filesystem::exists(json, error)) break;
+                        if (read_whole(json) == pair.first && std::filesystem::exists(clip, error) && read_whole(clip) == pair.second) break; // already here
+                    }
                     target = variation_name(name, n);
                 }
+                claimed.insert(target);
                 rename[name] = target;
             }
             for (const auto& [name, pair] : found) {
@@ -4734,6 +4792,19 @@ bool save(std::string& message) {
     auto name = file_safe(s.edits.name);
     for (const char* own : {"presets", "recorded", "library", "research"})
         if (_stricmp(name.c_str(), own) == 0) name = variation_name(name, 2);
+    // Nor is another saved animation written over: a recording named after its trick, a game trick opened
+    // under its own name, or a typed name, all of which can be a name already used. Only the animation this
+    // one was opened from or last saved to is saved over.
+    const auto in_library = [&](const std::string& n) {
+        return std::any_of(s.library.begin(), s.library.end(), [&](const std::string& o) { return _stricmp(o.c_str(), n.c_str()) == 0; });
+    };
+    const bool own_file = !s.saved_as.empty() && _stricmp(name.c_str(), s.saved_as.c_str()) == 0;
+    const auto wanted = name;
+    if (!own_file && in_library(name)) {
+        unsigned n = 2;
+        while (in_library(variation_name(wanted, n))) ++n;
+        name = variation_name(wanted, n);
+    }
     const auto folder = library_folder();
     try {
         std::filesystem::create_directories(folder);
@@ -4746,26 +4817,26 @@ bool save(std::string& message) {
         full.clip.landing = s.clip->landing;
         const auto json = to_json(full);
         const auto bytes = clip_bytes(*s.clip);
-        // Written beside the old files, then moved over them: a failed save never leaves half a profile.
+        // Both are written in full beside the old files first, and only then moved over them, the trick before
+        // its description: a failed save (a full disk) never leaves half an animation or a mismatched pair.
         std::filesystem::create_directories(folder / name);
         const auto json_path = folder / name / (name + ".json"), clip_path = folder / name / (name + ".clip");
-        for (const auto& [path, data, size] : {std::tuple{json_path, static_cast<const void*>(json.data()), json.size()},
-                                               std::tuple{clip_path, static_cast<const void*>(bytes.data()), bytes.size()}}) {
-            auto temporary = path;
-            temporary += L".saving";
-            {
-                std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-                out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
-                if (!out) throw std::runtime_error("could not write " + temporary.string());
-            }
-            std::filesystem::rename(temporary, path);
+        const auto staged = [](std::filesystem::path p) { p += L".saving"; return p; };
+        for (const auto& [path, data, size] : {std::tuple{clip_path, static_cast<const void*>(bytes.data()), bytes.size()},
+                                               std::tuple{json_path, static_cast<const void*>(json.data()), json.size()}}) {
+            std::ofstream out(staged(path), std::ios::binary | std::ios::trunc);
+            out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+            out.close();
+            if (!out) throw std::runtime_error("could not write " + staged(path).string());
         }
+        std::filesystem::rename(staged(clip_path), clip_path);
+        std::filesystem::rename(staged(json_path), json_path);
         s.edits.name = name;
         s.saved_as = name;
         s.dirty = false;
         s.tricks_read = false; // the next tick reads the custom tricks again
         read_library_locked(s);
-        message = "Saved " + name + ".";
+        message = name == wanted ? "Saved " + name + "." : "Saved as " + name + ": " + wanted + " is another saved animation.";
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), folder.string());
         publish_locked(s);
@@ -5054,6 +5125,7 @@ bool load(const std::string& name, std::string& message) {
         animation.name = safe;
         s.edits = std::move(animation);
         s.clip = std::move(clip);
+        ++s.clip_serial;
         s.saved_as = safe;
         s.undo.clear();
         s.redo.clear();
@@ -5147,7 +5219,7 @@ bool export_diagnostics(std::string& message) {
             Json record = Json::object(); record["name"] = name;
             record["copied"] = false;
             for (const auto* extension : {".json", ".clip"}) {
-                const auto source = library_folder() / (name + extension);
+                const auto source = std::string_view(extension) == ".json" ? saved_json(name) : saved_clip(name);
                 std::error_code error;
                 if (!std::filesystem::is_regular_file(source, error)) continue;
                 const auto bytes = std::filesystem::file_size(source, error);
