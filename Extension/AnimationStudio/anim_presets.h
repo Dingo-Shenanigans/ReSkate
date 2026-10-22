@@ -14,6 +14,7 @@ struct Preset {
     std::string stance;
     std::optional<bool> switch_stance;
     std::string entry{"ground"};
+    std::optional<bool> fakie; // made rolling fakie: its own slot, so a fixed pack keeps one of each
 };
 struct PresetPack {
     std::string name;
@@ -33,7 +34,8 @@ inline void select_presets(std::span<Preset> presets, const std::optional<Preset
         p.active = p.included = false;
         const auto slot = preset_slot(p.trick, p.pop);
         const auto compatible_slot = slot + (p.stance == "goofy" ? "|goofy" : "|regular") +
-                                     (p.switch_stance.value_or(false) ? "|switch" : "|normal") + "|" + p.entry;
+                                     (p.switch_stance.value_or(false) ? "|switch" : "|normal") + "|" + p.entry +
+                                     (p.fakie.value_or(false) ? "|fakie" : "");
         if (pack) {
             const auto entry = pack->slots.find(slot);
             if (entry == pack->slots.end()) continue;

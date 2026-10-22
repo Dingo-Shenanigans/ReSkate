@@ -2,8 +2,10 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace dingosdk::anim_studio {
 struct ContactWindow {
@@ -78,6 +80,47 @@ inline bool playback_lead_matches(bool recorded_goofy, std::optional<bool> recor
     return live_switch.has_value() &&
            leads_right(recorded_goofy, recorded_switch.value_or(false)) == leads_right(live_goofy, *live_switch);
 }
+// ---- which recording plays, from everything the game tells us at takeoff ---------------------------
+// What the game does (contrib/animator-studio/GAME_STANCE_NOTES.md): one mirror for the foot that leads
+// (regular is its goofy clips mirrored, switch flips it), fakie is the same clips with an upper-body layer
+// on top (never a mirror), nollie is its own clips and its own trick names, and board backwards (a shuvit,
+// or a push out of fakie into switch) only turns the deck under him. So a recording is described by the
+// foot it leads with and whether it was made rolling fakie; nollie is told apart by the trick's name before
+// this, and board backwards is taken care of by the board's frame when it plays.
+struct StanceCandidate {
+    bool leads_right{};        // the foot it was made leading with, read from its clip
+    std::optional<bool> fakie; // made rolling fakie; empty for a recording from before that was kept (taken as not)
+    int pop_rank{};            // playback_pop_rank against the pop the game graded; below 0 cannot play
+};
+struct LiveStance {
+    bool leads_right{}; // the game's mirror: clear when the right foot leads
+    bool fakie{};       // rolling backwards at takeoff
+};
+// The recordings that may play now, best first: exact stance only takes one made on the foot that leads now
+// and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
+// graded, then the same fakie state (a fakie recording carries the game's fakie upper body), then the same
+// lead foot (one made on the other foot is mirrored, which is exact). Only the best group is returned, so
+// cycling variants alternates between equally good recordings.
+inline std::vector<std::size_t> choose_stance_variants(std::span<const StanceCandidate> candidates, LiveStance live, bool front_foot) {
+    std::vector<std::size_t> out;
+    int best_pop = 1 << 20, best_tier = 1 << 20;
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const auto& c = candidates[i];
+        if (c.pop_rank < 0) continue;
+        const bool same_lead = c.leads_right == live.leads_right, same_fakie = c.fakie.value_or(false) == live.fakie;
+        if (!front_foot && (!same_lead || !same_fakie)) continue;
+        const int tier = (same_fakie ? 0 : 2) + (same_lead ? 0 : 1);
+        if (c.pop_rank < best_pop || (c.pop_rank == best_pop && tier < best_tier)) {
+            out.clear();
+            best_pop = c.pop_rank;
+            best_tier = tier;
+        }
+        if (c.pop_rank == best_pop && tier == best_tier) out.push_back(i);
+    }
+    return out;
+}
+// A recording made on the other foot is played mirrored, the game's way.
+inline bool plays_mirrored(const StanceCandidate& c, LiveStance live) noexcept { return c.leads_right != live.leads_right; }
 inline float advance_time(float time, float elapsed, float speed, float duration, bool loop) noexcept {
     if (!std::isfinite(elapsed) || elapsed <= 0 || !std::isfinite(speed) || speed <= 0 ||
         !std::isfinite(duration) || duration <= 0) return time;

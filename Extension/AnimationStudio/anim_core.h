@@ -150,6 +150,9 @@ struct Animation {
     // clip's end). Moving either bracket retimes unlocked tracks into the new window.
     float start{0};
     float end{-1};
+    // What the game said at takeoff when it was recorded: rolling fakie, and the board turned backwards
+    // under him. Empty for recordings from before these were kept.
+    std::optional<bool> fakie, board_backwards;
     // Which upgrade this file has had (empty: made before upgrades). Older builds ignore it.
     std::string upgraded;
     // The board's keys are in the board's nose-forward frame (every save since 2026-10-22). Older files

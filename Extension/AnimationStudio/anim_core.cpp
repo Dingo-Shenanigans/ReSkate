@@ -374,7 +374,11 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
         for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
             if (!gameplay_body_joint(j) || !editable(j)) continue;
             const float share = limbs ? rest * std::clamp(limbs->of(j), 0.0f, 1.0f) : rest;
-            if (share > 0) native[j].rotation = slerp(native[j].rotation, studio[j].rotation, share);
+            if (share <= 0) continue;
+            native[j].rotation = slerp(native[j].rotation, studio[j].rotation, share);
+            // Where each joint sits too - the hips above all, which carry how high and how far forward
+            // he is over the board; the rest are bone lengths and match already.
+            for (std::size_t k = 0; k < 3; ++k) native[j].position[k] += (studio[j].position[k] - native[j].position[k]) * share;
         }
     }
     for (const auto& track : animation.tracks) {
@@ -772,6 +776,8 @@ std::string to_json(const Animation& animation) {
                           {"rig", animation.source.rig}, {"board_frame", animation.source.board_frame},
                           {"position_codec", animation.source.position_codec}};
     root["entry"] = animation.entry;
+    if (animation.fakie) root["fakie"] = *animation.fakie;
+    if (animation.board_backwards) root["board_backwards"] = *animation.board_backwards;
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     root["start"] = animation.start;
@@ -817,6 +823,8 @@ Animation from_json(std::string_view text) {
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
     result.entry = root.value("entry", "ground");
+    if (root.contains("fakie") && root.at("fakie").is_boolean()) result.fakie = root.at("fakie").get<bool>();
+    if (root.contains("board_backwards") && root.at("board_backwards").is_boolean()) result.board_backwards = root.at("board_backwards").get<bool>();
     result.upgraded = root.value("upgraded", "");
     require(result.upgraded.size() < 64, "bad upgrade mark");
     result.board_nose_forward = root.value("board_keys", "") == "nose-forward";

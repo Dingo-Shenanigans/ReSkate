@@ -1163,6 +1163,12 @@ void bent_joints_match_the_studio() {
     apply_authored_edit_layer(animation, 0, whole, 1.0f, nullptr, studio, 1.0f, 1.0f);
     check(same_turn(whole[343].rotation, studio[343].rotation), "With the whole body matched an unkeyed foot follows the recording");
     check(same_turn(whole[9].rotation, normalised(multiply(studio[9].rotation, from_euler({0, 0, 40})))), "and the keys still go on top");
+    // and the hips sit where they do in the recording: how high he is over the board.
+    native[7].position = {0, 0.9f, 0};
+    studio[7].position = {0.05f, 0.7f, -0.02f};
+    auto placed = native;
+    apply_authored_edit_layer(animation, 0, placed, 1.0f, nullptr, studio, 1.0f, 1.0f);
+    check(near(placed[7].position[1], 0.7f) && near(placed[7].position[0], 0.05f), "With the whole body matched the hips sit where the recording has them");
     // Mirrored playback reads the studio's pose mirrored, so the bend lands on the joint it now drives.
     Clip clip;
     clip.joints = skeleton_joints;
@@ -1215,6 +1221,52 @@ void lead_foot_is_read_from_the_clip() {
     clip.frames[343].position = {0.1f, -0.8f, 0.07f};
     check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
 }
+// Every trigger the game gives at takeoff, through the one rule that picks the recording: regular, goofy,
+// switch, fakie and switch fakie, in front-foot and exact-stance modes.
+void every_stance_finds_its_recording() {
+    const auto pick = [](std::vector<StanceCandidate> c, LiveStance live, bool front_foot) { return choose_stance_variants(c, live, front_foot); };
+    const StanceCandidate normal_left{false, false, 0}, normal_right{true, false, 0}, fakie_left{false, true, 0}, fakie_right{true, true, 0};
+    const std::vector<StanceCandidate> all{normal_left, normal_right, fakie_left, fakie_right};
+    // With a recording for every case, each live stance gets its own one, unmirrored, in both modes.
+    struct Case { LiveStance live; std::size_t expected; const char* what; };
+    for (const auto& c : {Case{{false, false}, 0, "regular normal"}, Case{{true, false}, 1, "regular switch / goofy normal"},
+                          Case{{false, true}, 2, "regular fakie"}, Case{{true, true}, 3, "switch fakie / goofy fakie"}})
+        for (const bool front : {true, false}) {
+            const auto got = pick(all, c.live, front);
+            check(got.size() == 1 && got[0] == c.expected && !plays_mirrored(all[got[0]], c.live), c.what);
+        }
+    // Only a regular normal recording: front foot plays it everywhere (mirrored when the right foot leads),
+    // exact stance only riding the way it was made.
+    const std::vector<StanceCandidate> one{normal_left};
+    check(pick(one, {true, false}, true).size() == 1 && plays_mirrored(one[0], {true, false}), "Front foot: switch plays it mirrored");
+    check(pick(one, {false, true}, true).size() == 1 && !plays_mirrored(one[0], {false, true}), "Front foot: fakie plays it, never mirrored");
+    check(pick(one, {true, false}, false).empty(), "Exact stance: not for the other foot");
+    check(pick(one, {false, true}, false).empty(), "Exact stance: not for fakie when it was made rolling forward");
+    // Fakie matters more than the foot: the game's fakie upper body is in a fakie recording, a mirror is exact.
+    const std::vector<StanceCandidate> mixed{normal_left, fakie_right};
+    const auto fakie_pick = pick(mixed, {false, true}, true);
+    check(fakie_pick.size() == 1 && fakie_pick[0] == 1 && plays_mirrored(mixed[1], {false, true}), "Rolling fakie takes the fakie recording, mirrored");
+    // The pop the game graded comes first.
+    const std::vector<StanceCandidate> pops{{false, false, 1}, {true, false, 0}};
+    const auto pop_pick = pick(pops, {false, false}, true);
+    check(pop_pick.size() == 1 && pop_pick[0] == 1, "The graded pop wins over the closer stance");
+    check(pick({{false, false, -1}}, {false, false}, true).empty(), "A recording for another pop never plays");
+    // A recording from before fakie was kept counts as rolling forward.
+    const std::vector<StanceCandidate> old{{false, std::nullopt, 0}};
+    check(pick(old, {false, false}, false).size() == 1 && pick(old, {false, true}, false).empty(), "Old recordings count as rolling forward");
+    // Equally good recordings all come back, so variants cycle between them.
+    check(pick({normal_left, normal_left, normal_right}, {false, false}, true).size() == 2, "Equally good recordings cycle");
+}
+// A fixed pack keeps one recording per trick, pop and stance - and a fakie one is its own, so both play.
+void fakie_recordings_have_their_own_slot() {
+    std::vector<Preset> presets{{"Kick", "kickflip", "mid", false, false, "regular", false, "ground"},
+                                {"Kick fakie", "kickflip", "mid", false, false, "regular", false, "ground"},
+                                {"Kick 2", "kickflip", "mid", false, false, "regular", false, "ground"}};
+    presets[1].fakie = true;
+    select_presets(presets, std::nullopt);
+    check(presets[1].active, "The fakie recording plays beside the normal one");
+    check(presets[0].active != presets[2].active, "and two normal ones still share a slot");
+}
 int main(int argc, char** argv) {
     try {
         timing_and_stance_edge_cases();
@@ -1235,6 +1287,8 @@ int main(int argc, char** argv) {
         bent_joints_match_the_studio();
         joints_stay_in_their_range();
         lead_foot_is_read_from_the_clip();
+        every_stance_finds_its_recording();
+        fakie_recordings_have_their_own_slot();
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();

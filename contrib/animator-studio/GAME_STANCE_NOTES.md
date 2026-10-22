@@ -86,3 +86,22 @@ Read out of the game's own animation graph (the typed native documents the libra
   draws (physics) has its nose along the skater's +X unless the board is backwards. Recordings made mirrored
   or backwards (most old ones were made in switch reached by pushing from fakie, which also sets board
   backwards) therefore carry a board pointing the other way; the studio turns such a clip's board round.
+
+## The pipeline, as it stands (2026-10-22)
+
+At takeoff the studio reads everything the game gives and keeps it with a recording too:
+
+| Trigger | Read from | What it does |
+| --- | --- | --- |
+| Lead foot (regular / goofy / switch) | live: stance bit `0x20` at context+0x13c4; recording: its clip (`clip_leads_right`) | the game's mirror; a recording on the other foot is mirrored (Z plane) |
+| Fakie | body-relative forward speed (context+0x17fc) while riding, < -0.3 | never a mirror; recordings keep `fakie`, and a fakie one is preferred rolling fakie |
+| Nollie | the game's trick name (`nollie`, `n_kickflip`...) | its own trick, its own recordings |
+| Board backwards (true switch vs fakie-push switch, after a shuvit) | context+0x13c5 bit `0x20` | the board's key frame and the recording's board are turned with the game's board |
+| Pop height | the game's grade | the graded pop's recordings come first |
+| Entry | ground or rail before takeoff | must match |
+
+One rule picks the recording (`choose_stance_variants`, tested over every combination): exact stance takes only
+the same lead foot and fakie state, never mirrored; front foot takes any, closest first - pop, then fakie state,
+then lead foot (mirrored if it differs). In game the whole skater and the board play the recording with its
+keys, spread over the air that happens, keyed joints within the measured limits. These are fixed, not options:
+set wrong they broke tricks invisibly.

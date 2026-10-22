@@ -1531,42 +1531,19 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Stance", v.stance_choice != 0 ? (v.stance_choice == 1 ? "regular" : "goofy")
                                   : v.game_stance == 0 ? (v.showing_goofy ? "the game's (not set: goofy)" : "the game's (not set: regular)")
                                   : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
-                        "Which way round the skater stands on the board, and which a recording is saved as. A trick authored the "
-                        "other way is shown reflected across his own middle, his board with him, so the foot that was at the nose is "
-                        "at the tail. The game's own stance comes from the Stance setting in GRIND EXITS; until that is set it is "
-                        "taken as regular, and you can choose regular or goofy here instead.",
+                        "Which foot leads while you edit: regular (left) or goofy (right). A trick made leading with the other foot "
+                        "is mirrored into this stance the way the game mirrors its own animation, so the leg you grab is the leg "
+                        "that moves. Saved, a trick plays right in every stance either way. The game's: the Stance setting in "
+                        "GRIND EXITS (taken as regular until it is set).",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
         rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
-                        "Front foot: a trick belongs to the front foot and the back foot, so it plays whichever way round the skater "
-                        "stands and whether he is riding switch - mirrored when the other foot leads. A goofy skater and a regular one "
-                        "riding switch both lead with the right, so they get it as it was recorded. Exact stance: it plays only when the "
-                        "foot it was made on leads now, never mirrored, and the game's own animation is used otherwise. Either way "
-                        "the foot a trick was made on is read from the recording itself, and fakie never mirrors.",
+                        "Front foot: your trick plays in every stance - regular, goofy, switch, true switch, fakie - mirrored onto "
+                        "your front foot when the other foot leads, the way the game does it. The closest recording wins: the pop "
+                        "height first, then one made rolling the same way (fakie or not), then one on the same foot. Exact stance: "
+                        "only a recording made on the foot that leads now, rolling the same way, plays - never mirrored - and the "
+                        "game's own animation otherwise. Nollie tricks are their own tricks and need their own recording. The "
+                        "whole skater and the board play the recording, spread over the air that happens. Kept between sessions.",
                         [v] { studio::set_front_foot(!v.front_foot); }});
-        rows.push_back({"Trick timing", v.fit_air ? "fit the air" : "as recorded",
-                        "As recorded: the keys run at the seconds they were recorded at, whatever air he gets. Fit the air: they are "
-                        "spread over the air actually happening, within two thirds and one and a half times the recorded pace, so a "
-                        "trick over a gap or an obstacle keeps its shape instead of drifting out of step with the game's own motion.",
-                        [v] { studio::set_fit_air(!v.fit_air); }});
-        rows.push_back({"Joint limits", v.limits ? "on" : "off",
-                        "On: every joint you key stays inside the range the game's own animation uses - knees and elbows "
-                        "bend one way only, shoulders and hips swing as far as a skater's do, nothing twists round. A key or "
-                        "a drag past that stops at the edge, and the studio and the game hold to it. Measured from the "
-                        "game's clips. Off: joints can be turned anywhere.",
-                        [v] { studio::set_joint_limits(!v.limits); }});
-        rows.push_back({"Match the studio", v.match_studio == 2 ? "whole body" : v.match_studio == 1 ? "bent joints" : "off",
-                        "Whole body (default): the whole skater plays your recording with your keys on it, so it looks just "
-                        "like the studio - both feet. Bent joints: only the joints you bent take the pose they have here; the "
-                        "rest is the game's own animation (its flick, its back foot). Off: your bends are added to whatever "
-                        "the game is doing, which can come out quite different from here. Before the pop it is always the "
-                        "game's: which trick you do is only known at takeoff. Kept between sessions.",
-                        [v] { studio::set_match_studio((v.match_studio + 1) % 3); }});
-        rows.push_back({"Board turned for fakie", v.turn_board ? "on" : "off",
-                        "Off: the board's keys work in the board's own frame, nose to tail, which is how they are made in the studio "
-                        "and how the game plays them. On: they are turned half a turn when the board points the other way to its "
-                        "recording. It went in for a bug since found to be the stance being misread, so it is off; turn it on if a "
-                        "trick ridden fakie pushes the wrong end of the board.",
-                        [v] { studio::set_turn_board(!v.turn_board); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
                         "keyed and not saved - it is the studio showing what the hand is doing. They cannot be posed by hand yet.",
