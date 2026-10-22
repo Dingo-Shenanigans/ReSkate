@@ -148,6 +148,7 @@ struct Ui {
     bool hide_ui{};              // H: nothing but the skater and the room, for filming and pictures
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
     float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
+    float ground_force{0.6f};    // the ground force field (SETTINGS): how much of a joint's thickness is kept above the floor; 0 off
     bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
     int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
@@ -629,9 +630,19 @@ float near_segment(const studio::Vec3& p, const studio::Vec3& a, const studio::V
     for (int i = 0; i < 3; ++i) on[i] = a[i] + ab[i] * t;
     return std::hypot(std::hypot(p[0] - on[0], p[1] - on[1]), p[2] - on[2]);
 }
+// The ground force field (SETTINGS > Posing): nothing you move goes under the floor - as much of the joint's own
+// thickness as the slider says is kept clear of it. Off (0) lets it through. Apart from Keep clear, which is his
+// body and the deck.
+studio::Vec3 keep_off_ground(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
+    const float g = std::clamp(ui().ground_force, 0.0f, 1.0f);
+    if (!v.has_clip || !v.floor_valid || g <= 0.005f) return target;
+    const float lowest = v.floor + joint_radius(joint) * g;
+    if (target[1] < lowest) target[1] = lowest;
+    return target;
+}
 studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
     const float force = std::clamp(ui().clear_force, 0.0f, 1.0f);
-    if (!ui().anti_clip || !v.has_clip || force <= 0.01f) return target;
+    if (!ui().anti_clip || !v.has_clip || force <= 0.01f) return keep_off_ground(v, joint, target);
     // Against his own body the joint is as thick as the slider says; against the deck it is always its
     // whole self, since a shoe inside the board is wrong at every setting.
     const float r = joint_radius(joint) * force, deck_r = joint_radius(joint);
@@ -698,13 +709,8 @@ studio::Vec3 keep_clear(const studio::View& v, std::uint16_t joint, studio::Vec3
             for (int i = 0; i < 3; ++i) target[i] += axes[static_cast<std::size_t>(face)][i] * least * sign;
         }
     }
-    // The ground. Nothing goes under it at any setting: a hand or a foot through the floor shows in the
-    // world, and no pose wants it. The joint's own thickness is kept clear of it, as with the deck.
-    if (v.floor_valid) {
-        const float lowest = v.floor + joint_radius(joint) * 0.6f;
-        if (target[1] < lowest) target[1] = lowest;
-    }
-    return target;
+    // The ground: its own force field (keep_off_ground).
+    return keep_off_ground(v, joint, target);
 }
 
 // The nearest points on two segments, and how far apart they are. Clamped, so segments that pass each
@@ -951,7 +957,7 @@ float board_lowest_under(const studio::Quat& turn) {
 // Lifts the board's keys by however much of it has gone under the floor.
 void keep_board_up(const studio::View& v, studio::Offset& next) {
     auto& u = ui();
-    if (!v.floor_valid || !u.anti_clip) return;
+    if (!v.floor_valid || u.ground_force <= 0.005f) return; // the ground force field off lets it through
     const auto* sel = joint_view(v, studio::board_joint);
     if (!sel) return;
     studio::Vec3 moved{};
@@ -1197,7 +1203,9 @@ struct Row {
     bool enabled{true}, on{};
     std::string library; // a saved animation's name (Delete takes it out)
     std::optional<std::uint16_t> joint; // JOINTS: the joint this row chooses
-    bool slider{};       // JOINTS: Keep clear, drawn as a slider
+    bool slider{};       // drawn as a slider over `slide` (Keep clear's when none)
+    float* slide{};      // the value the slider sets, 0 to 1
+    bool* slide_on{};    // and the switch it turns on above 0, if it has one
     bool info{};         // information: it can be chosen to read its help, and does nothing
     // A switch of its own at the row's right end (a pack ON or OFF, a trick OUT of a pack): clicked by
     // itself, and Del (X on a controller) works it on the chosen row. The rest of the row does `act`.
@@ -1565,7 +1573,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Solo", v.solo ? "on" : "off",
                         "On: a turn moves that joint alone. The joints hanging off it are turned back by as much, so the limb below "
                         "keeps the way it faces instead of swinging with its parent. Bones are rigid, so it still travels with the "
-                        "joint. Key: S.",
+                        "joint. Key: O.",
                         [on = v.solo] { studio::set_solo(!on); }});
         rows.push_back({"Snapping", u.snap ? "on" : "off",
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
@@ -1978,6 +1986,24 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                             for (const float step : speeds) if (step > speed + 0.01f) { next = step; break; }
                             studio::set_speed(next);
                         }});
+        rows.push_back({"Posing", "", "", {}, false});
+        {
+            Row ground{"Ground force field", u.ground_force <= 0.005f ? "off" : std::format("{:.0f}%", u.ground_force * 100),
+                       "Keeps what you move above the floor: a hand, a foot, a knee or the board you drag down stops on the ground. "
+                       "How far above: how much of the joint's own thickness is kept clear of the floor - low lets a foot rest "
+                       "right on the ground, high holds everything well up. Off lets everything through the floor. Drag along "
+                       "it, or choose it to step through the quarters.",
+                       [] {
+                           auto& state = ui();
+                           const float steps[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+                           float next = steps[0];
+                           for (const float step : steps) if (step > state.ground_force + 0.01f) { next = step; break; }
+                           state.ground_force = next;
+                       }};
+            ground.slider = true;
+            ground.slide = &u.ground_force;
+            rows.push_back(std::move(ground));
+        }
         rows.push_back({"View", "", "", {}, false});
         rows.push_back({"Camera", shots[static_cast<std::size_t>(std::clamp(u.camera_shot, 0, 5))].name,
                         "A set camera angle to work in: close, on the board, cinematic, the filmer's follow, or over the skater. "
@@ -2359,20 +2385,22 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         // Keep clear: a paper row like the card below, filled across to how far it is turned up, dragged
         // anywhere along it.
         if (row.slider) {
+            float& amount = row.slide ? *row.slide : u.clear_force;
+            bool* switched = row.slide ? row.slide_on : &u.anti_clip;
             ImGui::SetCursorScreenPos(a);
-            ImGui::PushID(9001);
+            ImGui::PushID(9001 + static_cast<int>(i));
             ImGui::InvisibleButton("##force", ImVec2(b.x - a.x, b.y - a.y));
             const bool over = ImGui::IsItemHovered(), held = ImGui::IsItemActive();
             ImGui::PopID();
             const float inset = 20 * k;
             if (held) {
                 const float along = (ImGui::GetIO().MousePos.x - (a.x + inset)) / std::max(1.0f, (b.x - a.x) - 2 * inset);
-                u.clear_force = std::clamp(along, 0.0f, 1.0f);
-                u.anti_clip = u.clear_force > 0.005f;
+                amount = std::clamp(along, 0.0f, 1.0f);
+                if (switched) *switched = amount > 0.005f;
                 u.row = static_cast<int>(i);
             }
-            const bool on = u.anti_clip && u.clear_force > 0.005f;
-            const float force = on ? u.clear_force : 0.0f;
+            const bool on = (!switched || *switched) && amount > 0.005f;
+            const float force = on ? amount : 0.0f;
             constexpr ImU32 paper = IM_COL32(234, 234, 232, 250), ink = IM_COL32(20, 20, 22, 255);
             skate_theme::rough_rect(d, a, b, over || held ? IM_COL32(246, 246, 244, 252) : paper, seed_of(a), k);
             if (force > 0.005f) {
@@ -3546,13 +3574,33 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_R)) u.move_mode = false;
     if (!ctrl && pressed(ImGuiKey_G)) u.move_mode = true;
     if (!ctrl && pressed(ImGuiKey_L)) u.local_axes = !u.local_axes;
-    if (!ctrl && pressed(ImGuiKey_S)) studio::set_solo(!v.solo);
+    if (!ctrl && pressed(ImGuiKey_O)) studio::set_solo(!v.solo);
     if (!ctrl && pressed(ImGuiKey_N)) {
         u.snap = !u.snap;
         say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
     }
     if (!ctrl && pressed(ImGuiKey_Tab)) u.menu_hidden = !u.menu_hidden;
     auto orbit = v.orbit;
+    // WASD turns the view while held, as Blender's view keys do: A and D round him, W and S over and under; Shift
+    // faster. (Ctrl+S and Ctrl+A are save and choose every key, as before.)
+    if (!ctrl) {
+        const float dt = std::min(io.DeltaTime, 0.1f), speed = io.KeyShift ? 2.4f : 1.2f;
+        float round = 0, over = 0;
+        if (ImGui::IsKeyDown(ImGuiKey_A)) round -= 1;
+        if (ImGui::IsKeyDown(ImGuiKey_D)) round += 1;
+        if (ImGui::IsKeyDown(ImGuiKey_W)) over += 1;
+        if (ImGui::IsKeyDown(ImGuiKey_S)) over -= 1;
+        if (round != 0 || over != 0) {
+            any = true;
+            orbit.yaw += round * speed * 1.6f * dt;
+            orbit.pitch += over * speed * dt;
+            studio::set_orbit(orbit);
+            if (u.camera_shot) {
+                u.camera_shot = 0;
+                studio::set_camera_follow(false);
+            }
+        }
+    }
     bool set = true;
     if (pressed(ImGuiKey_1)) orbit.yaw = 0, orbit.pitch = 0.1f;
     else if (pressed(ImGuiKey_2)) orbit.yaw = 3.14159f, orbit.pitch = 0.1f;
@@ -3618,11 +3666,12 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
     else
         list = {{std::nullopt, "LMB", "Pick / turn"},
                 {std::nullopt, "RMB", "Orbit"},
+                {std::nullopt, "W A S D", "Turn the view"},
                 {std::nullopt, "MMB", "Pan"},
                 {std::nullopt, "G / R", u.move_mode ? "Move" : "Turn"},
                 {std::nullopt, "X Y Z", "Axis"},
                 {std::nullopt, "L", u.local_axes ? "Object axes" : "World axes"},
-                {std::nullopt, "S", v.solo ? "Solo on" : "Solo off"},
+                {std::nullopt, "O", v.solo ? "Solo on" : "Solo off"},
                 {std::nullopt, "N", u.snap ? "Snapping on" : "Snapping off"},
                 {std::nullopt, "J", u.hide_joints ? "Joints hidden" : "Hide joints"},
                 {std::nullopt, "H", "Hide everything"},
