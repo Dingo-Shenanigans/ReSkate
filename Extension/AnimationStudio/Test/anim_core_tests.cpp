@@ -1032,6 +1032,45 @@ void fitting_the_air_keeps_the_flip() {
     }
     check(episode.phase == PlaybackPhase::landing && steady && last > 1.33f, "and runs on into the landing without a jump");
 }
+void native_clips_pop_where_the_game_does() {
+    // A library clip at 60 fps: the board flat, then from frame 8 (0.133 s) its tail goes down 8 degrees a
+    // frame. Its height dips as the tail strikes (0.15 s), deepest as it lands (frame 38, 0.633 s), and a
+    // little as he rolls away (0.8 s).
+    const auto make = [](float takeoff, float landing) {
+        Clip clip;
+        clip.joints = 1;
+        const auto dip = [](float t, float at, float depth) { return -depth * std::exp(-((t - at) / 0.03f) * ((t - at) / 0.03f)); };
+        for (int f = 0; f < 60; ++f) {
+            const float t = static_cast<float>(f) / 60;
+            clip.times.push_back(t);
+            const float turn = f >= 8 ? static_cast<float>(f - 7) * 8 * 3.14159265f / 180 : 0;
+            Joint board;
+            board.rotation = {std::sin(turn / 2), 0, 0, std::cos(turn / 2)};
+            board.position = {0, dip(t, 0.15f, 0.15f) + dip(t, 38.0f / 60, 0.15f) + dip(t, 0.8f, 0.05f), 0};
+            clip.board.push_back(board);
+        }
+        clip.takeoff = takeoff;
+        clip.landing = landing;
+        return clip;
+    };
+    auto late = make(0.283f, 0.6f); // the library's pop shuv-it low: its pop a later dip
+    check(place_native_marks(late) && near(late.takeoff, 8.0f / 60 + 0.05f) && near(late.landing, 0.6f),
+          "A late pop is put just after the board tips, where the game leaves the ground; a landing near enough stays");
+    auto good = make(0.183f, 0.617f);
+    check(!place_native_marks(good) && near(good.takeoff, 0.183f) && near(good.landing, 0.617f), "Marks already there are left alone");
+    auto early = make(0.1f, 0.617f);
+    check(!place_native_marks(early) && near(early.takeoff, 0.1f), "and a pop earlier than that too: only late ones are the library's mistake");
+    auto spinning = make(0.183f, 0.433f); // FS 360 pop shuv-it low: landed with the board still turning
+    check(place_native_marks(spinning) && near(spinning.landing, 38.0f / 60), "A landing marked in the air goes to where the board comes down");
+    auto both = make(0.417f, 0.867f); // nollie 360 pop shuv-it low: both marks a dip late
+    check(place_native_marks(both) && near(both.takeoff, 8.0f / 60 + 0.05f) && near(both.landing, 38.0f / 60),
+          "and one looked for after a late pop is found again from the right one");
+    auto boardless = make(0.283f, 0.6f);
+    boardless.board.clear();
+    check(!place_native_marks(boardless) && near(boardless.takeoff, 0.283f), "A clip without its board keeps its mark");
+    auto piece = make(-1, -1);
+    check(!place_native_marks(piece) && piece.takeoff < 0, "and a piece with no pop gets none");
+}
 void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
@@ -1360,6 +1399,7 @@ int main(int argc, char** argv) {
         preview_trajectory_uses_the_whole_clip();
         native_playback_contracts();
         fitting_the_air_keeps_the_flip();
+        native_clips_pop_where_the_game_does();
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
         switch_edits_follow_the_native_body_facing();

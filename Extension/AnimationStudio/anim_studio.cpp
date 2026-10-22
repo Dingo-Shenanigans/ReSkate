@@ -820,6 +820,8 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             std::ifstream clip_in(clip_path, std::ios::binary);
             const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
             auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
+            if (animation->source.kind == "native_asset" && place_native_marks(*clip))
+                logging::log(Level::info, Channel::skater, "Animation Studio: {} pops at {:.2f} s in its clip, where the game has it.", entry.stem().string(), clip->takeoff);
             // A piece of the game's animation (a setup, a loop, the clip a trick is blended from) has no
             // pop of its own: it is found by its pose while it plays, not by a takeoff.
             const bool piece = animation->trick.starts_with("native:");
@@ -5092,6 +5094,7 @@ std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
     if (clip->joints != skeleton_joints) throw std::runtime_error("it is for another skeleton");
+    if (!trick.recorded) place_native_marks(*clip);
     return clip;
 }
 bool load_game_trick(const GameTrick& trick, std::string& message) {
@@ -5146,6 +5149,7 @@ bool load(const std::string& name, std::string& message) {
         const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
         auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
         if (clip->joints != skeleton_joints) throw std::runtime_error("it was recorded on another skeleton");
+        if (animation.source.kind == "native_asset") place_native_marks(*clip);
         for (const auto& t : animation.tracks)
             for (const auto& k : t.keys)
                 if (k.time > clip->duration() + 0.01f) throw std::runtime_error("a key lies past its recording");

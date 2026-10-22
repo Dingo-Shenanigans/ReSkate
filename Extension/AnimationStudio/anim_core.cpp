@@ -481,6 +481,45 @@ std::optional<bool> clip_leads_right(const Clip& clip) {
     if (!std::isfinite(apart) || std::abs(apart) < 0.1f) return std::nullopt;
     return apart > 0;
 }
+bool place_native_marks(Clip& clip) noexcept {
+    const auto n = clip.times.size();
+    if (!(clip.takeoff >= 0) || n < 8 || clip.board.size() != n) return false;
+    constexpr float tipped = 6.0f;     // degrees the board turns from how it starts: the tail is down
+    constexpr float leaves = 0.05f;    // and the board leaves the ground this long after
+    constexpr float tolerance = 0.04f; // the library's good pops are within a frame of it
+    bool moved = false;
+    const auto& rest = clip.board.front().rotation;
+    for (std::size_t i = 1; i < n; ++i) {
+        const auto& q = clip.board[i].rotation;
+        const float d = std::abs(rest[0] * q[0] + rest[1] * q[1] + rest[2] * q[2] + rest[3] * q[3]);
+        if (!std::isfinite(d) || 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f <= tipped) continue;
+        const float pop = clip.times[i] + leaves;
+        // Only ever earlier: a late pop is the library's mistake.
+        if (pop < clip.takeoff - tolerance && pop < clip.duration() - 0.3f) {
+            clip.takeoff = pop;
+            moved = true;
+        }
+        break;
+    }
+    // The landing: the board's height under the placement, over five frames, at its deepest low.
+    std::vector<float> smooth(n, 0.0f);
+    for (std::size_t i = 2; i + 2 < n; ++i) {
+        float sum = 0;
+        for (std::size_t j = i - 2; j <= i + 2; ++j) sum += clip.board[j].position[1];
+        smooth[i] = sum / 5;
+    }
+    std::optional<std::size_t> deepest;
+    for (std::size_t i = 3; i + 3 < n; ++i) {
+        if (clip.times[i] < clip.takeoff + 0.25f - 1e-3f || clip.times[i] > clip.takeoff + 0.85f + 1e-3f) continue;
+        if (!(smooth[i] <= smooth[i - 1] && smooth[i] < smooth[i + 1])) continue;
+        if (!deepest || smooth[i] < smooth[*deepest]) deepest = i;
+    }
+    if (deepest && std::isfinite(smooth[*deepest]) && (clip.landing < 0 || std::abs(clip.times[*deepest] - clip.landing) > 0.05f)) {
+        clip.landing = clip.times[*deepest];
+        moved = true;
+    }
+    return moved;
+}
 namespace {
 const JointLimit* limit_of(std::uint16_t joint) noexcept {
     for (const auto& l : joint_limits)

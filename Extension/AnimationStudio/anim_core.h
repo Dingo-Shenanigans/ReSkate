@@ -197,6 +197,16 @@ std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored);
 // (goofy) layout - the right foot leads - and with the left foot there it is mirrored - the left leads.
 // Taken before the pop, feet on the board. Empty when the feet are too close together to tell.
 std::optional<bool> clip_leads_right(const Clip& clip);
+// The pop and the landing of one of the game's own trick clips (the library, and animations made from one),
+// put where the game has them. The library found the pop at the board's first low point, which on most
+// clips is right but on many low pops is a later dip, up to 0.3 s after the pop: in game the trick then
+// started halfway through the flip and stood waiting before the landing. The game leaves the ground about
+// 0.05 s after its board starts to tip, in its own clips and in game alike, so a pop marked later than that
+// is moved there. The landing is the board's deepest low between 0.25 and 0.85 s after the pop (the
+// library's own rule), which a wrong pop had looked for in the wrong place (four 360 shuv-its landed with
+// the board still turning, or 0.2 s after it was down). Not for a recording: its marks are the game's own.
+// Returns whether it moved either.
+bool place_native_marks(Clip& clip) noexcept;
 // A zip with every file stored as it is (no compression), names as given (use '/'): for sharing packs.
 std::uint32_t crc32_of(const std::string& data) noexcept;
 std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& files);

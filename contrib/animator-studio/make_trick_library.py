@@ -139,6 +139,15 @@ def convert(fbx_path, hashes, native_vectors):
     smooth = np.convolve(y, np.ones(5) / 5, mode="same")
     lows = [i for i in range(2, len(y) - 2) if smooth[i] <= smooth[i - 1] and smooth[i] < smooth[i + 1]]
     takeoff = lows[0] if lows else 0
+    # On many low pops that first low is a later dip (up to 0.3 s after the pop), and the trick then started
+    # halfway through its flip in game. The game leaves the ground about 0.05 s (3 frames) after its board
+    # starts to tip, in its own clips and in game alike: the studio puts a later pop there when it loads a
+    # clip (place_native_marks), and so does this.
+    rest = np.array(board[0][1])
+    tipped = next((i for i in range(1, len(board))
+                   if 2 * math.degrees(math.acos(min(1.0, abs(float(np.dot(rest, board[i][1])))))) > 6), None)
+    if tipped is not None and tipped + 3 < takeoff - 2:
+        takeoff = tipped + 3
     # A flip trick's air is between a quarter and about 0.85 s (the game stretches it to the real one):
     # the landing is the board's deepest low point in that window.
     first, last = takeoff + 15, min(len(y) - 1, takeoff + 51)  # 60 fps
