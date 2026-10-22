@@ -647,7 +647,10 @@ void write_preset_file(const std::filesystem::path& path, const std::string& tex
 //   with the board backwards points the other way to the board the game draws; they are turned into the
 //   board's nose-forward frame the studio and the game now both use.
 // The old file is kept beside it (.json.before-upgrade) and the new one marked, so this happens once.
-inline constexpr const char* current_upgrade = "2026-10-22";
+// "2026-10-22.2": the label check again, since files saved in between kept a label that did not match their
+// clip (two of the same trick then counted as different stances and both played, taking turns). The board
+// keys are only ever turned once (board_nose_forward).
+inline constexpr const char* current_upgrade = "2026-10-22.2";
 bool upgrade_animation(Animation& animation, const Clip& clip) {
     if (animation.upgraded == current_upgrade) return false;
     if (const auto lead = clip_leads_right(clip)) {
@@ -693,7 +696,10 @@ bool upgrade_saved(const std::filesystem::path& json_path) {
         backup += L".before-upgrade";
         std::error_code error;
         if (!std::filesystem::exists(backup, error)) std::filesystem::copy_file(json_path, backup, error);
+        // Kept as saved when: "the one saved last plays" goes by it, and an upgrade is not a save.
+        const auto saved_when = std::filesystem::last_write_time(json_path, error);
         write_preset_file(json_path, to_json(animation));
+        if (!error) std::filesystem::last_write_time(json_path, saved_when, error);
         logging::log(Level::info, Channel::skater, "Animation Studio: upgraded {}{}.", json_path.stem().string(),
                      before_label != animation.switch_stance ? " (its stance label now matches the foot its clip leads with)" : "");
         return true;
@@ -723,6 +729,12 @@ std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& fold
         if (std::none_of(out.begin(), out.end(), [&](const auto& own) { return own.stem() == path.stem(); })) out.push_back(path);
     return out;
 }
+// When a saved animation's file was last written, for "the one saved last plays".
+std::int64_t saved_time(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto at = std::filesystem::last_write_time(path, error);
+    return error ? 0 : static_cast<std::int64_t>(at.time_since_epoch().count());
+}
 void read_library_locked(State& s) {
     s.library.clear();
     s.presets.clear();
@@ -746,6 +758,7 @@ void read_library_locked(State& s) {
                     s.presets.push_back({name, animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                     s.presets.back().fakie = animation.fakie;
                     s.presets.back().made_by = animation.author;
+                    s.presets.back().saved_at = saved_time(saved_json(name));
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
         }
@@ -782,6 +795,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error)) {
                 requested.push_back({entry.stem().string(), animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                 requested.back().fakie = animation.fakie;
+                requested.back().saved_at = saved_time(entry);
             }
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.filename().string(), e.what());
@@ -4817,6 +4831,12 @@ bool save(std::string& message) {
         std::filesystem::create_directories(folder);
         Animation full = s.edits;
         full.name = name;
+        // Its stance label is the foot its clip leads with, so packs and "the one saved last plays" treat two
+        // recordings on the same foot as the same stance.
+        if (const auto lead = clip_leads_right(*s.clip)) {
+            const bool goofy = authored_goofy(full);
+            if (leads_right(goofy, full.switch_stance.value_or(false)) != *lead) full.switch_stance = goofy != *lead;
+        }
         full.upgraded = current_upgrade;
         full.board_nose_forward = true;
         full.clip.times = {0, s.clip->duration()};

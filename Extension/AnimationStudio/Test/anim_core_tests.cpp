@@ -991,6 +991,30 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
     const auto finished = episode.sample(12, 0.2f, 0.75f, 2, 1, 1, true);
     check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
 }
+// A trick fitted to the game's air: the flip at its own pace, the landing on the game's touchdown.
+void fitting_the_air_keeps_the_flip() {
+    const float recorded = 0.63f;
+    check(near(fitted_air_time(0.2f, recorded, 1.0f), 0.2f), "A longer air leaves the pop and the flip at their own pace");
+    check(fitted_air_time(0.9f, recorded, 1.0f) < recorded, "A longer air spreads only the catch, and never lands early");
+    check(near(fitted_air_time(1.0f, recorded, 1.0f), recorded - 1.0f / 60, 1e-3f), "It reaches its landing with the game's");
+    check(near(fitted_air_time(5.0f, recorded, 1.0f), recorded - 1.0f / 60), "Still in the air: it waits just before its landing");
+    check(near(fitted_air_time(0.2f, recorded, 0.42f), 0.3f), "A shorter air plays the whole air faster");
+    check(near(fitted_air_time(0.2f, recorded, 0.1f), 0.4f), "but never more than twice as fast");
+    check(near(landed_time(0, 1.3f, 1.1f), 1.1f) && near(landed_time(0.08f, 1.3f, 1.1f), 1.38f),
+          "At touchdown a recording that was behind catches up to its landing over 80 ms");
+    check(near(landed_time(0.5f, 1.3f, 1.3f), 1.8f), "and from its landing on plays at its own pace");
+    PlaybackEpisode episode;
+    episode.observe(10, MotionState::riding);
+    episode.observe(10.1, MotionState::air);
+    episode.select(10.15);
+    const auto early = episode.sample(10.3, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+    check(near(early.time, 0.9f), "In game the flip plays at its own pace in a long air");
+    (void)episode.sample(10.6, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+    episode.observe(10.62, MotionState::riding);
+    for (int i = 1; i <= 6; ++i) episode.observe(10.62 + i / 60.0, MotionState::riding);
+    const auto landed = episode.sample(10.9, 0.7f, 1.33f, 2, 1, 1.0f, true, true);
+    check(episode.phase == PlaybackPhase::landing && landed.time > 1.33f, "After the game lands early the recording is past its own landing");
+}
 void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
@@ -1318,6 +1342,7 @@ int main(int argc, char** argv) {
         merged_library_and_timing();
         preview_trajectory_uses_the_whole_clip();
         native_playback_contracts();
+        fitting_the_air_keeps_the_flip();
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
         switch_edits_follow_the_native_body_facing();

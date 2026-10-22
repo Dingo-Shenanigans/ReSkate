@@ -1799,8 +1799,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         for (const auto& name : v.library) {
             std::size_t in = 0;
             for (const auto& pack : v.packs) in += std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
-            Row row{name, name == v.name ? "open" : trick_of(name) + (in ? ", " + std::to_string(in) + (in == 1 ? " pack" : " packs") : ""),
-                    "One of your saved tricks: choose it to open it and change it. Del (X on a controller) twice deletes it." + made_by(name),
+            const auto* preset = preset_of(name);
+            const bool plays = preset && preset->active;
+            Row row{name, name == v.name ? "open" : trick_of(name) + (plays ? ", plays" : "") + (in ? ", " + std::to_string(in) + (in == 1 ? " pack" : " packs") : ""),
+                    "One of your saved tricks: choose it to open it and change it. Del (X on a controller) twice deletes it. \"Plays\": the "
+                    "game uses it for that trick and pop now - with no pack on, the one of each you saved last; with packs on, the "
+                    "ones in them." + made_by(name),
                     [name] {
                         std::string m;
                         studio::load(name, m);

@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <span>
 #include <string>
@@ -16,6 +17,7 @@ struct Preset {
     std::string entry{"ground"};
     std::optional<bool> fakie; // made rolling fakie: its own slot, so a fixed pack keeps one of each
     std::string made_by;       // who made it (the animation's author)
+    std::int64_t saved_at{};   // when its file was last written: with no pack on, the newest of a kind plays
 };
 // A pack: saved animations grouped under a name, filed by trick and pop. Any number can be switched on.
 struct PresetPack {
@@ -51,8 +53,8 @@ inline std::optional<std::size_t> pack_place(const PresetPack& pack, const std::
             return 100000 + static_cast<std::size_t>(at - names.begin());
     return std::nullopt;
 }
-// With no pack on, every saved animation plays: one per trick, pop and stance, chosen alphabetically so the
-// order of the files never decides. With packs on, only their animations play. A Fixed pack plays its first
+// With no pack on, every saved animation plays: one per trick, pop and stance, the one saved last (so what
+// was just saved is what plays), alphabetically when two were saved at once. With packs on, only their animations play. A Fixed pack plays its first
 // variant per trick, pop and stance, an Alternate pack every one; two packs on that both have a kickflip both
 // play it, and the attempts take turns. Exact-pop precedence remains the runtime's job.
 inline void select_presets(std::span<Preset> presets, std::span<const PresetPack> packs) {
@@ -66,7 +68,7 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
         if (packs.empty()) {
             p.included = true;
             auto& [picked, place] = selected[compatible_slot];
-            if (!picked || p.name < picked->name) picked = &p;
+            if (!picked || p.saved_at > picked->saved_at || (p.saved_at == picked->saved_at && p.name < picked->name)) picked = &p;
             continue;
         }
         for (std::size_t k = 0; k < packs.size(); ++k) {
