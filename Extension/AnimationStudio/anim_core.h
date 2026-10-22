@@ -124,6 +124,11 @@ struct Offset {
 };
 // Before the first key and after the last the nearest key holds.
 Offset evaluate(const Track& track, float seconds) noexcept;
+// One number of an edit, as the timeline's channel rows show it: 0-2 its turn about X, Y and Z in degrees
+// (to_euler), 3-5 its move along X, Y and Z.
+float channel_value(const Offset& edit, int channel) noexcept;
+// The edit with one of those numbers set and the others as they were.
+Offset with_channel(Offset edit, int channel, float value) noexcept;
 
 struct AnimationSource {
     std::string kind{"unknown"}; // native_asset, render_capture, unknown (legacy)

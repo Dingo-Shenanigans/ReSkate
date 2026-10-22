@@ -55,6 +55,20 @@ struct Ui {
     bool rows_bar_held{};  // the joint list's scroll bar is being dragged
     bool list_bar_held{};  // the menu list's scroll bar is being dragged
     std::uint16_t rows_followed{0xffff}; // the joint the list last scrolled to
+    // Channels: joints whose rows are opened in the timeline into rotation X, Y, Z (and location X, Y, Z).
+    std::vector<std::uint16_t> opened;
+    std::uint16_t rows_reveal{0xffff};  // a joint just opened: the timeline scrolls to show its channels
+    std::uint16_t channel_joint{0xffff};
+    int channel{-1};                    // the channel row chosen last (-1 none)
+    struct ChannelDrag {
+        bool on{}, began{};
+        int mode{}; // 0 not decided yet, 1 up and down (the value), 2 sideways (the time)
+        std::uint16_t joint{};
+        int channel{};
+        float time{}, start{};
+        studio::Offset base;
+        ImVec2 from{};
+    } channel_drag;
     // What the timeline is showing: free (zoomed by hand), the whole trick, or the custom animation's
     // own window. The last one is kept, so it follows the brackets as they are moved.
     enum class View { free, fit, region };
@@ -277,6 +291,28 @@ bool button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 siz
 }
 void diamond(ImDrawList* d, ImVec2 c, float r, ImU32 colour) {
     d->AddQuadFilled(ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y), colour);
+}
+// ---- channels ------------------------------------------------------------------------------------
+// A joint opened in the timeline shows a row for each number of its keys: the turn about X, Y and Z and,
+// for what can be moved (the hips, the board), the move along X, Y and Z.
+int channel_count(std::uint16_t joint) {
+    const auto* e = studio::editable(joint);
+    return e && e->moves ? 6 : 3;
+}
+bool channels_open(std::uint16_t joint) {
+    const auto& o = ui().opened;
+    return std::find(o.begin(), o.end(), joint) != o.end();
+}
+// Opens or closes a joint's channels. One joint at a time, unless `keep_others` (Ctrl + click).
+void toggle_channels(std::uint16_t joint, bool keep_others) {
+    auto& u = ui();
+    if (channels_open(joint)) {
+        std::erase(u.opened, joint);
+        return;
+    }
+    if (!keep_others) u.opened.clear();
+    u.opened.push_back(joint);
+    u.rows_reveal = joint;
 }
 // Where each key was drawn this frame, for the box that picks them out.
 struct DrawnKey {
@@ -1572,6 +1608,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                             studio::begin_change();
                             studio::reset_joint(ui().selected);
                         }, track && !locked});
+        rows.push_back({"Channels", channels_open(u.selected) ? "shown" : "hidden",
+                        "Opens the chosen joint in the timeline into its channels - rotation X, Y and Z and, for the hips and the "
+                        "board, location X, Y and Z - each with its curve, to change one number of a key at a time: drag a key "
+                        "up or down (Shift: finer), drag it sideways to move it in time, or type a value. Clicking a joint's name "
+                        "in the timeline does the same; Ctrl + click keeps others open. Key: T.",
+                        [] { toggle_channels(ui().selected, false); }, v.has_clip});
         rows.push_back({"Mute joint's keys", track && track->hidden ? "muted" : "off",
                         "Muted: the trick plays as if the chosen joint had no keys. They are kept, and come back when it is unmuted.",
                         [hidden = track && track->hidden, locked] { studio::set_track_flags(ui().selected, !hidden, locked); }, track != nullptr});
@@ -2469,18 +2511,40 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             if (!bracket_key(key.time))
                     key_mark(d, ImVec2(x_of(key.time), summary_y + summary_h * 0.5f), 6 * k, t.hidden ? faint : soft, round_key(key));
     d->PopClipRect();
-    // Rows, one per joint.
+    // Rows, one per joint, and under a joint that is opened (its name clicked, or T) a row for each of its
+    // channels - rotation X, Y, Z and, for what can be moved, location X, Y, Z - each with its curve.
     const auto joints = studio::editable_joints();
     const float rows_top = summary_y + summary_h + 6 * k;
     const float rows_h = at.y + size.y - rows_top;
-    const float content_h = joints.size() * (row_h + gap);
-    // The list follows the chosen joint only when the choice has just changed: otherwise it would pull the
-    // view back every frame and the list could not be scrolled past it.
-    if (u.selected != u.rows_followed) {
+    const float ch_h = 30 * k, ch_gap = 3 * k;
+    struct LaneRow {
+        std::size_t r;
+        int channel; // -1: the joint's own row
+        float top;
+    };
+    std::vector<LaneRow> lanes;
+    float content_h = 0;
+    for (std::size_t r = 0; r < joints.size(); ++r) {
+        lanes.push_back({r, -1, content_h});
+        content_h += row_h + gap;
+        if (channels_open(joints[r].index))
+            for (int c = 0; c < channel_count(joints[r].index); ++c) {
+                lanes.push_back({r, c, content_h});
+                content_h += ch_h + ch_gap;
+            }
+    }
+    // The list follows the chosen joint only when the choice has just changed (or a joint was just opened):
+    // otherwise it would pull the view back every frame and the list could not be scrolled past it.
+    if (u.selected != u.rows_followed || u.rows_reveal != 0xffff) {
+        const std::uint16_t target = u.rows_reveal != 0xffff ? u.rows_reveal : u.selected;
         u.rows_followed = u.selected;
-        for (std::size_t r = 0; r < joints.size(); ++r)
-            if (joints[r].index == u.selected) {
-                const float top = r * (row_h + gap), bottom = top + row_h;
+        u.rows_reveal = 0xffff;
+        for (const auto& entry : lanes)
+            if (entry.channel < 0 && joints[entry.r].index == target) {
+                const float top = entry.top;
+                float bottom = top + row_h;
+                if (channels_open(target)) bottom += channel_count(target) * (ch_h + ch_gap);
+                bottom = std::min(bottom, top + rows_h); // taller than the list: its name at the top
                 if (top < u.rows_scroll) u.rows_scroll = top;
                 if (bottom > u.rows_scroll + rows_h) u.rows_scroll = bottom - rows_h;
             }
@@ -2488,12 +2552,161 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     u.rows_scroll = std::clamp(u.rows_scroll, 0.0f, std::max(0.0f, content_h - rows_h));
     drawn_keys().clear();
     d->PushClipRect(ImVec2(at.x, rows_top), ImVec2(lanes_right, at.y + size.y), true);
-    for (std::size_t r = 0; r < joints.size(); ++r) {
-        const auto& joint = joints[r];
-        const float y = rows_top + r * (row_h + gap) - u.rows_scroll;
-        if (y + row_h < rows_top || y > at.y + size.y) continue;
+    static constexpr std::array<const char*, 6> channel_names{"ROTATION X", "ROTATION Y", "ROTATION Z", "LOCATION X", "LOCATION Y", "LOCATION Z"};
+    static constexpr std::array<ImU32, 3> axis_colour{IM_COL32(232, 84, 84, 255), IM_COL32(110, 200, 96, 255), IM_COL32(80, 150, 245, 255)};
+    for (const auto& entry : lanes) {
+        const auto& joint = joints[entry.r];
+        const std::size_t r = entry.r;
+        const float y = rows_top + entry.top - u.rows_scroll;
+        if (y + (entry.channel < 0 ? row_h : ch_h) < rows_top || y > at.y + size.y) continue;
         const bool chosen = joint.index == u.selected;
         const auto* track = track_view(v, joint.index);
+        if (entry.channel >= 0) {
+            // ---- a channel: its name and value on the left, its curve and keys on the lane --------------
+            const int c = entry.channel;
+            const bool turn = c < 3;
+            const bool locked = track && track->locked;
+            const ImVec2 a(at.x + rows_left + 18 * k, y), b(lanes_right - 8 * k, y + ch_h);
+            const bool focused = u.channel_joint == joint.index && u.channel == c;
+            skate_theme::rough_rect(d, a, ImVec2(at.x + rows_left + label_w - 12 * k, b.y), focused ? IM_COL32(40, 52, 72, 246) : IM_COL32(20, 20, 22, 246), seed_of(a), k * 0.6f);
+            skate_theme::rough_rect(d, ImVec2(at.x + rows_left + label_w - 4 * k, a.y), b, IM_COL32(24, 25, 28, 225), seed_of(a) + 1, k * 0.6f);
+            d->AddRectFilled(ImVec2(a.x + 8 * k, y + 7 * k), ImVec2(a.x + 12 * k, y + ch_h - 7 * k), axis_colour[static_cast<std::size_t>(c % 3)], 2 * k);
+            text(d, f.bold, 13 * k, ImVec2(a.x + 20 * k, y + ch_h * 0.5f - 8 * k), focused ? white : soft, channel_names[static_cast<std::size_t>(c)]);
+            // The joint's keys as a curve of this one number.
+            studio::Track curve;
+            curve.joint = joint.index;
+            if (track) for (const auto& kv : track->keys) curve.keys.push_back({kv.time, kv.rotation, kv.offset, kv.ease});
+            // Its value on this frame, to drag or type (a double-click types).
+            {
+                float value = studio::channel_value(studio::evaluate(curve, v.time), c);
+                ImGui::PushID(joint.index);
+                ImGui::PushID(100 + c);
+                ImGui::PushStyleColor(ImGuiCol_Text, locked ? faint : white);
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(44, 46, 52, 255));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(60, 64, 72, 255));
+                ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(40, 80, 140, 255));
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6 * k, 3 * k));
+                ImGui::PushFont(f.bold);
+                ImGui::SetCursorScreenPos(ImVec2(at.x + rows_left + label_w - 104 * k, y + 4 * k));
+                ImGui::SetNextItemWidth(88 * k);
+                const bool changed = ImGui::DragFloat("##value", &value, turn ? 0.25f : 0.002f, 0, 0, turn ? "%.1f" : "%.3f");
+                if (ImGui::IsItemActivated() && !locked) {
+                    studio::begin_change();
+                    u.selected = joint.index;
+                    u.channel_joint = joint.index;
+                    u.channel = c;
+                }
+                if (changed && !locked) studio::set_offset(joint.index, studio::with_channel(studio::evaluate(curve, v.time), c, value));
+                ImGui::PopFont();
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor(4);
+                ImGui::PopID();
+                ImGui::PopID();
+            }
+            ImGui::PushID(joint.index);
+            ImGui::PushID(200 + c);
+            ImGui::SetCursorScreenPos(ImVec2(ruler_left, y));
+            ImGui::InvisibleButton("##channel", ImVec2(ruler_right - ruler_left, ch_h));
+            const bool lane_hovered = ImGui::IsItemHovered();
+            const bool lane_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+            ImGui::PopID();
+            ImGui::PopID();
+            bool on_key = false;
+            if (!curve.keys.empty()) {
+                d->PushClipRect(ImVec2(ruler_left, std::max(rows_top, y)), ImVec2(ruler_right, std::min(at.y + size.y, y + ch_h)), true);
+                // The curve, sampled across the lane; angles unwrapped so a turn past 180 does not jump.
+                thread_local std::vector<ImVec2> points;
+                thread_local std::vector<float> values;
+                points.clear();
+                values.clear();
+                const float step = 3 * k;
+                float lo = std::numeric_limits<float>::max(), hi = -lo, prev = 0;
+                for (float x = ruler_left; x <= ruler_right + 0.5f * step; x += step) {
+                    float value = studio::channel_value(studio::evaluate(curve, std::max(0.0f, t_of(x))), c);
+                    if (turn && !values.empty()) {
+                        while (value - prev > 180) value -= 360;
+                        while (value - prev < -180) value += 360;
+                    }
+                    prev = value;
+                    values.push_back(value);
+                    lo = std::min(lo, value);
+                    hi = std::max(hi, value);
+                }
+                const float least = turn ? 10.0f : 0.05f;
+                if (hi - lo < least) {
+                    const float middle = (hi + lo) * 0.5f;
+                    lo = middle - least * 0.5f;
+                    hi = middle + least * 0.5f;
+                }
+                const auto y_of = [&](float value) { return y + ch_h - 5 * k - (value - lo) / (hi - lo) * (ch_h - 10 * k); };
+                for (std::size_t i = 0; i < values.size(); ++i) points.emplace_back(ruler_left + static_cast<float>(i) * step, y_of(values[i]));
+                d->AddPolyline(points.data(), static_cast<int>(points.size()), track && track->hidden ? faint : axis_colour[static_cast<std::size_t>(c % 3)], 0, 1.6f * k);
+                for (const auto& key : track->keys) {
+                    if (bracket_key(key.time)) continue;
+                    const float kx = x_of(key.time);
+                    // Its value on the curve as drawn (unwrapped like the samples round it).
+                    float value = studio::channel_value(studio::Offset{key.rotation, key.offset}, c);
+                    if (turn && !values.empty()) {
+                        const auto near_sample = static_cast<std::size_t>(std::clamp((kx - ruler_left) / step, 0.0f, static_cast<float>(values.size() - 1)));
+                        while (value - values[near_sample] > 180) value -= 360;
+                        while (value - values[near_sample] < -180) value += 360;
+                    }
+                    const ImVec2 cpos(kx, y_of(value));
+                    const bool current = std::abs(key.time - v.time) < 0.5f / fps;
+                    const bool close_to = lane_hovered && std::abs(ImGui::GetIO().MousePos.x - kx) < 8 * k;
+                    const bool in_pick = is_picked(joint.index, key.time);
+                    drawn_keys().push_back({joint.index, key.time, cpos});
+                    if ((current && focused) || in_pick) key_mark(d, cpos, 9 * k, in_pick ? blue : blue_dim, round_key(key));
+                    key_mark(d, cpos, (close_to ? 7.5f : 6) * k, track->hidden ? faint : in_pick || (current && focused) ? blue_light : white, round_key(key));
+                    if (!close_to || !lane_clicked || locked) continue;
+                    on_key = true;
+                    if (ImGui::GetIO().KeyShift) {
+                        auto& picked = u.picked;
+                        const auto found = std::find_if(picked.begin(), picked.end(), [&](const auto& p) {
+                            return p.first == joint.index && std::abs(p.second - key.time) < 1e-4f;
+                        });
+                        if (found != picked.end()) picked.erase(found);
+                        else picked.emplace_back(joint.index, key.time);
+                        continue;
+                    }
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        studio::begin_change();
+                        std::string m;
+                        const std::array<std::pair<std::uint16_t, float>, 1> one{{{joint.index, key.time}}};
+                        studio::smooth_chosen_keys(one, m);
+                        say(m);
+                        u.channel_drag.on = false;
+                        continue;
+                    }
+                    // A press: this key's value can be dragged up and down, or the key moved sideways in time.
+                    if (!in_pick) u.picked.clear();
+                    u.selected = joint.index;
+                    u.channel_joint = joint.index;
+                    u.channel = c;
+                    studio::set_time(key.time);
+                    studio::set_playing(false);
+                    u.channel_drag = {};
+                    u.channel_drag.on = true;
+                    u.channel_drag.joint = joint.index;
+                    u.channel_drag.channel = c;
+                    u.channel_drag.time = key.time;
+                    u.channel_drag.base = studio::Offset{key.rotation, key.offset};
+                    u.channel_drag.start = studio::channel_value(u.channel_drag.base, c);
+                    u.channel_drag.from = ImGui::GetIO().MousePos;
+                }
+                d->PopClipRect();
+            }
+            if (lane_clicked && !on_key && v.has_clip) {
+                u.picked.clear();
+                u.selected = joint.index;
+                u.channel_joint = joint.index;
+                u.channel = c;
+                studio::set_time(std::round(t_of(ImGui::GetIO().MousePos.x) * fps) / fps);
+                studio::set_playing(false);
+            }
+            continue;
+        }
+        // ---- a joint: its name (click: open or close its channels) and its keys ------------------------
         const ImVec2 a(at.x + rows_left, y), b(lanes_right - 8 * k, y + row_h);
         if (chosen) {
             skate_theme::rough_rect(d, a, ImVec2(a.x + label_w - 12 * k, b.y), blue, seed_of(a), k);
@@ -2504,10 +2717,21 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             skate_theme::rough_rect(d, ImVec2(a.x + label_w - 4 * k, a.y), b, r % 2 ? IM_COL32(30, 31, 34, 220) : IM_COL32(34, 35, 38, 220), seed_of(a) + 1, k);
         }
         const bool has_keys = track && !track->keys.empty();
-        text(d, f.bold, 17 * k, ImVec2(a.x + 20 * k, y + row_h * 0.5f - 10 * k), chosen || has_keys ? white : soft, upper(std::string(joint.label)));
+        // The chevron: pointing down when the joint's channels are open.
+        {
+            const ImVec2 cc(a.x + 16 * k, y + row_h * 0.5f);
+            const float h = 5 * k;
+            const ImU32 ink = chosen || has_keys ? white : soft;
+            if (channels_open(joint.index)) d->AddTriangleFilled(ImVec2(cc.x - h, cc.y - h * 0.6f), ImVec2(cc.x + h, cc.y - h * 0.6f), ImVec2(cc.x, cc.y + h * 0.8f), ink);
+            else d->AddTriangleFilled(ImVec2(cc.x - h * 0.6f, cc.y - h), ImVec2(cc.x - h * 0.6f, cc.y + h), ImVec2(cc.x + h * 0.8f, cc.y), ink);
+        }
+        text(d, f.bold, 17 * k, ImVec2(a.x + 30 * k, y + row_h * 0.5f - 10 * k), chosen || has_keys ? white : soft, upper(std::string(joint.label)));
         ImGui::PushID(joint.index);
         ImGui::SetCursorScreenPos(a);
-        if (ImGui::InvisibleButton("##label", ImVec2(label_w - 12 * k, row_h))) u.selected = joint.index;
+        if (ImGui::InvisibleButton("##label", ImVec2(label_w - 12 * k, row_h))) {
+            u.selected = joint.index;
+            toggle_channels(joint.index, ImGui::GetIO().KeyCtrl);
+        }
         ImGui::SetCursorScreenPos(ImVec2(ruler_left, y));
         ImGui::InvisibleButton("##lane", ImVec2(ruler_right - ruler_left, row_h));
         const bool lane_hovered = ImGui::IsItemHovered();
@@ -2590,6 +2814,29 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                          u.rows_bar_held || over ? blue : IM_COL32(255, 255, 255, 110), bar_w * 0.5f);
     }
     d->PopClipRect();
+    if (u.channel_drag.on) {
+        auto& drag = u.channel_drag;
+        const auto& io = ImGui::GetIO();
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) drag.on = false;
+        else {
+            const float dx = io.MousePos.x - drag.from.x, dy = io.MousePos.y - drag.from.y;
+            if (drag.mode == 0 && std::hypot(dx, dy) > 4 * k) drag.mode = std::abs(dy) >= std::abs(dx) ? 1 : 2;
+            if (drag.mode == 1) {
+                if (!drag.began) {
+                    studio::begin_change();
+                    drag.began = true;
+                }
+                const float per_pixel = (drag.channel < 3 ? 0.25f : 0.0015f) * (io.KeyShift ? 0.2f : 1.0f);
+                studio::set_offset(drag.joint, studio::with_channel(drag.base, drag.channel, drag.start - dy * per_pixel));
+            } else if (drag.mode == 2) {
+                u.key_joint = drag.joint;
+                u.key_from = drag.time;
+                u.key_to = drag.time;
+                u.key_moved = false;
+                drag.on = false;
+            }
+        }
+    }
     if (u.key_joint) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             const float to = std::round(t_of(ImGui::GetIO().MousePos.x) * fps) / fps;
@@ -2634,17 +2881,6 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 if (caught) say(std::to_string(u.picked.size()) + " keys chosen: drag one to move them all.");
             }
         }
-    }
-    // What can be done with them, over the rows while any are chosen.
-    if (!u.picked.empty()) {
-        const float bw = 104 * k, bh = 28 * k, gap_x = 8 * k;
-        const ImVec2 at_strip(ruler_right - 3 * bw - 2 * gap_x - 12 * k, rows_top - bh - 6 * k);
-        const auto label = std::to_string(u.picked.size()) + (u.picked.size() == 1 ? " KEY" : " KEYS");
-        const auto lw = text_size(f.bold, 13 * k, label.c_str());
-        text(d, f.bold, 13 * k, ImVec2(at_strip.x - lw.x - 14 * k, at_strip.y + (bh - lw.y) * 0.5f), blue_light, label);
-        if (button(d, f, "##groupsmooth", at_strip, ImVec2(bw, bh), "SMOOTH")) smooth_picked();
-        if (button(d, f, "##groupdelete", ImVec2(at_strip.x + bw + gap_x, at_strip.y), ImVec2(bw, bh), "DELETE")) delete_picked();
-        if (button(d, f, "##groupclear", ImVec2(at_strip.x + 2 * (bw + gap_x), at_strip.y), ImVec2(bw, bh), "CLEAR")) ui().picked.clear();
     }
     // The brackets: the window the animation works in, drawn over the rows, with the window shaded. Either
     // one retimes the animation into the new window. Each is labelled and has a grab area wide enough to
@@ -2751,6 +2987,8 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
         u.timeline_view = Ui::View::fit;
         u.timeline_zoom = 1;
         u.timeline_scroll = u.rows_scroll = 0;
+        u.channel_drag = {};
+        u.channel = -1;
         u.rows_followed = 0xffff;
         u.message.clear();
         // A trick is open: the joints are what you want next, not the list you picked it from.
@@ -2937,6 +3175,7 @@ void keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_Equal) || pressed(ImGuiKey_KeypadAdd)) zoom_timeline(1.5f);
     if (pressed(ImGuiKey_Minus) || pressed(ImGuiKey_KeypadSubtract)) zoom_timeline(1 / 1.5f);
     if (!ctrl && pressed(ImGuiKey_F)) studio::focus_joint(u.selected);
+    if (!ctrl && pressed(ImGuiKey_T) && v.has_clip) toggle_channels(u.selected, false);
     if (!ctrl && pressed(ImGuiKey_K) && v.has_clip) key_joint();
     if (pressed(ImGuiKey_Delete)) {
         if (static_cast<Tab>(u.tab) == Tab::packs) delete_row(v);
@@ -3061,6 +3300,30 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
     if (action_button(d, f, "##keybutton", ImVec2(pa.x + size.x + 12 * k, by), size, Glyph::a, "K", "KEY", IM_COL32(234, 214, 96, 255),
                       IM_COL32(246, 226, 120, 255), skate_theme::black) && v.has_clip)
         key_joint();
+    // The chosen keys: what can be done with a group chosen by a box dragged with the right button, or by
+    // Shift + click. Under the shortcuts and over the timeline, where it is always seen and never covers a key.
+    if (v.has_clip) {
+        const bool any = !u.picked.empty();
+        const float bh = 30 * k, gap_x = 8 * k, top = pb.y + (50 * k - bh) * 0.5f;
+        float x = pb.x;
+        const auto next = [&](float w) {
+            x -= w;
+            const ImVec2 at(x, top);
+            x -= gap_x;
+            return at;
+        };
+        if (button(d, f, "##groupclear", next(84 * k), ImVec2(84 * k, bh), "CLEAR", false, any)) {
+            u.picked.clear();
+            say("No keys chosen.");
+        }
+        if (button(d, f, "##groupdelete", next(96 * k), ImVec2(96 * k, bh), "DELETE", false, any)) delete_picked();
+        if (button(d, f, "##groupsmooth", next(96 * k), ImVec2(96 * k, bh), "SMOOTH", false, any)) smooth_picked();
+        if (button(d, f, "##groupall", next(64 * k), ImVec2(64 * k, bh), "ALL")) pick_all(v);
+        const auto label = any ? std::to_string(u.picked.size()) + (u.picked.size() == 1 ? " KEY CHOSEN" : " KEYS CHOSEN")
+                               : std::string("CHOSEN KEYS");
+        const auto lw = text_size(f.bold, 13 * k, label.c_str());
+        text(d, f.bold, 13 * k, ImVec2(x - lw.x - 6 * k, top + (bh - lw.y) * 0.5f), any ? blue_light : soft, label);
+    }
 }
 // Closing with changes not saved: the game's white card asks first. Its three buttons are a row the
 // D-pad, the arrow keys or the mouse move along; the chosen one is lit, A / Enter / a click takes it.

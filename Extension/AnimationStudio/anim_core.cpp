@@ -278,6 +278,19 @@ Offset evaluate(const Track& track, float seconds) noexcept {
     }
 }
 
+float channel_value(const Offset& edit, int channel) noexcept {
+    if (channel < 3) return to_euler(edit.rotation)[static_cast<std::size_t>(std::clamp(channel, 0, 2))];
+    return edit.offset[static_cast<std::size_t>(std::clamp(channel - 3, 0, 2))];
+}
+Offset with_channel(Offset edit, int channel, float value) noexcept {
+    if (!std::isfinite(value)) return edit;
+    if (channel < 3) {
+        auto euler = to_euler(edit.rotation);
+        euler[static_cast<std::size_t>(std::clamp(channel, 0, 2))] = value;
+        edit.rotation = from_euler(euler);
+    } else edit.offset[static_cast<std::size_t>(std::clamp(channel - 3, 0, 2))] = value;
+    return edit;
+}
 Track* Animation::track(std::uint16_t joint) noexcept {
     for (auto& t : tracks) if (t.joint == joint) return &t;
     return nullptr;

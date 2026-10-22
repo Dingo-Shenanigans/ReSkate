@@ -29,6 +29,8 @@ struct KeyView {
     float time{};
     Ease ease{};
     bool smooth{}; // smoothed: the timeline draws it round
+    Quat rotation{0, 0, 0, 1}; // the key's edit, for the timeline's channel rows and curves
+    Vec3 offset{};
 };
 struct TrackView {
     std::uint16_t joint{};

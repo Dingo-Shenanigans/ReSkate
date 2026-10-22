@@ -3728,7 +3728,7 @@ View view() {
     v.joints = s.joints;
     for (const auto& t : s.edits.tracks) {
         TrackView tv{t.joint, {}, t.hidden, t.locked};
-        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease, k.smooth});
+        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease, k.smooth, k.rotation, k.offset});
         v.tracks.push_back(std::move(tv));
     }
     v.library = s.library;

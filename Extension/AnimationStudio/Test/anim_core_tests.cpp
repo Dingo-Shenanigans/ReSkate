@@ -435,6 +435,25 @@ void smoothing_chosen_keys() {
     const auto again = smooth_keys_at(track, std::array<float, 1>{4.0f}, -1.0f, -1.0f);
     check(again == 0, "A time with no key changes nothing");
 }
+// The timeline's channel rows: one number of a key changes, the others stay.
+void one_channel_changes_alone() {
+    Offset edit{from_euler({20, -35, 50}), {0.1f, 0.2f, 0.3f}};
+    for (int c = 0; c < 6; ++c) {
+        const auto before = to_euler(edit.rotation);
+        const auto changed = with_channel(edit, c, c < 3 ? 12.5f : -0.4f);
+        check(std::abs(channel_value(changed, c) - (c < 3 ? 12.5f : -0.4f)) < 1e-2f, "A channel takes the value it is given");
+        if (c < 3) {
+            const auto after = to_euler(changed.rotation);
+            for (int o = 0; o < 3; ++o)
+                if (o != c) check(std::abs(after[static_cast<std::size_t>(o)] - before[static_cast<std::size_t>(o)]) < 1e-2f, "The other angles stay as they were");
+            check(changed.offset == edit.offset, "Changing a turn leaves the move alone");
+        } else {
+            for (int o = 0; o < 3; ++o)
+                if (o != c - 3) check(near(changed.offset[static_cast<std::size_t>(o)], edit.offset[static_cast<std::size_t>(o)]), "The other moves stay as they were");
+            check(changed.rotation == edit.rotation, "Changing a move leaves the turn alone");
+        }
+    }
+}
 void smoothing_tidies_a_track() {
     Track track;
     track.joint = 343;
@@ -1321,6 +1340,7 @@ int main(int argc, char** argv) {
         turn_keeps_its_speed_through_a_key();
         smoothing_tidies_a_track();
         smoothing_chosen_keys();
+        one_channel_changes_alone();
         solo_turn_holds_the_joints_below();
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
