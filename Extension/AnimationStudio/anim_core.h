@@ -9,6 +9,7 @@
 #include <vector>
 #include <optional>
 #include <limits>
+#include <memory>
 
 // FOURTH Animation Studio's own data: a trick recorded from the game, and the keyframes a player puts
 // on it. Nothing here touches the game. The game side (anim_studio.cpp) copies the pose the native
@@ -139,6 +140,7 @@ struct Animation {
     std::string name;  // the profile's name, also its file name
     std::string trick;  // what the player says it is (Kickflip, Heelflip ...)
     std::string author; // who made it, kept with it so a shared trick says whose it is
+    std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;
     std::vector<Track> tracks;
     float speed{1}; // Studio preview speed; gameplay source seconds stay at 1x.
@@ -359,6 +361,62 @@ private:
     float candidate_from_{}, candidate_last_{};
     float play_time_{}, last_fit_time_{};
     double advanced_at_{};
+};
+
+// ---- the game's own clip, and how far into it it is ------------------------------------------------
+// A saved trick plays as the game plays its own: the game never says which clip it plays for a trick or how
+// far into it it is, but its own pose (before any edit) says both. Each animation update that pose is matched
+// against the clips it may be playing for the trick - the trick's own clip and the library's low, mid and high
+// pop of it, each as it is and mirrored - and the edits are laid on at the time read off it. A clip the game
+// plays that is not the edit's own (another pop) is read across through the pop and landing marks. When the
+// game goes into another animation its pose stops matching and the trick lets go: the game leads, the edits
+// only ride on it. (Measured on testers' dumps: the clip playing is told apart from the others by 7 degrees or
+// more, and its time to about a frame.)
+struct NativeModels {
+    struct Model {
+        std::size_t clip{};    // which clip given to build_native_models
+        bool own{};            // the edit's own clip: its time is the edit's
+        bool mirrored{};       // compared mirrored (the game mirrors the body by stance)
+        float up{-1}, down{-1}, duration{};
+        std::vector<std::uint16_t> joints; // the live joints compared, in order
+        std::vector<float> times;
+        std::vector<Quat> frames; // times.size() * joints.size()
+    };
+    std::vector<Model> models;
+    float edit_up{-1}, edit_down{-1}; // the edit's own clip's pop and landing
+    // A time in a model's clip as a time in the edit's own clip: the same before the pop, stretched between the
+    // pop and the landing, the same again after the landing.
+    float edit_time(const Model& model, float seconds) const noexcept;
+};
+// `clips[own]` is the edit's own clip; the others are the clips the game may play for its trick instead.
+std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own);
+class NativeClock {
+public:
+    static constexpr float lock_degrees = 4.5f; // how near the game's pose has to be to a clip to follow it
+    static constexpr float good_degrees = 3.0f; // nearer than this the edits are on in full
+    static constexpr float lose_degrees = 6.0f; // further than this for a few updates, the game has moved on
+    struct Reading {
+        bool locked{};   // following the game's clip
+        bool lost{};     // was, and the game has moved on (or the clip has ended): let go
+        float time{-1};  // seconds into the edit's own clip
+        float error{-1}; // degrees, the game's pose against the clip where it is followed
+        int clip{-1};    // which clip (as given to build_native_models)
+        bool mirrored{};
+        float confidence{}; // 1 on the clip, falling to 0 as the game blends away from it
+    };
+    void start(std::shared_ptr<const NativeModels> models) noexcept; // a new trick: look for its clip again
+    void reset() noexcept;
+    // One animation update: the game's own pose and the seconds the game moved on since the last.
+    Reading update(std::span<const Joint> pose, float step) noexcept;
+    bool active() const noexcept { return static_cast<bool>(models_); }
+
+private:
+    float error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept;
+    std::shared_ptr<const NativeModels> models_;
+    int locked_{-1};
+    float time_{-1}, error_{-1}, confidence_{};
+    int bad_{};
+    bool lost_{};
 };
 // A name safe as a file name ("Kickflip 2"): letters, digits, space, - and _ only.
 std::string file_safe(std::string_view name);

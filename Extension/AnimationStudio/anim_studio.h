@@ -86,7 +86,8 @@ struct View {
     struct PackView {
         std::string name, made_by;
         bool on{}, alternate{}, unsaved{};
-        std::vector<std::string> members; // as edited, when it has changes not saved yet
+        std::vector<std::string> members;
+        PresetPack pack; // its slots, which are Fixed or Alternate, and what is left out of a cycle
     };
     std::vector<PackView> packs;
     std::string open_pack; // the pack open in PACKS
@@ -225,14 +226,22 @@ void redo();
 void new_animation();
 bool save(std::string& message);
 bool save_preset_copy(std::string& message);
-// Packs. Any number can be switched on (at once); with none on, every saved animation plays. What is in a
-// pack, and its Variant playback, change a draft of it until save_pack.
+// Packs. One is used at a time (switching one on switches the others off); with none on, every saved
+// animation plays. Every change to a pack is saved at once and plays at once.
 bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
 void open_pack(const std::string& name); // the pack open in PACKS; "" for the list of packs
 bool set_pack_on(const std::string& name, bool on, std::string& message);
-bool set_pack_member(const std::string& animation, bool in, std::string& message); // in the open pack
-bool set_pack_alternate(bool alternate, std::string& message);                     // the open pack
+bool set_pack_member(const std::string& pack, const std::string& animation, bool in, std::string& message);
+// Where the pack has more than one of a trick and pop (`slot`, preset_slot): Fixed plays its first one,
+// Alternate the ones linked into its cycle, in turns.
+bool set_pack_mode(const std::string& pack, const std::string& slot, bool alternate, std::string& message);
+bool set_pack_fixed(const std::string& pack, const std::string& animation, std::string& message); // the one that plays
+bool set_pack_linked(const std::string& pack, const std::string& animation, bool linked, std::string& message);
+bool link_pack_slot(const std::string& pack, const std::string& slot, std::string& message); // all into the cycle
 bool save_pack(std::string& message);                                              // the open pack
+// The name a saved animation is shown by in MY TRICKS and the packs; empty takes it off. Its file keeps its
+// name, so the packs it is in keep it.
+bool set_label(const std::string& animation, const std::string& label, std::string& message);
 bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
 // A pack (saved first if it has changes), or every saved animation for "", as
 // ReSkate.Tricks/exports/<name>.zip, laid out like the tricks folder so it can be unzipped straight into it.

@@ -557,6 +557,35 @@ void several_packs_play_together() {
     const auto back = read_pack_json(pack_json(one));
     check(back.made_by == "22sh" && back.members().size() == 2, "A pack says who made it after it is shared");
 }
+void pack_slots_are_fixed_or_alternate() {
+    std::vector<Preset> presets{{"Kick A", "kickflip", "mid"}, {"Kick B", "kickflip", "mid"}, {"Kick C", "kickflip", "mid"},
+                                {"Heel A", "heelflip", "mid"}, {"Heel B", "heelflip", "mid"}};
+    PresetPack pack;
+    pack.name = "Steezy";
+    pack.slots["kickflip|mid"] = {"Kick B", "Kick A", "Kick C"};
+    pack.slots["heelflip|mid"] = {"Heel A", "Heel B"};
+    select_presets(presets, std::vector<PresetPack>{pack});
+    check(presets[1].active && !presets[0].active && !presets[2].active && presets[3].active && !presets[4].active,
+          "Fixed (as packs were): the first of each trick plays");
+    pack.slot_alternate["kickflip|mid"] = true;
+    pack.unlinked.insert("Kick C");
+    select_presets(presets, std::vector<PresetPack>{pack});
+    check(presets[0].active && presets[1].active && !presets[2].active && presets[2].included,
+          "Alternate: the kickflips linked into the cycle take turns, the unlinked one does not play");
+    check(presets[3].active && !presets[4].active, "and the heelflips, Fixed on their own, still play their first");
+    pack.unlinked = {"Kick A", "Kick B", "Kick C"};
+    select_presets(presets, std::vector<PresetPack>{pack});
+    check(presets[1].active && !presets[0].active && !presets[2].active, "With none linked, the first plays, as Fixed");
+    pack.unlinked = {"Kick C"};
+    const auto back = read_pack_json(pack_json(pack));
+    check(back.alternates("kickflip|mid") && !back.alternates("heelflip|mid") && back.unlinked.contains("Kick C") && back.unlinked.size() == 1 &&
+              back.slots.at("kickflip|mid").front() == "Kick B",
+          "Fixed or Alternate per trick, the cycle and the order come back from the file");
+    PresetPack old;
+    old.alternate = true;
+    old.slots["kickflip|mid"] = {"Kick A", "Kick B"};
+    check(read_pack_json(pack_json(old)).alternates("kickflip|mid"), "A pack from before, Alternate for the whole pack, still alternates");
+}
 void packs_select_variants_without_filesystem_order() {
     std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
     select_presets(presets, std::nullopt);
@@ -1032,6 +1061,89 @@ void fitting_the_air_keeps_the_flip() {
     }
     check(episode.phase == PlaybackPhase::landing && steady && last > 1.33f, "and runs on into the landing without a jump");
 }
+void native_clock_follows_the_game() {
+    // A trick clip at 60 fps: every body joint turning its own way (pop at 0.2 s, landing at 0.7 s), and
+    // another pop of the same trick, the same moves over a longer air (pop 0.25 s, landing 0.85 s).
+    const auto angle = [](std::size_t j, float t) { return 0.6f * std::sin(2.1f * t + 0.37f * static_cast<float>(j)) + 0.3f * std::sin(5.3f * t + static_cast<float>(j)); };
+    const auto turn = [&](std::size_t j, float t, float size = 1.0f) {
+        const float a = size * angle(j, t) / 2;
+        return j % 2 ? Quat{0, 0, std::sin(a), std::cos(a)} : Quat{std::sin(a), 0, 0, std::cos(a)};
+    };
+    // `warp` takes the clip's own time to the first clip's; `size` makes its moves bigger (a higher pop).
+    const auto make = [&](float up, float down, float size, auto warp) {
+        auto clip = std::make_shared<Clip>();
+        clip->joints = skeleton_joints;
+        for (int f = 0; f < 90; ++f) {
+            const float t = static_cast<float>(f) / 60;
+            clip->times.push_back(t);
+            for (std::size_t j = 0; j < skeleton_joints; ++j) {
+                Joint joint;
+                if (j >= 2 && j < 375) joint.rotation = turn(j, warp(t), size);
+                clip->frames.push_back(joint);
+            }
+        }
+        clip->takeoff = up;
+        clip->landing = down;
+        return clip;
+    };
+    const auto own = make(0.2f, 0.7f, 1.0f, [](float t) { return t; });
+    const auto higher = make(0.25f, 0.85f, 1.35f, [](float t) { return t <= 0.25f ? t - 0.05f : t >= 0.85f ? t - 0.15f : 0.2f + (t - 0.25f) * 0.5f / 0.6f; });
+    const auto models = build_native_models({own, higher}, 0);
+    // The game's pose: one of the clips at `t`, as it is or mirrored.
+    const auto pose_of = [&](const Clip& clip, float t, bool mirrored) {
+        std::vector<Joint> pose(skeleton_joints);
+        clip.sample(t, pose);
+        if (!mirrored) return pose;
+        std::vector<Joint> out(skeleton_joints);
+        for (std::size_t j = 0; j < skeleton_joints; ++j) {
+            out[mirror_joint[j]] = pose[j];
+            out[mirror_joint[j]].rotation = mirror_rotation(pose[j].rotation);
+        }
+        return out;
+    };
+    {
+        // The game plays the edit's own clip a little slower than it was made, from 0.03 s after its pop.
+        NativeClock clock;
+        clock.start(models);
+        float worst = 0;
+        bool locked = true;
+        for (int i = 0; i < 30; ++i) {
+            const float game = 0.23f + 0.93f * static_cast<float>(i) / 60;
+            const auto r = clock.update(pose_of(*own, game, false), 1.0f / 60);
+            locked = locked && r.locked && !r.lost && r.clip == 0 && !r.mirrored;
+            if (i >= 3) worst = std::max(worst, std::abs(r.time - game));
+        }
+        check(locked && worst < 0.006f, "The clock locks onto the game's clip and follows its time to within a third of a frame");
+        // The game goes into another animation: its pose leaves the clip.
+        std::vector<Joint> other(skeleton_joints);
+        for (std::size_t j = 2; j < 375; ++j) other[j].rotation = turn(j + 7, 3.0f);
+        NativeClock::Reading r;
+        for (int i = 0; i < 4; ++i) r = clock.update(other, 1.0f / 60);
+        check(r.lost && r.confidence < 0.5f, "and lets go when the game's pose leaves it, fading");
+    }
+    {
+        // The game plays the higher pop, mirrored (the other stance): read across onto the edit's own clip.
+        NativeClock clock;
+        clock.start(models);
+        float worst = 0;
+        bool right = true;
+        for (int i = 0; i < 30; ++i) {
+            const float game = 0.27f + static_cast<float>(i) / 60;
+            const auto r = clock.update(pose_of(*higher, game, true), 1.0f / 60);
+            const float expected = 0.2f + (game - 0.25f) * 0.5f / 0.6f;
+            right = right && r.locked && r.clip == 1 && r.mirrored;
+            if (i >= 3) worst = std::max(worst, std::abs(r.time - expected));
+        }
+        check(right && worst < 0.01f, "Another pop of the trick, the other way round, is found and read across through the marks");
+    }
+    {
+        NativeClock clock;
+        clock.start(models);
+        std::vector<Joint> riding(skeleton_joints);
+        const auto r = clock.update(riding, 1.0f / 60);
+        check(!r.locked, "A pose that is not the trick is not followed");
+    }
+}
 void native_clips_pop_where_the_game_does() {
     // A library clip at 60 fps: the board flat, then from frame 8 (0.133 s) its tail goes down 8 degrees a
     // frame. Its height dips as the tail strikes (0.15 s), deepest as it lands (frame 38, 0.633 s), and a
@@ -1400,12 +1512,14 @@ int main(int argc, char** argv) {
         native_playback_contracts();
         fitting_the_air_keeps_the_flip();
         native_clips_pop_where_the_game_does();
+        native_clock_follows_the_game();
         diagnostic_history_is_bounded();
         retargeted_edits_preserve_native_rig_and_convert_joint_frames();
         switch_edits_follow_the_native_body_facing();
         authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
     several_packs_play_together();
+    pack_slots_are_fixed_or_alternate();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         native_names_and_search();

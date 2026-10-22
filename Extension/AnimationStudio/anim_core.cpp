@@ -843,6 +843,7 @@ std::string to_json(const Animation& animation) {
     root["name"] = animation.name;
     root["trick"] = animation.trick;
     if (!animation.author.empty()) root["author"] = animation.author;
+    if (!animation.label.empty()) root["label"] = animation.label;
     root["speed"] = animation.speed;
     root["loop"] = animation.loop;
     root["pop"] = animation.pop;
@@ -894,6 +895,7 @@ Animation from_json(std::string_view text) {
     result.name = root.value("name", "");
     result.trick = root.value("trick", "");
     result.author = root.value("author", "");
+    result.label = root.value("label", "").substr(0, 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
     result.pop = root.value("pop", "");
@@ -1479,5 +1481,153 @@ bool gameplay_body_joint(std::uint16_t joint) noexcept {
         if (at == hips_joint) return true;
     }
     return false;
+}
+// ---- the game's own clip, and how far into it it is ------------------------------------------------
+namespace {
+constexpr std::uint16_t native_body_joints = 375; // the body: everything below Ground
+float degrees_between(const Quat& a, const Quat& b) noexcept {
+    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f;
+}
+} // namespace
+float NativeModels::edit_time(const Model& model, float seconds) const noexcept {
+    if (model.own || !std::isfinite(seconds)) return seconds;
+    if (!(model.up >= 0) || !(model.down > model.up) || !(edit_up >= 0) || !(edit_down > edit_up)) return seconds;
+    if (seconds <= model.up) return std::max(0.0f, edit_up - (model.up - seconds));
+    if (seconds >= model.down) return edit_down + (seconds - model.down);
+    return edit_up + (seconds - model.up) * (edit_down - edit_up) / (model.down - model.up);
+}
+std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
+    auto out = std::make_shared<NativeModels>();
+    if (own < clips.size() && clips[own]) {
+        out->edit_up = clips[own]->takeoff;
+        out->edit_down = clips[own]->landing;
+    }
+    // The body joints a trick is edited by: the ones that say most about the pose, the same for every clip.
+    std::vector<std::uint16_t> body;
+    for (const auto& e : editable_joints())
+        if (e.index < native_body_joints && e.index < skeleton_joints && gameplay_body_joint(e.index) &&
+            mirror_joint[e.index] < native_body_joints)
+            body.push_back(e.index);
+    for (std::size_t c = 0; c < clips.size(); ++c) {
+        const auto& clip = clips[c];
+        if (!clip || clip->empty() || clip->joints < native_body_joints || clip->times.size() < 4 || body.size() < 6) continue;
+        for (const bool mirrored : {false, true}) {
+            NativeModels::Model model;
+            model.clip = c;
+            model.own = c == own;
+            model.mirrored = mirrored;
+            model.up = clip->takeoff;
+            model.down = clip->landing;
+            model.duration = clip->duration();
+            model.times = clip->times;
+            // Mirrored, the live joint on the other side is compared with this one reflected (as PieceTracker).
+            for (const auto j : body) model.joints.push_back(mirrored ? mirror_joint[j] : j);
+            model.frames.reserve(clip->times.size() * body.size());
+            for (std::size_t f = 0; f < clip->times.size(); ++f)
+                for (const auto j : body) {
+                    const auto& q = clip->frame(f)[j].rotation;
+                    model.frames.push_back(mirrored ? mirror_rotation(q) : q);
+                }
+            out->models.push_back(std::move(model));
+        }
+    }
+    return out;
+}
+void NativeClock::start(std::shared_ptr<const NativeModels> models) noexcept {
+    reset();
+    models_ = std::move(models);
+}
+void NativeClock::reset() noexcept {
+    models_.reset();
+    locked_ = -1;
+    time_ = error_ = -1;
+    confidence_ = 0;
+    bad_ = 0;
+    lost_ = false;
+}
+float NativeClock::error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept {
+    const auto n = model.joints.size();
+    if (!n || frame >= model.times.size()) return 180;
+    float sum = 0;
+    for (std::size_t k = 0; k < n; ++k) sum += degrees_between(pose[model.joints[k]].rotation, model.frames[frame * n + k]);
+    return sum / static_cast<float>(n);
+}
+NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step) noexcept {
+    Reading out;
+    if (!models_ || models_->models.empty() || pose.size() < native_body_joints) return out;
+    if (!std::isfinite(step) || step < 0) step = 0;
+    step = std::min(step, 0.1f);
+    const auto& models = models_->models;
+    // A frame's error and the time between it and its neighbours, refined to between frames.
+    const auto refine = [&](const NativeModels::Model& m, std::size_t f, float e) {
+        if (f == 0 || f + 1 >= m.times.size()) return m.times[f];
+        const float before = error_at(m, f - 1, pose), after = error_at(m, f + 1, pose);
+        const float curve = before - 2 * e + after;
+        if (!(curve > 1e-4f)) return m.times[f];
+        const float shift = std::clamp(0.5f * (before - after) / curve, -0.5f, 0.5f);
+        return shift < 0 ? m.times[f] + shift * (m.times[f] - m.times[f - 1]) : m.times[f] + shift * (m.times[f + 1] - m.times[f]);
+    };
+    if (locked_ < 0) {
+        // Looking for it: every clip, both ways round, from the crouch before its pop to just after its landing.
+        // (Not its roll away: riding looks like the end of every trick.)
+        // The edit's own clip wins a near tie: it can be the very clip the game plays (a library pop).
+        int best_model = -1;
+        std::size_t best_frame = 0;
+        float best = 180, best_ranked = 180;
+        for (std::size_t i = 0; i < models.size(); ++i) {
+            const auto& m = models[i];
+            const float from = m.up >= 0 ? m.up - 0.3f : 0.0f;
+            const float to = m.down > m.up ? m.down + 0.05f : m.duration * 0.6f;
+            for (std::size_t f = 0; f < m.times.size(); ++f) {
+                if (m.times[f] < from || m.times[f] > to) continue;
+                const float e = error_at(m, f, pose), ranked = m.own ? e - 0.5f : e;
+                if (ranked < best_ranked) { best_ranked = ranked; best = e; best_model = static_cast<int>(i); best_frame = f; }
+            }
+        }
+        out.error = best;
+        if (best_model < 0 || best >= lock_degrees) return out;
+        locked_ = best_model;
+        time_ = refine(models[static_cast<std::size_t>(locked_)], best_frame, best);
+        error_ = best;
+        confidence_ = 0;
+    } else if (!lost_) {
+        // Following it: where the game should be now, and where its pose says it is, near that.
+        const auto& m = models[static_cast<std::size_t>(locked_)];
+        const float predicted = time_ + step;
+        std::size_t best_frame = 0;
+        float best = 180;
+        bool any = false;
+        for (std::size_t f = 0; f < m.times.size(); ++f) {
+            if (m.times[f] < predicted - 0.1f || m.times[f] > predicted + 0.1f) continue;
+            const float e = error_at(m, f, pose);
+            if (e < best) { best = e; best_frame = f; any = true; }
+        }
+        if (any) {
+            const float matched = refine(m, best_frame, best);
+            // Pulled towards what the pose says, never back: a pose that is held looks like any time it is held at.
+            time_ = std::max(time_, predicted + 0.35f * (matched - predicted));
+            error_ = best;
+        } else {
+            time_ = predicted;
+            error_ = 180;
+        }
+        bad_ = error_ > lose_degrees ? bad_ + 1 : 0;
+        if (bad_ >= 3 || time_ >= m.duration - 0.5f / 60) lost_ = true;
+    } else {
+        time_ += step;
+    }
+    const auto& m = models[static_cast<std::size_t>(locked_)];
+    // On the clip in full; less as the game blends away from it, smoothed so a single odd pose does not flicker.
+    const float on = lost_ ? 0.0f : std::clamp((lose_degrees - error_) / (lose_degrees - good_degrees), 0.0f, 1.0f);
+    confidence_ += (on - confidence_) * (confidence_ <= 0 ? 1.0f : 0.35f);
+    out.locked = true;
+    out.lost = lost_;
+    out.time = std::clamp(models_->edit_time(m, std::min(time_, m.duration)), 0.0f, std::numeric_limits<float>::max());
+    out.error = error_;
+    out.clip = static_cast<int>(m.clip);
+    out.mirrored = m.mirrored;
+    out.confidence = confidence_;
+    return out;
 }
 } // namespace dingosdk::anim_studio

@@ -98,6 +98,8 @@ struct CustomTrick {
     bool goofy{};      // recorded goofy
     bool leads_right{}; // the foot it leads with, read from the clip itself (clip_leads_right), not its label
     std::optional<bool> fakie; // made rolling fakie (empty: from before that was kept)
+    // The clips the game may play for its trick (its own and the library's pops of it), for NativeClock.
+    std::shared_ptr<const NativeModels> native;
 };
 // Dev only: true plays the other stance's variant when no variant matches the stance, as before
 // 2026-10-20. Keep it false while the mirroring between stances is in development.
@@ -160,14 +162,15 @@ std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component)
     return left ? std::optional<bool>{riding_switch(*left, goofy_stance())} : std::nullopt;
 }
 using CustomTricks = std::vector<CustomTrick>;
-// How a saved trick plays in game. These were settings once, and set wrong they broke tricks with nothing in
-// the menu to show why, so they are fixed: the whole skater and the board play the recording with its keys,
-// as the studio shows it, and the keys are spread over the air that really happens, so the landing meets the
-// game's. A deck turned round under him is taken from the game's own board-backwards flag. Joint limits is a
+// How a saved trick plays in game: the game leads. Its own pose says which clip it plays and how far into it
+// it is (NativeClock, PieceTracker for pieces), and the keys ride on the game's pose at that time - its IK,
+// its height, its board. Forcing the studio's whole pose over it (these were 1 until 2026-10-22) put the
+// skater at the clip's own height, took his feet off the game's deck and fought the game's next animation.
+// A deck turned round under him is taken from the game's own board-backwards flag. Joint limits is a
 // setting (JOINTS): it holds in the studio and in game alike, so what is posed is what plays.
-constexpr float match_bent_joints = 1; // a joint with a key takes the pose it has in the studio
-constexpr float match_whole_body = 1;  // and so does every other joint, and the board
-constexpr bool fit_keys_to_air = true;
+constexpr float match_bent_joints = 0; // a joint with a key: its key on the game's pose
+constexpr float match_whole_body = 0;  // every other joint, and the board: the game's own
+constexpr bool fit_keys_to_air = true; // the trick's own clock, when the game's clip for it is not found
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
@@ -360,6 +363,14 @@ struct Live {
     std::atomic<MotionState> render_motion{MotionState::unknown};
     std::string recorded_entry{"unknown"};
     const CustomTrick* game_trick{}; // the saved trick playing now, from snapshot `game_tricks`
+    // Where the game is in its own clip for that trick (NativeClock): the time the edits are laid on at.
+    NativeClock native_clock;
+    double clock_selected_at{-1}; // when the trick was chosen
+    double clock_locked_at{-1};   // when the game's clip was found
+    float clock_weight{};         // the layer, eased in when found and out when the game moves on
+    bool clock_fallback{};        // its clip was not found: the trick plays on its own clock instead
+    std::uint64_t finished_episode{~std::uint64_t{0}}; // a trick let go is not taken up again in its air
+    std::string finished_trick;
     // Board edit axes at takeoff, relative to actor placement. No recorded board pose is replayed.
     Quat board_frame_local{0, 0, 0, 1};
     bool board_at_takeoff_ok{};
@@ -458,8 +469,12 @@ void publish_gameplay_packet(std::shared_ptr<const GameplayPacket> packet) {
 std::shared_ptr<const GameplayPacket> gameplay_packet(bool presentation, std::uint64_t* frame = nullptr) {
     auto& packets = gameplay_packets(); std::lock_guard lock(packets.mutex);
     const auto epoch = gameplay_epoch.load(std::memory_order_acquire);
-    auto packet = presentation ? packets.presentation.get(profiler::presents(), epoch, packets.latest) : packets.latest;
-    if (frame) *frame = packets.presentation.presentation;
+    // Always the newest: pinning one per presented frame drew an edit 1 to 3 updates older than the pose under
+    // it whenever two updates fell in one frame (12% of frames at 54 fps, half of them at 36), and it then
+    // caught up with a jump. Body and board read it the same way, so they stay together.
+    (void)presentation;
+    auto packet = packets.latest;
+    if (frame) *frame = profiler::presents();
     if (!packet || packet->epoch != epoch || packet->generation != live().generation.load(std::memory_order_acquire) ||
         packet->component != live().component.load(std::memory_order_acquire) || !overrides_allowed.load(std::memory_order_acquire) ||
         now_seconds() - packet->at > 0.1) return {};
@@ -758,6 +773,7 @@ void read_library_locked(State& s) {
                     s.presets.push_back({name, animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                     s.presets.back().fakie = animation.fakie;
                     s.presets.back().made_by = animation.author;
+                    s.presets.back().label = animation.label;
                     s.presets.back().saved_at = saved_time(saved_json(name));
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
@@ -776,6 +792,9 @@ void read_library_locked(State& s) {
     } catch (const std::exception& e) { s.status = e.what(); }
 }
 
+} // namespace
+std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
+namespace {
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
 std::shared_ptr<const CustomTricks> read_custom_tricks() {
     auto tricks = std::make_shared<CustomTricks>();
@@ -806,6 +825,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
         logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
         return tricks;
     }
+    std::map<std::string, std::shared_ptr<const Clip>> library_clips; // read once for every saved trick of a kind
     for (const auto& entry : saved_jsons(folder)) {
         if (std::none_of(requested.begin(), requested.end(), [&](const Preset& p) {
             return p.active && p.name == entry.stem().string();
@@ -837,7 +857,29 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
                 logging::log(Level::info, Channel::skater, "Animation Studio: {} is labelled as leading with the {} foot but leads with the {}; going by the clip.",
                              entry.stem().string(), label_right ? "right" : "left", right ? "right" : "left");
             const auto fakie = animation->fakie;
-            tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right, fakie});
+            // What the game may play for this trick: the trick's own clip, and the library's low, mid and high
+            // pop of it (a saved trick plays on whichever the game picks, following that clip's time).
+            std::vector<std::shared_ptr<const Clip>> references{clip};
+            try {
+                if (const auto library = game_tricks())
+                    for (const auto& g : *library) {
+                        if (g.preview_only || g.recorded || g.file.empty()) continue;
+                        std::string name;
+                        for (const char c : g.trick) name += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                        if (name != trick) continue;
+                        auto found = library_clips.find(g.file);
+                        if (found == library_clips.end()) {
+                            std::shared_ptr<const Clip> loaded;
+                            try { loaded = read_game_clip(g); } catch (...) {}
+                            found = library_clips.emplace(g.file, std::move(loaded)).first;
+                        }
+                        if (found->second) references.push_back(found->second);
+                    }
+            } catch (const std::exception& e) {
+                logging::log(Level::warning, Channel::skater, "Animation Studio: the library's pops of {} are not looked for: {}", trick, e.what());
+            }
+            auto native = build_native_models(references, 0);
+            tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right, fakie, std::move(native)});
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
         }
@@ -2588,6 +2630,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
+                l.native_clock.reset(); l.clock_weight = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
@@ -2604,6 +2647,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             if (l.episode.phase == PlaybackPhase::idle) l.game_trick = nullptr;
+            if (!l.game_trick && l.native_clock.active()) { l.native_clock.reset(); l.clock_weight = 0; }
             if (l.episode.phase == PlaybackPhase::air && l.predicted_air == 0 && at - l.episode.takeoff >= 0.03) {
                 const double elapsed = at - l.episode.takeoff;
                 const auto vy = board_up_speed(base, component);
@@ -2639,7 +2683,8 @@ void on_animation(std::uintptr_t component) noexcept {
             // Not while standing back: the change that started it would otherwise be taken up in this same
             // frame and the old trick dropped at once, so the stand-back was never seen. It is taken up when
             // the stand-back is over (gave_way_at goes back to -1 and the old trick is let go).
-            if (l.gave_way_at < 0 && l.episode.entry != EntryKind::unknown && l.game_tricks &&
+            const bool let_go = l.finished_episode == l.episode.id && !name.empty() && name == l.finished_trick;
+            if (!let_go && l.gave_way_at < 0 && l.episode.entry != EntryKind::unknown && l.game_tricks &&
                 episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
                                           l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop)) {
                 const CustomTrick* found = nullptr;
@@ -2679,6 +2724,11 @@ void on_animation(std::uintptr_t component) noexcept {
                 if (found != l.game_trick) {
                     if (found) l.episode.select(at);
                     l.game_trick = found;
+                    // Its clock starts looking for the game's clip of it.
+                    l.native_clock.reset();
+                    if (found) l.native_clock.start(found->native);
+                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0;
+                    l.clock_fallback = !found || !found->native || found->native->models.empty();
                     if (found) {
                         const bool lead_matches = found->leads_right == live.leads_right;
                         logging::log(Level::info, Channel::skater,
@@ -2715,14 +2765,47 @@ void on_animation(std::uintptr_t component) noexcept {
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
                 const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
                 const auto& clip = *trick->clip;
-                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
+                // The game leads. Its own pose says which of its clips it plays and how far into it it is
+                // (NativeClock); the edits are laid on its pose at that time, eased in as it is found and out
+                // as the game moves into anything else. The brackets only mask the edits, as in the studio.
+                PlaybackSample sampled;
+                NativeClock::Reading reading;
+                if (!l.clock_fallback) {
+                    reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
+                    if (!reading.locked && at - l.clock_selected_at > 0.25) {
+                        l.clock_fallback = true;
+                        logging::log(Level::info, Channel::skater, "Animation Studio: the game's clip for {} was not found ({:.1f} degrees off); "
+                                     "it plays on its own clock.", trick->name, reading.error);
+                    }
+                }
+                if (!l.clock_fallback) {
+                    const bool moved_on = reading.lost || l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail;
+                    if (reading.locked && l.clock_locked_at < 0) {
+                        l.clock_locked_at = at;
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} follows the game's {}clip {} at {:.2f} s ({:.1f} degrees).",
+                                     trick->name, reading.mirrored ? "mirrored " : "", reading.clip == 0 ? std::string("(its own)") : std::to_string(reading.clip),
+                                     reading.time, reading.error);
+                    }
+                    const float target = reading.locked && !moved_on ? reading.confidence : 0.0f;
+                    constexpr float step = 1.0f / 60;
+                    l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / 0.08f)
+                                                             : std::max(target, l.clock_weight - step / 0.1f);
+                    sampled.time = reading.locked ? reading.time : -1.0f;
+                    sampled.weight = l.clock_weight;
+                    sampled.finished = reading.locked && moved_on && l.clock_weight <= 0;
+                } else {
+                    sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
+                }
+                diagnostic.clock_error = reading.error;
+                diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
+                diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : reading.lost ? "let go" : "following";
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
                 diagnostic.recorded_goofy = trick->goofy; diagnostic.recorded_switch = played.switch_stance;
                 diagnostic.retarget = false; diagnostic.mirror = l.played_mirrored;
                 diagnostic.reverse_facing = false;
-                diagnostic.source_timing = true;
+                diagnostic.source_timing = !l.clock_fallback;
                 diagnostic.clip_time = sampled.time; diagnostic.weight = weight;
                 if (sampled.time >= 0 && !sampled.finished) {
                     auto packet = std::make_shared<GameplayPacket>();
@@ -2731,10 +2814,12 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
-                    packet->mirrored = l.played_mirrored; packet->match = match_bent_joints;
+                    // The edits ride on the game's own pose (its IK, its height, its board), at its clip's time:
+                    // nothing of the studio's pose is forced over it.
+                    packet->mirrored = l.played_mirrored; packet->match = 0;
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
-                    packet->match_rest = match_whole_body;
+                    packet->match_rest = 0;
                     packet->limits = snap->limits;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
@@ -2755,7 +2840,12 @@ void on_animation(std::uintptr_t component) noexcept {
                         board_weight = weight;
                     }
                 }
-                if (sampled.finished) l.game_trick = nullptr;
+                if (sampled.finished) {
+                    l.finished_episode = l.episode.id;
+                    l.finished_trick = trick->trick;
+                    l.game_trick = nullptr;
+                    l.native_clock.reset();
+                }
             }
             play_pieces(l, *snap, at, generation, component, live_placement, scheduled, board_target, board_weight);
         }
@@ -3076,63 +3166,68 @@ void idle(double now) {
 
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
-    const auto generation = l.generation.load(std::memory_order_acquire);
-    const auto update = l.animation_updates.load(std::memory_order_acquire);
-    const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), holder, 512);
-    if (!layout.buffer || layout.count != skeleton_joints) return;
     auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
-    std::vector<NativeBone> current(layout.count);
-    if (!peek(layout.buffer, current.data(), current.size() * sizeof(NativeBone))) return;
-    std::vector<Joint> native; native.reserve(current.size());
-    for (const auto& bone : current) native.push_back(joint_of(bone));
-    publication.edits.restore(generation, update, layout.buffer, native);
-    if (packet) playback_verify::stash(*packet, presentation, native, now_seconds());
-    else playback_verify::idle(now_seconds());
-    auto edited = native;
-    if (packet) {
-        std::vector<Joint> studio;
-        if (packet->match > 0 && packet->clip && packet->clip->joints == skeleton_joints)
-            studio = studio_pose(*packet->clip, packet->time, packet->mirrored);
-        apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
-                                  packet->match_rest);
-        if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
-    }
-    const auto desired_deltas = pose_edit_deltas(native, edited);
-    edited = native;
-    std::vector<Offset> applied_deltas;
-    const auto motion = l.render_motion.load(std::memory_order_acquire);
-    if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
-        const auto deltas = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
-            packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas);
-        apply_pose_deltas(deltas, edited);
-        applied_deltas.assign(deltas.begin(), deltas.end());
-    } else publication.transition.reset();
-    if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
-        (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) return;
-    for (const auto& joint : edited)
-        if (!finite(joint)) throw std::runtime_error("Native edit layer produced an invalid joint");
-    for (std::size_t i = 0; i < edited.size(); ++i) {
-        if (edited[i] == joint_of(current[i])) continue;
-        auto& bone = current[i]; bone.rotation = edited[i].rotation;
-        std::memcpy(bone.position.data(), edited[i].position.data(), 12);
-        if (!poke(layout.buffer + i * sizeof(NativeBone), &bone, sizeof(bone))) throw std::runtime_error("Cannot publish native edits");
-    }
-    publication.network_deltas = std::move(applied_deltas);
-    publication.network_generation = generation; publication.network_at = now_seconds();
-    publication.network_epoch = gameplay_epoch.load();
-    if (diagnostics_capture) {
-        auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
-        shot.edited_skater = edited; shot.edited_at = now_seconds();
-        shot.edited_generation = generation; shot.edited_sequence = packet ? packet->sequence : 0;
-        shot.edited_episode = packet ? packet->episode : 0; shot.edited_presentation = presentation;
-        // Strip our exact previous writes from the diagnostic/recording baseline too.
-        shot.skater = current;
-        for (std::size_t i = 0; i < native.size(); ++i) {
-            shot.skater[i].rotation = native[i].rotation;
-            std::memcpy(shot.skater[i].position.data(), native[i].position.data(), 12);
+    // An animation update landing while this ran left a newer pose under it: it is read and edited again
+    // (once) rather than left unedited for a frame, which drew the game's plain pose in the middle of a trick.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto generation = l.generation.load(std::memory_order_acquire);
+        const auto update = l.animation_updates.load(std::memory_order_acquire);
+        const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), holder, 512);
+        if (!layout.buffer || layout.count != skeleton_joints) return;
+        std::vector<NativeBone> current(layout.count);
+        if (!peek(layout.buffer, current.data(), current.size() * sizeof(NativeBone))) return;
+        std::vector<Joint> native; native.reserve(current.size());
+        for (const auto& bone : current) native.push_back(joint_of(bone));
+        publication.edits.restore(generation, update, layout.buffer, native);
+        if (packet) playback_verify::stash(*packet, presentation, native, now_seconds());
+        else playback_verify::idle(now_seconds());
+        auto edited = native;
+        if (packet) {
+            std::vector<Joint> studio;
+            if (packet->match > 0 && packet->clip && packet->clip->joints == skeleton_joints)
+                studio = studio_pose(*packet->clip, packet->time, packet->mirrored);
+            apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
+                                      packet->match_rest);
+            if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
         }
+        const auto desired_deltas = pose_edit_deltas(native, edited);
+        edited = native;
+        std::vector<Offset> applied_deltas;
+        const auto motion = l.render_motion.load(std::memory_order_acquire);
+        if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
+            const auto deltas = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas);
+            apply_pose_deltas(deltas, edited);
+            applied_deltas.assign(deltas.begin(), deltas.end());
+        } else publication.transition.reset();
+        if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
+            (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
+        for (const auto& joint : edited)
+            if (!finite(joint)) throw std::runtime_error("Native edit layer produced an invalid joint");
+        for (std::size_t i = 0; i < edited.size(); ++i) {
+            if (edited[i] == joint_of(current[i])) continue;
+            auto& bone = current[i]; bone.rotation = edited[i].rotation;
+            std::memcpy(bone.position.data(), edited[i].position.data(), 12);
+            if (!poke(layout.buffer + i * sizeof(NativeBone), &bone, sizeof(bone))) throw std::runtime_error("Cannot publish native edits");
+        }
+        publication.network_deltas = std::move(applied_deltas);
+        publication.network_generation = generation; publication.network_at = now_seconds();
+        publication.network_epoch = gameplay_epoch.load();
+        if (diagnostics_capture) {
+            auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
+            shot.edited_skater = edited; shot.edited_at = now_seconds();
+            shot.edited_generation = generation; shot.edited_sequence = packet ? packet->sequence : 0;
+            shot.edited_episode = packet ? packet->episode : 0; shot.edited_presentation = presentation;
+            // Strip our exact previous writes from the diagnostic/recording baseline too.
+            shot.skater = current;
+            for (std::size_t i = 0; i < native.size(); ++i) {
+                shot.skater[i].rotation = native[i].rotation;
+                std::memcpy(shot.skater[i].position.data(), native[i].position.data(), 12);
+            }
+        }
+        publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
+        return;
     }
-    publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
 }
 
 // The local skater's pose handed to the renderer: the studio's pose goes in now, over whatever the
@@ -3209,99 +3304,104 @@ struct BoardPublicationState { std::mutex mutex; EditPublicationCache edits; Edi
 BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
 void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
-    const auto generation = l.generation.load(std::memory_order_acquire), update = l.animation_updates.load(std::memory_order_acquire);
-    const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), holder, 64);
-    if (!layout.buffer || layout.count != board_bones) return;
     auto& publication = board_publication_state(); std::lock_guard lock(publication.mutex);
-    std::array<NativeBone, board_bones> bones{};
-    if (!peek(layout.buffer, bones.data(), sizeof(bones))) return;
-    std::vector<Joint> native; for (const auto& bone : bones) native.push_back(joint_of(bone));
-    publication.edits.restore(generation, update, layout.buffer, native);
-    auto edited = native;
-    const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
-    Joint want = native_mount;
-    Joint studio_board;
-    bool studio_board_ok = false;
-    if (packet && packet->board_holder == holder && packet->board_owned && packet->board_frame_valid) {
-        const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
-        const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
-        std::array<NativeBone, 2> placement_bones{};
-        if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
-            const auto placement = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
-            Joint frame; frame.rotation = normalised(multiply(placement.rotation, packet->board_frame_local));
-            // Whole body: the board is the recording's too - nose-forward as the game draws it, mirrored with him
-            // when he is - so his feet and the deck flip together as they do in the studio. Then the board keys.
-            Joint base = native_mount;
-            if (packet->match_rest > 0 && packet->clip && !packet->clip->board.empty()) {
-                Joint rel;
-                if (packet->clip->sample_board(std::clamp(packet->time, 0.0f, packet->clip->duration()), rel)) {
-                    rel = nose_forward(*packet->clip, rel);
-                    if (packet->mirrored) rel = mirror_board_pose(rel);
-                    // With the deck turned round under him the game turns its trick board too: the recording's
-                    // board is turned the same way, so the real deck keeps its nose where it is and nothing spins
-                    // when the trick hands back to the game at the landing.
-                    if (packet->board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
-                    const auto recorded = compose(placement, rel);
-                    if (finite(recorded)) {
-                        const float k = std::min(packet->match_rest, 1.0f);
-                        base.rotation = slerp(native_mount.rotation, recorded.rotation, k);
-                        for (std::size_t i = 0; i < 3; ++i) base.position[i] += (recorded.position[i] - native_mount.position[i]) * k;
+    // An animation update landing while this ran left a newer pose under it: it is read and edited again
+    // (once) rather than left unedited for a frame, which drew the game's plain pose in the middle of a trick.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto generation = l.generation.load(std::memory_order_acquire), update = l.animation_updates.load(std::memory_order_acquire);
+        const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), holder, 64);
+        if (!layout.buffer || layout.count != board_bones) return;
+        std::array<NativeBone, board_bones> bones{};
+        if (!peek(layout.buffer, bones.data(), sizeof(bones))) return;
+        std::vector<Joint> native; for (const auto& bone : bones) native.push_back(joint_of(bone));
+        publication.edits.restore(generation, update, layout.buffer, native);
+        auto edited = native;
+        const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
+        Joint want = native_mount;
+        Joint studio_board;
+        bool studio_board_ok = false;
+        if (packet && packet->board_holder == holder && packet->board_owned && packet->board_frame_valid) {
+            const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
+            const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
+            std::array<NativeBone, 2> placement_bones{};
+            if (body_layout.buffer && body_layout.count == skeleton_joints && peek(body_layout.buffer, placement_bones.data(), sizeof(placement_bones))) {
+                const auto placement = compose(joint_of(placement_bones[0]), joint_of(placement_bones[1]));
+                Joint frame; frame.rotation = normalised(multiply(placement.rotation, packet->board_frame_local));
+                // Whole body: the board is the recording's too - nose-forward as the game draws it, mirrored with him
+                // when he is - so his feet and the deck flip together as they do in the studio. Then the board keys.
+                Joint base = native_mount;
+                if (packet->match_rest > 0 && packet->clip && !packet->clip->board.empty()) {
+                    Joint rel;
+                    if (packet->clip->sample_board(std::clamp(packet->time, 0.0f, packet->clip->duration()), rel)) {
+                        rel = nose_forward(*packet->clip, rel);
+                        if (packet->mirrored) rel = mirror_board_pose(rel);
+                        // With the deck turned round under him the game turns its trick board too: the recording's
+                        // board is turned the same way, so the real deck keeps its nose where it is and nothing spins
+                        // when the trick hands back to the game at the landing.
+                        if (packet->board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
+                        const auto recorded = compose(placement, rel);
+                        if (finite(recorded)) {
+                            const float k = std::min(packet->match_rest, 1.0f);
+                            base.rotation = slerp(native_mount.rotation, recorded.rotation, k);
+                            for (std::size_t i = 0; i < 3; ++i) base.position[i] += (recorded.position[i] - native_mount.position[i]) * k;
+                        }
                     }
                 }
-            }
-            const auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
-            studio_board = target;
-            studio_board_ok = packet->weight >= 0.98f;
-            if (target != native_mount) {
-                want.rotation = slerp(native_mount.rotation, target.rotation, packet->weight);
-                for (std::size_t i = 0; i < 3; ++i) want.position[i] += (target.position[i] - native_mount.position[i]) * packet->weight;
+                const auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
+                studio_board = target;
+                studio_board_ok = packet->weight >= 0.98f;
+                if (target != native_mount) {
+                    want.rotation = slerp(native_mount.rotation, target.rotation, packet->weight);
+                    for (std::size_t i = 0; i < 3; ++i) want.position[i] += (target.position[i] - native_mount.position[i]) * packet->weight;
+                }
             }
         }
-    }
-    std::array<Offset, 1> desired{};
-    if (want.rotation != native_mount.rotation) desired[0].rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
-    for (std::size_t k = 0; k < 3; ++k) desired[0].offset[k] = want.position[k] - native_mount.position[k];
-    want = native_mount;
-    const auto motion = l.render_motion.load(std::memory_order_acquire);
-    if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard && motion != MotionState::rail) {
-        const auto delta = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
-            packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired)[0];
-        if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
-        for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
-    } else publication.transition.reset();
-    if (want != native_mount) {
-        edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
-        edited[1].scale = native[1].scale;
-    }
-    if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
-        (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) return;
-    if (!finite(edited[1])) throw std::runtime_error("Native board edit produced an invalid transform");
-    if (edited[1] != joint_of(bones[1])) {
-        auto& root = bones[1]; root.rotation = edited[1].rotation;
-        std::memcpy(root.position.data(), edited[1].position.data(), 12);
-        if (!poke(layout.buffer + sizeof(NativeBone), &root, sizeof(root))) throw std::runtime_error("Cannot publish board edits");
-    }
-    if (diagnostics_capture) {
-        auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
-        shot.edited_board = compose(compose(edited[0], edited[1]), edited[board_mount]);
-        shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
-        shot.edited_board_sequence = packet ? packet->sequence : 0; shot.edited_board_presentation = presentation;
-        shot.board = native_mount;
-    }
-    // Verification: the body as it will be drawn, read back now, and the board as written.
-    if (studio_board_ok && playback_verify::on() && packet) {
-        const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
-        const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
-        std::vector<NativeBone> drawn_bones(skeleton_joints);
-        if (body_layout.buffer && body_layout.count == skeleton_joints &&
-            peek(body_layout.buffer, drawn_bones.data(), drawn_bones.size() * sizeof(NativeBone))) {
-            std::vector<Joint> drawn;
-            drawn.reserve(drawn_bones.size());
-            for (const auto& bone : drawn_bones) drawn.push_back(joint_of(bone));
-            playback_verify::compare(presentation, now_seconds(), drawn, compose(compose(edited[0], edited[1]), edited[board_mount]), studio_board);
+        std::array<Offset, 1> desired{};
+        if (want.rotation != native_mount.rotation) desired[0].rotation = normalised(multiply(want.rotation, conjugate(native_mount.rotation)));
+        for (std::size_t k = 0; k < 3; ++k) desired[0].offset[k] = want.position[k] - native_mount.position[k];
+        want = native_mount;
+        const auto motion = l.render_motion.load(std::memory_order_acquire);
+        if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard && motion != MotionState::rail) {
+            const auto delta = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired)[0];
+            if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
+            for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
+        } else publication.transition.reset();
+        if (want != native_mount) {
+            edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
+            edited[1].scale = native[1].scale;
         }
+        if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
+            (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
+        if (!finite(edited[1])) throw std::runtime_error("Native board edit produced an invalid transform");
+        if (edited[1] != joint_of(bones[1])) {
+            auto& root = bones[1]; root.rotation = edited[1].rotation;
+            std::memcpy(root.position.data(), edited[1].position.data(), 12);
+            if (!poke(layout.buffer + sizeof(NativeBone), &root, sizeof(root))) throw std::runtime_error("Cannot publish board edits");
+        }
+        if (diagnostics_capture) {
+            auto& shot = render_shot(); std::lock_guard shot_lock(shot.mutex);
+            shot.edited_board = compose(compose(edited[0], edited[1]), edited[board_mount]);
+            shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
+            shot.edited_board_sequence = packet ? packet->sequence : 0; shot.edited_board_presentation = presentation;
+            shot.board = native_mount;
+        }
+        // Verification: the body as it will be drawn, read back now, and the board as written.
+        if (studio_board_ok && playback_verify::on() && packet) {
+            const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
+            const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
+            std::vector<NativeBone> drawn_bones(skeleton_joints);
+            if (body_layout.buffer && body_layout.count == skeleton_joints &&
+                peek(body_layout.buffer, drawn_bones.data(), drawn_bones.size() * sizeof(NativeBone))) {
+                std::vector<Joint> drawn;
+                drawn.reserve(drawn_bones.size());
+                for (const auto& bone : drawn_bones) drawn.push_back(joint_of(bone));
+                playback_verify::compare(presentation, now_seconds(), drawn, compose(compose(edited[0], edited[1]), edited[board_mount]), studio_board);
+            }
+        }
+        publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
+        return;
     }
-    publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
 }
 
 // The board's pose, just before it is handed to the renderer: its mount where the studio or the
@@ -3753,7 +3853,7 @@ View view() {
         const auto draft = s.pack_drafts.find(saved.name);
         const auto& pack = draft != s.pack_drafts.end() ? draft->second : saved;
         const bool on = std::any_of(s.packs_on.begin(), s.packs_on.end(), [&](const PresetPack& p) { return p.name == saved.name; });
-        v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, draft != s.pack_drafts.end(), pack.members()});
+        v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, draft != s.pack_drafts.end(), pack.members(), pack});
     }
     v.open_pack = s.open_pack;
     v.your_name = s.your_name;
@@ -4427,8 +4527,8 @@ bool save_preset_copy(std::string& message) {
     return save(message);
 }
 // ---- packs (the PACKS tab) -------------------------------------------------------------------------
-// Any number of packs can be on; with none on, every saved animation plays. Switching one on or off takes
-// effect at once; what is in a pack is a draft until Save pack, so trying things out never changes what plays.
+// One pack is used at a time; with none on, every saved animation plays. Every change - switching one on,
+// what is in it, Fixed or Alternate, the cycle - is saved at once and plays at once.
 namespace {
 PresetPack& pack_draft_locked(State& s, const std::string& name) {
     if (const auto found = s.pack_drafts.find(name); found != s.pack_drafts.end()) return found->second;
@@ -4453,6 +4553,34 @@ void write_pack_drafts_locked(State& s) {
     read_library_locked(s);
     s.tricks_read = false;
 }
+// Caller holds the mutex: `change` is made to the pack and it is saved, and what plays read again.
+template <class Change>
+bool change_pack_locked(State& s, const std::string& name, std::string& message, Change&& change) {
+    try {
+        if (name.empty() || name != file_safe(name) || !std::filesystem::exists(pack_file(name)))
+            throw std::runtime_error("There is no pack called " + name + ".");
+        if (!s.library_read) read_library_locked(s);
+        auto& pack = pack_draft_locked(s, name);
+        change(pack);
+        std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
+        std::erase_if(pack.slot_alternate, [&](const auto& mode) { return !pack.slots.contains(mode.first); });
+        std::erase_if(pack.unlinked, [&](const std::string& member) { return !pack.has(member); });
+        write_pack_drafts_locked(s);
+        s.status = message;
+        publish_locked(s);
+        return true;
+    } catch (const std::exception& e) {
+        s.pack_drafts.erase(name);
+        message = e.what();
+        s.status = message;
+        publish_locked(s);
+        return false;
+    }
+}
+std::string shown_name(const State& s, const std::string& animation) {
+    const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; });
+    return found != s.presets.end() && !found->label.empty() ? found->label : animation;
+}
 } // namespace
 bool create_preset_pack(std::string& message, const std::string& name) {
     auto& s = state();
@@ -4472,7 +4600,7 @@ bool create_preset_pack(std::string& message, const std::string& name) {
         }
         write_preset_file(pack_file(pack.name), pack_json(pack).dump(2));
         s.open_pack = pack.name;
-        message = "Made the pack " + pack.name + ". Put your tricks in it, Save pack, then switch it on.";
+        message = "Made the pack " + pack.name + ". Put your tricks in it, then switch it on.";
         packs_changed_locked(s, message);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
@@ -4490,41 +4618,105 @@ bool set_pack_on(const std::string& name, bool on, std::string& message) {
         if (name != file_safe(name) || !std::filesystem::exists(pack_file(name))) throw std::runtime_error("There is no pack called " + name + ".");
         auto names = pack_names_on();
         std::erase(names, name);
-        if (on) names.push_back(name);
+        const bool others = !names.empty();
+        if (on) names = {name}; // one pack at a time
         write_pack_names_on(names);
-        message = on ? name + " is on: its tricks play." : name + " is off.";
+        message = on ? name + " is on: its tricks play" + (others ? " (the other pack is off)." : ".") : name + " is off.";
         if (names.empty()) message += " No pack is on, so all your saved tricks play.";
         packs_changed_locked(s, message);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
 }
-bool set_pack_member(const std::string& animation, bool in, std::string& message) {
+bool set_pack_member(const std::string& pack_name, const std::string& animation, bool in, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    try {
-        if (s.open_pack.empty()) throw std::runtime_error("Open a pack first.");
-        auto& pack = pack_draft_locked(s, s.open_pack);
-        for (auto& [slot, names] : pack.slots) std::erase(names, animation);
-        std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
-        if (in) {
-            const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; });
-            if (found == s.presets.end()) throw std::runtime_error(animation + " has no trick yet: open it, give it its trick and save it first.");
-            pack.slots[preset_slot(found->trick, found->pop)].push_back(animation);
-        }
-        message = (in ? "Put " + animation + " in " : "Took " + animation + " out of ") + s.open_pack + ". Save pack to keep it.";
+    if (!s.library_read) read_library_locked(s);
+    const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; });
+    if (in && found == s.presets.end()) {
+        message = animation + " has no trick yet: open it, give it its trick and save it first.";
         s.status = message;
         publish_locked(s, false);
-        return true;
-    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+        return false;
+    }
+    const auto slot = found != s.presets.end() ? preset_slot(found->trick, found->pop) : std::string{};
+    message = (in ? "Put " + shown_name(s, animation) + " in " : "Took " + shown_name(s, animation) + " out of ") + pack_name + ".";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        for (auto& [filed, names] : pack.slots) std::erase(names, animation);
+        pack.unlinked.erase(animation);
+        if (in) pack.slots[slot].push_back(animation);
+    });
 }
-bool set_pack_alternate(bool alternate, std::string& message) {
+bool set_pack_mode(const std::string& pack_name, const std::string& slot, bool alternate, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = alternate ? "Alternate: the ones linked into the cycle take turns, attempt by attempt."
+                        : "Fixed: the one chosen plays every time.";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        if (!pack.slots.contains(slot)) throw std::runtime_error("That trick is not in " + pack_name + ".");
+        pack.slot_alternate[slot] = alternate;
+    });
+}
+bool set_pack_fixed(const std::string& pack_name, const std::string& animation, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = shown_name(s, animation) + " is the one that plays.";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        const auto slot = pack.slot_of(animation);
+        if (slot.empty()) throw std::runtime_error(animation + " is not in " + pack_name + ".");
+        auto& names = pack.slots[slot];
+        std::erase(names, animation);
+        names.insert(names.begin(), animation);
+        pack.slot_alternate[slot] = false;
+    });
+}
+bool set_pack_linked(const std::string& pack_name, const std::string& animation, bool linked, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = shown_name(s, animation) + (linked ? " is in the cycle." : " is out of the cycle.");
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        const auto slot = pack.slot_of(animation);
+        if (slot.empty()) throw std::runtime_error(animation + " is not in " + pack_name + ".");
+        if (linked) pack.unlinked.erase(animation);
+        else pack.unlinked.insert(animation);
+        pack.slot_alternate[slot] = true;
+    });
+}
+bool link_pack_slot(const std::string& pack_name, const std::string& slot, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = "All of them are in the cycle.";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        const auto found = pack.slots.find(slot);
+        if (found == pack.slots.end()) throw std::runtime_error("That trick is not in " + pack_name + ".");
+        for (const auto& member : found->second) pack.unlinked.erase(member);
+        pack.slot_alternate[slot] = true;
+    });
+}
+bool set_label(const std::string& animation, const std::string& label_in, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     try {
-        if (s.open_pack.empty()) throw std::runtime_error("Open a pack first.");
-        pack_draft_locked(s, s.open_pack).alternate = alternate;
-        message = (alternate ? s.open_pack + " plays a different one of each trick every attempt."
-                             : s.open_pack + " plays the first one of each trick.") + std::string(" Save pack to keep it.");
+        auto label = label_in.substr(0, 48);
+        while (!label.empty() && std::isspace(static_cast<unsigned char>(label.back()))) label.pop_back();
+        while (!label.empty() && std::isspace(static_cast<unsigned char>(label.front()))) label.erase(label.begin());
+        const auto safe = file_safe(animation);
+        const auto path = saved_json(safe);
+        std::string text;
+        {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) throw std::runtime_error(animation + " is not in your tricks.");
+            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        auto animation_file = from_json(text);
+        animation_file.label = label;
+        // A label is not a save: which of a kind plays goes by when it was saved.
+        std::error_code error;
+        const auto saved_when = std::filesystem::last_write_time(path, error);
+        write_preset_file(path, to_json(animation_file));
+        if (!error) std::filesystem::last_write_time(path, saved_when, error);
+        if (s.saved_as == safe) s.edits.label = label;
+        message = label.empty() ? animation + " is shown by its own name again." : animation + " is labelled " + label + ".";
+        read_library_locked(s);
         s.status = message;
         publish_locked(s, false);
         return true;

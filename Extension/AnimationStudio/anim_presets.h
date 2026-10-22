@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <set>
 #include "Engine/Core/Json/json.h"
 
 namespace dingosdk::anim_studio {
@@ -17,14 +18,30 @@ struct Preset {
     std::string entry{"ground"};
     std::optional<bool> fakie; // made rolling fakie: its own slot, so a fixed pack keeps one of each
     std::string made_by;       // who made it (the animation's author)
+    std::string label;         // the name it is shown by (MY TRICKS); empty: its name
     std::int64_t saved_at{};   // when its file was last written: with no pack on, the newest of a kind plays
 };
-// A pack: saved animations grouped under a name, filed by trick and pop. Any number can be switched on.
+// A pack: saved animations grouped under a name, filed by trick and pop ("slots"). One is used at a time.
+// Where a pack has more than one of a trick and pop, that slot is Fixed - its first one plays - or
+// Alternate - the ones linked into its cycle take turns, attempt by attempt. `alternate` is what a slot is
+// when it has not been set on its own (packs from before had one setting for the whole pack).
 struct PresetPack {
     std::string name;
     std::string made_by; // who made the pack, so a pack passed on says whose it is
     bool alternate{};
     std::map<std::string, std::vector<std::string>> slots;
+    std::map<std::string, bool> slot_alternate; // slot -> Alternate (true) or Fixed, where set on its own
+    std::set<std::string> unlinked;             // members left out of their slot's cycle
+    bool alternates(const std::string& slot) const {
+        const auto found = slot_alternate.find(slot);
+        return found != slot_alternate.end() ? found->second : alternate;
+    }
+    // The slot a member is filed under; empty when it is not in the pack.
+    std::string slot_of(const std::string& animation) const {
+        for (const auto& [slot, names] : slots)
+            if (std::find(names.begin(), names.end(), animation) != names.end()) return slot;
+        return {};
+    }
     bool has(const std::string& animation) const {
         return std::any_of(slots.begin(), slots.end(), [&](const auto& slot) {
             return std::find(slot.second.begin(), slot.second.end(), animation) != slot.second.end();
@@ -54,11 +71,13 @@ inline std::optional<std::size_t> pack_place(const PresetPack& pack, const std::
     return std::nullopt;
 }
 // With no pack on, every saved animation plays: one per trick, pop and stance, the one saved last (so what
-// was just saved is what plays), alphabetically when two were saved at once. With packs on, only their animations play. A Fixed pack plays its first
-// variant per trick, pop and stance, an Alternate pack every one; two packs on that both have a kickflip both
-// play it, and the attempts take turns. Exact-pop precedence remains the runtime's job.
+// was just saved is what plays), alphabetically when two were saved at once. With a pack on, only its animations
+// play. A Fixed slot plays its first variant per stance; an Alternate slot every variant linked into its cycle
+// (they take turns), or its first when none is linked. Were two packs on, both would play and take turns.
+// Exact-pop precedence remains the runtime's job.
 inline void select_presets(std::span<Preset> presets, std::span<const PresetPack> packs) {
     std::map<std::string, std::pair<Preset*, std::size_t>> selected; // pack and stance slot -> the pick, its place
+    std::set<std::string> cycling; // pack and stance slots with at least one variant in their cycle
     for (auto& p : presets) {
         p.active = p.included = false;
         const auto slot = preset_slot(p.trick, p.pop);
@@ -75,12 +94,19 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
             const auto place = pack_place(packs[k], slot, p.name);
             if (!place) continue;
             p.included = true;
-            if (packs[k].alternate) { p.active = true; continue; }
-            auto& [picked, at] = selected[std::to_string(k) + "|" + compatible_slot];
+            const auto key = std::to_string(k) + "|" + compatible_slot;
+            if (packs[k].alternates(packs[k].slot_of(p.name)) && !packs[k].unlinked.contains(p.name)) {
+                p.active = true;
+                cycling.insert(key);
+                continue;
+            }
+            auto& [picked, at] = selected[key];
             if (!picked || *place < at) { picked = &p; at = *place; }
         }
     }
-    for (const auto& [slot, pick] : selected) pick.first->active = true;
+    // An Alternate slot plays its cycle; one with nothing linked plays its first, as Fixed does.
+    for (const auto& [key, pick] : selected)
+        if (!cycling.contains(key)) pick.first->active = true;
 }
 inline void select_presets(std::span<Preset> presets, const std::optional<PresetPack>& pack) {
     if (pack) select_presets(presets, std::span<const PresetPack>(&*pack, 1));
@@ -95,6 +121,11 @@ inline Json pack_json(const PresetPack& pack) {
     out["alternate"] = pack.alternate;
     out["slots"] = Json::object();
     for (const auto& [slot, names] : pack.slots) out["slots"][slot] = Json(names);
+    if (!pack.slot_alternate.empty()) {
+        out["modes"] = Json::object();
+        for (const auto& [slot, alternating] : pack.slot_alternate) out["modes"][slot] = alternating ? "alternate" : "fixed";
+    }
+    if (!pack.unlinked.empty()) out["unlinked"] = Json(std::vector<std::string>(pack.unlinked.begin(), pack.unlinked.end()));
     return out;
 }
 inline PresetPack read_pack_json(const Json& root) {
@@ -114,6 +145,12 @@ inline PresetPack read_pack_json(const Json& root) {
             if (std::find(list.begin(), list.end(), name.string()) == list.end()) list.push_back(name.string());
         }
     }
+    if (root.contains("modes") && root.at("modes").is_object() && root.at("modes").size() <= 2000)
+        for (const auto& [slot, mode] : root.at("modes").items())
+            if (mode.is_string() && (mode.string() == "alternate" || mode.string() == "fixed")) out.slot_alternate[slot] = mode.string() == "alternate";
+    if (root.contains("unlinked") && root.at("unlinked").is_array() && root.at("unlinked").size() <= 4000)
+        for (const auto& name : root.at("unlinked"))
+            if (name.is_string() && !name.string().empty()) out.unlinked.insert(name.string());
     return out;
 }
 } // namespace dingosdk::anim_studio
