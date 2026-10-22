@@ -102,6 +102,13 @@ struct View {
     // Goes up every time a clip arrives: a trick opened, a saved animation loaded, a take recorded, a new
     // animation started. The overlay starts clean on it.
     std::uint64_t clip_serial{};
+    // A rail to grind on, drawn in the studio for grind and slide tricks (set_rail): the line along its top, in the
+    // world, and how thick it is. rail_choice -1 automatic, 0 off, 1 along the board, 2 across it; rail_mode is
+    // what that comes to for the trick open.
+    int rail_choice{-1}, rail_mode{};
+    bool rail_valid{};
+    Vec3 rail_a{}, rail_b{};
+    float rail_radius{0.025f};
 };
 View view();
 Recording recording_state(); // the one value the overlay checks every frame while the studio is closed
@@ -180,6 +187,10 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+// The studio's rail: -1 automatic (along the board for a grind, across it for a slide, none otherwise), 0 off, 1 along
+// the board, 2 across it. place_rail puts it under the board as the board is now.
+void set_rail(int choice);
+void place_rail();
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
 void set_joint_limits(bool on);

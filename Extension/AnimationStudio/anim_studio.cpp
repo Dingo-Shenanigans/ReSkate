@@ -212,6 +212,12 @@ struct State {
     bool playing{}, play_in_game{true}, room{true};
     bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
     std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
+    // The studio's rail (set_rail, place_rail): placed under the board when a trick opens or when asked.
+    int rail_choice{-1};
+    std::uint64_t rail_request{}, rail_done{~std::uint64_t{0}}, rail_serial{~std::uint64_t{0}};
+    int rail_mode{};
+    bool rail_valid{};
+    Vec3 rail_a{}, rail_b{};
     // The studio's stance (0 as the game has him, 1 regular, 2 goofy) and the clip turned the other way
     // round, kept so it is mirrored once rather than every frame.
     int stance_choice{};
@@ -326,6 +332,17 @@ Joint joint_of(const NativeBone& b) noexcept {
     j.rotation = b.rotation;
     j.position = {b.position[0], b.position[1], b.position[2]};
     return j;
+}
+// What rail a trick wants in the studio, by its names: across the board for a slide (board, lip, nose, tail,
+// blunt), along it for a grind (50-50, 5-0, nosegrind, crooked, smith, feeble ...) or a trick that began on a rail,
+// none otherwise.
+int rail_kind(const Animation& a) {
+    std::string words = a.name + " " + a.trick + " " + a.source.asset + " " + a.label;
+    for (char& c : words) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (words.find("slide") != std::string::npos) return 2;
+    for (const char* grind : {"grind", "50-50", "5050", "5-0", "crook", "smith", "feeble", "salad", "suski", "willy"})
+        if (words.find(grind) != std::string::npos) return 1;
+    return a.entry == "rail" ? 1 : 0;
 }
 // The frame bone 2 hangs in, in the world.
 Joint board_parent(const std::array<NativeBone, board_bones>& b) noexcept { return compose(joint_of(b[0]), joint_of(b[1])); }
@@ -2617,6 +2634,33 @@ void on_animation(std::uintptr_t component) noexcept {
                 std::lock_guard base_lock(st.mutex);
                 st.board_base = relative(origin, unedited);
                 st.board_base_valid = has_trick && finite(st.board_base);
+                // The rail: when a trick opens (its kind says whether it is a grind or a slide) or when asked, put under
+                // the board as the trick has it now, and left there.
+                if (st.rail_serial != st.clip_serial) {
+                    st.rail_serial = st.clip_serial;
+                    ++st.rail_request;
+                }
+                st.rail_mode = st.rail_choice >= 0 ? st.rail_choice : has_trick ? rail_kind(st.edits) : 0;
+                if (st.rail_mode == 0) st.rail_valid = false;
+                else if (st.rail_done != st.rail_request && finite(unedited)) {
+                    st.rail_done = st.rail_request;
+                    const auto along = rotate(unedited.rotation, Vec3{0, 0, 1}), across = rotate(unedited.rotation, Vec3{1, 0, 0});
+                    const auto up = rotate(unedited.rotation, Vec3{0, 1, 0});
+                    Vec3 dir = st.rail_mode == 1 ? along : across;
+                    dir[1] = 0;
+                    const float n = std::sqrt(dir[0] * dir[0] + dir[2] * dir[2]);
+                    if (n > 1e-3f) {
+                        dir = {dir[0] / n, 0, dir[2] / n};
+                        // Where it touches: the trucks' hangers for a grind, the deck's underside for a slide.
+                        const float below = st.rail_mode == 1 ? 0.06f : 0.015f;
+                        const Vec3 top{unedited.position[0] - up[0] * below, unedited.position[1] - up[1] * below,
+                                       unedited.position[2] - up[2] * below};
+                        constexpr float half = 1.6f;
+                        st.rail_a = {top[0] - dir[0] * half, top[1], top[2] - dir[2] * half};
+                        st.rail_b = {top[0] + dir[0] * half, top[1], top[2] + dir[2] * half};
+                        st.rail_valid = true;
+                    }
+                }
                 if (snap->grab && finite(board_target)) {
                     close_hand(l.pose, right_hand_joint, right_fingers, board_target);
                     close_hand(l.pose, left_hand_joint, left_fingers, board_target);
@@ -3960,6 +4004,11 @@ View view() {
     v.pop = s.edits.pop;
     v.revision = s.revision;
     v.clip_serial = s.clip_serial;
+    v.rail_choice = s.rail_choice;
+    v.rail_mode = s.rail_mode;
+    v.rail_valid = s.open && s.rail_valid && s.rail_mode != 0;
+    v.rail_a = s.rail_a;
+    v.rail_b = s.rail_b;
     return v;
 }
 // Keys sit on whole frames of the timeline (30 a second), never between two.
@@ -4216,6 +4265,22 @@ void set_joint_limits(bool on) {
     s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses, in the studio and in game."
                   : "Joint limits off: joints go wherever you push them, in the studio and in game.";
     publish_locked(s);
+}
+void set_rail(int choice) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.rail_choice = std::clamp(choice, -1, 2);
+    ++s.rail_request;
+    s.status = choice < 0 ? "The rail comes with grind and slide tricks." : choice == 0 ? "No rail."
+             : choice == 1 ? "A rail along the board, under its trucks." : "A rail across the board, under its deck.";
+    publish_locked(s, false);
+}
+void place_rail() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    ++s.rail_request;
+    s.status = "The rail is under the board as it is now.";
+    publish_locked(s, false);
 }
 void set_grab(bool on) {
     auto& s = state();

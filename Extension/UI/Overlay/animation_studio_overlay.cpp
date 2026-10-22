@@ -1986,6 +1986,19 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         [&v] { next_shot(v, 1); }});
         rows.push_back({"Follow joint", "", "The camera keeps the chosen joint in the middle (again: the whole skater). Key: F.",
                         [] { studio::focus_joint(ui().selected); }});
+        {
+            const char* modes[] = {"off", "along the board", "across the board"};
+            const std::string shown = v.rail_choice < 0 ? std::string("auto: ") + modes[std::clamp(v.rail_mode, 0, 2)] : modes[std::clamp(v.rail_choice, 0, 2)];
+            rows.push_back({"Rail", shown,
+                            "A rail drawn under the board, to pose grinds and slides against. Auto: along the board for a grind "
+                            "(50-50, 5-0, crooked, smith, feeble ...), across it for a slide (board, lip, nose, tail), none for "
+                            "other tricks. Choose it to step through auto, off, along and across. It is drawn by the studio, not "
+                            "a real rail: nothing is saved and the game never sees it.",
+                            [choice = v.rail_choice] { studio::set_rail(choice >= 2 ? -1 : choice + 1); }});
+            rows.push_back({"Put the rail under the board", "", "Places the rail under the board as it is now, on this frame: under "
+                            "its trucks for a grind, under its deck for a slide. It stays there while the trick plays.",
+                            [] { studio::place_rail(); }, v.rail_mode != 0});
+        }
         rows.push_back({"Hide joints", u.hide_joints ? "hidden" : "shown", "Takes the dots and the gizmo off the skater, to see the "
                         "pose clean. Key: J.", [] { ui().hide_joints = !ui().hide_joints; }});
         rows.push_back({"Hide everything", "", "Takes the whole studio off the screen - tabs, timeline, dots and all - leaving the "
@@ -3267,9 +3280,57 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
 
 
 // The skater: dots on the joints that can be chosen, the glowing box on the chosen one, and the drag.
+// The studio's rail (View::rail_a/b, its top): a round steel bar on two posts down to the floor. Drawn over the
+// game's picture, under the dots and the gizmo; where it passes behind the camera it is left out.
+void draw_rail(ImDrawList* d, const studio::View& v, const Projector& project) {
+    if (!v.rail_valid || !project.valid) return;
+    const float r = v.rail_radius;
+    const auto at = [&](float t) {
+        return studio::Vec3{v.rail_a[0] + (v.rail_b[0] - v.rail_a[0]) * t, v.rail_a[1] - r + (v.rail_b[1] - v.rail_a[1]) * t,
+                            v.rail_a[2] + (v.rail_b[2] - v.rail_a[2]) * t};
+    };
+    const auto offset = [](const studio::Vec3& p, const studio::Vec3& by, float s) {
+        return studio::Vec3{p[0] + by[0] * s, p[1] + by[1] * s, p[2] + by[2] * s};
+    };
+    // Its posts first, so the bar is over them: square steel down to the floor.
+    const float floor = v.floor_valid ? v.floor : at(0.5f)[1] - 0.45f;
+    for (const float t : {0.12f, 0.88f}) {
+        const auto top = at(t);
+        const studio::Vec3 bottom{top[0], floor, top[2]};
+        const auto a = project(offset(top, project.right, -0.02f)), b = project(offset(top, project.right, 0.02f));
+        const auto c = project(offset(bottom, project.right, 0.02f)), e = project(offset(bottom, project.right, -0.02f));
+        if (a && b && c && e) {
+            d->AddQuadFilled(*a, *b, *c, *e, IM_COL32(58, 60, 66, 235));
+            d->AddLine(*a, *e, IM_COL32(150, 154, 162, 200), 1.0f);
+        }
+    }
+    // A quad shaded from its first edge (a, b) to its second (c, e).
+    const auto shade = [d](ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 e, ImU32 from, ImU32 to) {
+        const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+        const auto i = static_cast<ImDrawIdx>(d->_VtxCurrentIdx);
+        d->PrimReserve(6, 4);
+        d->PrimWriteIdx(i); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 1)); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 2));
+        d->PrimWriteIdx(i); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 2)); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 3));
+        d->PrimWriteVtx(a, uv, from); d->PrimWriteVtx(b, uv, from); d->PrimWriteVtx(c, uv, to); d->PrimWriteVtx(e, uv, to);
+    };
+    // The bar: steel, lit from above, in short pieces so the part behind the camera can be left out.
+    constexpr int pieces = 32;
+    for (int i = 0; i < pieces; ++i) {
+        const float t0 = static_cast<float>(i) / pieces, t1 = static_cast<float>(i + 1) / pieces;
+        const auto c0 = at(t0), c1 = at(t1);
+        const auto top0 = project(offset(c0, project.up, r)), top1 = project(offset(c1, project.up, r));
+        const auto bot0 = project(offset(c0, project.up, -r)), bot1 = project(offset(c1, project.up, -r));
+        const auto mid0 = project(c0), mid1 = project(c1);
+        if (!top0 || !top1 || !bot0 || !bot1 || !mid0 || !mid1) continue;
+        shade(*top0, *top1, *mid1, *mid0, IM_COL32(205, 210, 218, 245), IM_COL32(120, 124, 132, 245));
+        shade(*mid0, *mid1, *bot1, *bot0, IM_COL32(120, 124, 132, 245), IM_COL32(52, 54, 60, 245));
+        d->AddLine(*top0, *top1, IM_COL32(245, 248, 252, 220), 1.5f);
+    }
+}
 void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projector& project, ImVec2 area_min, ImVec2 area_max) {
     auto& u = ui();
     const float k = f.k;
+    draw_rail(d, v, project);
     // A clip has arrived - a trick opened, an animation loaded, a take recorded - so nothing is carried
     // over from the last one: the chosen joint, the picked keys, a drag in progress, the message that was
     // standing, and the timeline back to the whole trick.
