@@ -80,9 +80,14 @@ struct View {
     std::vector<TrackView> tracks;
     std::vector<std::string> library; // saved animations, by name
     std::vector<Preset> presets;
-    std::vector<std::string> packs;
-    std::string active_pack;
-    bool alternate_variants{};
+    struct PackView {
+        std::string name, made_by;
+        bool on{}, alternate{}, unsaved{};
+        std::vector<std::string> members; // as edited, when it has changes not saved yet
+    };
+    std::vector<PackView> packs;
+    std::string open_pack; // the pack open in PACKS
+    std::string your_name; // MADE BY, remembered for new recordings and packs
     Recording recording{};
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
     bool can_undo{}, can_redo{};
@@ -211,17 +216,21 @@ void redo();
 void new_animation();
 bool save(std::string& message);
 bool save_preset_copy(std::string& message);
-bool activate_preset(const std::string& name, std::string& message);
-bool create_preset_pack(std::string& message, const std::string& name = {});
-bool use_preset_pack(const std::string& name, std::string& message);
-// The active pack (or every saved animation, with none) as ReSkate.Tricks/exports/<pack>.zip, laid out like
-// the tricks folder so it can be unzipped straight into it.
-bool export_pack(std::string& message);
+// Packs. Any number can be switched on (at once); with none on, every saved animation plays. What is in a
+// pack, and its Variant playback, change a draft of it until save_pack.
+bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
+void open_pack(const std::string& name); // the pack open in PACKS; "" for the list of packs
+bool set_pack_on(const std::string& name, bool on, std::string& message);
+bool set_pack_member(const std::string& animation, bool in, std::string& message); // in the open pack
+bool set_pack_alternate(bool alternate, std::string& message);                     // the open pack
+bool save_pack(std::string& message);                                              // the open pack
+bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
+// A pack (saved first if it has changes), or every saved animation for "", as
+// ReSkate.Tricks/exports/<name>.zip, laid out like the tricks folder so it can be unzipped straight into it.
+bool export_pack(const std::string& pack_name, std::string& message);
 // Takes in every .zip in ReSkate.Tricks/import: checked first, names already taken are given the next
 // variation, older animations upgraded, and the zip moved to import/imported.
 bool import_packs(std::string& message);
-bool set_pack_alternation(bool alternate, std::string& message);
-bool include_preset(const std::string& name, bool included, std::string& message);
 bool load(const std::string& name, std::string& message);
 // The game's own tricks, made into studio clips by contrib/animator-studio/make_trick_library.py:
 // <folder>/library/catalog.json and its .clip files.

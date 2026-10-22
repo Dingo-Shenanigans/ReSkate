@@ -88,6 +88,7 @@ struct Ui {
 
     std::array<char, 64> name{}, trick{}, author{};
     std::array<char, 64> pack_name{};
+    int pack_row{}; // the row of the pack that was opened in PACKS, to come back to
     std::uint64_t names_for{};
     std::string message;
     double message_until{};
@@ -1082,8 +1083,8 @@ void save_now() {
 }
 
 // ---- the menu: skate.'s own list menu (Trick List), with tabs ---------------------------------------
-enum class Tab { tricks, joints, keys, settings };
-constexpr std::array<const char*, 4> tab_names{"TRICKS", "JOINTS", "KEYS", "SETTINGS"};
+enum class Tab { tricks, joints, keys, packs, settings };
+constexpr std::array<const char*, 5> tab_names{"TRICKS", "JOINTS", "KEYS", "PACKS", "SETTINGS"};
 // Back, one step, in the TRICKS tab: out of a trick's pops, or up the native asset tree. True when it
 // went back, so Esc and B only fall through to anything else when there was nowhere to go.
 bool go_back_in_tricks() {
@@ -1572,25 +1573,147 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Redo", "", "", [] { studio::redo(); }, v.can_redo});
         break;
     }
-    case Tab::settings: {
-        rows.push_back({"The animation", "", "", {}, false});
+    case Tab::packs: {
+        // Everything about keeping tricks: saving the one open, the packs, and every saved trick.
+        const auto preset_of = [&](const std::string& name) -> const studio::Preset* {
+            const auto found = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
+            return found == v.presets.end() ? nullptr : &*found;
+        };
+        const auto trick_of = [&](const std::string& name) {
+            const auto* p = preset_of(name);
+            return p ? p->trick + ", " + (p->pop.empty() ? std::string("any pop") : p->pop + " pop") : std::string("no trick yet");
+        };
+        const auto made_by = [&](const std::string& name) {
+            const auto* p = preset_of(name);
+            return p && !p->made_by.empty() ? " Made by " + p->made_by + "." : std::string{};
+        };
+        if (!v.open_pack.empty()) {
+            const auto pack = std::find_if(v.packs.begin(), v.packs.end(), [&](const auto& p) { return p.name == v.open_pack; });
+            rows.push_back({"< Back", "", "Back to your packs.", [] {
+                                studio::open_pack("");
+                                ui().row = ui().pack_row;
+                                ui().confirm_delete.clear();
+                            }});
+            if (pack == v.packs.end()) {
+                rows.push_back({"This pack is gone", "", "", {}, false});
+                break;
+            }
+            const auto name = pack->name;
+            rows.push_back({upper(name), pack->made_by.empty() ? "" : "by " + pack->made_by, "", {}, false});
+            rows.push_back({"Switched on", pack->on ? "on" : "off",
+                            "On: the tricks in this pack play in game. Several packs can be on at once (when two have the same "
+                            "trick they take turns). With no pack on, all your saved tricks play.",
+                            [name, on = pack->on] { std::string m; studio::set_pack_on(name, !on, m); say(m); }});
+            rows.push_back({"Variant playback", pack->alternate ? "Alternate" : "Fixed",
+                            "When the pack has more than one of a trick: Fixed plays the first one added, Alternate plays a "
+                            "different one each attempt.",
+                            [on = pack->alternate] { std::string m; studio::set_pack_alternate(!on, m); say(m); }});
+            rows.push_back({"Save pack", pack->unsaved ? "not saved" : "saved",
+                            "Keeps the tricks you put in or took out, and Variant playback. Until then the pack plays as it was "
+                            "last saved.",
+                            [] { std::string m; studio::save_pack(m); say(m); }, pack->unsaved});
+            rows.push_back({"Export pack", name + ".zip",
+                            "Saves the pack (with its tricks) as one zip in ReSkate.Tricks\\exports, to share. Whoever gets it puts "
+                            "the zip in their ReSkate.Tricks\\import and chooses Import packs in PACKS.",
+                            [name] { std::string m; studio::export_pack(name, m); say(m); }});
+            rows.push_back({"Delete pack", u.confirm_delete == "pack:" + name ? "delete again" : "",
+                            "Deletes the pack, not the tricks in it. Choose it twice.", [name] {
+                                auto& state = ui();
+                                if (state.confirm_delete != "pack:" + name) { state.confirm_delete = "pack:" + name; return; }
+                                std::string m;
+                                studio::delete_pack(name, m);
+                                say(m);
+                                state.confirm_delete.clear();
+                                state.row = state.pack_row;
+                            }});
+            std::vector<std::string> in, out;
+            for (const auto& trick : v.library)
+                (std::find(pack->members.begin(), pack->members.end(), trick) != pack->members.end() ? in : out).push_back(trick);
+            rows.push_back({"Tricks in this pack", std::to_string(in.size()), "", {}, false});
+            if (in.empty()) rows.push_back({"None yet", "", "", {}, false});
+            for (const auto& trick : in) {
+                Row row{trick, trick_of(trick), "In the pack: choose it to take it out (Save pack keeps that)." + made_by(trick),
+                        [trick] { std::string m; studio::set_pack_member(trick, false, m); say(m); }};
+                row.on = true;
+                rows.push_back(std::move(row));
+            }
+            rows.push_back({"Add your tricks", std::to_string(out.size()), "", {}, false});
+            if (out.empty()) rows.push_back({"All your tricks are in it", "", "", {}, false});
+            for (const auto& trick : out)
+                rows.push_back({trick, trick_of(trick), "Choose it to put it in the pack (Save pack keeps that)." + made_by(trick),
+                                [trick] { std::string m; studio::set_pack_member(trick, true, m); say(m); }, preset_of(trick) != nullptr});
+            break;
+        }
+        rows.push_back({"This animation", v.has_clip ? title_of(v) : "nothing open", "", {}, false});
+        rows.push_back({"Save", v.dirty ? "not saved" : "", "Saves the animation in your tricks, below. It plays in game on its trick - "
+                        "unless packs are switched on and it is in none of them.", [] { save_now(); }, v.has_clip});
         rows.push_back({"Save as new variation", "", "Saves a separate copy of this animation and its edits, keeping the original.", [] {
                             std::string m; studio::save_preset_copy(m); say(m); ui().names_for = 0;
                         }, v.has_clip});
-        {
-            const auto found = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == v.name; });
-            const bool saved = found != v.presets.end(), included = saved && found->included;
-            rows.push_back({"Include saved variation in pack", included ? "yes" : "no",
-                            "Changes the active pack's membership. Uses the saved version; save your edits first.", [v, included] {
-                                std::string m; studio::include_preset(v.name, !included, m); say(m);
-                            }, saved && !v.active_pack.empty()});
-            rows.push_back({"Choose this fixed variation", "", "Makes this saved animation the fixed choice for its trick and pop in this pack.", [v] {
-                                std::string m; studio::activate_preset(v.name, m); say(m);
-                            }, saved && !v.active_pack.empty() && !v.alternate_variants});
+        rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
+                        "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
+                        [v] { studio::set_pop(v.pop.empty() ? "low" : v.pop == "low" ? "mid" : v.pop == "mid" ? "high" : ""); }, v.has_clip});
+        rows.push_back({"Copy to low, mid and high pop", "", "Saves this animation with its keys three times, one for each pop height, so it plays on every pop.",
+                        [] {
+                            std::string m;
+                            studio::copy_to_pops(m);
+                            say(m);
+                        }, v.has_clip});
+        std::size_t packs_on = 0;
+        for (const auto& pack : v.packs) packs_on += pack.on;
+        rows.push_back({"Your packs", packs_on ? std::to_string(packs_on) + " on" : "none on: all your tricks play", "", {}, false});
+        if (v.packs.empty()) rows.push_back({"No packs yet", "", "", {}, false});
+        for (const auto& pack : v.packs) {
+            std::size_t count = 0;
+            for (const auto& member : pack.members) count += std::find(v.library.begin(), v.library.end(), member) != v.library.end();
+            const int index = static_cast<int>(rows.size());
+            rows.push_back({pack.name, std::string(pack.on ? "on" : "off") + ", " + std::to_string(count) + (count == 1 ? " trick" : " tricks") +
+                                           (pack.unsaved ? ", not saved" : "") + " >",
+                            (pack.made_by.empty() ? std::string{} : "Made by " + pack.made_by + ". ") +
+                                "Open it to switch it on or off, put your tricks in it, save it or export it.",
+                            [name = pack.name, index] {
+                                studio::open_pack(name);
+                                ui().pack_row = index;
+                                ui().row = 2; // Switched on
+                            }});
         }
-        rows.push_back({"Export diagnostics", "Last 15 seconds", "Reproduce the bug, open F8, then export. Captures native/modified poses, switch/stance, timings, board and selected presets as local text files. Gameplay history freezes while the studio is open.", [] {
-                            std::string m; studio::export_diagnostics(m); say(m);
+        rows.push_back({"Create a new pack", u.pack_name[0] ? std::string(u.pack_name.data()) : "type its name below",
+                        "Type the pack's name in NEW PACK NAME below (for example Steezy), then choose this. It starts empty "
+                        "and off: put your tricks in it, Save pack, and switch it on.", [] {
+                            std::string m;
+                            if (studio::create_preset_pack(m, ui().pack_name.data())) {
+                                ui().pack_name.fill(0);
+                                ui().row = 2;
+                            }
+                            say(m);
                         }});
+        rows.push_back({"Import packs", "", "Takes in other people's packs: put their zip in ReSkate.Tricks\\import first. Everything "
+                        "in it is checked, a name already used gets the next number, and animations from older builds are "
+                        "brought up to date.", [] { std::string m; studio::import_packs(m); say(m); }});
+        rows.push_back({"Export all your tricks", "All saved animations.zip", "Every saved animation in one zip in "
+                        "ReSkate.Tricks\\exports, to share or keep.", [] { std::string m; studio::export_pack("", m); say(m); }});
+        rows.push_back({"Your tricks", std::to_string(v.library.size()), "", {}, false});
+        if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
+        for (const auto& name : v.library) {
+            std::size_t in = 0;
+            for (const auto& pack : v.packs) in += std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
+            Row row{name, name == v.name ? "open" : trick_of(name) + (in ? ", " + std::to_string(in) + (in == 1 ? " pack" : " packs") : ""),
+                    "One of your saved tricks: choose it to open it and change it. Delete takes it out of your tricks (press it twice)." + made_by(name),
+                    [name] {
+                        std::string m;
+                        studio::load(name, m);
+                        say(m);
+                        ui().names_for = 0;
+                    }};
+            row.on = name == v.name;
+            row.library = name;
+            if (u.confirm_delete == name) row.value = "delete again";
+            rows.push_back(std::move(row));
+        }
+        break;
+    }
+    case Tab::settings: {
+        rows.push_back({"Playback", "", "", {}, false});
         rows.push_back({v.playing ? "Pause" : "Play", "", "Plays the trick with your keys.", [v] { studio::set_playing(!v.playing); }, v.has_clip});
         rows.push_back({"Loop", v.loop ? "on" : "off", "Repeat the timeline. A source whose end differs from its start can visibly reset when looped.", [v] { studio::set_loop(!v.loop); }});
         rows.push_back({"Preview speed", std::format("{:.2f}x", v.speed), "Slows the studio preview down to edit. In game the trick is fitted to the air that happens.", [v] {
@@ -1599,6 +1722,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                             for (const float s : speeds) if (s > v.speed + 0.01f) { next = s; break; }
                             studio::set_speed(next);
                         }});
+        rows.push_back({"This animation", "", "", {}, false});
         rows.push_back({"Source", v.source_kind == "native_asset" ? (v.source_position_codec == "native-piec-v1-extent" ? "Native clip" : "Unverified native clip") : v.source_kind == "render_capture" ? "In-game capture" : "Legacy / unknown",
                         "Where this animation came from. In game the whole skater and the board play it with your keys, as the studio shows it.", {}, false});
         rows.push_back({"In game", "Whole body",
@@ -1619,67 +1743,17 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         if (v.source_kind == "native_asset" && v.source_position_codec != "native-piec-v1-extent")
             rows.push_back({"Source needs updating", "Reopen from TRICKS", "This saved source predates the position decoder correction. Your saved keys remain intact; use the updated native library to inspect the corrected source.", {}, false});
         rows.push_back({"Entry binding", v.entry, "Ground and rail-exit recordings are separate presets. Entry is captured when recording.", {}, false});
+        rows.push_back({"Studio", "", "", {}, false});
         rows.push_back({"Custom tricks in game", v.play_in_game ? "on" : "off",
                         "On: your saved animations play in game in place of the game's own. Off: every trick plays as the game has it.",
                         [v] { studio::set_play_in_game(!v.play_in_game); }});
         rows.push_back({"Studio room", v.room ? "on" : "off",
                         "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where you are. Takes effect the next time it opens.",
                         [v] { studio::set_room(!v.room); }});
-        rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
-                        "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
-                        [v] { studio::set_pop(v.pop.empty() ? "low" : v.pop == "low" ? "mid" : v.pop == "mid" ? "high" : ""); }, v.has_clip});
-        rows.push_back({"Copy to low, mid and high pop", "", "Saves this animation with its keys three times, one for each pop height, so it plays on every pop.",
-                        [] {
-                            std::string m;
-                            studio::copy_to_pops(m);
-                            say(m);
-                        }, v.has_clip});
-        rows.push_back({"Save", v.dirty ? "not saved" : "", "Saves the animation in the library.", [] { save_now(); }, v.has_clip});
+        rows.push_back({"Export diagnostics", "Last 15 seconds", "Reproduce the bug, open F8, then export. Captures native/modified poses, switch/stance, timings, board and selected presets as local text files. Gameplay history freezes while the studio is open.", [] {
+                            std::string m; studio::export_diagnostics(m); say(m);
+                        }});
         rows.push_back({"Close the studio", "", "Back to skating. The camera and the game's HUD come back.", [] { studio::request_close(); }});
-        rows.push_back({"Saved animations", "", "", {}, false});
-        rows.push_back({"PACKS", "", "", {}, false});
-        rows.push_back({"Active pack", v.active_pack.empty() ? "All saved (fixed)" : v.active_pack,
-                        "Choose a pack. Each pack keeps its own selection of saved animations.", [v] {
-                            std::string next;
-                            const auto found = std::find(v.packs.begin(), v.packs.end(), v.active_pack);
-                            if (v.active_pack.empty() && !v.packs.empty()) next = v.packs.front();
-                            else if (found != v.packs.end() && std::next(found) != v.packs.end()) next = *std::next(found);
-                            std::string m; studio::use_preset_pack(next, m); say(m);
-                        }});
-        rows.push_back({"Export pack", (v.active_pack.empty() ? std::string("All saved animations") : v.active_pack) + ".zip",
-                        "Saves the active pack - or every saved animation when none is chosen - as one zip in "
-                        "ReSkate.Tricks\\exports. Share it: it can be unzipped straight into ReSkate.Tricks, or dropped in "
-                        "ReSkate.Tricks\\import and taken in with Import packs.", [] {
-                            std::string m; studio::export_pack(m); say(m);
-                        }});
-        rows.push_back({"Import packs", "", "Takes in every pack zip in ReSkate.Tricks\\import. Everything in it is checked first, a name "
-                        "already used gets the next number, and animations from older builds are brought up to date.", [] {
-                            std::string m; studio::import_packs(m); say(m);
-                        }});
-        rows.push_back({"Variant playback", v.alternate_variants ? "Alternate" : "Fixed",
-                        "Fixed uses the chosen variant. Alternate cycles the included variants of each trick between attempts.", [v] {
-                            std::string m; studio::set_pack_alternation(!v.alternate_variants, m); say(m);
-                        }, !v.active_pack.empty()});
-        rows.push_back({"Create a new pack", u.pack_name.data(), "Type a pack name in the details panel (for example Steezy), then choose this row. Copies current choices; an existing pack is never overwritten.", [] {
-                            std::string m; studio::create_preset_pack(m, ui().pack_name.data()); say(m);
-                        }});
-        rows.push_back({"SAVED ANIMATIONS", "", "", {}, false});
-        if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
-        for (const auto& name : v.library) {
-            Row row{name, name == v.name ? "open" : "", "A saved animation: choose it to open it. Delete takes it out of the library (press it twice).",
-                    [name] {
-                        std::string m;
-                        studio::load(name, m);
-                        say(m);
-                        ui().names_for = 0;
-                    }};
-            row.on = name == v.name;
-            const auto preset = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
-            if (preset != v.presets.end()) row.value += preset->active ? "  active" : preset->included ? "  in pack" : "";
-            row.library = name;
-            if (u.confirm_delete == name) row.value = "delete again";
-            rows.push_back(std::move(row));
-        }
         break;
     }
     }
@@ -1800,7 +1874,7 @@ void controller(const studio::View& v, const Projector& p) {
     if ((released & pad_rb) && !u.shoulder_shifted) switch_tab(1);
     if (pressed & pad_a) activate_row(v);
     if (pressed & pad_x) {
-        if (static_cast<Tab>(u.tab) == Tab::settings) delete_row(v);
+        if (static_cast<Tab>(u.tab) == Tab::packs) delete_row(v);
         else delete_key(v);
     }
     if (pressed & pad_y) studio::set_playing(!v.playing);
@@ -1910,9 +1984,14 @@ void page_title(ImDrawList* d, const Fonts& f, ImVec2 at) {
     text(d, f.bold, 15 * k, ImVec2(at.x + 6 * k, at.y - 14 * k), blue_light, "RESKATE");
 }
 // The tab row: Q / E (LB / RB) either side, the chosen tab outlined with a blue brush stroke under it.
-void tab_row(ImDrawList* d, const Fonts& f, ImVec2 at) {
+void tab_row(ImDrawList* d, const Fonts& f, ImVec2 at, float width) {
     auto& u = ui();
-    const float k = f.k, h = 36 * k, fs = 25 * k;
+    const float k = f.k, h = 36 * k;
+    // The names shrink a little rather than run past the menu.
+    float names = 0;
+    for (const char* name : tab_names) names += text_size(f.heading, 25 * k, name).x;
+    const float room = width - 2 * (22 + 14) * k - static_cast<float>(tab_names.size()) * 34 * k;
+    const float fs = 25 * k * std::clamp(room / names, 0.6f, 1.0f);
     float x = at.x;
     const auto cap = [&](const char* key, std::optional<Glyph> g) {
         if (u.pad_mode && g) x += glyph(d, f, ImVec2(x, at.y + 7 * k), *g, u.playstation) + 12 * k;
@@ -2155,7 +2234,7 @@ void card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
         }
         return; // what the chosen row does is said beside the card, in help_box
     }
-    if (tab == Tab::settings) {
+    if (tab == Tab::packs) {
         // The name and trick of the one being edited, typed here.
         if (u.names_for != v.revision && !ImGui::IsAnyItemActive()) {
             std::snprintf(u.name.data(), u.name.size(), "%s", v.name.c_str());
@@ -2794,7 +2873,7 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_F)) studio::focus_joint(u.selected);
     if (!ctrl && pressed(ImGuiKey_K) && v.has_clip) key_joint();
     if (pressed(ImGuiKey_Delete)) {
-        if (static_cast<Tab>(u.tab) == Tab::settings) delete_row(v);
+        if (static_cast<Tab>(u.tab) == Tab::packs) delete_row(v);
         else if (!u.picked.empty()) delete_picked();
         else delete_key(v);
     }
@@ -2927,7 +3006,13 @@ void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     skate_theme::rough_rect(d, a, b, IM_COL32(236, 236, 234, 252), 97, k);
     const ImU32 ink = IM_COL32(20, 20, 22, 255);
     text(d, f.title, 40 * k, ImVec2(a.x + 30 * k, a.y + 18 * k), ink, "UNSAVED CHANGES");
-    const std::string question = "\"" + title_of(v) + "\" has changes that are not saved. Save them before you go back to skating?";
+    std::string packs;
+    for (const auto& pack : v.packs)
+        if (pack.unsaved) packs += (packs.empty() ? "" : ", ") + pack.name;
+    const bool animation = v.dirty && v.has_clip;
+    const std::string what = animation && !packs.empty() ? "\"" + title_of(v) + "\" and the pack " + packs + " have"
+                             : animation ? "\"" + title_of(v) + "\" has" : "The pack " + packs + " has";
+    const std::string question = what + " changes that are not saved. Save them before you go back to skating?";
     d->AddText(f.bold, 19 * k, ImVec2(a.x + 30 * k, a.y + 84 * k), IM_COL32(60, 60, 66, 255), question.c_str(), nullptr, w - 60 * k);
     constexpr std::array<const char*, 3> labels{"SAVE", "DON'T SAVE", "STAY"};
     constexpr std::array<studio::CloseAnswer, 3> answers{studio::CloseAnswer::save, studio::CloseAnswer::discard, studio::CloseAnswer::cancel};
@@ -3165,7 +3250,7 @@ void draw_animation_studio_loading() {
 
     // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
     {
-        static constexpr std::array<const char*, 10> tips{
+        static constexpr std::array<const char*, 11> tips{
             "Pick a trick in TRICKS, then its pop: low, mid or high.",
             "Click a dot on the skater, or choose a joint in JOINTS, then drag to turn it.",
             "The arrows on a joint move it along one axis, the rings turn it about one.",
@@ -3174,7 +3259,8 @@ void draw_animation_studio_loading() {
             "K keys the pose on this frame. Keys always sit on whole frames.",
             "G moves the hips or the board. X, Y and Z lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
-            "Copy to low, mid and high pop in PLAYBACK to fit every pop.",
+            "Copy to low, mid and high pop in PACKS to fit every pop.",
+            "Packs group your tricks: switch them on and off, and share them, in PACKS.",
             "On a controller: the left stick turns, RT and LT step frames, A keys."};
         const auto tip = tips[static_cast<std::size_t>(l.seconds / 4.0f) % tips.size()];
         const ImVec2 ta(0.034f * display.x, H - 0.115f * H);
@@ -3267,7 +3353,7 @@ void draw_animation_studio() {
     shot_strip(d, f, v, view_min, view_max);
     if (!u.menu_hidden) {
         page_title(d, f, ImVec2(menu_x, 40 * k));
-        tab_row(d, f, ImVec2(menu_x, 140 * k));
+        tab_row(d, f, ImVec2(menu_x, 140 * k), menu_w + 10 * k);
         float list_top = 205 * k;
         const float card_h = 190 * k;
         if (static_cast<Tab>(u.tab) == Tab::tricks && u.asset_document.empty()) {

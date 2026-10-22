@@ -252,8 +252,11 @@ struct State {
     std::uint64_t revision{1};
     std::vector<std::string> library;
     std::vector<Preset> presets;
-    std::vector<std::string> packs;
-    std::optional<PresetPack> pack;
+    std::vector<PresetPack> packs;                 // every pack in ReSkate.Tricks/presets, as saved
+    std::vector<PresetPack> packs_on;              // the ones switched on
+    std::map<std::string, PresetPack> pack_drafts; // packs changed in PACKS and not saved yet
+    std::string open_pack;                         // the pack open in PACKS
+    std::string your_name;                         // MADE BY, remembered for new recordings and packs
     bool library_read{};
     std::shared_ptr<const Snapshot> snapshot;
     std::shared_ptr<const Animation> published_edits;
@@ -575,6 +578,7 @@ void load_settings(State& s) {
         s.front_foot = root.value("front_foot", s.front_foot);
         s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
         s.grab_board = root.value("grab_board", s.grab_board);
+        s.your_name = root.value("made_by", s.your_name.c_str()).substr(0, 48);
     } catch (...) {}
 }
 // Caller holds the mutex.
@@ -584,23 +588,39 @@ void save_settings_locked(const State& s) {
         root["front_foot"] = s.front_foot;
         root["stance"] = s.stance_choice;
         root["grab_board"] = s.grab_board;
+        if (!s.your_name.empty()) root["made_by"] = s.your_name;
         const auto path = library_folder() / settings_file;
         std::filesystem::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         out << root.dump(2);
     } catch (...) {}
 }
-std::optional<PresetPack> current_pack() {
-    const auto folder = library_folder() / L"presets";
-    std::ifstream active(folder / L"current.txt", std::ios::binary);
-    std::string name;
-    if (!active || !std::getline(active, name) || name.empty()) return std::nullopt;
-    if (name != file_safe(name)) throw std::runtime_error("Invalid active pack name");
-    std::ifstream in(folder / (name + ".json"), std::ios::binary);
-    if (!in) throw std::runtime_error("Active animation pack is missing: " + name);
+// The packs switched on: presets/current.txt, one name a line (a file from before holds one). A name whose
+// pack is gone is passed over rather than stopping the others.
+std::vector<std::string> pack_names_on() {
+    std::vector<std::string> out;
+    std::ifstream in(library_folder() / L"presets" / L"current.txt", std::ios::binary);
+    for (std::string line; in && std::getline(in, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty() && line == file_safe(line) && std::find(out.begin(), out.end(), line) == out.end()) out.push_back(line);
+    }
+    return out;
+}
+std::filesystem::path pack_file(const std::string& name) { return library_folder() / L"presets" / (name + ".json"); }
+PresetPack read_pack_file(const std::string& name) {
+    std::ifstream in(pack_file(name), std::ios::binary);
+    if (!in) throw std::runtime_error("The pack " + name + " is missing.");
     auto pack = read_pack_json(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())));
     pack.name = name;
     return pack;
+}
+std::vector<PresetPack> packs_on() {
+    std::vector<PresetPack> out;
+    for (const auto& name : pack_names_on()) {
+        try { out.push_back(read_pack_file(name)); }
+        catch (const std::exception& e) { logging::log(Level::warning, Channel::skater, "Animation Studio: pack {} not used: {}", name, e.what()); }
+    }
+    return out;
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text) {
     std::filesystem::create_directories(path.parent_path());
@@ -610,7 +630,7 @@ void write_preset_file(const std::filesystem::path& path, const std::string& tex
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(text.data(), static_cast<std::streamsize>(text.size()));
         out.close();
-        if (!out) throw std::runtime_error("Could not write preset selection");
+        if (!out) throw std::runtime_error("Could not write " + path.filename().string());
     }
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Could not replace preset selection");
@@ -703,7 +723,7 @@ void read_library_locked(State& s) {
     s.library.clear();
     s.presets.clear();
     s.packs.clear();
-    s.pack.reset();
+    s.packs_on.clear();
     s.library_read = true;
     std::error_code error;
     const auto folder = library_folder();
@@ -713,7 +733,7 @@ void read_library_locked(State& s) {
     s.library.erase(std::unique(s.library.begin(), s.library.end()), s.library.end());
     for (const auto& name : s.library) upgrade_saved(saved_json(name));
     try {
-        s.pack = current_pack();
+        s.packs_on = packs_on();
         for (const auto& name : s.library) {
             try {
                 std::ifstream in(saved_json(name), std::ios::binary);
@@ -721,15 +741,21 @@ void read_library_locked(State& s) {
                 if (!animation.trick.empty()) {
                     s.presets.push_back({name, animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                     s.presets.back().fakie = animation.fakie;
+                    s.presets.back().made_by = animation.author;
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
         }
-        select_presets(s.presets, s.pack);
+        select_presets(s.presets, s.packs_on);
         const auto packs = folder / L"presets";
         if (std::filesystem::is_directory(packs, error))
             for (const auto& entry : std::filesystem::directory_iterator(packs, error))
-                if (entry.is_regular_file(error) && entry.path().extension() == L".json") s.packs.push_back(entry.path().stem().string());
-        std::sort(s.packs.begin(), s.packs.end());
+                if (entry.is_regular_file(error) && entry.path().extension() == L".json") {
+                    try { s.packs.push_back(read_pack_file(entry.path().stem().string())); }
+                    catch (const std::exception& e) {
+                        logging::log(Level::warning, Channel::skater, "Animation Studio: pack {} not read: {}", entry.path().filename().string(), e.what());
+                    }
+                }
+        std::sort(s.packs.begin(), s.packs.end(), [](const PresetPack& a, const PresetPack& b) { return a.name < b.name; });
     } catch (const std::exception& e) { s.status = e.what(); }
 }
 
@@ -757,7 +783,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.filename().string(), e.what());
         }
     }
-    try { select_presets(requested, current_pack()); }
+    try { select_presets(requested, packs_on()); }
     catch (const std::exception& e) {
         logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
         return tricks;
@@ -1046,6 +1072,7 @@ void finish_recording(Live& l) {
     s.clip = std::move(clip);
     // A recording is a new document. Old trick/pop/speed/history must not leak into it.
     s.edits = Animation{};
+    s.edits.author = s.your_name;
     s.saved_as.clear();
     s.undo.clear();
     s.redo.clear();
@@ -3682,9 +3709,14 @@ View view() {
     }
     v.library = s.library;
     v.presets = s.presets;
-    v.packs = s.packs;
-    v.active_pack = s.pack ? s.pack->name : "";
-    v.alternate_variants = s.pack && s.pack->alternate;
+    for (const auto& saved : s.packs) {
+        const auto draft = s.pack_drafts.find(saved.name);
+        const auto& pack = draft != s.pack_drafts.end() ? draft->second : saved;
+        const bool on = std::any_of(s.packs_on.begin(), s.packs_on.end(), [&](const PresetPack& p) { return p.name == saved.name; });
+        v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, draft != s.pack_drafts.end(), pack.members()});
+    }
+    v.open_pack = s.open_pack;
+    v.your_name = s.your_name;
     v.recording = s.recording;
     v.bracket_start = s.edits.start;
     v.bracket_end = s.edits.end;
@@ -3699,10 +3731,11 @@ View view() {
 }
 // Keys sit on whole frames of the timeline (30 a second), never between two.
 float frame_time(float seconds) { return std::round(seconds * 30.0f) / 30.0f; }
+namespace { void write_pack_drafts_locked(State& s); } // with the packs, below
 void request_close() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    if (s.dirty && s.clip && !s.clip->empty()) {
+    if ((s.dirty && s.clip && !s.clip->empty()) || !s.pack_drafts.empty()) {
         s.confirm_close = true;
         ++s.revision;
         return;
@@ -3712,7 +3745,13 @@ void request_close() {
 }
 void answer_close(CloseAnswer answer) {
     std::string message;
-    if (answer == CloseAnswer::save && !save(message)) {
+    bool animation_changed{};
+    {
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        animation_changed = s.dirty && s.clip && !s.clip->empty();
+    }
+    if (answer == CloseAnswer::save && animation_changed && !save(message)) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.confirm_close = false;
@@ -3722,6 +3761,11 @@ void answer_close(CloseAnswer answer) {
     std::lock_guard lock(s.mutex);
     s.confirm_close = false;
     if (answer == CloseAnswer::cancel) return;
+    if (answer == CloseAnswer::save && !s.pack_drafts.empty()) {
+        try { write_pack_drafts_locked(s); }
+        catch (const std::exception& e) { s.status = e.what(); publish_locked(s); return; }
+    }
+    if (answer == CloseAnswer::discard) s.pack_drafts.clear();
     s.open_requested = false;
     s.open_request_pending = true;
 }
@@ -4300,27 +4344,32 @@ bool save_preset_copy(std::string& message) {
     }
     return save(message);
 }
+// ---- packs (the PACKS tab) -------------------------------------------------------------------------
+// Any number of packs can be on; with none on, every saved animation plays. Switching one on or off takes
+// effect at once; what is in a pack is a draft until Save pack, so trying things out never changes what plays.
 namespace {
-template<class Change> bool change_pack(Change change, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    try {
-        if (!s.pack) throw std::runtime_error("Create or choose a pack first in ANIMATIONS.");
-        auto pack = *s.pack;
-        change(pack, s);
-        write_preset_file(library_folder() / L"presets" / (pack.name + ".json"), pack_json(pack).dump(2));
-        s.tricks_read = false;
-        read_library_locked(s);
-        message = "Updated pack " + pack.name + ".";
-        s.status = message;
-        publish_locked(s);
-        return true;
-    } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
+PresetPack& pack_draft_locked(State& s, const std::string& name) {
+    if (const auto found = s.pack_drafts.find(name); found != s.pack_drafts.end()) return found->second;
+    return s.pack_drafts.emplace(name, read_pack_file(name)).first->second;
 }
-const Preset& saved_preset(const State& s, const std::string& name) {
-    const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == name; });
-    if (found == s.presets.end()) throw std::runtime_error("Save the animation before choosing it as a preset.");
-    return *found;
+// Caller holds the mutex: the library and the packs are read again, and the tricks that play with them.
+void packs_changed_locked(State& s, const std::string& message) {
+    read_library_locked(s);
+    s.tricks_read = false;
+    s.status = message;
+    publish_locked(s);
+}
+void write_pack_names_on(const std::vector<std::string>& names) {
+    std::string text;
+    for (const auto& name : names) text += name + "\n";
+    write_preset_file(library_folder() / L"presets" / L"current.txt", text);
+}
+// Caller holds the mutex. Every pack with changes is written, and the tricks read again.
+void write_pack_drafts_locked(State& s) {
+    for (const auto& [name, pack] : s.pack_drafts) write_preset_file(pack_file(name), pack_json(pack).dump(2));
+    s.pack_drafts.clear();
+    read_library_locked(s);
+    s.tricks_read = false;
 }
 } // namespace
 bool create_preset_pack(std::string& message, const std::string& name) {
@@ -4328,26 +4377,108 @@ bool create_preset_pack(std::string& message, const std::string& name) {
     std::lock_guard lock(s.mutex);
     try {
         if (!s.library_read) read_library_locked(s);
-        auto pack = s.pack.value_or(PresetPack{});
-        if (!s.pack) for (const auto& p : s.presets) pack.slots[preset_slot(p.trick, p.pop)].push_back(p.name);
-        if (name.empty()) {
+        PresetPack pack;
+        pack.made_by = s.your_name;
+        const auto wanted = file_safe(name);
+        if (wanted.empty()) {
             int number = 1;
-            do { pack.name = "Pack " + std::to_string(number++); }
-            while (std::filesystem::exists(library_folder() / L"presets" / (pack.name + ".json")));
+            do { pack.name = "Pack " + std::to_string(number++); } while (std::filesystem::exists(pack_file(pack.name)));
         } else {
-            pack.name = file_safe(name);
-            if (std::filesystem::exists(library_folder() / L"presets" / (pack.name + ".json")))
-                throw std::runtime_error("That pack name already exists. Choose another name.");
+            pack.name = wanted;
+            if (std::filesystem::exists(pack_file(pack.name))) throw std::runtime_error("There is a pack called " + pack.name + " already: choose another name.");
         }
-        write_preset_file(library_folder() / L"presets" / (pack.name + ".json"), pack_json(pack).dump(2));
-        write_preset_file(library_folder() / L"presets" / L"current.txt", pack.name);
-        read_library_locked(s);
-        s.tricks_read = false;
-        message = "Created " + pack.name + ". Choose variations in PLAYBACK.";
-        s.status = message;
-        publish_locked(s);
+        write_preset_file(pack_file(pack.name), pack_json(pack).dump(2));
+        s.open_pack = pack.name;
+        message = "Made the pack " + pack.name + ". Put your tricks in it, Save pack, then switch it on.";
+        packs_changed_locked(s, message);
         return true;
-    } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
+}
+void open_pack(const std::string& name) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.open_pack = name;
+    publish_locked(s, false);
+}
+bool set_pack_on(const std::string& name, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (name != file_safe(name) || !std::filesystem::exists(pack_file(name))) throw std::runtime_error("There is no pack called " + name + ".");
+        auto names = pack_names_on();
+        std::erase(names, name);
+        if (on) names.push_back(name);
+        write_pack_names_on(names);
+        message = on ? name + " is on: its tricks play." : name + " is off.";
+        if (names.empty()) message += " No pack is on, so all your saved tricks play.";
+        packs_changed_locked(s, message);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
+}
+bool set_pack_member(const std::string& animation, bool in, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (s.open_pack.empty()) throw std::runtime_error("Open a pack first.");
+        auto& pack = pack_draft_locked(s, s.open_pack);
+        for (auto& [slot, names] : pack.slots) std::erase(names, animation);
+        std::erase_if(pack.slots, [](const auto& slot) { return slot.second.empty(); });
+        if (in) {
+            const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; });
+            if (found == s.presets.end()) throw std::runtime_error(animation + " has no trick yet: open it, give it its trick and save it first.");
+            pack.slots[preset_slot(found->trick, found->pop)].push_back(animation);
+        }
+        message = (in ? "Put " + animation + " in " : "Took " + animation + " out of ") + s.open_pack + ". Save pack to keep it.";
+        s.status = message;
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+bool set_pack_alternate(bool alternate, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (s.open_pack.empty()) throw std::runtime_error("Open a pack first.");
+        pack_draft_locked(s, s.open_pack).alternate = alternate;
+        message = (alternate ? s.open_pack + " plays a different one of each trick every attempt."
+                             : s.open_pack + " plays the first one of each trick.") + std::string(" Save pack to keep it.");
+        s.status = message;
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
+}
+bool save_pack(std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (s.open_pack.empty()) throw std::runtime_error("Open a pack first.");
+        const auto draft = s.pack_drafts.find(s.open_pack);
+        if (draft == s.pack_drafts.end()) {
+            message = s.open_pack + " has no changes to save.";
+        } else {
+            write_preset_file(pack_file(draft->first), pack_json(draft->second).dump(2));
+            const auto count = draft->second.members().size();
+            message = std::format("Saved {} ({} trick{}).", s.open_pack, count, count == 1 ? "" : "s");
+            s.pack_drafts.erase(draft);
+        }
+        packs_changed_locked(s, message);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
+}
+bool delete_pack(const std::string& name, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (name != file_safe(name)) throw std::runtime_error("There is no pack called " + name + ".");
+        std::filesystem::remove(pack_file(name));
+        auto names = pack_names_on();
+        if (std::erase(names, name)) write_pack_names_on(names);
+        s.pack_drafts.erase(name);
+        if (s.open_pack == name) s.open_pack.clear();
+        message = "Deleted the pack " + name + ". The tricks in it are still saved.";
+        packs_changed_locked(s, message);
+        return true;
+    } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
 }
 // ---- sharing packs --------------------------------------------------------------------------------
 // A pack goes out as one zip laid out exactly like the tricks folder - presets/<pack>.json and each
@@ -4376,11 +4507,11 @@ void write_whole(const std::filesystem::path& path, const std::string& data) {
 const char* share_readme =
     "ReSkate Animator Studio pack\r\n\r\n"
     "Either unzip this into the ReSkate.Tricks folder next to the game (it is laid out like that folder),\r\n"
-    "or put the zip itself in ReSkate.Tricks\\import and choose Import packs in the studio (F8, ANIMATIONS).\r\n"
+    "or put the zip itself in ReSkate.Tricks\\import and choose Import packs in the studio (F8, PACKS).\r\n"
     "Animations made in older builds are brought up to date when they are first read.\r\n";
 } // namespace
 
-bool export_pack(std::string& message) {
+bool export_pack(const std::string& pack_name, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     try {
@@ -4388,13 +4519,20 @@ bool export_pack(std::string& message) {
         const auto folder = library_folder();
         std::vector<std::pair<std::string, std::string>> files;
         std::vector<std::string> names;
-        std::string title;
-        if (s.pack) {
-            title = s.pack->name;
-            files.emplace_back("presets/" + title + ".json", read_whole(folder / L"presets" / (title + ".json")));
-            for (const auto& [slot, list] : s.pack->slots)
-                for (const auto& name : list)
-                    if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+        std::string title, saved_first;
+        if (!pack_name.empty()) {
+            if (pack_name != file_safe(pack_name)) throw std::runtime_error("There is no pack called " + pack_name + ".");
+            // What is shared is what you see: changes not saved yet are saved first.
+            if (const auto draft = s.pack_drafts.find(pack_name); draft != s.pack_drafts.end()) {
+                write_preset_file(pack_file(pack_name), pack_json(draft->second).dump(2));
+                s.pack_drafts.erase(draft);
+                s.tricks_read = false;
+                saved_first = "Saved and exported ";
+            }
+            const auto pack = read_pack_file(pack_name);
+            title = pack.name;
+            files.emplace_back("presets/" + title + ".json", read_whole(pack_file(title)));
+            names = pack.members();
         } else {
             title = "All saved animations";
             names = s.library;
@@ -4412,7 +4550,9 @@ bool export_pack(std::string& message) {
         files.emplace_back("README.txt", share_readme);
         const auto zip = folder / L"exports" / (file_safe(title) + ".zip");
         write_whole(zip, stored_zip(files));
-        message = std::format("Exported {} ({} animation{}) to ReSkate.Tricks\\exports\\{}.zip.", title, animations, animations == 1 ? "" : "s", file_safe(title));
+        message = std::format("{}{} ({} animation{}) to ReSkate.Tricks\\exports\\{}.zip.", saved_first.empty() ? "Exported " : saved_first, title,
+                              animations, animations == 1 ? "" : "s", file_safe(title));
+        if (!saved_first.empty()) read_library_locked(s);
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
         publish_locked(s);
@@ -4537,49 +4677,12 @@ bool import_packs(std::string& message) {
     read_library_locked(s);
     message = std::format("Imported {} animation{} and {} pack{}{}.", animations, animations == 1 ? "" : "s", packs, packs == 1 ? "" : "s",
                           renamed ? std::format(" ({} renamed: the name was taken)", renamed) : std::string{});
+    if (packs) message += " Switch a pack on in PACKS to play it.";
     if (!problems.empty()) message += " Not imported: " + problems.front() + (problems.size() > 1 ? std::format(" and {} more", problems.size() - 1) : "");
     s.status = message;
     logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
     publish_locked(s);
     return problems.empty();
-}
-bool use_preset_pack(const std::string& name, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    try {
-        if (!name.empty()) {
-            if (name != file_safe(name)) throw std::runtime_error("Invalid pack name");
-            std::ifstream in(library_folder() / L"presets" / (name + ".json"), std::ios::binary);
-            if (!in) throw std::runtime_error("Pack not found");
-            read_pack_json(Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())));
-        }
-        write_preset_file(library_folder() / L"presets" / L"current.txt", name);
-        read_library_locked(s);
-        s.tricks_read = false;
-        message = name.empty() ? "Using all saved animations (one fixed variant per trick/pop)." : "Using pack " + name + ".";
-        s.status = message;
-        publish_locked(s);
-        return true;
-    } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
-}
-bool set_pack_alternation(bool alternate, std::string& message) {
-    return change_pack([=](PresetPack& pack, const State&) { pack.alternate = alternate; }, message);
-}
-bool activate_preset(const std::string& name, std::string& message) {
-    return change_pack([&](PresetPack& pack, const State& s) {
-        const auto& p = saved_preset(s, name);
-        auto& names = pack.slots[preset_slot(p.trick, p.pop)];
-        std::erase(names, name);
-        names.insert(names.begin(), name);
-    }, message);
-}
-bool include_preset(const std::string& name, bool included, std::string& message) {
-    return change_pack([&](PresetPack& pack, const State& s) {
-        const auto& p = saved_preset(s, name);
-        auto& names = pack.slots[preset_slot(p.trick, p.pop)];
-        std::erase(names, name);
-        if (included) names.push_back(name);
-    }, message);
 }
 bool save(std::string& message) {
     auto& s = state();
@@ -4990,7 +5093,9 @@ bool export_diagnostics(std::string& message) {
         Animation preview_edits;
         { auto& s = state(); std::lock_guard lock(s.mutex);
           summary["failure"] = s.failure;
-          summary["active_pack"] = s.pack ? s.pack->name : "";
+          std::string on;
+          for (const auto& pack : s.packs_on) on += (on.empty() ? "" : ", ") + pack.name;
+          summary["active_pack"] = on;
           summary["studio_open"] = s.open;
           summary["custom_playback_enabled"] = s.play_in_game;
           summary["gameplay_body_binding"] = "anatomical_local";
@@ -5068,6 +5173,15 @@ void set_trick(const std::string& trick) {
 void set_author(const std::string& author) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    // Typed here it is also your name from now on: new recordings and new packs carry it.
+    if (!author.empty() && s.your_name != author.substr(0, 48)) {
+        s.your_name = author.substr(0, 48);
+        save_settings_locked(s);
+    }
+    if (!s.clip || s.clip->empty()) { // nothing open: it is only your name
+        publish_locked(s, false);
+        return;
+    }
     if (s.edits.author == author) return;
     s.edits.author = author.substr(0, 48);
     s.dirty = true;

@@ -494,6 +494,30 @@ void solo_turn_holds_the_joints_below() {
           "The joints below still travel with their parent: solo holds the facing, not the place");
 }
 
+// Several packs on at once (the PACKS tab): each plays what it has, and two with the same trick take turns.
+void several_packs_play_together() {
+    std::vector<Preset> presets{{"Kick A", "kickflip", ""}, {"Kick B", "kickflip", ""}, {"Heel", "heelflip", ""}, {"Ollie", "ollie", ""}};
+    PresetPack one, two;
+    one.name = "One";
+    one.slots["kickflip|"] = {"Kick A"};
+    one.slots["heelflip|"] = {"Heel"};
+    two.name = "Two";
+    two.slots["kickflip|"] = {"Kick B"};
+    select_presets(presets, std::vector<PresetPack>{one, two});
+    check(presets[0].active && presets[1].active, "Two packs on with a kickflip each: both kickflips play, taking turns");
+    check(presets[2].active && !presets[3].active && !presets[3].included, "A trick in no pack that is on stays the game's");
+    select_presets(presets, std::vector<PresetPack>{two});
+    check(!presets[0].active && presets[1].active && !presets[2].active, "Switching a pack off takes its tricks out");
+    select_presets(presets, std::vector<PresetPack>{});
+    check(presets[0].active && presets[2].active && presets[3].active, "No pack on: every saved trick plays");
+    // A trick whose pop was changed after it went in is still in the pack.
+    std::vector<Preset> moved{{"Kick A", "kickflip", "high"}};
+    select_presets(moved, std::vector<PresetPack>{one});
+    check(moved[0].active && one.has("Kick A") && !one.has("Kick B"), "A pack keeps a trick whose pop changed");
+    one.made_by = "22sh";
+    const auto back = read_pack_json(pack_json(one));
+    check(back.made_by == "22sh" && back.members().size() == 2, "A pack says who made it after it is shared");
+}
 void packs_select_variants_without_filesystem_order() {
     std::vector<Preset> presets{{"Z", "Kickflip", "mid"}, {"A", "kickflip", "mid"}, {"Any", "kickflip", ""}};
     select_presets(presets, std::nullopt);
@@ -1050,7 +1074,7 @@ void native_playback_contracts() {
           "Source provenance and entry bindings survive save/load without becoming rendered captures");
     std::vector<Preset> presets{{"Ground", "ollie", "", false, false, "regular", false, "ground"},
                                 {"Rail", "ollie", "", false, false, "regular", false, "rail"}};
-    select_presets(presets, {});
+    select_presets(presets, std::nullopt);
     check(presets[0].active && presets[1].active, "Fixed selection preserves separate ground and rail-exit presets");
 }
 // The game's own clips are recognised by the pose: a piece is found when the body moves through it in
@@ -1260,6 +1284,7 @@ int main(int argc, char** argv) {
         switch_edits_follow_the_native_body_facing();
         authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
+    several_packs_play_together();
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         native_names_and_search();
