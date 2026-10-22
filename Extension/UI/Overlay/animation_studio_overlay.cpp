@@ -59,6 +59,14 @@ struct Ui {
     std::vector<std::uint16_t> opened;
     std::uint16_t rows_reveal{0xffff};  // a joint just opened: the timeline scrolls to show its channels
     double held_said_until{};           // Joint limits holding an edit back was said until then
+    struct ChannelField {               // a channel's value box while it is dragged or typed into
+        std::uint16_t joint{0xffff};
+        int channel{-1};
+        bool active{}, began{};
+        float value{};                  // the number asked for (an angle read back can come out another way)
+        studio::Offset base;            // the edit it started from
+    } channel_field;
+    bool bracket_began{};               // the held bracket has moved: its undo step is taken
     std::uint16_t channel_joint{0xffff};
     int channel{-1};                    // the channel row chosen last (-1 none)
     struct ChannelDrag {
@@ -181,19 +189,27 @@ bool is_picked(std::uint16_t joint, float time) {
 void pick_all(const studio::View& v) {
     auto& u = ui();
     u.picked.clear();
+    // The keys a bracket puts on every joint are the brackets' own: they are not chosen (as a box leaves them).
+    const float end = v.bracket_end < 0 ? v.duration : v.bracket_end;
     for (const auto& t : v.tracks)
         if (!t.locked)
-            for (const auto& key : t.keys) u.picked.emplace_back(t.joint, key.time);
+            for (const auto& key : t.keys)
+                if (std::abs(key.time - v.bracket_start) >= 0.5f / fps && std::abs(key.time - end) >= 0.5f / fps)
+                    u.picked.emplace_back(t.joint, key.time);
     say(u.picked.empty() ? "There are no keys yet." : std::to_string(u.picked.size()) + " keys chosen: drag one to move them all, Delete takes them off.");
 }
 // The chosen keys moved by `by` seconds, as one undo step: the far end first, so none lands on another.
-void move_picked(float by, float duration) {
+void move_picked(float by, const studio::View& v) {
     auto& u = ui();
     if (u.picked.empty()) return;
-    // The group moves as one and stops at the ends of the clip, so no key is pushed onto another there.
+    // The group moves as one. Inside the brackets it stays inside them (a key never lands on a bracket's own
+    // key), outside them it stops at the ends of the clip.
     float first = u.picked.front().second, last = first;
     for (const auto& [joint, time] : u.picked) first = std::min(first, time), last = std::max(last, time);
-    by = std::clamp(by, -first, std::max(0.0f, duration - last));
+    const float end = v.bracket_end < 0 ? v.duration : v.bracket_end;
+    const float low = first > v.bracket_start + 0.5f / fps ? v.bracket_start + 1 / fps : 0.0f;
+    const float high = last < end - 0.5f / fps ? end - 1 / fps : v.duration;
+    by = std::clamp(by, std::min(0.0f, low - first), std::max(0.0f, high - last));
     if (std::abs(by) < 1e-4f) return;
     auto keys = u.picked;
     std::sort(keys.begin(), keys.end(), [by](const auto& a, const auto& b) { return by > 0 ? a.second > b.second : a.second < b.second; });
@@ -308,11 +324,13 @@ bool channels_open(std::uint16_t joint) {
 }
 // A channel edit that Joint limits held back is said, once in a while, so a number that will not move is
 // explained rather than looking broken.
-void note_held(const studio::View& v, std::uint16_t joint, int channel, float wanted) {
+void note_held(const studio::View& v, std::uint16_t joint, const studio::Offset& requested) {
     if (!v.limits) return;
-    float apart = studio::channel_value(studio::offset_of(joint), channel) - wanted;
-    if (channel < 3) apart = std::remainder(apart, 360.0f);
-    if (std::abs(apart) <= (channel < 3 ? 0.5f : 0.002f)) return;
+    // The turns compared, not one angle read back from them (that can come out another way round).
+    const auto got = studio::offset_of(joint).rotation;
+    const float d = std::abs(got[0] * requested.rotation[0] + got[1] * requested.rotation[1] + got[2] * requested.rotation[2] +
+                             got[3] * requested.rotation[3]);
+    if (2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.29578f <= 0.5f) return;
     auto& u = ui();
     if (ImGui::GetTime() < u.held_said_until) return;
     u.held_said_until = ImGui::GetTime() + 4;
@@ -1184,6 +1202,18 @@ Row info_row(std::string label, std::string value, std::string about) {
 }
 // What can be chosen in a list: anything but a heading.
 bool selectable(const Row& row) noexcept { return static_cast<bool>(row.act) || row.info; }
+// JOINTS: the highlight follows the chosen joint - on a joint's row, or when a joint was chosen elsewhere (a
+// dot on the skater, the timeline) - and stays on an option row otherwise. Used by the list, the keys and the pad.
+int joints_row(const std::vector<Row>& rows) {
+    auto& u = ui();
+    const bool joint_changed = u.joint_row_for != u.selected;
+    u.joint_row_for = u.selected;
+    const bool on_joint = u.row < 0 || u.row >= static_cast<int>(rows.size()) || rows[static_cast<std::size_t>(u.row)].joint;
+    if (on_joint || joint_changed)
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            if (rows[i].joint && *rows[i].joint == u.selected) return static_cast<int>(i);
+    return u.row;
+}
 // ---- the shots ------------------------------------------------------------------------------------
 // Set camera angles to work in, the ones a skate part is actually shot from. Each is the orbit the studio
 // already drives - turned and tilted about the skater, at a distance - and what it holds in the middle, so
@@ -1807,8 +1837,6 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Hide everything", "", "Takes the whole studio off the screen - tabs, timeline, dots and all - leaving the "
                         "skater and the room, for filming a trick or taking a picture of it. Key: H brings it back.",
                         [] { ui().hide_ui = true; say("Hidden. H brings it back."); }});
-        rows.push_back({"Hide the menu", "", "Takes this menu away to give the skater more room; the timeline stays. Key: Tab "
-                        "brings it back.", [] { ui().menu_hidden = true; say("Menu hidden. Tab brings it back."); }});
         rows.push_back({"Stance", v.stance_choice != 0 ? (v.stance_choice == 1 ? "regular" : "goofy")
                                   : v.game_stance == 0 ? (v.showing_goofy ? "the game's (not set: goofy)" : "the game's (not set: regular)")
                                   : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
@@ -1890,6 +1918,7 @@ void move_row(const studio::View& v, int delta) {
     auto& u = ui();
     const auto rows = rows_of(static_cast<Tab>(u.tab), v);
     const int count = static_cast<int>(rows.size());
+    if (static_cast<Tab>(u.tab) == Tab::joints) u.row = joints_row(rows);
     // Headings are stepped over. In JOINTS going onto a joint's row chooses that joint.
     int at = std::clamp(u.row, 0, std::max(0, count - 1));
     for (int step = 0; step < count; ++step) {
@@ -1903,6 +1932,7 @@ void move_row(const studio::View& v, int delta) {
 void activate_row(const studio::View& v) {
     auto& u = ui();
     auto rows = rows_of(static_cast<Tab>(u.tab), v);
+    if (static_cast<Tab>(u.tab) == Tab::joints) u.row = joints_row(rows);
     // On a joint's row, Enter (A) keys that joint on this frame.
     if (u.row >= 0 && u.row < static_cast<int>(rows.size()) && rows[static_cast<std::size_t>(u.row)].joint) {
         key_joint();
@@ -2125,17 +2155,7 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
     const float k = f.k, row_h = 50 * k, gap = 8 * k;
     const auto tab = static_cast<Tab>(u.tab);
     const auto rows = rows_of(tab, v);
-    int chosen = u.row;
-    if (tab == Tab::joints) {
-        // On the joints the highlight follows the chosen joint, and so does a joint chosen on the skater even
-        // when an option row was highlighted.
-        const bool joint_changed = u.joint_row_for != u.selected;
-        u.joint_row_for = u.selected;
-        const bool on_joint = u.row < 0 || u.row >= static_cast<int>(rows.size()) || rows[static_cast<std::size_t>(u.row)].joint;
-        if (on_joint || joint_changed)
-            for (std::size_t i = 0; i < rows.size(); ++i)
-                if (rows[i].joint && *rows[i].joint == u.selected) chosen = static_cast<int>(i);
-    }
+    int chosen = tab == Tab::joints ? joints_row(rows) : u.row;
     chosen = std::clamp(chosen, 0, std::max(0, static_cast<int>(rows.size()) - 1));
     // A heading cannot be chosen: the first row under it that does something is.
     if (!rows.empty() && !selectable(rows[static_cast<std::size_t>(chosen)]))
@@ -2593,7 +2613,10 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             if (track) for (const auto& kv : track->keys) curve.keys.push_back({kv.time, kv.rotation, kv.offset, kv.ease});
             // Its value on this frame, to drag or type (a double-click types).
             {
-                float value = studio::channel_value(studio::evaluate(curve, v.time), c);
+                const float frame_time = std::round(v.time * fps) / fps; // the frame a change is keyed on
+                auto& field = u.channel_field;
+                const bool this_field = field.joint == joint.index && field.channel == c;
+                float value = this_field && field.active ? field.value : studio::channel_value(studio::evaluate(curve, frame_time), c);
                 ImGui::PushID(joint.index);
                 ImGui::PushID(100 + c);
                 ImGui::PushStyleColor(ImGuiCol_Text, locked ? faint : white);
@@ -2606,14 +2629,29 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 ImGui::SetNextItemWidth(88 * k);
                 const bool changed = ImGui::DragFloat("##value", &value, turn ? 0.25f : 0.002f, 0, 0, turn ? "%.1f" : "%.3f");
                 if (ImGui::IsItemActivated() && !locked) {
-                    studio::begin_change();
+                    field = {};
+                    field.joint = joint.index;
+                    field.channel = c;
+                    field.active = true;
+                    field.base = studio::evaluate(curve, frame_time);
+                    field.value = value;
                     u.selected = joint.index;
+                    u.rows_followed = joint.index; // chosen here: the rows stay where they are
                     u.channel_joint = joint.index;
                     u.channel = c;
                 }
-                if (changed && !locked) {
-                    studio::set_offset(joint.index, studio::with_channel(studio::evaluate(curve, v.time), c, value));
-                    note_held(v, joint.index, c, value);
+                if (field.joint == joint.index && field.channel == c) {
+                    if (ImGui::IsItemActive()) field.value = value;
+                    else field.active = false;
+                    if (changed && !locked) {
+                        if (!field.began) { // one undo step, taken when it first changes something
+                            studio::begin_change();
+                            field.began = true;
+                        }
+                        const auto requested = studio::with_channel(field.base, c, value);
+                        studio::set_offset(joint.index, requested);
+                        note_held(v, joint.index, requested);
+                    }
                 }
                 ImGui::PopFont();
                 ImGui::PopStyleVar();
@@ -2630,6 +2668,16 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             ImGui::PopID();
             ImGui::PopID();
             bool on_key = false;
+            std::optional<float> nearest; // the key a click takes: the nearest in reach
+            if (lane_clicked && track) {
+                float reach = 8 * k;
+                for (const auto& key : track->keys)
+                    if (!bracket_key(key.time))
+                        if (const float apart = std::abs(ImGui::GetIO().MousePos.x - x_of(key.time)); apart < reach) {
+                            reach = apart;
+                            nearest = key.time;
+                        }
+            }
             if (!curve.keys.empty()) {
                 d->PushClipRect(ImVec2(ruler_left, std::max(rows_top, y)), ImVec2(ruler_right, std::min(at.y + size.y, y + ch_h)), true);
                 // The curve, sampled across the lane; angles unwrapped so a turn past 180 does not jump.
@@ -2679,7 +2727,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     drawn_keys().push_back({joint.index, key.time, cpos});
                     if ((current && focused) || in_pick) key_mark(d, cpos, 9 * k, in_pick ? blue : blue_dim, round_key(key));
                     key_mark(d, cpos, (close_to ? 7.5f : 6) * k, track->hidden ? faint : in_pick || (current && focused) ? blue_light : white, round_key(key));
-                    if (!close_to || !lane_clicked || locked) continue;
+                    if (!lane_clicked || locked || !nearest || std::abs(key.time - *nearest) > 1e-4f) continue;
                     on_key = true;
                     if (ImGui::GetIO().KeyShift) {
                         auto& picked = u.picked;
@@ -2702,6 +2750,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     // A press: this key's value can be dragged up and down, or the key moved sideways in time.
                     if (!in_pick) u.picked.clear();
                     u.selected = joint.index;
+                    u.rows_followed = joint.index;
                     u.channel_joint = joint.index;
                     u.channel = c;
                     studio::set_time(key.time);
@@ -2720,6 +2769,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             if (lane_clicked && !on_key && v.has_clip) {
                 u.picked.clear();
                 u.selected = joint.index;
+                u.rows_followed = joint.index;
                 u.channel_joint = joint.index;
                 u.channel = c;
                 studio::set_time(std::round(t_of(ImGui::GetIO().MousePos.x) * fps) / fps);
@@ -2758,6 +2808,16 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const bool lane_hovered = ImGui::IsItemHovered();
         const bool lane_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         bool on_key = false;
+        std::optional<float> nearest; // the key a click takes: the nearest in reach
+        if (lane_clicked && track) {
+            float reach = 9 * k;
+            for (const auto& key : track->keys)
+                if (!bracket_key(key.time))
+                    if (const float apart = std::abs(ImGui::GetIO().MousePos.x - x_of(key.time)); apart < reach) {
+                        reach = apart;
+                        nearest = key.time;
+                    }
+        }
         if (track) {
             d->PushClipRect(ImVec2(ruler_left, rows_top), ImVec2(ruler_right, at.y + size.y), true);
             for (const auto& key : track->keys) {
@@ -2769,12 +2829,13 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 const bool current = std::abs(key.time - v.time) < 0.5f / fps;
                 const bool close_to = lane_hovered && std::abs(ImGui::GetIO().MousePos.x - c.x) < 9 * k;
                 const bool in_pick = is_picked(joint.index, key.time);
+                const bool hit = lane_clicked && nearest && std::abs(key.time - *nearest) < 1e-4f;
                 drawn_keys().push_back({joint.index, key.time, c});
                 if ((current && chosen) || in_pick) key_mark(d, c, 13 * k, in_pick ? blue : blue_dim, round_key(key));
                 key_mark(d, c, (close_to ? 10.5f : 9) * k, track->hidden ? faint : in_pick || (current && chosen) ? blue_light : white,
                          round_key(key));
                 if (key.ease == studio::Ease::step) d->AddLine(ImVec2(c.x, c.y - 4 * k), ImVec2(c.x, c.y + 4 * k), IM_COL32(40, 40, 40, 255), 2 * k);
-                if (close_to && lane_clicked && !track->locked && ImGui::GetIO().KeyShift) {
+                if (hit && !track->locked && ImGui::GetIO().KeyShift) {
                     on_key = true;
                     auto& picked = u.picked;
                     const auto found = std::find_if(picked.begin(), picked.end(), [&](const auto& p) {
@@ -2782,7 +2843,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     });
                     if (found != picked.end()) picked.erase(found);
                     else picked.emplace_back(joint.index, key.time);
-                } else if (close_to && lane_clicked && !track->locked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                } else if (hit && !track->locked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     // Double-click: the key (or the chosen group it is in) is smoothed and shows round.
                     on_key = true;
                     studio::begin_change();
@@ -2794,7 +2855,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     }
                     say(m);
                     u.key_joint.reset(); // not a drag
-                } else if (close_to && lane_clicked && !track->locked) {
+                } else if (hit && !track->locked) {
                     on_key = true;
                     if (!in_pick) u.picked.clear();
                     u.key_joint = joint.index;
@@ -2848,9 +2909,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     drag.began = true;
                 }
                 const float per_pixel = (drag.channel < 3 ? 0.25f : 0.0015f) * (io.KeyShift ? 0.2f : 1.0f);
-                const float wanted = drag.start - dy * per_pixel;
-                studio::set_offset(drag.joint, studio::with_channel(drag.base, drag.channel, wanted));
-                note_held(v, drag.joint, drag.channel, wanted);
+                const auto requested = studio::with_channel(drag.base, drag.channel, drag.start - dy * per_pixel);
+                studio::set_offset(drag.joint, requested);
+                note_held(v, drag.joint, requested);
             } else if (drag.mode == 2) {
                 u.key_joint = drag.joint;
                 u.key_from = drag.time;
@@ -2867,7 +2928,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             u.key_to = to;
         } else {
             if (u.key_moved && std::abs(u.key_to - u.key_from) > 1e-4f) {
-                if (is_picked(*u.key_joint, u.key_from) && u.picked.size() > 1) move_picked(u.key_to - u.key_from, v.duration);
+                if (is_picked(*u.key_joint, u.key_from) && u.picked.size() > 1) move_picked(u.key_to - u.key_from, v);
                 else {
                     studio::begin_change();
                     studio::move_key(*u.key_joint, u.key_from, u.key_to);
@@ -2960,13 +3021,17 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         // One drag of a bracket is one change to undo, and it only moves when it reaches another frame.
         if (near_bracket && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             u.bracket_drag = near_bracket;
-            u.bracket_dragged_to = -1;
-            studio::begin_change();
+            u.bracket_dragged_to = near_bracket == 1 ? v.bracket_start : v.bracket_end < 0 ? v.duration : v.bracket_end;
+            u.bracket_began = false;
         }
         if (u.bracket_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.bracket_drag = 0;
         if (u.bracket_drag) {
             const float to = std::round(t_of(io.MousePos.x) * fps) / fps;
             if (std::abs(to - u.bracket_dragged_to) > 0.5f / fps) {
+                if (!u.bracket_began) {
+                    studio::begin_change();
+                    u.bracket_began = true;
+                }
                 u.bracket_dragged_to = to;
                 studio::move_bracket(u.bracket_drag, to);
             }
@@ -3228,7 +3293,10 @@ void keyboard(const studio::View& v) {
     else set = false;
     if (set) {
         studio::set_orbit(orbit);
-        u.camera_shot = 0;
+        if (u.camera_shot) {
+            u.camera_shot = 0;
+            studio::set_camera_follow(false);
+        }
     }
     if (any || std::hypot(io.MousePos.x - u.last_mouse.x, io.MousePos.y - u.last_mouse.y) > 4 || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.pad_mode = false;
     u.last_mouse = io.MousePos;

@@ -4304,7 +4304,10 @@ void smooth_keys(std::uint16_t joint) {
     for (auto& t : s.edits.tracks) {
         if (t.locked || (joint != all_joints && t.joint != joint)) continue;
         // A key that only now shows round is a change too (it is saved with the animation).
-        auto n = static_cast<std::size_t>(std::count_if(t.keys.begin(), t.keys.end(), [](const Key& k) { return !k.smooth || k.ease != Ease::smooth; }));
+        auto n = static_cast<std::size_t>(std::count_if(t.keys.begin(), t.keys.end(), [&](const Key& k) {
+            const bool bracket = std::abs(k.time - s.edits.start) < 1.0f / 60 || std::abs(k.time - end) < 1.0f / 60;
+            return !bracket && (!k.smooth || k.ease != Ease::smooth);
+        }));
         n += anim_studio::smooth_track(t, s.edits.start, end);
         for (auto& k : t.keys) { k.ease = Ease::smooth; k.smooth = true; } // a track too short to smooth still shows it
         if (n) {
@@ -4655,7 +4658,11 @@ bool import_packs(std::string& message) {
             if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) throw std::runtime_error("not a zip file");
             struct Closer { mz_zip_archive* z; ~Closer() { mz_zip_reader_end(z); } } closer{&zip};
             // Read it all first; nothing is written unless every file in it checks out.
-            std::map<std::string, std::pair<std::string, std::string>> found; // animation -> json, clip
+            // Names compared as Windows compares file names: "Kickflip" and "kickflip" are one folder.
+            struct NoCase {
+                bool operator()(const std::string& a, const std::string& b) const { return _stricmp(a.c_str(), b.c_str()) < 0; }
+            };
+            std::map<std::string, std::pair<std::string, std::string>, NoCase> found; // animation -> json, clip
             std::vector<std::pair<std::string, std::string>> pack_files;     // pack name -> json
             const auto count = mz_zip_reader_get_num_files(&zip);
             for (mz_uint i = 0; i < count; ++i) {
@@ -4692,8 +4699,8 @@ bool import_packs(std::string& message) {
             // that names it is told.
             // A name is taken by a saved animation, by one already given out in this zip, or by another of
             // the zip's own animations (its "Kickflip 2" is not free for a renamed "Kickflip").
-            std::map<std::string, std::string> rename;
-            std::set<std::string> claimed;
+            std::map<std::string, std::string, NoCase> rename;
+            std::set<std::string, NoCase> claimed;
             for (const auto& [name, pair] : found) {
                 std::string target = name;
                 for (unsigned n = 2;; ++n) {
@@ -4818,7 +4825,7 @@ bool save(std::string& message) {
         const auto json = to_json(full);
         const auto bytes = clip_bytes(*s.clip);
         // Both are written in full beside the old files first, and only then moved over them, the trick before
-        // its description: a failed save (a full disk) never leaves half an animation or a mismatched pair.
+        // its description: a failed write (a full disk) leaves the saved animation as it was.
         std::filesystem::create_directories(folder / name);
         const auto json_path = folder / name / (name + ".json"), clip_path = folder / name / (name + ".clip");
         const auto staged = [](std::filesystem::path p) { p += L".saving"; return p; };
@@ -4842,6 +4849,8 @@ bool save(std::string& message) {
         publish_locked(s);
         return true;
     } catch (const std::exception& e) {
+        std::error_code ignored;
+        for (const char* extension : {".json.saving", ".clip.saving"}) std::filesystem::remove(folder / name / (name + extension), ignored);
         message = std::string("Saving failed: ") + e.what();
         s.status = message;
         return false;
