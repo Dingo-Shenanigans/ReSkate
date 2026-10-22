@@ -996,11 +996,17 @@ void fitting_the_air_keeps_the_flip() {
     const float recorded = 0.63f;
     check(near(fitted_air_time(0.2f, recorded, 1.0f), 0.2f), "A longer air leaves the trick at its own pace");
     check(near(fitted_air_time(0.5f, recorded, 1.0f), 0.5f), "and is never slowed down to fit (it came in late)");
-    check(near(fitted_air_time(5.0f, recorded, 1.0f), recorded - 1.0f / 60), "Still in the air: it waits just before its landing");
-    check(near(fitted_air_time(0.2f, recorded, 0.42f), 0.3f), "A shorter air plays the whole air faster");
-    check(near(fitted_air_time(0.2f, recorded, 0.1f), 0.32f), "but never more than 1.6 times as fast");
-    check(near(landed_time(0, 1.3f, 1.1f), 1.1f) && near(landed_time(0.08f, 1.3f, 1.1f), 1.38f),
-          "At touchdown a recording that was behind catches up to its landing over 80 ms");
+    check(near(fitted_air_time(5.0f, recorded, 1.0f), recorded - 1.0f / 60, 1e-3f), "Still in the air: it comes to just before its landing");
+    {
+        const float a = fitted_air_time(0.58f, recorded, 1.0f), b = fitted_air_time(0.62f, recorded, 1.0f), c = fitted_air_time(0.7f, recorded, 1.0f);
+        check(a < b && b < c && c < recorded - 1.0f / 60, "and keeps moving towards it, never standing still");
+    }
+    check(near(fitted_air_time(0.2f, recorded, 0.5f), 0.252f), "A shorter air plays the air a little faster");
+    check(near(fitted_air_time(0.2f, recorded, 0.1f), 0.26f), "but never more than 1.3 times as fast");
+    check(near(landed_time(0, 1.3f, 1.25f), 1.25f) && near(landed_time(0.08f, 1.3f, 1.25f), 1.38f),
+          "At touchdown a recording a little behind catches up to its landing over 80 ms");
+    check(near(landed_time(0.16f, 1.3f, 1.1f), 1.46f) && landed_time(0.08f, 1.3f, 1.1f) < 1.3f,
+          "and one far behind over longer, never more than about 2.25 times its pace");
     check(near(landed_time(0.5f, 1.3f, 1.3f), 1.8f), "and from its landing on plays at its own pace");
     PlaybackEpisode episode;
     episode.observe(10, MotionState::riding);

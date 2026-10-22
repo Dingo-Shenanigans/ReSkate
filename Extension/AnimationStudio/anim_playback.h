@@ -30,26 +30,31 @@ inline const char* phase_name(PlaybackPhase value) noexcept {
 struct PlaybackSample { float time{-1}, weight{}; bool finished{}; };
 // A trick fitted to the game's air, never slower than it was recorded. Seconds into the recording's air for
 // `in_air` seconds into the game's, when the game's air is expected to last `target` seconds (the recorded one
-// lasted `recorded_air`). A shorter air plays the whole air faster (at most 1.6 times), so it is not late. A
-// longer one is not slowed down to fit: the expected air is often long (a tester's varial kickflip: 0.71 s
-// expected, 0.46 s real), and a trick slowed for it was still in the air when the board landed. It plays at
-// its own pace and never reaches its landing while the game is still in the air: it waits just before it,
-// feet reaching for the ground.
+// lasted `recorded_air`). A shorter expected air plays it a little faster (at most 1.3 times: the expectation
+// is often wrong both ways). A longer one is not slowed down to fit (a tester's varial kickflip: 0.71 s
+// expected, 0.46 s real, and a trick slowed for it was still in the air when the board landed). It never
+// reaches its landing while the game is still in the air, and it never stands still waiting for it either
+// (a low-pop shuv-it on a bigger pop stood frozen for six frames): over its last `ease` seconds it slows,
+// feet reaching for the ground, closer and closer to the landing however long the air runs.
 inline float fitted_air_time(float in_air, float recorded_air, float target) noexcept {
     if (!std::isfinite(in_air)) return 0;
     in_air = std::max(0.0f, in_air);
     if (!(recorded_air > 1.0f / 30) || !std::isfinite(recorded_air)) return in_air;
     float t = in_air;
-    if (target > 0.05f && std::isfinite(target) && target < recorded_air) t = in_air * std::min(recorded_air / target, 1.6f);
-    return std::min(t, recorded_air - 1.0f / 60);
+    if (target > 0.05f && std::isfinite(target) && target < recorded_air) t = in_air * std::min(recorded_air / target, 1.3f);
+    const float land = recorded_air - 1.0f / 60, ease = std::min(0.06f, land * 0.3f), knee = land - ease;
+    if (t > knee) t = knee + ease * (1 - std::exp(-(t - knee) / ease));
+    return t;
 }
 // After the game's touchdown, `since` seconds ago: the recording from its own landing (`down`) on, at its own
 // pace, so the landing bend happens on the ground. It was at `from` at touchdown; if that was short of its
-// landing it catches up over 80 ms rather than jumping.
+// landing it catches up rather than jumping, over a time that grows with how far behind it was (80 to 200 ms),
+// so it never runs at more than about 2.25 times its pace.
 inline float landed_time(float since, float down, float from) noexcept {
     since = std::isfinite(since) ? std::max(0.0f, since) : 0.0f;
     const float behind = std::isfinite(from) ? std::max(0.0f, down - from) : 0.0f;
-    const float u = std::clamp(since / 0.08f, 0.0f, 1.0f);
+    const float window = std::clamp(behind * 0.8f, 0.08f, 0.2f);
+    const float u = std::clamp(since / window, 0.0f, 1.0f);
     return down + since - behind * (1 - u);
 }
 struct PlaybackEpisode {
