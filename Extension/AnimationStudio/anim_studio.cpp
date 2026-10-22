@@ -11,6 +11,7 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "anim_diagnostics.h"
 #include "skater_mirror.h"
+#include "miniz.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -567,6 +568,69 @@ void write_preset_file(const std::filesystem::path& path, const std::string& tex
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Could not replace preset selection");
 }
+// ---- older animations, brought up to date ----------------------------------------------------------
+// What changed under saved animations on 2026-10-22, and what is done once to each file made before:
+// - its stance label could be wrong (one made with the right foot leading was labelled regular normal);
+//   the label is set from the clip, so a pack picks the right variant per stance.
+// - its board keys were made in the frame of the clip's own board, which on a clip recorded mirrored or
+//   with the board backwards points the other way to the board the game draws; they are turned into the
+//   board's nose-forward frame the studio and the game now both use.
+// The old file is kept beside it (.json.before-upgrade) and the new one marked, so this happens once.
+inline constexpr const char* current_upgrade = "2026-10-22";
+bool upgrade_animation(Animation& animation, const Clip& clip) {
+    if (animation.upgraded == current_upgrade) return false;
+    if (const auto lead = clip_leads_right(clip)) {
+        const bool goofy = authored_goofy(animation);
+        const bool label = leads_right(goofy, animation.switch_stance.value_or(false));
+        if (label != *lead) animation.switch_stance = goofy != *lead;
+    }
+    Joint first_board;
+    const bool turned_round = clip.sample_board(0, first_board) && rotate(first_board.rotation, Vec3{0, 0, 1})[0] < 0;
+    if (!animation.board_nose_forward && turned_round)
+        if (auto* board = animation.track(board_joint))
+            for (auto& key : board->keys) {
+                // Half a turn about the board's up: across and along change sign, up stays.
+                key.rotation = {-key.rotation[0], key.rotation[1], -key.rotation[2], key.rotation[3]};
+                key.offset = {-key.offset[0], key.offset[1], -key.offset[2]};
+            }
+    animation.board_nose_forward = true;
+    animation.upgraded = current_upgrade;
+    return true;
+}
+// Upgrades the saved file at `json_path` (its clip beside it) if it needs it. Returns whether it did.
+bool upgrade_saved(const std::filesystem::path& json_path) {
+    try {
+        std::string text;
+        {
+            std::ifstream in(json_path, std::ios::binary);
+            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        auto animation = from_json(text);
+        if (animation.upgraded == current_upgrade) return false;
+        auto clip_path = json_path;
+        clip_path.replace_extension(L".clip");
+        std::ifstream clip_in(clip_path, std::ios::binary);
+        if (!clip_in) return false;
+        const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
+        const auto clip = clip_from_bytes(bytes);
+        animation.clip.times = {0, clip.duration()};
+        animation.clip.takeoff = clip.takeoff;
+        animation.clip.landing = clip.landing;
+        const auto before_label = animation.switch_stance;
+        if (!upgrade_animation(animation, clip)) return false;
+        auto backup = json_path;
+        backup += L".before-upgrade";
+        std::error_code error;
+        if (!std::filesystem::exists(backup, error)) std::filesystem::copy_file(json_path, backup, error);
+        write_preset_file(json_path, to_json(animation));
+        logging::log(Level::info, Channel::skater, "Animation Studio: upgraded {}{}.", json_path.stem().string(),
+                     before_label != animation.switch_stance ? " (its stance label now matches the foot its clip leads with)" : "");
+        return true;
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: {} could not be upgraded: {}", json_path.filename().string(), e.what());
+        return false;
+    }
+}
 void read_library_locked(State& s) {
     s.library.clear();
     s.presets.clear();
@@ -587,6 +651,7 @@ void read_library_locked(State& s) {
     }
     std::sort(s.library.begin(), s.library.end());
     s.library.erase(std::unique(s.library.begin(), s.library.end()), s.library.end());
+    for (const auto& name : s.library) upgrade_saved(saved_json(name));
     try {
         s.pack = current_pack();
         for (const auto& name : s.library) {
@@ -635,6 +700,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
     // Select from small JSON metadata before expanding clips.
     // An inactive pack variant must not consume full animation memory or block a pack switch.
     std::vector<Preset> requested;
+    for (const auto& entry : saved_jsons(folder)) upgrade_saved(entry);
     for (const auto& entry : saved_jsons(folder)) {
         try {
             std::ifstream in(entry, std::ios::binary);
@@ -4119,6 +4185,200 @@ bool create_preset_pack(std::string& message, const std::string& name) {
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; return false; }
 }
+// ---- sharing packs --------------------------------------------------------------------------------
+// A pack goes out as one zip laid out exactly like the tricks folder - presets/<pack>.json and each
+// animation's own folder with its .json and .clip - so it can be unzipped straight into ReSkate.Tricks, or
+// put in ReSkate.Tricks/import and taken in with Import. Animations from older builds are upgraded as they
+// arrive (upgrade_saved), so a tester's pack works as it is.
+namespace {
+std::string read_whole(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("could not read " + path.filename().string());
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+void write_whole(const std::filesystem::path& path, const std::string& data) {
+    std::filesystem::create_directories(path.parent_path());
+    auto temporary = path;
+    temporary += L".saving";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out.write(data.data(), static_cast<std::streamsize>(data.size()));
+        if (!out) throw std::runtime_error("could not write " + path.filename().string());
+    }
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    std::filesystem::rename(temporary, path);
+}
+const char* share_readme =
+    "ReSkate Animator Studio pack\r\n\r\n"
+    "Either unzip this into the ReSkate.Tricks folder next to the game (it is laid out like that folder),\r\n"
+    "or put the zip itself in ReSkate.Tricks\\import and choose Import packs in the studio (F8, ANIMATIONS).\r\n"
+    "Animations made in older builds are brought up to date when they are first read.\r\n";
+} // namespace
+
+bool export_pack(std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (!s.library_read) read_library_locked(s);
+        const auto folder = library_folder();
+        std::vector<std::pair<std::string, std::string>> files;
+        std::vector<std::string> names;
+        std::string title;
+        if (s.pack) {
+            title = s.pack->name;
+            files.emplace_back("presets/" + title + ".json", read_whole(folder / L"presets" / (title + ".json")));
+            for (const auto& [slot, list] : s.pack->slots)
+                for (const auto& name : list)
+                    if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+        } else {
+            title = "All saved animations";
+            names = s.library;
+        }
+        std::size_t animations = 0;
+        for (const auto& name : names) {
+            const auto json = saved_json(name), clip = saved_clip(name);
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(json, error) || !std::filesystem::is_regular_file(clip, error)) continue;
+            files.emplace_back(name + "/" + name + ".json", read_whole(json));
+            files.emplace_back(name + "/" + name + ".clip", read_whole(clip));
+            ++animations;
+        }
+        if (!animations) throw std::runtime_error("There is nothing saved in this pack to export.");
+        files.emplace_back("README.txt", share_readme);
+        const auto zip = folder / L"exports" / (file_safe(title) + ".zip");
+        write_whole(zip, stored_zip(files));
+        message = std::format("Exported {} ({} animation{}) to ReSkate.Tricks\\exports\\{}.zip.", title, animations, animations == 1 ? "" : "s", file_safe(title));
+        s.status = message;
+        logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
+        publish_locked(s);
+        return true;
+    } catch (const std::exception& e) {
+        message = std::string("Export failed: ") + e.what();
+        s.status = message;
+        publish_locked(s);
+        return false;
+    }
+}
+
+bool import_packs(std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto folder = library_folder();
+    const auto inbox = folder / L"import";
+    std::error_code error;
+    std::filesystem::create_directories(inbox, error);
+    std::vector<std::filesystem::path> zips;
+    for (const auto& entry : std::filesystem::directory_iterator(inbox, error))
+        if (entry.is_regular_file(error) && entry.path().extension() == L".zip") zips.push_back(entry.path());
+    if (zips.empty()) {
+        message = "Nothing to import: put a pack's .zip in ReSkate.Tricks\\import first.";
+        s.status = message;
+        publish_locked(s);
+        return false;
+    }
+    std::size_t animations = 0, packs = 0, renamed = 0;
+    std::vector<std::string> problems;
+    for (const auto& path : zips) {
+        try {
+            const auto data = read_whole(path);
+            mz_zip_archive zip{};
+            if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) throw std::runtime_error("not a zip file");
+            struct Closer { mz_zip_archive* z; ~Closer() { mz_zip_reader_end(z); } } closer{&zip};
+            // Read it all first; nothing is written unless every file in it checks out.
+            std::map<std::string, std::pair<std::string, std::string>> found; // animation -> json, clip
+            std::vector<std::pair<std::string, std::string>> pack_files;     // pack name -> json
+            const auto count = mz_zip_reader_get_num_files(&zip);
+            for (mz_uint i = 0; i < count; ++i) {
+                mz_zip_archive_file_stat stat{};
+                if (!mz_zip_reader_file_stat(&zip, i, &stat) || stat.m_is_directory) continue;
+                std::string name = stat.m_filename;
+                std::replace(name.begin(), name.end(), '\\', '/');
+                const auto slash = name.rfind('/');
+                const std::string file = slash == std::string::npos ? name : name.substr(slash + 1);
+                const std::string dir = slash == std::string::npos ? "" : name.substr(0, slash);
+                const auto dot = file.rfind('.');
+                if (dot == std::string::npos || stat.m_uncomp_size > 64ull * 1024 * 1024) continue;
+                const std::string stem = file.substr(0, dot), ext = file.substr(dot);
+                if (ext != ".json" && ext != ".clip") continue;
+                if (stem != file_safe(stem)) continue; // only the names the studio itself makes
+                size_t size = 0;
+                void* bytes = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+                if (!bytes) throw std::runtime_error("could not unpack " + name);
+                std::string content(static_cast<const char*>(bytes), size);
+                mz_free(bytes);
+                const auto last_dir = dir.substr(dir.rfind('/') == std::string::npos ? 0 : dir.rfind('/') + 1);
+                if (last_dir == "presets" && ext == ".json") pack_files.emplace_back(stem, std::move(content));
+                else if (ext == ".json") found[stem].first = std::move(content);
+                else found[stem].second = std::move(content);
+            }
+            // Check every animation before writing any.
+            for (const auto& [name, pair] : found) {
+                if (pair.first.empty() || pair.second.empty()) throw std::runtime_error(name + " is missing its .json or .clip");
+                (void)from_json(pair.first);
+                const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
+                if (clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
+            }
+            // A name already taken by a different animation gets the next free variation, and the pack
+            // that names it is told.
+            std::map<std::string, std::string> rename;
+            for (const auto& [name, pair] : found) {
+                std::string target = name;
+                for (unsigned n = 2;; ++n) {
+                    const auto json = saved_json(target), clip = saved_clip(target);
+                    if (!std::filesystem::exists(json, error)) break;
+                    if (read_whole(json) == pair.first && std::filesystem::exists(clip, error) && read_whole(clip) == pair.second) break; // already here
+                    target = variation_name(name, n);
+                }
+                rename[name] = target;
+            }
+            for (const auto& [name, pair] : found) {
+                const auto& target = rename[name];
+                if (target != name) ++renamed;
+                auto json = pair.first;
+                if (target != name) {
+                    auto animation = from_json(json);
+                    animation.name = target;
+                    animation.clip.times = {0, clip_from_bytes(std::vector<std::uint8_t>(pair.second.begin(), pair.second.end())).duration()};
+                    json = to_json(animation);
+                }
+                write_whole(folder / target / (target + ".json"), json);
+                write_whole(folder / target / (target + ".clip"), pair.second);
+                upgrade_saved(folder / target / (target + ".json"));
+                ++animations;
+            }
+            for (auto& [pack_name, text] : pack_files) {
+                auto pack = read_pack_json(Json::parse(text));
+                for (auto& [slot, list] : pack.slots)
+                    for (auto& name : list)
+                        if (const auto r = rename.find(name); r != rename.end()) name = r->second;
+                std::string target = file_safe(pack_name);
+                for (unsigned n = 2; std::filesystem::exists(folder / L"presets" / (target + ".json"), error); ++n) {
+                    if (read_whole(folder / L"presets" / (target + ".json")) == pack_json(pack).dump(2)) break;
+                    target = variation_name(file_safe(pack_name), n);
+                }
+                pack.name = target;
+                write_preset_file(folder / L"presets" / (target + ".json"), pack_json(pack).dump(2));
+                ++packs;
+            }
+            // Out of the way, so the next Import does not take it in again.
+            std::filesystem::create_directories(inbox / L"imported", error);
+            std::filesystem::rename(path, inbox / L"imported" / path.filename(), error);
+            if (error) std::filesystem::remove(path, error);
+        } catch (const std::exception& e) {
+            problems.push_back(path.filename().string() + ": " + e.what());
+        }
+    }
+    s.tricks_read = false;
+    read_library_locked(s);
+    message = std::format("Imported {} animation{} and {} pack{}{}.", animations, animations == 1 ? "" : "s", packs, packs == 1 ? "" : "s",
+                          renamed ? std::format(" ({} renamed: the name was taken)", renamed) : std::string{});
+    if (!problems.empty()) message += " Not imported: " + problems.front() + (problems.size() > 1 ? std::format(" and {} more", problems.size() - 1) : "");
+    s.status = message;
+    logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
+    publish_locked(s);
+    return problems.empty();
+}
 bool use_preset_pack(const std::string& name, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -4198,6 +4458,8 @@ bool save(std::string& message) {
         std::filesystem::create_directories(folder);
         Animation full = s.edits;
         full.name = name;
+        full.upgraded = current_upgrade;
+        full.board_nose_forward = true;
         full.clip.times = {0, s.clip->duration()};
         full.clip.takeoff = s.clip->takeoff;
         full.clip.landing = s.clip->landing;

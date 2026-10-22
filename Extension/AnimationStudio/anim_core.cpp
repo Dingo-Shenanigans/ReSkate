@@ -412,6 +412,44 @@ std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored) {
     for (std::size_t j = skeleton_joints; j < pose.size(); ++j) out[j] = pose[j];
     return out;
 }
+std::uint32_t crc32_of(const std::string& data) noexcept {
+    static const auto table = [] {
+        std::array<std::uint32_t, 256> t{};
+        for (std::uint32_t i = 0; i < 256; ++i) {
+            std::uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+        return t;
+    }();
+    std::uint32_t c = 0xFFFFFFFFu;
+    for (const unsigned char b : data) c = table[(c ^ b) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+// A zip with every file stored as it is (no compression): any unzip program, and Import, read it.
+std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& files) {
+    std::string out, central;
+    const auto u16 = [](std::string& s, std::uint16_t v) { s.push_back(static_cast<char>(v & 0xFF)); s.push_back(static_cast<char>(v >> 8)); };
+    const auto u32 = [&](std::string& s, std::uint32_t v) { u16(s, static_cast<std::uint16_t>(v & 0xFFFF)); u16(s, static_cast<std::uint16_t>(v >> 16)); };
+    for (const auto& [name, data] : files) {
+        const auto offset = static_cast<std::uint32_t>(out.size());
+        const auto crc = crc32_of(data);
+        const auto size = static_cast<std::uint32_t>(data.size());
+        u32(out, 0x04034b50u); u16(out, 20); u16(out, 0x0800); u16(out, 0); u16(out, 0); u16(out, 0x21);
+        u32(out, crc); u32(out, size); u32(out, size); u16(out, static_cast<std::uint16_t>(name.size())); u16(out, 0);
+        out += name;
+        out += data;
+        u32(central, 0x02014b50u); u16(central, 20); u16(central, 20); u16(central, 0x0800); u16(central, 0); u16(central, 0); u16(central, 0x21);
+        u32(central, crc); u32(central, size); u32(central, size); u16(central, static_cast<std::uint16_t>(name.size())); u16(central, 0); u16(central, 0);
+        u16(central, 0); u16(central, 0); u32(central, 0); u32(central, offset);
+        central += name;
+    }
+    const auto at = static_cast<std::uint32_t>(out.size());
+    out += central;
+    u32(out, 0x06054b50u); u16(out, 0); u16(out, 0); u16(out, static_cast<std::uint16_t>(files.size())); u16(out, static_cast<std::uint16_t>(files.size()));
+    u32(out, static_cast<std::uint32_t>(central.size())); u32(out, at); u16(out, 0);
+    return out;
+}
 std::optional<bool> clip_leads_right(const Clip& clip) {
     if (clip.empty() || clip.joints < skeleton_joints) return std::nullopt;
     const float before_pop = clip.takeoff > 0.25f ? clip.takeoff - 0.2f : 0.0f;
@@ -734,6 +772,8 @@ std::string to_json(const Animation& animation) {
                           {"rig", animation.source.rig}, {"board_frame", animation.source.board_frame},
                           {"position_codec", animation.source.position_codec}};
     root["entry"] = animation.entry;
+    if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
+    if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     root["start"] = animation.start;
     root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
@@ -777,6 +817,9 @@ Animation from_json(std::string_view text) {
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
     result.entry = root.value("entry", "ground");
+    result.upgraded = root.value("upgraded", "");
+    require(result.upgraded.size() < 64, "bad upgrade mark");
+    result.board_nose_forward = root.value("board_keys", "") == "nose-forward";
     require(result.entry == "ground" || result.entry == "rail" || result.entry == "unknown", "bad trick entry");
     if (root.contains("source")) {
         const auto& source = root.at("source");

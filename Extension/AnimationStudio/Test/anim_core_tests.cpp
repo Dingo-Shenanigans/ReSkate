@@ -1294,6 +1294,21 @@ int main(int argc, char** argv) {
                       "Every studio parent must match the actual native AntSkeletonAsset");
             std::cout << "Native animation hierarchy: all 395 parents match\n";
         }
+        if (argc == 3 && std::string_view(argv[1]) == "--roundtrip") {
+            std::ifstream in(argv[2], std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            auto animation = from_json(text);
+            std::cout << to_json(animation);
+            return 0;
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--zip-test") {
+            const std::string clip(70000, '\x01');
+            const auto zip = stored_zip({{"presets/Steezy.json", "{\"name\": \"Steezy\"}"}, {"Kick/Kick.json", "{}"}, {"Kick/Kick.clip", clip}, {"README.txt", "hi"}});
+            std::ofstream out(argv[2], std::ios::binary);
+            out.write(zip.data(), static_cast<std::streamsize>(zip.size()));
+            std::cout << "crc of 'hello': " << std::hex << crc32_of("hello") << "\n";
+            return 0;
+        }
         if (argc == 3 && std::string_view(argv[1]) == "--limits-check") {
             // How often the game's own clips would be limited, per joint (should be about 1% or less).
             const std::filesystem::path folder(argv[2]);

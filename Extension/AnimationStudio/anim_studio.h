@@ -232,6 +232,12 @@ bool save_preset_copy(std::string& message);
 bool activate_preset(const std::string& name, std::string& message);
 bool create_preset_pack(std::string& message, const std::string& name = {});
 bool use_preset_pack(const std::string& name, std::string& message);
+// The active pack (or every saved animation, with none) as ReSkate.Tricks/exports/<pack>.zip, laid out like
+// the tricks folder so it can be unzipped straight into it.
+bool export_pack(std::string& message);
+// Takes in every .zip in ReSkate.Tricks/import: checked first, names already taken are given the next
+// variation, older animations upgraded, and the zip moved to import/imported.
+bool import_packs(std::string& message);
 bool set_pack_alternation(bool alternate, std::string& message);
 bool include_preset(const std::string& name, bool included, std::string& message);
 bool load(const std::string& name, std::string& message);

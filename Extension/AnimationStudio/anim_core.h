@@ -150,6 +150,11 @@ struct Animation {
     // clip's end). Moving either bracket retimes unlocked tracks into the new window.
     float start{0};
     float end{-1};
+    // Which upgrade this file has had (empty: made before upgrades). Older builds ignore it.
+    std::string upgraded;
+    // The board's keys are in the board's nose-forward frame (every save since 2026-10-22). Older files
+    // made on a clip whose board points backwards had them the other way round; the upgrade turns them.
+    bool board_nose_forward{};
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;
@@ -184,6 +189,9 @@ std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored);
 // (goofy) layout - the right foot leads - and with the left foot there it is mirrored - the left leads.
 // Taken before the pop, feet on the board. Empty when the feet are too close together to tell.
 std::optional<bool> clip_leads_right(const Clip& clip);
+// A zip with every file stored as it is (no compression), names as given (use '/'): for sharing packs.
+std::uint32_t crc32_of(const std::string& data) noexcept;
+std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& files);
 
 // ---- joint limits ----------------------------------------------------------------------------------
 // How far each editable joint may turn, measured from the game's own animation (skater_joint_limits.h):
