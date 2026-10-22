@@ -93,6 +93,7 @@ struct CustomTrick {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
     bool goofy{};      // recorded goofy
+    bool leads_right{}; // the foot it leads with, read from the clip itself (clip_leads_right), not its label
 };
 // Dev only: true plays the other stance's variant when no variant matches the stance, as before
 // 2026-10-20. Keep it false while the mirroring between stances is in development.
@@ -672,7 +673,14 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
             std::string trick;
             for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             const bool goofy = authored_goofy(*animation);
-            tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy});
+            // Its lead foot from the clip, its label only when the clip cannot tell: labels have been wrong
+            // (one made with the right foot leading was labelled regular normal and played on the wrong leg).
+            const bool label_right = leads_right(goofy, animation->switch_stance.value_or(false));
+            const bool right = clip_leads_right(*clip).value_or(label_right);
+            if (right != label_right)
+                logging::log(Level::info, Channel::skater, "Animation Studio: {} is labelled as leading with the {} foot but leads with the {}; going by the clip.",
+                             entry.stem().string(), label_right ? "right" : "left", right ? "right" : "left");
+            tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right});
         } catch (const std::exception& e) {
             logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
         }
@@ -2283,7 +2291,8 @@ void on_animation(std::uintptr_t component) noexcept {
             // the casual stance he waits in, which is one of them. A recording is labelled from the game's
             // stance setting as it happens, so its label is true and is read as it is - reading every clip
             // backwards, as this did, turned a regular skater's own recordings round.
-            const bool clip_stands_goofy = !has_trick || authored_goofy(shown_edits); // the casual stance is a game clip
+            // Which way round the clip stands, from the clip itself: goofy is the right foot leading.
+            const bool clip_stands_goofy = clip_leads_right(*shown).value_or(!has_trick || authored_goofy(shown_edits));
             mirrored_body = snap->goofy != clip_stands_goofy;
             if (mirrored_body) {
                 l.mirror_scratch.assign(l.pose.begin(), l.pose.end());
@@ -2414,9 +2423,10 @@ void on_animation(std::uintptr_t component) noexcept {
                 // By front foot: a trick is the same trick whichever way round the skater stands, and the
                 // one that already leads with the right foot is preferred so nothing is mirrored that does
                 // not have to be. Off, it is the old rule: the exact stance and switch it was recorded in.
+                const bool live_right = leads_right(l.playback_goofy, l.playback_switch.value_or(false));
                 const auto compatible = [&](const CustomTrick& t) {
                     return l.playback_front_foot
-                               ? playback_lead_matches(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch)
+                               ? (l.playback_switch.has_value() && t.leads_right == live_right)
                                : playback_stance_compatible(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch);
                 };
                 int best_pop = 3;
@@ -2457,10 +2467,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (found) l.episode.select(at);
                     l.game_trick = found;
                     if (found) {
-                        const bool lead_matches = playback_lead_matches(found->goofy, found->edits->switch_stance, l.playback_goofy, l.playback_switch);
+                        const bool lead_matches = found->leads_right == leads_right(l.playback_goofy, l.playback_switch.value_or(false));
                         logging::log(Level::info, Channel::skater,
-                                     "Animation Studio: {} recorded {} {}, played {} {} - leading with the {} foot, {}.", found->name,
-                                     found->goofy ? "goofy" : "regular", found->edits->switch_stance.value_or(false) ? "switch" : "normal",
+                                     "Animation Studio: {} leads with the {} foot (from the clip), played {} {} - leading with the {} foot, {}.", found->name,
+                                     found->leads_right ? "right" : "left",
                                      l.playback_goofy ? "goofy" : "regular", l.playback_switch.value_or(false) ? "switch" : "normal",
                                      leads_right(l.playback_goofy, l.playback_switch.value_or(false)) ? "right" : "left",
                                      !l.playback_front_foot ? "exact stance" : lead_matches ? "as recorded" : "mirrored");
@@ -2475,7 +2485,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // The other foot leading means the same trick, the other way round: the keys are mirrored
                 // so the front foot does what the front foot did. Made once and kept.
                 const bool mirror_it = l.playback_front_foot && l.playback_switch.has_value() &&
-                                       !playback_lead_matches(trick->goofy, trick->edits->switch_stance, l.playback_goofy, l.playback_switch);
+                                       trick->leads_right != leads_right(l.playback_goofy, l.playback_switch.value_or(false));
                 auto keys = trick->edits;
                 if (mirror_it) {
                     auto found = l.mirrored_edits.find(trick->edits.get());

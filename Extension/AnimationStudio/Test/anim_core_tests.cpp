@@ -1192,6 +1192,29 @@ void joints_stay_in_their_range() {
     const auto twisted = normalised(multiply(ref, axis_angle(axis, 1.2f)));
     check(angle_between(limit_rotation(9, twisted), ref) < 0.2f, "A knee twisted round is turned back");
 }
+// The lead foot comes from the clip: right foot on the skater's +X side is the game's own goofy layout, and
+// mirroring the clip the game's way turns it into the left foot leading.
+void lead_foot_is_read_from_the_clip() {
+    Clip clip;
+    clip.joints = skeleton_joints;
+    clip.times = {0.0f};
+    clip.frames.assign(skeleton_joints, Joint{});
+    // Feet hung straight off the placement, the right one on +X, the left on -X.
+    clip.frames[10].position = {0.15f, -0.8f, 0.05f};
+    clip.frames[343].position = {-0.2f, -0.8f, 0.07f};
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+        if (j == 10 || j == 343 || j == placement_joint) continue;
+        clip.frames[j].position = {};
+    }
+    // Make the feet children of the placement for the test by giving their chain no offsets of its own.
+    const auto right = clip_leads_right(clip);
+    check(right.has_value() && *right, "Right foot on +X: the clip leads with the right foot");
+    const auto mirrored = mirror_body_clip(clip);
+    const auto left = clip_leads_right(mirrored);
+    check(left.has_value() && !*left, "Mirrored the game's way it leads with the left");
+    clip.frames[343].position = {0.1f, -0.8f, 0.07f};
+    check(!clip_leads_right(clip).has_value(), "Feet together cannot tell");
+}
 int main(int argc, char** argv) {
     try {
         timing_and_stance_edge_cases();
@@ -1211,6 +1234,7 @@ int main(int argc, char** argv) {
         pieces_are_recognised_by_the_pose();
         bent_joints_match_the_studio();
         joints_stay_in_their_range();
+        lead_foot_is_read_from_the_clip();
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();

@@ -179,6 +179,12 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
 // The clip's pose at `seconds`, mirrored the game's way when `mirrored` (for apply_authored_edit_layer).
 std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored);
 
+// Which foot a clip leads with, read from the clip itself rather than from its label: the game mirrors the
+// body in the skater's own frame, so with the right foot on that frame's +X side it is the game's own
+// (goofy) layout - the right foot leads - and with the left foot there it is mirrored - the left leads.
+// Taken before the pop, feet on the board. Empty when the feet are too close together to tell.
+std::optional<bool> clip_leads_right(const Clip& clip);
+
 // ---- joint limits ----------------------------------------------------------------------------------
 // How far each editable joint may turn, measured from the game's own animation (skater_joint_limits.h):
 // a twist range about the bone and how far the bone may swing in each direction. A knee or an elbow is a

@@ -412,6 +412,20 @@ std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored) {
     for (std::size_t j = skeleton_joints; j < pose.size(); ++j) out[j] = pose[j];
     return out;
 }
+std::optional<bool> clip_leads_right(const Clip& clip) {
+    if (clip.empty() || clip.joints < skeleton_joints) return std::nullopt;
+    const float before_pop = clip.takeoff > 0.25f ? clip.takeoff - 0.2f : 0.0f;
+    std::vector<Joint> pose(clip.joints);
+    clip.sample(before_pop, pose);
+    const auto placed = world(pose, placement_joint);
+    const auto side = [&](std::uint16_t foot) {
+        const auto w = world(pose, foot).position;
+        return rotate(conjugate(placed.rotation), Vec3{w[0] - placed.position[0], w[1] - placed.position[1], w[2] - placed.position[2]})[0];
+    };
+    const float apart = side(10) - side(343); // right foot's x less the left foot's
+    if (!std::isfinite(apart) || std::abs(apart) < 0.1f) return std::nullopt;
+    return apart > 0;
+}
 namespace {
 const JointLimit* limit_of(std::uint16_t joint) noexcept {
     for (const auto& l : joint_limits)
