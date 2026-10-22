@@ -689,6 +689,11 @@ std::vector<std::string> pack_names_on() {
 }
 std::filesystem::path pack_file(const std::string& name) { return library_folder() / L"presets" / (name + ".json"); }
 std::filesystem::path pack_thumbnail_file(const std::string& name) { return library_folder() / L"presets" / (name + ".png"); }
+// A path as UTF-8 (path::string() is the ANSI code page, which throws on a name it cannot spell).
+std::string utf8_path(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
 // Where packs are exported to and imported from: as set in SETTINGS, or ReSkate.Tricks\exports and \import.
 std::filesystem::path pack_export_folder(const State& s) {
     if (!s.export_folder.empty()) return std::filesystem::path(std::u8string(s.export_folder.begin(), s.export_folder.end()));
@@ -3963,6 +3968,9 @@ bool camera(std::array<float, 16>& matrix) {
 
 // ---- the overlay -----------------------------------------------------------------------------------
 bool is_open() noexcept { return open_flag.load(std::memory_order_acquire); }
+std::atomic<float> fov_wanted{0};
+void set_wanted_fov(float degrees) noexcept { fov_wanted.store(std::isfinite(degrees) && degrees > 10 && degrees < 150 ? degrees : 0.0f); }
+float wanted_fov() noexcept { return is_open() ? fov_wanted.load() : 0.0f; }
 bool room_wanted() noexcept {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -4038,6 +4046,7 @@ View view() {
     v.failure = s.failure;
     v.camera = s.camera;
     v.fov = s.fov;
+    v.base_yaw = s.base_yaw_valid ? s.base_yaw : 0.0f;
     v.camera_valid = s.camera_valid;
     v.name = s.edits.name;
     v.trick = s.edits.trick;
@@ -4095,7 +4104,7 @@ View view() {
         v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, draft != s.pack_drafts.end(), pack.members(), pack});
         std::error_code error;
         if (const auto picture = pack_thumbnail_file(saved.name); std::filesystem::is_regular_file(picture, error)) {
-            v.packs.back().thumbnail = picture.string();
+            v.packs.back().thumbnail = utf8_path(picture);
             v.packs.back().thumbnail_stamp = static_cast<std::int64_t>(std::filesystem::last_write_time(picture, error).time_since_epoch().count());
         }
     }
@@ -4103,8 +4112,9 @@ View view() {
     v.conflicts = s.conflicts;
     v.export_folder = s.export_folder;
     v.import_folder = s.import_folder;
-    v.export_path = pack_export_folder(s).string();
-    v.import_path = pack_import_folder(s).string();
+    v.export_path = utf8_path(pack_export_folder(s));
+    v.import_path = utf8_path(pack_import_folder(s));
+    v.library_path = utf8_path(library_folder());
     v.test_trick = s.test_trick;
     v.test_returned = s.test_returned;
     v.your_name = s.your_name;
@@ -5235,12 +5245,12 @@ bool set_conflict_choice(const std::string& slot, const std::string& pack, std::
     std::lock_guard lock(s.mutex);
     try {
         auto choices = read_conflict_choices();
-        if (pack.empty()) choices.erase(slot);
-        else choices[slot] = pack;
+        if (pack.empty()) choices.erase(slot); // not decided: the studio asks again
+        else choices[slot] = pack;          // "*" at random, or the pack whose plays it
         Json root = Json::object();
         for (const auto& [key, choice] : choices) root[key] = choice;
         write_preset_file(conflicts_file(), root.dump(2));
-        message = pack.empty() ? "Those play at random, a different one each time." : pack + "'s plays it.";
+        message = pack.empty() || pack == "*" ? "Those play at random, a different one each time." : pack + "'s plays it.";
         packs_changed_locked(s, message);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
@@ -5370,7 +5380,7 @@ bool export_pack(const std::string& pack_name, std::string& message) {
         const auto zip = out_folder / (file_safe(title) + ".zip");
         write_whole(zip, stored_zip(files));
         message = std::format("{}{} ({} animation{}) to {}.", saved_first.empty() ? "Exported " : saved_first, title,
-                              animations, animations == 1 ? "" : "s", zip.string());
+                              animations, animations == 1 ? "" : "s", utf8_path(zip));
         ShellExecuteW(nullptr, L"open", out_folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL); // there it is
         if (!saved_first.empty()) read_library_locked(s);
         s.status = message;
@@ -5396,7 +5406,7 @@ bool import_packs(std::string& message) {
     for (const auto& entry : std::filesystem::directory_iterator(inbox, error))
         if (entry.is_regular_file(error) && entry.path().extension() == L".zip") zips.push_back(entry.path());
     if (zips.empty()) {
-        message = "Nothing to import: put a pack's .zip in " + inbox.string() + " first.";
+        message = "Nothing to import: put a pack's .zip in " + utf8_path(inbox) + " first.";
         s.status = message;
         publish_locked(s);
         return false;
@@ -6031,6 +6041,14 @@ void rename(const std::string& name) {
     s.edits.name = name;
     s.dirty = true;
     ++s.revision;
+}
+void set_your_name(const std::string& name) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.your_name == name.substr(0, 48)) return;
+    s.your_name = name.substr(0, 48);
+    save_settings_locked(s);
+    publish_locked(s, false);
 }
 void set_author(const std::string& author) {
     auto& s = state();

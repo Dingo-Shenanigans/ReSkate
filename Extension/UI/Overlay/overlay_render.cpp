@@ -16,6 +16,7 @@
 #include <imgui_internal.h>
 
 namespace dingosdk::overlay::detail {
+void studio_frame_lost() noexcept; // the studio's frame texture is gone with the device (below)
 
 // ImGui draws into the swapchain's back buffer, so its display is the buffer, in the buffer's
 // pixels. The Win32 backend sizes the display by the window's client area and places the mouse in
@@ -82,6 +83,10 @@ void destroy_graphics() {
     menu_map_pixels_lost();
     s.mod_icon_texture.Reset(); s.mod_icon_upload.Reset();
     mod_icon_lost();
+    s.studio_pack_texture.Reset(); s.studio_pack_upload.Reset();
+    studio_pack_pixels_lost();
+    s.studio_frame.Reset();
+    studio_frame_lost();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -289,7 +294,9 @@ bool setup_graphics() {
         return false;
     }
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap.NumDescriptors = 4; // ImGui's atlas, the map download card's icon, the menu's map pictures, an item's mod icon (upload_image)
+    // ImGui's atlas, the map download card's icon, the menu's map pictures, an item's mod icon, the studio's pack pictures
+    // (upload_image), and the game's frame for the studio's fisheye (copy_studio_frame)
+    heap.NumDescriptors = 6;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     graphics_result = s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&s.srvs));
     if (FAILED(graphics_result)) {
@@ -687,6 +694,92 @@ void upload_menu_map_image(State& s) {
     if (const auto id = upload_image(s, pixels, 2, s.menu_map_texture, s.menu_map_upload)) menu_map_pixels_uploaded(id, pixels.serial);
 }
 
+// The Animator Studio's pack pictures (studio_pack_pictures.cpp), when a new set is waiting.
+void upload_studio_pack_image(State& s) {
+    if (!s.device || !s.srvs) return;
+    if (s.studio_pack_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+    CardPixels pixels;
+    if (!take_studio_pack_pixels(pixels) || pixels.rgba.empty()) return;
+    if (const auto id = upload_image(s, pixels, 4, s.studio_pack_texture, s.studio_pack_upload)) studio_pack_pixels_uploaded(id, pixels.serial);
+}
+
+// The game's finished frame for the Animator Studio's fisheye: wanted (asked for each frame it is drawn) and where it is.
+std::atomic<bool> studio_frame_asked{};
+std::atomic<ImTextureID> studio_frame_id{};
+void studio_frame_lost() noexcept { studio_frame_id.store(ImTextureID{}); }
+// Copies the back buffer as the game left it into the studio's frame texture, ahead of the overlay's own draws, so the
+// studio can draw it again bent. Made, or made again at a new size, only once the frames before have finished with it.
+void copy_studio_frame(State& s, Frame& frame) {
+    if (!s.device || !s.srvs || !frame.buffer) return;
+    const auto desc = frame.buffer->GetDesc();
+    if (desc.SampleDesc.Count != 1 || desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    const bool fits = s.studio_frame && s.studio_frame_width == desc.Width && s.studio_frame_height == desc.Height && s.studio_frame_format == desc.Format;
+    if (!fits) {
+        if (s.studio_frame && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
+        studio_frame_id.store(ImTextureID{});
+        s.studio_frame.Reset();
+        D3D12_RESOURCE_DESC texture{};
+        texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texture.Width = desc.Width;
+        texture.Height = desc.Height;
+        texture.DepthOrArraySize = 1;
+        texture.MipLevels = 1;
+        texture.Format = desc.Format;
+        texture.SampleDesc.Count = 1;
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        if (FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                     IID_PPV_ARGS(&s.studio_frame))))
+            return;
+        const auto step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        auto cpu = s.srvs->GetCPUDescriptorHandleForHeapStart();
+        auto gpu = s.srvs->GetGPUDescriptorHandleForHeapStart();
+        cpu.ptr += std::size_t{step} * 5;
+        gpu.ptr += std::uint64_t{step} * 5;
+        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = desc.Format;
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Texture2D.MipLevels = 1;
+        s.device->CreateShaderResourceView(s.studio_frame.Get(), &view, cpu);
+        s.studio_frame_width = desc.Width;
+        s.studio_frame_height = desc.Height;
+        s.studio_frame_format = desc.Format;
+        s.studio_frame_waiting_copy = true;
+        studio_frame_id.store(static_cast<ImTextureID>(gpu.ptr));
+    }
+    D3D12_RESOURCE_BARRIER before[2]{};
+    UINT count = 0;
+    before[count].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    before[count].Transition.pResource = frame.buffer.Get();
+    before[count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    before[count].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    before[count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    ++count;
+    if (!s.studio_frame_waiting_copy) {
+        before[count].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        before[count].Transition.pResource = s.studio_frame.Get();
+        before[count].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        before[count].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        before[count].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        ++count;
+    }
+    s.commands->ResourceBarrier(count, before);
+    s.commands->CopyResource(s.studio_frame.Get(), frame.buffer.Get());
+    D3D12_RESOURCE_BARRIER after[2]{};
+    after[0] = before[0];
+    std::swap(after[0].Transition.StateBefore, after[0].Transition.StateAfter);
+    after[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    after[1].Transition.pResource = s.studio_frame.Get();
+    after[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    after[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    after[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    s.commands->ResourceBarrier(2, after);
+    s.studio_frame_waiting_copy = false;
+}
+void want_studio_frame() noexcept { studio_frame_asked.store(true); }
+ImTextureID studio_frame_texture() noexcept { return studio_frame_id.load(); }
+
 // The item card's mod icon (item_browser_overlay.cpp), when another is waiting.
 void upload_mod_icon(State& s) {
     if (!s.device || !s.srvs) return;
@@ -855,6 +948,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     upload_card_image(s);
     upload_menu_map_image(s);
     upload_mod_icon(s);
+    upload_studio_pack_image(s);
+    if (studio_frame_asked.exchange(false)) copy_studio_frame(s, frame);
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = frame.buffer.Get();

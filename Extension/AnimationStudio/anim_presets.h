@@ -23,14 +23,14 @@ struct Preset {
     // The pop it plays on, as the pack that has it on says (its Pack rules); empty when no pack says. "" any.
     std::optional<std::string> pack_pop;
 };
-// What to do with a trick and pop that more than one pack that is on has: "" play any of them at random, attempt
-// by attempt; a pack's name: that pack's plays it. By slot (preset_slot).
+// What to do with a trick and pop that more than one pack that is on has: "*" (or nothing) play any of them at random,
+// attempt by attempt; a pack's name: that pack's plays it. By slot (preset_slot).
 using ConflictChoices = std::map<std::string, std::string>;
 // A trick and pop more than one pack that is on has, each with its own animation of it.
 struct PackConflict {
     std::string slot, trick, pop;
     std::vector<std::pair<std::string, std::vector<std::string>>> packs; // each pack and its animations of it
-    std::string choice; // as ConflictChoices says ("" at random)
+    std::string choice; // as ConflictChoices says: a pack's name, "*" at random, "" not decided yet (at random)
 };
 // A pack: saved animations grouped under a name, filed by trick and pop ("slots"). One is used at a time.
 // Where a pack has more than one of a trick and pop, that slot is Fixed - its first one plays - or

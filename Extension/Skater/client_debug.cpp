@@ -334,17 +334,19 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     trial.camera_transform(camera.identity.camera, &next);
     debug.flight_matrix = next;
     debug.flight_ready = true;
-    // Written every tick: the camera may refresh its FOV from its own settings.
+    // Written every tick: the camera may refresh its FOV from its own settings. The Animator Studio's own (FILMER's
+    // fisheye) goes over the free camera's while it wants one, and the camera's is put back when it does not.
+    const float studio_fov = debug.animation_studio ? anim_studio::wanted_fov() : 0.0f;
     if (debug.first_person && debug.first_person_fov > 0)
         (void)first_person_write_fov(camera.identity.camera, debug.first_person_fov);
-    else if (!debug.first_person && debug.free_camera_fov > 0) {
+    else if (!debug.first_person && (studio_fov > 0 || debug.free_camera_fov > 0)) {
         if (!debug.free_camera_saved_fov) {
             float current{};
             debug.free_camera_saved_fov = first_person_read(camera.identity.camera + camera_fov_offset, &current, 4) &&
                 std::isfinite(current) && current > 1.0f && current < 175.0f ? current : 0.0f;
         }
-        (void)first_person_write_fov(camera.identity.camera, debug.free_camera_fov);
-    }
+        (void)first_person_write_fov(camera.identity.camera, studio_fov > 0 ? studio_fov : debug.free_camera_fov);
+    } else if (debug.animation_studio && !debug.first_person && debug.free_camera_saved_fov > 0) free_camera_restore_fov(debug);
 }
 // ---- saved choices ("ReSkate.*" in the local profile)
 namespace saved {

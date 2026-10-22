@@ -50,6 +50,7 @@ struct View {
     std::array<float, 16> camera{};
     float fov{};
     bool camera_valid{};
+    float base_yaw{}; // the yaw the orbit's own is added to (the skater's facing when the studio opened)
     // The animation being edited.
     std::string name, trick, author;
     std::string source_kind, source_asset, entry;
@@ -95,7 +96,8 @@ struct View {
     std::vector<PackConflict> conflicts; // tricks more than one pack that is on has, and what plays them
     // Where packs are exported to and imported from: as set (SETTINGS > Packs), or "" for ReSkate.Tricks\exports and \import.
     std::string export_folder, import_folder;
-    std::string export_path, import_path; // and where that is, in full
+    std::string export_path, import_path; // and where that is, in full (UTF-8)
+    std::string library_path;             // ReSkate.Tricks itself (UTF-8)
     std::string test_trick;    // Test in game: the trick played in game until the studio opens again
     std::string test_returned; // back from testing it: the studio says something about it (clear_test_returned)
     std::vector<PackView> packs;
@@ -251,8 +253,8 @@ void redo();
 void new_animation();
 bool save(std::string& message);
 bool save_preset_copy(std::string& message);
-// Packs. One is used at a time (switching one on switches the others off); with none on, every saved
-// animation plays. Every change to a pack is saved at once and plays at once.
+// Packs. Any number can be on at once (a trick more than one has is chosen between: View::conflicts); with none
+// on, every saved animation plays. Every change to a pack is saved at once and plays at once.
 bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
 void open_pack(const std::string& name); // the pack open in PACKS; "" for the list of packs
 bool set_pack_on(const std::string& name, bool on, std::string& message);
@@ -272,7 +274,8 @@ bool set_pack_thumbnail(const std::string& pack, const std::string& png, std::st
 bool rename_pack(const std::string& from, const std::string& to, std::string& message);
 // Pack rules: the pop every trick in the pack plays on: "" each its own, "any", or "low", "mid" or "high" only.
 bool set_pack_pop_rule(const std::string& pack, const std::string& rule, std::string& message);
-// A trick more than one pack that is on has (its slot): "" play them at random, or the pack whose plays it.
+// A trick more than one pack that is on has (its slot): "*" play them at random, the name of the pack whose plays it, or
+// "" not decided (they play at random, and the studio asks).
 bool set_conflict_choice(const std::string& slot, const std::string& pack, std::string& message);
 // Where packs are exported to and imported from ("" the defaults); open_folder shows it in Explorer.
 void set_pack_folder(bool exporting, const std::string& path);
@@ -316,6 +319,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message);
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
 void set_author(const std::string& author); // whose trick it is, kept with it and shared with it
+void set_your_name(const std::string& name); // MADE BY for new recordings and packs, without touching the one open
 // Camera.
 void set_orbit(const Orbit& orbit);
 void focus_joint(std::uint16_t joint); // the orbit centres on it, or comes off it when it is on it already
@@ -326,6 +330,9 @@ void set_camera_follow(bool on);
 // How far above and right of the screen's middle the free area beside the menu has its middle, both
 // as shares of the screen's height: the camera aims so the skater sits there.
 void set_view_shift(float share, float right_share);
+// The camera's field of view the studio wants (FILMER's fisheye), in degrees; 0 leaves the game's own. Any thread.
+void set_wanted_fov(float degrees) noexcept;
+float wanted_fov() noexcept;
 
 // ---- the game side -------------------------------------------------------------------------------
 // Engine thread, every client tick with the local skater's animation component (0 when there is
