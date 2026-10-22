@@ -257,10 +257,16 @@ struct Options {
 };
 // False when another registration is busy.
 bool begin(std::string_view mode, std::uint32_t game, const Options& options);
+// Reposition the current host's waiting flag without setup/placement or a new queue.
+// Empty: queued, with a request id (at most 2^53-1). Completion is flag_restored
+// {game,x,y,z,yaw,request}; failure is flag_restore_failed {game,why,request}.
+// A refused request changes nothing. Native limits, flag art and settings are retained.
+std::string restore(std::string_view mode, std::uint32_t game, const Vec3& at, float yaw, std::uint64_t& request);
 struct State {
     bool owned{}, waiting{}, placing{}, busy{};
     std::string mode;
     std::uint32_t game{};
+    bool restoring{};
 };
 State state() noexcept;
 // The owner is done with it (refused, finished, cancelled): the registration goes.

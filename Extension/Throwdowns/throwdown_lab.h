@@ -74,6 +74,9 @@ bool queue_throwdown_add(std::uint32_t player, const std::string &series, std::u
 bool queue_throwdown_remove(std::uint32_t player) noexcept; // RemoveParticipantFromCommunityEvent as `player`
 bool queue_throwdown_start(const std::string &series, std::uint32_t mmid) noexcept;
 bool queue_throwdown_destroy(std::uint32_t mmid) noexcept;
+// Update only the pose of an owned waiting registration; preserve all other native parameters.
+bool queue_throwdown_move(std::uint64_t request, std::uint64_t world, std::uint32_t mmid,
+                         const std::array<float,3>& at, float yaw) noexcept;
 // `player`'s total in the running throwdown: its leaderboard row and the server's own
 // score list. False until the local client has opened this throwdown's leaderboard.
 bool queue_throwdown_score(std::uint32_t player, std::int32_t score) noexcept;

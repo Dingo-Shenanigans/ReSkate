@@ -162,7 +162,7 @@ constexpr std::array<std::uint32_t, 2> throwdown_score_graphs{0xac8e7dbc, 0x80fa
 struct Job {
     enum class Kind { ai, spawn, start, destroy, join, end_turn, score, remove, total, row, attempt, destroy_event,
                       criteria_attempt, onboarding_complete, challenge_start, challenge_slam, challenge_leave,
-                      beacon_move, beacon_remove } kind;
+                      beacon_move, beacon_remove, move_flag } kind;
     std::uint32_t uid{}, max_players{};
     std::string series;                            // spawn: mode when no placement is recorded
     std::string instance;                          // spawn: its flag's InstanceId (empty: the series' own)
@@ -178,6 +178,7 @@ struct Job {
     std::vector<std::uint8_t> placement, settings;
     std::array<std::uint8_t, 28> trick{}; // attempt (flag = landed)
     float spawn_yaw{};
+    std::uint64_t flag_world{}; // move_flag: bind the request to its registration's world
 };
 struct Lab {
     Address base{};
@@ -1096,6 +1097,28 @@ std::string run_job(const Job& job) {
         e.set_u32(field_mmid, mmid);
         e.send();
         return std::format("AddAIParticipantToCommunityEvent sent: player {:#x} into {} queue MMID {:#x}", job.uid, series, mmid);
+    }
+    case Job::Kind::move_flag: {
+        if (!job.position || !native_flag::restore_pending(job.token, job.flag_world, job.mmid)) return "Expired flag update discarded";
+        Instance e(type_of(event_update));
+        const auto p = find_field(e.type, field_params);
+        if (!p || p->kind != kind_struct) throw std::runtime_error("Flag update parameters are unavailable");
+        const auto at = e.value + p->offset;
+        StreamReader reader{job.placement}; restore_value(p->type, at, reader, 0);
+        if (reader.at != job.placement.size()) throw std::runtime_error("Flag parameter stream differs");
+        const auto spawn = find_field(p->type, field_spawn), teleport = find_field(p->type, field_teleport);
+        if (!spawn || spawn->size != 16 || !teleport || teleport->size != 12) throw std::runtime_error("Flag pose layout differs");
+        const auto& xyz = *job.position;
+        const std::array<float,4> pose{xyz[0], xyz[1], xyz[2], job.spawn_yaw};
+        std::memcpy(reinterpret_cast<void*>(at + spawn->offset), pose.data(), sizeof pose);
+        std::memcpy(reinterpret_cast<void*>(at + teleport->offset), xyz.data(), sizeof xyz);
+        e.set_u32(field_mmid, job.mmid);
+        // Recheck immediately before dispatch; do not reuse an old world's native queue id.
+        if (!native_flag::restore_dispatch(job.token, job.flag_world, job.mmid)) return "Retired flag update discarded";
+        e.send();
+        // Injected sends bypass observation. Report the exact successfully dispatched pose.
+        native_flag::restore_sent(job.token, job.flag_world, job.mmid);
+        return "Repositioned owned native flag without setup or placement";
     }
     case Job::Kind::spawn: {
         Instance e(type_of(event_debug_spawn));
@@ -2190,7 +2213,7 @@ void pump_throwdown_lab(Address vm) noexcept {
     profile_runtime::PreserveError preserve;
     // A relay spawn that fails here never reaches the server: the relay is told, so the copy
     // is dropped instead of waiting for an MMID that will not come.
-    std::uint64_t spawn_token{};
+    std::uint64_t spawn_token{}, restore_token{};
     try {
         if (realm() != client_realm) return;
         Job job{};
@@ -2200,9 +2223,11 @@ void pump_throwdown_lab(Address vm) noexcept {
             job = l.jobs.front(); l.jobs.pop_front();
             if (l.jobs.empty()) l.pending.store(false, std::memory_order_release);
         }
-        spawn_token = job.token;
+        if (job.kind == Job::Kind::move_flag) restore_token = job.token;
+        else spawn_token = job.token;
         const auto result = run_job(job);
         spawn_token = 0;
+        restore_token = 0;
         logging::log(logging::Level::info, logging::Channel::progression, "Throwdown lab: {}.", result);
     } catch (const std::exception& e) {
         logging::log(logging::Level::warning, logging::Channel::progression, "Throwdown lab: injection failed: {}", e.what());
@@ -2210,6 +2235,7 @@ void pump_throwdown_lab(Address vm) noexcept {
         logging::write(logging::Level::warning, logging::Channel::progression, "Throwdown lab: injection failed.");
     }
     if (spawn_token) throwdown_relay_spawned(spawn_token, 0, 0);
+    if (restore_token) native_flag::restore_failed(restore_token);
 }
 
 void throwdown_lab_before_level_transition(unsigned next) noexcept {
@@ -2333,6 +2359,23 @@ bool queue_custom_throwdown_flag(std::uint64_t token,std::uint32_t host,const st
         job.max_players=10; // A flag must never auto-start the Spot Battle donor.
         return queue_relay_job(std::move(job),event_debug_spawn);
     } catch(...) {return false;}
+}
+bool queue_throwdown_move(std::uint64_t request, std::uint64_t world, std::uint32_t mmid,
+                         const std::array<float,3>& at, float yaw) noexcept {
+    if (!native_flag::restore_pending(request, world, mmid) || !std::isfinite(yaw) || std::abs(yaw) > 100000 ||
+        !std::all_of(at.begin(), at.end(), [](float n) { return std::isfinite(n) && std::abs(n) < 100000; })) return false;
+    try {
+        Job job{Job::Kind::move_flag};
+        job.token = request; job.flag_world = world; job.mmid = mmid; job.position = at;
+        job.spawn_yaw = yaw * 3.14159265f / 180.f;
+        auto& l = lab();
+        {
+            std::lock_guard lock(l.mutex);
+            if (l.hosted_mmid != mmid || l.mmid != mmid || l.params.empty()) return false;
+            job.placement = l.params;
+        }
+        return queue_relay_job(std::move(job), event_update);
+    } catch (...) { return false; }
 }
 bool queue_throwdown_add(std::uint32_t player, const std::string& series, std::uint32_t mmid) noexcept {
     if (!player || !mmid) return false;

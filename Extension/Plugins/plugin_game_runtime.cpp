@@ -665,6 +665,9 @@ public:
         return throwdowns::kit::flag::begin(mode, game, options);
     }
     throwdowns::kit::flag::State throwdown_flag_state() override { return throwdowns::kit::flag::state(); }
+    std::string throwdown_flag_restore(std::string_view mode, std::uint32_t game, const Vec3& at, float yaw, std::uint64_t& request) override {
+        return throwdowns::kit::flag::restore(mode, game, at, yaw, request);
+    }
     // Only the plugin whose mode the registration is may let it go.
     void throwdown_flag_leave(std::string_view plugin) override {
         if (throwdowns::kit::flag::state().mode.starts_with(std::string(plugin) + "/")) throwdowns::kit::flag::leave();

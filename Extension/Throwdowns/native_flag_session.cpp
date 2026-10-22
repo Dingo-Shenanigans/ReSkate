@@ -30,6 +30,13 @@ struct Note {
     std::string mode, action;
     std::vector<std::string> args;
 };
+struct Restore {
+    std::uint64_t request{}, world{}, deadline{}, retry{};
+    std::uint32_t mmid{};
+    std::array<float,3> at{};
+    float yaw{};
+    bool queued{}, dispatching{};
+};
 struct Placement {
     std::mutex mutex;
     Step step{};
@@ -48,6 +55,8 @@ struct Placement {
     std::optional<std::array<float,3>> spawn;
     Facing facing=default_facing;
     std::optional<Request> pending; // opens once the previous registration's teardown finishes
+    std::optional<Restore> restore;
+    std::uint64_t restore_sequence{}; // never reset: an old job cannot claim a new registration
     std::string status;
     std::vector<Note> notes;
 };
@@ -77,6 +86,7 @@ void reset(Placement& p) {
     p.created = p.setup_seen = p.flag_seen = p.exited = p.cancelling = p.destroy_queued = p.destroyed = false;
     p.handed_off = p.match_seen = false;
     p.show_setup = p.native_entry = p.confirmed = p.owner_left = p.adopted = false;
+    p.restore.reset();
 }
 // The registration ends; its plugin hears flag_left unless it ended it itself.
 void retire(Placement& p) {
@@ -88,6 +98,7 @@ void to_cleanup(Placement& p, std::uint64_t now) {
     // Exit, but repeated leave notifications must not queue that same Exit again.
     if (p.step != Step::cleanup) p.sent = 0;
     p.cancelling = true; p.step = Step::cleanup; p.until = now + 15000;
+    p.restore.reset();
 }
 // Left before its setup was asked for (a plugin refusing its card at `open`): nothing of the game's
 // is open to back out of, so the registration just ends. An exit the game never takes stays
@@ -108,7 +119,12 @@ void open_request(Placement& p, const Request& r, std::uint64_t now) {
     p.status = r.options.setup_page ? "Opening the Throwdown setup..." : "Opening flag placement...";
 }
 bool waiting_card(const Placement& p) {
-    return p.step == Step::waiting && p.handed_off && p.spawn && p.mmid;
+    return p.step == Step::waiting && p.handed_off && p.spawn && p.mmid && !p.restore;
+}
+void fail_restore(Placement& p, std::string why) {
+    if (!p.restore) return;
+    note(p, "flag_restore_failed", {std::to_string(p.game), std::move(why), std::to_string(p.restore->request)});
+    p.restore.reset(); p.status.clear();
 }
 // Documents name their mode by the plugin's own id or the registered "<plugin>/<id>".
 bool same_mode(std::string_view registered, std::string_view named) {
@@ -325,6 +341,40 @@ void observe_destroyed(std::uint32_t mmid) noexcept {
     }
     if (p.step == Step::cleanup && p.mmid == mmid) { p.destroyed = true; p.changed = GetTickCount64(); }
 }
+bool restore_pending(std::uint64_t request, std::uint64_t world, std::uint32_t mmid) noexcept {
+    const auto live_world = current_world();
+    auto& p = placement(); std::lock_guard lock(p.mutex);
+    return p.restore && p.restore->request == request && p.restore->world == world && world == live_world &&
+        p.world == world && p.mmid == mmid && p.restore->mmid == mmid && p.step == Step::waiting &&
+        !p.adopted && !p.cancelling && !p.destroy_queued && GetTickCount64() < p.restore->deadline;
+}
+void restore_sent(std::uint64_t request, std::uint64_t world, std::uint32_t mmid) noexcept {
+    try {
+        const auto live_world = current_world();
+        FlushOnExit flush_notes;
+        auto& p = placement(); std::lock_guard lock(p.mutex);
+        if (!p.restore || !p.restore->dispatching || p.restore->request != request || p.world != world ||
+            p.world != live_world || p.mmid != mmid || p.step != Step::waiting || p.cancelling || p.destroy_queued) return;
+        const auto move = *p.restore;
+        p.spawn = move.at; p.facing = yaw_facing(move.yaw); p.restore.reset(); p.status.clear();
+        note(p, "flag_restored", {std::to_string(p.game), std::format("{}", move.at[0]), std::format("{}", move.at[1]),
+            std::format("{}", move.at[2]), std::format("{}", facing_yaw(p.facing)), std::to_string(request)});
+    } catch (...) {}
+}
+bool restore_dispatch(std::uint64_t request, std::uint64_t world, std::uint32_t mmid) noexcept {
+    if (!restore_pending(request, world, mmid)) return false;
+    auto& p = placement(); std::lock_guard lock(p.mutex);
+    if (!p.restore || p.restore->request != request || p.world != world || p.mmid != mmid || p.restore->dispatching) return false;
+    p.restore->dispatching = true;
+    return true;
+}
+void restore_failed(std::uint64_t request) noexcept {
+    try {
+        FlushOnExit flush_notes;
+        auto& p = placement(); std::lock_guard lock(p.mutex);
+        if (p.restore && p.restore->request == request) fail_restore(p, "The native flag update could not be sent.");
+    } catch (...) {}
+}
 void abandon() noexcept {
     {
         auto& p = placement(); std::lock_guard lock(p.mutex);
@@ -354,6 +404,7 @@ void tick(const menu_data::Context& c) {
     FlushOnExit flush_notes;
     std::string command; Step next{}; std::uint32_t destroy{};
     bool release{};
+    std::optional<Restore> move;
     {
         std::lock_guard lock(p.mutex);
         if (p.step == Step::idle || p.mode != owner) return;
@@ -372,6 +423,12 @@ void tick(const menu_data::Context& c) {
         }
         if (p.step == Step::flag && p.flag_seen) { p.step = Step::placing; p.until = now + 300000; p.status = "Place the starting flag."; }
         if (p.step == Step::waiting) {
+            if (p.restore) {
+                if (now >= p.restore->deadline && !p.restore->dispatching) fail_restore(p, "The native flag update timed out; the flag was kept.");
+                else if (!p.restore->queued && now >= p.restore->retry) {
+                    p.restore->queued = true; move = p.restore;
+                }
+            }
             // Keep the native registration alive: it owns the world flag, waiting notification,
             // and Start/Leave input prompts.
             if (!p.handed_off && p.spawn) {
@@ -388,8 +445,8 @@ void tick(const menu_data::Context& c) {
             if (waiting || playing) p.match_seen = true;
             // The waiting card gave way to the match HUD (not an editor's): the lobby flag goes, the
             // match stays.
-            if (p.handed_off && p.match_seen && p.mmid && !p.destroy_queued && playing && !editing && !waiting) destroy = p.mmid;
-            if ((p.match_seen && !waiting && !playing) || (p.handed_off && !p.match_seen && now >= p.until)) to_cleanup(p, now);
+            if (!p.restore && p.handed_off && p.match_seen && p.mmid && !p.destroy_queued && playing && !editing && !waiting) destroy = p.mmid;
+            if (!p.restore && ((p.match_seen && !waiting && !playing) || (p.handed_off && !p.match_seen && now >= p.until))) to_cleanup(p, now);
         }
         if (p.step == Step::setup && p.setup_seen && !p.show_setup && p.native_entry && now >= p.until) {
             // Back already performed the native navigation. Do not send an exit that could
@@ -428,6 +485,12 @@ void tick(const menu_data::Context& c) {
         }
     }
     if (release) release_native_flag_placeholder();
+    if (move && !queue_throwdown_move(move->request, move->world, move->mmid, move->at, move->yaw)) {
+        std::lock_guard lock(p.mutex);
+        if (p.restore && p.restore->request == move->request) {
+            p.restore->queued = false; p.restore->retry = now + 250;
+        }
+    }
     if (destroy && prepare_throwdown_injection() && queue_throwdown_destroy(destroy)) {
         std::lock_guard lock(p.mutex);
         if (p.mmid == destroy) p.destroy_queued = true;
@@ -462,7 +525,7 @@ bool begin(std::string_view mode, std::uint32_t game, const Options& options) {
         const auto now = GetTickCount64();
         Request request{std::string(mode), game, options, world};
         if (!options.setup_page && p.step == Step::waiting && p.mode == mode && p.game == game && p.world == world &&
-            p.handed_off && p.mmid && !p.destroy_queued) {
+            p.handed_off && p.mmid && !p.destroy_queued && !p.restore) {
             // Re-placing this mode's start flag needs a new native picker after the old
             // registration is destroyed. Never reuse its MMID.
             p.pending = std::move(request); p.owner_left = true; to_cleanup(p, now);
@@ -486,6 +549,25 @@ bool begin(std::string_view mode, std::uint32_t game, const Options& options) {
     if (accepted) multiplayer::prepare_throwdown_injection(); // prewarm cleanup before the player places the flag
     return accepted;
 }
+std::string restore(std::string_view mode, std::uint32_t game, const Vec3& at, float yaw, std::uint64_t& request) {
+    using namespace multiplayer::native_flag;
+    request = 0;
+    if (mode.empty() || !game || !std::isfinite(yaw) || std::abs(yaw) > 100000 ||
+        !std::all_of(at.begin(), at.end(), [](float n) { return std::isfinite(n) && std::abs(n) < 100000; })) return "invalid flag position or facing";
+    const auto world = current_world();
+    const auto docs = kit::documents_for(mode);
+    if (!world || !docs) return "the mode has no waiting flag in this world";
+    if (!shows_waiting(*docs, mode) && !docs->hud.editor.present) return "only a waiting flag can be repositioned";
+    auto& p = placement(); std::lock_guard lock(p.mutex);
+    if (p.mode != mode || p.game != game || p.world != world || p.step != Step::waiting || !p.handed_off || !p.spawn ||
+        !p.mmid || p.destroy_queued || p.cancelling || p.adopted) return "this mode does not own a waiting host flag";
+    if (p.restore) return "the flag is already being repositioned";
+    if (p.restore_sequence >= 9007199254740991ULL) return "the flag request counter is exhausted";
+    request = ++p.restore_sequence;
+    p.restore = Restore{request, world, GetTickCount64() + 10000, 0, p.mmid, at, yaw};
+    p.status = "Repositioning the starting flag...";
+    return {};
+}
 State state() noexcept {
     using namespace multiplayer::native_flag;
     auto& p = placement(); std::lock_guard lock(p.mutex);
@@ -496,6 +578,7 @@ State state() noexcept {
     s.placing = p.step == Step::flag || p.step == Step::placing || p.step == Step::closing;
     try { s.mode = p.mode; } catch (...) {}
     s.game = p.game;
+    s.restoring = p.restore.has_value();
     return s;
 }
 void leave() noexcept {

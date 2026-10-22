@@ -361,6 +361,9 @@ public:
     // registration only when it is one of the plugin's modes.
     virtual std::string publish_throwdown_ui(std::string_view /*plugin*/, const Json&) { return unavailable; }
     virtual bool throwdown_flag_begin(std::string_view /*mode*/, std::uint32_t /*game*/, const throwdowns::kit::flag::Options&) { return false; }
+    virtual std::string throwdown_flag_restore(std::string_view /*mode*/, std::uint32_t /*game*/, const Vec3&, float /*yaw*/, std::uint64_t& request) {
+        request = 0; return "native flag repositioning is unavailable";
+    }
     virtual throwdowns::kit::flag::State throwdown_flag_state() { return {}; }
     virtual void throwdown_flag_leave(std::string_view /*plugin*/) {}
     // ---- general services for a game layer in Lua (plugin_api_services.cpp) ----------------------

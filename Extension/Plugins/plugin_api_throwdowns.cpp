@@ -129,7 +129,27 @@ struct KitApi {
         lua_pushboolean(L, game(plugin).throwdown_flag_begin(plugin.id() + "/" + mode, static_cast<std::uint32_t>(number), options));
         return 1;
     }
-    // flag.state(): {owned, waiting, placing, busy, mine, mode, game}; mode (the plugin's own id) and
+    // flag.restore(mode, game, {position, yaw}): reposition this plugin's owned waiting flag.
+    // Acceptance is asynchronous: true, request; or false, why. No new queue or navigation.
+    static int flag_restore(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "throwdowns", "reskate.throwdowns.flag.restore");
+        const auto mode = own_mode(L, 1);
+        const double number = luaL_checknumber(L, 2);
+        if (!(number >= 1 && number <= 4294967295.0) || number != std::floor(number)) luaL_argerror(L, 2, "a game number");
+        luaL_checktype(L, 3, LUA_TTABLE);
+        lua_getfield(L, 3, "position");
+        const auto at = position_of(L, -1, "the flag's position");
+        lua_pop(L, 1);
+        const auto yaw = static_cast<float>(number_field(L, 3, "yaw", 0, -100000, 100000));
+        std::uint64_t request{};
+        const auto why = game(plugin).throwdown_flag_restore(plugin.id() + "/" + mode, static_cast<std::uint32_t>(number), at, yaw, request);
+        if (!why.empty()) return result(L, why);
+        lua_pushboolean(L, true);
+        lua_pushnumber(L, static_cast<double>(request));
+        return 2;
+    }
+    // flag.state(): {owned, waiting, placing, busy, restoring, mine, mode, game}; mode (the plugin's own id) and
     // game only when the registration is one of its modes.
     static int flag_state(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -137,7 +157,9 @@ struct KitApi {
         const auto state = game(plugin).throwdown_flag_state();
         const auto prefix = plugin.id() + "/";
         const bool mine = state.mode.starts_with(prefix);
-        lua_createtable(L, 0, 7);
+        lua_createtable(L, 0, 8);
+        lua_pushboolean(L, state.restoring);
+        lua_setfield(L, -2, "restoring");
         lua_pushboolean(L, state.owned);
         lua_setfield(L, -2, "owned");
         lua_pushboolean(L, state.waiting);
@@ -377,7 +399,7 @@ void install_kit_api(Plugin& plugin, lua_State* L) { KitApi::install(plugin, L);
 void KitApi::install(Plugin&, lua_State* L) {
     add_functions(L, "throwdowns", {{"ui", ui}});
     lua_getfield(L, -1, "throwdowns");
-    add_functions(L, "flag", {{"begin", flag_begin}, {"state", flag_state}, {"leave", flag_leave}});
+    add_functions(L, "flag", {{"begin", flag_begin}, {"restore", flag_restore}, {"state", flag_state}, {"leave", flag_leave}});
     lua_pop(L, 1);
     add_functions(L, "files", {{"list", files_list}, {"read", files_read}, {"write", files_write}, {"remove", files_remove}});
     add_functions(L, "ui", {{"dialog", dialog}, {"close_dialog", close_dialog}});

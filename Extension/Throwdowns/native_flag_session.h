@@ -56,6 +56,13 @@ bool known_queue(std::uint32_t mmid) noexcept;
 void observe_position(std::uint32_t mmid, const std::array<float,3>& spawn, const std::array<float,16>* transform=nullptr) noexcept;
 void observe_exit(bool cancelling) noexcept;
 void observe_destroyed(std::uint32_t mmid) noexcept;
+// A queued native parameter update is bound to this request, registration and world.
+// The lab checks again immediately before sending, so a late job cannot move a new flag.
+bool restore_pending(std::uint64_t request, std::uint64_t world, std::uint32_t mmid) noexcept;
+// Claim the synchronous dispatch after validation, so its completion cannot time out mid-send.
+bool restore_dispatch(std::uint64_t request, std::uint64_t world, std::uint32_t mmid) noexcept;
+void restore_sent(std::uint64_t request, std::uint64_t world, std::uint32_t mmid) noexcept;
+void restore_failed(std::uint64_t request) noexcept;
 // The level unloads every native queue.
 void abandon() noexcept;
 }

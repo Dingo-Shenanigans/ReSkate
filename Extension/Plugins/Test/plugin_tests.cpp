@@ -481,6 +481,14 @@ struct FakeGame final : Game {
         flag = {true, false, true, true, std::string(mode), game};
         return true;
     }
+    std::uint64_t flag_restore_sequence{};
+    std::string throwdown_flag_restore(std::string_view mode, std::uint32_t game, const Vec3& at, float yaw, std::uint64_t& request) override {
+        request = 0;
+        if (!flag.owned || !flag.waiting || flag.mode != mode || flag.game != game) return "not this mode's waiting flag";
+        calls.push_back(std::format("flag restore {} {} {:.1f} {:.1f} {:.1f} {:.1f}",mode,game,at[0],at[1],at[2],yaw));
+        request = ++flag_restore_sequence; flag.restoring = true; flag.waiting = false;
+        return {};
+    }
     dingosdk::throwdowns::kit::flag::State throwdown_flag_state() override { return flag; }
     void throwdown_flag_leave(std::string_view plugin) override {
         calls.push_back(std::format("flag leave {}", plugin));
@@ -3181,6 +3189,33 @@ void item_tabs_keep_tabs_and_wear_on_top() {
     check(game.kept_keys.empty() && game.kept_buttons == 0 && !game.grid_shown, "Given back when the grid closes\n" + environment.all());
 }
 
+void plugins_reposition_their_waiting_flags() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.flag = {true,true,false,true,"flag-test/lap",7};
+    Host host(environment, Side::client);
+    host.apply({script("no-flag-permission", R"(
+        local ok, why = pcall(reskate.throwdowns.flag.restore, "lap", 7, {position=vector.create(10,20,30),yaw=90})
+        assert(not ok and why:find('needs the "throwdowns" permission'), why)
+    )"), script("flag-test", R"(
+        local flag=reskate.throwdowns.flag
+        assert(not pcall(flag.restore,"lap",0,{position=vector.create(1,2,3)}))
+        assert(not pcall(flag.restore,"another/plugin",7,{position=vector.create(1,2,3)}))
+        assert(not pcall(flag.restore,"lap",7,{position=vector.create(100001,2,3)}))
+        assert(not pcall(flag.restore,"lap",7,{position=vector.create(0/0,2,3)}))
+        assert(not pcall(flag.restore,"lap",7,{position=vector.create(1,2,3),yaw=0/0}))
+        local ok,why=flag.restore("other",7,{position=vector.create(1,2,3)})
+        assert(not ok and type(why)=="string")
+        local accepted,request=flag.restore("lap",7,{position=vector.create(10,20,30),yaw=450})
+        assert(accepted and request==1)
+        local state=flag.state()
+        assert(state.mine and state.owned and state.restoring and not state.waiting and state.game==7)
+        assert(not flag.restore("lap",7,{position=vector.create(4,5,6)}))
+    )", R"("throwdowns")")});
+    running(host,"no-flag-permission",environment); running(host,"flag-test",environment);
+    check(game.called("flag restore flag-test/lap 7 10.0 20.0 30.0 450.0"),"The API forwards only its namespaced mode and validated pose");
+    check(!game.called("flag restore no-flag-permission/lap"),"Permission refusal happens before calling the game");
+}
 void plugins_drive_the_throwdown_kit() {
     namespace kit = dingosdk::throwdowns::kit;
     TestEnvironment environment;
@@ -3896,6 +3931,7 @@ int main() {
         run(smokey_throwdowns_register_and_play_one_up);
         run(filmer_follows_and_films);
         run(plugins_drive_the_throwdown_kit);
+        run(plugins_reposition_their_waiting_flags);
         run(fit_check_turns_the_board_and_saves_it);
         run(item_tabs_keep_tabs_and_wear_on_top);
         run(the_throwdowns_page_lists_the_stock_cards_and_plugin_modes);
