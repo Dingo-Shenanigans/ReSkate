@@ -1666,10 +1666,8 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                             else if (found != v.packs.end() && std::next(found) != v.packs.end()) next = *std::next(found);
                             std::string m; studio::use_preset_pack(next, m); say(m);
                         }});
-        rows.push_back({"Create a new pack", u.pack_name.data(), "Type a pack name in the details panel (for example Steezy), then choose this row. Copies current choices; an existing pack is never overwritten.", [] {
-                            std::string m; studio::create_preset_pack(m, ui().pack_name.data()); say(m);
-                        }});
-        rows.push_back({"Export this pack", "", "Saves the active pack - or every saved animation when none is chosen - as one zip in "
+        rows.push_back({"Export pack", (v.active_pack.empty() ? std::string("All saved animations") : v.active_pack) + ".zip",
+                        "Saves the active pack - or every saved animation when none is chosen - as one zip in "
                         "ReSkate.Tricks\\exports. Share it: it can be unzipped straight into ReSkate.Tricks, or dropped in "
                         "ReSkate.Tricks\\import and taken in with Import packs.", [] {
                             std::string m; studio::export_pack(m); say(m);
@@ -1682,6 +1680,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "Fixed uses the chosen variant. Alternate cycles the included variants of each trick between attempts.", [v] {
                             std::string m; studio::set_pack_alternation(!v.alternate_variants, m); say(m);
                         }, !v.active_pack.empty()});
+        rows.push_back({"Create a new pack", u.pack_name.data(), "Type a pack name in the details panel (for example Steezy), then choose this row. Copies current choices; an existing pack is never overwritten.", [] {
+                            std::string m; studio::create_preset_pack(m, ui().pack_name.data()); say(m);
+                        }});
         rows.push_back({"SAVED ANIMATIONS", "", "", {}, false});
         if (v.library.empty()) rows.push_back({"Nothing saved yet", "", "Pick a trick in TRICKS, change it and save it: it shows up here.", {}, false});
         for (const auto& name : v.library) {
