@@ -65,7 +65,7 @@ struct View {
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     bool fit_air{};        // the keys are spread over the air that happens, not the one they were recorded in
-    int match_studio{1};   // 0 off, 1 a bent joint takes the pose it has in the studio, 2 the whole body does
+    int match_studio{2};   // 0 off, 1 a bent joint takes the pose it has in the studio, 2 the whole body does
     bool limits{true};     // keyed joints stay inside the range the game's own animation uses
     bool turn_board{};     // the board's keys are turned round when the board points the other way to its recording
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the

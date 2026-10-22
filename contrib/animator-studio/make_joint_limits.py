@@ -7,6 +7,11 @@ bone tipping away). The limit is the twist range and, in each of 24 directions, 
 both from the 0.5th to 99.5th percentile, with a margin - so a knee comes out a hinge (almost no swing
 sideways or backwards) and a shoulder a wide cone, from the game's data rather than guesses.
 
+The game's clips are all authored goofy, so on its own the left leg only ever does the back foot's job and
+the right leg the front foot's. A regular skater plays them mirrored, which swaps the jobs. So each joint's
+range is measured over its own poses and its opposite number's poses mirrored the game's way (rotation
+(x, y, z, w) -> (-x, -y, z, w)): both sides get the full range, whichever foot leads.
+
 Usage: python make_joint_limits.py <Tricks/library folder> <output header>
 """
 import json, math, os, re, struct, sys
@@ -21,6 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 src = open(os.path.join(HERE, '..', '..', 'Extension', 'AnimationStudio', 'animation_skeleton.h')).read()
 body = src[src.index('animation_parents{') + 18:]
 PARENT = [int(x) for x in re.findall(r'-?\d+', body[:body.index('}')])]
+msrc = open(os.path.join(HERE, '..', '..', 'Extension', 'AnimationStudio', 'skater_mirror.h')).read()
+mbody = msrc[msrc.index('mirror_joint{') + 13:]
+MIRROR = [int(x) for x in re.findall(r'\d+', mbody[:mbody.index('}')])]
 
 
 def read(path):
@@ -63,7 +71,8 @@ def conj(q):
 def main(library, header):
     cat = json.load(open(os.path.join(library, 'catalog.json'), encoding='utf-8'))
     files = [c['file'] for c in cat if not SKIP.search(c.get('label', '') + ' ' + c.get('category', ''))]
-    rot = {j: [] for j in JOINTS}
+    wanted = sorted(set(JOINTS) | {MIRROR[j] for j in JOINTS})
+    rot = {j: [] for j in wanted}
     pos = {j: [] for j in range(395)}
     used = 0
     for fn in files:
@@ -75,7 +84,7 @@ def main(library, header):
             continue
         clip = clip[::3]
         used += 1
-        for j in JOINTS:
+        for j in wanted:
             rot[j].append(clip[:, j, 3:7].astype(np.float64))
         if used <= 200:
             for j in range(395):
@@ -84,7 +93,9 @@ def main(library, header):
     mean_pos = {j: np.mean(pos[j], 0) for j in range(395) if pos[j]}
     limits = []
     for j in JOINTS:
-        q = np.concatenate(rot[j])
+        own = np.concatenate(rot[j])
+        partner = np.concatenate(rot[MIRROR[j]]) * np.array([-1, -1, 1, 1])
+        q = np.concatenate([own, partner])
         q /= np.linalg.norm(q, axis=1, keepdims=True)
         # The average pose: quaternions put on one side, then the principal direction.
         q[q[:, 3] < 0] *= -1

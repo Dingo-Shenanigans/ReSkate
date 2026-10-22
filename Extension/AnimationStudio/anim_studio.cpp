@@ -130,12 +130,20 @@ std::uintptr_t physics_context(std::uintptr_t base, std::uintptr_t component) no
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return 0;
     return read<std::uintptr_t>(core + 0x3c0).value_or(0);
 }
+// The game's board-backwards flag (context+0x13c5 bit 0x20, found 2026-10-22): set exactly while the deck is
+// turned round under the skater, after a shuvit or a push out of fakie into switch.
+bool board_backwards(std::uintptr_t base, std::uintptr_t component) noexcept;
 // The whole byte the stance bit lives in: the other bits are not understood yet (the stance readout logs them).
 std::optional<std::uint8_t> stance_flags(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
     const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
     return context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
+}
+bool board_backwards(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto context = physics_context(base, component);
+    const auto flags = context ? read<std::uint8_t>(context + 0x13c5) : std::nullopt;
+    return flags && (*flags & 0x20) != 0;
 }
 std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto left = left_foot_leads(base, component);
@@ -153,7 +161,7 @@ struct Snapshot {
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
     bool fit_air{};     // the keys are spread over the air that happens
-    int match_studio{1}; // 0 off, 1 a bent joint goes to the pose it was made on, 2 the whole body does
+    int match_studio{2}; // 0 off, 1 a bent joint goes to the pose it was made on, 2 the whole body does
     bool limits{true};   // keyed joints stay inside the range the game's own animation uses
     bool turn_board{};  // the board's frame is turned round when it points the other way to its recording
     std::shared_ptr<const CustomTricks> tricks;
@@ -193,7 +201,7 @@ struct State {
     bool front_foot{true};
     bool fit_air{};
     bool turn_board{};
-    int match_studio{1};
+    int match_studio{2};
     bool limits{true};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
@@ -241,8 +249,13 @@ struct State {
     std::shared_ptr<const Snapshot> snapshot;
     std::shared_ptr<const Animation> published_edits;
 };
+void load_settings(State& s);
 State& state() {
-    static auto* s = new State;
+    static auto* s = [] {
+        auto* fresh = new State;
+        load_settings(*fresh);
+        return fresh;
+    }();
     return *s;
 }
 // One transform after another (parent, then child in the parent's frame); uniform scale.
@@ -364,6 +377,7 @@ struct Live {
     // something else. Rather than guess what it will do - its conditions are its own - the layer watches
     // what it did and lets go smoothly, limb by limb where it can tell which.
     LimbWeights limbs;
+    std::uint8_t limbs_logged{}; // which limbs have been reported handed back this trick
     // Which way a recording's board was pointing, in its own skater's frame, worked out once per trick.
     // Riding fakie the board is the other way round to the way it was recorded, and its keys have to be
     // read that way round too or they push the wrong end of it.
@@ -542,6 +556,41 @@ std::filesystem::path library_folder() {
     const auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (!count || count >= buffer.size()) return {};
     return std::filesystem::path(std::wstring(buffer.data(), count)).parent_path() / L"ReSkate.Tricks";
+}
+// The studio's settings, kept in ReSkate.Tricks/studio-settings.json so they survive a restart. They used
+// to reset every start, so Match the studio went back to bent joints and the back foot of a front-foot
+// trick went back to the game's own movement without anyone touching it.
+void load_settings(State& s) {
+    try {
+        std::ifstream in(library_folder() / L"studio-settings.json", std::ios::binary);
+        if (!in) return;
+        const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+        if (!root.is_object()) return;
+        s.front_foot = root.value("front_foot", s.front_foot);
+        s.match_studio = std::clamp(root.value("match_studio", s.match_studio), 0, 2);
+        s.limits = root.value("joint_limits", s.limits);
+        s.fit_air = root.value("fit_air", s.fit_air);
+        s.turn_board = root.value("turn_board", s.turn_board);
+        s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
+        s.grab_board = root.value("grab_board", s.grab_board);
+    } catch (...) {}
+}
+// Caller holds the mutex.
+void save_settings_locked(const State& s) {
+    try {
+        Json root = Json::object();
+        root["front_foot"] = s.front_foot;
+        root["match_studio"] = s.match_studio;
+        root["joint_limits"] = s.limits;
+        root["fit_air"] = s.fit_air;
+        root["turn_board"] = s.turn_board;
+        root["stance"] = s.stance_choice;
+        root["grab_board"] = s.grab_board;
+        const auto path = library_folder() / L"studio-settings.json";
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << root.dump(2);
+    } catch (...) {}
 }
 std::optional<PresetPack> current_pack() {
     const auto folder = library_folder() / L"presets";
@@ -1835,6 +1884,8 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     std::optional<PieceMatch> match;
     if (!l.game_trick && !scheduled) match = l.pieces.update(at, l.pose);
     else l.pieces.reset();
+    // Exact stance: a piece seen playing the other way round to the way it was made is left to the game.
+    if (match && !snap.front_foot && match->mirrored) match.reset();
     if (match && match->piece < l.piece_tricks.size()) {
         const auto* trick = l.piece_tricks[match->piece];
         if (trick != play.trick || match->mirrored != play.mirrored || play.weight <= 0) {
@@ -1847,6 +1898,8 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
                 if (finite(mount)) {
                     play.board_frame = normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount)));
                     play.board_frame_ok = true;
+                    if (board_backwards(l.base.load(std::memory_order_acquire), component))
+                        play.board_frame = normalised(multiply(play.board_frame, Quat{0, 1, 0, 0}));
                 }
             }
             logging::log(Level::info, Channel::skater, "Animation Studio: the game is playing {}{} ({:.2f} s in); playing your {}.",
@@ -2473,7 +2526,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 l.game_tricks = snap->tricks;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
-                l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
+                l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear(); l.limbs_logged = 0;
                 l.native_before.clear(); l.source_before.clear(); l.limbs_at = -1;
                 l.board_at_takeoff_ok = false;
                 if (l.board_ok) {
@@ -2481,6 +2534,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (finite(mount)) {
                         l.board_frame_local = normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount)));
                         l.board_at_takeoff_ok = true;
+                        // The game's board-backwards flag: the deck is turned round under him, and the game turns its
+                        // animated board to match. The keys follow the animation's board, so they are turned too -
+                        // a key on the nose stays on the end the trick treats as the nose.
+                        if (board_backwards(base, component)) l.board_frame_local = normalised(multiply(l.board_frame_local, Quat{0, 1, 0, 0}));
                     }
                 }
             }
@@ -2635,7 +2692,15 @@ void on_animation(std::uintptr_t component) noexcept {
                             // like, or every mirrored trick reads as the game taking limbs it has not touched.
                             const auto source_joint = l.played_mirrored ? mirror_joint[joint] : joint;
                             const float by_clip = moved(l.source_before[source_joint].rotation, source_now[source_joint].rotation);
-                            taken = by_game - by_clip > 0.22f; // about 13 degrees in a frame the clip did not ask for
+                            // Not while the whole body plays the recording: a kickflip's pop and catch move the legs
+                            // that fast anyway, and handing the back leg to the game mid-trick is what made it move
+                            // on its own.
+                            taken = snap->match_studio <= 1 && by_game - by_clip > 0.22f; // ~13 degrees a frame the clip did not ask for
+                            if (taken && !(l.limbs_logged & (1u << limb))) {
+                                l.limbs_logged |= static_cast<std::uint8_t>(1u << limb);
+                                static constexpr const char* limb_names[] = {"body", "left arm", "right arm", "left leg", "right leg"};
+                                logging::log(Level::info, Channel::skater, "Animation Studio: the game took the {} - handed back to it.", limb_names[limb]);
+                            }
                         }
                         const float want = taken ? 0.0f : 1.0f;
                         const float step = dt > 0 ? (taken ? dt / 0.10f : dt / 0.30f) : 1.0f; // let go quickly, come back slowly
@@ -3760,6 +3825,7 @@ void set_turn_board(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.turn_board = on;
+    save_settings_locked(s);
     s.status = on ? "The board's keys are turned round when the board points the other way to its recording."
                   : "The board's keys stay in the board's own frame.";
     publish_locked(s);
@@ -3768,6 +3834,7 @@ void set_joint_limits(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.limits = on;
+    save_settings_locked(s);
     s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses."
                   : "Joint limits off: joints can be turned anywhere.";
     publish_locked(s);
@@ -3776,6 +3843,7 @@ void set_match_studio(int how) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.match_studio = std::clamp(how, 0, 2);
+    save_settings_locked(s);
     s.status = s.match_studio == 2   ? "In game the whole body plays your recording with your keys on it, as the studio shows it."
                : s.match_studio == 1 ? "In game a joint you bent takes the pose it has in the studio; the rest is the game's."
                                      : "In game your bends are added to whatever the game is doing.";
@@ -3785,6 +3853,7 @@ void set_fit_air(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.fit_air = on;
+    save_settings_locked(s);
     s.status = on ? "Keys are spread over the air that happens." : "Keys run at the seconds they were recorded at.";
     publish_locked(s);
 }
@@ -3792,6 +3861,7 @@ void set_front_foot(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.front_foot = on;
+    save_settings_locked(s);
     s.status = on ? "Tricks play by front foot: any stance, mirrored when the other foot leads."
                   : "Tricks play only for the stance they were recorded in.";
     publish_locked(s);
@@ -3800,6 +3870,7 @@ void set_grab(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.grab_board = on;
+    save_settings_locked(s);
     s.status = on ? "Hands close on the board when they come near it." : "Hands stay as they are.";
     publish_locked(s);
 }
@@ -3807,6 +3878,7 @@ void set_stance(int choice) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.stance_choice = std::clamp(choice, 0, 2);
+    save_settings_locked(s);
     const bool goofy = studio_goofy(s.stance_choice);
     s.status = s.stance_choice == 0 ? (goofy ? "Stance: as the game has him, goofy." : "Stance: as the game has him, regular.")
                : goofy ? "Stance: goofy." : "Stance: regular.";
