@@ -84,11 +84,6 @@ for ch in word:
     x += tl.textlength(ch, font=wf) + track
 word_right = x - track
 canvas = Image.alpha_composite(canvas, shadow.filter(ImageFilter.GaussianBlur(18)))
-# Worn: the letters take a little of a grain.
-grain = np.asarray(Image.effect_noise((W // 4, H // 4), 60).resize((W, H), Image.BICUBIC)).astype(np.float32)
-alpha = np.asarray(type_layer.split()[3]).astype(np.float32)
-worn = alpha * np.clip(0.95 + (grain - 128) / 255 * 0.22, 0.86, 1.0)
-type_layer.putalpha(Image.fromarray(worn.astype(np.uint8)))
 canvas = Image.alpha_composite(canvas, type_layer)
 
 # The blue tape: a dry brush stroke, ragged, streaked, splattered, dripping.
@@ -159,7 +154,8 @@ canvas = Image.alpha_composite(canvas, strip.filter(ImageFilter.GaussianBlur(0.6
 # ---- grain over all of it ------------------------------------------------------------------------------
 final = canvas.convert('RGB')
 noise = np.asarray(Image.effect_noise((W, H), 22)).astype(np.float32) - 128
-out = np.asarray(final).astype(np.float32) + noise[..., None] * 0.22
+clean = np.asarray(type_layer.split()[3].filter(ImageFilter.MaxFilter(9))).astype(np.float32) / 255.0  # the letters
+out = np.asarray(final).astype(np.float32) + (noise * 0.22 * (1 - clean))[..., None]
 final = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
 final.save(OUT)
 final.resize((1584, 672), Image.LANCZOS).save(HERE + r"\compose_preview.jpg", quality=92)
