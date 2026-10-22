@@ -2424,10 +2424,11 @@ void on_animation(std::uintptr_t component) noexcept {
                 // one that already leads with the right foot is preferred so nothing is mirrored that does
                 // not have to be. Off, it is the old rule: the exact stance and switch it was recorded in.
                 const bool live_right = leads_right(l.playback_goofy, l.playback_switch.value_or(false));
+                // Both modes go by the foot the recording really leads with (read from its clip), since labels
+                // have been wrong: exact stance only ever plays a recording made on the foot that leads now,
+                // never mirrored; front foot also takes one made on the other foot and mirrors it.
                 const auto compatible = [&](const CustomTrick& t) {
-                    return l.playback_front_foot
-                               ? (l.playback_switch.has_value() && t.leads_right == live_right)
-                               : playback_stance_compatible(t.goofy, t.edits->switch_stance, l.playback_goofy, l.playback_switch);
+                    return l.playback_switch.has_value() && t.leads_right == live_right;
                 };
                 int best_pop = 3;
                 // Who may be chosen at all. By front foot, any recording of the trick: one for the other foot

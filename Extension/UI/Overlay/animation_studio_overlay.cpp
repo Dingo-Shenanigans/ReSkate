@@ -1539,8 +1539,9 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
                         "Front foot: a trick belongs to the front foot and the back foot, so it plays whichever way round the skater "
                         "stands and whether he is riding switch - mirrored when the other foot leads. A goofy skater and a regular one "
-                        "riding switch both lead with the right, so they get it as it was recorded. Exact stance: it plays only for the "
-                        "stance and switch it was recorded in, and the game's own animation is used otherwise.",
+                        "riding switch both lead with the right, so they get it as it was recorded. Exact stance: it plays only when the "
+                        "foot it was made on leads now, never mirrored, and the game's own animation is used otherwise. Either way "
+                        "the foot a trick was made on is read from the recording itself, and fakie never mirrors.",
                         [v] { studio::set_front_foot(!v.front_foot); }});
         rows.push_back({"Trick timing", v.fit_air ? "fit the air" : "as recorded",
                         "As recorded: the keys run at the seconds they were recorded at, whatever air he gets. Fit the air: they are "
