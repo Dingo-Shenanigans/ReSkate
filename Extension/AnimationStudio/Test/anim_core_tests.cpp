@@ -1154,6 +1154,34 @@ void native_clock_follows_the_game() {
         const auto r = clock.update(riding, 1.0f / 60);
         check(!r.locked, "A pose that is not the trick is not followed");
     }
+    {
+        // A recording of the trick (the edit's own clip) that drifts off the game's own clip towards the landing,
+        // as the game's corrections in it grow: the clock moves onto the game's clip, without a jump in time.
+        auto drifting = std::make_shared<Clip>(*own);
+        for (std::size_t f = 0; f < drifting->times.size(); ++f) {
+            const float drift = std::max(0.0f, drifting->times[f] - 0.35f) * 30 * 3.14159265f / 180;
+            for (std::size_t j = 2; j < 375; ++j) {
+                auto& q = drifting->frames[f * skeleton_joints + j].rotation;
+                q = normalised(multiply(q, Quat{0, std::sin(drift / 2), 0, std::cos(drift / 2)}));
+            }
+        }
+        const auto both = build_native_models({drifting, own}, 0);
+        NativeClock clock;
+        clock.start(both);
+        bool moved = false, smooth = true;
+        float last = -1;
+        int on = -1;
+        for (int i = 0; i < 40; ++i) {
+            const float game = 0.23f + static_cast<float>(i) / 60;
+            const auto r = clock.update(pose_of(*own, game, false), 1.0f / 60);
+            if (i == 0) on = r.clip;
+            moved = moved || r.switched;
+            if (last >= 0) smooth = smooth && r.time >= last && r.time - last < 0.03f;
+            last = r.time;
+        }
+        check(on == 0 && moved && smooth && std::abs(last - (0.23f + 39.0f / 60)) < 0.01f,
+              "A recording drifting off the game's clip hands over to the game's clip, in time and without a jump");
+    }
 }
 void native_clips_pop_where_the_game_does() {
     // A library clip at 60 fps: the board flat, then from frame 8 (0.133 s) its tail goes down 8 degrees a

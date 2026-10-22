@@ -1497,6 +1497,13 @@ float NativeModels::edit_time(const Model& model, float seconds) const noexcept 
     if (seconds >= model.down) return edit_down + (seconds - model.down);
     return edit_up + (seconds - model.up) * (edit_down - edit_up) / (model.down - model.up);
 }
+float NativeModels::model_time(const Model& model, float seconds) const noexcept {
+    if (model.own || !std::isfinite(seconds)) return seconds;
+    if (!(model.up >= 0) || !(model.down > model.up) || !(edit_up >= 0) || !(edit_down > edit_up)) return seconds;
+    if (seconds <= edit_up) return std::max(0.0f, model.up - (edit_up - seconds));
+    if (seconds >= edit_down) return model.down + (seconds - edit_down);
+    return model.up + (seconds - edit_up) * (model.down - model.up) / (edit_down - edit_up);
+}
 std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
     auto out = std::make_shared<NativeModels>();
     if (own < clips.size() && clips[own]) {
@@ -1541,9 +1548,11 @@ void NativeClock::start(std::shared_ptr<const NativeModels> models) noexcept {
 void NativeClock::reset() noexcept {
     models_.reset();
     locked_ = -1;
-    time_ = error_ = -1;
+    time_ = error_ = baseline_ = -1;
     confidence_ = 0;
-    bad_ = 0;
+    bad_ = updates_ = 0;
+    candidate_ = -1;
+    streak_ = 0;
     lost_ = false;
 }
 float NativeClock::error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept {
@@ -1589,8 +1598,9 @@ NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step
         if (best_model < 0 || best >= lock_degrees) return out;
         locked_ = best_model;
         time_ = refine(models[static_cast<std::size_t>(locked_)], best_frame, best);
-        error_ = best;
+        error_ = baseline_ = best;
         confidence_ = 0;
+        updates_ = 0;
     } else if (!lost_) {
         // Following it: where the game should be now, and where its pose says it is, near that.
         const auto& m = models[static_cast<std::size_t>(locked_)];
@@ -1612,10 +1622,65 @@ NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step
             time_ = predicted;
             error_ = 180;
         }
-        bad_ = error_ > lose_degrees ? bad_ + 1 : 0;
-        if (bad_ >= 3 || time_ >= m.duration - 0.5f / 60) lost_ = true;
+        // How near this clip comes at best, from its first updates: a recording of the trick (the game's pose
+        // after its own corrections) never comes as near as the game's own clip does.
+        if (++updates_ <= 8) baseline_ = std::min(baseline_, error_);
+        // Another of the clips fitting the game better (the game's own clip rather than a recording of it, as a
+        // recording drifts off it towards the landing): moved onto, at the same moment of the trick.
+        out.switched = false;
+        {
+            const float edit_now = models_->edit_time(m, time_);
+            int alternative = -1;
+            float alternative_error = error_ - 1.0f, alternative_time = -1;
+            for (std::size_t i = 0; i < models.size(); ++i) {
+                const auto& b = models[i];
+                if (static_cast<int>(i) == locked_ || b.mirrored != m.mirrored) continue;
+                const float there = models_->model_time(b, edit_now);
+                std::size_t frame = 0;
+                float e_best = 180;
+                bool found = false;
+                for (std::size_t f = 0; f < b.times.size(); ++f) {
+                    if (b.times[f] < there - 0.08f || b.times[f] > there + 0.08f) continue;
+                    const float e = error_at(b, f, pose);
+                    if (e < e_best) { e_best = e; frame = f; found = true; }
+                }
+                if (found && e_best < alternative_error) {
+                    alternative_error = e_best;
+                    alternative = static_cast<int>(i);
+                    alternative_time = refine(b, frame, e_best);
+                }
+            }
+            if (alternative >= 0) {
+                streak_ = alternative == candidate_ ? streak_ + 1 : 1;
+                candidate_ = alternative;
+                if (streak_ >= 3) {
+                    locked_ = alternative;
+                    time_ = alternative_time;
+                    error_ = alternative_error;
+                    baseline_ = std::min(baseline_, alternative_error);
+                    candidate_ = -1;
+                    streak_ = 0;
+                    bad_ = 0;
+                    out.switched = true;
+                }
+            } else {
+                candidate_ = -1;
+                streak_ = 0;
+            }
+        }
+        const auto& now_on = models[static_cast<std::size_t>(locked_)];
+        bad_ = error_ > std::max(lose_degrees, baseline_ + 4.0f) ? bad_ + 1 : 0;
+        if (bad_ >= 3 || time_ >= now_on.duration - 0.5f / 60) lost_ = true;
     } else {
+        // Lost: on at the clip's own pace, and still measured against it (the caller tells the game's own
+        // landing from its next animation by how far the game's pose goes from it).
         time_ += step;
+        const auto& m = models[static_cast<std::size_t>(locked_)];
+        if (!m.times.empty()) {
+            const auto it = std::lower_bound(m.times.begin(), m.times.end(), time_);
+            const auto f = it == m.times.end() ? m.times.size() - 1 : static_cast<std::size_t>(it - m.times.begin());
+            error_ = error_at(m, f, pose);
+        }
     }
     const auto& m = models[static_cast<std::size_t>(locked_)];
     // On the clip in full; less as the game blends away from it, smoothed so a single odd pose does not flicker.
@@ -1623,8 +1688,10 @@ NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step
     confidence_ += (on - confidence_) * (confidence_ <= 0 ? 1.0f : 0.35f);
     out.locked = true;
     out.lost = lost_;
-    out.time = std::clamp(models_->edit_time(m, std::min(time_, m.duration)), 0.0f, std::numeric_limits<float>::max());
+    // Past its clip's end only once lost (a clip the trick's own is read across onto can be shorter).
+    out.time = std::clamp(models_->edit_time(m, lost_ ? time_ : std::min(time_, m.duration)), 0.0f, std::numeric_limits<float>::max());
     out.error = error_;
+    out.baseline = baseline_;
     out.clip = static_cast<int>(m.clip);
     out.mirrored = m.mirrored;
     out.confidence = confidence_;

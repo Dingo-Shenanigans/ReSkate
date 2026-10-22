@@ -385,8 +385,9 @@ struct NativeModels {
     std::vector<Model> models;
     float edit_up{-1}, edit_down{-1}; // the edit's own clip's pop and landing
     // A time in a model's clip as a time in the edit's own clip: the same before the pop, stretched between the
-    // pop and the landing, the same again after the landing.
+    // pop and the landing, the same again after the landing. model_time is the other way.
     float edit_time(const Model& model, float seconds) const noexcept;
+    float model_time(const Model& model, float edit_seconds) const noexcept;
 };
 // `clips[own]` is the edit's own clip; the others are the clips the game may play for its trick instead.
 std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own);
@@ -394,15 +395,18 @@ class NativeClock {
 public:
     static constexpr float lock_degrees = 4.5f; // how near the game's pose has to be to a clip to follow it
     static constexpr float good_degrees = 3.0f; // nearer than this the edits are on in full
-    static constexpr float lose_degrees = 6.0f; // further than this for a few updates, the game has moved on
+    static constexpr float lose_degrees = 6.0f; // further than this (and than it began) for a few updates: lost
     struct Reading {
-        bool locked{};   // following the game's clip
-        bool lost{};     // was, and the game has moved on (or the clip has ended): let go
+        bool locked{};   // found the game's clip
+        bool lost{};     // no longer on it (the game's own landing, its next animation, the clip's end): the
+                         // time goes on at the clip's own pace from there
         float time{-1};  // seconds into the edit's own clip
-        float error{-1}; // degrees, the game's pose against the clip where it is followed
+        float error{-1}; // degrees, the game's pose against the clip at that time (still measured once lost)
+        float baseline{-1}; // the error it had while it was followed: how near this clip comes at best
         int clip{-1};    // which clip (as given to build_native_models)
         bool mirrored{};
         float confidence{}; // 1 on the clip, falling to 0 as the game blends away from it
+        bool switched{};    // moved onto another of the clips, that fits the game better, this update
     };
     void start(std::shared_ptr<const NativeModels> models) noexcept; // a new trick: look for its clip again
     void reset() noexcept;
@@ -414,8 +418,9 @@ private:
     float error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept;
     std::shared_ptr<const NativeModels> models_;
     int locked_{-1};
-    float time_{-1}, error_{-1}, confidence_{};
-    int bad_{};
+    float time_{-1}, error_{-1}, confidence_{}, baseline_{-1};
+    int bad_{}, updates_{};
+    int candidate_{-1}, streak_{}; // another clip fitting better, and for how many updates
     bool lost_{};
 };
 // A name safe as a file name ("Kickflip 2"): letters, digits, space, - and _ only.

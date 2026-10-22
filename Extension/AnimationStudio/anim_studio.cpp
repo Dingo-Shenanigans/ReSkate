@@ -369,6 +369,14 @@ struct Live {
     double clock_locked_at{-1};   // when the game's clip was found
     float clock_weight{};         // the layer, eased in when found and out when the game moves on
     bool clock_fallback{};        // its clip was not found: the trick plays on its own clock instead
+    // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
+    // its own pace, its landing on the game's touchdown, until the game starts something new.
+    double clock_lost_at{-1}, clock_touch_at{-1};
+    float clock_touch_from{-1}, clock_last_time{-1};
+    double drift_since{-1};      // measuring how far the game's pose is from the trick after the landing
+    float drift_base{};
+    int drift_count{};
+    std::string clock_why;       // why it let go, said once
     std::uint64_t finished_episode{~std::uint64_t{0}}; // a trick let go is not taken up again in its air
     std::string finished_trick;
     // Board edit axes at takeoff, relative to actor placement. No recorded board pose is replayed.
@@ -2728,6 +2736,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
                     l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0;
+                    l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
+                    l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear();
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
                     if (found) {
                         const bool lead_matches = found->leads_right == live.leads_right;
@@ -2779,26 +2789,77 @@ void on_animation(std::uintptr_t component) noexcept {
                     }
                 }
                 if (!l.clock_fallback) {
-                    const bool moved_on = reading.lost || l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail;
                     if (reading.locked && l.clock_locked_at < 0) {
                         l.clock_locked_at = at;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} follows the game's {}clip {} at {:.2f} s ({:.1f} degrees).",
                                      trick->name, reading.mirrored ? "mirrored " : "", reading.clip == 0 ? std::string("(its own)") : std::to_string(reading.clip),
                                      reading.time, reading.error);
                     }
-                    const float target = reading.locked && !moved_on ? reading.confidence : 0.0f;
+                    if (reading.switched)
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} moved onto the game's clip {} at {:.2f} s ({:.1f} degrees): it fits the game better.",
+                                     trick->name, reading.clip == 0 ? std::string("(its own)") : std::to_string(reading.clip), reading.time, reading.error);
+                    // The game's touchdown, and where the trick was at it: the trick's landing goes on the game's.
+                    std::optional<double> touch;
+                    if (l.episode.contact.since) touch = *l.episode.contact.since;
+                    else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch = l.episode.landing;
+                    float time = reading.locked ? reading.time : -1.0f;
+                    const float up = clip.takeoff, down = clip.landing;
+                    if (reading.locked && touch && l.clock_touch_at < 0) { l.clock_touch_at = *touch; l.clock_touch_from = time; }
+                    if (reading.locked && reading.lost) {
+                        // Off the game's clip: the game's own landing animation, or a recording drifting off it near the
+                        // landing. The trick goes on at its own pace - your landing too, on the game's touchdown - until
+                        // the game starts something new (below), instead of handing back to the game's landing.
+                        if (l.clock_lost_at < 0) {
+                            l.clock_lost_at = at;
+                            logging::log(Level::info, Channel::skater, "Animation Studio: {} goes on at its own pace from {:.2f} s{} ({:.1f} degrees off the game's clip).",
+                                         trick->name, time, touch ? ", after the touchdown" : ", in the air", reading.error);
+                        }
+                        if (up >= 0 && down > up) {
+                            if (!touch) time = up + fitted_air_time(time - up, down - up, 0); // eases in to just before its landing
+                            else if (l.clock_touch_from >= 0 && l.clock_touch_from < down)
+                                time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
+                        }
+                    }
+                    if (time >= 0 && l.clock_last_time >= 0) time = std::max(time, l.clock_last_time);
+                    if (time >= 0) l.clock_last_time = time;
+                    // Letting go when the game starts something new: the next pop (its crouch), a grind, the end of the
+                    // trick (its end bracket, or its clip's end), or - after the landing, off the clip - its pose going a
+                    // long way from the trick (a push, a turn into something else).
+                    const float edit_end = played.end >= 0 ? played.end : clip.duration();
+                    std::string why;
+                    if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
+                    else if (touch && current_state && *current_state == 103) why = "the next pop";
+                    else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
+                    // Followed through the landing and lost well after it: that is the game going into its next
+                    // animation (a push), not its landing.
+                    else if (reading.locked && reading.lost && touch && l.clock_lost_at - *touch > 0.3) why = "the game's next animation";
+                    else if (reading.locked && reading.lost && touch) {
+                        if (l.drift_since < 0) { l.drift_since = at; l.drift_base = reading.error; l.drift_count = 0; }
+                        else if (at - l.drift_since < 0.15) l.drift_base = std::min(l.drift_base, reading.error);
+                        else {
+                            l.drift_count = reading.error > l.drift_base + 10.0f ? l.drift_count + 1 : 0;
+                            if (l.drift_count >= 4) why = "the game's next animation";
+                        }
+                    }
+                    if (!why.empty() && l.clock_why.empty()) {
+                        l.clock_why = why;
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go at {:.2f} s: {}.", trick->name, time, why);
+                    }
+                    if (!l.clock_why.empty()) why = l.clock_why; // once let go, it stays let go
+                    const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
                     constexpr float step = 1.0f / 60;
                     l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / 0.08f)
-                                                             : std::max(target, l.clock_weight - step / 0.1f);
-                    sampled.time = reading.locked ? reading.time : -1.0f;
+                                                             : std::max(target, l.clock_weight - step / 0.12f);
+                    sampled.time = time;
                     sampled.weight = l.clock_weight;
-                    sampled.finished = reading.locked && moved_on && l.clock_weight <= 0;
+                    sampled.finished = reading.locked && !why.empty() && l.clock_weight <= 0;
                 } else {
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
                 }
                 diagnostic.clock_error = reading.error;
                 diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
-                diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : reading.lost ? "let go" : "following";
+                diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : !l.clock_why.empty() ? "let go"
+                                       : reading.lost ? "own pace" : "following";
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
