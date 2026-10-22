@@ -178,6 +178,16 @@ void apply_authored_edit_layer(const Animation& animation, float seconds, std::s
                                float match_rest = 0);
 // The clip's pose at `seconds`, mirrored the game's way when `mirrored` (for apply_authored_edit_layer).
 std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored);
+
+// ---- joint limits ----------------------------------------------------------------------------------
+// How far each editable joint may turn, measured from the game's own animation (skater_joint_limits.h):
+// a twist range about the bone and how far the bone may swing in each direction. A knee or an elbow is a
+// hinge, a shoulder a wide cone. `local` is the joint's whole parent-local rotation, not an edit.
+bool has_joint_limit(std::uint16_t joint) noexcept;
+Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept;
+// Keeps every joint the animation has a real key on inside its limits; joints without keys (the game's own
+// pose, which is always natural) are left alone.
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
 // Explicit cross-frame transfer experiment; gameplay uses anatomical apply_authored_edit_layer.
 // Transfers authored offsets through placement-relative joint frames onto a native pose.
 // Unlike mirror_clip, this never copies recorded skeleton transforms into the target rig.

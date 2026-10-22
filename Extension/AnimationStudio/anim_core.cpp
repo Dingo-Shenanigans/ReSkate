@@ -1,5 +1,6 @@
 #include "skater_effectors.h"
 #include "skater_mirror.h"
+#include "skater_joint_limits.h"
 #include "anim_core.h"
 #include "animation_skeleton.h"
 #include "Engine/Core/Json/json.h"
@@ -410,6 +411,67 @@ std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored) {
     for (std::size_t j = 0; j < skeleton_joints; ++j) out[mirror_joint[j]] = mirror_pose(pose[j]);
     for (std::size_t j = skeleton_joints; j < pose.size(); ++j) out[j] = pose[j];
     return out;
+}
+namespace {
+const JointLimit* limit_of(std::uint16_t joint) noexcept {
+    for (const auto& l : joint_limits)
+        if (l.joint == joint) return &l;
+    return nullptr;
+}
+float dot3(const Vec3& a, const Vec3& b) noexcept { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+} // namespace
+bool has_joint_limit(std::uint16_t joint) noexcept { return limit_of(joint) != nullptr; }
+Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept {
+    const auto* l = limit_of(joint);
+    if (!l) return local;
+    const Quat ref{l->reference[0], l->reference[1], l->reference[2], l->reference[3]};
+    const Vec3 axis{l->axis[0], l->axis[1], l->axis[2]}, across{l->across[0], l->across[1], l->across[2]}, up{l->up[0], l->up[1], l->up[2]};
+    // The turn from the average pose, split into twist about the bone and the bone's swing away from it.
+    auto d = normalised(multiply(conjugate(ref), local));
+    if (d[3] < 0) d = {-d[0], -d[1], -d[2], -d[3]};
+    const float along = dot3({d[0], d[1], d[2]}, axis);
+    float twist = 2 * std::atan2(along, d[3]);
+    if (twist > 3.14159265f) twist -= 6.2831853f;
+    if (twist < -3.14159265f) twist += 6.2831853f;
+    const auto twist_q = normalised(Quat{axis[0] * along, axis[1] * along, axis[2] * along, d[3]});
+    auto swing = normalised(multiply(d, conjugate(twist_q)));
+    if (swing[3] < 0) swing = {-swing[0], -swing[1], -swing[2], -swing[3]};
+    const Vec3 sv{swing[0], swing[1], swing[2]};
+    const float n = std::sqrt(dot3(sv, sv));
+    float angle = 2 * std::atan2(n, swing[3]);
+    // How far it may swing this way: between the two measured directions either side of it.
+    bool changed = false;
+    Vec3 dir{1, 0, 0};
+    if (n > 1e-6f) {
+        dir = {sv[0] / n, sv[1] / n, sv[2] / n};
+        const float phi = std::atan2(dot3(dir, up), dot3(dir, across));
+        const float at = (phi + 3.14159265f) / 6.2831853f * static_cast<float>(l->swing.size()) - 0.5f;
+        const float below = std::floor(at);
+        const auto count = static_cast<int>(l->swing.size());
+        const auto i0 = ((static_cast<int>(below) % count) + count) % count, i1 = (i0 + 1) % count;
+        const float f = at - below;
+        const float most = l->swing[static_cast<std::size_t>(i0)] * (1 - f) + l->swing[static_cast<std::size_t>(i1)] * f;
+        if (angle > most) {
+            angle = most;
+            changed = true;
+        }
+    }
+    if (twist < l->twist_min || twist > l->twist_max) {
+        twist = std::clamp(twist, l->twist_min, l->twist_max);
+        changed = true;
+    }
+    if (!changed) return local;
+    const auto limited = multiply(axis_angle(dir, angle), axis_angle(axis, twist));
+    return normalised(multiply(ref, limited));
+}
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept {
+    if (!std::isfinite(seconds)) return;
+    for (const auto& track : animation.tracks) {
+        if (track.hidden || track.keys.empty() || track.joint >= pose.size() || !has_joint_limit(track.joint)) continue;
+        const auto edit = evaluate(track, seconds);
+        if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0) continue; // only holds the pose
+        pose[track.joint].rotation = limit_rotation(track.joint, pose[track.joint].rotation);
+    }
 }
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
                              std::span<Joint> native, bool mirror, float weight, bool reverse_facing) {

@@ -1,6 +1,8 @@
 // Animation Studio's keyframes apart from the game: turning numbers, blending keys, what a profile
 // and a clip file hold, and that edits never grow a pose.
 #include "Extension/AnimationStudio/anim_core.h"
+#include "Extension/AnimationStudio/skater_joint_limits.h"
+#include <map>
 #include "Extension/AnimationStudio/skater_mirror.h"
 #include "Extension/AnimationStudio/anim_presets.h"
 #include "Extension/AnimationStudio/anim_research.h"
@@ -1170,6 +1172,26 @@ void bent_joints_match_the_studio() {
     const auto mirrored = studio_pose(clip, 0, true);
     check(same_turn(mirrored[mirror_joint[9]].rotation, mirror_rotation(clip.frames[9].rotation)), "and the studio's pose is mirrored with the keys");
 }
+// Joint limits: the game's own range for each joint. The average pose is left alone, limiting twice is the
+// same as once, and a knee is a hinge - it cannot be twisted round or bent the wrong way.
+void joints_stay_in_their_range() {
+    check(has_joint_limit(9) && has_joint_limit(342) && has_joint_limit(48) && !has_joint_limit(7), "Knees and elbows are limited, the hips are not");
+    for (const auto& l : joint_limits) {
+        const Quat ref{l.reference[0], l.reference[1], l.reference[2], l.reference[3]};
+        check(same_turn(limit_rotation(l.joint, ref), ref), "A joint's average pose is inside its limits");
+        for (int i = 0; i < 40; ++i) {
+            const auto q = from_euler({static_cast<float>((i * 37) % 360 - 180), static_cast<float>((i * 53) % 180 - 90),
+                                       static_cast<float>((i * 71) % 360 - 180)});
+            const auto once = limit_rotation(l.joint, q);
+            check(angle_between(limit_rotation(l.joint, once), once) < 0.02f, "Limiting twice is the same as once");
+        }
+    }
+    const auto& knee = *std::find_if(joint_limits.begin(), joint_limits.end(), [](const JointLimit& l) { return l.joint == 9; });
+    const Quat ref{knee.reference[0], knee.reference[1], knee.reference[2], knee.reference[3]};
+    const Vec3 axis{knee.axis[0], knee.axis[1], knee.axis[2]};
+    const auto twisted = normalised(multiply(ref, axis_angle(axis, 1.2f)));
+    check(angle_between(limit_rotation(9, twisted), ref) < 0.2f, "A knee twisted round is turned back");
+}
 int main(int argc, char** argv) {
     try {
         timing_and_stance_edge_cases();
@@ -1188,6 +1210,7 @@ int main(int argc, char** argv) {
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
         bent_joints_match_the_studio();
+        joints_stay_in_their_range();
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
@@ -1246,6 +1269,30 @@ int main(int argc, char** argv) {
                 check(parent(static_cast<std::uint16_t>(i)) == joints[i].at("fields").at("Parent").get<int>(),
                       "Every studio parent must match the actual native AntSkeletonAsset");
             std::cout << "Native animation hierarchy: all 395 parents match\n";
+        }
+        if (argc == 3 && std::string_view(argv[1]) == "--limits-check") {
+            // How often the game's own clips would be limited, per joint (should be about 1% or less).
+            const std::filesystem::path folder(argv[2]);
+            std::map<std::uint16_t, std::pair<std::size_t, std::size_t>> counts;
+            std::size_t clips = 0;
+            for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+                if (entry.path().extension() != ".clip" || ++clips > 600) continue;
+                std::ifstream binary(entry.path(), std::ios::binary);
+                const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(binary)), std::istreambuf_iterator<char>());
+                Clip clip;
+                try { clip = clip_from_bytes(bytes); } catch (...) { continue; }
+                if (clip.joints != skeleton_joints) continue;
+                for (std::size_t f = 0; f < clip.times.size(); f += 3)
+                    for (const auto& l : joint_limits) {
+                        const auto q = clip.frame(f)[l.joint].rotation;
+                        auto& c = counts[l.joint];
+                        ++c.second;
+                        if (angle_between(limit_rotation(l.joint, q), q) > 0.035f) ++c.first;
+                    }
+            }
+            for (const auto& [joint, c] : counts)
+                std::cout << joint << ": " << (100.0 * static_cast<double>(c.first) / static_cast<double>(std::max<std::size_t>(c.second, 1))) << "% limited\n";
+            return 0;
         }
         if (argc == 3 && std::string_view(argv[1]) == "--stance-check") {
             // Where his feet and the board are, in the placement's frame, at the clip's last frame, as it is

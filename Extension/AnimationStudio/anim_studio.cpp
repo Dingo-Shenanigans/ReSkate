@@ -152,6 +152,7 @@ struct Snapshot {
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
     bool fit_air{};     // the keys are spread over the air that happens
     int match_studio{1}; // 0 off, 1 a bent joint goes to the pose it was made on, 2 the whole body does
+    bool limits{true};   // keyed joints stay inside the range the game's own animation uses
     bool turn_board{};  // the board's frame is turned round when it points the other way to its recording
     std::shared_ptr<const CustomTricks> tricks;
 };
@@ -191,6 +192,7 @@ struct State {
     bool fit_air{};
     bool turn_board{};
     int match_studio{1};
+    bool limits{true};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -403,6 +405,7 @@ struct GameplayPacket {
     bool mirrored{};   // the keys were mirrored for this stance, so the studio's pose is too
     float match{};     // how far a bent joint goes to the pose it was made on (Match the studio)
     float match_rest{}; // and how far the joints with no bend do (Match the studio: whole body)
+    bool limits{};      // keyed joints are kept inside the game's range
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Animation> edits;
@@ -706,6 +709,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->front_foot = s.front_foot;
         snap->fit_air = s.fit_air;
         snap->match_studio = s.match_studio;
+        snap->limits = s.limits;
         snap->turn_board = s.turn_board;
     }
     snap->room = s.room;
@@ -1770,6 +1774,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->clip = play.trick->clip; packet->edits = keys;
     packet->mirrored = play.mirrored; packet->match = snap.match_studio > 0 ? 1.0f : 0.0f;
     packet->match_rest = snap.match_studio > 1 ? 1.0f : 0.0f;
+    packet->limits = snap.limits;
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
     if (play.board_frame_ok && l.board_ok) {
@@ -2266,6 +2271,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             apply_edits(shown_edits, shown_time, l.pose);
+            if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
             // Standing him the other way round: his body is reflected across its own middle, so the foot
             // that was at the nose is at the tail and the arm that led now trails. Only the skinned body
             // moves; the placement and everything hanging off it stay where they stood, so the board does
@@ -2318,6 +2324,7 @@ void on_animation(std::uintptr_t component) noexcept {
         } else if (snap->open) {
             // No trick loaded yet: the live pose, with the edits of the start of the timeline.
             apply_edits(*snap->edits, 0, l.pose);
+            if (snap->limits) limit_keyed_joints(*snap->edits, 0, l.pose);
             first = in_room ? placement_joint : 2;
             last = layout.count;
         } else if (snap->play_in_game && !snap->armed && !bailing && snap->tricks && !snap->tricks->empty()) {
@@ -2539,6 +2546,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
                     packet->mirrored = l.played_mirrored; packet->match = snap->match_studio > 0 ? 1.0f : 0.0f;
                     packet->match_rest = snap->match_studio > 1 ? 1.0f : 0.0f;
+                    packet->limits = snap->limits;
                     // The board keys work in the frame the board had at takeoff. That is only the frame
                     // they were authored in if the board is pointing the way it was when they were
                     // recorded: riding fakie it is the other way round, and the keys then push the nose
@@ -2785,6 +2793,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             studio = studio_pose(*packet->clip, packet->time, packet->mirrored);
         apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
                                   packet->match_rest);
+        if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
     }
     const auto desired_deltas = pose_edit_deltas(native, edited);
     edited = native;
@@ -3376,6 +3385,7 @@ View view() {
     v.front_foot = s.front_foot;
     v.fit_air = s.fit_air;
     v.match_studio = s.match_studio;
+    v.limits = s.limits;
     v.turn_board = s.turn_board;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
@@ -3637,6 +3647,14 @@ void set_turn_board(bool on) {
                   : "The board's keys stay in the board's own frame.";
     publish_locked(s);
 }
+void set_joint_limits(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.limits = on;
+    s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses."
+                  : "Joint limits off: joints can be turned anywhere.";
+    publish_locked(s);
+}
 void set_match_studio(int how) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -3743,6 +3761,31 @@ void hold_facing(State& s, std::span<const std::uint16_t> children, std::span<co
 }
 } // namespace
 
+namespace {
+// Keeps the key of `joint` at `at` inside the joint's range: the pose it makes (the clip's pose with the key
+// on it) is limited, and the key is worked back out from that. So what is saved is already a natural pose,
+// in the studio and in game alike. Caller holds the mutex.
+void limit_key(State& s, std::uint16_t joint, float at) {
+    if (!s.limits || !s.clip || s.clip->empty() || !has_joint_limit(joint)) return;
+    const auto* t = s.edits.track(joint);
+    if (!t || t->locked || t->keys.empty()) return;
+    std::vector<Joint> native(s.clip->joints);
+    s.clip->sample(at, native);
+    if (joint >= native.size()) return;
+    auto key = evaluate(*t, at);
+    const auto posed = normalised(multiply(native[joint].rotation, key.rotation));
+    const auto limited = limit_rotation(joint, posed);
+    if (limited == posed) return;
+    key.rotation = normalised(multiply(conjugate(native[joint].rotation), limited));
+    set_key(s.edits, joint, at, key);
+}
+// The joint and the limb above it that a drag bends.
+void limit_chain(State& s, std::uint16_t joint, std::size_t chain, float at) {
+    int at_joint = joint;
+    for (std::size_t i = 0; i <= chain && at_joint >= 0; ++i, at_joint = parent(static_cast<std::uint16_t>(at_joint)))
+        limit_key(s, static_cast<std::uint16_t>(at_joint), at);
+}
+} // namespace
 std::size_t limb_chain(std::uint16_t joint) noexcept {
     switch (joint) {
     case 10: case 343: case 49: case 278: return 3;  // the feet and the hands
@@ -3772,6 +3815,7 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     std::vector<Quat> facing;
     if (!children.empty()) facing = facing_of(s, children);
     set_key(s.edits, joint, frame_time(s.time), clean);
+    limit_key(s, joint, frame_time(s.time));
     if (!children.empty()) hold_facing(s, children, facing);
     changed_locked(s);
 }
@@ -3828,6 +3872,7 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
     Offset held{};
     if (const auto* t = s.edits.track(joint)) held.rotation = evaluate(*t, at).rotation;
     set_key(s.edits, joint, at, held);
+    limit_chain(s, joint, chain, at);
     changed_locked(s);
 }
 
@@ -3877,6 +3922,7 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
         s.status = e.what();
         return;
     }
+    limit_chain(s, joint, std::max<std::size_t>(limb_chain(joint), 2), at);
     changed_locked(s);
 }
 void delete_key(std::uint16_t joint, float time) {

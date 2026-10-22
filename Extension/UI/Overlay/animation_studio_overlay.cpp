@@ -1547,6 +1547,12 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "spread over the air actually happening, within two thirds and one and a half times the recorded pace, so a "
                         "trick over a gap or an obstacle keeps its shape instead of drifting out of step with the game's own motion.",
                         [v] { studio::set_fit_air(!v.fit_air); }});
+        rows.push_back({"Joint limits", v.limits ? "on" : "off",
+                        "On: every joint you key stays inside the range the game's own animation uses - knees and elbows "
+                        "bend one way only, shoulders and hips swing as far as a skater's do, nothing twists round. A key or "
+                        "a drag past that stops at the edge, and the studio and the game hold to it. Measured from the "
+                        "game's clips. Off: joints can be turned anywhere.",
+                        [v] { studio::set_joint_limits(!v.limits); }});
         rows.push_back({"Match the studio", v.match_studio == 2 ? "whole body" : v.match_studio == 1 ? "bent joints" : "off",
                         "Bent joints: in game, a joint you bent takes the pose it has here - your recording with your key on "
                         "it - and the joints you did not touch stay the game's (its own flick still shows). Whole body: the "
