@@ -240,6 +240,23 @@ Quat rotation_control(const Quat& prev, const Quat& q, const Quat& next, float s
     const Quat a = quat_log(multiply(inverse, nearest(prev, q))), b = quat_log(multiply(inverse, nearest(next, q)));
     return normalised(multiply(q, quat_exp({(b[0] - a[0]) * scale, (b[1] - a[1]) * scale, (b[2] - a[2]) * scale, 0})));
 }
+// A smooth key's slope that never overshoots (a monotone cubic, as Blender's auto-clamped handles): flat where
+// the curve turns - the key above or below both its neighbours - and at the ends, else a weighted harmonic mean
+// of the slopes either side, so the curve never goes past a key, and never dips the other way before a rise.
+float monotone_slope(float d0, float d1, float h0, float h1) noexcept {
+    if (!(d0 * d1 > 0) || !(h0 > 0) || !(h1 > 0)) return 0;
+    const float w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
+    return (w1 + w2) / (w1 / d0 + w2 / d1);
+}
+// One channel between keys a and b (h apart), u of the way, with its neighbours where there are any.
+float monotone_curve(std::optional<std::pair<float, float>> before, float pa, float pb, std::optional<std::pair<float, float>> after,
+                     float h, float u) noexcept {
+    const float d = h > 1e-6f ? (pb - pa) / h : 0.0f;
+    const float ma = before ? monotone_slope((pa - before->second) / before->first, d, before->first, h) : 0.0f;
+    const float mb = after ? monotone_slope(d, (after->second - pb) / after->first, h, after->first) : 0.0f;
+    const float u2 = u * u, u3 = u2 * u;
+    return (2 * u3 - 3 * u2 + 1) * pa + (u3 - 2 * u2 + u) * h * ma + (-2 * u3 + 3 * u2) * pb + (u3 - u2) * h * mb;
+}
 } // namespace
 
 Offset evaluate(const Track& track, float seconds) noexcept {
@@ -260,20 +277,36 @@ Offset evaluate(const Track& track, float seconds) noexcept {
         return {slerp(a.rotation, b.rotation, u), lerp(a.offset, b.offset, u)};
     case Ease::smooth:
     default: {
-        // Time-aware cubic position and rotation curves preserve velocity at uneven key spacing.
-        const auto& before = i > 0 ? keys[i - 1].offset : a.offset;
-        const auto& after = i + 2 < keys.size() ? keys[i + 2].offset : b.offset;
-        const Quat prev = i > 0 ? keys[i - 1].rotation : a.rotation, next = i + 2 < keys.size() ? keys[i + 2].rotation : b.rotation;
-        const Quat b_rotation = nearest(b.rotation, a.rotation);
-        const float before_time = i > 0 ? keys[i - 1].time : a.time - span;
-        const float after_time = i + 2 < keys.size() ? keys[i + 2].time : b.time + span;
-        const float left_scale = span / std::max(b.time - before_time, 1e-6f);
-        const float right_scale = span / std::max(after_time - a.time, 1e-6f);
-        const Quat ca = rotation_control(prev, a.rotation, b_rotation, left_scale / 3);
-        const Quat cb = rotation_control(a.rotation, b_rotation, next, -right_scale / 3);
-        const Quat qa = slerp(a.rotation, ca, u), qm = slerp(ca, cb, u), qb = slerp(cb, b_rotation, u);
-        const Quat moved = slerp(slerp(qa, qm, u), slerp(qm, qb, u), u);
-        return {normalised(moved), hermite(before, a.offset, b.offset, after, u, left_scale, right_scale)};
+        // Smooth keys never overshoot (monotone_curve): a move or a turn eases between its keys without going past
+        // either, flat at the ends - the brackets' keys - and where it turns back. (A curve shaped by its
+        // neighbours alone went past its keys: below zero before a rise off a bracket, and the board under the floor.)
+        const bool has_before = i > 0, has_after = i + 2 < keys.size();
+        const float h0 = has_before ? a.time - keys[i - 1].time : 0.0f, h2 = has_after ? keys[i + 2].time - b.time : 0.0f;
+        Vec3 offset{};
+        for (std::size_t c = 0; c < 3; ++c)
+            offset[c] = monotone_curve(has_before ? std::optional<std::pair<float, float>>({h0, keys[i - 1].offset[c]}) : std::nullopt,
+                                       a.offset[c], b.offset[c],
+                                       has_after ? std::optional<std::pair<float, float>>({h2, keys[i + 2].offset[c]}) : std::nullopt, span, u);
+        // The turn the same way, in the frame of key a: each key's turn from a as a rotation vector, each part of it
+        // eased as above, then turned back into a rotation.
+        // Each neighbour is measured from the key next to it and the steps added up, so a trick that turns on past
+        // half a turn keeps turning the same way instead of reading as a turn back.
+        const auto step = [](const Quat& from, const Quat& to) { return quat_log(multiply(conjugate(from), nearest(to, from))); };
+        const Quat lb = step(a.rotation, b.rotation);
+        Quat lp{0, 0, 0, 0}, ln{0, 0, 0, 0};
+        if (has_before) {
+            const Quat back = step(a.rotation, keys[i - 1].rotation);
+            lp = back;
+        }
+        if (has_after) {
+            const Quat on = step(b.rotation, keys[i + 2].rotation);
+            ln = {lb[0] + on[0], lb[1] + on[1], lb[2] + on[2], 0};
+        }
+        Quat turn{0, 0, 0, 0};
+        for (std::size_t c = 0; c < 3; ++c)
+            turn[c] = monotone_curve(has_before ? std::optional<std::pair<float, float>>({h0, lp[c]}) : std::nullopt, 0.0f, lb[c],
+                                     has_after ? std::optional<std::pair<float, float>>({h2, ln[c]}) : std::nullopt, span, u);
+        return {normalised(multiply(a.rotation, quat_exp(turn))), offset};
     }
     }
 }

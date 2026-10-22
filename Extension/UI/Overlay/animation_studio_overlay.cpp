@@ -149,6 +149,7 @@ struct Ui {
     bool anti_clip{true};        // a joint being placed is kept out of the body and the deck
     float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
     float ground_force{0.6f};    // the ground force field (SETTINGS): how much of a joint's thickness is kept above the floor; 0 off
+    float crossfade_slider{};    // the Crossfade setting on its slider, 0 to 1 (0.1 to 0.8 s), from the studio each frame
     bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
     int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
@@ -1206,6 +1207,7 @@ struct Row {
     bool slider{};       // drawn as a slider over `slide` (Keep clear's when none)
     float* slide{};      // the value the slider sets, 0 to 1
     bool* slide_on{};    // and the switch it turns on above 0, if it has one
+    std::function<void(float)> slid; // told the value as it is dragged, when it is kept elsewhere
     bool info{};         // information: it can be chosen to read its help, and does nothing
     // A switch of its own at the row's right end (a pack ON or OFF, a trick OUT of a pack): clicked by
     // itself, and Del (X on a controller) works it on the chosen row. The rest of the row does `act`.
@@ -2051,6 +2053,29 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "trick - your keys fade out with it. The brackets only mark where your keys count, as in the studio. "
                         "Off: every trick plays as the game has it.",
                         [on = v.play_in_game] { studio::set_play_in_game(!on); }});
+        {
+            // 0.1 to 0.8 s along the slider; the studio keeps it (saved with its settings).
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) u.crossfade_slider = std::clamp((v.crossfade - 0.1f) / 0.7f, 0.0f, 1.0f);
+            const float seconds = 0.1f + u.crossfade_slider * 0.7f;
+            Row fade{"Crossfade", std::format("{:.2f} s", seconds),
+                     "How smoothly your trick hands back to the game when it goes into its next move - a manual, a push, the "
+                     "next trick: short is snappy, long is buttery. One trick's keys blend into the next over half of it. "
+                     "Drag along it, or choose it to step through 0.1, 0.2, 0.3, 0.45 and 0.6 s.",
+                     [seconds] {
+                         const float steps[] = {0.1f, 0.2f, 0.3f, 0.45f, 0.6f};
+                         float next = steps[0];
+                         for (const float step : steps) if (step > seconds + 0.01f) { next = step; break; }
+                         studio::set_crossfade(next);
+                     }};
+            fade.slider = true;
+            fade.slide = &u.crossfade_slider;
+            fade.slid = [](float amount) {
+                static float said = -1;
+                const float seconds = std::round((0.1f + amount * 0.7f) * 100) / 100;
+                if (std::abs(seconds - said) > 0.005f) { said = seconds; studio::set_crossfade(seconds); }
+            };
+            rows.push_back(std::move(fade));
+        }
         rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
                         "Front foot: plays in every stance (regular, goofy, switch, fakie), mirrored onto your front foot when "
                         "the other foot leads, as the game does. The closest recording wins: same pop, then rolling the same way, "
@@ -2397,6 +2422,7 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
                 const float along = (ImGui::GetIO().MousePos.x - (a.x + inset)) / std::max(1.0f, (b.x - a.x) - 2 * inset);
                 amount = std::clamp(along, 0.0f, 1.0f);
                 if (switched) *switched = amount > 0.005f;
+                if (row.slid) row.slid(amount);
                 u.row = static_cast<int>(i);
             }
             const bool on = (!switched || *switched) && amount > 0.005f;
@@ -2410,7 +2436,7 @@ void list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec
             }
             const float fs = 21 * k;
             text(d, f.bold, fs, ImVec2(a.x + 30 * k, a.y + row_h * 0.5f - 12 * k), on && force > 0.25f ? white : ink, row.label);
-            const std::string value = on ? std::format("{:.0f}%", force * 100) : "off";
+            const std::string value = !row.value.empty() ? row.value : on ? std::format("{:.0f}%", force * 100) : "off";
             const auto vw = text_size(f.bold, 16 * k, value.c_str());
             text(d, f.bold, 16 * k, ImVec2(b.x - vw.x - 22 * k, a.y + row_h * 0.5f - 9 * k), on && force > 0.92f ? white : ink, value);
             continue;
@@ -2937,8 +2963,11 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 values.clear();
                 const float step = 3 * k;
                 float lo = std::numeric_limits<float>::max(), hi = -lo, prev = 0;
+                // Outside the brackets the edits do nothing (the game's own animation plays), so the curve is 0 there.
+                const float window_start = v.bracket_start, window_end = v.bracket_end < 0 ? v.duration : v.bracket_end;
                 for (float x = ruler_left; x <= ruler_right + 0.5f * step; x += step) {
-                    float value = studio::channel_value(studio::evaluate(curve, std::max(0.0f, t_of(x))), c);
+                    const float t = std::max(0.0f, t_of(x));
+                    float value = t < window_start - 1e-4f || t > window_end + 1e-4f ? 0.0f : studio::channel_value(studio::evaluate(curve, t), c);
                     if (turn && !values.empty()) {
                         while (value - prev > 180) value -= 360;
                         while (value - prev < -180) value += 360;
@@ -4071,6 +4100,9 @@ void draw_animation_studio() {
     auto* d = ImGui::GetWindowDrawList();
     const float timeline_h = std::min(display.y * 0.34f, 360 * k);
     const float menu_x = left + 60 * k, menu_w = 520 * k;
+    // The menu is a column down the whole left side, its list as long as the screen allows, and the timeline
+    // starts beside it rather than under it (the whole width when the menu is hidden).
+    const float timeline_left = u.menu_hidden ? left : menu_x + menu_w + 30 * k, timeline_w = right - timeline_left;
     // With everything hidden the skater has the whole screen and is aimed at the middle of it: nothing is
     // beside him or under him to leave room for, and a clip filmed this way wants him centred.
     const ImVec2 view_min(u.hide_ui || u.menu_hidden ? left : menu_x + menu_w + 30 * k, 0),
@@ -4119,17 +4151,18 @@ void draw_animation_studio() {
             }
             list_top += 70 * k;
         }
-        // The white card only where it has something: the joint's numbers (JOINTS, KEYS) and the
-        // animation's name, trick and maker (PACKS). Elsewhere the list runs down to the timeline.
+        // The white card only where it has something - the joint's numbers (JOINTS, KEYS), the animation's name,
+        // trick and maker (PACKS) - at the foot of the column. Elsewhere the list runs to the bottom of the screen.
         const auto tab = static_cast<Tab>(u.tab);
         const bool has_card = tab == Tab::joints || tab == Tab::keys || tab == Tab::packs;
-        const float card_top = display.y - timeline_h - card_h - 22 * k;
-        const float list_bottom = has_card ? card_top - 18 * k : display.y - timeline_h - 24 * k;
+        const float card_top = display.y - card_h - 22 * k;
+        const float list_bottom = has_card ? card_top - 18 * k : display.y - 24 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
         if (has_card) card(d, f, v, ImVec2(menu_x, card_top), ImVec2(menu_w + 10 * k, card_h));
-        help_top = help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, card_top), ImVec2(330 * k, card_h));
+        // What the chosen row does: beside the column, just over the timeline.
+        help_top = help_box(d, f, v, ImVec2(timeline_left + 6 * k, display.y - timeline_h - 14 * k - card_h), ImVec2(330 * k, card_h));
     }
-    timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
+    timeline(d, f, v, ImVec2(timeline_left, display.y - timeline_h), ImVec2(timeline_w, timeline_h));
     // What the studio last said. It used to stand there for good, so the screen kept a line about a trick
     // opened minutes ago; it is held long enough to read, by its length, and then goes. A failure stays,
     // because that is something to act on.
@@ -4148,7 +4181,7 @@ void draw_animation_studio() {
         const auto w1 = text_size(f.heading, 30 * k, first);
         const float bw = std::max(w1.x + 60 * k, 520 * k);
         // In the empty timeline, clear of the skater.
-        const ImVec2 a(left + (frame_w - bw) * 0.5f, display.y - timeline_h * 0.5f - 30 * k), b(a.x + bw, a.y + 120 * k);
+        const ImVec2 a(timeline_left + (timeline_w - bw) * 0.5f, display.y - timeline_h * 0.5f - 30 * k), b(a.x + bw, a.y + 120 * k);
         skate_theme::rough_rect(d, a, b, IM_COL32(234, 234, 232, 250), 101, k);
         text(d, f.heading, 30 * k, ImVec2(a.x + (bw - w1.x) * 0.5f, a.y + 16 * k), IM_COL32(20, 20, 22, 255), first);
         d->AddText(f.bold, 17 * k, ImVec2(a.x + 30 * k, a.y + 60 * k), IM_COL32(60, 60, 66, 255), second.c_str(), nullptr, bw - 60 * k);

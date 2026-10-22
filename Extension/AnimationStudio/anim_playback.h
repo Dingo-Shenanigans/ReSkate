@@ -196,7 +196,7 @@ struct EditTransition {
     std::vector<Offset> from, current;
     void reset() { *this = {}; }
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
-                                     std::uintptr_t selected, std::span<const Offset> desired) {
+                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
         if (!std::isfinite(now)) { reset(); return current; }
         if (generation != gen || current.size() != desired.size() || now < observed) {
             generation = gen; current.assign(desired.size(), Offset{}); started = -1;
@@ -205,8 +205,9 @@ struct EditTransition {
             from = current; started = now; episode = attempt; source = selected;
         }
         observed = now;
-        // 0.15 s: one trick's keys into the next, or out when a trick is cut short (a new air, a bail), without a snap.
-        float u = std::clamp(static_cast<float>(now - started) / 0.15f, 0.0f, 1.0f);
+        // `seconds` (0.15 unless the Crossfade setting says): one trick's keys into the next, or out when a trick is
+        // cut short (a new air, a bail), without a snap.
+        float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         for (std::size_t i = 0; i < desired.size(); ++i) {
             current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);

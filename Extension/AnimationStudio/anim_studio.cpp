@@ -183,6 +183,7 @@ struct Snapshot {
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
     bool limits{true};  // keyed joints are kept inside the range the game's own animation uses
+    float crossfade{0.3f}; // the Crossfade setting: seconds to hand back to the game's next move
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -225,6 +226,7 @@ struct State {
     bool grab_board{};
     bool front_foot{true};
     bool limits{true}; // Joint limits (JOINTS): keyed joints stay inside the range the game's own animation uses
+    float crossfade{0.3f}; // Crossfade (SETTINGS > In game), saved
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -497,6 +499,7 @@ struct GameplayPacket {
     std::shared_ptr<const Animation> edits;
 };
 std::atomic<std::uint64_t> gameplay_epoch{};
+std::atomic<float> trick_blend{0.15f}; // one trick's keys into the next on the render thread: half the Crossfade setting
 std::atomic<bool> overrides_allowed{true};
 Live& live();
 struct GameplayPackets {
@@ -645,6 +648,8 @@ void load_settings(State& s) {
         s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
         s.grab_board = root.value("grab_board", s.grab_board);
         s.your_name = root.value("made_by", s.your_name.c_str()).substr(0, 48);
+        if (root.contains("crossfade") && root.at("crossfade").is_number())
+            s.crossfade = std::clamp(static_cast<float>(root.at("crossfade").get<double>()), 0.1f, 0.8f);
     } catch (...) {}
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
@@ -656,6 +661,7 @@ void save_settings_locked(const State& s) {
         root["joint_limits"] = s.limits;
         root["stance"] = s.stance_choice;
         root["grab_board"] = s.grab_board;
+        root["crossfade"] = s.crossfade;
         if (!s.your_name.empty()) root["made_by"] = s.your_name;
         write_preset_file(library_folder() / settings_file, root.dump(2));
     } catch (...) {}
@@ -1001,6 +1007,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
         snap->limits = s.limits;
+        snap->crossfade = s.crossfade;
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -1014,7 +1021,27 @@ std::shared_ptr<const Snapshot> snapshot() {
     return s.snapshot;
 }
 float duration_locked(const State& s) { return s.clip ? s.clip->duration() : 0.0f; }
+// The brackets' keys stay at nothing - 0, 0, 0 - on every joint, so the edits always come in from the game's own
+// pose at the start bracket and go back to it at the end: the curves start and end on 0 and never jump. A change
+// made on a bracket's frame is taken back off its key. Returns how many keys it put back.
+std::size_t pin_brackets_locked(State& s) {
+    if (!s.clip || s.clip->empty()) return 0;
+    const float start = s.edits.start, end = s.edits.end < 0 ? s.clip->duration() : s.edits.end;
+    std::size_t pinned = 0;
+    for (auto& t : s.edits.tracks)
+        for (auto& k : t.keys) {
+            if (std::abs(k.time - start) > 0.5f / 60 && std::abs(k.time - end) > 0.5f / 60) continue;
+            if (k.rotation == Quat{0, 0, 0, 1} && k.offset == Vec3{}) continue;
+            k.rotation = {0, 0, 0, 1};
+            k.offset = {};
+            ++pinned;
+        }
+    return pinned;
+}
 void changed_locked(State& s) {
+    if (pin_brackets_locked(s))
+        s.status = "The brackets' keys stay at 0, 0, 0, so your animation comes in from the game's pose and goes back to it: "
+                   "pose between the brackets.";
     s.dirty = true;
     publish_locked(s);
 }
@@ -2916,7 +2943,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     // In over 0.1 s, out over 0.3 s, both eased, so handing over to the game's next move (a manual, the
                     // next trick) is a smooth crossfade rather than a snap. The trick's end is eased into before it comes.
                     const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
-                    constexpr float step = 1.0f / 60, fade_in = 0.1f, fade_out = 0.3f;
+                    constexpr float step = 1.0f / 60, fade_in = 0.1f;
+                    const float fade_out = std::clamp(snap->crossfade, 0.1f, 0.8f); // SETTINGS > In game: Crossfade
                     l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / fade_in)
                                                              : std::max(target, l.clock_weight - step / fade_out);
                     const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
@@ -2981,6 +3009,7 @@ void on_animation(std::uintptr_t component) noexcept {
             }
             play_pieces(l, *snap, at, generation, component, live_placement, scheduled, board_target, board_weight);
         }
+        trick_blend.store(std::clamp(snap->crossfade * 0.5f, 0.08f, 0.4f), std::memory_order_relaxed);
         publish_gameplay_packet(std::move(scheduled));
         if (diagnostics_capture) {
             diagnostic.observed_phase = snap->open ? "studio_preview" : phase_name(l.episode.phase);
@@ -3328,7 +3357,8 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
         const auto motion = l.render_motion.load(std::memory_order_acquire);
         if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard) {
             const auto deltas = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
-                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas);
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired_deltas,
+                trick_blend.load(std::memory_order_relaxed));
             apply_pose_deltas(deltas, edited);
             applied_deltas.assign(deltas.begin(), deltas.end());
         } else publication.transition.reset();
@@ -3495,7 +3525,7 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         const auto motion = l.render_motion.load(std::memory_order_acquire);
         if (overrides_allowed.load() && motion != MotionState::unknown && motion != MotionState::offboard && motion != MotionState::rail) {
             const auto delta = publication.transition.evaluate(now_seconds(), generation, packet ? packet->episode : 0,
-                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired)[0];
+                packet ? reinterpret_cast<std::uintptr_t>(packet->edits.get()) : 0, desired, trick_blend.load(std::memory_order_relaxed))[0];
             if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
             for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
         } else publication.transition.reset();
@@ -3961,6 +3991,7 @@ View view() {
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
     v.limits = s.limits;
+    v.crossfade = s.crossfade;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -4265,6 +4296,15 @@ void set_joint_limits(bool on) {
     s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses, in the studio and in game."
                   : "Joint limits off: joints go wherever you push them, in the studio and in game.";
     publish_locked(s);
+}
+void set_crossfade(float seconds) {
+    if (!std::isfinite(seconds)) return;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.crossfade = std::clamp(seconds, 0.1f, 0.8f);
+    save_settings_locked(s);
+    s.status = std::format("Your tricks hand over to the game's next move over {:.2f} s.", s.crossfade);
+    publish_locked(s, false);
 }
 void set_rail(int choice) {
     auto& s = state();

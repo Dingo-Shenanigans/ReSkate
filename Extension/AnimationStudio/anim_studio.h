@@ -67,6 +67,7 @@ struct View {
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     bool limits{true};     // Joint limits: keyed joints stay inside the range the game's own animation uses
+    float crossfade{0.3f}; // seconds a trick takes to hand back to the game's next move in game (Crossfade)
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
@@ -187,6 +188,9 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+// In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
+// one trick's keys blend into the next's over half of it. Saved with the studio's settings.
+void set_crossfade(float seconds);
 // The studio's rail: -1 automatic (along the board for a grind, across it for a slide, none otherwise), 0 off, 1 along
 // the board, 2 across it. place_rail puts it under the board as the board is now.
 void set_rail(int choice);

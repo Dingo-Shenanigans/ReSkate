@@ -92,6 +92,29 @@ void slerp_meets_both_ends() {
     check(same_turn(slerp(a, b, 0.5f), from_euler({0, 45, 0})), "and halfway is half the turn");
 }
 
+// Smooth keys never go past a key: a knee's keys like a user's kickflip (0 at the start bracket, still, a little, a
+// lot, the most, back to 0 at the end bracket) never dip below 0 before the rise and never go over the most.
+void smooth_keys_never_overshoot() {
+    Animation animation;
+    animation.clip.times = {0, 2.2f};
+    const std::array<std::pair<float, float>, 6> keys{{{0.0f, 0.0f}, {0.63f, 0.0f}, {0.7f, 3.0f}, {0.93f, 48.0f}, {1.33f, 119.0f}, {2.12f, 0.0f}}};
+    for (const auto& [t, degrees] : keys) set_key(animation, 342, t, {from_euler({0, 0, degrees}), {0, degrees / 1000, 0}});
+    for (auto& k : animation.track(342)->keys) k.ease = Ease::smooth;
+    const auto* track = animation.track(342);
+    float lowest = 1e9f, highest = -1e9f, lowest_move = 1e9f, highest_move = -1e9f;
+    for (int i = 0; i <= 2120; ++i) {
+        const float t = static_cast<float>(i) / 1000;
+        const auto e = evaluate(*track, t);
+        const float z = to_euler(e.rotation)[2];
+        lowest = std::min(lowest, z);
+        highest = std::max(highest, z);
+        lowest_move = std::min(lowest_move, e.offset[1]);
+        highest_move = std::max(highest_move, e.offset[1]);
+    }
+    check(lowest > -0.01f && highest < 119.01f, "A smooth turn never goes past its keys: not below 0 before the rise, not over the most");
+    check(lowest_move > -1e-5f && highest_move < 0.119f + 1e-5f, "and a smooth move neither");
+    check(near(to_euler(evaluate(*track, 0.3f).rotation)[2], 0, 0.01f), "Off the start bracket it stays on 0 until the rise");
+}
 // A turn through keys keeps its speed at each key (no stop-and-go in playback).
 void turn_keeps_its_speed_through_a_key() {
     Animation animation;
@@ -1573,6 +1596,7 @@ int main(int argc, char** argv) {
         mirroring_puts_each_joint_where_its_reflection_belongs();
         dragged_foot_reaches_the_drag();
         turn_keeps_its_speed_through_a_key();
+        smooth_keys_never_overshoot();
         smoothing_tidies_a_track();
         smoothing_chosen_keys();
         one_channel_changes_alone();
