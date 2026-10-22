@@ -158,6 +158,15 @@ std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component)
     return left ? std::optional<bool>{riding_switch(*left, goofy_stance())} : std::nullopt;
 }
 using CustomTricks = std::vector<CustomTrick>;
+// How a saved trick plays in game. These were settings once, and set wrong they broke tricks with nothing in
+// the menu to show why, so they are fixed: the whole skater and the board play the recording with its keys,
+// as the studio shows it; keyed joints stay inside the range the game's own animation uses; and the keys are
+// spread over the air that really happens, so the landing meets the game's. A deck turned round under him is
+// taken from the game's own board-backwards flag.
+constexpr float match_bent_joints = 1; // a joint with a key takes the pose it has in the studio
+constexpr float match_whole_body = 1;  // and so does every other joint, and the board
+constexpr bool keep_joint_limits = true;
+constexpr bool fit_keys_to_air = true;
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
@@ -168,10 +177,6 @@ struct Snapshot {
     bool goofy{}; // the way round the studio is working
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
-    bool fit_air{};     // the keys are spread over the air that happens
-    int match_studio{2}; // 0 off, 1 a bent joint goes to the pose it was made on, 2 the whole body does
-    bool limits{true};   // keyed joints stay inside the range the game's own animation uses
-    bool turn_board{};  // the board's frame is turned round when it points the other way to its recording
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -207,10 +212,6 @@ struct State {
     bool showing_goofy{};
     bool grab_board{};
     bool front_foot{true};
-    bool fit_air{};
-    bool turn_board{};
-    int match_studio{2};
-    bool limits{true};
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -382,22 +383,13 @@ struct Live {
     } piece_play;
     std::uint64_t piece_episodes{};
     // Giving way to the game. The native graph goes on underneath the authored layer the whole time, and
-    // it changes its mind: a trick is refined, a grind is taken, an obstacle turns the transition into
-    // something else. Rather than guess what it will do - its conditions are its own - the layer watches
-    // what it did and lets go smoothly, limb by limb where it can tell which.
+    // it changes its mind: a trick is refined, an obstacle turns it into something else. Then the layer
+    // stands back smoothly (gave_way_at) rather than guess what the game will do.
     LimbWeights limbs;
-    std::uint8_t limbs_logged{}; // which limbs have been reported handed back this trick
     float riding_forward{};       // body-relative forward speed while last riding (below zero: fakie)
     bool playback_fakie{}, playback_backwards{}; // at this trick's takeoff
     bool recorded_fakie{}, recorded_backwards{}; // at the recorded trick's takeoff
-    // Which way a recording's board was pointing, in its own skater's frame, worked out once per trick.
-    // Riding fakie the board is the other way round to the way it was recorded, and its keys have to be
-    // read that way round too or they push the wrong end of it.
-    std::map<const Clip*, Quat> recorded_board_frame;
     std::vector<Joint> mirror_scratch;  // the pose being read while his mirrored one is written
-    std::vector<Joint> native_before;   // the native pose a frame ago, to see what the graph just did
-    std::vector<Joint> source_before;   // and what the authored clip expected over the same frame
-    double limbs_at{-1};
     double gave_way_at{-1};             // the whole layer standing back after the trick changed under it
     std::string gave_way_from;
     std::string recorded_trick; // the game's name of the trick being recorded
@@ -432,8 +424,9 @@ struct GameplayPacket {
     LimbWeights limbs; // a limb the game has taken is given back to it
     bool mirrored{};   // the keys were mirrored for this stance, so the studio's pose is too
     bool board_backwards{}; // the game had the deck turned round under him at takeoff
-    float match{};     // how far a bent joint goes to the pose it was made on (Match the studio)
-    float match_rest{}; // and how far the joints with no bend do (Match the studio: whole body)
+    bool fakie{};           // he took off rolling fakie (for the playback verification's report)
+    float match{};     // how far a keyed joint goes to the pose it has in the studio (match_bent_joints)
+    float match_rest{}; // and how far every other joint and the board do (match_whole_body)
     bool limits{};      // keyed joints are kept inside the game's range
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
@@ -570,41 +563,28 @@ std::filesystem::path library_folder() {
     if (!count || count >= buffer.size()) return {};
     return std::filesystem::path(std::wstring(buffer.data(), count)).parent_path() / L"ReSkate.Tricks";
 }
-// The studio's settings, kept in ReSkate.Tricks/studio-settings.json so they survive a restart. They used
-// to reset every start, so Match the studio went back to bent joints and the back foot of a front-foot
-// trick went back to the game's own movement without anyone touching it.
+// The studio's settings, kept beside the animations in ReSkate.Tricks so they survive a restart. It is not an
+// animation: the library listings pass over it.
+constexpr const wchar_t* settings_file = L"studio-settings.json";
 void load_settings(State& s) {
     try {
-        std::ifstream in(library_folder() / L"studio-settings.json", std::ios::binary);
+        std::ifstream in(library_folder() / settings_file, std::ios::binary);
         if (!in) return;
         const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
         if (!root.is_object()) return;
         s.front_foot = root.value("front_foot", s.front_foot);
-        s.match_studio = std::clamp(root.value("match_studio", s.match_studio), 0, 2);
-        s.limits = root.value("joint_limits", s.limits);
-        s.fit_air = root.value("fit_air", s.fit_air);
-        s.turn_board = root.value("turn_board", s.turn_board);
         s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
         s.grab_board = root.value("grab_board", s.grab_board);
     } catch (...) {}
-    // Not options any more (set wrong, they broke tricks): whatever an older session saved, these hold.
-    s.match_studio = 2;
-    s.limits = true;
-    s.fit_air = true;
-    s.turn_board = false;
 }
 // Caller holds the mutex.
 void save_settings_locked(const State& s) {
     try {
         Json root = Json::object();
         root["front_foot"] = s.front_foot;
-        root["match_studio"] = s.match_studio;
-        root["joint_limits"] = s.limits;
-        root["fit_air"] = s.fit_air;
-        root["turn_board"] = s.turn_board;
         root["stance"] = s.stance_choice;
         root["grab_board"] = s.grab_board;
-        const auto path = library_folder() / L"studio-settings.json";
+        const auto path = library_folder() / settings_file;
         std::filesystem::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         out << root.dump(2);
@@ -698,6 +678,27 @@ bool upgrade_saved(const std::filesystem::path& json_path) {
         return false;
     }
 }
+// Every saved animation's metadata file: the ones loose in the tricks folder, and the ones in a folder of
+// their own named after them. A folder without its own .json (presets, recorded, library) is passed over.
+std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& folder) {
+    std::vector<std::filesystem::path> out, loose;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().filename() != settings_file)
+            loose.push_back(entry.path());
+        else if (entry.is_directory(error)) {
+            auto own = entry.path() / entry.path().filename();
+            own += L".json";
+            std::error_code inner;
+            if (std::filesystem::is_regular_file(own, inner)) out.push_back(own);
+        }
+    }
+    // A trick in both places is the same trick: the folder wins, as saved_file has it. Loaded twice it
+    // would be two variants of itself and alternate with itself in game.
+    for (const auto& path : loose)
+        if (std::none_of(out.begin(), out.end(), [&](const auto& own) { return own.stem() == path.stem(); })) out.push_back(path);
+    return out;
+}
 void read_library_locked(State& s) {
     s.library.clear();
     s.presets.clear();
@@ -707,15 +708,7 @@ void read_library_locked(State& s) {
     std::error_code error;
     const auto folder = library_folder();
     if (folder.empty() || !std::filesystem::is_directory(folder, error)) return;
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (entry.is_regular_file(error) && entry.path().extension() == L".json") s.library.push_back(entry.path().stem().string());
-        else if (entry.is_directory(error)) {
-            // A trick's own folder, named after it, holding its .json beside its .clip.
-            const auto name = entry.path().filename().string();
-            std::error_code inner;
-            if (std::filesystem::is_regular_file(entry.path() / (name + ".json"), inner)) s.library.push_back(name);
-        }
-    }
+    for (const auto& path : saved_jsons(folder)) s.library.push_back(path.stem().string());
     std::sort(s.library.begin(), s.library.end());
     s.library.erase(std::unique(s.library.begin(), s.library.end()), s.library.end());
     for (const auto& name : s.library) upgrade_saved(saved_json(name));
@@ -738,27 +731,6 @@ void read_library_locked(State& s) {
                 if (entry.is_regular_file(error) && entry.path().extension() == L".json") s.packs.push_back(entry.path().stem().string());
         std::sort(s.packs.begin(), s.packs.end());
     } catch (const std::exception& e) { s.status = e.what(); }
-}
-
-// Every saved animation's metadata file: the ones loose in the tricks folder, and the ones in a folder of
-// their own named after them. A folder without its own .json (presets, recorded, library) is passed over.
-std::vector<std::filesystem::path> saved_jsons(const std::filesystem::path& folder) {
-    std::vector<std::filesystem::path> out, loose;
-    std::error_code error;
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (entry.is_regular_file(error) && entry.path().extension() == L".json") loose.push_back(entry.path());
-        else if (entry.is_directory(error)) {
-            auto own = entry.path() / entry.path().filename();
-            own += L".json";
-            std::error_code inner;
-            if (std::filesystem::is_regular_file(own, inner)) out.push_back(own);
-        }
-    }
-    // A trick in both places is the same trick: the folder wins, as saved_file has it. Loaded twice it
-    // would be two variants of itself and alternate with itself in game.
-    for (const auto& path : loose)
-        if (std::none_of(out.begin(), out.end(), [&](const auto& own) { return own.stem() == path.stem(); })) out.push_back(path);
-    return out;
 }
 
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
@@ -894,15 +866,6 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->goofy = goofy;
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
-        snap->fit_air = s.fit_air;
-        // Fixed, not options: set wrong they broke tricks in ways nobody could see from the menu. The whole
-        // body plays the recording with its keys (board too), keys stay in their joints' range, the trick is
-        // spread over the air that really happens so the landing meets the game's, and the board's frame
-        // follows the game's board-backwards flag rather than a guess.
-        snap->match_studio = 2;
-        snap->limits = true;
-        snap->fit_air = true;
-        snap->turn_board = false;
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -1976,10 +1939,10 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
     packet->at = at; packet->time = play.time; packet->weight = weight;
     packet->clip = play.trick->clip; packet->edits = keys;
-    packet->mirrored = play.mirrored; packet->match = snap.match_studio > 0 ? 1.0f : 0.0f;
+    packet->mirrored = play.mirrored; packet->match = match_bent_joints;
     packet->board_backwards = play.board_backwards;
-    packet->match_rest = snap.match_studio > 1 ? 1.0f : 0.0f;
-    packet->limits = snap.limits;
+    packet->match_rest = match_whole_body;
+    packet->limits = keep_joint_limits;
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
     if (play.board_frame_ok && l.board_ok) {
@@ -2479,7 +2442,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             apply_edits(shown_edits, shown_time, l.pose);
-            if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
+            limit_keyed_joints(shown_edits, shown_time, l.pose);
             // Standing him the other way round: his body is reflected across its own middle, so the foot
             // that was at the nose is at the tail and the arm that led now trails. Only the skinned body
             // moves; the placement and everything hanging off it stay where they stood, so the board does
@@ -2533,7 +2496,7 @@ void on_animation(std::uintptr_t component) noexcept {
         } else if (snap->open) {
             // No trick loaded yet: the live pose, with the edits of the start of the timeline.
             apply_edits(*snap->edits, 0, l.pose);
-            if (snap->limits) limit_keyed_joints(*snap->edits, 0, l.pose);
+            limit_keyed_joints(*snap->edits, 0, l.pose);
             first = in_room ? placement_joint : 2;
             last = layout.count;
         } else if (snap->play_in_game && !snap->armed && !bailing && snap->tricks && !snap->tricks->empty()) {
@@ -2565,12 +2528,10 @@ void on_animation(std::uintptr_t component) noexcept {
                 // one can be given the old one's address, so a stale entry would be found and believed.
                 if (l.game_tricks != snap->tricks) {
                     l.mirrored_edits.clear();
-                    l.recorded_board_frame.clear();
                 }
                 l.game_tricks = snap->tricks;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
-                l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear(); l.limbs_logged = 0;
-                l.native_before.clear(); l.source_before.clear(); l.limbs_at = -1;
+                l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
                 if (l.board_ok) {
                     const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
@@ -2661,14 +2622,13 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (found) l.episode.select(at);
                     l.game_trick = found;
                     if (found) {
-                        const bool lead_matches = found->leads_right == leads_right(l.playback_goofy, l.playback_switch.value_or(false));
+                        const bool lead_matches = found->leads_right == live.leads_right;
                         logging::log(Level::info, Channel::skater,
-                                     "Animation Studio: {} (made leading with the {} foot{}) plays{}{} - {} {} - leading with the {} foot, {}.", found->name,
+                                     "Animation Studio: {} (made leading with the {} foot{}) plays - {} foot leading{}{} - {} ({}).", found->name,
                                      found->leads_right ? "right" : "left", found->fakie.value_or(false) ? ", fakie" : "",
-                                     l.playback_fakie ? " fakie" : "", l.playback_backwards ? " with the board backwards" : "",
-                                     l.playback_goofy ? "goofy" : "regular", l.playback_switch.value_or(false) ? "switch" : "normal",
-                                     leads_right(l.playback_goofy, l.playback_switch.value_or(false)) ? "right" : "left",
-                                     !l.playback_front_foot ? "exact stance" : lead_matches ? "as recorded" : "mirrored");
+                                     live.leads_right ? "right" : "left", live.fakie ? ", fakie" : "",
+                                     l.playback_backwards ? ", board backwards" : "", lead_matches ? "as made" : "mirrored",
+                                     l.playback_front_foot ? "front foot" : "exact stance");
                     }
                     if (found)
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
@@ -2697,51 +2657,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
                 const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
                 const auto& clip = *trick->clip;
-                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, snap->fit_air);
-                // What the graph did this frame against what the clip says should have happened. A limb
-                // the game has taken - a grind planting the feet, a grab putting a hand on the board -
-                // moves far more than the clip does, and that is the signal: no guess about why, only
-                // that it did. It is given back, and taken up again when it settles.
-                {
-                    const float dt = l.limbs_at > 0 ? static_cast<float>(std::clamp(at - l.limbs_at, 0.0, 0.1)) : 0.0f;
-                    l.limbs_at = at;
-                    std::vector<Joint> source_now(trick->clip->joints);
-                    trick->clip->sample(std::clamp(sampled.time, 0.0f, trick->clip->duration()), source_now);
-                    const bool have_before = l.native_before.size() >= skeleton_joints && l.source_before.size() >= skeleton_joints;
-                    // One joint speaks for each limb: the elbow and the knee, which every grind and grab moves.
-                    constexpr std::array<std::uint16_t, 5> speaks_for{0, 277, 48, 342, 9};
-                    for (std::size_t limb = 1; limb < speaks_for.size(); ++limb) {
-                        bool taken = false;
-                        if (have_before && dt > 0) {
-                            const auto joint = speaks_for[limb];
-                            const auto moved = [](const Quat& a, const Quat& b) {
-                                const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
-                                return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
-                            };
-                            const float by_game = moved(l.native_before[joint].rotation, l.pose[joint].rotation);
-                            // Played mirrored, the clip's left elbow is the one driving his right: compare like with
-                            // like, or every mirrored trick reads as the game taking limbs it has not touched.
-                            const auto source_joint = l.played_mirrored ? mirror_joint[joint] : joint;
-                            const float by_clip = moved(l.source_before[source_joint].rotation, source_now[source_joint].rotation);
-                            // Not while the whole body plays the recording: a kickflip's pop and catch move the legs
-                            // that fast anyway, and handing the back leg to the game mid-trick is what made it move
-                            // on its own.
-                            taken = snap->match_studio <= 1 && by_game - by_clip > 0.22f; // ~13 degrees a frame the clip did not ask for
-                            if (taken && !(l.limbs_logged & (1u << limb))) {
-                                l.limbs_logged |= static_cast<std::uint8_t>(1u << limb);
-                                static constexpr const char* limb_names[] = {"body", "left arm", "right arm", "left leg", "right leg"};
-                                logging::log(Level::info, Channel::skater, "Animation Studio: the game took the {} - handed back to it.", limb_names[limb]);
-                            }
-                        }
-                        const float want = taken ? 0.0f : 1.0f;
-                        const float step = dt > 0 ? (taken ? dt / 0.10f : dt / 0.30f) : 1.0f; // let go quickly, come back slowly
-                        auto& held = l.limbs.limb[limb];
-                        held += std::clamp(want - held, -step, step);
-                        held = std::clamp(held, 0.0f, 1.0f);
-                    }
-                    l.native_before.assign(l.pose.begin(), l.pose.begin() + std::min<std::size_t>(l.pose.size(), skeleton_joints));
-                    l.source_before = std::move(source_now);
-                }
+                const auto sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
                 const float weight = sampled.weight * animation_window_weight(played, sampled.time) * give_way;
                 diagnostic.preset = trick->name;
                 diagnostic.source_kind = played.source.kind;
@@ -2757,40 +2673,15 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
-                    packet->mirrored = l.played_mirrored; packet->match = snap->match_studio > 0 ? 1.0f : 0.0f;
+                    packet->mirrored = l.played_mirrored; packet->match = match_bent_joints;
                     packet->board_backwards = l.playback_backwards;
-                    packet->match_rest = snap->match_studio > 1 ? 1.0f : 0.0f;
-                    packet->limits = snap->limits;
-                    // The board keys work in the frame the board had at takeoff. That is only the frame
-                    // they were authored in if the board is pointing the way it was when they were
-                    // recorded: riding fakie it is the other way round, and the keys then push the nose
-                    // where they should push the tail. So the two are compared and the frame turned to
-                    // match. Which foot leads is the body's business and is handled on its own; this is
-                    // the board's.
-                    // Turning the board's frame round when the board points the other way to its recording.
-                    // This went in to cure tricks playing backwards for a regular skater, and that turned out
-                    // to be the stance bit being misread (fixed at its source, left_foot_leads). Read again
-                    // with that fixed, the board's keys are authored in the board's own frame (start_frame)
-                    // and played in the board's own frame (board_frame_local), both nose-relative, so they
-                    // need no turning for fakie - and turning them would put a nose key on the tail. Kept
-                    // as a setting, off, so it can be judged in the game rather than argued about.
-                    Quat takeoff_frame = l.board_frame_local;
-                    if (false) { // the old guess; the game's board-backwards flag now turns the frame at takeoff
-                        auto known = l.recorded_board_frame.find(trick->clip.get());
-                        if (known == l.recorded_board_frame.end()) {
-                            Quat recorded{0, 0, 0, 1};
-                            if (Joint rel; trick->clip->sample_board(0, rel)) {
-                                rel = nose_forward(*trick->clip, rel);
-                                const auto placed = world(trick->clip->frame(0), placement_joint);
-                                recorded = normalised(multiply(conjugate(placed.rotation), ground_turn(compose(placed, rel))));
-                            }
-                            known = l.recorded_board_frame.emplace(trick->clip.get(), recorded).first;
-                        }
-                        const auto along = [](const Quat& q) { return rotate(q, Vec3{0, 0, 1}); };
-                        const auto live = along(takeoff_frame), as_recorded = along(known->second);
-                        if (live[0] * as_recorded[0] + live[2] * as_recorded[2] < 0)
-                            takeoff_frame = normalised(multiply(axis_angle({0, 1, 0}, 3.14159265f), takeoff_frame));
-                    }
+                    packet->fakie = l.playback_fakie;
+                    packet->match_rest = match_whole_body;
+                    packet->limits = keep_joint_limits;
+                    // The board keys are authored in the board's own frame and played in it (nose-relative both
+                    // times), so they need no turning for fakie. A deck turned round under him is the game's
+                    // board-backwards flag, applied where the board is drawn.
+                    const Quat takeoff_frame = l.board_frame_local;
                     packet->board_frame_local = takeoff_frame; packet->board_frame_valid = l.board_at_takeoff_ok;
                     packet->board_owned = l.episode.phase != PlaybackPhase::rail_release;
                     scheduled = std::move(packet);
@@ -2988,6 +2879,136 @@ void hide_in_room(std::uintptr_t animation_interface, bool skater) noexcept {
     }
 }
 
+// ---- playback verification (test builds: RESKATE_PLAYBACK_VERIFY=1) --------------------------------
+// Measures, every frame a saved trick is fully on, how far what the game DRAWS is from what the studio shows
+// for that moment: the recording with its keys, mirrored the game's way when played mirrored, keyed joints in
+// their limits. The drawn pose is read back from the skater's buffer after the board is drawn, so nothing the
+// game does after our write can hide. One line per trick in ReSkate.Tricks/research/playback-verify.txt.
+namespace playback_verify {
+bool on() {
+    static const bool enabled = [] {
+        wchar_t flag[4]{};
+        return GetEnvironmentVariableW(L"RESKATE_PLAYBACK_VERIFY", flag, 4) == 1 && flag[0] == L'1';
+    }();
+    return enabled;
+}
+struct Expected {
+    std::uint64_t presentation{~std::uint64_t{0}}, episode{};
+    double at{-1};
+    float time{};
+    std::vector<Joint> pose, native;
+    std::string name;
+    bool mirrored{}, fakie{}, backwards{};
+};
+struct Totals {
+    std::uint64_t episode{};
+    std::string name;
+    bool mirrored{}, fakie{}, backwards{};
+    std::size_t frames{};
+    double body_sum{}, native_sum{};
+    float body_max{}, hips_max{}, board_deg_max{}, board_cm_max{}, feet_cm_max{};
+    std::uint16_t worst{};
+    double last_at{-1};
+    float t_first{-1}, t_last{};
+};
+std::mutex mutex;
+Expected expected;
+Totals totals;
+float angle(const Quat& a, const Quat& b) noexcept {
+    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f;
+}
+float distance_cm(const Vec3& a, const Vec3& b) noexcept {
+    const float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return std::sqrt(x * x + y * y + z * z) * 100;
+}
+void flush_locked() {
+    if (!totals.frames) return;
+    const auto* worst = editable(totals.worst);
+    const auto line = std::format(
+        "{:<22} {:<9} {:<6} {:<10} frames {:4}  t {:.2f}-{:.2f}  body mean {:5.2f} max {:5.2f} deg ({})  hips {:4.1f} cm  board {:5.2f} deg {:4.1f} cm  "
+        "feet on board {:4.1f} cm  | the game's own pose was {:5.2f} deg from the studio",
+        totals.name.substr(0, 22), totals.mirrored ? "mirrored" : "as made", totals.fakie ? "fakie" : "normal",
+        totals.backwards ? "board-back" : "board-fwd", totals.frames, totals.t_first, totals.t_last,
+        totals.body_sum / static_cast<double>(totals.frames), totals.body_max, worst ? std::string(worst->label) : std::to_string(totals.worst),
+        totals.hips_max, totals.board_deg_max, totals.board_cm_max, totals.feet_cm_max,
+        totals.native_sum / static_cast<double>(totals.frames));
+    try {
+        const auto folder = library_folder() / L"research";
+        std::filesystem::create_directories(folder);
+        std::ofstream file(folder / "playback-verify.txt", std::ios::binary | std::ios::app);
+        file << line << '\n';
+    } catch (...) {}
+    logging::log(Level::info, Channel::skater, "Animation Studio verify: {}", line);
+    totals = {};
+}
+// Render thread, body: what the studio shows for this packet, kept for the board render to compare with.
+void stash(const GameplayPacket& packet, std::uint64_t presentation, const std::vector<Joint>& native, double now) {
+    if (!on() || !packet.clip || !packet.edits || packet.clip->joints != skeleton_joints || native.size() < skeleton_joints) return;
+    std::lock_guard lock(mutex);
+    if (totals.frames && (totals.episode != packet.episode || now - totals.last_at > 0.3)) flush_locked();
+    if (packet.weight < 0.98f) return;
+    const auto studio = studio_pose(*packet.clip, packet.time, packet.mirrored);
+    auto pose = native;
+    for (std::uint16_t j = 0; j < skeleton_joints; ++j)
+        if (gameplay_body_joint(j) && editable(j)) pose[j] = studio[j];
+    apply_edits(*packet.edits, packet.time, pose); // the board track (900) is past the skeleton and left out
+    limit_keyed_joints(*packet.edits, packet.time, pose);
+    expected = {presentation, packet.episode, now, packet.time, std::move(pose), native, packet.edits->name, packet.mirrored, packet.fakie,
+                packet.board_backwards};
+}
+// Render thread, board: the drawn body read back now, the drawn board as written, against the studio's.
+void compare(std::uint64_t presentation, double now, const std::vector<Joint>& drawn, const Joint& drawn_board, const Joint& studio_board) {
+    if (!on()) return;
+    std::lock_guard lock(mutex);
+    if (expected.presentation != presentation || expected.pose.size() < skeleton_joints || drawn.size() < skeleton_joints || now - expected.at > 0.05) return;
+    if (totals.frames && totals.episode != expected.episode) flush_locked();
+    if (!totals.frames) {
+        totals.episode = expected.episode;
+        totals.name = expected.name;
+        totals.mirrored = expected.mirrored;
+        totals.fakie = expected.fakie;
+        totals.backwards = expected.backwards;
+        totals.t_first = expected.time;
+    }
+    float sum = 0, native_sum = 0;
+    int count = 0;
+    for (const auto& e : editable_joints()) {
+        const auto j = e.index;
+        if (j >= skeleton_joints || !gameplay_body_joint(j)) continue;
+        const float error = angle(drawn[j].rotation, expected.pose[j].rotation);
+        sum += error;
+        native_sum += angle(expected.native[j].rotation, expected.pose[j].rotation);
+        ++count;
+        if (error > totals.body_max) {
+            totals.body_max = error;
+            totals.worst = j;
+        }
+    }
+    if (count) {
+        totals.body_sum += sum / static_cast<float>(count);
+        totals.native_sum += native_sum / static_cast<float>(count);
+    }
+    totals.hips_max = std::max(totals.hips_max, distance_cm(drawn[hips_joint].position, expected.pose[hips_joint].position));
+    totals.board_deg_max = std::max(totals.board_deg_max, angle(drawn_board.rotation, studio_board.rotation));
+    totals.board_cm_max = std::max(totals.board_cm_max, distance_cm(drawn_board.position, studio_board.position));
+    for (const std::uint16_t foot : {std::uint16_t{10}, std::uint16_t{343}}) {
+        const auto on_drawn = relative(drawn_board, world(drawn, foot)).position;
+        const auto on_studio = relative(studio_board, world(expected.pose, foot)).position;
+        totals.feet_cm_max = std::max(totals.feet_cm_max, distance_cm(on_drawn, on_studio));
+    }
+    ++totals.frames;
+    totals.t_last = expected.time;
+    totals.last_at = now;
+}
+// Render thread, body, no trick on: a finished trick is written out.
+void idle(double now) {
+    if (!on()) return;
+    std::lock_guard lock(mutex);
+    if (totals.frames && now - totals.last_at > 0.3) flush_locked();
+}
+} // namespace playback_verify
+
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
     const auto generation = l.generation.load(std::memory_order_acquire);
@@ -3000,6 +3021,8 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
     std::vector<Joint> native; native.reserve(current.size());
     for (const auto& bone : current) native.push_back(joint_of(bone));
     publication.edits.restore(generation, update, layout.buffer, native);
+    if (packet) playback_verify::stash(*packet, presentation, native, now_seconds());
+    else playback_verify::idle(now_seconds());
     auto edited = native;
     if (packet) {
         std::vector<Joint> studio;
@@ -3132,6 +3155,8 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
     auto edited = native;
     const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
     Joint want = native_mount;
+    Joint studio_board;
+    bool studio_board_ok = false;
     if (packet && packet->board_holder == holder && packet->board_owned && packet->board_frame_valid) {
         const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
         const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
@@ -3160,6 +3185,8 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
                 }
             }
             const auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
+            studio_board = target;
+            studio_board_ok = packet->weight >= 0.98f;
             if (target != native_mount) {
                 want.rotation = slerp(native_mount.rotation, target.rotation, packet->weight);
                 for (std::size_t i = 0; i < 3; ++i) want.position[i] += (target.position[i] - native_mount.position[i]) * packet->weight;
@@ -3195,6 +3222,19 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         shot.edited_board_at = now_seconds(); shot.edited_board_generation = generation;
         shot.edited_board_sequence = packet ? packet->sequence : 0; shot.edited_board_presentation = presentation;
         shot.board = native_mount;
+    }
+    // Verification: the body as it will be drawn, read back now, and the board as written.
+    if (studio_board_ok && playback_verify::on() && packet) {
+        const auto body_holder = read<std::uintptr_t>(packet->component + 0xa0).value_or(0);
+        const auto body_layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
+        std::vector<NativeBone> drawn_bones(skeleton_joints);
+        if (body_layout.buffer && body_layout.count == skeleton_joints &&
+            peek(body_layout.buffer, drawn_bones.data(), drawn_bones.size() * sizeof(NativeBone))) {
+            std::vector<Joint> drawn;
+            drawn.reserve(drawn_bones.size());
+            for (const auto& bone : drawn_bones) drawn.push_back(joint_of(bone));
+            playback_verify::compare(presentation, now_seconds(), drawn, compose(compose(edited[0], edited[1]), edited[board_mount]), studio_board);
+        }
     }
     publication.edits.commit(generation, update, layout.buffer, std::move(native), std::move(edited));
 }
@@ -3617,10 +3657,6 @@ View view() {
     v.game_stance = dingosdk::grind_exit_control::stance();
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
-    v.fit_air = s.fit_air;
-    v.match_studio = s.match_studio;
-    v.limits = s.limits;
-    v.turn_board = s.turn_board;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -3870,43 +3906,7 @@ void set_play_in_game(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.play_in_game = on;
-    s.status = on ? "Your saved keys modify native tricks. Full source motion is previewed in the studio." : "Tricks play as the game has them.";
-    publish_locked(s);
-}
-void set_turn_board(bool on) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.turn_board = on;
-    save_settings_locked(s);
-    s.status = on ? "The board's keys are turned round when the board points the other way to its recording."
-                  : "The board's keys stay in the board's own frame.";
-    publish_locked(s);
-}
-void set_joint_limits(bool on) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.limits = on;
-    save_settings_locked(s);
-    s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses."
-                  : "Joint limits off: joints can be turned anywhere.";
-    publish_locked(s);
-}
-void set_match_studio(int how) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.match_studio = std::clamp(how, 0, 2);
-    save_settings_locked(s);
-    s.status = s.match_studio == 2   ? "In game the whole body plays your recording with your keys on it, as the studio shows it."
-               : s.match_studio == 1 ? "In game a joint you bent takes the pose it has in the studio; the rest is the game's."
-                                     : "In game your bends are added to whatever the game is doing.";
-    publish_locked(s);
-}
-void set_fit_air(bool on) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.fit_air = on;
-    save_settings_locked(s);
-    s.status = on ? "Keys are spread over the air that happens." : "Keys run at the seconds they were recorded at.";
+    s.status = on ? "Your saved tricks play in game, as the studio shows them." : "Tricks play as the game has them.";
     publish_locked(s);
 }
 void set_front_foot(bool on) {
@@ -4007,7 +4007,7 @@ namespace {
 // on it) is limited, and the key is worked back out from that. So what is saved is already a natural pose,
 // in the studio and in game alike. Caller holds the mutex.
 void limit_key(State& s, std::uint16_t joint, float at) {
-    if (!s.limits || !s.clip || s.clip->empty() || !has_joint_limit(joint)) return;
+    if (!s.clip || s.clip->empty() || !has_joint_limit(joint)) return;
     const auto* t = s.edits.track(joint);
     if (!t || t->locked || t->keys.empty()) return;
     std::vector<Joint> native(s.clip->joints);

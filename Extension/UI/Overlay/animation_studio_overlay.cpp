@@ -1533,16 +1533,14 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                                   : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
                         "Which foot leads while you edit: regular (left) or goofy (right). A trick made leading with the other foot "
                         "is mirrored into this stance the way the game mirrors its own animation, so the leg you grab is the leg "
-                        "that moves. Saved, a trick plays right in every stance either way. The game's: the Stance setting in "
+                        "that moves. Where it plays once saved is up to Trick matching. The game's: the Stance setting in "
                         "GRIND EXITS (taken as regular until it is set).",
                         [v] { studio::set_stance((v.stance_choice + 1) % 3); }});
         rows.push_back({"Trick matching", v.front_foot ? "front foot" : "exact stance",
-                        "Front foot: your trick plays in every stance - regular, goofy, switch, true switch, fakie - mirrored onto "
-                        "your front foot when the other foot leads, the way the game does it. The closest recording wins: the pop "
-                        "height first, then one made rolling the same way (fakie or not), then one on the same foot. Exact stance: "
-                        "only a recording made on the foot that leads now, rolling the same way, plays - never mirrored - and the "
-                        "game's own animation otherwise. Nollie tricks are their own tricks and need their own recording. The "
-                        "whole skater and the board play the recording, spread over the air that happens. Kept between sessions.",
+                        "Front foot: plays in every stance (regular, goofy, switch, fakie), mirrored onto your front foot when "
+                        "the other foot leads, as the game does. The closest recording wins: same pop, then rolling the same way, "
+                        "then the same foot. Exact stance: only one made on the foot that leads now, rolling the same way; the "
+                        "game's own animation otherwise. Nollie tricks need their own recording.",
                         [v] { studio::set_front_foot(!v.front_foot); }});
         rows.push_back({"Hands grab the board", v.grab_board ? "on" : "off",
                         "On: a hand brought near the deck closes its fingers round it, more the nearer it gets. The fingers are not "
@@ -1595,18 +1593,22 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         }});
         rows.push_back({v.playing ? "Pause" : "Play", "", "Plays the trick with your keys.", [v] { studio::set_playing(!v.playing); }, v.has_clip});
         rows.push_back({"Loop", v.loop ? "on" : "off", "Repeat the timeline. A source whose end differs from its start can visibly reset when looped.", [v] { studio::set_loop(!v.loop); }});
-        rows.push_back({"Preview speed", std::format("{:.2f}x", v.speed), "Slow down the studio preview to edit. Gameplay keys keep the native trick's timing at 1x.", [v] {
+        rows.push_back({"Preview speed", std::format("{:.2f}x", v.speed), "Slows the studio preview down to edit. In game the trick is fitted to the air that happens.", [v] {
                             const float speeds[] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
                             float next = speeds[0];
                             for (const float s : speeds) if (s > v.speed + 0.01f) { next = s; break; }
                             studio::set_speed(next);
                         }});
         rows.push_back({"Source", v.source_kind == "native_asset" ? (v.source_position_codec == "native-piec-v1-extent" ? "Native clip" : "Unverified native clip") : v.source_kind == "render_capture" ? "In-game capture" : "Legacy / unknown",
-                        "The studio previews this source. Gameplay applies your saved keys over native motion; full source-motion replacement requires native phase and constraint support.", {}, false});
-        rows.push_back({"In-game body edits", "Anatomical / local axes",
-                        "Left leg stays left in every stance. Saved joint offsets and rotations use the same local axes as F8; gameplay does not automatically swap limbs.", {}, false});
-        rows.push_back({"In-game key timing", "Source seconds from takeoff",
-                        "Takeoff aligns with the source takeoff marker, then keys advance at 1x through reception, independently of Preview speed. The trick is identified after takeoff, so preparation keys cannot be applied in advance. A low/mid/high preset only matches that pop; an Any binding matches all heights. The native base motion still follows the game.", {}, false});
+                        "Where this animation came from. In game the whole skater and the board play it with your keys, as the studio shows it.", {}, false});
+        rows.push_back({"In game", "Whole body",
+                        "The skater and the board play this animation with your keys. When the other foot leads it is mirrored "
+                        "onto the front foot (Trick matching in KEYS); with the deck turned round under him the board turns with it. "
+                        "Joints stay in their natural range.", {}, false});
+        rows.push_back({"In-game timing", "Fitted to the air",
+                        "Takeoff meets the recording's takeoff and the landing meets the game's, so a longer or shorter air "
+                        "stretches the trick to fit. The trick is known only after takeoff, so nothing plays before it. A low, "
+                        "mid or high pop binding plays only on that pop; Any plays on all.", {}, false});
         if (v.has_clip && v.source_pose_count > 1) {
             const float hz = v.duration > 0 ? static_cast<float>(v.source_pose_count - 1) / v.duration : 0;
             const bool sparse = v.source_max_sample_gap > 0.05f;
@@ -1618,7 +1620,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             rows.push_back({"Source needs updating", "Reopen from TRICKS", "This saved source predates the position decoder correction. Your saved keys remain intact; use the updated native library to inspect the corrected source.", {}, false});
         rows.push_back({"Entry binding", v.entry, "Ground and rail-exit recordings are separate presets. Entry is captured when recording.", {}, false});
         rows.push_back({"Custom tricks in game", v.play_in_game ? "on" : "off",
-                        "On: your saved keys modify the native trick. An untouched preset preserves native body and board motion. Full source motion is previewed in the studio.",
+                        "On: your saved animations play in game in place of the game's own. Off: every trick plays as the game has it.",
                         [v] { studio::set_play_in_game(!v.play_in_game); }});
         rows.push_back({"Studio room", v.room ? "on" : "off",
                         "On: the studio opens in the game's own lit studio room, as skate.'s Skaters page shows it. Off: it opens where you are. Takes effect the next time it opens.",
@@ -1626,7 +1628,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"Pop", v.pop.empty() ? "any" : v.pop,
                         "Which pop this plays on: any, or only a low, mid or high pop (one of each can be saved for a trick). Choose it to step through.",
                         [v] { studio::set_pop(v.pop.empty() ? "low" : v.pop == "low" ? "mid" : v.pop == "mid" ? "high" : ""); }, v.has_clip});
-        rows.push_back({"Copy to low, mid and high pop", "", "Saves these keys in three separate pop bindings. Each keeps source timing at 1x over that pop's native motion; the base low/mid/high animations are different.",
+        rows.push_back({"Copy to low, mid and high pop", "", "Saves this animation with its keys three times, one for each pop height, so it plays on every pop.",
                         [] {
                             std::string m;
                             studio::copy_to_pops(m);

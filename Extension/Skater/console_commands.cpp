@@ -386,6 +386,14 @@ void register_movement_commands(Commands &registry) {
         out(DingoSDKOverlayTestPad(std::get<std::string>(args[0]).c_str()) ? "Test pad: playing." : "Test pad: off.");
     };
     registry.add(std::move(test_pad));
+    auto test_pad_reads = action("testpadreads", "Test builds: how often the game has read the virtual controller", Group::movement);
+    test_pad_reads.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    test_pad_reads.run = [](const Model &, const Values &, const Output &out) {
+        unsigned all{}, by_game{};
+        DingoSDKOverlayTestPadReads(&all, &by_game);
+        out("Test pad reads answered: " + std::to_string(all) + ", from the game's own code: " + std::to_string(by_game));
+    };
+    registry.add(std::move(test_pad_reads));
     // TEST ONLY (not for the PR): starts Record all tricks.
     auto anim_record_all = action("animrecordall", "Test builds: Record all tricks", Group::movement);
     anim_record_all.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };

@@ -105,3 +105,36 @@ the same lead foot and fakie state, never mirrored; front foot takes any, closes
 then lead foot (mirrored if it differs). In game the whole skater and the board play the recording with its
 keys, spread over the air that happens, keyed joints within the measured limits. These are fixed, not options:
 set wrong they broke tricks invisibly.
+
+## Checked in game 2026-10-22 (playback verifier)
+
+A test build reads back, every frame a saved trick is fully on, the pose the game actually draws and the
+board as drawn, and compares them with what the studio shows for that moment (the recording with its keys,
+mirrored when played mirrored, joints in their limits). Set `RESKATE_PLAYBACK_VERIFY=1`; one line per trick
+goes to `ReSkate.Tricks/research/playback-verify.txt`. Tricks were done by the virtual controller
+(`RESKATE_TEST_PAD=1`, console `testpad`), on a skater whose right foot leads riding normal.
+
+| Recording | Rider at takeoff | Played | Body max | Hips | Board | Feet on board |
+| --- | --- | --- | --- | --- | --- | --- |
+| right foot | right foot, normal | as made | 0.06-0.28 deg | 0.0-0.1 cm | 0.00-0.04 deg | 0.0-0.1 cm |
+| right foot | right foot, fakie (after a 180) | as made | 0.06 deg | 0.0 cm | 0.00 deg | 0.0 cm |
+| right foot | right foot, board backwards (after a pop shuvit) | as made | 0.06 deg | 0.0 cm | 0.04 deg | 0.0 cm |
+| left foot | right foot, normal / fakie | mirrored | 0.06 deg | 0.0 cm | 0.00 deg | 0.0 cm |
+| left foot | right foot, normal / fakie, board backwards | mirrored | 0.06 deg | 0.0 cm | 0.00 deg | 0.0 cm |
+| right foot | left foot (switch from a fakie push), board backwards | mirrored | 0.06 deg | 0.0 cm | 0.00 deg | 0.0 cm |
+| right foot | left foot, fakie, board backwards | mirrored | 0.06 deg | 0.0 cm | 0.00 deg | 0.0 cm |
+| left foot | left foot (true switch), exact stance | as made | 0.06 deg | 0.0 cm | 0.00 deg | 0.0 cm |
+
+The game's own pose was 16.6-18.8 deg away from the studio's in every case, so the numbers above are ours,
+not the game happening to agree. Exact stance left a fakie kickflip and a mid-pop kickflip (only high pop
+was recorded) to the game, and a nollie kickflip arrived as `n_kickflip`, so the kickflip recording stayed
+off it.
+
+What the game does that matters here:
+
+- Pushing sets `0x10` and flips `0x20`/`0x40` for about a second while the foot kicks. It clears the moment an
+  ollie starts, so a trick done straight out of a push still reads the right foot.
+- The game's own setting *Hold Fakie Push* (Gameplay > Controls) decides switch: on, pushing while fakie stays
+  fakie; off, it puts him in switch with the board backwards. A 180 from there gives true switch (board
+  forward). Pushing while switch-fakie brings him back to his own foot with the board backwards.
+- The flick sticks follow the lead foot: the kickflip flick riding switch is the heelflip flick riding normal.

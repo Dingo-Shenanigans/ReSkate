@@ -606,11 +606,6 @@ void merged_library_and_timing() {
     // Which foot leads, and what that means for a trick recorded in one stance being done in another.
     check(leads_right(true, false) && !leads_right(false, false), "Goofy leads with the right foot, regular with the left");
     check(leads_right(false, true) && !leads_right(true, true), "Riding switch turns that round");
-    check(playback_lead_matches(true, false, false, true), "A goofy recording suits a regular skater riding switch as it is");
-    check(playback_lead_matches(false, false, true, true), "and a regular one suits a goofy skater riding switch");
-    check(!playback_lead_matches(true, false, false, false), "A goofy recording must be mirrored for a regular skater");
-    check(!playback_lead_matches(true, false, true, true), "and for a goofy skater riding switch");
-    check(!playback_lead_matches(true, false, false, std::nullopt), "Nothing matches while the switch state is unknown");
     // The game tells us one thing outright - whether the left foot leads - and switch is worked out from it
     // and the stance setting. The stance cancels out of the lead foot, so the lead foot comes out right even
     // when the setting is wrong or was never set: a goofy skater read as regular is read as regular riding
@@ -709,19 +704,6 @@ void timing_and_stance_edge_cases() {
         contact.observe(11, false);
         check(!contact.since && !contact.observe(11.001, true), "A brief contact interrupted by air cannot accumulate into a false landing");
     }
-    for (const bool recorded_goofy : {false, true})
-        for (const bool recorded_switch : {false, true})
-            for (const bool live_goofy : {false, true})
-                for (const bool live_switch : {false, true}) {
-                    const bool same_stance = recorded_goofy == live_goofy && recorded_switch == live_switch;
-                    check(playback_stance_compatible(recorded_goofy, recorded_switch, live_goofy, live_switch) == same_stance,
-                          "Only identical base stance and switch state may replay raw recorded bones");
-                }
-    check(!playback_stance_compatible(true, false, true, true), "A goofy normal recording cannot enter switch through raw bone mirroring");
-    check(!playback_stance_compatible(false, true, true, false), "Equal lead feet do not make regular switch and goofy normal compatible");
-    check(!playback_stance_compatible(true, false, true, std::nullopt), "Unknown live switch state keeps native animation");
-    check(playback_stance_compatible(true, std::nullopt, true, false) &&
-          !playback_stance_compatible(true, std::nullopt, true, true), "Legacy recordings are normal stance only");
     check(!riding_switch(true, false) && riding_switch(false, false), "A regular skater whose left foot leads is not switch");
     check(riding_switch(true, true) && !riding_switch(false, true), "A goofy skater whose left foot leads is switch");
     check(near(advance_time(0, 0.25f, 1, 2, false), 0.25f), "A 250 ms render stall must not discard 150 ms of playback");
@@ -1347,6 +1329,31 @@ int main(int argc, char** argv) {
                 check(parent(static_cast<std::uint16_t>(i)) == joints[i].at("fields").at("Parent").get<int>(),
                       "Every studio parent must match the actual native AntSkeletonAsset");
             std::cout << "Native animation hierarchy: all 395 parents match\n";
+        }
+        if (argc == 5 && std::string_view(argv[1]) == "--mirror-saved") {
+            // A saved animation mirrored the game's way (clip and keys), as the studio does for the other foot.
+            std::ifstream json_in(argv[2], std::ios::binary);
+            auto animation = from_json(std::string((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>()));
+            std::filesystem::path clip_path(argv[2]);
+            clip_path.replace_extension(".clip");
+            std::ifstream clip_in(clip_path, std::ios::binary);
+            const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
+            const auto clip = clip_from_bytes(bytes);
+            auto mirrored = mirror_animation(animation);
+            mirrored.name = argv[4];
+            mirrored.upgraded.clear();
+            const auto mirrored_clip = mirror_clip(clip);
+            mirrored.clip.times = {0, mirrored_clip.duration()};
+            mirrored.clip.takeoff = mirrored_clip.takeoff;
+            mirrored.clip.landing = mirrored_clip.landing;
+            const std::filesystem::path out = std::filesystem::path(argv[3]) / argv[4];
+            std::filesystem::create_directories(out);
+            std::ofstream(out / (std::string(argv[4]) + ".json"), std::ios::binary) << to_json(mirrored);
+            const auto clip_out = clip_bytes(mirrored_clip);
+            std::ofstream(out / (std::string(argv[4]) + ".clip"), std::ios::binary).write(reinterpret_cast<const char*>(clip_out.data()), static_cast<std::streamsize>(clip_out.size()));
+            const auto lead = clip_leads_right(mirrored_clip);
+            std::cout << "mirrored; leads " << (lead ? (*lead ? "right" : "left") : "unclear") << "\n";
+            return 0;
         }
         if (argc == 3 && std::string_view(argv[1]) == "--roundtrip") {
             std::ifstream in(argv[2], std::ios::binary);

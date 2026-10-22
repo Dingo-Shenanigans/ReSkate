@@ -61,25 +61,10 @@ inline bool episode_selection_changed(std::string_view selected, std::string_vie
     return !reported.empty() && (selected != reported || (!selected_pop.empty() && selected_pop != wanted_pop));
 }
 inline bool riding_switch(bool left_foot_leads, bool goofy) noexcept { return left_foot_leads == goofy; }
-inline bool playback_stance_compatible(bool recorded_goofy, std::optional<bool> recorded_switch,
-                                      bool live_goofy, std::optional<bool> live_switch) noexcept {
-    // Equal lead feet are not enough: regular switch and goofy normal have different
-    // placement/bind frames. Raw local-bone reflection is not a valid retargeter.
-    // Legacy files predate switch metadata and retain their normal-stance assumption.
-    return live_switch.has_value() && recorded_goofy == live_goofy &&
-           recorded_switch.value_or(false) == *live_switch;
-}
 // Which foot is forward. A goofy skater leads with his right; riding switch turns that round, so a regular
 // skater riding switch leads with his right too. A trick belongs to the front foot and the back foot, not
 // to the left and the right: a kickflip is flicked with the front foot whoever is standing on the board.
 inline bool leads_right(bool goofy, bool switch_stance) noexcept { return goofy != switch_stance; }
-// Whether a recording is already the right way round for the live stance, by which foot leads. When it is
-// not, the same trick still plays, mirrored: the front foot does what the front foot did.
-inline bool playback_lead_matches(bool recorded_goofy, std::optional<bool> recorded_switch, bool live_goofy,
-                                  std::optional<bool> live_switch) noexcept {
-    return live_switch.has_value() &&
-           leads_right(recorded_goofy, recorded_switch.value_or(false)) == leads_right(live_goofy, *live_switch);
-}
 // ---- which recording plays, from everything the game tells us at takeoff ---------------------------
 // What the game does (contrib/animator-studio/GAME_STANCE_NOTES.md): one mirror for the foot that leads
 // (regular is its goofy clips mirrored, switch flips it), fakie is the same clips with an upper-body layer
