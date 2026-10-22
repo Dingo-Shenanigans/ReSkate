@@ -367,7 +367,7 @@ struct Live {
     NativeClock native_clock;
     double clock_selected_at{-1}; // when the trick was chosen
     double clock_locked_at{-1};   // when the game's clip was found
-    float clock_weight{};         // the layer, eased in when found and out when the game moves on
+    float clock_weight{};         // the layer, ramped in when found and out when the game moves on (eased when used)
     bool clock_fallback{};        // its clip was not found: the trick plays on its own clock instead
     // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
     // its own pace, its landing on the game's touchdown, until the game starts something new.
@@ -2834,11 +2834,13 @@ void on_animation(std::uintptr_t component) noexcept {
                     // animation (a push), not its landing.
                     else if (reading.locked && reading.lost && touch && l.clock_lost_at - *touch > 0.3) why = "the game's next animation";
                     else if (reading.locked && reading.lost && touch) {
+                        // Quick to notice (two updates), so the crossfade into a manual or the next move starts while the
+                        // game is still blending into it.
                         if (l.drift_since < 0) { l.drift_since = at; l.drift_base = reading.error; l.drift_count = 0; }
-                        else if (at - l.drift_since < 0.15) l.drift_base = std::min(l.drift_base, reading.error);
+                        else if (at - l.drift_since < 0.1) l.drift_base = std::min(l.drift_base, reading.error);
                         else {
-                            l.drift_count = reading.error > l.drift_base + 10.0f ? l.drift_count + 1 : 0;
-                            if (l.drift_count >= 4) why = "the game's next animation";
+                            l.drift_count = reading.error > l.drift_base + 6.0f ? l.drift_count + 1 : 0;
+                            if (l.drift_count >= 2) why = "the game's next animation";
                         }
                     }
                     if (!why.empty() && l.clock_why.empty()) {
@@ -2846,12 +2848,16 @@ void on_animation(std::uintptr_t component) noexcept {
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} lets go at {:.2f} s: {}.", trick->name, time, why);
                     }
                     if (!l.clock_why.empty()) why = l.clock_why; // once let go, it stays let go
+                    // In over 0.1 s, out over 0.3 s, both eased, so handing over to the game's next move (a manual, the
+                    // next trick) is a smooth crossfade rather than a snap. The trick's end is eased into before it comes.
                     const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
-                    constexpr float step = 1.0f / 60;
-                    l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / 0.08f)
-                                                             : std::max(target, l.clock_weight - step / 0.12f);
+                    constexpr float step = 1.0f / 60, fade_in = 0.1f, fade_out = 0.3f;
+                    l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / fade_in)
+                                                             : std::max(target, l.clock_weight - step / fade_out);
+                    const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
+                    const float before_end = time >= 0 ? ease((edit_end - time) / fade_out) : 1.0f;
                     sampled.time = time;
-                    sampled.weight = l.clock_weight;
+                    sampled.weight = ease(l.clock_weight) * before_end;
                     sampled.finished = reading.locked && !why.empty() && l.clock_weight <= 0;
                 } else {
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);

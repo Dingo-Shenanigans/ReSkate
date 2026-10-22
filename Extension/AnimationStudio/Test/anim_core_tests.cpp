@@ -1226,11 +1226,11 @@ void native_playback_contracts() {
     EditTransition transition;
     std::array<Offset, 1> a{}, b{}; a[0].offset[0] = 0.4f; b[0].offset[0] = -0.4f;
     check(near(transition.evaluate(1, 1, 1, 10, a)[0].offset[0], 0), "The first edit layer fades from native motion");
-    check(near(transition.evaluate(1.081, 1, 1, 10, a)[0].offset[0], 0.4f), "An established edit layer reaches its target");
-    check(near(transition.evaluate(1.1, 1, 1, 11, b)[0].offset[0], 0.4f),
+    check(near(transition.evaluate(1.151, 1, 1, 10, a)[0].offset[0], 0.4f), "An established edit layer reaches its target");
+    check(near(transition.evaluate(1.17, 1, 1, 11, b)[0].offset[0], 0.4f),
           "Ollie-to-flip selection starts from the previous edit delta instead of resetting the visible pose");
-    check(near(transition.evaluate(1.14, 1, 1, 11, b)[0].offset[0], 0, 0.001f), "A changed preset blends smoothly between deltas");
-    check(near(transition.evaluate(1.15, 2, 1, 11, b)[0].offset[0], 0), "Respawn cannot carry a previous entity's edit layer");
+    check(near(transition.evaluate(1.245, 1, 1, 11, b)[0].offset[0], 0, 0.001f), "A changed preset blends smoothly between deltas");
+    check(near(transition.evaluate(1.25, 2, 1, 11, b)[0].offset[0], 0), "Respawn cannot carry a previous entity's edit layer");
     PlaybackEpisode episode;
     // Real failed hardflip trace: riding -> five crouch samples -> pop -> air.
     // Production classification must retain ground entry through state 103.

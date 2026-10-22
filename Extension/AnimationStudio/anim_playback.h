@@ -205,7 +205,8 @@ struct EditTransition {
             from = current; started = now; episode = attempt; source = selected;
         }
         observed = now;
-        float u = std::clamp(static_cast<float>(now - started) / 0.08f, 0.0f, 1.0f);
+        // 0.15 s: one trick's keys into the next, or out when a trick is cut short (a new air, a bail), without a snap.
+        float u = std::clamp(static_cast<float>(now - started) / 0.15f, 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         for (std::size_t i = 0; i < desired.size(); ++i) {
             current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);
