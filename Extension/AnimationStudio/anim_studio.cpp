@@ -759,7 +759,47 @@ std::shared_ptr<const CustomTricks> read_custom_tricks() {
 }
 
 // Publishes what the animation thread works from. Caller holds the mutex.
+// The studio edits a trick in the stance it is set to. A recording made leading with the other foot is
+// mirrored into that stance - its clip, its keys and the undo history, the game's way - rather than only
+// being drawn mirrored: drawn mirrored, the joint picked as the left leg was the recording's right one,
+// so turning the left leg moved the right. Mirroring is exact and undoes itself, the file is not marked
+// changed by it, and a saved trick plays right in every stance because playback reads the lead foot from
+// the clip. Returns whether it mirrored.
+bool face_studio_stance(State& s) {
+    if (!s.open || !s.clip || s.clip->empty() || s.clip->joints != skeleton_joints) return false;
+    const auto lead = clip_leads_right(*s.clip);
+    const bool want_right = studio_goofy(s.stance_choice); // goofy is the right foot leading
+    if (!lead || *lead == want_right) return false;
+    try {
+        auto clip = std::make_shared<const Clip>(mirror_clip(*s.clip));
+        const auto mirror_tracks = [](std::vector<Track> tracks) {
+            Animation only;
+            only.tracks = std::move(tracks);
+            return mirror_animation(only).tracks;
+        };
+        Animation edits = s.edits;
+        const auto metadata = edits.clip;
+        edits.clip = {};
+        edits = mirror_animation(edits);
+        edits.clip = metadata;
+        // Its labels follow the clip, so a pack files it under the stance it now leads with.
+        edits.switch_stance = authored_goofy(edits) != want_right;
+        for (auto& step : s.undo) step.tracks = mirror_tracks(std::move(step.tracks));
+        for (auto& step : s.redo) step.tracks = mirror_tracks(std::move(step.tracks));
+        s.clip = std::move(clip);
+        s.edits = std::move(edits);
+        s.status = std::string("Made leading with the ") + (want_right ? "left" : "right") + " foot: shown mirrored into your " +
+                   (want_right ? "goofy" : "regular") + " stance, the game's way. Left is left - edit as you see it.";
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} mirrored into the studio's {} stance for editing.",
+                     s.edits.name.empty() ? std::string("the trick") : s.edits.name, want_right ? "goofy" : "regular");
+        return true;
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: could not mirror the trick into the studio's stance: {}", e.what());
+        return false;
+    }
+}
 void publish_locked(State& s, bool edits_changed = true) {
+    if (face_studio_stance(s)) edits_changed = true;
     overrides_allowed.store(s.open || (s.play_in_game && s.recording == Recording::off), std::memory_order_release);
     auto snap = std::make_shared<Snapshot>();
     snap->clip = s.clip;
@@ -2359,7 +2399,7 @@ void on_animation(std::uintptr_t component) noexcept {
             // backwards, as this did, turned a regular skater's own recordings round.
             // Which way round the clip stands, from the clip itself: goofy is the right foot leading.
             const bool clip_stands_goofy = clip_leads_right(*shown).value_or(!has_trick || authored_goofy(shown_edits));
-            mirrored_body = snap->goofy != clip_stands_goofy;
+            mirrored_body = !has_trick && snap->goofy != clip_stands_goofy;
             if (mirrored_body) {
                 l.mirror_scratch.assign(l.pose.begin(), l.pose.end());
                 mirror_pose_frame(l.mirror_scratch, l.pose, true);
