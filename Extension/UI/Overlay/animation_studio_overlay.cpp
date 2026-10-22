@@ -1529,6 +1529,11 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                         "On: a foot you move lands on the deck, at the height the feet ride at, and slides along the board "
                         "instead of through it or over it. Key: N.",
                         [] { ui().snap = !ui().snap; }});
+        rows.push_back({"Joint limits", v.limits ? "on" : "off",
+                        "On: knees and elbows bend one way and every joint stays in the range the game's own animation "
+                        "uses, while you pose and in game. Off: joints go wherever you push them, in the studio and in "
+                        "game alike. Kept between sessions.",
+                        [v] { studio::set_joint_limits(!v.limits); }});
         rows.push_back({"Stance", v.stance_choice != 0 ? (v.stance_choice == 1 ? "regular" : "goofy")
                                   : v.game_stance == 0 ? (v.showing_goofy ? "the game's (not set: goofy)" : "the game's (not set: regular)")
                                   : v.showing_goofy ? "the game's (goofy)" : "the game's (regular)",
@@ -1728,7 +1733,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
         rows.push_back({"In game", "Whole body",
                         "The skater and the board play this animation with your keys. When the other foot leads it is mirrored "
                         "onto the front foot (Trick matching in KEYS); with the deck turned round under him the board turns with it. "
-                        "Joints stay in their natural range.", {}, false});
+                        "With Joint limits on (KEYS), joints stay in their natural range.", {}, false});
         rows.push_back({"In-game timing", "Fitted to the air",
                         "Takeoff meets the recording's takeoff and the landing meets the game's, so a longer or shorter air "
                         "stretches the trick to fit. The trick is known only after takeoff, so nothing plays before it. A low, "

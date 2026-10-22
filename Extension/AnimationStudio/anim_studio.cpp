@@ -160,12 +160,11 @@ std::optional<bool> switch_stance(std::uintptr_t base, std::uintptr_t component)
 using CustomTricks = std::vector<CustomTrick>;
 // How a saved trick plays in game. These were settings once, and set wrong they broke tricks with nothing in
 // the menu to show why, so they are fixed: the whole skater and the board play the recording with its keys,
-// as the studio shows it; keyed joints stay inside the range the game's own animation uses; and the keys are
-// spread over the air that really happens, so the landing meets the game's. A deck turned round under him is
-// taken from the game's own board-backwards flag.
+// as the studio shows it, and the keys are spread over the air that really happens, so the landing meets the
+// game's. A deck turned round under him is taken from the game's own board-backwards flag. Joint limits is a
+// setting (KEYS): it holds in the studio and in game alike, so what is posed is what plays.
 constexpr float match_bent_joints = 1; // a joint with a key takes the pose it has in the studio
 constexpr float match_whole_body = 1;  // and so does every other joint, and the board
-constexpr bool keep_joint_limits = true;
 constexpr bool fit_keys_to_air = true;
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
@@ -177,6 +176,7 @@ struct Snapshot {
     bool goofy{}; // the way round the studio is working
     bool grab{};       // a hand near the board closes on it
     bool front_foot{};  // tricks are matched by which foot leads, and mirrored when the other one does
+    bool limits{true};  // keyed joints are kept inside the range the game's own animation uses
     std::shared_ptr<const CustomTricks> tricks;
 };
 struct History {
@@ -212,6 +212,7 @@ struct State {
     bool showing_goofy{};
     bool grab_board{};
     bool front_foot{true};
+    bool limits{true}; // Joint limits (KEYS): keyed joints stay inside the range the game's own animation uses
     // The ground he stands or rides on, from the live pose: no camera is allowed under it.
     float floor{};
     bool floor_valid{};
@@ -576,6 +577,7 @@ void load_settings(State& s) {
         const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
         if (!root.is_object()) return;
         s.front_foot = root.value("front_foot", s.front_foot);
+        s.limits = root.value("joint_limits", s.limits);
         s.stance_choice = std::clamp(root.value("stance", s.stance_choice), 0, 2);
         s.grab_board = root.value("grab_board", s.grab_board);
         s.your_name = root.value("made_by", s.your_name.c_str()).substr(0, 48);
@@ -586,6 +588,7 @@ void save_settings_locked(const State& s) {
     try {
         Json root = Json::object();
         root["front_foot"] = s.front_foot;
+        root["joint_limits"] = s.limits;
         root["stance"] = s.stance_choice;
         root["grab_board"] = s.grab_board;
         if (!s.your_name.empty()) root["made_by"] = s.your_name;
@@ -892,6 +895,7 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->goofy = goofy;
         snap->grab = s.grab_board;
         snap->front_foot = s.front_foot;
+        snap->limits = s.limits;
     }
     snap->room = s.room;
     snap->armed = s.recording != Recording::off;
@@ -1969,7 +1973,7 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     packet->mirrored = play.mirrored; packet->match = match_bent_joints;
     packet->board_backwards = play.board_backwards;
     packet->match_rest = match_whole_body;
-    packet->limits = keep_joint_limits;
+    packet->limits = snap.limits;
     packet->board_frame_local = play.board_frame; packet->board_frame_valid = play.board_frame_ok;
     packet->board_owned = true;
     if (play.board_frame_ok && l.board_ok) {
@@ -2469,7 +2473,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
             }
             apply_edits(shown_edits, shown_time, l.pose);
-            limit_keyed_joints(shown_edits, shown_time, l.pose);
+            if (snap->limits) limit_keyed_joints(shown_edits, shown_time, l.pose);
             // Standing him the other way round: his body is reflected across its own middle, so the foot
             // that was at the nose is at the tail and the arm that led now trails. Only the skinned body
             // moves; the placement and everything hanging off it stay where they stood, so the board does
@@ -2523,7 +2527,7 @@ void on_animation(std::uintptr_t component) noexcept {
         } else if (snap->open) {
             // No trick loaded yet: the live pose, with the edits of the start of the timeline.
             apply_edits(*snap->edits, 0, l.pose);
-            limit_keyed_joints(*snap->edits, 0, l.pose);
+            if (snap->limits) limit_keyed_joints(*snap->edits, 0, l.pose);
             first = in_room ? placement_joint : 2;
             last = layout.count;
         } else if (snap->play_in_game && !snap->armed && !bailing && snap->tricks && !snap->tricks->empty()) {
@@ -2704,7 +2708,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = match_whole_body;
-                    packet->limits = keep_joint_limits;
+                    packet->limits = snap->limits;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
                     // board-backwards flag, applied where the board is drawn.
@@ -2980,7 +2984,7 @@ void stash(const GameplayPacket& packet, std::uint64_t presentation, const std::
     for (std::uint16_t j = 0; j < skeleton_joints; ++j)
         if (gameplay_body_joint(j) && editable(j)) pose[j] = studio[j];
     apply_edits(*packet.edits, packet.time, pose); // the board track (900) is past the skeleton and left out
-    limit_keyed_joints(*packet.edits, packet.time, pose);
+    if (packet.limits) limit_keyed_joints(*packet.edits, packet.time, pose);
     expected = {presentation, packet.episode, now, packet.time, std::move(pose), native, packet.edits->name, packet.mirrored, packet.fakie,
                 packet.board_backwards};
 }
@@ -3684,6 +3688,7 @@ View view() {
     v.game_stance = dingosdk::grind_exit_control::stance();
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
+    v.limits = s.limits;
     // The position fields measure a hand or a foot in the clip's own space, while the joints are shown in
     // the world the skater stands in. This is the turn between the two, so the overlay can point an arrow
     // along a field's axis and move that field by what the arrow is pulled.
@@ -3962,6 +3967,15 @@ void set_front_foot(bool on) {
                   : "Tricks play only for the stance they were recorded in.";
     publish_locked(s);
 }
+void set_joint_limits(bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.limits = on;
+    save_settings_locked(s);
+    s.status = on ? "Joint limits on: knees and elbows bend one way and every joint stays in the range the game uses, in the studio and in game."
+                  : "Joint limits off: joints go wherever you push them, in the studio and in game.";
+    publish_locked(s);
+}
 void set_grab(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -4051,7 +4065,7 @@ namespace {
 // on it) is limited, and the key is worked back out from that. So what is saved is already a natural pose,
 // in the studio and in game alike. Caller holds the mutex.
 void limit_key(State& s, std::uint16_t joint, float at) {
-    if (!s.clip || s.clip->empty() || !has_joint_limit(joint)) return;
+    if (!s.limits || !s.clip || s.clip->empty() || !has_joint_limit(joint)) return;
     const auto* t = s.edits.track(joint);
     if (!t || t->locked || t->keys.empty()) return;
     std::vector<Joint> native(s.clip->joints);

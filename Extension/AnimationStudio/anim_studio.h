@@ -64,6 +64,7 @@ struct View {
     int game_stance{}; // what the game's own setting says: 0 not set, 1 regular, 2 goofy
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
+    bool limits{true};     // Joint limits: keyed joints stay inside the range the game's own animation uses
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
@@ -175,6 +176,9 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+// Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
+// elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
+void set_joint_limits(bool on);
 // How a saved trick is matched to the skater doing it. On, a trick belongs to the front foot and the back
 // foot: it plays for any stance, mirrored when the other foot leads. Off, it plays only for the stance and
 // switch it was recorded in, which is what it did before.
