@@ -1015,6 +1015,26 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
     // The loading screen stays up while the walk to the room or back goes on.
     if (debug.studio_room_walk || room_phase == room::Phase::leaving)
         anim_studio::set_loading(room_phase == room::Phase::leaving ? anim_studio::Loading::leaving : anim_studio::Loading::opening, 0.5f);
+    // The Studio room switched while the studio is open: on, it closes and opens again, in the room; off, it leaves
+    // the room and stays open where he is. (It used to wait for the next time the studio opened.)
+    if (const auto changes = anim_studio::room_changes(); changes != debug.studio_room_changes) {
+        debug.studio_room_changes = changes;
+        if (debug.animation_studio && !debug.studio_room_walk) {
+            if (anim_studio::room_wanted() && !debug.studio_in_room) {
+                debug.studio_reopen = true;
+                anim_studio::request_open(false);
+            } else if (!anim_studio::room_wanted() && debug.studio_in_room) {
+                debug.studio_in_room = false;
+                anim_studio::set_loading(anim_studio::Loading::leaving, 1.2f);
+                room::leave();
+            }
+        }
+    }
+    if (debug.studio_reopen && !debug.animation_studio && !debug.studio_room_walk && room_phase != room::Phase::leaving &&
+        room_phase != room::Phase::opening) {
+        debug.studio_reopen = false;
+        anim_studio::request_open(true);
+    }
     bool open_now = wanted.changed && wanted.want_open && !debug.animation_studio;
     if (debug.studio_room_walk) {
         if (!wanted.want_open) {

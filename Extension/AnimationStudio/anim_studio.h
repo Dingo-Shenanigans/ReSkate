@@ -188,6 +188,8 @@ void set_stance(int choice);
 // A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
 // keyed and not saved: this is the studio showing what the hand is doing, not an edit.
 void set_grab(bool on);
+// How many times the Studio room setting was switched: the client opens the studio in the room, or leaves it, at once.
+std::uint64_t room_changes() noexcept;
 // In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
 // one trick's keys blend into the next's over half of it. Saved with the studio's settings.
 void set_crossfade(float seconds);

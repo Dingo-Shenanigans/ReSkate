@@ -150,6 +150,8 @@ struct Ui {
     float clear_force{1.0f};     // how wide the body is taken to be: 0 nothing, 1 the full shapes
     float ground_force{0.6f};    // the ground force field (SETTINGS): how much of a joint's thickness is kept above the floor; 0 off
     float crossfade_slider{};    // the Crossfade setting on its slider, 0 to 1 (0.1 to 0.8 s), from the studio each frame
+    bool controls_open{true};    // the shortcuts panel out (its tab at its side, or F1, slides it in and out)
+    float controls_t{1};         // how far out it is, eased
     bool shove_limbs{true};      // a limb that is run into gives way as well, not only what you move
     int camera_shot{};           // which of the shots the camera is set to, 0 while it is yours
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
@@ -1309,8 +1311,6 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
     std::vector<Row> rows;
     switch (tab) {
     case Tab::tricks: {
-        static constexpr const char* record_about =
-            "Skate and land the trick you want: you are back in the studio with it, the board where the game had it. Esc: back without one.";
         // The game's tricks by category, each once; choosing one shows its pops (low, mid, high).
         const auto tricks = studio::game_tricks();
         const auto& list = *tricks;
@@ -1430,13 +1430,7 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
                 std::string m; studio::refresh_game_tricks(m); say(m);
             }});
         };
-        const auto record_entries = [&] {
-            rows.push_back({"RECORD", "", "", {}, false});
-            rows.push_back({"Record a trick", "", record_about, [] { studio::record_next_trick(); }});
-            rows.push_back({"Record all tricks", std::any_of(list.begin(), list.end(), [](const auto& t) { return t.recorded; }) ? "Has recorded takes" : "", "Records the game's trick gestures on a solo practice stage, with the real board physics. Esc/Back stops after the current take.", [] { studio::request_record_all(); }});
-        };
         if (list.empty()) {
-            record_entries();
             asset_entry();
             break;
         }
@@ -1527,7 +1521,25 @@ std::vector<Row> rows_of(Tab tab, const studio::View& v) {
             }
             break;
         }
-        record_entries();
+        // Your own saved tricks first: choose one to open it and change it.
+        if (!v.library.empty()) {
+            rows.push_back({"My tricks", std::to_string(v.library.size()), "", {}, false});
+            for (const auto& name : v.library) {
+                const auto found = std::find_if(v.presets.begin(), v.presets.end(), [&](const auto& p) { return p.name == name; });
+                const bool known = found != v.presets.end();
+                const std::string label = known && !found->label.empty() ? found->label : name;
+                const std::string what = known ? found->trick + ", " + (found->pop.empty() ? std::string("any pop") : found->pop + " pop") : std::string("a piece");
+                Row row{label, what, "One of your saved tricks: choose it to open it and change it. Its packs, label and pop are in "
+                        "PACKS > My Tricks.", [name] {
+                            std::string m;
+                            studio::load(name, m);
+                            say(m);
+                            ui().names_for = 0;
+                        }};
+                row.on = name == v.name;
+                rows.push_back(std::move(row));
+            }
+        }
         rows.push_back({"Tricks to edit", "", "", {}, false});
         // Each kind once, with how many tricks are in it, in the order the catalog has them.
         {
@@ -3609,6 +3621,7 @@ void keyboard(const studio::View& v) {
         say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
     }
     if (!ctrl && pressed(ImGuiKey_Tab)) u.menu_hidden = !u.menu_hidden;
+    if (pressed(ImGuiKey_F1)) u.controls_open = !u.controls_open;
     auto orbit = v.orbit;
     // WASD turns the view while held, as Blender's view keys do: A and D round him, W and S over and under; Shift
     // faster. (Ctrl+S and Ctrl+A are save and choose every key, as before.)
@@ -3717,10 +3730,34 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
     const int rows = static_cast<int>((list.size() + 1) / 2);
     const float panel_w = 2 * col_w + 2 * pad, panel_h = rows * row_h + 2 * pad;
     const ImVec2 pb(view_max.x - 20 * k, view_max.y - 50 * k), pa(pb.x - panel_w, pb.y - panel_h);
-    skate_theme::rough_rect(d, pa, pb, IM_COL32(12, 12, 14, 200), 93, k);
-    for (std::size_t i = 0; i < list.size(); ++i) {
+    // The shortcuts slide out to the side and back: the tab on their left edge (or F1) opens and closes them. SAVE,
+    // KEY and the chosen keys' buttons stay where they are.
+    {
+        const float target = u.controls_open ? 1.0f : 0.0f;
+        u.controls_t += (target - u.controls_t) * std::min(1.0f, ImGui::GetIO().DeltaTime * 10);
+        if (std::abs(target - u.controls_t) < 0.002f) u.controls_t = target;
+    }
+    const float out = u.controls_t * u.controls_t * (3 - 2 * u.controls_t);
+    const float slid = (1 - out) * (panel_w + 24 * k);
+    const ImVec2 qa(pa.x + slid, pa.y), qb(pb.x + slid, pb.y);
+    d->PushClipRect(ImVec2(0, 0), ImVec2(view_max.x, ImGui::GetIO().DisplaySize.y), true);
+    {
+        // The tab: an arrow on the panel's left edge, pointing the way it will go.
+        const ImVec2 ta(qa.x - 30 * k, qa.y + panel_h * 0.5f - 42 * k), tb(qa.x - 2 * k, qa.y + panel_h * 0.5f + 42 * k);
+        ImGui::SetCursorScreenPos(ta);
+        const bool clicked = ImGui::InvisibleButton("##controlstab", ImVec2(tb.x - ta.x, tb.y - ta.y));
+        const bool over = ImGui::IsItemHovered();
+        skate_theme::rough_rect(d, ta, tb, over ? IM_COL32(40, 41, 46, 235) : IM_COL32(12, 12, 14, 215), 95, k * 0.7f);
+        const char* arrow = u.controls_open ? ">" : "<";
+        const auto t = text_size(f.heading, 20 * k, arrow);
+        text(d, f.heading, 20 * k, ImVec2((ta.x + tb.x - t.x) * 0.5f, (ta.y + tb.y - t.y) * 0.5f), over ? white : IM_COL32(200, 200, 205, 255), arrow);
+        if (clicked) u.controls_open = !u.controls_open;
+        if (over) ImGui::SetTooltip(u.controls_open ? "Hide the shortcuts (F1)" : "Show the shortcuts (F1)");
+    }
+    if (out > 0.01f) skate_theme::rough_rect(d, qa, qb, IM_COL32(12, 12, 14, 200), 93, k);
+    for (std::size_t i = 0; i < list.size() && out > 0.01f; ++i) {
         const auto& [g, key, what] = list[i];
-        const ImVec2 at(pa.x + pad + static_cast<float>(i % 2) * col_w, pa.y + pad + static_cast<float>(i / 2) * row_h);
+        const ImVec2 at(qa.x + pad + static_cast<float>(i % 2) * col_w, qa.y + pad + static_cast<float>(i / 2) * row_h);
         // Glyph or key cap in a fixed slot, so the labels line up.
         if (g) glyph(d, f, at, *g, u.playstation);
         else {
@@ -3730,6 +3767,7 @@ void prompts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 view_m
         }
         text(d, f.bold, 13 * k, ImVec2(at.x + 66 * k, at.y + 11 * k - text_size(f.bold, 13 * k, what).y * 0.5f), white, what);
     }
+    d->PopClipRect();
     // KEY (yellow, as the game's main action) and SAVE over the panel.
     const ImVec2 size(panel_w * 0.5f - 6 * k, 48 * k);
     const float by = pa.y - 12 * k - size.y;
@@ -4100,9 +4138,6 @@ void draw_animation_studio() {
     auto* d = ImGui::GetWindowDrawList();
     const float timeline_h = std::min(display.y * 0.34f, 360 * k);
     const float menu_x = left + 60 * k, menu_w = 520 * k;
-    // The menu is a column down the whole left side, its list as long as the screen allows, and the timeline
-    // starts beside it rather than under it (the whole width when the menu is hidden).
-    const float timeline_left = u.menu_hidden ? left : menu_x + menu_w + 30 * k, timeline_w = right - timeline_left;
     // With everything hidden the skater has the whole screen and is aimed at the middle of it: nothing is
     // beside him or under him to leave room for, and a clip filmed this way wants him centred.
     const ImVec2 view_min(u.hide_ui || u.menu_hidden ? left : menu_x + menu_w + 30 * k, 0),
@@ -4151,18 +4186,17 @@ void draw_animation_studio() {
             }
             list_top += 70 * k;
         }
-        // The white card only where it has something - the joint's numbers (JOINTS, KEYS), the animation's name,
-        // trick and maker (PACKS) - at the foot of the column. Elsewhere the list runs to the bottom of the screen.
+        // The white card only where it has something: the joint's numbers (JOINTS, KEYS) and the
+        // animation's name, trick and maker (PACKS). Elsewhere the list runs down to the timeline.
         const auto tab = static_cast<Tab>(u.tab);
         const bool has_card = tab == Tab::joints || tab == Tab::keys || tab == Tab::packs;
-        const float card_top = display.y - card_h - 22 * k;
-        const float list_bottom = has_card ? card_top - 18 * k : display.y - 24 * k;
+        const float card_top = display.y - timeline_h - card_h - 22 * k;
+        const float list_bottom = has_card ? card_top - 18 * k : display.y - timeline_h - 24 * k;
         list(d, f, v, ImVec2(menu_x + 16 * k, list_top), ImVec2(menu_w - 16 * k, std::max(120 * k, list_bottom - list_top)));
         if (has_card) card(d, f, v, ImVec2(menu_x, card_top), ImVec2(menu_w + 10 * k, card_h));
-        // What the chosen row does: beside the column, just over the timeline.
-        help_top = help_box(d, f, v, ImVec2(timeline_left + 6 * k, display.y - timeline_h - 14 * k - card_h), ImVec2(330 * k, card_h));
+        help_top = help_box(d, f, v, ImVec2(menu_x + menu_w + 26 * k, card_top), ImVec2(330 * k, card_h));
     }
-    timeline(d, f, v, ImVec2(timeline_left, display.y - timeline_h), ImVec2(timeline_w, timeline_h));
+    timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
     // What the studio last said. It used to stand there for good, so the screen kept a line about a trick
     // opened minutes ago; it is held long enough to read, by its length, and then goes. A failure stays,
     // because that is something to act on.
@@ -4181,7 +4215,7 @@ void draw_animation_studio() {
         const auto w1 = text_size(f.heading, 30 * k, first);
         const float bw = std::max(w1.x + 60 * k, 520 * k);
         // In the empty timeline, clear of the skater.
-        const ImVec2 a(timeline_left + (timeline_w - bw) * 0.5f, display.y - timeline_h * 0.5f - 30 * k), b(a.x + bw, a.y + 120 * k);
+        const ImVec2 a(left + (frame_w - bw) * 0.5f, display.y - timeline_h * 0.5f - 30 * k), b(a.x + bw, a.y + 120 * k);
         skate_theme::rough_rect(d, a, b, IM_COL32(234, 234, 232, 250), 101, k);
         text(d, f.heading, 30 * k, ImVec2(a.x + (bw - w1.x) * 0.5f, a.y + 16 * k), IM_COL32(20, 20, 22, 255), first);
         d->AddText(f.bold, 17 * k, ImVec2(a.x + 30 * k, a.y + 60 * k), IM_COL32(60, 60, 66, 255), second.c_str(), nullptr, bw - 60 * k);

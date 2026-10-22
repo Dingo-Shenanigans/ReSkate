@@ -4264,12 +4264,15 @@ void cancel_recording() {
     s.status = "Recording cancelled.";
     publish_locked(s);
 }
+std::atomic<std::uint64_t> room_switches{};
+std::uint64_t room_changes() noexcept { return room_switches.load(std::memory_order_acquire); }
 void set_room(bool on) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     s.room = on;
     s.eased_valid = false;
-    s.status = on ? "From the next time it opens, the studio opens in its room." : "From the next time it opens, the studio opens where you are.";
+    room_switches.fetch_add(1, std::memory_order_acq_rel);
+    s.status = on ? "To the studio room: the studio opens again there." : "Out of the studio room: the studio stays open where you are.";
     publish_locked(s);
 }
 void set_play_in_game(bool on) {
@@ -5602,6 +5605,13 @@ bool recorded_tricks() {
         if (entry.path().extension() == L".clip") return true;
     return false;
 }
+// Where a trick opens: on its pop, where editing it begins - not on its start bracket, whose keys stay at 0 so
+// a change there was put straight back. A piece with no pop opens a quarter of the way in.
+float opening_time(const Clip& clip) noexcept {
+    const float d = clip.duration();
+    const float t = clip.takeoff >= 0 && clip.takeoff < d ? clip.takeoff : d * 0.25f;
+    return std::round(t * 60) / 60;
+}
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     if (!safe_library_clip(trick.file)) throw std::runtime_error("invalid local library clip name");
     if (!trick.recorded && trick.position_codec != "native-piec-v1-extent")
@@ -5635,7 +5645,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.saved_as.clear();
         s.undo.clear();
         s.redo.clear();
-        s.time = 0; // at its start: on the board, on the ground
+        s.time = opening_time(*s.clip);
         s.playing = false;
         s.dirty = false; // only an edit makes it unsaved
         message = trick.preview_only ? "Opened " + trick.label + " to edit. It is a piece of the game's own animation rather than a whole trick, "
@@ -5679,7 +5689,7 @@ bool load(const std::string& name, std::string& message) {
         s.saved_as = safe;
         s.undo.clear();
         s.redo.clear();
-        s.time = 0; // at its start: on the board, on the ground
+        s.time = opening_time(*s.clip);
         s.playing = false;
         s.dirty = false;
         message = "Opened " + safe + ".";

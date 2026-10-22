@@ -109,6 +109,8 @@ struct InteractiveDebug {
     // The studio's room (studio_room.h): the walk to it runs before the studio opens, and the studio
     // walks back when it closes in it.
     bool studio_room_walk{}, studio_in_room{};
+    std::uint64_t studio_room_changes{}; // the Studio room setting's switches seen (anim_studio::room_changes)
+    bool studio_reopen{};                // closed to open again in the room
     std::uint64_t studio_room_seen{}; // when the room's skater was last seen (GetTickCount64)
     std::uint64_t studio_batch_wanted{}; // Record all tricks was asked for then (GetTickCount64); 0 none
     // Shares Freecam's owned mode-1 camera; each tick publishes the head pose
