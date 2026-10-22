@@ -194,6 +194,7 @@ struct Settings {
     bool loose_files{true};
     bool gpu_diagnostics{};
     bool discord_status{true};
+    bool steam_card_pictures{true};
     bool offline{};
     // The map the game starts in, by its level asset (start_maps.h); empty: San Vansterdam.
     std::string start_map;

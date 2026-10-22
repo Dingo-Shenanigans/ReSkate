@@ -99,9 +99,19 @@ struct State {
 State& state() { static auto* value = new State; return *value; }
 } // namespace
 
+bool enabled() noexcept {
+    // The launcher says "0" when its switch is off.
+    static const bool value = [] {
+        wchar_t text[2]{};
+        const auto length = GetEnvironmentVariableW(L"RESKATE_STEAM_CARD_PICTURES", text, 2);
+        return !(length == 1 && text[0] == L'0');
+    }();
+    return value;
+}
+
 void tick(std::uintptr_t base) noexcept {
     auto& s = state();
-    if (!base) return;
+    if (!base || !enabled()) return;
     const auto now = Clock::now();
     if (now < s.next) return;
     // Cards are only in the game's menus: nothing to look for in play (whether a menu is up is sampled

@@ -194,7 +194,7 @@ CosmeticShared make_cosmetic_catalog(const profile::Snapshot& snapshot) {
             metadata["browser_category"] = placement.category ? placement.category->id : info.category;
         }
         // The "Steam picture" card icon is listed by what it shows (steam_avatar_cards.h).
-        if (key == steam_avatar_cards::icon_key) {
+        if (key == steam_avatar_cards::icon_key && steam_avatar_cards::enabled()) {
             metadata["title"] = std::string(steam_avatar_cards::icon_title);
             metadata["description"] = std::string(steam_avatar_cards::icon_description);
         }
