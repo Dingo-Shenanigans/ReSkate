@@ -489,6 +489,7 @@ struct Live {
     float floor{};
     bool floor_valid{};
     std::shared_ptr<const Clip> floor_clip;
+    bool floor_clip_peek{}; // floor_clip is a trick looked at from TRICKS
     bool preview_own_jump{};
     std::uint64_t failures{};
     bool failure_shown{}; // a failure is on screen: it is taken off after the next clean pass
@@ -2667,6 +2668,7 @@ void on_animation(std::uintptr_t component) noexcept {
             l.attempt_variants.clear();
             l.floor_valid = false;
             l.floor_clip = nullptr;
+            l.floor_clip_peek = false;
             l.logged_layout = false;
             l.seen_generation = generation;
         }
@@ -2817,11 +2819,16 @@ void on_animation(std::uintptr_t component) noexcept {
             // wheels, or its tail at the pop) is on the studio's floor before the pop and after the landing,
             // and between them follows the arc of a jump as long as the clip's air (unless the clip rises by
             // itself, as a recording does), never under the floor.
-            // A new trick starts from where the skater is now: his floor is taken again.
+            // A new trick starts from where the skater is now: his floor is taken again. A trick looked at from TRICKS
+            // stands on the open one's floor, going in and coming out: he does not move. (It was compared with the open
+            // clip, so while one was looked at this ran every frame: the floor was taken again from the pose being
+            // played, mid-trick, and he bobbed and floated.)
             if (shown != l.floor_clip.get()) {
-                l.floor_clip = has_trick ? snap->clip : snap->idle;
+                const bool peek_switch = peeking || l.floor_clip_peek;
+                l.floor_clip = peeking ? snap->peek_clip : has_trick ? snap->clip : snap->idle;
+                l.floor_clip_peek = peeking;
                 l.preview_own_jump = clip_has_vertical_trajectory(*shown);
-                l.floor_valid = false;
+                if (!peek_switch) l.floor_valid = false;
             }
             if (!l.floor_valid || (air && *air)) {
                 l.floor = world(l.pose, ground_joint).position[1];

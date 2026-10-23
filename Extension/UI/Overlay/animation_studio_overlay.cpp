@@ -1532,6 +1532,7 @@ struct Nav {
     ImVec2 clip_a{}, clip_b{};     // and its box: what is outside it cannot be pressed
     bool clipped{};
     int top{};                     // the highest layer drawn last frame: only that one can be chosen
+    std::unordered_map<int, float> region_end; // each scrolled list's furthest scroll, as it was last frame
 };
 Nav& nav() {
     static auto* n = new Nav;
@@ -1641,7 +1642,10 @@ void begin_region(int id, ImVec2 a, ImVec2 b, float& scroll, float k) {
     const auto& io = ImGui::GetIO();
     if (io.MousePos.x >= a.x && io.MousePos.x <= b.x && io.MousePos.y >= a.y && io.MousePos.y <= b.y && io.MouseWheel != 0 && !io.KeyCtrl)
         scroll -= io.MouseWheel * 90 * k;
+    // Held at its end before it is drawn: scrolled past it, the list was drawn too far for a frame and then snapped
+    // back, which flickered and cut it off at the bottom.
     scroll = std::max(0.0f, scroll);
+    if (const auto end = n.region_end.find(id); end != n.region_end.end()) scroll = std::min(scroll, end->second);
     n.region = id;
     n.clip_a = a;
     n.clip_b = b;
@@ -1652,9 +1656,10 @@ void begin_region(int id, ImVec2 a, ImVec2 b, float& scroll, float k) {
 void end_region(ImDrawList* d, ImVec2 a, ImVec2 b, float content, float& scroll, float k) {
     auto& n = nav();
     ImGui::PopClipRect();
+    const float room = b.y - a.y;
+    n.region_end[n.region] = std::max(0.0f, content - room);
     n.region = 0;
     n.clipped = false;
-    const float room = b.y - a.y;
     scroll = std::clamp(scroll, 0.0f, std::max(0.0f, content - room));
     if (content > room + 1) {
         const float h = std::max(30 * k, room * room / content);
@@ -3456,16 +3461,32 @@ void stop_hover_peek() {
     h.peeking = false;
     ui().peek_hole = false;
 }
+// The window was already left clear in the menu this frame: it is filled as the menu is, so the camera going back is not
+// seen through it.
+void cover_peek_hole() {
+    const auto& u = ui();
+    if (u.peek_hole) ImGui::GetWindowDrawList()->AddRectFilled(u.peek_a, u.peek_b, IM_COL32(10, 10, 12, 252));
+}
+// Leaving TRICKS (for the editor, another tab) ends a preview at once. Left playing, he went on doing the trick in the
+// editor with the camera held at his side, and the menu came back with the old window still cut in it.
+void end_hover_preview() {
+    auto& u = ui();
+    if (!u.hover.peeking && !u.peek_hole && u.hover.key.empty()) return;
+    stop_hover_peek();
+    u.hover = {};
+}
 void hover_preview(const Fonts& f, const studio::View& v) {
     auto& u = ui();
     auto& h = u.hover;
     const double now = ImGui::GetTime();
     if (!v.hover_preview || u.hover_candidate.empty() || any_card_open(v) || !u.menu || u.menu_tab != 0) {
+        cover_peek_hole();
         stop_hover_peek();
         h = {};
         return;
     }
     if (h.key != u.hover_candidate) {
+        cover_peek_hole();
         stop_hover_peek();
         h = {};
         h.key = u.hover_candidate;
@@ -3497,6 +3518,7 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     if (!h.peeking) return;
     const float k = f.k, played = static_cast<float>(now - h.since);
     if (played > h.duration + 0.9f) { // done, and the window closes until another card is held
+        cover_peek_hole();
         stop_hover_peek();
         h.done = true;
         return;
@@ -3517,6 +3539,12 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     studio::set_view_shift((display.y * 0.5f - middle.y) / display.y, (middle.x - display.x * 0.5f) / display.y);
     auto* d = ImGui::GetForegroundDrawList();
     const float fade_in = std::clamp(played / 0.25f, 0.0f, 1.0f);
+    // The first moments and the last are covered, fading: the camera takes a frame or two to get to his side, and he
+    // goes back after. The window opens on him already in place and is closed again before anything moves back.
+    const float opening = std::clamp((played - 0.12f) / 0.18f, 0.0f, 1.0f);
+    const float closing = std::clamp((h.duration + 0.9f - played) / 0.2f, 0.0f, 1.0f);
+    if (const float cover = 1 - std::min(opening, closing); cover > 0)
+        d->AddRectFilled(a, b, IM_COL32(10, 10, 12, static_cast<int>(252 * cover)), 6 * k);
     // Its frame: the name across the top, how far it has got along the bottom.
     d->AddRect(a, b, IM_COL32(1, 131, 255, static_cast<int>(200 * fade_in)), 6 * k, 0, 3 * k);
     d->AddRectFilled(ImVec2(a.x, a.y), ImVec2(b.x, a.y + 40 * k), IM_COL32(12, 12, 14, 235), 6 * k, ImDrawFlags_RoundCornersTop);
@@ -5274,7 +5302,7 @@ void browser_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
     }
     const ImVec2 la(lx, top + 62 * k), lb(rx, bottom);
     skate_theme::rough_rect(d, la, lb, IM_COL32(12, 12, 14, 240), seed_of(la), k * 0.6f);
-    begin_region(71, ImVec2(la.x + 6 * k, la.y + 6 * k), ImVec2(lb.x - 4 * k, lb.y - 6 * k), br.scroll, k);
+    begin_region(73, ImVec2(la.x + 6 * k, la.y + 6 * k), ImVec2(lb.x - 4 * k, lb.y - 6 * k), br.scroll, k);
     float ly = la.y + 6 * k - br.scroll;
     std::optional<std::filesystem::path> into;
     std::optional<std::filesystem::path> chosen_picture;
@@ -7611,6 +7639,7 @@ void draw_animation_studio() {
     // The pad and the keys first, so a press this frame reaches what is drawn this frame.
     controller(v, project);
     if ((u.menu || any_card_open(v)) && !v.confirm_close) menu_keyboard(v);
+    if (!u.menu || u.menu_tab != 0) end_hover_preview();
     // What the studio last said: held long enough to read, by its length, and then gone. A failure stays, because that
     // is something to act on.
     std::string line = v.failure.empty() ? v.status : v.failure;
