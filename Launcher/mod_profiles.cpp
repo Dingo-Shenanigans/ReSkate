@@ -228,6 +228,7 @@ Profiles load(const fs::path& mods_root) noexcept {
         }
         profiles.active = root.value("active", "");
         if (!profiles.find(profiles.active)) profiles.active.clear();
+        profiles.keep_others = root.value("keep_others", false);
     } catch (...) {
         profiles = {};
     }
@@ -252,6 +253,7 @@ void save(const fs::path& mods_root, const Profiles& profiles) {
     }
     Json root = Json::object();
     root["active"] = profiles.active;
+    root["keep_others"] = profiles.keep_others;
     root["profiles"] = std::move(list);
     const auto target = mods_root / profiles_file;
     auto temporary = target;
@@ -280,7 +282,7 @@ Profile capture(std::string name, const mods::ModList& list) {
     return profile;
 }
 
-Applied apply(const Profile& profile, const mods::ModList& list) {
+Applied apply(const Profile& profile, const mods::ModList& list, bool keep_others) {
     Applied result;
     std::map<std::string, const mods::ModEntry*> installed;
     for (const auto& entry : list.entries) installed.emplace(folded(entry.mod.name), &entry);
@@ -299,13 +301,13 @@ Applied apply(const Profile& profile, const mods::ModList& list) {
     for (const auto& entry : list.entries)
         if (!used.contains(folded(entry.mod.name))) {
             result.entries.push_back(entry);
-            result.entries.back().enabled = false;
+            if (!keep_others) result.entries.back().enabled = false;
         }
     return result;
 }
 
-bool in_use(const Profile& profile, const mods::ModList& list) {
-    const auto applied = apply(profile, list);
+bool in_use(const Profile& profile, const mods::ModList& list, bool keep_others) {
+    const auto applied = apply(profile, list, keep_others);
     if (!applied.missing.empty()) return false;
     const auto enabled = [](const std::vector<mods::ModEntry>& entries) {
         std::vector<std::string> names;

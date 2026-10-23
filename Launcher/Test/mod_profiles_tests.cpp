@@ -79,6 +79,21 @@ void applying() {
     check(profiles::in_use(have, after) && !profiles::in_use(have, list), "In use does not follow which mods are on");
 }
 
+// "Keep my other mods on": a profile adds its mods to the player's own, and is in use when its own mods match.
+void keeping_others() {
+    const auto list = installed({{"Team-A", "1.0.0", true}, {"Team-B", "2.1.0", false}, {"Local Mod", "wip", true}});
+    const profiles::Profile pack{"Pack", {{"Team-B", "2.1.0", true}}};
+    const auto applied = profiles::apply(pack, list, true);
+    check(order(applied.entries) == std::vector<std::string>{"Team-B+", "Team-A+", "Local Mod+"},
+          "Keeping other mods switched a mod the profile does not name off");
+    check(order(profiles::apply(pack, list).entries) == std::vector<std::string>{"Team-B+", "Team-A-", "Local Mod-"},
+          "Without keeping other mods, the mods outside the profile were not switched off");
+    auto after = list;
+    after.entries = applied.entries;
+    check(profiles::in_use(pack, after, true) && !profiles::in_use(pack, after), "In use with kept mods does not follow the profile's own mods");
+    check(!profiles::in_use(pack, list, true), "A profile whose mod is off counts as in use");
+}
+
 void storage(const std::filesystem::path& root) {
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root);
@@ -86,9 +101,11 @@ void storage(const std::filesystem::path& root) {
     profiles::Profiles set;
     set.list = {{"Street", {{"Team-A", "1.0.0", true}, {"Team-B", "2.0.0", false}}}, {"Empty", {}}};
     set.active = "Street";
+    set.keep_others = true;
     profiles::save(root, set);
     const auto read = profiles::load(root);
     check(read.active == "Street" && read.list == set.list, "Profiles did not survive saving and loading");
+    check(read.keep_others, "Keeping other mods did not survive saving and loading");
     std::ofstream(root / profiles::profiles_file) << R"({"active":"Gone","profiles":[{"name":"ok","mods":[{"name":"../x"},{"name":"Fine"}]},)"
                                                      R"({"name":"bad/name"},{"name":"ok"},7]})";
     const auto loose = profiles::load(root);
@@ -149,6 +166,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     names();
     applying();
+    keeping_others();
     storage(std::filesystem::path(argv[1]) / L"profiles");
     exporting(std::filesystem::path(argv[1]) / L"profiles");
     codes();

@@ -34,6 +34,9 @@ struct Profile {
 struct Profiles {
     std::string active;             // the profile last loaded or saved; empty for none
     std::vector<Profile> list;
+    // Loading a profile leaves the mods it does not name as they are, instead of switching them off:
+    // a profile then adds its mods to the player's own.
+    bool keep_others{};
 
     Profile* find(std::string_view name);
     // `wanted`, or `wanted (2)`, `wanted (3)`... when a profile already has that name.
@@ -59,14 +62,16 @@ Profile capture(std::string name, const mods::ModList& list);
 
 struct Applied {
     // What mods.json should hold: the profile's installed mods in its order with its
-    // switches, then every installed mod it does not name, switched off.
+    // switches, then every installed mod it does not name, switched off (or left as it is
+    // with keep_others).
     std::vector<mods::ModEntry> entries;
     // The mods it switches on that are not installed, to be downloaded.
     std::vector<ProfileMod> missing;
 };
-Applied apply(const Profile& profile, const mods::ModList& list);
+Applied apply(const Profile& profile, const mods::ModList& list, bool keep_others = false);
 // True when loading `profile` would change nothing: the same mods on, in the same order.
-bool in_use(const Profile& profile, const mods::ModList& list);
+// With keep_others only the profile's own mods count.
+bool in_use(const Profile& profile, const mods::ModList& list, bool keep_others = false);
 
 // export.r2x. parse_export throws a readable message for text that is not one.
 std::string export_text(const Profile& profile);
