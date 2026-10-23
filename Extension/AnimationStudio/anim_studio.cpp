@@ -2093,6 +2093,15 @@ float lowest_point(const Joint& board, const BoardShape& shape) noexcept {
     for (const auto& pt : shape.points) low = std::min(low, board.position[1] + rotate(board.rotation, pt)[1]);
     return low;
 }
+// A board keyed into the floor is held up on it: its lowest point (a tip as it tilts, or its wheels) no lower than
+// `floor`. The keys ease its turn and its height each on their own, so between two keys on the ground a tilt swung a
+// tip through the floor. Returns how far it was lifted (0 when it was not under it).
+float keep_board_above(Joint& board, const BoardShape& shape, float floor) noexcept {
+    const float low = lowest_point(board, shape);
+    if (!std::isfinite(low) || !std::isfinite(floor) || !(low < floor)) return 0;
+    board.position[1] += floor - low;
+    return floor - low;
+}
 
 // Edited pieces of the game's own animation. The game never says which of its clips it is playing, so
 // each saved piece is looked for in the skater's pose (PieceTracker): when the body is seen moving
@@ -2733,6 +2742,15 @@ void on_animation(std::uintptr_t component) noexcept {
                 const auto unedited = compose(live_placement, rel);
                 const auto origin = start_frame(*shown, live_placement, (l.floor_valid ? l.floor : live_placement.position[1]) + deck, fit_preview_contact);
                 board_target = board_edited(unedited, shown_edits, shown_time, origin.rotation);
+                // Never into the floor: the board is held up on it, and he is lifted with it - as a board tipped onto
+                // its tail lifts its rider - so his feet stay on the deck.
+                if (has_trick && l.floor_valid)
+                    if (const float lift = keep_board_above(board_target, shape, l.floor); lift > 0) {
+                        const auto up = rotate(conjugate(live_placement.rotation), {0, lift, 0});
+                        for (std::size_t i = 2; i < std::min<std::size_t>(layout.count, l.pose.size()); ++i)
+                            if (parent(static_cast<std::uint16_t>(i)) == placement_joint)
+                                for (std::size_t a = 0; a < 3; ++a) l.pose[i].position[a] += up[a];
+                    }
                 board_frame = origin.rotation;
                 board_weight = 1;
                 auto& st = state();
@@ -3605,7 +3623,12 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
                         }
                     }
                 }
-                const auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
+                auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
+                // Rolling on the ground the game's board stands on it, so the edited one goes no lower than it does.
+                if (packet->clip && l.render_motion.load(std::memory_order_acquire) == MotionState::riding) {
+                    const auto shape = board_shape(*packet->clip);
+                    (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
+                }
                 studio_board = target;
                 studio_board_ok = packet->weight >= 0.98f;
                 if (target != native_mount) {
@@ -4166,6 +4189,8 @@ View view() {
 }
 // Keys sit on whole frames of the timeline (30 a second), never between two.
 float frame_time(float seconds) { return std::round(seconds * 30.0f) / 30.0f; }
+// The playhead's frame, for a key: on a frame, never past the clip's end (its length is seldom a whole number of frames).
+float key_time_locked(const State& s) { return std::min(frame_time(s.time), duration_locked(s)); }
 namespace { void write_pack_drafts_locked(State& s); } // with the packs, below
 Recording recording_state() {
     auto& s = state();
@@ -4502,7 +4527,7 @@ std::vector<std::uint16_t> solo_children(const State& s, std::uint16_t joint) {
 }
 // The way each of those joints faces in the world, with the edits as they stand.
 std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> children) {
-    const float at = frame_time(s.time);
+    const float at = key_time_locked(s);
     std::vector<Joint> pose(skeleton_joints);
     s.clip->sample(at, pose);
     apply_edits(s.edits, at, pose);
@@ -4514,7 +4539,7 @@ std::vector<Quat> facing_of(const State& s, std::span<const std::uint16_t> child
 // Turns each of them back to the way it faced. A joint's place in the world is the chain above it times
 // its own key, so multiplying its key by conj(where it faces now) * (where it faced) puts it back.
 void hold_facing(State& s, std::span<const std::uint16_t> children, std::span<const Quat> before) {
-    const float at = frame_time(s.time);
+    const float at = key_time_locked(s);
     std::vector<Joint> pose(skeleton_joints);
     s.clip->sample(at, pose);
     apply_edits(s.edits, at, pose);
@@ -4584,8 +4609,8 @@ void set_offset(std::uint16_t joint, const Offset& value) {
     const auto children = solo_children(s, joint);
     std::vector<Quat> facing;
     if (!children.empty()) facing = facing_of(s, children);
-    set_key(s.edits, joint, frame_time(s.time), clean);
-    limit_key(s, joint, frame_time(s.time));
+    set_key(s.edits, joint, key_time_locked(s), clean);
+    limit_key(s, joint, key_time_locked(s));
     if (!children.empty()) hold_facing(s, children, facing);
     changed_locked(s);
 }
@@ -4608,7 +4633,7 @@ Vec3 limb_position(std::uint16_t joint) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (!s.clip || s.clip->empty() || !editable(joint)) return {};
-    const float at = frame_time(s.time);
+    const float at = key_time_locked(s);
     std::vector<Joint> native(skeleton_joints);
     s.clip->sample(at, native);
     std::vector<Joint> posed(native);
@@ -4627,7 +4652,7 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset) {
     }
     const auto chain = limb_chain(joint);
     if (!chain) return;
-    const float at = frame_time(s.time);
+    const float at = key_time_locked(s);
     std::vector<Joint> native(skeleton_joints);
     s.clip->sample(at, native);
     const auto rest = world(native, joint).position;
@@ -4674,7 +4699,7 @@ void drag_limb(std::uint16_t joint, const Vec3& target_view) {
         s.status = "That track is locked.";
         return;
     }
-    const float at = frame_time(s.time);
+    const float at = key_time_locked(s);
     std::vector<Joint> native(s.clip->joints);
     s.clip->sample(at, native);
     // The target is in the view's frame (the joints' frame); the solver works in the clip's. Both frames have
@@ -4799,7 +4824,7 @@ void paste_pose() {
     if (s.clipboard.empty()) return;
     for (const auto& [joint, value] : s.clipboard) {
         const auto* t = s.edits.track(joint);
-        if (!t || !t->locked) set_key(s.edits, joint, frame_time(s.time), value);
+        if (!t || !t->locked) set_key(s.edits, joint, key_time_locked(s), value);
     }
     s.status = std::format("Pasted the pose of {} joints.", s.clipboard.size());
     changed_locked(s);
@@ -6070,7 +6095,7 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.dirty = false; // only an edit makes it unsaved
         message = trick.preview_only ? "Opened " + trick.label + " to edit. It is a piece of the game's own animation rather than a whole trick, "
                                        "so it is saved by the clip it came from. In game it plays whenever the game plays that piece: the studio knows it by the skater's pose, about a quarter of a second after it starts." :
-            "Opened the game's " + trick.label + " (" + trick.pop + " pop). Native board physics and graph constraints are not included in this clip.";
+            "Opened the game's " + trick.label + " (" + trick.pop + " pop). In game, skate.'s own board physics and blending still play on top of your changes.";
         s.status = message;
         publish_locked(s);
         return true;
@@ -6097,9 +6122,12 @@ bool load(const std::string& name, std::string& message) {
         auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
         if (clip->joints != skeleton_joints) throw std::runtime_error("it was recorded on another skeleton");
         if (animation.source.kind == "native_asset") place_native_marks(*clip);
-        for (const auto& t : animation.tracks)
-            for (const auto& k : t.keys)
-                if (k.time > clip->duration() + 0.01f) throw std::runtime_error("a key lies past its recording");
+        // A key a frame past the end (rounded onto a frame past it by builds before 2026-10-23) is put on the end.
+        for (auto& t : animation.tracks)
+            for (auto& k : t.keys) {
+                if (k.time > clip->duration() + 0.1f) throw std::runtime_error("a key lies past its recording");
+                k.time = std::min(k.time, clip->duration());
+            }
         auto& s = state();
         std::lock_guard lock(s.mutex);
         animation.name = safe;

@@ -680,7 +680,8 @@ void shift_keys(Animation& animation, float delta, float duration) noexcept {
         }
         track.keys.resize(kept);
     }
-    animation.start = std::max(0.0f, animation.start + delta);
+    animation.start = std::clamp(animation.start + delta, 0.0f, duration);
+    if (animation.end >= 0) animation.end = std::clamp(animation.end, animation.start, duration);
 }
 float on_a_frame(float seconds) noexcept { return std::round(seconds * key_fps) / key_fps; }
 bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept {
@@ -689,7 +690,9 @@ bool move_window_edge(Animation& animation, int which, float to, float duration)
     if (!std::isfinite(old_start) || !std::isfinite(old_end) || old_end < old_start) return false;
     const float from = which == 1 ? old_start : which == 2 ? old_end : -1;
     if (from < 0) return false;
-    const float at = on_a_frame(to);
+    // On a frame, but never past the clip: its length is seldom a whole number of frames, and a bracket rounded past
+    // its end made a file that could not be read back ("bad animation window") - the trick reset.
+    const float at = std::clamp(on_a_frame(to), 0.0f, duration);
     const float gap = 1.0f / key_fps;
     if (which == 1 && at > old_end - gap) return false;
     if (which == 2 && at < old_start + gap) return false;
@@ -959,8 +962,13 @@ Animation from_json(std::string_view text) {
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
     require(duration >= 0 && duration < 120, "bad duration");
-    require(result.start >= 0 && result.start <= duration && (result.end == -1 ||
-            (result.end >= result.start && result.end <= duration + 0.01f)), "bad animation window");
+    require(std::isfinite(result.start) && std::isfinite(result.end), "bad animation window");
+    // A window a little off the clip (a bracket rounded onto a frame past its end, by builds before 2026-10-23) is put
+    // back on it rather than refusing the whole trick.
+    if (duration > 0) {
+        result.start = std::clamp(result.start, 0.0f, duration);
+        if (result.end != -1) result.end = std::clamp(result.end, result.start, duration);
+    }
     std::size_t total = 0;
     if (root.contains("tracks")) {
         const auto& tracks = root.at("tracks");
