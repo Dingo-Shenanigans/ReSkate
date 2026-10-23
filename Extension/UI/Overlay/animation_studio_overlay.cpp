@@ -4935,13 +4935,11 @@ void radial_menu(const Fonts& f, const studio::View& v, ImVec2 display) {
         const float from = -pi * 0.5f - span * 0.5f + span * static_cast<float>(i) + 0.025f, to = from + span - 0.05f;
         const bool lit = hot == static_cast<int>(i) && slices[i].enabled;
         const ImU32 fill = lit ? blue : slices[i].enabled ? IM_COL32(24, 25, 29, 240) : IM_COL32(24, 25, 29, 150);
-        constexpr int steps = 10;
-        for (int s = 0; s < steps; ++s) {
-            const float t0 = from + (to - from) * static_cast<float>(s) / steps, t1 = from + (to - from) * static_cast<float>(s + 1) / steps;
-            const float r_out = outer + (lit ? 8 * k : 0);
-            d->AddQuadFilled(ImVec2(c.x + std::cos(t0) * inner, c.y + std::sin(t0) * inner), ImVec2(c.x + std::cos(t0) * r_out, c.y + std::sin(t0) * r_out),
-                             ImVec2(c.x + std::cos(t1) * r_out, c.y + std::sin(t1) * r_out), ImVec2(c.x + std::cos(t1) * inner, c.y + std::sin(t1) * inner), fill);
-        }
+        // One shape per slice (out along the rim, back along the inside), so it fills clean with no seams across it.
+        const float r_out = outer + (lit ? 8 * k : 0);
+        d->PathArcTo(c, r_out, from, to, 24);
+        d->PathArcTo(c, inner, to, from, 12);
+        d->PathFillConcave(fill);
         const float mid = (from + to) * 0.5f, r = (inner + outer) * 0.5f + (lit ? 4 * k : 0);
         const auto t = text_size(f.heading, 14 * k, slices[i].label);
         text(d, f.heading, 14 * k, ImVec2(c.x + std::cos(mid) * r - t.x * 0.5f, c.y + std::sin(mid) * r - t.y * 0.5f),
