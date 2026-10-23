@@ -45,6 +45,8 @@ constexpr ImU32 header_fill = IM_COL32(9, 9, 10, 244);
 constexpr ImU32 white = skate_theme::white;
 constexpr ImU32 soft = IM_COL32(168, 170, 176, 255);
 constexpr ImU32 faint = IM_COL32(112, 114, 120, 255);
+// The tools down the left: how wide (times the scale), and where they start from the left edge.
+constexpr float tool_strip_width = 148, tool_strip_margin = 20;
 constexpr ImU32 blue = skate_theme::blue;
 constexpr ImU32 blue_dim = IM_COL32(1, 131, 255, 110);
 constexpr ImU32 blue_light = IM_COL32(90, 180, 255, 255);
@@ -691,7 +693,12 @@ bool limb_end(std::uint16_t joint) { return studio::limb_chain(joint) != 0; }
 float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
 studio::Vec3 up_of(const studio::Quat& q); // below
-studio::Vec3 deck_point(const studio::Vec3& centre, const studio::Quat& turn, studio::Vec3 target, bool inside); // below
+// The deck's own directions in the world: its up, along it nose to tail, and across it.
+struct Deck {
+    studio::Vec3 up{0, 1, 0}, along{0, 0, 1}, across{1, 0, 0};
+};
+Deck deck_of(const studio::View& v, const studio::JointView& board);                                       // below
+studio::Vec3 deck_point(const studio::Vec3& centre, const Deck& deck, studio::Vec3 target, bool inside); // below
 // ---- several joints at once ------------------------------------------------------------------------
 // Ctrl + click adds a joint to the chosen ones (or takes it off). A turn or a move of the one the gizmo is on is done
 // to all of them by the same amount in the world, each about its own joint. With the board among them, the feet
@@ -723,7 +730,8 @@ void snap_feet_to_deck(const studio::View& v, bool bring_deck) {
     const auto* right = joint_view(v, 10);
     if (!board || !left || !right) return;
     studio::Vec3 centre = board->position;
-    const auto up = up_of(board->rotation);
+    const auto deck = deck_of(v, *board);
+    const auto& up = deck.up;
     const studio::Vec3 middle{(left->position[0] + right->position[0]) * 0.5f, (left->position[1] + right->position[1]) * 0.5f,
                               (left->position[2] + right->position[2]) * 0.5f};
     const studio::Vec3 off{middle[0] - centre[0], middle[1] - centre[1], middle[2] - centre[2]};
@@ -739,7 +747,7 @@ void snap_feet_to_deck(const studio::View& v, bool bring_deck) {
         for (int i = 0; i < 3; ++i) centre[i] += shift[i];
     }
     for (const auto* foot : {left, right})
-        studio::drag_limb(foot->joint, deck_point(centre, board->rotation, foot->position, true));
+        studio::drag_limb(foot->joint, deck_point(centre, deck, foot->position, true));
 }
 void lock_feet_to_deck(const studio::View& v) {
     auto& u = ui();
@@ -857,10 +865,37 @@ studio::Vec3 up_of(const studio::Quat& q) {
 // under the lower foot (board_on_feet), in the air the one the clip and its keys put there. Snapping a
 // foot onto it is right either way, so this asks nothing about the trick but whether the board is known.
 bool snapping_now(const studio::View& v) { return (ui().snap || ui().feet_lock) && v.has_clip; }
-// A point on the deck of a board at `centre` turned `turn`: at the feet's height over it, and - with the feet locked to
-// it - inside its outline (along it short of the kicks, across it inside its edges).
-studio::Vec3 deck_point(const studio::Vec3& centre, const studio::Quat& turn, studio::Vec3 target, bool inside) {
-    const auto up = up_of(turn), along = studio::rotate(turn, studio::Vec3{0, 0, 1}), across = studio::rotate(turn, studio::Vec3{1, 0, 0});
+// The deck's directions: which of the board's own axes is its up and which runs along it differ from clip to clip (the
+// studio finds them per clip too, BoardShape), so they are read off the board as it lies - up the axis nearest the
+// world's up, along the one of the other two nearest the line between his feet.
+Deck deck_of(const studio::View& v, const studio::JointView& board) {
+    std::array<studio::Vec3, 3> axes{};
+    for (int i = 0; i < 3; ++i) {
+        studio::Vec3 e{};
+        e[static_cast<std::size_t>(i)] = 1;
+        axes[static_cast<std::size_t>(i)] = studio::rotate(board.rotation, e);
+    }
+    std::size_t up = 1;
+    for (std::size_t i = 0; i < 3; ++i)
+        if (std::abs(axes[i][1]) > std::abs(axes[up][1])) up = i;
+    studio::Vec3 feet{0, 0, 1};
+    if (const auto* left = joint_view(v, 343), *right = joint_view(v, 10); left && right)
+        feet = {left->position[0] - right->position[0], left->position[1] - right->position[1], left->position[2] - right->position[2]};
+    std::size_t along = up == 0 ? 1 : 0, other = 3 - up - along;
+    if (std::abs(dot3(axes[other], feet)) > std::abs(dot3(axes[along], feet))) std::swap(along, other);
+    Deck deck;
+    deck.up = axes[up];
+    if (deck.up[1] < 0) deck.up = {-deck.up[0], -deck.up[1], -deck.up[2]};
+    deck.along = axes[along];
+    deck.across = axes[other];
+    return deck;
+}
+// A point on the deck of a board at `centre`: at the feet's height over it, and - with the feet locked to it - inside its
+// outline (along it short of the kicks, across it inside its edges).
+studio::Vec3 deck_point(const studio::Vec3& centre, const Deck& deck, studio::Vec3 target, bool inside) {
+    const auto& up = deck.up;
+    const auto& along = deck.along;
+    const auto& across = deck.across;
     const studio::Vec3 from{target[0] - centre[0], target[1] - centre[1], target[2] - centre[2]};
     float a = dot3(from, along), c = dot3(from, across);
     const float u_over = studio::feet_above_board;
@@ -875,7 +910,7 @@ studio::Vec3 on_the_deck(const studio::View& v, std::uint16_t joint, studio::Vec
     if ((joint != 10 && joint != 343) || !snapping_now(v)) return target;
     const auto* board = joint_view(v, studio::board_joint);
     if (!board) return target;
-    return deck_point(board->position, board->rotation, target, ui().feet_lock);
+    return deck_point(board->position, deck_of(v, *board), target, ui().feet_lock);
 }
 
 // ---- keeping the skater out of himself ------------------------------------------------------------
@@ -1301,7 +1336,7 @@ void apply_axis(const studio::View& v, int a, float amount, bool move) {
         }
         // Out of the body and the deck, the same way snapping is done: taken to the world, pushed clear,
         // and brought back to the fields.
-        if (u.anti_clip && v.field_axes_valid) {
+        if (u.anti_clip && v.field_axes_valid && !(u.feet_lock && (u.selected == 10 || u.selected == 343))) {
             studio::Vec3 world{};
             for (int i = 0; i < 3; ++i) world[i] = field[i] - u.drag_field[i];
             world = studio::rotate(v.field_axes, world);
@@ -1400,7 +1435,9 @@ void drag_limb_to(const studio::View& v, const Projector& p, ImVec2 mouse) {
     } else {
         for (int i = 0; i < 3; ++i) target[i] = p.origin[i] - p.back[i] * depth + p.right[i] * (sx * depth) + p.up[i] * (sy * depth);
     }
-    studio::drag_limb(ui().selected, keep_clear(v, ui().selected, on_the_deck(v, ui().selected, target)));
+    const bool locked_foot = ui().feet_lock && (ui().selected == 10 || ui().selected == 343);
+    const auto placed = on_the_deck(v, ui().selected, target);
+    studio::drag_limb(ui().selected, locked_foot ? placed : keep_clear(v, ui().selected, placed));
 }
 // `dx`, `dy`: how far the turn has gone, in screen pixels at 1080 lines.
 void apply_turn(const studio::View& v, const Projector& p, float dx, float dy, bool move) {
@@ -2489,6 +2526,10 @@ void keyboard(const studio::View& v) {
     if (!ctrl && pressed(ImGuiKey_G)) u.move_mode = true;
     if (!ctrl && pressed(ImGuiKey_L)) u.local_axes = !u.local_axes;
     if (!ctrl && pressed(ImGuiKey_O)) studio::set_solo(!v.solo);
+    if (!ctrl && pressed(ImGuiKey_M)) {
+        studio::set_joint_limits(!v.limits);
+        say(v.limits ? "Limits off: joints turn freely." : "Limits on: joints stay in the game's own range.");
+    }
     if (!ctrl && pressed(ImGuiKey_N)) {
         u.snap = !u.snap;
         say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
@@ -5393,11 +5434,19 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     ImGui::SetCursorScreenPos(ImVec2(rx, y + 24 * k));
     ImGui::PushFont(f.bold);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, 8 * k));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(20, 21, 24, 255));
+    // A shade lighter than the card, as the studio's other typed fields are, so the box shows where to type.
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(32, 34, 38, 255));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 255));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 255));
+    ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, blue_dim);
+    ImGui::PushStyleColor(ImGuiCol_Text, white);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
     ImGui::InputTextMultiline("##sharedescription", u.share_description.data(), u.share_description.size(), ImVec2(rw, cover - 24 * k));
     const bool done_typing = ImGui::IsItemDeactivatedAfterEdit();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
+    if (u.share_description[0] == 0 && !ImGui::IsItemActive())
+        text(d, f.bold, 14 * k, ImVec2(rx + 10 * k, y + 32 * k), faint, "Click here and say what is in the pack and how it skates.");
+    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar(2);
     ImGui::PopFont();
     if (done_typing) {
         std::string m;
@@ -5883,25 +5932,35 @@ void editor_top(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     if (action(d, f, "##redo", place(86 * k), ImVec2(86 * k, 46 * k), "REDO", Look::ghost, v.can_redo)) studio::redo();
     if (action(d, f, "##undo", place(86 * k), ImVec2(86 * k, 46 * k), "UNDO", Look::ghost, v.can_undo)) studio::undo();
 }
-// The tools, down the left: how a drag poses the joint, and what holds it back. Each says what it is beside it.
+// The tools, down the left in three groups - how a drag poses the joint, what helps it, what is shown - a row each,
+// its name at the left and its key at the right. Each says what it is beside it while the mouse is over it.
 void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at) {
     auto& u = ui();
-    const float k = f.k, w = 92 * k, h = 50 * k;
+    const float k = f.k, w = tool_strip_width * k, h = 38 * k, row = h + 4 * k;
     float y = at.y;
     u.tool_tip.clear();
+    const auto group = [&](const char* name, bool first = false) {
+        if (!first) y += 14 * k;
+        text(d, f.bold, 11 * k, ImVec2(at.x + 3 * k, y), faint, name);
+        y += 19 * k;
+    };
     const auto tool = [&](const char* id, const char* label, const char* key, bool on, const char* about, float width = 0, float x_off = 0) {
         const float bw = width > 0 ? width : w;
         const ImVec2 a(at.x + x_off, y), b(a.x + bw, y + h);
         bool lit = false;
         const bool pressed = hit(id, a, b, &lit);
-        skate_theme::rough_rect(d, a, b, on ? (lit ? IM_COL32(40, 152, 255, 255) : blue) : lit ? IM_COL32(62, 64, 70, 245) : IM_COL32(20, 21, 24, 230),
+        skate_theme::rough_rect(d, a, b, on ? (lit ? IM_COL32(40, 152, 255, 255) : blue) : lit ? IM_COL32(46, 48, 54, 245) : IM_COL32(20, 21, 24, 230),
                                 seed_of(a), k * 0.6f);
-        const auto t = text_size(f.heading, 15 * k, label);
-        text(d, f.heading, 15 * k, ImVec2(a.x + (bw - t.x) * 0.5f, a.y + (key[0] ? 8 * k : (h - t.y) * 0.5f)), white, label);
+        const auto t = text_size(f.heading, 14 * k, label);
         if (key[0]) {
-            const auto kt = text_size(f.bold, 10 * k, key);
-            text(d, f.bold, 10 * k, ImVec2(a.x + (bw - kt.x) * 0.5f, b.y - kt.y - 6 * k), on ? IM_COL32(230, 240, 255, 230) : faint, key);
-        }
+            text(d, f.heading, 14 * k, ImVec2(a.x + 12 * k, a.y + (h - t.y) * 0.5f), white, label);
+            // The key, on a little cap at the right.
+            const auto kt = text_size(f.bold, 11 * k, key);
+            const float cap_w = std::max(20 * k, kt.x + 10 * k), cap_h = 20 * k;
+            const ImVec2 ca(b.x - 9 * k - cap_w, a.y + (h - cap_h) * 0.5f), cb(b.x - 9 * k, ca.y + cap_h);
+            d->AddRectFilled(ca, cb, on ? IM_COL32(255, 255, 255, 46) : IM_COL32(255, 255, 255, 20), 4 * k);
+            text(d, f.bold, 11 * k, ImVec2(ca.x + (cap_w - kt.x) * 0.5f, ca.y + (cap_h - kt.y) * 0.5f), on ? IM_COL32(235, 243, 255, 245) : faint, key);
+        } else text(d, f.heading, 14 * k, ImVec2(a.x + (bw - t.x) * 0.5f, a.y + (h - t.y) * 0.5f), white, label);
         if (lit) {
             u.tool_tip = label;
             u.tool_tip_text = about;
@@ -5909,12 +5968,12 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
         }
         return pressed;
     };
-    const auto gap = [&](float by) { y += by; };
+    group("POSE", true);
     if (tool("##turn", "TURN", "R", !u.move_mode, "A drag (or the left stick) turns the chosen joint.")) u.move_mode = false;
-    gap(h + 6 * k);
+    y += row;
     if (tool("##move", "MOVE", "G", u.move_mode, "A drag moves the hips or the board, and pulls a hand or a foot to where you drag it, the limb bending to follow."))
         u.move_mode = true;
-    gap(h + 6 * k);
+    y += row;
     {
         const float third = (w - 8 * k) / 3;
         static constexpr std::array<const char*, 3> names{"X", "Y", "Z"};
@@ -5924,28 +5983,30 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
                      "Locks a drag to one axis. Press it again for any axis. Keys: X, Y, Z.", third, static_cast<float>(i) * (third + 4 * k)))
                 u.axis = u.axis == i ? -1 : i;
     }
-    gap(h + 16 * k);
+    y += row;
     if (tool("##axes", u.local_axes ? "OBJECT" : "WORLD", "L", false, "Which way the gizmo's arrows and rings lie: the joint's own axes, or the world's."))
         u.local_axes = !u.local_axes;
-    gap(h + 6 * k);
+    y += row;
+    group("HELPERS");
     if (tool("##solo", "SOLO", "O", v.solo, "A turn moves that joint alone: the limb below keeps the way it faces.")) studio::set_solo(!v.solo);
-    gap(h + 6 * k);
+    y += row;
     if (tool("##snap", "SNAP", "N", u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
-    gap(h + 6 * k);
+    y += row;
     if (tool("##feetboard", "FEET+BOARD", "B", u.feet_lock,
-             "Locks the feet to the deck: they are put on it, go with it when you move or turn the board, and slide over it but never leave "
-             "it, until you let go (B again). Ctrl + click a joint to add it to what you turn.")) {
+             "Locks the feet to the deck: they go with the board when you move or turn it, and slide along it but never leave it. "
+             "B again lets go. Ctrl + click a joint to turn it too.")) {
         if (u.feet_lock) unlock_feet();
         else lock_feet_to_deck(v);
     }
-    gap(h + 6 * k);
-    if (tool("##limits", "LIMITS", "", v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
+    y += row;
+    if (tool("##limits", "LIMITS", "M", v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
         studio::set_joint_limits(!v.limits);
-    gap(h + 6 * k);
+    y += row;
     if (tool("##clear", "CLEAR", "C", u.anti_clip, "What you move is kept out of his body and off the deck. How much: SETTINGS > SKATER.")) u.anti_clip = !u.anti_clip;
-    gap(h + 16 * k);
+    y += row;
+    group("VIEW");
     if (tool("##joints", "JOINTS", "J", !u.hide_joints, "The dots on his joints and the gizmo. Off shows the pose clean.")) u.hide_joints = !u.hide_joints;
-    gap(h + 6 * k);
+    y += row;
     if (tool("##follow", "FOLLOW", "F", false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;
@@ -7541,7 +7602,7 @@ void draw_animation_studio() {
     u.blocked = card || u.radial || u.menu;
     const float timeline_h = std::min(display.y * 0.34f, 360 * k);
     const float side_w = 434 * k; // the joint's card and the shortcuts, at the right
-    const ImVec2 view_min(u.hide_ui ? left : left + 130 * k, u.hide_ui ? 0 : 80 * k),
+    const ImVec2 view_min(u.hide_ui ? left : left + (tool_strip_margin + tool_strip_width + 22) * k, u.hide_ui ? 0 : 80 * k),
         view_max(u.hide_ui ? right : right - side_w - 40 * k, u.hide_ui ? display.y : display.y - timeline_h);
     // The skater stands in the middle of the free space.
     studio::set_view_shift((display.y * 0.5f - (view_min.y + view_max.y) * 0.5f) / display.y,
@@ -7606,7 +7667,7 @@ void draw_animation_studio() {
             return;
         }
         editor_top(d, f, v, display, left, right);
-        tool_strip(d, f, v, ImVec2(left + 20 * k, 98 * k));
+        tool_strip(d, f, v, ImVec2(left + tool_strip_margin * k, 98 * k));
         joint_card(d, f, v, ImVec2(right - 20 * k - side_w, 98 * k), side_w);
         timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
         selection_bar(d, f, v, (left + right) * 0.5f - side_w * 0.25f, display.y - timeline_h);
