@@ -2,6 +2,8 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/skater_entities.h"
+#include "Engine/Game/Build/20260929/native_skater.h"
+#include "Engine/Game/Build/20260929/world_props.h"
 #include <cstdint>
 #include <limits>
 #include <string_view>
@@ -9,6 +11,23 @@
 // The checks behind world_entities.cpp, as SmokeyDawg58 wrote them for his fork's gates (its source
 // and asset contracts): pure over the reads they are given, so they test.
 namespace dingosdk::world_entities::detail {
+// Only the isolated bus created for this object may move. Never write its source
+// skater's transform, a recycled owner, or an animation-driven transform.
+template<class Pointer, class Byte>
+std::uintptr_t object_blueprint_transform(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t owner,
+        std::uintptr_t context, std::uintptr_t created_bus, std::uintptr_t source_bus, Pointer pointer, Byte byte) {
+    namespace p = addr::world_props;
+    constexpr auto maximum = std::numeric_limits<std::uintptr_t>::max();
+    if (!base || !entity || !context || !created_bus || !source_bus || owner != created_bus || owner == source_bus ||
+        base > maximum - addr::native_skater::blueprint_transform_vtable || entity > maximum - p::entity_owner ||
+        owner > maximum - p::bus_context || source_bus > maximum - p::bus_transform) return 0;
+    if (pointer(entity + p::entity_context) != context || pointer(entity + p::entity_owner) != owner ||
+        pointer(owner + p::bus_context) != context) return 0;
+    const auto transform = pointer(owner + p::bus_transform);
+    if (!transform || transform > maximum - p::transform_animation_driven || transform == pointer(source_bus + p::bus_transform) ||
+        pointer(transform) != base + addr::native_skater::blueprint_transform_vtable || byte(transform + p::transform_animation_driven)) return 0;
+    return transform;
+}
 // The native creation parent bus. A ClientSkaterSource can keep its spawned entity slot empty after
 // player replacement while the verified local player owns the current skater; its same-context CAS
 // source still supplies the bus, as native_skater_spawn::find_source does for remote actors.

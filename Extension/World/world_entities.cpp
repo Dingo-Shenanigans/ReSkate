@@ -46,6 +46,7 @@ struct Wanted {
 };
 struct Live {
     std::uintptr_t entity{}, owner{}, context{};
+    std::uintptr_t created_bus{}, source_bus{};
     std::string asset;
     Matrix matrix{};
     std::uint64_t moved{};
@@ -192,12 +193,20 @@ Live create(std::uintptr_t base, std::uintptr_t parent, std::uintptr_t asset, co
     reinterpret_cast<void* (*)(void*, void*, std::uintptr_t, std::uintptr_t, std::uintptr_t)>(base + e::create_entity)(result.data(), descriptor.data(), asset, 0, 0);
     if (result[1]) reinterpret_cast<void (*)(std::uintptr_t)>(base + e::release_reference)(result[1]);
     require(result[0] != 0, "A world object blueprint did not create an entity.");
-    Live live{result[0], ptr(result[0], 0x40), ptr(result[0], 0x20)};
+    Live live{result[0], ptr(result[0], 0x40), ptr(result[0], 0x20), bus, parent};
     reinterpret_cast<void (*)(std::uintptr_t, const void*, std::uintptr_t, std::uint8_t)>(base + e::initialize_placement)(live.entity, matrix.data(), 0, 1);
     return live;
 }
 void move(std::uintptr_t base, const Live& l, const Matrix& matrix) {
-    reinterpret_cast<void (*)(std::uintptr_t, const void*, std::uint8_t, std::uint8_t)>(base + e::move_spatial_entity)(l.entity, matrix.data(), 1, 1);
+    const auto transform = detail::object_blueprint_transform(base, l.entity, l.owner, l.context, l.created_bus, l.source_bus,
+        [](auto at) { return ptr(at); }, [](auto at) { return get<std::uint8_t>(at); });
+    require(transform != 0, "World object blueprint transform ownership changed.");
+    alignas(16) const auto pose = matrix;
+    // The blueprint transform notifies every object created on this private bus,
+    // including effects. The spatial setter still moves the root model itself.
+    // Preserve that order, as the native skateboard world-transform event does.
+    reinterpret_cast<void (*)(std::uintptr_t, const void*)>(base + addr::native_skater::set_blueprint_transform)(transform, pose.data());
+    reinterpret_cast<void (*)(std::uintptr_t, const void*, std::uint8_t, std::uint8_t)>(base + e::move_spatial_entity)(l.entity, pose.data(), 1, 1);
 }
 void destroy(std::uintptr_t base, const Live& l) {
     // No lock held: the shared destroy hook calls entity_destroyed back.
@@ -535,6 +544,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             prefix(base, e::create_entity, e::create_entity_prefix);
             prefix(base, e::initialize_placement, e::initialize_placement_prefix);
             prefix(base, e::move_spatial_entity, e::move_spatial_entity_prefix);
+            prefix(base, addr::native_skater::set_blueprint_transform, addr::native_skater::set_blueprint_transform_prefix);
             prefix(base, b::create_bus, b::create_bus_prefix);
             prefix(base, b::acquire_bus, b::acquire_bus_prefix);
             // ReSkate's shared entity lifetime hook detours Destroy: it tells us of each one.

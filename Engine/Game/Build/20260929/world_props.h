@@ -13,4 +13,11 @@ namespace dingosdk::game::build::v20260929::world_props {
 inline constexpr std::uintptr_t object_blueprint_vtable = 0x638dfa8;
 // The entity a static-model object blueprint creates on the client (the cone's).
 inline constexpr std::uintptr_t static_model_entity_vtable = 0x6403720;
+// The private bus made for an object owns its blueprint transform. Moving only
+// the root spatial entity leaves sibling effects at their creation pose.
+inline constexpr std::uintptr_t entity_context = 0x20;
+inline constexpr std::uintptr_t entity_owner = 0x40;
+inline constexpr std::uintptr_t bus_context = 0x20;
+inline constexpr std::uintptr_t bus_transform = 0x18;
+inline constexpr std::uintptr_t transform_animation_driven = 0xa5;
 } // namespace dingosdk::game::build::v20260929::world_props
