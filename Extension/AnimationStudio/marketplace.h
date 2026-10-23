@@ -43,6 +43,7 @@ inline constexpr std::array crew_members{
     CrewMember{"smonky", "smonk", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
     CrewMember{"reskate_animation_editor", "philsteezy", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
     CrewMember{"Heatz", "Heatz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"Bonksz", "Bonksz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
 };
 // Sample packs, so the shop can be seen full before it is: shown after the real ones, with covers made by the cover
 // designer, and nothing to GET. Off: the release shows the real packs only.
