@@ -101,7 +101,7 @@ section { position: relative; }
 .welcome .kicker { font-family: "Anton"; font-size: 30px; letter-spacing: 3px; color: var(--ink); padding: 8px 22px; transform: rotate(-2deg); }
 .welcome .word { position: relative; margin-top: -6px; height: 156px; }
 .welcome .word .strip { position: absolute; left: -24px; top: 40px; }
-.welcome .word img { position: absolute; left: 0; top: 0; height: 156px; }
+.welcome .word .clean { position: absolute; left: 4px; top: 8px; font-family: "Anton"; font-size: 168px; line-height: 1; letter-spacing: 2px; color: #fff; white-space: nowrap; }
 .welcome p { margin-top: 18px; width: 640px; font-size: 16px; line-height: 1.55; color: rgba(243,243,239,.86); }
 .welcome .stats { display: flex; gap: 30px; margin-top: 18px; font-family: "Anton"; font-size: 28px; letter-spacing: 1px; }
 .welcome .stats small { display: block; font-family: "Montserrat"; font-weight: 800; font-size: 11px; letter-spacing: 1.2px; color: var(--soft); }
@@ -302,7 +302,7 @@ section { position: relative; }
       <section class="welcome" id="welcome"><div class="mid">
         <div class="copy">
           <div class="label kicker" data-kind="white" data-seed="11"><span>WELCOME TO THE</span></div>
-          <div class="word"><img src="../../../assets/animator_studio/market/word_marketplace.png" alt="MARKETPLACE"></div>
+          <div class="word"><div class="clean">MARKETPLACE</div></div>
           <p>Animation packs made in the Animator Studio, by skaters, for skaters. Find a trick, hit GET, and it is in your game. Made one yourself? Put it on the shelf.</p>
           <div class="stats" id="stats"></div>
           <div class="ctas"><div class="btn blue big" data-go="browse">BROWSE ALL PACKS</div><div class="btn line big" data-open="designer">SHARE YOUR PACK</div></div>
