@@ -291,18 +291,20 @@ struct Ui {
         std::string key;
         double since{-1};
         ImVec2 a{}, b{};
-        std::function<bool()> start;
-        bool tried{}, peeking{}, done{};
+        std::function<bool(bool)> start; // asks for the trick: true plays it once it is ready, false only readies it
+        bool readied{}, tried{}, peeking{}, done{};
+        double asked{-1};
         float duration{};
         studio::Orbit orbit; // the camera as it was, put back after
     } hover;
     std::string hover_candidate, hover_candidate_title, hover_title;
     ImVec2 hover_candidate_a{}, hover_candidate_b{};
-    std::function<bool()> hover_candidate_start;
+    std::function<bool(bool)> hover_candidate_start;
     // The window the skater is seen through while a trick is looked at: the menu leaves it clear (last frame's).
     bool peek_hole{};
     ImVec2 peek_a{}, peek_b{};
     ImVec2 grid_a{}, grid_b{}; // where TRICKS' cards are, for the window to sit in
+    float grid_gap{};          // and the room between them
     std::string asset_filter;
     std::string asset_document, asset_json_path;
     std::vector<std::pair<std::string, std::string>> asset_history;
@@ -3523,7 +3525,7 @@ void library_news() {
 // With PREVIEW on (TRICKS, top right), a trick card held under the mouse a moment has the skater himself do its trick:
 // the menu leaves a window clear beside the card, the camera holds on him and his board from the side, and he does it
 // once. Nothing is opened: what is open in the studio stays as it is, and the camera goes back as it was.
-void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<bool()> start, const std::string& title = {}) {
+void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<bool(bool)> start, const std::string& title = {}) {
     if (!ImGui::IsMouseHoveringRect(a, b) || !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) return;
     auto& u = ui();
     u.hover_candidate = key;
@@ -3539,8 +3541,8 @@ bool under_peek(ImVec2 a, ImVec2 b) {
 }
 void stop_hover_peek() {
     auto& h = ui().hover;
+    if (h.tried || h.peeking) studio::end_peek(); // one asked for and still being read does not start later
     if (h.peeking) {
-        studio::end_peek();
         studio::set_orbit(h.orbit);
         studio::set_camera_follow(ui().camera_shot != 0);
     }
@@ -3583,10 +3585,25 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         u.hover_title = u.hover_candidate_title;
     }
     if (h.done) return;
+    // Read while the mouse settles on the card (off the frame), played once it has stayed a moment.
+    if (!h.readied && now - h.since >= 0.12) {
+        h.readied = true;
+        if (h.start) (void)h.start(false);
+    }
     if (!h.tried) {
         if (now - h.since < 0.35) return; // a moment held on it, not passed over
         h.tried = true;
-        if (!h.start || !h.start()) return;
+        h.asked = now;
+        if (!h.start || !h.start(true)) {
+            h.done = true;
+            return;
+        }
+    }
+    if (!h.peeking) {
+        if (!studio::peek_playing()) {
+            if (now - h.asked > 4.0) h.done = true; // it could not be read
+            return;
+        }
         h.peeking = true;
         h.since = now;
         h.duration = std::max(0.3f, studio::peek_duration());
@@ -3609,12 +3626,24 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         h.done = true;
         return;
     }
-    // The window: beside the card, inside the cards' area, as tall as a skater in the air needs.
-    const float w = std::min(460 * k, (u.grid_b.x - u.grid_a.x) * 0.48f), hgt = std::min(560 * k, u.grid_b.y - u.grid_a.y);
-    ImVec2 a(h.b.x + 16 * k, h.a.y - 60 * k);
-    if (a.x + w > u.grid_b.x) a.x = h.a.x - 16 * k - w;
-    if (a.x < u.grid_a.x) a.x = std::min(u.grid_b.x - w, h.b.x + 16 * k);
-    a.y = std::clamp(a.y, u.grid_a.y, std::max(u.grid_a.y, u.grid_b.y - hgt));
+    // The window: the next column of cards beside the card, a few rows of it (as tall as a skater in the air needs), so
+    // the cards it is over are hidden whole and none is cut in two. With one column only, beside the card as it fits.
+    const float gap = u.grid_gap > 0 ? u.grid_gap : 16 * k, row = (h.b.y - h.a.y) + gap, grid_h = u.grid_b.y - u.grid_a.y;
+    const int rows = std::clamp(static_cast<int>(std::ceil((520 * k + gap) / row)), 1, std::max(1, static_cast<int>((grid_h + gap) / row)));
+    float w = h.b.x - h.a.x, hgt = static_cast<float>(rows) * row - gap;
+    ImVec2 a(h.b.x + gap, h.a.y);
+    if (a.x + w > u.grid_b.x + 1) a.x = h.a.x - gap - w;
+    if (a.x < u.grid_a.x - 1) {
+        w = std::min(460 * k, (u.grid_b.x - u.grid_a.x) * 0.48f);
+        hgt = std::min(560 * k, grid_h);
+        a = ImVec2(std::clamp(h.b.x + 16 * k, u.grid_a.x, std::max(u.grid_a.x, u.grid_b.x - w)), h.a.y - 60 * k);
+        a.y = std::clamp(a.y, u.grid_a.y, std::max(u.grid_a.y, u.grid_b.y - hgt));
+    } else {
+        // Whole rows: down past the top of the cards' area, up off its foot.
+        if (a.y < u.grid_a.y - 1) a.y += row * std::ceil((u.grid_a.y - a.y) / row);
+        while (a.y + hgt > u.grid_b.y + 1 && a.y - row >= u.grid_a.y - 1) a.y -= row;
+        hgt = std::min(hgt, u.grid_b.y - a.y);
+    }
     const ImVec2 b(a.x + w, a.y + hgt);
     u.peek_hole = true;
     u.peek_a = a;
@@ -3773,11 +3802,12 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     }
     u.grid_a = grid_a;
     u.grid_b = grid_b;
+    u.grid_gap = gap;
     for (const auto& name : mine) {
         const auto at = place(i++);
         if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
         my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
-        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name] { return studio::peek_saved(name); }, shown_name(v, name));
+        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
     }
     if (!mine.empty()) {
         top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
@@ -3800,7 +3830,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
             for (const std::size_t pop : {1, 0, 2, 3})
                 if (c->pops[pop]) {
                     const studio::GameTrick trick = *c->pops[pop];
-                    note_hover("game|" + trick.file, at, end, [trick] { return studio::peek_game_trick(trick); }, c->label + " (" + trick.pop + " pop)");
+                    note_hover("game|" + trick.file, at, end, [trick](bool play) { return studio::peek_game_trick(trick, play); }, c->label + " (" + trick.pop + " pop)");
                     break;
                 }
             continue;
@@ -3808,7 +3838,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         if (!c->sides.empty())
             if (const auto* piece = main_piece(*c, c->sides.front()); piece && piece->clip) {
                 const studio::GameTrick trick = *piece->clip;
-                note_hover("piece|" + trick.file, at, end, [trick] { return studio::peek_game_trick(trick); },
+                note_hover("piece|" + trick.file, at, end, [trick](bool play) { return studio::peek_game_trick(trick, play); },
                            c->label + " (" + (piece->side.empty() ? piece->part : piece->side + " " + piece->part) + ")");
             }
         int saved = 0;

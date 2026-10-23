@@ -34,6 +34,7 @@
 #include <cctype>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -6664,44 +6665,121 @@ std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     return clip;
 }
 namespace {
-// Puts a trick up to look at, turned into the studio's stance as an open one is (face_studio_stance).
-bool peek_locked(State& s, std::shared_ptr<Clip> clip, Animation edits) {
-    if (!clip || clip->empty() || clip->joints != skeleton_joints) return false;
-    const bool want_right = studio_goofy(s.stance_choice);
-    if (const auto lead = clip_leads_right(*clip); lead && *lead != want_right) {
+// The hover preview's tricks, read off the frame (peek_game_trick).
+struct PeekRead {
+    std::string key; // what it is and the stance it was turned into
+    std::shared_ptr<const Clip> clip;
+    std::shared_ptr<const Animation> edits;
+};
+struct Peeks {
+    std::mutex mutex;             // taken before the studio's own (state().mutex), never while that is held
+    std::vector<PeekRead> kept;   // the last few read, the newest last
+    std::set<std::string> reading;
+    std::string to_play;          // the one to start once it is read ("" none)
+};
+Peeks& peeks() {
+    static auto* value = new Peeks; // process lifetime
+    return *value;
+}
+constexpr std::size_t peeks_kept = 8;
+// Starts a read trick if it is still the one asked to play. The caller holds peeks().mutex.
+void start_peek_locked(Peeks& p, const PeekRead& read) {
+    if (p.to_play != read.key || !read.clip) return;
+    p.to_play.clear();
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.peek_clip = read.clip;
+    s.peek_edits = read.edits;
+    s.peek_since = now_seconds();
+    publish_locked(s, false);
+}
+// A clip and its edits turned into the stance the studio shows (`goofy`: the right foot leads), as an open one is.
+PeekRead turned(std::string key, std::shared_ptr<Clip> clip, Animation edits, bool goofy) {
+    if (!clip || clip->empty() || clip->joints != skeleton_joints) throw std::runtime_error("not a clip of the skater");
+    if (const auto lead = clip_leads_right(*clip); lead && *lead != goofy) {
         clip = std::make_shared<Clip>(mirror_clip(*clip));
         edits.clip = {};
         edits = mirror_animation(edits);
     }
-    s.peek_clip = std::move(clip);
-    s.peek_edits = std::make_shared<const Animation>(std::move(edits));
-    s.peek_since = now_seconds();
-    publish_locked(s, false);
+    return {std::move(key), std::move(clip), std::make_shared<const Animation>(std::move(edits))};
+}
+bool studio_goofy_now() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return studio_goofy(s.stance_choice);
+}
+// A trick to look at, under `key`: one kept starts at once; else `read` reads it on its own thread.
+bool ask_peek(const std::string& key, bool play, std::function<PeekRead()> read) {
+    auto& p = peeks();
+    std::lock_guard lock(p.mutex);
+    if (play) p.to_play = key;
+    for (auto it = p.kept.rbegin(); it != p.kept.rend(); ++it)
+        if (it->key == key) {
+            if (play) start_peek_locked(p, *it);
+            return true;
+        }
+    if (!p.reading.insert(key).second) return true; // being read: it starts when it is
+    try {
+        std::thread([key, read = std::move(read)] {
+            PeekRead done;
+            try {
+                done = read();
+            } catch (const std::exception& e) {
+                logging::log(Level::warning, Channel::skater, "Animation Studio: a preview could not be read: {}", e.what());
+            } catch (...) {}
+            auto& l = peeks();
+            std::lock_guard lock(l.mutex);
+            l.reading.erase(key);
+            if (!done.clip) {
+                if (l.to_play == key) l.to_play.clear();
+                return;
+            }
+            l.kept.push_back(done);
+            if (l.kept.size() > peeks_kept) l.kept.erase(l.kept.begin());
+            start_peek_locked(l, done);
+        }).detach();
+    } catch (...) {
+        p.reading.erase(key);
+        if (p.to_play == key) p.to_play.clear();
+        return false;
+    }
     return true;
 }
 } // namespace
-bool peek_game_trick(const GameTrick& trick) {
-    try {
-        auto clip = read_game_clip(trick);
-        auto& s = state();
-        std::lock_guard lock(s.mutex);
-        return peek_locked(s, std::move(clip), {});
-    } catch (...) { return false; }
+bool peek_game_trick(const GameTrick& trick, bool play) {
+    if (!safe_library_clip(trick.file)) return false;
+    const bool goofy = studio_goofy_now();
+    const auto key = std::string(trick.recorded ? "recorded|" : "library|") + trick.file + (goofy ? "|goofy" : "|regular");
+    return ask_peek(key, play, [trick, key, goofy] { return turned(key, read_game_clip(trick), {}, goofy); });
 }
-bool peek_saved(const std::string& animation) {
+bool peek_saved(const std::string& animation, bool play) {
     try {
         const auto safe = file_safe(animation);
-        std::ifstream json_in(saved_json(safe), std::ios::binary), clip_in(saved_clip(safe), std::ios::binary);
-        if (!json_in || !clip_in) return false;
-        auto edits = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
-        auto clip = std::make_shared<Clip>(clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {})));
-        if (edits.source.kind == "native_asset") place_native_marks(*clip);
-        auto& s = state();
-        std::lock_guard lock(s.mutex);
-        return peek_locked(s, std::move(clip), std::move(edits));
+        std::error_code error;
+        const auto written = std::filesystem::last_write_time(saved_clip(safe), error);
+        if (error) return false;
+        const bool goofy = studio_goofy_now();
+        // Saved again, it is another trick: when it was written is part of what it is.
+        const auto key = "saved|" + safe + "|" + std::to_string(written.time_since_epoch().count()) + (goofy ? "|goofy" : "|regular");
+        return ask_peek(key, play, [safe, key, goofy] {
+            std::ifstream json_in(saved_json(safe), std::ios::binary), clip_in(saved_clip(safe), std::ios::binary);
+            if (!json_in || !clip_in) throw std::runtime_error("its files are missing");
+            auto edits = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
+            auto clip = std::make_shared<Clip>(clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {})));
+            if (edits.source.kind == "native_asset") place_native_marks(*clip);
+            return turned(key, std::move(clip), std::move(edits), goofy);
+        });
     } catch (...) { return false; }
 }
+bool peek_playing() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return s.peek_clip && s.peek_since >= 0;
+}
 void end_peek() {
+    auto& p = peeks();
+    std::lock_guard peek_lock(p.mutex);
+    p.to_play.clear();
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (!s.peek_clip) return;
