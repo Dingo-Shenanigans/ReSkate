@@ -55,6 +55,7 @@ constexpr float tool_strip_width = 148, tool_strip_margin = 20;
 constexpr ImU32 blue = skate_theme::blue;
 constexpr ImU32 blue_dim = IM_COL32(1, 131, 255, 110);
 constexpr ImU32 blue_light = IM_COL32(90, 180, 255, 255);
+constexpr ImU32 shop_ink = IM_COL32(11, 12, 15, 255); // the shop's black: ink on paper, its dark buttons
 constexpr float fps = 30.0f;
 
 // XInput button bits (read_gamepad keeps them for PlayStation pads too).
@@ -465,10 +466,66 @@ struct Fonts {
     float made_at{1};
     std::array<ImFont*, 4> covers{}; // the cover designer's fonts: Bebas Neue, Rubik Dirt, Sedgwick Ave Display, Knewave
 };
-ImVec2 text_size(ImFont* font, float size, const char* text) { return font->CalcTextSizeA(size, FLT_MAX, 0, text); }
-void text(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 colour, const std::string& value) {
-    d->AddText(font, size, at, colour, value.c_str());
+// ---- type ----
+// Anton at the size it is drawn: the big face for big words (scaled up it would blur), the small one for the rest.
+// Of a face's sizes, the one made at `px` or just above (drawn a little smaller stays sharp; drawn bigger, it blurs).
+ImFont* face_at(const SkateMenu::StudioFace* face, float made_at, float px, ImFont* fallback) {
+    if (!face || face->count == 0) return fallback;
+    for (int i = 0; i < face->count; ++i)
+        if (face->fonts[static_cast<std::size_t>(i)] && face->sizes[static_cast<std::size_t>(i)] * made_at >= px * 0.97f) return face->fonts[static_cast<std::size_t>(i)];
+    const auto* last = face->fonts[static_cast<std::size_t>(face->count - 1)];
+    return last ? const_cast<ImFont*>(last) : fallback;
 }
+ImFont* anton(const Fonts& f, float px) { return face_at(f.anton, f.made_at, px, f.heading); }
+ImFont* mont(const Fonts& f, float px) { return face_at(f.mont, f.made_at, px, f.heading); }
+ImFont* body(const Fonts& f, float px) { return face_at(f.body_face, f.made_at, px, f.body); }
+// The brush face at the size it is drawn: stamps and captions.
+ImFont* marker(const Fonts& f, float px) { return face_at(f.brush, f.made_at, px, f.title); }
+// Any face at the size it is drawn. The studio's old faces (body, bold, heading, the brush title: made once, at their
+// 1080p sizes, and stretched on a bigger screen, which is what made the menus look soft and pixelly) are swapped for the
+// same face made at the screen's own scale; the MARKET's faces are already. Set each frame with the frame's Fonts.
+Fonts sharp_now{};
+bool sharp_set = false;
+ImFont* sharp(ImFont* font, float px) {
+    if (!sharp_set || !font) return font;
+    const auto& f = sharp_now;
+    if (font == f.bold || font == f.heading) return mont(f, px);
+    if (font == f.body) return body(f, px);
+    if (font == f.title) return marker(f, px);
+    return font;
+}
+ImVec2 text_size(ImFont* font, float size, const char* text) { return sharp(font, size)->CalcTextSizeA(size, FLT_MAX, 0, text); }
+void text(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 colour, const std::string& value) {
+    d->AddText(sharp(font, size), size, at, colour, value.c_str());
+}
+// Where capitals sit in a line of `font` drawn `size` high: their top and their foot below the line's top.
+std::pair<float, float> caps_of(ImFont* font, float size) {
+    const auto* g = font->FindGlyph('H');
+    if (!g || font->FontSize <= 0) return {size * 0.2f, size * 0.8f};
+    const float s = size / font->FontSize;
+    return {g->Y0 * s, g->Y1 * s};
+}
+float spaced_width(ImFont* font, float size, std::string_view words, float spacing) {
+    float w = 0;
+    char one[2]{};
+    for (const char c : words) {
+        one[0] = c;
+        w += sharp(font, size)->CalcTextSizeA(size, FLT_MAX, 0, one).x + spacing;
+    }
+    return words.empty() ? 0 : w - spacing;
+}
+// Words with room between their letters (the shop's small capitals). Returns how wide they came out.
+float text_spaced(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 colour, std::string_view words, float spacing) {
+    float x = at.x;
+    char one[2]{};
+    for (const char c : words) {
+        one[0] = c;
+        d->AddText(sharp(font, size), size, ImVec2(x, at.y), colour, one);
+        x += sharp(font, size)->CalcTextSizeA(size, FLT_MAX, 0, one).x + spacing;
+    }
+    return words.empty() ? 0 : x - at.x - spacing;
+}
+
 unsigned seed_of(ImVec2 a) { return static_cast<unsigned>(a.x * 7 + a.y * 13); }
 // A tile with skate.'s rough, hand-cut edge and a little screen-print in its corner.
 void tile(ImDrawList* d, ImVec2 a, ImVec2 b, ImU32 colour, float k, bool print = true) {
@@ -482,11 +539,12 @@ bool button(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 siz
     ImGui::SetCursorScreenPos(at);
     const bool clicked = ImGui::InvisibleButton(id, size) && enabled;
     const bool hovered = ImGui::IsItemHovered() && enabled;
-    const ImU32 fill = on ? blue : hovered ? IM_COL32(64, 66, 72, 240) : IM_COL32(34, 35, 38, 240);
-    skate_theme::rough_rect(d, at, ImVec2(at.x + size.x, at.y + size.y), fill, seed_of(at), f.k * 0.7f);
+    const ImU32 fill = on ? blue : hovered ? IM_COL32(40, 42, 48, 250) : IM_COL32(14, 15, 18, 235);
+    d->AddRectFilled(at, ImVec2(at.x + size.x, at.y + size.y), fill);
+    if (!on) d->AddRect(at, ImVec2(at.x + size.x, at.y + size.y), IM_COL32(255, 255, 255, hovered ? 110 : 40), 0, 0, 1 * f.k);
     const float fs = 14 * f.k;
     const auto t = text_size(f.bold, fs, label.c_str());
-    d->AddText(f.bold, fs, ImVec2(at.x + (size.x - t.x) * 0.5f, at.y + (size.y - t.y) * 0.5f), enabled ? white : faint, label.c_str());
+    d->AddText(sharp(f.bold, fs), fs, ImVec2(at.x + (size.x - t.x) * 0.5f, at.y + (size.y - t.y) * 0.5f), enabled ? white : faint, label.c_str());
     return clicked;
 }
 void diamond(ImDrawList* d, ImVec2 c, float r, ImU32 colour) {
@@ -578,7 +636,7 @@ float glyph(ImDrawList* d, const Fonts& f, ImVec2 at, Glyph g, bool playstation)
         const float fs = 11 * k;
         const auto t = text_size(f.bold, fs, s);
         d->AddRectFilled(ImVec2(at.x, at.y + 2 * k), ImVec2(at.x + w, at.y + 2 * r - 2 * k), white, 5 * k);
-        d->AddText(f.bold, fs, ImVec2(at.x + (w - t.x) * 0.5f, c.y - t.y * 0.5f), skate_theme::black, s);
+        d->AddText(sharp(f.bold, fs), fs, ImVec2(at.x + (w - t.x) * 0.5f, c.y - t.y * 0.5f), skate_theme::black, s);
         return w;
     };
     switch (g) {
@@ -587,7 +645,7 @@ float glyph(ImDrawList* d, const Fonts& f, ImVec2 at, Glyph g, bool playstation)
         if (!playstation) {
             const char* s = g == Glyph::a ? "A" : g == Glyph::b ? "B" : g == Glyph::x ? "X" : "Y";
             const auto t = text_size(f.bold, 14 * k, s);
-            d->AddText(f.bold, 14 * k, ImVec2(c.x - t.x * 0.5f, c.y - t.y * 0.5f), skate_theme::black, s);
+            d->AddText(sharp(f.bold, 14 * k), 14 * k, ImVec2(c.x - t.x * 0.5f, c.y - t.y * 0.5f), skate_theme::black, s);
         } else {
             const float s = r * 0.48f, w = 2.2f * k;
             const ImU32 ink = skate_theme::black;
@@ -612,7 +670,7 @@ float glyph(ImDrawList* d, const Fonts& f, ImVec2 at, Glyph g, bool playstation)
         d->AddCircle(c, r, white, 0, 2 * k);
         const char* s = g == Glyph::ls ? "L" : "R";
         const auto t = text_size(f.bold, 12 * k, s);
-        d->AddText(f.bold, 12 * k, ImVec2(c.x - t.x * 0.5f, c.y - t.y * 0.5f), white, s);
+        d->AddText(sharp(f.bold, 12 * k), 12 * k, ImVec2(c.x - t.x * 0.5f, c.y - t.y * 0.5f), white, s);
         return 2 * r;
     }
     case Glyph::dpad_ud: case Glyph::dpad_lr: {
@@ -631,12 +689,12 @@ float prompt(ImDrawList* d, const Fonts& f, ImVec2 at, std::optional<Glyph> g, c
     else {
         const auto cap = text_size(f.bold, 11 * f.k, key);
         d->AddRectFilled(ImVec2(at.x, at.y + 2 * f.k), ImVec2(at.x + cap.x + 12 * f.k, at.y + 20 * f.k), white, 3 * f.k);
-        d->AddText(f.bold, 11 * f.k, ImVec2(at.x + 6 * f.k, at.y + 11 * f.k - cap.y * 0.5f), skate_theme::black, key);
+        d->AddText(sharp(f.bold, 11 * f.k), 11 * f.k, ImVec2(at.x + 6 * f.k, at.y + 11 * f.k - cap.y * 0.5f), skate_theme::black, key);
         w = cap.x + 12 * f.k;
     }
     const float fs = 13 * f.k;
     const auto t = text_size(f.bold, fs, what);
-    d->AddText(f.bold, fs, ImVec2(at.x + w + 7 * f.k, at.y + 11 * f.k - t.y * 0.5f), white, what);
+    d->AddText(sharp(f.bold, fs), fs, ImVec2(at.x + w + 7 * f.k, at.y + 11 * f.k - t.y * 0.5f), white, what);
     return w + 7 * f.k + t.x + 20 * f.k;
 }
 
@@ -687,7 +745,7 @@ bool text_field(const Fonts& f, const char* id, std::array<char, 64>& buffer, fl
     ImGui::PushStyleColor(ImGuiCol_Text, white);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, (h - 14 * k) * 0.5f));
-    ImGui::PushFont(f.bold);
+    ImGui::PushFont(sharp(f.bold, 15 * f.k));
     ImGui::SetNextItemWidth(width);
     const bool done = ImGui::InputTextWithHint(id, hint, buffer.data(), buffer.size());
     ImGui::PopFont();
@@ -1717,25 +1775,27 @@ bool action(ImDrawList* d, const Fonts& f, const char* id, ImVec2 a, ImVec2 size
     const ImVec2 b(a.x + size.x, a.y + size.y);
     bool lit = false;
     const bool clicked = hit(id, a, b, &lit, enabled);
-    ImU32 fill = IM_COL32(34, 35, 38, 245), ink = white;
+    // The shop's buttons: flat and square; the dark ones with a hairline so they read over the wall.
+    ImU32 fill = shop_ink, ink = white;
     switch (look) {
-    case Look::dark: fill = on ? blue : lit ? IM_COL32(62, 64, 70, 250) : IM_COL32(34, 35, 38, 245); break;
+    case Look::dark: fill = on ? blue : lit ? IM_COL32(40, 42, 48, 250) : IM_COL32(14, 15, 18, 235); break;
     case Look::blue: fill = lit ? IM_COL32(40, 152, 255, 255) : blue; break;
-    case Look::paper: fill = lit ? IM_COL32(255, 255, 255, 255) : IM_COL32(232, 232, 230, 250), ink = IM_COL32(18, 18, 20, 255); break;
-    case Look::key: fill = lit ? IM_COL32(250, 230, 128, 255) : IM_COL32(236, 214, 96, 255), ink = IM_COL32(18, 18, 20, 255); break;
-    case Look::danger: fill = lit ? IM_COL32(220, 70, 70, 255) : IM_COL32(120, 34, 36, 245); break;
-    case Look::ghost: fill = lit ? IM_COL32(255, 255, 255, 30) : IM_COL32(255, 255, 255, 0); break;
+    case Look::paper: fill = lit ? IM_COL32(255, 255, 255, 255) : IM_COL32(233, 230, 221, 255), ink = shop_ink; break;
+    case Look::key: fill = lit ? IM_COL32(250, 230, 128, 255) : IM_COL32(236, 214, 96, 255), ink = shop_ink; break;
+    case Look::danger: fill = lit ? IM_COL32(220, 70, 70, 255) : IM_COL32(150, 38, 40, 245); break;
+    case Look::ghost: fill = lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 90); break;
     }
-    if (!enabled) fill = IM_COL32(30, 31, 34, 200), ink = faint;
-    if (look == Look::ghost) {
-        d->AddRectFilled(a, b, fill, 3 * k);
-        d->AddRect(a, b, IM_COL32(255, 255, 255, lit ? 150 : 70), 3 * k, 0, 1.4f * k);
-    } else skate_theme::rough_rect(d, a, b, fill, seed_of(a), k * 0.7f);
+    if (!enabled) fill = IM_COL32(40, 42, 46, 200), ink = IM_COL32(150, 152, 158, 255);
+    d->AddRectFilled(a, b, fill);
+    if (look == Look::ghost) d->AddRect(a, b, enabled ? IM_COL32(255, 255, 255, lit ? 230 : 190) : IM_COL32(255, 255, 255, 60), 0, 0, 2 * k);
+    else if (look == Look::dark && !on) d->AddRect(a, b, IM_COL32(255, 255, 255, lit ? 110 : 40), 0, 0, 1 * k);
     if (lit && nav().keys) chosen_outline(d, a, b, k);
-    const float fs = std::min(16 * k, size.y * 0.42f);
-    const auto shown = elide(f.bold, fs, label, size.x - 12 * k);
-    const auto t = text_size(f.bold, fs, shown.c_str());
-    text(d, f.bold, fs, ImVec2(a.x + (size.x - t.x) * 0.5f, a.y + (size.y - t.y) * 0.5f), ink, shown);
+    const float fs = std::min(15 * k, size.y * 0.4f);
+    ImFont* font = mont(f, fs);
+    const auto shown = elide(font, fs, label, size.x - 16 * k);
+    const float tw = text_size(font, fs, shown.c_str()).x;
+    const auto [ct, cf] = caps_of(font, fs);
+    text(d, font, fs, ImVec2(a.x + (size.x - tw) * 0.5f, a.y + (size.y - (cf - ct)) * 0.5f - ct), ink, shown);
     return clicked;
 }
 // A small rounded tag: a pop, PLAYS, IN 2 PACKS. Returns its width.
@@ -1743,7 +1803,7 @@ float tag(ImDrawList* d, const Fonts& f, ImVec2 at, const std::string& label, Im
     const float k = f.k, fs = 12 * k;
     const auto t = text_size(f.bold, fs, label.c_str());
     const ImVec2 b(at.x + t.x + 14 * k, at.y + 20 * k);
-    d->AddRectFilled(at, b, fill, 10 * k);
+    d->AddRectFilled(at, b, fill);
     text(d, f.bold, fs, ImVec2(at.x + 7 * k, at.y + (20 * k - t.y) * 0.5f), ink, label);
     return b.x - at.x;
 }
@@ -1758,10 +1818,10 @@ bool chip(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, const std::s
     bool lit = false;
     const bool clicked = hit(id, at, b, &lit, enabled);
     const ImU32 fill = !enabled ? IM_COL32(30, 31, 34, 200) : on ? (lit ? IM_COL32(40, 152, 255, 255) : blue)
-                                                             : lit ? IM_COL32(70, 72, 78, 255) : IM_COL32(40, 41, 46, 255);
-    d->AddRectFilled(at, b, fill, h * 0.5f);
-    if (!on) d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 120 : 50), h * 0.5f, 0, 1.2f * k);
-    if (lit && nav().keys) d->AddRect(ImVec2(at.x - 3 * k, at.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), white, h * 0.5f + 3 * k, 0, 2 * k);
+                                                             : lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 110);
+    d->AddRectFilled(at, b, fill);
+    if (!on) d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 200 : 110), 0, 0, 1.4f * k);
+    if (lit && nav().keys) chosen_outline(d, at, b, k);
     text(d, f.bold, fs, ImVec2(at.x + 12 * k, at.y + (h - t.y) * 0.5f), enabled ? white : faint, label);
     if (width) *width = b.x - at.x;
     return clicked;
@@ -1773,7 +1833,8 @@ int segmented(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, float wi
     const float k = f.k;
     const float w = width / static_cast<float>(std::max<std::size_t>(1, labels.size()));
     int pressed = -1;
-    d->AddRectFilled(at, ImVec2(at.x + width, at.y + height), IM_COL32(24, 25, 28, 250), 4 * k);
+    d->AddRectFilled(at, ImVec2(at.x + width, at.y + height), IM_COL32(14, 15, 18, 235));
+    d->AddRect(at, ImVec2(at.x + width, at.y + height), IM_COL32(255, 255, 255, 40), 0, 0, 1 * k);
     for (std::size_t i = 0; i < labels.size(); ++i) {
         const ImVec2 a(at.x + w * static_cast<float>(i), at.y), b(a.x + w, at.y + height);
         ImGui::PushID(static_cast<int>(i));
@@ -1781,9 +1842,9 @@ int segmented(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, float wi
         if (hit(id, a, b, &lit, enabled)) pressed = static_cast<int>(i);
         ImGui::PopID();
         const bool on = static_cast<int>(i) == chosen;
-        if (on) d->AddRectFilled(ImVec2(a.x + 2 * k, a.y + 2 * k), ImVec2(b.x - 2 * k, b.y - 2 * k), blue, 3 * k);
-        else if (lit) d->AddRectFilled(ImVec2(a.x + 2 * k, a.y + 2 * k), ImVec2(b.x - 2 * k, b.y - 2 * k), IM_COL32(62, 64, 70, 255), 3 * k);
-        if (lit && nav().keys) d->AddRect(ImVec2(a.x - 1 * k, a.y - 1 * k), ImVec2(b.x + 1 * k, b.y + 1 * k), white, 3 * k, 0, 2 * k);
+        if (on) d->AddRectFilled(ImVec2(a.x + 2 * k, a.y + 2 * k), ImVec2(b.x - 2 * k, b.y - 2 * k), blue);
+        else if (lit) d->AddRectFilled(ImVec2(a.x + 2 * k, a.y + 2 * k), ImVec2(b.x - 2 * k, b.y - 2 * k), IM_COL32(255, 255, 255, 26));
+        if (lit && nav().keys) d->AddRect(ImVec2(a.x - 1 * k, a.y - 1 * k), ImVec2(b.x + 1 * k, b.y + 1 * k), white, 0, 0, 2 * k);
         const float fs = std::min(14 * k, height * 0.45f);
         const auto shown = elide(f.bold, fs, labels[i], w - 8 * k);
         const auto t = text_size(f.bold, fs, shown.c_str());
@@ -1819,16 +1880,16 @@ bool field(const Fonts& f, const char* id, std::array<char, 64>& buffer, ImVec2 
         n.press = false;
     }
     ImGui::SetCursorScreenPos(at);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(28, 29, 32, 250));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(14, 15, 18, 235));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(40, 42, 46, 250));
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(46, 48, 54, 255));
     ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, blue_dim);
     ImGui::PushStyleColor(ImGuiCol_Text, white);
-    ImGui::PushStyleColor(ImGuiCol_Border, chosen ? white : IM_COL32(255, 255, 255, 40));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3 * k);
+    ImGui::PushStyleColor(ImGuiCol_Border, chosen ? white : IM_COL32(255, 255, 255, 110));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, chosen ? 2 * k : 1 * k);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, 9 * k));
-    ImGui::PushFont(f.bold);
+    ImGui::PushFont(sharp(f.bold, 15 * f.k));
     ImGui::SetNextItemWidth(width);
     const bool done = ImGui::InputTextWithHint(id, hint, buffer.data(), buffer.size(), ImGuiInputTextFlags_EnterReturnsTrue);
     if (edited) *edited = ImGui::IsItemDeactivatedAfterEdit();
@@ -1841,20 +1902,25 @@ bool field(const Fonts& f, const char* id, std::array<char, 64>& buffer, ImVec2 
     ImGui::PopStyleColor(6);
     return done;
 }
-// A heading over a group: small capitals with a line along under them.
+// A heading over a group, as the shop's: Anton capitals, a line along under them and a stroke of blue at its start.
 void heading(ImDrawList* d, const Fonts& f, ImVec2 at, float width, const std::string& label, const std::string& value = {}) {
-    const float k = f.k;
-    text(d, f.heading, 15 * k, at, white, upper(label));
+    const float k = f.k, size = 20 * k;
+    ImFont* font = anton(f, size);
+    const auto [ct, cf] = caps_of(font, size);
+    text_spaced(d, font, size, ImVec2(at.x, at.y + 18 * k - cf), IM_COL32_WHITE, upper(label), 1.2f * k);
     if (!value.empty()) {
-        const auto t = text_size(f.bold, 13 * k, value.c_str());
-        text(d, f.bold, 13 * k, ImVec2(at.x + width - t.x, at.y + 2 * k), soft, value);
+        ImFont* vf = mont(f, 12 * k);
+        const auto [vt, vb] = caps_of(vf, 12 * k);
+        const float vw = spaced_width(vf, 12 * k, upper(value), 1.2f * k);
+        text_spaced(d, vf, 12 * k, ImVec2(at.x + width - vw, at.y + 18 * k - vb), soft, upper(value), 1.2f * k);
     }
     d->AddRectFilled(ImVec2(at.x, at.y + 22 * k), ImVec2(at.x + width, at.y + 23.5f * k), IM_COL32(255, 255, 255, 34));
+    d->AddRectFilled(ImVec2(at.x, at.y + 21.5f * k), ImVec2(at.x + 34 * k, at.y + 24 * k), blue);
 }
 // Wrapped text; returns how tall it came out.
 float paragraph(ImDrawList* d, ImFont* font, float size, ImVec2 at, float width, ImU32 colour, const std::string& value) {
-    d->AddText(font, size, at, colour, value.c_str(), nullptr, width);
-    return font->CalcTextSizeA(size, FLT_MAX, width, value.c_str()).y;
+    d->AddText(sharp(font, size), size, at, colour, value.c_str(), nullptr, width);
+    return sharp(font, size)->CalcTextSizeA(size, FLT_MAX, width, value.c_str()).y;
 }
 
 // ---- the menu's lists: the game's animation tree (TRICKS > GAME ANIMATIONS) --------------------------
@@ -2741,44 +2807,6 @@ void menu_backdrop(ImDrawList* d, const Fonts& f, ImVec2 display, float alpha) {
     theme::halftone(d, ImVec2(display.x - 150 * k, display.y - 120 * k), 12, 6, IM_COL32(255, 255, 255, a8(14)));
     theme::halftone(d, ImVec2(30 * k, 110 * k), 8, 10, IM_COL32(255, 255, 255, a8(10)));
 }
-// The tabs, in the middle at the top whatever the screen's width, with Q and E (LB and RB) either side.
-void menu_tabs_row(ImDrawList* d, const Fonts& f, float centre_x, float y) {
-    auto& u = ui();
-    const float k = f.k, fs = 30 * k, side = 30 * k, gap = 14 * k, h = 54 * k;
-    float names = 0;
-    for (const char* name : menu_tabs) names += text_size(f.heading, fs, name).x + 2 * side;
-    names += gap * static_cast<float>(menu_tabs.size() - 1);
-    const float cap_w = 44 * k;
-    float x = centre_x - names * 0.5f;
-    const auto cap = [&](float at, const char* key, Glyph g) {
-        const ImVec2 c(at, y + h * 0.5f - 11 * k);
-        if (u.pad_mode) glyph(d, f, c, g, u.playstation);
-        else {
-            d->AddRect(ImVec2(c.x, c.y), ImVec2(c.x + 24 * k, c.y + 24 * k), IM_COL32(255, 255, 255, 170), 3 * k, 0, 2 * k);
-            const auto t = text_size(f.bold, 13 * k, key);
-            text(d, f.bold, 13 * k, ImVec2(c.x + 12 * k - t.x * 0.5f, c.y + 12 * k - t.y * 0.5f), white, key);
-        }
-    };
-    cap(x - cap_w, "Q", Glyph::lb);
-    for (int i = 0; i < static_cast<int>(menu_tabs.size()); ++i) {
-        const auto t = text_size(f.heading, fs, menu_tabs[static_cast<std::size_t>(i)]);
-        const ImVec2 a(x, y), b(x + t.x + 2 * side, y + h);
-        ImGui::PushID(i);
-        bool lit = false;
-        if (hit("##menutab", a, b, &lit)) u.menu_tab = i;
-        ImGui::PopID();
-        const bool chosen = u.menu_tab == i;
-        if (chosen) {
-            if (!draw_studio_brush(d, ImVec2(a.x - 6 * k, a.y + 4 * k), ImVec2(b.x + 6 * k, b.y - 2 * k), blue))
-                skate_theme::rough_rect(d, a, b, blue, seed_of(a), k);
-        } else if (lit) skate_theme::rough_rect(d, a, b, IM_COL32(255, 255, 255, 22), seed_of(a), k);
-        if (lit && nav().keys) chosen_outline(d, a, b, k);
-        text(d, f.heading, fs, ImVec2(a.x + side, a.y + (h - t.y) * 0.5f), chosen || lit ? white : IM_COL32(170, 172, 178, 255),
-             menu_tabs[static_cast<std::size_t>(i)]);
-        x = b.x + gap;
-    }
-    cap(x - gap + 20 * k, "E", Glyph::rb);
-}
 // Along the bottom: what the studio last said on the left, what the buttons do on the right.
 void menu_footer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, float left, float right, const std::string& line) {
     auto& u = ui();
@@ -2796,35 +2824,36 @@ void menu_footer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
     float x = right - 48 * k - w;
     for (const auto& [g, key, what] : list) x += prompt(d, f, ImVec2(x, y), g, key, what, u.playstation);
 }
-// The top of the menu: the studio's name on the left, the tabs in the middle, back to the editor on the right.
+// The top of the menu: the tabs in the middle, back to the editor on the right.
 void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, float right); // below
-void menu_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, float left, float right) {
-    if (ui().menu_tab == 2 || ui().menu_tab == 4) {
-        market_header(d, f, v, display, right);
-        return;
-    }
-    const float k = f.k;
-    text(d, f.bold, 14 * k, ImVec2(left + 50 * k, 26 * k), blue_light, "RESKATE");
-    text(d, f.title, 36 * k, ImVec2(left + 48 * k, 40 * k), white, "ANIMATOR STUDIO");
-    menu_tabs_row(d, f, display.x * 0.5f, 24 * k);
-    float x = right - 48 * k;
-    {
-        const float w = 150 * k;
-        x -= w;
-        if (action(d, f, "##closestudio", ImVec2(x, 30 * k), ImVec2(w, 42 * k), "CLOSE (F8)", Look::ghost)) studio::request_close();
-    }
-    if (v.has_clip) {
-        const float w = 200 * k;
-        x -= w + 12 * k;
-        if (action(d, f, "##toeditor", ImVec2(x, 30 * k), ImVec2(w, 42 * k), "BACK TO EDITOR", Look::paper)) ui().menu = false;
-    }
-    d->AddRectFilled(ImVec2(left + 48 * k, 98 * k), ImVec2(right - 48 * k, 99.5f * k), IM_COL32(255, 255, 255, 30));
+// Every tab in the MARKET's dress: the tabs in Anton, the open one on torn blue paper, CLOSE and BACK TO EDITOR.
+void menu_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, float /*left*/, float right) {
+    market_header(d, f, v, display, right);
 }
-// A page's title: big, brushed, with what it is for under it.
+// A title in the shop's Anton where the brush face stood: its capitals where the brush's were, a little smaller (Anton is
+// the taller face); cut short to `width` when one is given.
+void title_text(ImDrawList* d, const Fonts& f, float size, ImVec2 at, ImU32 colour, const std::string& words, float width = 0) {
+    const float s = size * 0.9f;
+    ImFont* font = anton(f, s);
+    const auto [ct, cf] = caps_of(font, s);
+    const auto shown = width > 0 ? elide(font, s, upper(words), width) : upper(words);
+    d->AddText(font, s, ImVec2(at.x, at.y + size * 0.16f - ct), colour, shown.c_str());
+}
+// A page's title, as the shop's headlines: big Anton capitals, with what it is for under it.
 void page_heading(ImDrawList* d, const Fonts& f, ImVec2 at, const std::string& title, const std::string& about) {
-    const float k = f.k;
-    text(d, f.title, 46 * k, at, white, title);
-    if (!about.empty()) text(d, f.bold, 15 * k, ImVec2(at.x + 2 * k, at.y + 50 * k), soft, about);
+    const float k = f.k, size = 54 * k;
+    ImFont* font = anton(f, size);
+    const auto [ct, cf] = caps_of(font, size);
+    d->AddText(font, size, ImVec2(at.x, at.y + 42 * k - cf), IM_COL32_WHITE, upper(title).c_str());
+    if (!about.empty()) text(d, body(f, 15 * k), 15 * k, ImVec2(at.x + 2 * k, at.y + 54 * k), IM_COL32(243, 243, 239, 190), about);
+}
+
+// A clean flat panel, as the MARKET's and ABOUT's: what the menu pages' tiles are (they were cut rough, skate. style).
+// A card-sized one casts a shadow, as the shop's cards do.
+void flat_rect(ImDrawList* d, ImVec2 a, ImVec2 b, ImU32 colour, unsigned /*seed*/, float k = 1) {
+    const bool card = b.y - a.y >= 90 * k && b.x - a.x >= 160 * k && ((colour >> IM_COL32_A_SHIFT) & 0xFF) >= 200;
+    if (card) d->AddRectFilled(ImVec2(a.x + 8 * k, a.y + 10 * k), ImVec2(b.x + 8 * k, b.y + 10 * k), IM_COL32(0, 0, 0, 90));
+    d->AddRectFilled(a, b, colour);
 }
 
 // ---- TRICKS ---------------------------------------------------------------------------------------
@@ -3014,8 +3043,7 @@ void game_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const
     bool lit = false;
     const bool open = hit("##card", a, ImVec2(b.x, b.y - strip), &lit);
     const bool current = v.has_clip && v.trick == c.trick;
-    skate_theme::rough_rect(d, a, b, lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
-    theme::halftone(d, ImVec2(b.x - 52 * k, a.y + 10 * k), 6, 3, IM_COL32(255, 255, 255, 18));
+    flat_rect(d, a, b, lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
     if (current) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
     if (saved) {
@@ -3078,8 +3106,7 @@ void piece_card(ImDrawList* d, const Fonts& f, const studio::View& v, const Tric
         for (const auto& piece : c.pieces)
             if (v.trick == piece_trick(piece)) open = &piece;
     const bool panel = u.piece_card == c.trick;
-    skate_theme::rough_rect(d, a, b, panel ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
-    theme::halftone(d, ImVec2(b.x - 52 * k, a.y + 10 * k), 6, 3, IM_COL32(255, 255, 255, 18));
+    flat_rect(d, a, b, panel ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
     if (open) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
     if (saved) {
@@ -3126,14 +3153,14 @@ void piece_card(ImDrawList* d, const Fonts& f, const studio::View& v, const Tric
 void piece_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, const TrickCard& c, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
-    skate_theme::rough_rect(d, a, b, IM_COL32(18, 19, 22, 250), seed_of(a), k);
+    flat_rect(d, a, b, IM_COL32(18, 19, 22, 250), seed_of(a), k);
     if (action(d, f, "##piececlose", ImVec2(b.x - 52 * k, a.y + 14 * k), ImVec2(38 * k, 34 * k), "X", Look::ghost)) {
         u.piece_card.clear();
         return;
     }
     const float x = a.x + 26 * k, w = b.x - a.x - 52 * k;
     float y = a.y + 18 * k;
-    text(d, f.title, 34 * k, ImVec2(x, y), white, elide(f.title, 34 * k, upper(c.label), w - 50 * k));
+    title_text(d, f, 34 * k, ImVec2(x, y), white, c.label, w - 50 * k);
     y += 42 * k;
     text(d, f.bold, 14 * k, ImVec2(x, y), soft, c.category + ", " + std::to_string(c.pieces.size()) + " pieces of the game's own animation");
     y += 24 * k;
@@ -3180,8 +3207,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         u.confirm_delete.clear();
     }
     const bool page = u.trick_page == name;
-    skate_theme::rough_rect(d, a, b, page ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
-    theme::halftone(d, ImVec2(b.x - 52 * k, a.y + 10 * k), 6, 3, IM_COL32(255, 255, 255, 18));
+    flat_rect(d, a, b, page ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
     if (name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
     if (p && p->active) {
@@ -3225,7 +3251,7 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     auto& u = ui();
     const float k = f.k;
     const auto name = u.trick_page;
-    skate_theme::rough_rect(d, a, b, IM_COL32(18, 19, 22, 250), seed_of(a), k);
+    flat_rect(d, a, b, IM_COL32(18, 19, 22, 250), seed_of(a), k);
     if (action(d, f, "##drawerclose", ImVec2(b.x - 52 * k, a.y + 14 * k), ImVec2(38 * k, 34 * k), "X", Look::ghost)) {
         u.trick_page.clear();
         return;
@@ -3237,7 +3263,7 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     }
     const auto* p = preset_named(v, name);
     float y = a.y + 18 * k;
-    text(d, f.title, 34 * k, ImVec2(x, y), white, elide(f.title, 34 * k, upper(shown_name(v, name)), w - 50 * k));
+    title_text(d, f, 34 * k, ImVec2(x, y), white, shown_name(v, name), w - 50 * k);
     y += 42 * k;
     const std::string what = p ? trick_label(p->trick) + ", " + (p->pop.empty() ? std::string("any pop") : p->pop + " pop") : std::string("a piece");
     text(d, f.bold, 14 * k, ImVec2(x, y), soft, what + (shown_name(v, name) != name ? "   (file: " + name + ")" : std::string{}));
@@ -3391,10 +3417,10 @@ void asset_list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         const bool pressed = hit("##assetrow", ra, rb, &lit, row.enabled);
         ImGui::PopID();
         if (lit) {
-            skate_theme::rough_rect(d, ra, rb, blue, seed_of(ra), k);
+            flat_rect(d, ra, rb, blue, seed_of(ra), k);
             about = row.about;
             about_title = row.label;
-        } else skate_theme::rough_rect(d, ra, rb, IM_COL32(24, 24, 26, 246), seed_of(ra), k);
+        } else flat_rect(d, ra, rb, IM_COL32(24, 24, 26, 246), seed_of(ra), k);
         if (row.on && !lit) d->AddRectFilled(ImVec2(ra.x, ra.y + 6 * k), ImVec2(ra.x + 4 * k, rb.y - 6 * k), blue);
         const ImU32 ink = row.info ? soft : row.enabled ? white : faint;
         const float value_w = row.value.empty() ? 0 : std::min(text_size(f.bold, 15 * k, row.value.c_str()).x, (rb.x - ra.x) * 0.4f);
@@ -3412,7 +3438,7 @@ void asset_list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
     end_region(d, la, lb, y + u.list_scroll - la.y, u.list_scroll, k);
     // What the row under the mouse (or the pad) is.
     const ImVec2 ha(a.x, b.y - about_h), hb(b.x, b.y);
-    skate_theme::rough_rect(d, ha, hb, IM_COL32(18, 19, 22, 240), seed_of(ha), k * 0.8f);
+    flat_rect(d, ha, hb, IM_COL32(18, 19, 22, 240), seed_of(ha), k * 0.8f);
     if (!about.empty()) {
         text(d, f.heading, 13 * k, ImVec2(ha.x + 18 * k, ha.y + 12 * k), blue_light, elide(f.heading, 13 * k, upper(about_title), hb.x - ha.x - 36 * k));
         paragraph(d, f.bold, 14 * k, ImVec2(ha.x + 18 * k, ha.y + 34 * k), hb.x - ha.x - 36 * k, IM_COL32(222, 222, 226, 255), about);
@@ -3435,13 +3461,12 @@ float library_panel(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
     if (!build.exists) {
         const float h = 288 * k;
         const ImVec2 pa = a, pb(b.x, a.y + h);
-        skate_theme::rough_rect(d, pa, pb, IM_COL32(20, 21, 24, 246), seed_of(pa), k);
+        flat_rect(d, pa, pb, IM_COL32(20, 21, 24, 246), seed_of(pa), k);
         draw_studio_picture(d, StudioPicture::grain, pa, pb, IM_COL32(255, 255, 255, 34));
         // A strip of blue tape across the corner, as on the loading screen.
         d->AddQuadFilled(ImVec2(pb.x - 250 * k, pa.y), ImVec2(pb.x - 150 * k, pa.y), ImVec2(pb.x, pa.y + 120 * k), ImVec2(pb.x, pa.y + 210 * k), blue);
-        theme::halftone(d, ImVec2(pb.x - 120 * k, pa.y + 24 * k), 8, 5, IM_COL32(255, 255, 255, 50));
         const float x = pa.x + 32 * k, text_w = std::min(w - 300 * k, 820 * k);
-        text(d, f.title, 42 * k, ImVec2(x, pa.y + 26 * k), white, "BUILD YOUR TRICK LIBRARY");
+        title_text(d, f, 42 * k, ImVec2(x, pa.y + 26 * k), white, "BUILD YOUR TRICK LIBRARY");
         float y = pa.y + 84 * k;
         y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), text_w, IM_COL32(222, 222, 226, 255),
                        "The studio makes its tricks from your own copy of skate.: every flip trick, grind, grab and manual the game "
@@ -3468,7 +3493,7 @@ float library_panel(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
     if (!build.running && !build.outdated) return 0;
     const float h = 62 * k;
     const ImVec2 pa = a, pb(b.x, a.y + h);
-    skate_theme::rough_rect(d, pa, pb, IM_COL32(20, 21, 24, 246), seed_of(pa), k);
+    flat_rect(d, pa, pb, IM_COL32(20, 21, 24, 246), seed_of(pa), k);
     d->AddRectFilled(pa, ImVec2(pa.x + 6 * k, pb.y), build.running ? blue : skate_theme::warning);
     const float x = pa.x + 24 * k;
     if (build.running) {
@@ -3666,9 +3691,8 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         ImGui::PopID();
         const bool chosen = u.trick_group == g.key;
         if (chosen) {
-            skate_theme::rough_rect(d, ra, rb, blue, seed_of(ra), k);
-            theme::halftone(d, ImVec2(rb.x - 60 * k, ra.y + 8 * k), 7, 4, IM_COL32(255, 255, 255, 40));
-        } else skate_theme::rough_rect(d, ra, rb, lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(24, 25, 28, 240), seed_of(ra), k);
+            flat_rect(d, ra, rb, blue, seed_of(ra), k);
+        } else flat_rect(d, ra, rb, lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(24, 25, 28, 240), seed_of(ra), k);
         if (lit && nav().keys) chosen_outline(d, ra, rb, k);
         text(d, f.bold, 17 * k, ImVec2(ra.x + 18 * k, ra.y + 12 * k), white, elide(f.bold, 17 * k, g.label, rb.x - ra.x - 80 * k));
         const auto count = std::to_string(g.count);
@@ -3963,7 +3987,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const auto& member = s.members.front();
                 bool lit = false;
                 if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 246 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
-                skate_theme::rough_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + row_h), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240),
+                flat_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + row_h), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240),
                                         seed_of(ImVec2(a.x, y)), k * 0.7f);
                 if (lit && nav().keys) chosen_outline(d, ImVec2(a.x, y), ImVec2(a.x + width - 80 * k, y + row_h), k);
                 float right = a.x + width - 250 * k;
@@ -3981,7 +4005,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             // More than one of this trick and pop.
             const bool cycle = pack.pack.alternates(s.slot);
             const float head_h = 44 * k;
-            skate_theme::rough_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + head_h), IM_COL32(32, 34, 40, 246), seed_of(ImVec2(a.x, y)), k * 0.7f);
+            flat_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + head_h), IM_COL32(32, 34, 40, 246), seed_of(ImVec2(a.x, y)), k * 0.7f);
             text(d, f.bold, 16 * k, ImVec2(a.x + 16 * k, y + 12 * k), white,
                  elide(f.bold, 16 * k, upper(trick_label(s.trick)) + "  /  " + pop_label + "  x" + std::to_string(s.members.size()), width - 260 * k));
             const int mode = segmented(d, f, "##mode", ImVec2(a.x + width - 230 * k, y + 6 * k), 218 * k, 32 * k, {"FIXED", "CYCLE"}, cycle ? 1 : 0);
@@ -4005,7 +4029,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                     else studio::set_pack_fixed(pack.name, member, m);
                     say(m);
                 }
-                skate_theme::rough_rect(d, ra, ImVec2(a.x + width - 8 * k, rb.y), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(22, 23, 26, 240), seed_of(ra), k * 0.6f);
+                flat_rect(d, ra, ImVec2(a.x + width - 8 * k, rb.y), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(22, 23, 26, 240), seed_of(ra), k * 0.6f);
                 if (lit && nav().keys) chosen_outline(d, ra, rb, k);
                 // A dot for the one that plays (FIXED), a tick box for the ones in the cycle (CYCLE).
                 const ImVec2 c(ra.x + 18 * k, ra.y + row_h * 0.5f);
@@ -4170,7 +4194,7 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     // ---- its name, rules and tricks ----
     const float x = a.x + col + 48 * k, w = b.x - x;
     float y = a.y + 42 * k;
-    text(d, f.title, 54 * k, ImVec2(x, y), white, elide(f.title, 54 * k, upper(pack.name), w));
+    title_text(d, f, 54 * k, ImVec2(x, y), white, pack.name, w);
     y += 60 * k;
     const auto count = saved_count(v, pack);
     text(d, f.bold, 15 * k, ImVec2(x + 2 * k, y), soft,
@@ -4197,7 +4221,7 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         y += 50 * k;
         // What the pops are, so a pack's tags can be read as what they will look like in game.
         const ImVec2 ha(x, y), hb(x + w, y + 92 * k);
-        skate_theme::rough_rect(d, ha, hb, IM_COL32(18, 22, 30, 236), seed_of(ha), k * 0.6f);
+        flat_rect(d, ha, hb, IM_COL32(18, 22, 30, 236), seed_of(ha), k * 0.6f);
         d->AddRectFilled(ha, ImVec2(ha.x + 5 * k, hb.y), blue);
         static constexpr std::array<std::pair<const char*, const char*>, 4> pops{{
             {"LOW", "a quick, short flick: a little hop, about a third of a second in the air. Tricks look tight and fast."},
@@ -4281,7 +4305,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
     y += 50 * k;
     if (!v.conflicts.empty()) {
         const ImVec2 ca(a.x, y), cb(b.x, y + 52 * k);
-        skate_theme::rough_rect(d, ca, cb, IM_COL32(56, 38, 8, 240), seed_of(ca), k * 0.7f);
+        flat_rect(d, ca, cb, IM_COL32(56, 38, 8, 240), seed_of(ca), k * 0.7f);
         d->AddRectFilled(ca, ImVec2(ca.x + 6 * k, cb.y), skate_theme::warning);
         const auto count = v.conflicts.size();
         text(d, f.heading, 17 * k, ImVec2(ca.x + 22 * k, ca.y + 7 * k), white,
@@ -4376,7 +4400,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             if (pack.favorite) d->AddConcavePolyFilled(points.data(), 10, IM_COL32(255, 196, 0, 255));
             d->AddPolyline(points.data(), 10, pack.favorite ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 255, 255, star_lit ? 255 : 170), ImDrawFlags_Closed, 2 * k);
         }
-        skate_theme::rough_rect(d, ImVec2(ca.x, cover_b.y), cb, lit ? IM_COL32(236, 236, 234, 252) : IM_COL32(22, 23, 26, 248), seed_of(ca), k * 0.6f);
+        flat_rect(d, ImVec2(ca.x, cover_b.y), cb, lit ? IM_COL32(236, 236, 234, 252) : IM_COL32(22, 23, 26, 248), seed_of(ca), k * 0.6f);
         const ImU32 ink = lit ? IM_COL32(18, 18, 20, 255) : white, ink_soft = lit ? IM_COL32(80, 80, 86, 255) : soft;
         text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, elide(f.bold, 19 * k, pack.name, card_w - 100 * k));
         const auto tricks = saved_count(v, pack);
@@ -4406,7 +4430,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         u.pack_settings = false;
         return;
     }
-    text(d, f.title, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "PACK SETTINGS");
+    title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "PACK SETTINGS");
     const float col = std::min(760 * k, (b.x - a.x) * 0.52f);
     const float x = a.x, w = col;
     float y = a.y + 116 * k;
@@ -4445,7 +4469,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         const auto& e = v.playlist[i];
         ImGui::PushID(static_cast<int>(i));
         const ImVec2 ra(x, ly), rb(x + w - 14 * k, ly + 48 * k);
-        skate_theme::rough_rect(d, ra, rb, IM_COL32(26, 27, 30, 244), seed_of(ra), k * 0.6f);
+        flat_rect(d, ra, rb, IM_COL32(26, 27, 30, 244), seed_of(ra), k * 0.6f);
         text(d, f.bold, 14 * k, ImVec2(ra.x + 14 * k, ra.y + 15 * k), faint, std::to_string(i + 1));
         const std::string what = e.animation.empty() ? "PACK" : "TRICK";
         tag(d, f, ImVec2(ra.x + 44 * k, ra.y + 14 * k), what, e.animation.empty() ? blue : IM_COL32(255, 255, 255, 46));
@@ -4472,7 +4496,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         ImGui::PushID((e.pack + "|" + e.animation).c_str());
         const bool have = in_playlist(e);
         const ImVec2 ra(px + (whole ? 0 : 22 * k), qy), rb(px + pw - 14 * k, qy + (whole ? 44 : 36) * k);
-        skate_theme::rough_rect(d, ra, rb, whole ? IM_COL32(30, 32, 38, 244) : IM_COL32(22, 23, 26, 240), seed_of(ra), k * 0.6f);
+        flat_rect(d, ra, rb, whole ? IM_COL32(30, 32, 38, 244) : IM_COL32(22, 23, 26, 240), seed_of(ra), k * 0.6f);
         text(d, whole ? f.heading : f.bold, (whole ? 15 : 14) * k, ImVec2(ra.x + 14 * k, ra.y + (whole ? 13 : 9) * k), have ? faint : white,
              elide(f.bold, 15 * k, label, rb.x - ra.x - 140 * k));
         if (action(d, f, "##add", ImVec2(rb.x - 110 * k, ra.y + 4 * k), ImVec2(100 * k, rb.y - ra.y - 8 * k), have ? "ADDED" : "+ ADD", have ? Look::ghost : Look::blue, !have)) {
@@ -4512,7 +4536,6 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
 using MarketPack = studio::market::Pack;
 using PackList = std::vector<const MarketPack*>;
 constexpr float shop_pi = 3.14159265f;
-constexpr ImU32 shop_ink = IM_COL32(11, 12, 15, 255);
 constexpr ImU32 shop_white = IM_COL32(243, 243, 239, 255);
 std::string thousands(std::uint64_t n) {
     auto text = std::to_string(n);
@@ -4532,48 +4555,6 @@ std::string short_count(std::uint64_t n) {
     return buffer;
 }
 
-// ---- type ----
-// Anton at the size it is drawn: the big face for big words (scaled up it would blur), the small one for the rest.
-// Of a face's sizes, the one made at `px` or just above (drawn a little smaller stays sharp; drawn bigger, it blurs).
-ImFont* face_at(const SkateMenu::StudioFace* face, float made_at, float px, ImFont* fallback) {
-    if (!face || face->count == 0) return fallback;
-    for (int i = 0; i < face->count; ++i)
-        if (face->fonts[static_cast<std::size_t>(i)] && face->sizes[static_cast<std::size_t>(i)] * made_at >= px * 0.97f) return face->fonts[static_cast<std::size_t>(i)];
-    const auto* last = face->fonts[static_cast<std::size_t>(face->count - 1)];
-    return last ? const_cast<ImFont*>(last) : fallback;
-}
-ImFont* anton(const Fonts& f, float px) { return face_at(f.anton, f.made_at, px, f.heading); }
-ImFont* mont(const Fonts& f, float px) { return face_at(f.mont, f.made_at, px, f.heading); }
-ImFont* body(const Fonts& f, float px) { return face_at(f.body_face, f.made_at, px, f.body); }
-// The brush face at the size it is drawn: stamps and captions.
-ImFont* marker(const Fonts& f, float px) { return face_at(f.brush, f.made_at, px, f.title); }
-// Where capitals sit in a line of `font` drawn `size` high: their top and their foot below the line's top.
-std::pair<float, float> caps_of(ImFont* font, float size) {
-    const auto* g = font->FindGlyph('H');
-    if (!g || font->FontSize <= 0) return {size * 0.2f, size * 0.8f};
-    const float s = size / font->FontSize;
-    return {g->Y0 * s, g->Y1 * s};
-}
-float spaced_width(ImFont* font, float size, std::string_view words, float spacing) {
-    float w = 0;
-    char one[2]{};
-    for (const char c : words) {
-        one[0] = c;
-        w += font->CalcTextSizeA(size, FLT_MAX, 0, one).x + spacing;
-    }
-    return words.empty() ? 0 : w - spacing;
-}
-// Words with room between their letters (the shop's small capitals). Returns how wide they came out.
-float text_spaced(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 colour, std::string_view words, float spacing) {
-    float x = at.x;
-    char one[2]{};
-    for (const char c : words) {
-        one[0] = c;
-        d->AddText(font, size, ImVec2(x, at.y), colour, one);
-        x += font->CalcTextSizeA(size, FLT_MAX, 0, one).x + spacing;
-    }
-    return words.empty() ? 0 : x - at.x - spacing;
-}
 // What was drawn since `start` (vertices of the list), turned `angle` about `centre`: a label's words with its paper.
 // Rounding that makes ImGui fill a rectangle or picture as a shape, with its one-pixel smoothed edge: too small to see,
 // and the edge stays smooth when the shape is turned (rotate_since). Plain rectangles and pictures have none.
@@ -4749,7 +4730,7 @@ ImVec2 paper_label(ImDrawList* d, const Fonts& f, ImFont* font, float size, ImVe
                    float deg, ImU32 ink, ImVec2 pad, float spacing = 0, float edge = 2.6f, float ends = 10) {
     const float k = f.k;
     const auto [cap_top, cap_foot] = caps_of(font, size);
-    const float tw = spacing > 0 ? spaced_width(font, size, words, spacing) : font->CalcTextSizeA(size, FLT_MAX, 0, words.data(), words.data() + words.size()).x;
+    const float tw = spacing > 0 ? spaced_width(font, size, words, spacing) : sharp(font, size)->CalcTextSizeA(size, FLT_MAX, 0, words.data(), words.data() + words.size()).x;
     const ImVec2 sz(tw + pad.x * 2, (cap_foot - cap_top) + pad.y * 2);
     const auto shape = torn::piece(sz.x, sz.y, seed, edge * k, ends * k, 7 * k);
     const float angle = deg * shop_pi / 180;
@@ -4757,13 +4738,13 @@ ImVec2 paper_label(ImDrawList* d, const Fonts& f, ImFont* font, float size, ImVe
     draw_paper(d, f, shape, at, 0, ImVec2(0, 0), kind, seed);
     const ImVec2 tp(at.x + pad.x, at.y + pad.y - cap_top);
     if (spacing > 0) text_spaced(d, font, size, tp, ink, words, spacing);
-    else d->AddText(font, size, tp, ink, words.data(), words.data() + words.size());
+    else d->AddText(sharp(font, size), size, tp, ink, words.data(), words.data() + words.size());
     rotate_since(d, start, angle, ImVec2(at.x + sz.x * 0.5f, at.y + sz.y * 0.5f));
     return sz;
 }
 ImVec2 label_size(const Fonts& f, ImFont* font, float size, std::string_view words, ImVec2 pad, float spacing = 0) {
     const auto [cap_top, cap_foot] = caps_of(font, size);
-    const float tw = spacing > 0 ? spaced_width(font, size, words, spacing) : font->CalcTextSizeA(size, FLT_MAX, 0, words.data(), words.data() + words.size()).x;
+    const float tw = spacing > 0 ? spaced_width(font, size, words, spacing) : sharp(font, size)->CalcTextSizeA(size, FLT_MAX, 0, words.data(), words.data() + words.size()).x;
     (void)f;
     return ImVec2(tw + pad.x * 2, (cap_foot - cap_top) + pad.y * 2);
 }
@@ -4974,7 +4955,7 @@ template <class Picture> void print_card(ImDrawList* d, const Fonts& f, ImVec2 a
     d->AddRectFilled(at, b, IM_COL32(241, 239, 232, 255), soft_edge);
     picture(ImVec2(at.x + side, at.y + side), ImVec2(at.x + side + size.x, at.y + side + size.y));
     if (!caption.empty())
-        d->AddText(marker(f, caption_size * k), caption_size * k, ImVec2(at.x + side + 2 * k, b.y - foot + 6 * k), shop_ink, caption.data(),
+        d->AddText(sharp(marker(f, caption_size * k), caption_size * k), caption_size * k, ImVec2(at.x + side + 2 * k, b.y - foot + 6 * k), shop_ink, caption.data(),
                    caption.data() + caption.size());
     if (tape) {
         const float tw = 130 * k, th = 34 * k, tx = at.x + (b.x - at.x - tw) * 0.5f, ty = at.y - 16 * k;
@@ -5019,10 +5000,10 @@ void shop_card(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     const float x = ia.x + 14 * k, tw = w - 28 * k;
     ImFont* title_font = anton(f, 24 * k);
     const auto [ct, cf] = caps_of(title_font, 24 * k);
-    d->AddText(title_font, 24 * k, ImVec2(x, ia.y + 15 * k - ct), shop_white, elide(title_font, 24 * k, upper(p.title), tw).c_str());
+    d->AddText(sharp(title_font, 24 * k), 24 * k, ImVec2(x, ia.y + 15 * k - ct), shop_white, elide(title_font, 24 * k, upper(p.title), tw).c_str());
     const std::string by = "by " + maker_of(p);
     const float by_w = text_size(mont(f, 12 * k), 12 * k, by.c_str()).x;
-    d->AddText(mont(f, 12 * k), 12 * k, ImVec2(x, ia.y + 45 * k), p.crew ? blue_light : soft, by.c_str());
+    d->AddText(sharp(mont(f, 12 * k), 12 * k), 12 * k, ImVec2(x, ia.y + 45 * k), p.crew ? blue_light : soft, by.c_str());
     if (p.crew) crew_stamp(d, f, ImVec2(x + by_w + 10 * k, ia.y + 42 * k), 12 * k, static_cast<std::uint32_t>(p.full_name.size() * 31 + 300));
     // tricks | stance                downloads
     const float my = ia.y + 74 * k;
@@ -5041,7 +5022,7 @@ void shop_card(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     }
     const auto dl = short_count(p.downloads);
     const float dw = text_size(mont(f, 11 * k), 11 * k, dl.c_str()).x;
-    d->AddText(mont(f, 11 * k), 11 * k, ImVec2(ib.x - 14 * k - dw, my), soft, dl.c_str());
+    d->AddText(sharp(mont(f, 11 * k), 11 * k), 11 * k, ImVec2(ib.x - 14 * k - dw, my), soft, dl.c_str());
     download_icon(d, ImVec2(ib.x - 22 * k - dw, my + 6 * k), 12 * k, soft);
     if ((lit || heart_lit) && nav().keys) chosen_outline(d, ca, ib, k);
     ImGui::PopID();
@@ -5061,8 +5042,8 @@ float shop_row(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             const auto number = std::to_string(i + 1);
             const auto [ct, cf] = caps_of(font, 190 * k);
             const ImVec2 np(x - 6 * k, at.y + h - 84 * k - cf);
-            d->AddText(font, 190 * k, ImVec2(np.x + 7 * k, np.y + 7 * k), blue, number.c_str());
-            d->AddText(font, 190 * k, np, shop_white, number.c_str());
+            d->AddText(sharp(font, 190 * k), 190 * k, ImVec2(np.x + 7 * k, np.y + 7 * k), blue, number.c_str());
+            d->AddText(sharp(font, 190 * k), 190 * k, np, shop_white, number.c_str());
         }
         shop_card(d, f, v, m, *packs[i], ImVec2(x + num_w, at.y), w, covers);
     }
@@ -5089,26 +5070,55 @@ struct ShopColumn {
     float x0, width; // the 1920 column (on the 1080p page), centred on the screen
     float inner() const { return x0 + 48; }
 };
-void shop_wall(ImDrawList* d, ImVec2 display, float fade) {
+// The market's wall behind every tab, darker under the tabs and at the foot so the pages read over it (`darker` more in
+// the middle, for the pages full of words). Round the trick being looked at (the hover preview's hole) it leaves the
+// game showing, as the menu's own backdrop does.
+void shop_wall(ImDrawList* d, ImVec2 display, float fade, float darker = 0) {
     if (fade <= 0) return;
+    const auto& u = ui();
     ArtPlace wall;
-    if (market_art(MarketArt::wallpaper, wall)) {
+    const bool art = market_art(MarketArt::wallpaper, wall);
+    ImVec2 uv0(0, 0), uv1(1, 1);
+    if (art) {
         // Filled over the screen with its own shape kept: what does not fit is cropped evenly.
-        const float pw = wall.width, ph = wall.height, shape = pw / ph, screen = display.x / display.y;
-        float u = 1, vv = 1;
-        if (shape > screen) u = screen / shape;
-        else vv = shape / screen;
-        const ImVec2 uv0((1 - u) * 0.5f, (1 - vv) * 0.5f), uv1(1 - (1 - u) * 0.5f, 1 - (1 - vv) * 0.5f);
-        d->AddImage(wall.texture, ImVec2(0, 0), display, uv0, uv1, IM_COL32(255, 255, 255, static_cast<int>(255 * fade)));
-    } else d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 19, static_cast<int>(255 * fade)));
-    // Darker under the tabs and at the foot, so the shop reads over it.
-    const auto a = [&](float x) { return static_cast<int>(255 * x * fade); };
-    const float y1 = display.y * 0.24f, y2 = display.y * 0.8f;
-    d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x, y1), IM_COL32(5, 6, 8, a(0.78f)), IM_COL32(5, 6, 8, a(0.78f)), IM_COL32(5, 6, 8, a(0.35f)),
-                               IM_COL32(5, 6, 8, a(0.35f)));
-    d->AddRectFilled(ImVec2(0, y1), ImVec2(display.x, y2), IM_COL32(5, 6, 8, a(0.35f)));
-    d->AddRectFilledMultiColor(ImVec2(0, y2), display, IM_COL32(5, 6, 8, a(0.35f)), IM_COL32(5, 6, 8, a(0.35f)), IM_COL32(5, 6, 8, a(0.7f)),
-                               IM_COL32(5, 6, 8, a(0.7f)));
+        const float shape = wall.width / wall.height, screen = display.x / display.y;
+        float cu = 1, cv = 1;
+        if (shape > screen) cu = screen / shape;
+        else cv = shape / screen;
+        uv0 = ImVec2(wall.uv0.x + (wall.uv1.x - wall.uv0.x) * (1 - cu) * 0.5f, wall.uv0.y + (wall.uv1.y - wall.uv0.y) * (1 - cv) * 0.5f);
+        uv1 = ImVec2(wall.uv1.x - (wall.uv1.x - wall.uv0.x) * (1 - cu) * 0.5f, wall.uv1.y - (wall.uv1.y - wall.uv0.y) * (1 - cv) * 0.5f);
+    }
+    const auto alpha = [&](float x) { return static_cast<int>(255 * std::clamp(x, 0.0f, 1.0f) * fade); };
+    const float y1 = display.y * 0.24f, y2 = display.y * 0.8f, mid = 0.35f + darker;
+    const auto shade = [&](float y) {
+        if (y <= y1) return 0.78f + (mid - 0.78f) * (y / y1);
+        if (y <= y2) return mid;
+        return mid + (std::max(0.7f, mid) - mid) * ((y - y2) / std::max(1.0f, display.y - y2));
+    };
+    const auto piece = [&](ImVec2 a, ImVec2 b) {
+        if (b.x <= a.x || b.y <= a.y) return;
+        if (art) {
+            const ImVec2 pa(uv0.x + (uv1.x - uv0.x) * a.x / display.x, uv0.y + (uv1.y - uv0.y) * a.y / display.y);
+            const ImVec2 pb(uv0.x + (uv1.x - uv0.x) * b.x / display.x, uv0.y + (uv1.y - uv0.y) * b.y / display.y);
+            d->AddImage(wall.texture, a, b, pa, pb, IM_COL32(255, 255, 255, alpha(1)));
+        } else d->AddRectFilled(a, b, IM_COL32(13, 15, 19, alpha(1)));
+        const ImU32 top = IM_COL32(5, 6, 8, alpha(shade(a.y))), foot = IM_COL32(5, 6, 8, alpha(shade(b.y)));
+        d->AddRectFilledMultiColor(a, b, top, top, foot, foot);
+    };
+    std::vector<float> cuts{0, y1, y2, display.y};
+    if (u.peek_hole) {
+        cuts.push_back(std::clamp(u.peek_a.y, 0.0f, display.y));
+        cuts.push_back(std::clamp(u.peek_b.y, 0.0f, display.y));
+    }
+    std::sort(cuts.begin(), cuts.end());
+    for (std::size_t i = 0; i + 1 < cuts.size(); ++i) {
+        const float ya = cuts[i], yb = cuts[i + 1];
+        if (yb <= ya) continue;
+        if (u.peek_hole && ya >= u.peek_a.y && yb <= u.peek_b.y) {
+            piece(ImVec2(0, ya), ImVec2(u.peek_a.x, yb));
+            piece(ImVec2(u.peek_b.x, ya), ImVec2(display.x, yb));
+        } else piece(ImVec2(0, ya), ImVec2(display.x, yb));
+    }
 }
 float welcome_section(ImDrawList* d, const Fonts& f, const studio::View& v, const PackList& all, const ShopColumn& col, float y) {
     auto& u = ui();
@@ -5148,7 +5158,7 @@ float welcome_section(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     ty += label.y + 8 * k;
     ImFont* big = anton(f, 168 * k);
     const auto [bt, bf] = caps_of(big, 168 * k);
-    d->AddText(big, 168 * k, ImVec2(cx + 4 * k, ty - bt), IM_COL32_WHITE, "MARKETPLACE");
+    d->AddText(sharp(big, 168 * k), 168 * k, ImVec2(cx + 4 * k, ty - bt), IM_COL32_WHITE, "MARKETPLACE");
     ty += (bf - bt) + 28 * k;
     ty += paragraph(d, body(f, 16 * k), 16 * k, ImVec2(cx, ty), 640 * k, IM_COL32(243, 243, 239, 220),
                     "Animation packs made in the Animator Studio, by skaters, for skaters. Find a trick, hit GET, and it is in your game. Made one "
@@ -5166,7 +5176,7 @@ float welcome_section(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     ImFont* num = anton(f, 28 * k);
     const auto [nt, nf] = caps_of(num, 28 * k);
     for (const auto& [value, word] : stats) {
-        d->AddText(num, 28 * k, ImVec2(sx, ty - nt), IM_COL32_WHITE, value.c_str());
+        d->AddText(sharp(num, 28 * k), 28 * k, ImVec2(sx, ty - nt), IM_COL32_WHITE, value.c_str());
         const float ww = text_spaced(d, mont(f, 11 * k), 11 * k, ImVec2(sx, ty + (nf - nt) + 8 * k), soft, word, 1.2f * k);
         sx += std::max(ww, text_size(num, 28 * k, value.c_str()).x) + 30 * k;
     }
@@ -5235,14 +5245,14 @@ float spotlight_section(ImDrawList* d, const Fonts& f, const studio::View& v, co
     const auto [bt, bf] = caps_of(big, 104 * k);
     for (const auto& line : lines) {
         if (line.empty()) continue;
-        d->AddText(big, 104 * k, ImVec2(x, ty - bt), shop_white, elide(big, 104 * k, line, 860 * k).c_str());
+        d->AddText(sharp(big, 104 * k), 104 * k, ImVec2(x, ty - bt), shop_white, elide(big, 104 * k, line, 860 * k).c_str());
         ty += (bf - bt) + 20 * k;
     }
     ty += 6 * k;
-    d->AddText(mont(f, 20 * k), 20 * k, ImVec2(x, ty), IM_COL32_WHITE, "by");
+    d->AddText(sharp(mont(f, 20 * k), 20 * k), 20 * k, ImVec2(x, ty), IM_COL32_WHITE, "by");
     const float byw = text_size(mont(f, 20 * k), 20 * k, "by ").x;
     const auto maker = upper(maker_of(p));
-    d->AddText(mont(f, 20 * k), 20 * k, ImVec2(x + byw + 4 * k, ty), blue_light, maker.c_str());
+    d->AddText(sharp(mont(f, 20 * k), 20 * k), 20 * k, ImVec2(x + byw + 4 * k, ty), blue_light, maker.c_str());
     if (p.crew) crew_stamp(d, f, ImVec2(x + byw + 18 * k + text_size(mont(f, 20 * k), 20 * k, maker.c_str()).x, ty - 2 * k), 17 * k, 91 + static_cast<std::uint32_t>(u.spotlight));
     ty += 38 * k;
     std::string meta = std::to_string(p.tricks.size()) + " TRICKS";
@@ -5297,8 +5307,8 @@ float spotlight_section(ImDrawList* d, const Fonts& f, const studio::View& v, co
             qx += 44 * k;
         }
         qx += 8 * k;
-        d->AddText(font, 22 * k, ImVec2(qx, qy), IM_COL32_WHITE, count.c_str());
-        d->AddText(font, 22 * k, ImVec2(qx + text_size(font, 22 * k, count.c_str()).x, qy), soft, total.c_str());
+        d->AddText(sharp(font, 22 * k), 22 * k, ImVec2(qx, qy), IM_COL32_WHITE, count.c_str());
+        d->AddText(sharp(font, 22 * k), 22 * k, ImVec2(qx + text_size(font, 22 * k, count.c_str()).x, qy), soft, total.c_str());
     }
     return h;
 }
@@ -5336,7 +5346,7 @@ void member_card(ImDrawList* d, const Fonts& f, const studio::market::CrewMember
     float y = ca.y + ph + 14 * k;
     ImFont* nf = anton(f, 38 * k);
     const auto [nt, nb] = caps_of(nf, 38 * k);
-    d->AddText(nf, 38 * k, ImVec2(ca.x + 18 * k, y - nt), IM_COL32_WHITE, upper(std::string(member.name)).c_str());
+    d->AddText(sharp(nf, 38 * k), 38 * k, ImVec2(ca.x + 18 * k, y - nt), IM_COL32_WHITE, upper(std::string(member.name)).c_str());
     y += (nb - nt) + 12 * k;
     text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(ca.x + 18 * k, y), blue_light, upper(std::string(member.role)), 1.8f * k);
     y += 24 * k;
@@ -5350,7 +5360,7 @@ void member_card(ImDrawList* d, const Fonts& f, const studio::market::CrewMember
     const std::array<std::pair<std::string, const char*>, 3> stats{
         {{std::to_string(theirs.size()), "PACKS"}, {short_count(static_cast<std::uint64_t>(likes)), "LIKES"}, {short_count(downloads), "DOWNLOADS"}}};
     for (const auto& [value, word] : stats) {
-        d->AddText(num, 22 * k, ImVec2(sx, y - st), IM_COL32_WHITE, value.c_str());
+        d->AddText(sharp(num, 22 * k), 22 * k, ImVec2(sx, y - st), IM_COL32_WHITE, value.c_str());
         const float ww = text_spaced(d, mont(f, 10 * k), 10 * k, ImVec2(sx, y + (sb - st) + 6 * k), soft, word, 1.2f * k);
         sx += std::max(ww, text_size(num, 22 * k, value.c_str()).x) + 18 * k;
     }
@@ -5375,9 +5385,9 @@ float crew_section(ImDrawList* d, const Fonts& f, const PackList& all, const Sho
     float ty = y + 92 * k;
     ImFont* big = anton(f, 112 * k);
     const auto [bt, bf] = caps_of(big, 112 * k);
-    d->AddText(big, 112 * k, ImVec2(cx, ty - bt), shop_ink, "FROM");
+    d->AddText(sharp(big, 112 * k), 112 * k, ImVec2(cx, ty - bt), shop_ink, "FROM");
     ty += (bf - bt) + 14 * k;
-    d->AddText(big, 112 * k, ImVec2(cx, ty - bt), shop_ink, "THE CREW");
+    d->AddText(sharp(big, 112 * k), 112 * k, ImVec2(cx, ty - bt), shop_ink, "THE CREW");
     ty += (bf - bt) + 26 * k;
     const auto stamp = paper_label(d, f, marker(f, 30 * k), 30 * k, ImVec2(cx, ty), "crew certified", PaperKind::blue, 31, -4, shop_ink, ImVec2(22 * k, 10 * k));
     ty += stamp.y + 22 * k;
@@ -5419,8 +5429,8 @@ float cta_section(ImDrawList* d, const Fonts& f, const ShopColumn& col, ImVec2 d
     const float cx = (col.x0 + 64) * k;
     ImFont* big = anton(f, 78 * k);
     const auto [bt, bf] = caps_of(big, 78 * k);
-    d->AddText(big, 78 * k, ImVec2(cx, y + 70 * k - bt), IM_COL32_WHITE, "GOT A TRICK?");
-    d->AddText(big, 78 * k, ImVec2(cx, y + 70 * k + (bf - bt) + 14 * k - bt), IM_COL32_WHITE, "PUT IT ON THE SHELF.");
+    d->AddText(sharp(big, 78 * k), 78 * k, ImVec2(cx, y + 70 * k - bt), IM_COL32_WHITE, "GOT A TRICK?");
+    d->AddText(sharp(big, 78 * k), 78 * k, ImVec2(cx, y + 70 * k + (bf - bt) + 14 * k - bt), IM_COL32_WHITE, "PUT IT ON THE SHELF.");
     const std::array<std::array<const char*, 3>, 3> steps{{{"01", "MAKE IT", "Pose it, key it, test it in game, in the studio."},
                                                            {"02", "PACK IT", "Put your tricks in a pack, and give it a cover."},
                                                            {"03", "SHARE IT", "Publish it from here. It is in everyone's shop in a minute."}}};
@@ -5429,7 +5439,7 @@ float cta_section(ImDrawList* d, const Fonts& f, const ShopColumn& col, ImVec2 d
         ImFont* num = anton(f, 54 * k);
         const auto [nt, nb] = caps_of(num, 54 * k);
         float sy = y + 74 * k;
-        d->AddText(num, 54 * k, ImVec2(sx, sy - nt), shop_ink, step[0]);
+        d->AddText(sharp(num, 54 * k), 54 * k, ImVec2(sx, sy - nt), shop_ink, step[0]);
         sy += (nb - nt) + 12 * k;
         ImFont* word = anton(f, 26 * k);
         const auto [wt, wb] = caps_of(word, 26 * k);
@@ -5520,9 +5530,9 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     y += 60 * k;
     if (y < bottom) {
         float fx = ix;
-        d->AddText(mont(f, 22 * k), 22 * k, ImVec2(fx, y), IM_COL32_WHITE, "reskate");
+        d->AddText(sharp(mont(f, 22 * k), 22 * k), 22 * k, ImVec2(fx, y), IM_COL32_WHITE, "reskate");
         fx += text_size(mont(f, 22 * k), 22 * k, "reskate").x;
-        d->AddText(mont(f, 22 * k), 22 * k, ImVec2(fx, y), blue, ".");
+        d->AddText(sharp(mont(f, 22 * k), 22 * k), 22 * k, ImVec2(fx, y), blue, ".");
         fx += 30 * k;
         fx += text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(fx, y + 6 * k), faint, "PACKS LIVE ON THUNDERSTORE", 1.5f * k) + 30 * k;
         text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(fx, y + 6 * k), faint, "BUILT BY 22SH, FOURTH, NORMS, STEEZ", 1.5f * k);
@@ -5557,7 +5567,7 @@ void grid_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     float y = top + 30 * k;
     ImFont* big = anton(f, 64 * k);
     const auto [bt, bf] = caps_of(big, 64 * k);
-    d->AddText(big, 64 * k, ImVec2(ix, y - bt), IM_COL32_WHITE, std::string(heading).c_str());
+    d->AddText(sharp(big, 64 * k), 64 * k, ImVec2(ix, y - bt), IM_COL32_WHITE, std::string(heading).c_str());
     const float hw = text_size(big, 64 * k, std::string(heading).c_str()).x;
     if (orders) {
         static const std::array<std::pair<const char*, const char*>, 6> sorts{
@@ -5601,7 +5611,7 @@ void crew_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     float y = top + 30 * k - u.market_scroll;
     ImFont* big = anton(f, 64 * k);
     const auto [bt, bf] = caps_of(big, 64 * k);
-    d->AddText(big, 64 * k, ImVec2(ix, y - bt), IM_COL32_WHITE, "THE CREW");
+    d->AddText(sharp(big, 64 * k), 64 * k, ImVec2(ix, y - bt), IM_COL32_WHITE, "THE CREW");
     text_spaced(d, mont(f, 13 * k), 13 * k, ImVec2(ix + text_size(big, 64 * k, "THE CREW").x + 22 * k, y + (bf - bt) * 0.5f - 7 * k), soft,
                 "THE TESTERS WHO SHAPED THE STUDIO", 2 * k);
     y += (bf - bt) + 40 * k;
@@ -5673,7 +5683,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     {
         float size = 112 * k;
         const auto title = upper(p.title);
-        while (size > 48 * k && anton(f, size)->CalcTextSizeA(size, FLT_MAX, w, title.c_str()).y > size * 2.3f) size -= 6 * k;
+        while (size > 48 * k && sharp(anton(f, size), size)->CalcTextSizeA(size, FLT_MAX, w, title.c_str()).y > size * 2.3f) size -= 6 * k;
         ImFont* big = anton(f, size);
         const auto [bt, bf] = caps_of(big, size);
         ry += 16 * k;
@@ -5687,7 +5697,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
                 if (end == std::string::npos) end = title.size();
                 const auto word = title.substr(start, end - start);
                 const auto joined = current.empty() ? word : current + " " + word;
-                if (!current.empty() && big->CalcTextSizeA(size, FLT_MAX, 0, joined.c_str()).x > w) {
+                if (!current.empty() && sharp(big, size)->CalcTextSizeA(size, FLT_MAX, 0, joined.c_str()).x > w) {
                     lines.push_back(current);
                     current = word;
                 } else current = joined;
@@ -5697,14 +5707,14 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
             if (!current.empty()) lines.push_back(current);
         }
         for (const auto& l : lines) {
-            d->AddText(big, size, ImVec2(x, ry - bt), shop_white, l.c_str());
+            d->AddText(sharp(big, size), size, ImVec2(x, ry - bt), shop_white, l.c_str());
             ry += (bf - bt) + 14 * k;
         }
         ry += 6 * k;
     }
     // Its maker: one of the crew opens their page.
     {
-        d->AddText(mont(f, 20 * k), 20 * k, ImVec2(x, ry), IM_COL32_WHITE, "by");
+        d->AddText(sharp(mont(f, 20 * k), 20 * k), 20 * k, ImVec2(x, ry), IM_COL32_WHITE, "by");
         const float byw = text_size(mont(f, 20 * k), 20 * k, "by ").x;
         const auto maker = upper(maker_of(p));
         const ImVec2 ma(x + byw + 4 * k, ry), mb(ma.x + text_size(mont(f, 20 * k), 20 * k, maker.c_str()).x, ry + 24 * k);
@@ -5715,7 +5725,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
             u.market_open.clear();
             u.market_scroll = 0;
         }
-        d->AddText(mont(f, 20 * k), 20 * k, ma, lit ? IM_COL32_WHITE : blue_light, maker.c_str());
+        d->AddText(sharp(mont(f, 20 * k), 20 * k), 20 * k, ma, lit ? IM_COL32_WHITE : blue_light, maker.c_str());
         ry += 46 * k;
     }
     // Its numbers.
@@ -5729,7 +5739,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
                                                                          {age > 999 ? std::string("-") : std::to_string(age) + "D", "OUT SINCE"}}};
         float sx = x;
         for (const auto& [value, word] : stats) {
-            d->AddText(num, 40 * k, ImVec2(sx, ry - nt), IM_COL32_WHITE, value.c_str());
+            d->AddText(sharp(num, 40 * k), 40 * k, ImVec2(sx, ry - nt), IM_COL32_WHITE, value.c_str());
             const float ww = text_spaced(d, mont(f, 11 * k), 11 * k, ImVec2(sx, ry + (nb - nt) + 8 * k), soft, word, 1.6f * k);
             sx += std::max(ww, text_size(num, 40 * k, value.c_str()).x) + 40 * k;
         }
@@ -5790,8 +5800,8 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
             }
             d->AddRectFilled(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), IM_COL32(18, 19, 24, 255));
             d->AddRect(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), IM_COL32(1, 131, 255, 140), 0, 0, 1 * k);
-            d->AddText(mont(f, 13 * k), 13 * k, ImVec2(tx + 14 * k, ry + 11 * k), IM_COL32_WHITE, name.c_str());
-            if (!rest.empty()) d->AddText(mont(f, 13 * k), 13 * k, ImVec2(tx + 14 * k + nw + 6 * k, ry + 11 * k), blue_light, rest.c_str());
+            d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(tx + 14 * k, ry + 11 * k), IM_COL32_WHITE, name.c_str());
+            if (!rest.empty()) d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(tx + 14 * k + nw + 6 * k, ry + 11 * k), blue_light, rest.c_str());
             tx += tw + 10 * k;
         }
         ry += th + 10 * k;
@@ -5891,7 +5901,7 @@ void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         if (cw > 0) {
             const ImVec2 qa(pa.x + 18 * k + tw + 8 * k, pa.y + (bar_h - 18 * k) * 0.5f);
             d->AddRectFilled(qa, ImVec2(qa.x + cw, qa.y + 18 * k), chosen ? IM_COL32(0, 0, 0, 64) : IM_COL32(255, 255, 255, 36), 9 * k);
-            d->AddText(mont(f, 11 * k), 11 * k, ImVec2(qa.x + 7 * k, qa.y + 3 * k), IM_COL32_WHITE, count.c_str());
+            d->AddText(sharp(mont(f, 11 * k), 11 * k), 11 * k, ImVec2(qa.x + 7 * k, qa.y + 3 * k), IM_COL32_WHITE, count.c_str());
         }
         x = pb.x + 4 * k;
     }
@@ -5922,7 +5932,7 @@ void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     const auto banner = [&](const std::string& line, ImU32 colour, float fraction) {
         const ImVec2 ba(ix, top), bb(ix + iw, top + 34 * k);
         d->AddRectFilled(ba, bb, IM_COL32(10, 11, 14, 235));
-        d->AddText(mont(f, 13 * k), 13 * k, ImVec2(ba.x + 14 * k, ba.y + 10 * k), colour, elide(mont(f, 13 * k), 13 * k, line, bb.x - ba.x - 28 * k).c_str());
+        d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(ba.x + 14 * k, ba.y + 10 * k), colour, elide(mont(f, 13 * k), 13 * k, line, bb.x - ba.x - 28 * k).c_str());
         if (fraction >= 0) d->AddRectFilled(ImVec2(ba.x, bb.y - 4 * k), ImVec2(ba.x + (bb.x - ba.x) * fraction, bb.y), blue);
         top += 42 * k;
     };
@@ -5988,7 +5998,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
     {
         ImFont* big = anton(f, 150 * k);
         const auto [bt, bf] = caps_of(big, 150 * k);
-        d->AddText(big, 150 * k, ImVec2(ix + 20 * k, y - bt), IM_COL32_WHITE, "ANIMATOR STUDIO");
+        d->AddText(sharp(big, 150 * k), 150 * k, ImVec2(ix + 20 * k, y - bt), IM_COL32_WHITE, "ANIMATOR STUDIO");
         y += (bf - bt) + 30 * k;
     }
     y += paragraph(d, body(f, 17 * k), 17 * k, ImVec2(ix + 20 * k, y), std::min(iw, 820 * k), IM_COL32(243, 243, 239, 220),
@@ -6011,7 +6021,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
             d->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + 4 * k), blue);
             ImFont* nf = anton(f, 54 * k);
             const auto [nt, nb] = caps_of(nf, 54 * k);
-            d->AddText(nf, 54 * k, ImVec2(x + 24 * k, y + 30 * k - nt), IM_COL32_WHITE, elide(nf, 54 * k, name, w - 48 * k).c_str());
+            d->AddText(sharp(nf, 54 * k), 54 * k, ImVec2(x + 24 * k, y + 30 * k - nt), IM_COL32_WHITE, elide(nf, 54 * k, name, w - 48 * k).c_str());
             if (!line.empty())
                 text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(x + 26 * k, y + 30 * k + (nb - nt) + 18 * k), blue_light, line, 1.8f * k);
             // A strip of tape holding it up.
@@ -6036,8 +6046,8 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
         for (const auto& [what, who] : rows) {
             ImFont* wf = anton(f, 28 * k);
             const auto [wt, wb] = caps_of(wf, 28 * k);
-            d->AddText(wf, 28 * k, ImVec2(ix + 20 * k, y - wt), IM_COL32_WHITE, what.c_str());
-            d->AddText(body(f, 16 * k), 16 * k, ImVec2(ix + 380 * k, y + (wb - wt) * 0.5f - 9 * k), IM_COL32(243, 243, 239, 200), who.c_str());
+            d->AddText(sharp(wf, 28 * k), 28 * k, ImVec2(ix + 20 * k, y - wt), IM_COL32_WHITE, what.c_str());
+            d->AddText(sharp(body(f, 16 * k), 16 * k), 16 * k, ImVec2(ix + 380 * k, y + (wb - wt) * 0.5f - 9 * k), IM_COL32(243, 243, 239, 200), who.c_str());
             y += (wb - wt) + 22 * k;
             d->AddRectFilled(ImVec2(ix + 20 * k, y - 11 * k), ImVec2(ix + iw, y - 10 * k), IM_COL32(255, 255, 255, 22));
         }
@@ -6051,7 +6061,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
     {
         ImFont* big = anton(f, 78 * k);
         const auto [bt, bf] = caps_of(big, 78 * k);
-        d->AddText(big, 78 * k, ImVec2(ix + 20 * k, y + 56 * k - bt), IM_COL32_WHITE, "THANKS FOR SKATING WITH US.");
+        d->AddText(sharp(big, 78 * k), 78 * k, ImVec2(ix + 20 * k, y + 56 * k - bt), IM_COL32_WHITE, "THANKS FOR SKATING WITH US.");
         paragraph(d, body(f, 14 * k), 14 * k, ImVec2(ix + 22 * k, y + 56 * k + (bf - bt) + 18 * k), std::min(iw, 1100 * k), IM_COL32(255, 255, 255, 220),
                   "skate. is made by Full Circle and published by Electronic Arts. The Animator Studio and ReSkate are made by fans, and are not made, "
                   "endorsed or supported by them.");
@@ -6080,7 +6090,7 @@ void market_header(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
             ImFont* kf = anton(f, 18 * k);
             const auto [kt, kb] = caps_of(kf, 18 * k);
             const float tw = text_size(kf, 18 * k, label).x;
-            d->AddText(kf, 18 * k, ImVec2(c.x + (cap - tw) * 0.5f, c.y + (cap - (kb - kt)) * 0.5f - kt), IM_COL32_WHITE, label);
+            d->AddText(sharp(kf, 18 * k), 18 * k, ImVec2(c.x + (cap - tw) * 0.5f, c.y + (cap - (kb - kt)) * 0.5f - kt), IM_COL32_WHITE, label);
         }
         x += cap + cap_gap * 2;
     };
@@ -6430,7 +6440,7 @@ void tile_picture(ImDrawList* d, int which, ImVec2 a, ImVec2 b, bool lit) {
 }
 // A tile as skate.'s own: its rough, hand-cut shape (the game's own tile when it is there), filled.
 void rough_tile(ImDrawList* d, ImVec2 a, ImVec2 b, ImU32 colour, float k) {
-    if (!draw_studio_tile(d, a, b, 18 * k, colour)) skate_theme::rough_rect(d, a, b, colour, seed_of(a), k);
+    if (!draw_studio_tile(d, a, b, 18 * k, colour)) flat_rect(d, a, b, colour, seed_of(a), k);
 }
 // SETTINGS: a tile for each part, as the game's own settings page has them - the name at the top left, a big worn white
 // icon running off the bottom right corner, and the chosen one flooded blue with its name in black.
@@ -6442,7 +6452,7 @@ void settings_tiles(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
     // The grid in the middle of the page, the title over its left edge.
     const float grid_w = 2 * tile_w + gap;
     a.x += std::max(0.0f, (b.x - a.x - grid_w) * 0.5f);
-    text(d, f.title, 64 * k, ImVec2(a.x, a.y - 8 * k), white, "SETTINGS");
+    title_text(d, f, 64 * k, ImVec2(a.x, a.y - 8 * k), white, "SETTINGS");
     static constexpr std::array<StudioPicture, 4> icons{StudioPicture::icon_studio, StudioPicture::icon_skater, StudioPicture::icon_tricks,
                                                         StudioPicture::icon_packs};
     for (int i = 0; i < 4; ++i) {
@@ -6478,7 +6488,7 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         return;
     }
     const int page = std::clamp(u.settings_page, 0, 3);
-    text(d, f.title, 46 * k, ImVec2(a.x, a.y + 44 * k), white, settings_pages[static_cast<std::size_t>(page)]);
+    title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, settings_pages[static_cast<std::size_t>(page)]);
     const auto rows = settings_of(page, v);
     const float rows_w = std::min(1000 * k, (b.x - a.x) * 0.62f);
     const ImVec2 ra(a.x, a.y + 116 * k), rb(a.x + rows_w, b.y);
@@ -6499,8 +6509,7 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         const ImVec2 hit_b = tall ? ImVec2(b1.x, a1.y + 52 * k) : b1;
         const bool pressed = row.kind == Setting::Kind::name ? false : hit("##setting", a1, hit_b, &lit, row.enabled, sideways);
         if (row.kind == Setting::Kind::name) lit = nav_chosen("##yourname");
-        skate_theme::rough_rect(d, a1, b1, lit ? IM_COL32(1, 131, 255, 250) : IM_COL32(26, 27, 30, 246), seed_of(a1), k);
-        if (lit) theme::halftone(d, ImVec2(control_x - 90 * k, a1.y + 8 * k), 9, 4, IM_COL32(255, 255, 255, 40));
+        flat_rect(d, a1, b1, lit ? IM_COL32(1, 131, 255, 250) : IM_COL32(26, 27, 30, 246), seed_of(a1), k);
         if (lit && n.keys) chosen_outline(d, a1, b1, k);
         text(d, f.bold, 20 * k, ImVec2(a1.x + 24 * k, a1.y + (tall ? 14 * k : row_h * 0.5f - 12 * k)), white, row.label);
         const float mid_y = a1.y + (tall ? 26 * k : row_h * 0.5f);
@@ -6593,8 +6602,7 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     end_region(d, ra, rb, y + u.settings_scroll - ra.y, u.settings_scroll, k);
     // What the chosen row does, beside the rows.
     const ImVec2 ha(rb.x + 36 * k, ra.y), hb(b.x, std::min(b.y, ra.y + 320 * k));
-    skate_theme::rough_rect(d, ha, hb, IM_COL32(18, 19, 22, 240), seed_of(ha), k);
-    theme::halftone(d, ImVec2(hb.x - 60 * k, ha.y + 12 * k), 6, 4, IM_COL32(255, 255, 255, 20));
+    flat_rect(d, ha, hb, IM_COL32(18, 19, 22, 240), seed_of(ha), k);
     if (about.empty()) {
         about_title = settings_pages[static_cast<std::size_t>(page)];
         about = settings_blurbs[static_cast<std::size_t>(page)];
@@ -6636,13 +6644,12 @@ std::pair<ImVec2, ImVec2> card_box(ImDrawList* d, const Fonts& f, ImVec2 display
     w = std::min(w, display.x - 40 * k);
     h = std::min(h, display.y - 40 * k);
     const ImVec2 a((display.x - w) * 0.5f, (display.y - h) * 0.5f), b(a.x + w, a.y + h);
-    skate_theme::rough_rect(d, ImVec2(a.x + 8 * k, a.y + 8 * k), ImVec2(b.x + 8 * k, b.y + 8 * k), IM_COL32(0, 0, 0, 150), 95, k);
-    skate_theme::rough_rect(d, a, b, IM_COL32(18, 19, 22, 252), 97, k);
-    theme::halftone(d, ImVec2(b.x - 90 * k, a.y + 16 * k), 9, 5, IM_COL32(255, 255, 255, 18));
-    const auto t = text_size(f.title, 38 * k, title.c_str());
-    const ImVec2 ta(a.x + 26 * k, a.y + 20 * k), tb(ta.x + t.x + 30 * k, ta.y + t.y + 10 * k);
-    if (!draw_studio_brush(d, ta, tb, tape)) skate_theme::rough_rect(d, ta, tb, tape, seed_of(ta), k);
-    text(d, f.title, 38 * k, ImVec2(ta.x + 15 * k, ta.y + 5 * k), white, title);
+    d->AddRectFilled(ImVec2(a.x + 10 * k, a.y + 12 * k), ImVec2(b.x + 10 * k, b.y + 12 * k), IM_COL32(0, 0, 0, 130));
+    d->AddRectFilled(a, b, IM_COL32(14, 15, 18, 250));
+    d->AddRectFilled(a, ImVec2(b.x, a.y + 4 * k), tape);
+    const bool on_blue = tape == blue;
+    paper_label(d, f, anton(f, 32 * k), 32 * k, ImVec2(a.x + 26 * k, a.y + 24 * k), upper(title), on_blue ? PaperKind::blue : PaperKind::white,
+                static_cast<std::uint32_t>(title.size() * 7 + 3), -1.2f, on_blue ? IM_COL32_WHITE : shop_ink, ImVec2(20 * k, 11 * k), 1 * k);
     return {a, b};
 }
 
@@ -6745,7 +6752,7 @@ void browser_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
         if (hit("##place", pa, pb, &lit)) br.dir = places[i].second;
         ImGui::PopID();
         const bool here = br.dir == places[i].second;
-        skate_theme::rough_rect(d, pa, pb, here ? blue : lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240), seed_of(pa), k * 0.6f);
+        flat_rect(d, pa, pb, here ? blue : lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240), seed_of(pa), k * 0.6f);
         if (lit && nav().keys) chosen_outline(d, pa, pb, k);
         folder_icon(d, ImVec2(pa.x + 10 * k, pa.y + 6 * k), k, here ? white : soft);
         text(d, f.bold, 15 * k, ImVec2(pa.x + 44 * k, pa.y + 9 * k), white, places[i].first);
@@ -6768,7 +6775,7 @@ void browser_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
         text(d, f.bold, 15 * k, ImVec2(lx + 96 * k, top + 22 * k), white, shown);
     }
     const ImVec2 la(lx, top + 62 * k), lb(rx, bottom);
-    skate_theme::rough_rect(d, la, lb, IM_COL32(12, 12, 14, 240), seed_of(la), k * 0.6f);
+    flat_rect(d, la, lb, IM_COL32(12, 12, 14, 240), seed_of(la), k * 0.6f);
     begin_region(73, ImVec2(la.x + 6 * k, la.y + 6 * k), ImVec2(lb.x - 4 * k, lb.y - 6 * k), br.scroll, k);
     float ly = la.y + 6 * k - br.scroll;
     std::optional<std::filesystem::path> into;
@@ -6853,7 +6860,7 @@ bool secret_field(const Fonts& f, const char* id, std::array<char, 512>& buffer,
     const float k = f.k;
     ImGui::SetCursorScreenPos(at);
     ImGui::PushItemWidth(width);
-    ImGui::PushFont(f.bold);
+    ImGui::PushFont(sharp(f.bold, 15 * f.k));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, 8 * k));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(20, 21, 24, 255));
     const bool entered = ImGui::InputTextWithHint(id, hint, buffer.data(), buffer.size(), ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
@@ -6977,7 +6984,7 @@ bool cover_choice(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, std:
     const float k = f.k, h = 40 * k;
     const float fs = size > 0 ? size : 12 * k;
     ImFont* face = font ? font : mont(f, fs);
-    const float tw = font ? face->CalcTextSizeA(fs, FLT_MAX, 0, label.data(), label.data() + label.size()).x : spaced_width(face, fs, label, 0.5f * k);
+    const float tw = font ? sharp(face, fs)->CalcTextSizeA(fs, FLT_MAX, 0, label.data(), label.data() + label.size()).x : spaced_width(face, fs, label, 0.5f * k);
     width = tw + 28 * k;
     const ImVec2 b(at.x + width, at.y + h);
     bool lit = false;
@@ -6987,7 +6994,7 @@ bool cover_choice(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, std:
     if (lit && nav().keys) chosen_outline(d, at, b, k);
     const auto [ct, cf] = caps_of(face, fs);
     const float ty = at.y + (h - (cf - ct)) * 0.5f - ct;
-    if (font) d->AddText(face, fs, ImVec2(at.x + 14 * k, ty), IM_COL32_WHITE, label.data(), label.data() + label.size());
+    if (font) d->AddText(sharp(face, fs), fs, ImVec2(at.x + 14 * k, ty), IM_COL32_WHITE, label.data(), label.data() + label.size());
     else text_spaced(d, face, fs, ImVec2(at.x + 14 * k, ty), IM_COL32_WHITE, label, 0.5f * k);
     return pressed;
 }
@@ -7035,7 +7042,7 @@ void cover_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         ImFont* head = anton(f, 22 * k);
         const auto [ht, hb] = caps_of(head, 22 * k);
         const float w = text_spaced(d, head, 22 * k, ImVec2(ox, y - ht), IM_COL32_WHITE, title, 1.5f * k);
-        if (!note.empty()) d->AddText(body(f, 12 * k), 12 * k, ImVec2(ox + w + 12 * k, y + (hb - ht) - 13 * k), faint, std::string(note).c_str());
+        if (!note.empty()) d->AddText(sharp(body(f, 12 * k), 12 * k), 12 * k, ImVec2(ox + w + 12 * k, y + (hb - ht) - 13 * k), faint, std::string(note).c_str());
         y += (hb - ht) + 14 * k;
     };
     const auto choices = [&](const char* id, const std::vector<std::pair<std::string, std::string>>& options, std::string& value, bool in_font = false) {
@@ -7049,7 +7056,7 @@ void cover_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
             }
             float w = 0;
             ImGui::PushID((std::string(id) + key).c_str());
-            const float probe = font ? font->CalcTextSizeA(size, FLT_MAX, 0, label.c_str()).x + 28 * k : spaced_width(mont(f, 12 * k), 12 * k, label, 0.5f * k) + 28 * k;
+            const float probe = font ? sharp(font, size)->CalcTextSizeA(size, FLT_MAX, 0, label.c_str()).x + 28 * k : spaced_width(mont(f, 12 * k), 12 * k, label, 0.5f * k) + 28 * k;
             if (x > ox && x + probe > ox + ow) {
                 x = ox;
                 y += 50 * k;
@@ -7073,7 +7080,7 @@ void cover_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
                 cover_changed();
             }
         }
-        d->AddText(body(f, 13 * k), 13 * k, ImVec2(ox + 78 * k, y + 7 * k), soft,
+        d->AddText(sharp(body(f, 13 * k), 13 * k), 13 * k, ImVec2(ox + 78 * k, y + 7 * k), soft,
                    u.cover.own.empty() ? "Use a picture of mine as the cover (pick one first)" : "Use my picture as the cover");
         y += 30 * k + 26 * k;
     }
@@ -7208,7 +7215,7 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         u.share_description_for = pack->name;
     }
     ImGui::SetCursorScreenPos(ImVec2(rx, y + 24 * k));
-    ImGui::PushFont(f.bold);
+    ImGui::PushFont(sharp(f.bold, 15 * f.k));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * k, 8 * k));
     // A shade lighter than the card, as the studio's other typed fields are, so the box shows where to type.
     ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(32, 34, 38, 255));
@@ -7269,7 +7276,7 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         const bool pressed = hit(id, wa, wb, &lit, enabled);
         const ImU32 fill = !enabled ? IM_COL32(30, 31, 34, 220) : look == Look::blue ? (lit ? IM_COL32(40, 152, 255, 255) : blue)
                                                                                      : (lit ? IM_COL32(62, 64, 70, 250) : IM_COL32(34, 35, 38, 245));
-        skate_theme::rough_rect(d, wa, wb, fill, seed_of(wa), k * 0.7f);
+        flat_rect(d, wa, wb, fill, seed_of(wa), k * 0.7f);
         text(d, f.heading, 18 * k, ImVec2(wa.x + 18 * k, wa.y + 16 * k), enabled ? white : faint, title);
         paragraph(d, f.bold, 12 * k, ImVec2(wa.x + 18 * k, wa.y + 48 * k), bw - 36 * k, enabled ? IM_COL32(230, 232, 236, 255) : faint, about);
         return pressed;
@@ -7523,10 +7530,10 @@ void test_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     // The line, big, on paper.
     {
         const float fs = 40 * k;
-        const auto measured = f.title->CalcTextSizeA(fs, FLT_MAX, w - 40 * k, upper(u.test_line).c_str());
+        const auto measured = sharp(f.title, fs)->CalcTextSizeA(fs, FLT_MAX, w - 40 * k, upper(u.test_line).c_str());
         const ImVec2 pa(x, y), pb(x + w, y + measured.y + 36 * k);
         skate_theme::rough_rect(d, pa, pb, IM_COL32(236, 236, 234, 252), seed_of(pa), k);
-        d->AddText(f.title, fs, ImVec2(pa.x + 20 * k, pa.y + 18 * k), IM_COL32(18, 18, 20, 255), upper(u.test_line).c_str(), nullptr, w - 40 * k);
+        d->AddText(sharp(f.title, fs), fs, ImVec2(pa.x + 20 * k, pa.y + 18 * k), IM_COL32(18, 18, 20, 255), upper(u.test_line).c_str(), nullptr, w - 40 * k);
         y = pb.y + 18 * k;
     }
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
@@ -7809,7 +7816,7 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     if (tool("##follow", "FOLLOW", "F", false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;
-        const auto measured = f.bold->CalcTextSizeA(14 * k, FLT_MAX, tw - 28 * k, u.tool_tip_text.c_str());
+        const auto measured = sharp(f.bold, 14 * k)->CalcTextSizeA(14 * k, FLT_MAX, tw - 28 * k, u.tool_tip_text.c_str());
         const ImVec2 a = u.tool_tip_at, b(a.x + tw, a.y + measured.y + 50 * k);
         skate_theme::rough_rect(d, a, b, IM_COL32(236, 236, 234, 250), seed_of(a), k * 0.7f);
         text(d, f.heading, 15 * k, ImVec2(a.x + 14 * k, a.y + 10 * k), IM_COL32(18, 18, 20, 255), u.tool_tip);
@@ -7856,7 +7863,7 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
         ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0, 84, 170, 255));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6 * k, 5 * k));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3 * k);
-        ImGui::PushFont(f.bold);
+        ImGui::PushFont(sharp(f.bold, 15 * f.k));
         static constexpr std::array<ImU32, 3> axis_colour{IM_COL32(232, 84, 84, 255), IM_COL32(110, 200, 96, 255), IM_COL32(80, 150, 245, 255)};
         static constexpr std::array<const char*, 3> axes{"X", "Y", "Z"};
         const float col_w = w / 3;
@@ -8416,7 +8423,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, IM_COL32(60, 64, 72, 255));
                 ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(40, 80, 140, 255));
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6 * k, 3 * k));
-                ImGui::PushFont(f.bold);
+                ImGui::PushFont(sharp(f.bold, 15 * f.k));
                 ImGui::SetCursorScreenPos(ImVec2(at.x + rows_left + label_w - 104 * k, y + 4 * k));
                 ImGui::SetNextItemWidth(88 * k);
                 const bool changed = ImGui::DragFloat("##value", &value, turn ? 0.25f : 0.002f, 0, 0, turn ? "%.1f" : "%.3f");
@@ -9070,7 +9077,7 @@ void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     const std::string what = animation && !packs.empty() ? "\"" + title_of(v) + "\" and the pack " + packs + " have"
                              : animation ? "\"" + title_of(v) + "\" has" : "The pack " + packs + " has";
     const std::string question = what + " changes that are not saved. Save them before you go back to skating?";
-    d->AddText(f.bold, 19 * k, ImVec2(a.x + 30 * k, a.y + 84 * k), IM_COL32(60, 60, 66, 255), question.c_str(), nullptr, w - 60 * k);
+    d->AddText(sharp(f.bold, 19 * k), 19 * k, ImVec2(a.x + 30 * k, a.y + 84 * k), IM_COL32(60, 60, 66, 255), question.c_str(), nullptr, w - 60 * k);
     constexpr std::array<const char*, 3> labels{"SAVE", "DON'T SAVE", "STAY"};
     constexpr std::array<studio::CloseAnswer, 3> answers{studio::CloseAnswer::save, studio::CloseAnswer::discard, studio::CloseAnswer::cancel};
     u.warning_choice = std::clamp(u.warning_choice, 0, 2);
@@ -9256,11 +9263,11 @@ void draw_animation_studio_loading() {
             const char glyph[2]{*c, 0};
             // Drawn three times a hair apart: a heavier cut than the font has.
             if (heavy) {
-                d->AddText(logo, size, ImVec2(x - size * 0.008f, at.y), colour, glyph);
-                d->AddText(logo, size, ImVec2(x + size * 0.008f, at.y), colour, glyph);
+                d->AddText(sharp(logo, size), size, ImVec2(x - size * 0.008f, at.y), colour, glyph);
+                d->AddText(sharp(logo, size), size, ImVec2(x + size * 0.008f, at.y), colour, glyph);
             }
-            d->AddText(logo, size, ImVec2(x, at.y), colour, glyph);
-            x += logo->CalcTextSizeA(size, FLT_MAX, 0, glyph).x + track * size;
+            d->AddText(sharp(logo, size), size, ImVec2(x, at.y), colour, glyph);
+            x += sharp(logo, size)->CalcTextSizeA(size, FLT_MAX, 0, glyph).x + track * size;
         }
         return x - track * size - at.x;
     };
@@ -9268,7 +9275,7 @@ void draw_animation_studio_loading() {
         float x = 0;
         for (const char* c = word; *c; ++c) {
             const char glyph[2]{*c, 0};
-            x += logo->CalcTextSizeA(size, FLT_MAX, 0, glyph).x + track * size;
+            x += sharp(logo, size)->CalcTextSizeA(size, FLT_MAX, 0, glyph).x + track * size;
         }
         return x - track * size;
     };
@@ -9288,7 +9295,7 @@ void draw_animation_studio_loading() {
     const float tape_top = word_at.y + word_size * 0.99f, tape_h = 0.13f * H;
     const ImVec2 tape_a(display.x * 0.5f - sub_w * 0.5f - 0.03f * H, tape_top), tape_b(display.x * 0.5f + sub_w * 0.5f + 0.03f * H, tape_top + tape_h);
     if (!draw_studio_brush(d, tape_a, tape_b, fade(skate_theme::blue))) skate_theme::rough_rect(d, tape_a, tape_b, fade(skate_theme::blue), 7, 2.0f * k);
-    const float sub_h = logo->CalcTextSizeA(sub_size, FLT_MAX, 0, "a").y;
+    const float sub_h = sharp(logo, sub_size)->CalcTextSizeA(sub_size, FLT_MAX, 0, "a").y;
     tight("animator studio", sub_size, sub_track, ImVec2(display.x * 0.5f - sub_w * 0.5f, tape_top + (tape_h - sub_h) * 0.5f - 0.004f * H), fade(ink), true);
 
     // Who built it, on a strip of paper.
@@ -9389,6 +9396,8 @@ void draw_animation_studio() {
     f.brush = &s.menu.studio_marker;
     f.made_at = s.menu.studio_scale;
     for (std::size_t i = 0; i < f.covers.size(); ++i) f.covers[i] = s.menu.studio_covers[i] ? s.menu.studio_covers[i] : f.heading;
+    sharp_now = f;
+    sharp_set = true;
     // Any screen: laid out on a 1920 x 1080 page, scaled to fit the height and the game's menu frame (the whole width up
     // to 21:9, a 21:9 frame in the middle of anything wider).
     const float frame_w = std::min(display.x, display.y * 21.0f / 9.0f);
@@ -9442,9 +9451,10 @@ void draw_animation_studio() {
     if (u.menu) {
         u.menu_fade = std::min(1.0f, u.menu_fade + ImGui::GetIO().DeltaTime * 8);
         menu_backdrop(d, f, display, 0.6f + 0.4f * u.menu_fade);
-        // The MARKET has its own wall behind it, faded in as it is opened.
-        u.market_fade = u.menu_tab == 2 || u.menu_tab == 4 ? std::min(1.0f, u.market_fade + ImGui::GetIO().DeltaTime * 4) : 0.0f;
-        shop_wall(d, display, u.market_fade * (0.6f + 0.4f * u.menu_fade));
+        // The market's wall behind every tab, faded in as the menu opens; a little darker behind the pages full of words.
+        want_market_art();
+        u.market_fade = std::min(1.0f, u.market_fade + ImGui::GetIO().DeltaTime * 4);
+        shop_wall(d, display, u.market_fade * (0.6f + 0.4f * u.menu_fade), u.menu_tab == 2 || u.menu_tab == 4 ? 0.0f : 0.18f);
         menu_header(d, f, v, display, left, right);
         const ImVec2 ca(left + 48 * k, 124 * k), cb(right - 48 * k, display.y - 76 * k);
         switch (u.menu_tab) {

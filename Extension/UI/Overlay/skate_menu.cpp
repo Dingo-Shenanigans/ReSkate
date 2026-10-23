@@ -837,6 +837,10 @@ const char* group_of(int page) {
 void load_skate_fonts(SkateMenu& menu, float studio_scale) {
     auto* atlas = ImGui::GetIO().Fonts;
     atlas->TexGlyphPadding = 2;
+    // The Animator Studio's faces come at several sizes, made at the screen's scale: a wide atlas keeps it well under the
+    // 16384 a texture may be tall, even on a 4K screen, and its height is not rounded up to a power of two.
+    atlas->TexDesiredWidth = std::max(atlas->TexDesiredWidth, 4096);
+    atlas->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
     // Latin, Cyrillic and general punctuation cover player and lobby names.
     static const ImWchar ranges[]{0x0020, 0x024F, 0x0400, 0x052F, 0x2000, 0x206F, 0x20A0, 0x20CF, 0x2190, 0x21FF, 0};
     std::array<char, MAX_PATH> windows{};
@@ -887,9 +891,9 @@ void load_skate_fonts(SkateMenu& menu, float studio_scale) {
         }
     };
     face(menu.studio_anton, L"FONT_ANTON", "impact.ttf", {20, 30, 44, 66, 112, 190}, plain, capitals, 100);
-    face(menu.studio_heading, L"FONT_HEADING", "arialbd.ttf", {12, 15, 20, 26}, latin, latin, 1000);
-    face(menu.studio_body, L"FONT_BODY", "arial.ttf", {14, 17}, latin, latin, 1000);
-    face(menu.studio_marker, L"FONT_BRUSH", "arialbi.ttf", {16, 30}, plain, plain, 1000);
+    face(menu.studio_heading, L"FONT_HEADING", "arialbd.ttf", {12, 15, 20, 26, 34, 44}, ranges, latin, 30);
+    face(menu.studio_body, L"FONT_BODY", "arial.ttf", {14, 17, 22}, ranges, ranges, 1000);
+    face(menu.studio_marker, L"FONT_BRUSH", "arialbi.ttf", {16, 30, 48, 72}, plain, plain, 1000);
     menu.studio_covers = {font(L"FONT_BEBAS", "impact.ttf", std::round(24 * scale), plain), font(L"FONT_DIRT", "impact.ttf", std::round(24 * scale), plain),
                           font(L"FONT_SEDGWICK", "impact.ttf", std::round(24 * scale), plain),
                           font(L"FONT_KNEWAVE", "impact.ttf", std::round(24 * scale), plain)};
