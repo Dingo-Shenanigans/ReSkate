@@ -590,6 +590,40 @@ void dragged_foot_reaches_the_drag() {
     check(length3_test(sub3_test(world(rest, 10).position, before_foot)) < 2e-3f, "A drag to where the foot is holds it there");
 }
 
+// A foot put back on the deck in game (place_foot): it reaches the spot, turned as asked, the leg keeps its lengths and the
+// hip stays; half the way goes half the way; nothing asked changes nothing.
+void foot_placed_on_the_deck() {
+    std::vector<Joint> pose(skeleton_joints);
+    pose[8].position = {0.1f, -0.05f, 0};
+    pose[9].position = {0, -0.4f, 0.02f};
+    pose[9].rotation = normalised(Quat{0.08f, 0, 0, 1}); // a knee a little bent, as a skater's is
+    pose[10].position = {0, -0.4f, 0};
+    const auto hip = world(pose, 8).position, foot = world(pose, 10).position;
+    const float thigh_len = length3_test(sub3_test(world(pose, 9).position, hip)), shin_len = length3_test(sub3_test(foot, world(pose, 9).position));
+    const Vec3 to{foot[0] + 0.03f, foot[1] + 0.12f, foot[2] - 0.05f};
+    const Quat turn = normalised(Quat{0, 0.2f, 0, 1});
+    auto moved = pose;
+    place_foot(moved, 10, to, &turn, 1);
+    const auto got = world(moved, 10);
+    check(length3_test(sub3_test(got.position, to)) < 2e-3f, "A foot is put where it is asked");
+    check(std::abs(std::abs(got.rotation[0] * turn[0] + got.rotation[1] * turn[1] + got.rotation[2] * turn[2] + got.rotation[3] * turn[3]) - 1) < 1e-4f,
+          "and turned as asked");
+    check(near(length3_test(sub3_test(world(moved, 9).position, world(moved, 8).position)), thigh_len, 2e-3f) &&
+              near(length3_test(sub3_test(got.position, world(moved, 9).position)), shin_len, 2e-3f),
+          "The leg keeps its lengths");
+    check(length3_test(sub3_test(world(moved, 8).position, hip)) < 1e-4f, "The hip stays where it is");
+    auto half = pose;
+    place_foot(half, 10, to, nullptr, 0.5f);
+    const Vec3 mid{(foot[0] + to[0]) / 2, (foot[1] + to[1]) / 2, (foot[2] + to[2]) / 2};
+    check(length3_test(sub3_test(world(half, 10).position, mid)) < 2e-3f, "Half the way goes half the way");
+    check(std::abs(std::abs(world(half, 10).rotation[3] * world(pose, 10).rotation[3] + world(half, 10).rotation[1] * world(pose, 10).rotation[1] +
+                            world(half, 10).rotation[0] * world(pose, 10).rotation[0] + world(half, 10).rotation[2] * world(pose, 10).rotation[2]) - 1) < 1e-4f,
+          "Without a turn asked, the foot keeps its turn in the world");
+    auto none = pose;
+    place_foot(none, 10, to, &turn, 0);
+    check(length3_test(sub3_test(world(none, 10).position, foot)) < 1e-6f, "Nothing asked changes nothing");
+}
+
 // Smooth keys: a key that says nothing goes, the rest ease smoothly and are marked, and the brackets stay.
 // Smoothing chosen keys (KEYS, a double-click, the chosen-keys strip): only those keys change, each is
 // drawn towards its neighbours and shows round; the first and last only show round.
@@ -1857,6 +1891,7 @@ int main(int argc, char** argv) {
         switch_edits_follow_the_native_body_facing();
         authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
+        foot_placed_on_the_deck();
         review_fixes_hold();
     several_packs_play_together();
     pack_slots_are_fixed_or_alternate();

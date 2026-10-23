@@ -1529,6 +1529,25 @@ void solve_chain(std::span<const Joint> pose, const Chain& chain, const Vec3& ta
     }
 }
 
+// Puts a foot at `to` (and, given, turned as `turn`), `share` of the way, by bending its leg (thigh and shin) the way it
+// already bends: the hip stays where it is.
+void place_foot(std::vector<Joint>& pose, std::uint16_t foot, const Vec3& to, const Quat* turn, float share) noexcept {
+    if (!(share > 0) || foot >= pose.size()) return;
+    share = std::min(share, 1.0f);
+    const auto now = world(pose, foot);
+    const Vec3 target{now.position[0] + (to[0] - now.position[0]) * share, now.position[1] + (to[1] - now.position[1]) * share,
+                      now.position[2] + (to[2] - now.position[2]) * share};
+    const Chain chain = chain_above(foot, 3); // thigh, shin, foot
+    if (chain.count < 3) return;
+    std::array<Quat, 8> bent{};
+    solve_chain(pose, chain, target, bent);
+    for (std::size_t i = 0; i + 1 < chain.count; ++i)
+        if (finite(Joint{{1, 1, 1}, bent[i], {}})) pose[chain.joints[i]].rotation = bent[i];
+    // The foot keeps its turn in the world (it was carried by the leg), or takes the one asked for.
+    const auto parent_turn = world(pose, static_cast<std::uint16_t>(parent(foot))).rotation;
+    const Quat want = turn ? slerp(now.rotation, *turn, share) : now.rotation;
+    pose[foot].rotation = normalised(multiply(conjugate(parent_turn), want));
+}
 void drag_joint(Animation& animation, std::span<const Joint> native, float seconds, std::uint16_t end, const Vec3& target, std::size_t length) {
     if (end >= native.size()) throw std::runtime_error("the joint is not on the skater");
     const Chain chain = chain_above(end, length);

@@ -428,6 +428,10 @@ struct Live {
     double clock_locked_at{-1};   // when the game's clip was found
     float clock_weight{};         // the layer, ramped in when found and out when the game moves on (eased when used)
     bool clock_fallback{};        // its clip was not found: the trick plays on its own clock instead
+    // Off the game's clip in the air (a kicker's or a drop's longer air, where the game holds a pose of its own, or no clip
+    // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
+    float off_clip{};
+    bool off_clip_said{};
     // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
     // its own pace, its landing on the game's touchdown, until the game starts something new.
     double clock_lost_at{-1}, clock_touch_at{-1};
@@ -532,6 +536,7 @@ struct GameplayPacket {
     bool fakie{};           // he took off rolling fakie (for the playback verification's report)
     float match{};     // how far a keyed joint goes to the pose it has in the studio (match_bent_joints)
     float match_rest{}; // and how far every other joint and the board do (match_whole_body)
+    float feet_match{}; // how far a foot on the deck goes where the studio has it on the board (off the game's clip)
     bool limits{};      // keyed joints are kept inside the game's range
     Quat board_frame_local{0, 0, 0, 1};
     std::shared_ptr<const Clip> clip;
@@ -3216,7 +3221,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
-                l.native_clock.reset(); l.clock_weight = 0;
+                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
@@ -3337,7 +3342,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Its clock starts looking for the game's clip of it.
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
-                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0;
+                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
                     l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
                     l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear();
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
@@ -3465,6 +3470,21 @@ void on_animation(std::uintptr_t component) noexcept {
                 } else {
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
                 }
+                // Off the game's clip in the air - the game holding a pose of its own through a kicker's or a drop's longer
+                // air, or no clip of the game's found at all: the keys rode on a pose made for something else (a foot
+                // through the deck, a pose not the timeline's). Then they go on the pose they were made on, and the feet on
+                // the deck as the studio has them; by the touchdown it is the game's pose again, as on flat ground.
+                {
+                    const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
+                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost));
+                    constexpr float off_step = (1.0f / 60) / 0.15f;
+                    l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
+                    if (off && !l.off_clip_said) {
+                        l.off_clip_said = true;
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
+                                     trick->name, l.clock_fallback ? "no clip of the game's found" : "the game holds a pose of its own");
+                    }
+                }
                 diagnostic.clock_error = reading.error;
                 diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
                 diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : !l.clock_why.empty() ? "let go"
@@ -3484,9 +3504,11 @@ void on_animation(std::uintptr_t component) noexcept {
                     packet->component = component; packet->board_holder = l.board_holder.load(std::memory_order_acquire);
                     packet->at = at; packet->time = sampled.time; packet->weight = weight;
                     packet->clip = trick->clip; packet->edits = keys; packet->limbs = l.limbs;
-                    // The edits ride on the game's own pose (its IK, its height, its board), at its clip's time:
-                    // nothing of the studio's pose is forced over it.
-                    packet->mirrored = l.played_mirrored; packet->match = 0;
+                    // The edits ride on the game's own pose (its IK, its height, its board), at its clip's time: nothing of
+                    // the studio's pose is forced over it - but off the game's clip in the air (off_clip), the keyed joints go
+                    // to the pose they were made on and the feet onto the deck as the studio has them.
+                    const float off = l.off_clip * l.off_clip * (3 - 2 * l.off_clip);
+                    packet->mirrored = l.played_mirrored; packet->match = off; packet->feet_match = off;
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = 0;
@@ -3878,6 +3900,7 @@ void idle(double now) {
 }
 } // namespace playback_verify
 
+void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
     auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
@@ -3903,6 +3926,7 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
             apply_authored_edit_layer(*packet->edits, packet->time, edited, packet->weight, &packet->limbs, studio, packet->match,
                                       packet->match_rest);
             if (packet->limits) limit_keyed_joints(*packet->edits, packet->time, edited);
+            seat_feet_on_board(*packet, native, edited);
         }
         const auto desired_deltas = pose_edit_deltas(native, edited);
         edited = native;
@@ -4017,6 +4041,118 @@ void on_render(std::uintptr_t animation_interface) noexcept {
 
 struct BoardPublicationState { std::mutex mutex; EditPublicationCache edits; EditTransition transition; };
 BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
+
+// ---- the feet on the deck ------------------------------------------------------------------------------
+// The board as its own pass will draw it this frame (apply_gameplay_board), worked out before the body is handed over:
+// the game's board this update, with the trick's board keys on it, as far as the trick is in.
+bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept {
+    try {
+        auto& l = live();
+        if (!packet.board_holder || !packet.board_owned || !packet.board_frame_valid || !packet.clip || !packet.edits || skater.size() < 2) return false;
+        const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), packet.board_holder, 64);
+        if (!layout.buffer || layout.count != board_bones) return false;
+        std::array<NativeBone, board_bones> bones{};
+        if (!peek(layout.buffer, bones.data(), sizeof(bones))) return false;
+        std::vector<Joint> native;
+        for (const auto& bone : bones) native.push_back(joint_of(bone));
+        {
+            // Our own write of the last frame taken back off, as the board's pass does.
+            auto& publication = board_publication_state();
+            std::lock_guard lock(publication.mutex);
+            publication.edits.restore(l.generation.load(std::memory_order_acquire), l.animation_updates.load(std::memory_order_acquire), layout.buffer, native);
+        }
+        const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
+        // On a rail (and off the board) its pass leaves the game's board as it is.
+        const auto motion = l.render_motion.load(std::memory_order_acquire);
+        if (!overrides_allowed.load() || motion == MotionState::rail || motion == MotionState::unknown || motion == MotionState::offboard) {
+            out = native_mount;
+            return finite(out);
+        }
+        const auto placement = compose(skater[0], skater[1]);
+        Joint frame;
+        frame.rotation = normalised(multiply(placement.rotation, packet.board_frame_local));
+        auto target = board_edited(native_mount, *packet.edits, packet.time, ground_turn(frame));
+        if (motion == MotionState::riding) {
+            const auto shape = board_shape(*packet.clip);
+            (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
+        }
+        const float w = std::clamp(packet.weight, 0.0f, 1.0f);
+        out = native_mount;
+        out.rotation = slerp(native_mount.rotation, target.rotation, w);
+        for (std::size_t i = 0; i < 3; ++i) out.position[i] += (target.position[i] - native_mount.position[i]) * w;
+        return finite(out);
+    } catch (...) {
+        return false;
+    }
+}
+// After the keys are on: a foot that is on the deck in the studio goes where the studio has it on the board, as far as the
+// trick is off the game's clip (feet_match) - the game's board and the keyed legs had come apart there; and a foot is never
+// drawn sunk into an upright deck, whatever the keys and the game did. The board is the one drawn this frame.
+void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept {
+    try {
+        if (!(packet.weight > 0) || edited.size() < skeleton_joints || native.size() < skeleton_joints) return;
+        Joint board;
+        if (!drawn_board_now(packet, native, board)) return;
+        // The board's own axes, from the clip (board_shape): up, along (tail to nose) and across.
+        const auto shape = board_shape(*packet.clip);
+        const Vec3 up = unit(shape.up);
+        const Vec3 along = unit(Vec3{shape.points[0][0] - shape.points[1][0], shape.points[0][1] - shape.points[1][1], shape.points[0][2] - shape.points[1][2]});
+        const Vec3 across = unit(cross(up, along));
+        const auto on_deck = [&](const Vec3& p, float& height) {
+            height = p[0] * up[0] + p[1] * up[1] + p[2] * up[2];
+            const float a = p[0] * along[0] + p[1] * along[1] + p[2] * along[2];
+            const float w = p[0] * across[0] + p[1] * across[1] + p[2] * across[2];
+            return std::abs(a) < 0.45f && std::abs(w) < 0.18f;
+        };
+        constexpr std::array<std::pair<std::uint16_t, std::uint16_t>, 2> legs{{{left_foot_joint, 341}, {right_foot_joint, 8}}};
+        const float w = std::min(packet.weight, 1.0f);
+        // 1. Off the game's clip: the studio's foot on the studio's board - the recording's body and board, the keys on
+        // both, under the live placement (which drops out of the relation) - put on the drawn board.
+        if (packet.feet_match > 0 && packet.clip->joints == skeleton_joints && !packet.clip->board.empty()) {
+            Joint rel;
+            if (packet.clip->sample_board(std::clamp(packet.time, 0.0f, packet.clip->duration()), rel)) {
+                rel = nose_forward(*packet.clip, rel);
+                if (packet.mirrored) rel = mirror_board_pose(rel);
+                if (packet.board_backwards) rel.rotation = normalised(multiply(rel.rotation, Quat{0, 1, 0, 0}));
+                const auto placement = compose(native[0], native[1]);
+                Joint frame;
+                frame.rotation = normalised(multiply(placement.rotation, packet.board_frame_local));
+                const auto studio_board = board_edited(compose(placement, rel), *packet.edits, packet.time, ground_turn(frame));
+                const auto studio = studio_pose(*packet.clip, packet.time, packet.mirrored);
+                std::vector<Joint> body(native.begin(), native.end());
+                for (std::uint16_t j = 0; j < skeleton_joints; ++j)
+                    if (gameplay_body_joint(j) && editable(j)) body[j] = studio[j];
+                apply_edits(*packet.edits, packet.time, body);
+                if (packet.limits) limit_keyed_joints(*packet.edits, packet.time, body);
+                for (const auto& [foot, thigh] : legs) {
+                    const auto on_board = relative(studio_board, world(body, foot));
+                    float height = 0;
+                    if (!finite(on_board) || !on_deck(on_board.position, height) || height < 0.02f) continue;
+                    // On the deck up to 13 cm (the ankle stands 10.4 cm over the mount), let go by 20.
+                    const float x = std::clamp((0.20f - height) / 0.07f, 0.0f, 1.0f);
+                    const float share = packet.feet_match * x * x * (3 - 2 * x) * w * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
+                    if (share <= 0) continue;
+                    const auto want = compose(board, on_board);
+                    place_foot(edited, foot, want.position, &want.rotation, share);
+                }
+            }
+        }
+        // 2. Never sunk into the deck: with the deck upright under him, an ankle less than 9.5 cm over it is lifted to there.
+        const auto placement = compose(edited[0], edited[1]);
+        const Vec3 board_up = rotate(board.rotation, up), body_up = rotate(placement.rotation, Vec3{0, 1, 0});
+        if (board_up[0] * body_up[0] + board_up[1] * body_up[1] + board_up[2] * body_up[2] < 0.5f) return;
+        constexpr float lowest = 0.095f;
+        for (const auto& [foot, thigh] : legs) {
+            const auto now = world(edited, foot);
+            const auto on_board = relative(board, now);
+            float height = 0;
+            if (!finite(on_board) || !on_deck(on_board.position, height) || height >= lowest || height < -0.08f) continue;
+            const float lift = lowest - height;
+            const Vec3 to{now.position[0] + board_up[0] * lift, now.position[1] + board_up[1] * lift, now.position[2] + board_up[2] * lift};
+            place_foot(edited, foot, to, nullptr, w * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f));
+        }
+    } catch (...) {}
+}
 void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
     auto& publication = board_publication_state(); std::lock_guard lock(publication.mutex);

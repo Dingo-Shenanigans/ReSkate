@@ -285,6 +285,10 @@ Chain chain_above(std::uint16_t end, std::size_t length) noexcept;
 // The chain's new local rotations for the pose `pose` (which already has the animation's edits applied).
 void solve_chain(std::span<const Joint> pose, const Chain& chain, const Vec3& target, std::span<Quat> rotations) noexcept;
 void drag_joint(Animation& animation, std::span<const Joint> native, float seconds, std::uint16_t end, const Vec3& target, std::size_t length = 3);
+// Puts a foot (or any joint at the end of a two-bone limb) at `to` (in the frame world() gives) and, given, turned as `turn`,
+// `share` of the way, by bending the limb (thigh and shin) the way it already bends: the hip stays where it is. In game:
+// the feet back on the deck where the studio has them (seat_feet_on_board).
+void place_foot(std::vector<Joint>& pose, std::uint16_t foot, const Vec3& to, const Quat* turn, float share) noexcept;
 
 // ---- goofy ----------------------------------------------------------------------------------------
 // The other side of the body (a regular trick played goofy, and back): the skater mirrored across its
