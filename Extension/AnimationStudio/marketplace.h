@@ -40,25 +40,26 @@ struct CrewMember {
     float focus_x{0.5f}, focus_y{0.5f};
 };
 inline constexpr std::array crew_members{
-    CrewMember{"leafbro", "leaf.bro", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"Myawsometeam", "Setsu", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them.", 0.5f, 0.42f},
-    CrewMember{"smonky", "smonk", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"reskate_animation_editor", "philsteezy", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"Heatz", "Heatz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"Bonksz", "Bonksz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them.", 0.6f, 0.42f},
+    CrewMember{"leafbro", "leaf.bro", "Bailed into every bug so you don't have to. Hall of Meat regular."},
+    CrewMember{"Myawsometeam", "Setsu", "Ran the same line a hundred times so the studio lands it a hundred and one."},
+    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Pop shuv-it specialist: sent the dump and the video before the board even landed.", 0.5f, 0.42f},
+    CrewMember{"smonky", "smonk", "Rolls away from every crash, then sends the log. Smooth as fresh bearings."},
+    CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style."},
+    CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first."},
+    CrewMember{"Bonksz", "Bonksz", "Bonked every rail, ledge and kicker until the bugs gave up.", 0.6f, 0.42f},
 };
 // BUILT BY, on ABOUT: who made the Animator Studio. Their pictures are found by `pictures` (assets/animator_studio/crew/
-// <pictures>_profile.jpg and _thumbnail.jpg, as THE CREW's); `team` is their Thunderstore team where there is one to link to.
+// <pictures>_profile.jpg and _thumbnail.jpg, as THE CREW's); `team` is their Thunderstore team where there is one to link to;
+// `about`, a line on their card.
 struct Builder {
-    std::string_view name, pictures, team;
+    std::string_view name, pictures, team, about;
     float focus_x{0.5f}, focus_y{0.5f}; // where their shot is cut round, as CrewMember's
 };
 inline constexpr std::array builders{
-    Builder{"22SH", "22sh", ""},
-    Builder{"Fourth", "fourth", "Fourth_Studio", 0.5f, 0.45f},
-    Builder{"Norms", "norms", "worthlessnorms"},
-    Builder{"Steez", "steez", "", 0.48f, 0.4f},
+    Builder{"22SH", "22sh", "", "Responsible for getting all the animations in the game."},
+    Builder{"Fourth", "fourth", "Fourth_Studio", "Well... do we need to explain this?", 0.5f, 0.45f},
+    Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher."},
+    Builder{"Steez", "steez", "", "Animation King and back-up scripter.", 0.48f, 0.4f},
 };
 // One of BUILT BY by their Thunderstore team (in any case), or none: their packs are CREW CERTIFIED too.
 inline const Builder* builder_of(std::string_view team) {

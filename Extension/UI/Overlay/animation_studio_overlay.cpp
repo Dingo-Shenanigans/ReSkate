@@ -6148,11 +6148,11 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
                    "These are the people it comes from.") +
          50 * k;
     // BUILT BY and THE CREW: a card each, as a profile's head - their shot across the top (the studio's blue until they
-    // send one), their picture on its edge, their name beside it, and their Thunderstore page under it where they have
-    // one (the card opens it).
+    // send one), their picture on its edge, their name beside it, their Thunderstore page under it where they have one
+    // (the card opens it), and a line about them.
     struct Profile {
         std::string name;
-        std::string_view pictures, team;
+        std::string_view pictures, team, about;
         ImVec2 focus;
     };
     const auto profile_row = [&](std::string_view title, PaperKind kind, std::uint32_t seed, const std::vector<Profile>& people) {
@@ -6162,9 +6162,15 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
         const float gap = 22 * k, count = static_cast<float>(std::clamp<std::size_t>(people.size(), 4, 5)); // 4 or 5 a row, then the next row
         const float w = (iw - gap * (count - 1)) / count, band = 170 * k;
         const ImU32 card = IM_COL32(14, 15, 18, 250);
-        // One height for the row: room for the link when any of them has one.
+        // One height for the row: room for the link when any of them has one, and for the longest line about them.
         const bool any_link = std::any_of(people.begin(), people.end(), [](const Profile& p) { return !p.team.empty(); });
-        const float h = any_link ? 286 * k : 250 * k;
+        const float about_size = 14 * k, about_w = w - 42 * k;
+        ImFont* about_font = body(f, about_size);
+        float about_h = 0;
+        for (const auto& p : people)
+            if (!p.about.empty())
+                about_h = std::max(about_h, sharp(about_font, about_size)->CalcTextSizeA(about_size, FLT_MAX, about_w, p.about.data(), p.about.data() + p.about.size()).y);
+        const float h = (any_link ? 286 * k : 250 * k) + (about_h > 0 ? about_h + 10 * k : 0);
         float x = ix;
         std::uint32_t s = seed;
         for (const auto& person : people) {
@@ -6209,6 +6215,9 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
                 const auto [wt, wb] = caps_of(wf, 12 * k);
                 text(d, wf, 12 * k, ImVec2(wx, ty + (lb - lt) - wb), IM_COL32(243, 243, 239, 150), shown);
             }
+            if (!person.about.empty())
+                paragraph(d, about_font, about_size, ImVec2(ca.x + 21 * k, ca.y + band + r + 24 * k + (any_link ? 34 * k : 0)), about_w,
+                          IM_COL32(243, 243, 239, 200), std::string(person.about));
             duct_tape(d, f, ImVec2((ca.x + cb.x) * 0.5f, ca.y), 104 * k, 28 * k, (s % 2) ? 3.5f : -3.0f, s);
             ++s;
             if (lit && nav().keys) chosen_outline(d, ca, cb, k);
@@ -6223,10 +6232,10 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
     {
         std::vector<Profile> built;
         for (const auto& builder : studio::market::builders)
-            built.push_back({std::string(builder.name), builder.pictures, builder.team, ImVec2(builder.focus_x, builder.focus_y)});
+            built.push_back({std::string(builder.name), builder.pictures, builder.team, builder.about, ImVec2(builder.focus_x, builder.focus_y)});
         profile_row("BUILT BY", PaperKind::blue, 111, built);
         std::vector<Profile> crew;
-        for (const auto& m : studio::market::crew_members) crew.push_back({std::string(m.name), m.team, m.team, ImVec2(m.focus_x, m.focus_y)});
+        for (const auto& m : studio::market::crew_members) crew.push_back({std::string(m.name), m.team, m.team, m.about, ImVec2(m.focus_x, m.focus_y)});
         profile_row("THE CREW", PaperKind::white, 121, crew);
     }
     // What it stands on, line by line.
