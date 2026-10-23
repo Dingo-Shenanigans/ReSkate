@@ -58,7 +58,7 @@ inline constexpr std::array builders{
     Builder{"22SH", "22sh", ""},
     Builder{"Fourth", "fourth", "Fourth_Studio", 0.5f, 0.45f},
     Builder{"Norms", "norms", "worthlessnorms"},
-    Builder{"Steez", "steez", ""},
+    Builder{"Steez", "steez", "", 0.48f, 0.4f},
 };
 // One of BUILT BY by their Thunderstore team (in any case), or none: their packs are CREW CERTIFIED too.
 inline const Builder* builder_of(std::string_view team) {
