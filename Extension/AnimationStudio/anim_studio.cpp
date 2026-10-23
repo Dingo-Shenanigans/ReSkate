@@ -1278,16 +1278,19 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
 }
 
 // Publishes what the animation thread works from. Caller holds the mutex.
-// The studio edits a trick in the stance it is set to. A recording made leading with the other foot is
-// mirrored into that stance - its clip, its keys and the undo history, the game's way - rather than only
-// being drawn mirrored: drawn mirrored, the joint picked as the left leg was the recording's right one,
-// so turning the left leg moved the right. Mirroring is exact and undoes itself, the file is not marked
-// changed by it, and a saved trick plays right in every stance because playback reads the lead foot from
-// the clip. Returns whether it mirrored.
+// Which way round the studio shows a trick. One with a foot of its own - a recording, a stance version - is shown on
+// it, as its STANCES tick says and as it plays: a switch one shows him riding switch, and it is saved as it is. A
+// trick of the game's own library has no foot of its own (the game plays its clips either way round): it is turned
+// into the stance the studio is set to - its clip, its keys and the undo history, the game's way - rather than only
+// being drawn mirrored (drawn mirrored, the joint picked as the left leg was the clip's right one, so turning the left
+// leg moved the right), and saved in that stance. Mirroring is exact and undoes itself, the file is not marked changed
+// by it, and playback reads the lead foot from the clip. Returns whether it mirrored.
 bool face_studio_stance(State& s) {
     if (!s.open || !s.clip || s.clip->empty() || s.clip->joints != skeleton_joints) return false;
     const auto lead = clip_leads_right(*s.clip);
-    const bool want_right = studio_goofy(s.stance_choice); // goofy is the right foot leading
+    const bool own_foot = s.edits.source.kind != "native_asset";
+    if (own_foot && !s.edits.keep_leads_right) return false; // a recording: as it was made
+    const bool want_right = s.edits.keep_leads_right ? *s.edits.keep_leads_right : studio_goofy(s.stance_choice); // goofy: the right foot leads
     if (!lead || *lead == want_right) return false;
     try {
         auto clip = std::make_shared<const Clip>(mirror_clip(*s.clip));
@@ -1297,11 +1300,6 @@ bool face_studio_stance(State& s) {
             return mirror_animation(only).tracks;
         };
         Animation edits = s.edits;
-        // A recording is saved back on the foot it was made on (save mirrors it back): only the studio shows it mirrored.
-        // A trick of the game's own library has no foot of its own (the game plays its clips either way round): it is
-        // saved in the stance it was edited in, as it always was, so Exact stance and its stance versions stay as they were.
-        const bool own_foot = edits.source.kind != "native_asset";
-        if (own_foot && !edits.keep_leads_right) edits.keep_leads_right = *lead;
         const auto metadata = edits.clip;
         edits.clip = {};
         edits = mirror_animation(edits);
@@ -1312,9 +1310,7 @@ bool face_studio_stance(State& s) {
         for (auto& step : s.redo) step.tracks = mirror_tracks(std::move(step.tracks));
         s.clip = std::move(clip);
         s.edits = std::move(edits);
-        s.status = std::string("Made leading with the ") + (want_right ? "left" : "right") + " foot: shown mirrored into your " +
-                   (want_right ? "goofy" : "regular") + " stance, the game's way. Left is left - edit as you see it." +
-                   (s.edits.keep_leads_right ? " Saving keeps it on its own foot." : "");
+        s.status = std::string("Shown in your ") + (want_right ? "goofy" : "regular") + " stance, the game's way. Left is left - edit as you see it.";
         logging::log(Level::info, Channel::skater, "Animation Studio: {} mirrored into the studio's {} stance for editing.",
                      s.edits.name.empty() ? std::string("the trick") : s.edits.name, want_right ? "goofy" : "regular");
         return true;
@@ -6302,17 +6298,19 @@ bool save(std::string& message) {
         std::filesystem::create_directories(folder);
         Animation full = s.edits;
         full.name = name;
-        // A trick goes back on its own foot (keep_leads_right): the studio shows it mirrored into your stance to edit.
+        // A stance version is saved on the foot it keeps (keep_leads_right), whichever way round it is open.
         std::shared_ptr<const Clip> written = s.clip;
+        bool mirror_back = false;
         if (full.keep_leads_right)
-            if (const auto lead = clip_leads_right(*s.clip); lead && *lead != *full.keep_leads_right) {
-                written = std::make_shared<const Clip>(mirror_clip(*s.clip));
-                const auto timing = full.clip;
-                full.clip = {};
-                full = mirror_animation(full);
-                full.clip = timing;
-                full.name = name;
-            }
+            if (const auto lead = clip_leads_right(*s.clip)) mirror_back = *lead != *full.keep_leads_right;
+        if (mirror_back) {
+            written = std::make_shared<const Clip>(mirror_clip(*s.clip));
+            const auto timing = full.clip;
+            full.clip = {};
+            full = mirror_animation(full);
+            full.clip = timing;
+            full.name = name;
+        }
         // Its stance label is the foot its clip leads with, so packs and "the one saved last plays" treat two
         // recordings on the same foot as the same stance.
         if (const auto lead = clip_leads_right(*written)) {
@@ -6831,10 +6829,14 @@ void start_peek_locked(Peeks& p, const PeekRead& read) {
     s.peek_since = now_seconds();
     publish_locked(s, false);
 }
-// A clip and its edits turned into the stance the studio shows (`goofy`: the right foot leads), as an open one is.
-PeekRead turned(std::string key, std::shared_ptr<Clip> clip, Animation edits, bool goofy) {
+// A clip and its edits turned the way the studio shows them when opened (face_studio_stance): one of the game's in the
+// studio's stance (`goofy`: the right foot leads), a recording as made, a stance version on its own foot.
+PeekRead turned(std::string key, std::shared_ptr<Clip> clip, Animation edits, bool goofy, bool game_clip) {
     if (!clip || clip->empty() || clip->joints != skeleton_joints) throw std::runtime_error("not a clip of the skater");
-    if (const auto lead = clip_leads_right(*clip); lead && *lead != goofy) {
+    const bool own_foot = !game_clip && edits.source.kind != "native_asset";
+    const auto lead = clip_leads_right(*clip);
+    const bool want_right = edits.keep_leads_right ? *edits.keep_leads_right : own_foot ? lead.value_or(goofy) : goofy;
+    if (lead && *lead != want_right) {
         clip = std::make_shared<Clip>(mirror_clip(*clip));
         edits.clip = {};
         edits = mirror_animation(edits);
@@ -6888,7 +6890,7 @@ bool peek_game_trick(const GameTrick& trick, bool play) {
     if (!safe_library_clip(trick.file)) return false;
     const bool goofy = studio_goofy_now();
     const auto key = std::string(trick.recorded ? "recorded|" : "library|") + trick.file + (goofy ? "|goofy" : "|regular");
-    return ask_peek(key, play, [trick, key, goofy] { return turned(key, read_game_clip(trick), {}, goofy); });
+    return ask_peek(key, play, [trick, key, goofy] { return turned(key, read_game_clip(trick), {}, goofy, !trick.recorded); });
 }
 bool peek_saved(const std::string& animation, bool play) {
     try {
@@ -6905,7 +6907,7 @@ bool peek_saved(const std::string& animation, bool play) {
             auto edits = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
             auto clip = std::make_shared<Clip>(clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {})));
             if (edits.source.kind == "native_asset") place_native_marks(*clip);
-            return turned(key, std::move(clip), std::move(edits), goofy);
+            return turned(key, std::move(clip), std::move(edits), goofy, false);
         });
     } catch (...) { return false; }
 }
