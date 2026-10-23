@@ -5399,8 +5399,10 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         y += lh + 22 * k;
         return pressed;
     };
-    const auto row = [&](const PackList& list, bool ranked) {
+    const auto row = [&](const char* id, const PackList& list, bool ranked) {
+        ImGui::PushID(id);
         y += shop_row(d, f, v, m, list, ImVec2(ix, y), iw, ranked, top, bottom, covers);
+        ImGui::PopID();
     };
     if (!month.empty()) {
         static const char* months[]{"JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"};
@@ -5413,7 +5415,7 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             u.market_sort = "top";
             u.market_scroll = 0;
         }
-        row(month, true);
+        row("month", month, true);
     }
     y += 80 * k;
     y += crew_section(d, f, all, col, display, y, top, bottom, covers);
@@ -5424,7 +5426,7 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             u.market_crew.clear();
             u.market_scroll = 0;
         }
-        row(crew, false);
+        row("crew", crew, false);
     }
     fresh = sorted(all, "new");
     if (head("NEW RELEASES", PaperKind::grip, 41, "JUST DROPPED", "", "##seenew")) {
@@ -5432,7 +5434,7 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         u.market_sort = "new";
         u.market_scroll = 0;
     }
-    row(fresh, false);
+    row("new", fresh, false);
     y += 70 * k;
     y += cta_section(d, f, col, display, y, top, bottom);
     if (head("ALL-TIME FAVORITES", PaperKind::white, 51, "THE MOST LIKED, EVER", "", "##seefav")) {
@@ -5440,7 +5442,7 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         u.market_sort = "liked";
         u.market_scroll = 0;
     }
-    row(sorted(all, "liked"), false);
+    row("liked", sorted(all, "liked"), false);
     // The foot of the page.
     y += 60 * k;
     if (y < bottom) {
