@@ -249,6 +249,9 @@ struct Ui {
         };
         std::vector<Entry> entries;
         std::string error;
+        // Places: the known folders and the drives, looked up every few seconds (a drive can be plugged in), not every frame.
+        std::vector<std::pair<std::string, std::filesystem::path>> places;
+        double places_at{-1};
         float scroll{};
     } browser;
     // Saving: the card after a trick is saved the first time (name it, test it, put it in a pack), and the line the studio
@@ -272,6 +275,11 @@ struct Ui {
     bool fisheye{true};          // FILMER looks through a fisheye, as a filmer's VX does
     std::uint64_t clip_seen{};   // the clip the overlay last started clean on
     int warning_choice{};
+    // EDIT on another trick while the open one has changes not saved: what to open once the warning is answered, and
+    // what it is called. `unsaved` (set each frame from the view): the open trick, or the one a preview keeps, has changes.
+    std::function<void()> pending_open;
+    std::string pending_what, unsaved_title, open_name;
+    bool unsaved{};
     bool zoom_to_playhead{};
     // The game's animation tree (TRICKS > GAME ANIMATIONS).
     bool browse_assets{};
@@ -2075,6 +2083,7 @@ void shot_switch(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 ce
 }
 
 // The rows of the game's animation tree: its folders, the clips in them, and a clip's own fields.
+void open_game_trick(const studio::GameTrick& t); // below: opens it to edit, asking first about changes not saved
 std::vector<Row> asset_rows(const studio::View& v) {
     (void)v;
     auto& u = ui();
@@ -2171,12 +2180,7 @@ std::vector<Row> asset_rows(const studio::View& v) {
         const auto ready = available.find(asset.asset);
         const auto description = asset.context + ". Folder: " + asset.category + ". Source: " + asset.asset + ". " + asset.detail;
         if (ready != available.end() && !u.asset_inspect)
-            rows.push_back({asset.label, "Editable", description, [t = *ready->second] {
-                                std::string m;
-                                studio::load_game_trick(t, m);
-                                say(m);
-                                ui().names_for = 0;
-                            }});
+            rows.push_back({asset.label, "Editable", description, [t = *ready->second] { open_game_trick(t); }});
         else
             rows.push_back({asset.label,
                             ready != available.end() ? "Editable / data" : asset.decode_state == "metadata" ? "Metadata"
@@ -2436,7 +2440,7 @@ void controller(const studio::View& v, const Projector& p) {
         }
         return;
     }
-    if (v.confirm_close) return; // the close warning's card takes the buttons
+    if (v.confirm_close || u.pending_open) return; // an unsaved changes card takes the buttons
     const bool card = any_card_open(v);
     // The menu and the cards: the D-pad chooses, A presses, B goes back, LB and RB change tab, View goes to the editor.
     if (u.menu || card) {
@@ -2964,13 +2968,31 @@ const std::vector<TrickCard>& trick_cards(const std::shared_ptr<const std::vecto
 }
 // The clip a piece is, as the studio names it once it is open ("native:<asset>").
 std::string piece_trick(const TrickCard::Piece& piece) { return "native:" + piece.clip->asset; }
+// Opening another trick to edit puts it in place of the one open: with changes not saved there (or behind a preview),
+// the studio asks first - SAVE, DON'T SAVE or STAY - and opens it once that is answered.
+bool ask_before_open(std::function<void()> open, const std::string& what) {
+    auto& u = ui();
+    if (!u.unsaved) return false;
+    u.pending_open = std::move(open);
+    u.pending_what = what;
+    u.warning_choice = 0;
+    return true;
+}
 void open_game_trick(const studio::GameTrick& t) {
+    if (ask_before_open([t] { open_game_trick(t); }, t.label)) return;
     std::string m;
     studio::load_game_trick(t, m);
     say(m);
     ui().names_for = 0;
 }
 void open_saved(const std::string& name) {
+    // EDIT on the trick that is open, with its changes: it stays open as it is.
+    if (ui().unsaved && !ui().open_name.empty() && _stricmp(name.c_str(), ui().open_name.c_str()) == 0) {
+        say(name + " is open, with your changes.");
+        ui().names_for = 0;
+        return;
+    }
+    if (ask_before_open([name] { open_saved(name); }, name)) return;
     std::string m;
     studio::load(name, m);
     say(m);
@@ -5824,7 +5846,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     float y = region_top + 22 * k - u.market_detail_scroll;
     // The cover, taped up.
     const float side = 470 * k;
-    print_card(d, f, ImVec2(ix + 10 * k, y + 20 * k), ImVec2(side, side), -2.5f, upper(maker_of(p)).substr(0, 24) + " / v" + p.version, true,
+    print_card(d, f, ImVec2(ix + 10 * k, y + 20 * k), ImVec2(side, side), -2.5f, studio::utf8_prefix(upper(maker_of(p)), 24) + " / v" + p.version, true,
                [&](ImVec2 a, ImVec2 b) { market_icon(d, f, p, a, b); });
     const float x = ix + 520 * k + 70 * k, w = ix + iw - x;
     float ry = y;
@@ -6866,7 +6888,7 @@ void read_folder(Ui::Browser& br) {
     std::error_code e;
     for (auto it = std::filesystem::directory_iterator(br.dir, std::filesystem::directory_options::skip_permission_denied, e);
          !e && it != std::filesystem::directory_iterator(); it.increment(e)) {
-        if (br.entries.size() >= 800) break;
+        if (br.entries.size() >= 5000) break;
         const auto& path = it->path();
         const auto name = to_utf8(path.filename());
         if (name.empty() || name[0] == '.' || name[0] == '$') continue;
@@ -6882,6 +6904,8 @@ void read_folder(Ui::Browser& br) {
         if (a.folder != b.folder) return a.folder;
         return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
     });
+    // The first 800 in order (folders first, then A to Z): cut after the sort, so it is never an arbitrary 800.
+    if (br.entries.size() > 800) br.entries.resize(800);
 }
 void folder_icon(ImDrawList* d, ImVec2 at, float k, ImU32 colour) {
     d->AddRectFilled(ImVec2(at.x, at.y + 3 * k), ImVec2(at.x + 10 * k, at.y + 7 * k), colour, 2 * k);
@@ -6910,18 +6934,22 @@ void browser_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
     float y = top + 20 * k;
     heading(d, f, ImVec2(a.x + 28 * k, y), places_w - 20 * k, "Places");
     y += 32 * k;
-    std::vector<std::pair<std::string, std::filesystem::path>> places{{"Desktop", known_folder(FOLDERID_Desktop)},
-                                                                      {"Pictures", known_folder(FOLDERID_Pictures)},
-                                                                      {"Downloads", known_folder(FOLDERID_Downloads)},
-                                                                      {"Documents", known_folder(FOLDERID_Documents)},
-                                                                      {"ReSkate.Tricks", from_utf8(v.library_path)}};
-    const DWORD drives = GetLogicalDrives();
-    for (int i = 0; i < 26; ++i)
-        if (drives & (1u << i)) {
-            const wchar_t root[4]{static_cast<wchar_t>(L'A' + i), L':', L'\\', 0};
-            const UINT type = GetDriveTypeW(root);
-            if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE) places.emplace_back(std::string(1, static_cast<char>('A' + i)) + ":\\", std::filesystem::path(root));
-        }
+    if (br.places.empty() || ImGui::GetTime() - br.places_at > 3.0) {
+        br.places_at = ImGui::GetTime();
+        br.places = {{"Desktop", known_folder(FOLDERID_Desktop)},
+                     {"Pictures", known_folder(FOLDERID_Pictures)},
+                     {"Downloads", known_folder(FOLDERID_Downloads)},
+                     {"Documents", known_folder(FOLDERID_Documents)},
+                     {"ReSkate.Tricks", from_utf8(v.library_path)}};
+        const DWORD drives = GetLogicalDrives();
+        for (int i = 0; i < 26; ++i)
+            if (drives & (1u << i)) {
+                const wchar_t root[4]{static_cast<wchar_t>(L'A' + i), L':', L'\\', 0};
+                const UINT type = GetDriveTypeW(root);
+                if (type == DRIVE_FIXED || type == DRIVE_REMOVABLE) br.places.emplace_back(std::string(1, static_cast<char>('A' + i)) + ":\\", std::filesystem::path(root));
+            }
+    }
+    const auto& places = br.places;
     for (std::size_t i = 0; i < places.size(); ++i) {
         if (places[i].second.empty()) continue;
         const ImVec2 pa(a.x + 28 * k, y), pb(a.x + places_w, y + 36 * k);
@@ -9189,8 +9217,8 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
 
 // Closing with changes not saved: the game's white card asks first. Its three buttons are a row the
 // D-pad, the arrow keys or the mouse move along; the chosen one is lit, A / Enter / a click takes it.
-void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
-    if (!v.confirm_close) return;
+// The unsaved changes card: the question, SAVE / DON'T SAVE / STAY. Returns the answer taken this frame (0, 1, 2).
+std::optional<int> unsaved_card(ImDrawList* d, const Fonts& f, ImVec2 display, const std::string& question) {
     auto& u = ui();
     const float k = f.k;
     d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, 150));
@@ -9200,10 +9228,8 @@ void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     skate_theme::rough_rect(d, a, b, IM_COL32(236, 236, 234, 252), 97, k);
     const ImU32 ink = IM_COL32(20, 20, 22, 255);
     text(d, f.title, 40 * k, ImVec2(a.x + 30 * k, a.y + 18 * k), ink, "UNSAVED CHANGES");
-    const std::string question = "\"" + title_of(v) + "\" has changes that are not saved. Save them before you go back to skating?";
     d->AddText(sharp(f.bold, 19 * k), 19 * k, ImVec2(a.x + 30 * k, a.y + 84 * k), IM_COL32(60, 60, 66, 255), question.c_str(), nullptr, w - 60 * k);
     constexpr std::array<const char*, 3> labels{"SAVE", "DON'T SAVE", "STAY"};
-    constexpr std::array<studio::CloseAnswer, 3> answers{studio::CloseAnswer::save, studio::CloseAnswer::discard, studio::CloseAnswer::cancel};
     u.warning_choice = std::clamp(u.warning_choice, 0, 2);
     const ImVec2 size((w - 60 * k - 2 * 12 * k) / 3, 48 * k);
     const float y = b.y - 30 * k - size.y;
@@ -9245,10 +9271,37 @@ void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     x += prompt(d, f, ImVec2(x, py), u.pad_mode ? std::optional<Glyph>(Glyph::dpad_lr) : std::nullopt, "< >", "Choose", u.playstation);
     x += prompt(d, f, ImVec2(x, py), u.pad_mode ? std::optional<Glyph>(Glyph::a) : std::nullopt, "ENTER", "Select", u.playstation);
     prompt(d, f, ImVec2(x, py), u.pad_mode ? std::optional<Glyph>(Glyph::b) : std::nullopt, "ESC", "Stay", u.playstation);
-    if (taken) {
-        studio::answer_close(answers[static_cast<std::size_t>(*taken)]);
-        u.warning_choice = 0;
+    if (taken) u.warning_choice = 0;
+    return taken;
+}
+// Closing the studio with changes not saved.
+void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+    if (!v.confirm_close) return;
+    constexpr std::array<studio::CloseAnswer, 3> answers{studio::CloseAnswer::save, studio::CloseAnswer::discard, studio::CloseAnswer::cancel};
+    const std::string question = "\"" + title_of(v) + "\" has changes that are not saved. Save them before you go back to skating?";
+    if (const auto taken = unsaved_card(d, f, display, question)) studio::answer_close(answers[static_cast<std::size_t>(*taken)]);
+}
+// Opening another trick with changes not saved (ask_before_open).
+void open_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+    auto& u = ui();
+    if (!u.pending_open) return;
+    const std::string question = "\"" + u.unsaved_title + "\" has changes that are not saved. Save them before you open " + u.pending_what + "?";
+    const auto taken = unsaved_card(d, f, display, question);
+    if (!taken) return;
+    auto open = std::move(u.pending_open);
+    u.pending_open = nullptr;
+    if (*taken == 2) return; // STAY
+    // The trick a preview keeps comes back first, so SAVE saves it (and DON'T SAVE lets it go).
+    if (v.previewing) studio::end_preview();
+    if (*taken == 0) {
+        std::string m;
+        if (!studio::save(m)) {
+            say(m);
+            return;
+        }
     }
+    u.unsaved = false; // answered: the open below does not ask again
+    open();
 }
 } // namespace
 
@@ -9537,19 +9590,27 @@ void draw_animation_studio() {
         if (filming && !u.menu) detail::want_studio_frame();
         lens().on = filming && !u.menu && detail::studio_frame_texture() != ImTextureID{};
     }
-    const bool card = any_card_open(v) || v.confirm_close;
+    // Changes not saved: in the open trick, or in the one a preview keeps (ask_before_open asks about them).
+    u.unsaved = (v.has_clip && v.dirty && !v.previewing) || v.kept_dirty;
+    u.unsaved_title = v.kept_dirty ? upper(v.kept_name) : title_of(v);
+    u.open_name = v.previewing ? std::string{} : v.name;
+    const bool warning = v.confirm_close || static_cast<bool>(u.pending_open);
+    const bool card = any_card_open(v) || warning;
     u.blocked = card || u.radial || u.menu;
     const float timeline_h = std::min(display.y * 0.34f, 360 * k);
     const float side_w = 434 * k; // the joint's card and the shortcuts, at the right
-    const ImVec2 view_min(u.hide_ui ? left : left + (tool_strip_margin + tool_strip_width + 22) * k, u.hide_ui ? 0 : 80 * k),
-        view_max(u.hide_ui ? right : right - side_w - 40 * k, u.hide_ui ? display.y : display.y - timeline_h);
+    const bool hidden = u.hide_ui && !card; // H: the skater alone, until a card or the close warning is up
+    const ImVec2 view_min(hidden ? left : left + (tool_strip_margin + tool_strip_width + 22) * k, hidden ? 0 : 80 * k),
+        view_max(hidden ? right : right - side_w - 40 * k, hidden ? display.y : display.y - timeline_h);
     // The skater stands in the middle of the free space.
     studio::set_view_shift((display.y * 0.5f - (view_min.y + view_max.y) * 0.5f) / display.y,
                            ((view_min.x + view_max.x) * 0.5f - display.x * 0.5f) / display.y);
     const auto project = projector(v, display);
-    // The pad and the keys first, so a press this frame reaches what is drawn this frame.
+    // The pad and the keys first, so a press this frame reaches what is drawn this frame. A key that closes the menu
+    // is not seen again by the editor in the same frame (it would open the menu again).
+    const bool menu_open_at_input = u.menu;
     controller(v, project);
-    if ((u.menu || any_card_open(v)) && !v.confirm_close) menu_keyboard(v);
+    if ((u.menu || any_card_open(v)) && !warning) menu_keyboard(v);
     if (!u.menu || u.menu_tab != 0) end_hover_preview();
     // What the studio last said: held long enough to read, by its length, and then gone. A failure stays, because that
     // is something to act on.
@@ -9602,10 +9663,11 @@ void draw_animation_studio() {
             return;
         }
         viewport(d, f, v, project, view_min, view_max);
-        if (u.hide_ui) {
+        if (hidden) {
             // Only the skater and the room he stands in: for filming a trick or taking a picture of it. The camera and the
-            // playhead still answer, so a trick can be played and watched clean.
-            if (!card) keyboard(v);
+            // playhead still answer, so a trick can be played and watched clean. A card or the close warning brings the
+            // rest back, so it can be answered.
+            if (!menu_open_at_input) keyboard(v);
             ImGui::End();
             ImGui::PopStyleVar(2);
             nav_end_frame();
@@ -9623,14 +9685,15 @@ void draw_animation_studio() {
             skate_theme::rough_rect(d, ImVec2(at.x - 14 * k, at.y - 7 * k), ImVec2(at.x + w.x + 14 * k, at.y + w.y + 7 * k), IM_COL32(16, 16, 18, 230), 41, k * 0.6f);
             text(d, f.bold, 15 * k, at, v.failure.empty() ? white : skate_theme::danger, line);
         }
-        if (!card) keyboard(v);
+        if (!card && !menu_open_at_input) keyboard(v);
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
     // Over everything: a card when one is up, the close warning, the round menu.
-    if (v.confirm_close) {
+    if (warning) {
         begin_card(display, false);
-        close_warning(ImGui::GetWindowDrawList(), f, v, display);
+        if (v.confirm_close) close_warning(ImGui::GetWindowDrawList(), f, v, display);
+        else open_warning(ImGui::GetWindowDrawList(), f, v, display);
         end_card();
     } else draw_cards(f, v, display);
     if (!u.menu) radial_menu(f, v, display);

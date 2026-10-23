@@ -918,7 +918,7 @@ Animation from_json(std::string_view text) {
     result.author = root.value("author", "");
     result.maker_key = root.value("maker_key", "").substr(0, 64);
     result.editable = root.value("editable", false);
-    result.label = root.value("label", "").substr(0, 48);
+    result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
     result.pop = root.value("pop", "");
@@ -972,6 +972,7 @@ Animation from_json(std::string_view text) {
                         t.contains("locked") && t.at("locked").is_boolean() && t.at("locked").get<bool>()};
             require(t.contains("keys") && t.at("keys").is_array(), "a track has no keys");
             const auto& keys = t.at("keys");
+            bool put_back = false; // a key past the clip's end, put back on it
             total += keys.size();
             require(total <= 20000, "too many keys");
             for (std::size_t k = 0; k < keys.size(); ++k) {
@@ -979,7 +980,13 @@ Animation from_json(std::string_view text) {
                 require(key.is_object() && key.contains("t") && key.contains("r") && key.contains("p"), "a key is incomplete");
                 Key value;
                 value.time = number(key.at("t"), "bad key time");
-                require(value.time >= 0 && value.time <= duration + 0.01f, "a key lies past the clip");
+                // Up to a frame past the clip, as the window above: the old builds' end bracket put a key on every joint
+                // there. Put back on the clip's end.
+                require(value.time >= 0 && value.time <= duration + frame, "a key lies past the clip");
+                if (value.time > duration) {
+                    value.time = duration;
+                    put_back = true;
+                }
                 value.rotation = normalised(numbers<4>(key.at("r"), "bad key rotation"));
                 value.offset = numbers<3>(key.at("p"), "bad key offset");
                 for (const float v : value.offset) require(std::abs(v) < 10, "a key moves a joint more than 10 m");
@@ -989,6 +996,10 @@ Animation from_json(std::string_view text) {
                 track.keys.push_back(value);
             }
             std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
+            // A key put back on the clip's end gives way to one already there.
+            if (put_back)
+                track.keys.erase(std::unique(track.keys.begin(), track.keys.end(), [&](const Key& a, const Key& b) { return a.time == b.time && b.time == duration; }),
+                                 track.keys.end());
             result.tracks.push_back(std::move(track));
         }
     }

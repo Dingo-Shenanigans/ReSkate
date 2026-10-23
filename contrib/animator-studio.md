@@ -73,7 +73,8 @@ Saved animations go to `ReSkate.Tricks/` beside Skate.exe.
 
 ANIMATIONS > Create a new pack copies the current pack's choices, or starts with all saved
 animations. Active pack cycles the available packs. Variant playback chooses Fixed (one chosen
-variation per trick/pop) or Alternate (cycle included variations on successive attempts of a trick).
+variation per trick/pop) or Alternate (one of the linked variations at random on each attempt, never the same one
+twice running).
 PLAYBACK > Save as new variation preserves the original file. Include saved variation in pack
 changes membership; Choose this fixed variation changes that slot's preferred choice. These
 actions use the saved animation, so save edits first. A new variation is not automatically added

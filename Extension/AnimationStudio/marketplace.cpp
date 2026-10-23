@@ -318,16 +318,19 @@ void save_lists_locked(const Market& m) {
         for (const auto& f : m.favorites) favorites.push_back(f);
         for (const auto& [name, version] : m.installed) installed[name] = version;
         for (const auto& [name, pack] : m.installed_as) installed_as[name] = pack;
-        write_file(folder() / L"market.json", Json{{"favorites", std::move(favorites)}, {"installed", std::move(installed)},
-                                                   {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt}}.dump(2));
+        write_file(folder() / L"settings.json", Json{{"favorites", std::move(favorites)}, {"installed", std::move(installed)},
+                                                     {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt}}.dump(2));
     } catch (...) {}
 }
 void read_settings_locked(Market& m) {
     if (m.settings_read) return;
     m.settings_read = true;
     try {
-        if (const auto text = read_file(folder() / L"market.json"); !text.empty()) {
-            const auto root = Json::parse(text);
+        // market/settings.json; market/market.json before 1.0.8 (its shape made it look like a saved trick called market).
+        auto saved = read_file(folder() / L"settings.json");
+        const bool old_name = saved.empty() && !(saved = read_file(folder() / L"market.json")).empty();
+        if (!saved.empty()) {
+            const auto root = Json::parse(saved);
             if (root.contains("favorites") && root.at("favorites").is_array())
                 for (const auto& f : root.at("favorites"))
                     if (f.is_string()) m.favorites.insert(f.string());
@@ -338,6 +341,11 @@ void read_settings_locked(Market& m) {
                 for (const auto& [name, pack] : root.at("installed_as").items())
                     if (pack.is_string()) m.installed_as[name] = pack.string();
             m.like_prompt = root.value("like_prompt", true);
+            if (old_name) {
+                save_lists_locked(m);
+                std::error_code error;
+                if (std::filesystem::exists(folder() / L"settings.json", error)) std::filesystem::remove(folder() / L"market.json", error);
+            }
         }
         if (const auto text = read_file(account_file()); !text.empty()) m.team = Json::parse(text).value("team", "");
     } catch (...) {}
@@ -747,6 +755,14 @@ void install(const std::string& full_name) {
         std::error_code error;
         std::filesystem::create_directories(zip.parent_path(), error);
         std::filesystem::remove(zip, error);
+        // The download goes when the install is done, whether it went in or not.
+        struct Gone {
+            const std::filesystem::path& zip;
+            ~Gone() {
+                std::error_code ignored;
+                std::filesystem::remove(zip, ignored);
+            }
+        } gone{zip};
         https::Watch watch;
         std::atomic<bool> done{};
         // How far the download is, while it runs. Waited for before going on: it reads `watch` and `done`, which go
@@ -782,7 +798,14 @@ void install(const std::string& full_name) {
         progress(0.95f);
         std::string message;
         std::vector<std::string> made;
-        const bool ok = import_pack_zip(zip, message, &made);
+        // An UPDATE or a REINSTALL replaces the pack it became before, rather than adding another copy of it.
+        std::string before;
+        {
+            auto& m = market();
+            std::lock_guard lock(m.mutex);
+            if (const auto found = m.installed_as.find(pack.full_name); found != m.installed_as.end()) before = found->second;
+        }
+        const bool ok = import_pack_zip(zip, message, &made, before);
         std::filesystem::remove(zip, error);
         if (!ok) throw std::runtime_error(message);
         auto& m = market();
@@ -978,13 +1001,19 @@ void take_installed_mods() {
                 }
                 const auto zip = folder() / L"downloads" / (mod.path().filename().wstring() + L".zip");
                 write_file(zip, make_zip(files));
-                std::string message;
-                const bool ok = import_pack_zip(zip, message);
+                std::string message, before;
+                {
+                    std::lock_guard lock(m.mutex);
+                    if (const auto found = m.installed_as.find(key); found != m.installed_as.end()) before = found->second;
+                }
+                std::vector<std::string> made;
+                const bool ok = import_pack_zip(zip, message, &made, before); // a new version of the mod replaces the old
                 std::filesystem::remove(zip, error);
                 logging::log(ok ? Level::info : Level::warning, Channel::skater, "Animator Studio market: {} from the Mods folder: {}", utf8(mod.path().filename()), message);
                 if (ok) {
                     std::lock_guard lock(m.mutex);
                     m.installed[key] = version;
+                    if (!made.empty()) m.installed_as[key] = made.front();
                     save_lists_locked(m);
                 }
             } catch (const std::exception& e) {

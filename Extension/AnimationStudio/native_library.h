@@ -70,6 +70,11 @@ struct Report {
 // throws Stopped).
 using Progress = std::function<bool(std::string_view step, std::size_t done, std::size_t total)>;
 struct Stopped {};
+// A file of the library that could not be written (a full disk, a locked file): the whole build fails, so a library with
+// files missing never takes the place of a good one. (A clip that cannot be decoded is one error, and the build goes on.)
+struct WriteFailed : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 // Builds a whole library into `output` (made if it is not there; meant to be an empty staging folder): the clips,
 // catalog.json, native-catalog.json, the native resources' details and build-info.json (with `stamp` in it).
 Report build(const std::filesystem::path& game_root, const std::filesystem::path& output, const Progress& progress, const std::string& stamp);

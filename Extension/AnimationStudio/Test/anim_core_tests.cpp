@@ -828,13 +828,60 @@ void packs_select_variants_without_filesystem_order() {
         {"Switch Z", "ollie", "", false, false, "goofy", true},
         {"Regular", "ollie", "", false, false, "regular", false}};
     select_presets(stances, std::nullopt);
-    check(stances[0].active && stances[1].active && !stances[2].active && stances[3].active,
-          "Default selection retains a separate playable recording per base/switch stance");
+    // By the foot each leads with: goofy normal leads right; goofy switch and regular normal both lead left, so they are
+    // one slot, and of those the first by name plays (all saved at once).
+    check(stances[0].active && !stances[1].active && !stances[2].active && stances[3].active,
+          "Default selection keeps one playable recording per lead foot");
     pack.alternate = false;
     pack.slots["ollie|"] = {"Normal A", "Switch Z", "Switch A", "Regular"};
     select_presets(stances, pack);
-    check(stances[0].active && !stances[1].active && stances[2].active && stances[3].active,
-          "Fixed packs choose their first included compatible variant for each stance");
+    // Right foot: Normal A. Left foot: Switch Z, the first of the three that lead with it.
+    check(stances[0].active && !stances[1].active && stances[2].active && !stances[3].active,
+          "Fixed packs choose their first included compatible variant for each lead foot");
+}
+// The 22sh review of PR 8: what was fixed for 1.0.8, held.
+void review_fixes_hold() {
+    // A name cut to its 48 bytes never ends inside a character (the cut made every later save fail).
+    std::string accents = "A";
+    for (int i = 0; i < 24; ++i) accents += "\xC3\xA9";
+    const auto cut = utf8_prefix(accents, 48);
+    check(cut.size() == 47 && utf8_prefix("Kickflip", 48) == "Kickflip", "A UTF-8 name is cut between characters");
+    (void)dingosdk::Json(cut).dump();
+    // Two recordings leading with the same foot are one slot: a goofy normal and a regular switch both lead right.
+    std::vector<Preset> same_foot{{"Goofy normal", "kickflip", "mid", false, false, "goofy", false},
+                                  {"Regular switch", "kickflip", "mid", false, false, "regular", true}};
+    same_foot[0].saved_at = 1;
+    same_foot[1].saved_at = 2;
+    select_presets(same_foot, std::nullopt);
+    check(!same_foot[0].active && same_foot[1].active, "Two recordings on the same foot: the newer plays, they do not take turns");
+    same_foot[1].leads_right = false; // the studio read it from the file: it leads left after all
+    select_presets(same_foot, std::nullopt);
+    check(same_foot[0].active && same_foot[1].active, "The lead foot the studio read goes before the labels");
+    // Packs: a regular kickflip in one and a goofy one in another are not a duplicate.
+    std::vector<Preset> kicks{{"A regular", "kickflip", "mid", false, false, "regular", false},
+                              {"B goofy", "kickflip", "mid", false, false, "goofy", false}};
+    PresetPack a, b;
+    a.name = "A";
+    a.slots["kickflip|mid"] = {"A regular"};
+    b.name = "B";
+    b.slots["kickflip|mid"] = {"B goofy"};
+    const std::vector<PresetPack> ab{a, b};
+    check(pack_conflicts(kicks, ab).empty(), "Kickflips for different feet in two packs are not a duplicate");
+    ConflictChoices pick{{"kickflip|mid", "A"}};
+    select_presets(kicks, ab, &pick);
+    check(kicks[0].active && kicks[1].active, "A choice stands down only the animations for the same takeoffs");
+    kicks.push_back({"B regular", "kickflip", "mid", false, false, "regular", false});
+    b.slots["kickflip|mid"].push_back("B regular");
+    const std::vector<PresetPack> ab2{a, b};
+    check(pack_conflicts(kicks, ab2).size() == 1, "Two packs with a regular kickflip each are a duplicate");
+    select_presets(kicks, ab2, &pick);
+    check(kicks[0].active && kicks[1].active && !kicks[2].active, "Chosen A: B's regular kickflip stands down, its goofy one plays");
+    // A key on the end bracket a frame past the clip (old builds) is put back on the end, not refused.
+    const auto past = from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"end":1.03,"tracks":[{"joint":7,"keys":[{"t":0.5,"r":[0,0,0,1],"p":[0,0,0]},{"t":1.03,"r":[0,0,0,1],"p":[0,0,0]}]}]})");
+    check(past.tracks.size() == 1 && past.tracks[0].keys.size() == 2 && past.tracks[0].keys[1].time == 1.0f && past.end == 1.0f,
+          "A key a frame past the clip is put on its end");
+    const auto both = from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"tracks":[{"joint":7,"keys":[{"t":1,"r":[0,0,0,1],"p":[0,0,0]},{"t":1.03,"r":[0,0,0,1],"p":[0,0,0]}]}]})");
+    check(both.tracks[0].keys.size() == 1, "and gives way to a key already on the end");
 }
 void research_keeps_short_transitions_and_is_bounded() {
     ResearchBuffer buffer;
@@ -1801,6 +1848,7 @@ int main(int argc, char** argv) {
         switch_edits_follow_the_native_body_facing();
         authored_gameplay_matches_f8_limbs_and_source_key_times();
         packs_select_variants_without_filesystem_order();
+        review_fixes_hold();
     several_packs_play_together();
     pack_slots_are_fixed_or_alternate();
     packs_on_together_and_their_rules();

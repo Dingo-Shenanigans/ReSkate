@@ -9,6 +9,7 @@
 #include <set>
 #include <string_view>
 #include "Engine/Core/Json/json.h"
+#include "utf8_text.h"
 
 namespace dingosdk::anim_studio {
 struct Preset {
@@ -31,7 +32,20 @@ struct Preset {
     // Switched to PLAY on its own (MY TRICKS): it plays in game whichever packs are on (where none of theirs has its
     // trick, pop and stance). A trick saved or put in a pack starts switched off.
     bool playing{};
+    // The foot it leads with, as the studio reads its file (authored_goofy and its switch label, which a save and the
+    // upgrade keep true to its clip). Empty: from its stance and switch labels.
+    std::optional<bool> leads_right;
 };
+// The foot a saved trick leads with: what decides which takeoffs it plays on, as the game mirrors by it. A goofy normal
+// and a regular switch recording both lead with the right foot.
+inline bool preset_leads_right(const Preset& p) {
+    return p.leads_right ? *p.leads_right : (p.stance == "goofy") != p.switch_stance.value_or(false);
+}
+// Which of a trick's takeoffs an animation is for, past its trick and pop: the foot it leads with, how it went in (off
+// the ground or a rail) and fakie. Two animations with the same are for the same takeoffs: one of them plays.
+inline std::string stance_part(const Preset& p) {
+    return std::string(preset_leads_right(p) ? "|right" : "|left") + "|" + p.entry + (p.fakie.value_or(false) ? "|fakie" : "");
+}
 // What to do with a trick and pop that more than one pack that is on has: "*" (or nothing) play any of them at random,
 // attempt by attempt; a pack's name: that pack's plays it. By slot (preset_slot).
 using ConflictChoices = std::map<std::string, std::string>;
@@ -43,7 +57,8 @@ struct PackConflict {
 };
 // A pack: saved animations grouped under a name, filed by trick and pop ("slots"). One is used at a time.
 // Where a pack has more than one of a trick and pop, that slot is Fixed - its first one plays - or
-// Alternate - the ones linked into its cycle take turns, attempt by attempt. `alternate` is what a slot is
+// Alternate - one of the ones linked into its cycle plays each attempt, at random but never the same one twice
+// running. `alternate` is what a slot is
 // when it has not been set on its own (packs from before had one setting for the whole pack).
 struct PresetPack {
     std::string name;
@@ -110,15 +125,19 @@ inline std::optional<std::size_t> pack_place(const PresetPack& pack, const std::
 // With no pack on, every saved animation plays: one per trick, pop and stance, the one saved last (so what
 // was just saved is what plays), alphabetically when two were saved at once. With a pack on, only its animations
 // play. A Fixed slot plays its first variant per stance; an Alternate slot every variant linked into its cycle
-// (they take turns), or its first when none is linked. Were two packs on, both would play and take turns.
+// (one of them at random each attempt, never the same twice running), or its first when none is linked. Where two
+// packs that are on have the same trick and pop, either plays at random unless one was chosen (pack_conflicts).
 // Exact-pop precedence remains the runtime's job.
 inline std::string effective_pop(const PresetPack& pack, const std::string& own) {
     return pack.pop_rule.empty() ? own : pack.pop_rule == "any" ? std::string{} : pack.pop_rule;
 }
-// The tricks and pops more than one of `packs` (all on) has, each with an animation of its own in each.
+// The tricks and pops more than one of `packs` (all on) has, each with an animation of its own in each for the same
+// takeoffs (stance_part): a regular kickflip in one pack and a goofy one in another both play, each in its stance. A
+// trick on any pop does not clash with one on a set pop either: the set pop's plays on its pop, the other on the rest.
 inline std::vector<PackConflict> pack_conflicts(std::span<const Preset> presets, std::span<const PresetPack> packs,
                                                 const ConflictChoices& choices = {}) {
     std::map<std::string, PackConflict> found;
+    std::map<std::string, std::map<std::string, std::set<std::pair<std::string, std::string>>>> takeoffs; // slot -> stance -> pack, animation
     for (const auto& pack : packs)
         for (const auto& [filed, names] : pack.slots) {
             std::vector<std::string> mine;
@@ -130,6 +149,7 @@ inline std::vector<PackConflict> pack_conflicts(std::span<const Preset> presets,
                 mine.push_back(name);
                 trick = p->trick;
                 pop = effective_pop(pack, p->pop);
+                takeoffs[preset_slot(trick, pop)][stance_part(*p)].emplace(pack.name, name);
             }
             if (mine.empty()) continue;
             const auto key = preset_slot(trick, pop);
@@ -142,10 +162,17 @@ inline std::vector<PackConflict> pack_conflicts(std::span<const Preset> presets,
     std::vector<PackConflict> out;
     for (auto& [key, c] : found) {
         if (c.packs.size() < 2) continue;
-        // The same animation in two packs is not a choice to make.
-        std::set<std::string> distinct;
-        for (const auto& [pack, names] : c.packs) distinct.insert(names.begin(), names.end());
-        if (distinct.size() < 2) continue;
+        // Two packs with different animations for the same takeoffs. The same animation in two packs is not a choice to make.
+        bool clash = false;
+        for (const auto& [stance, entries] : takeoffs[key]) {
+            std::set<std::string> in_packs, distinct;
+            for (const auto& [pack, name] : entries) {
+                in_packs.insert(pack);
+                distinct.insert(name);
+            }
+            clash |= in_packs.size() > 1 && distinct.size() > 1;
+        }
+        if (!clash) continue;
         if (const auto chosen = choices.find(key); chosen != choices.end()) c.choice = chosen->second;
         out.push_back(std::move(c));
     }
@@ -166,10 +193,7 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
             if (!filed.empty() && packs[k].alternates(filed) && !packs[k].unlinked.contains(p.name))
                 linked.insert(std::to_string(k) + "|" + filed);
         }
-    const auto compatible = [](const Preset& p, const std::string& pop) {
-        return preset_slot(p.trick, pop) + (p.stance == "goofy" ? "|goofy" : "|regular") +
-               (p.switch_stance.value_or(false) ? "|switch" : "|normal") + "|" + p.entry + (p.fakie.value_or(false) ? "|fakie" : "");
-    };
+    const auto compatible = [](const Preset& p, const std::string& pop) { return preset_slot(p.trick, pop) + stance_part(p); };
     for (auto& p : presets) {
         p.active = p.included = false;
         p.pack_pop.reset();
@@ -212,11 +236,15 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
             if (conflict.choice.empty()) continue;
             const auto winner = std::find_if(conflict.packs.begin(), conflict.packs.end(), [&](const auto& e) { return e.first == conflict.choice; });
             if (winner == conflict.packs.end()) continue;
+            // Only for the takeoffs the chosen pack has an animation for: the others' animations for other stances play on.
+            std::set<std::string> covered;
+            for (const auto& name : winner->second)
+                for (const auto& p : presets) if (p.name == name) covered.insert(stance_part(p));
             for (const auto& [pack, names] : conflict.packs) {
                 if (pack == conflict.choice) continue;
                 for (const auto& name : names) {
                     if (std::find(winner->second.begin(), winner->second.end(), name) != winner->second.end()) continue;
-                    for (auto& p : presets) if (p.name == name) p.active = false;
+                    for (auto& p : presets) if (p.name == name && covered.contains(stance_part(p))) p.active = false;
                 }
             }
         }
@@ -288,8 +316,7 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
     for (auto& p : presets) {
         if (!p.included) continue;
         const auto pop = p.pack_pop ? *p.pack_pop : p.pop;
-        const auto key = preset_slot(p.trick, pop) + (p.stance == "goofy" ? "|goofy" : "|regular") + (p.switch_stance.value_or(false) ? "|switch" : "|normal") +
-                         "|" + p.entry + (p.fakie.value_or(false) ? "|fakie" : "");
+        const auto key = preset_slot(p.trick, pop) + stance_part(p);
         if (mode != PlaylistMode::fixed) {
             p.active = true;
             continue;
@@ -334,7 +361,7 @@ inline PresetPack read_pack_json(const Json& root) {
         throw std::runtime_error("Invalid animation preset pack");
     PresetPack out;
     out.name = root.value("name", "Pack");
-    out.made_by = root.value("made_by", "").substr(0, 48);
+    out.made_by = utf8_prefix(root.value("made_by", ""), 48);
     out.alternate = root.value("alternate", false);
     std::size_t count = 0;
     for (const auto& [slot, names] : root.at("slots").items()) {
@@ -354,11 +381,11 @@ inline PresetPack read_pack_json(const Json& root) {
     if (const auto rule = root.value("pop_rule", ""); rule == "any" || rule == "low" || rule == "mid" || rule == "high") out.pop_rule = rule;
     out.maker_key = root.value("maker_key", "").substr(0, 64);
     out.editable = root.value("editable", false);
-    out.description = root.value("description", "").substr(0, 2000);
+    out.description = utf8_prefix(root.value("description", ""), 2000);
     out.version = root.value("release", "1.0.0").substr(0, 32);
     out.published = root.value("published", "").substr(0, 32);
-    out.published_as = root.value("published_as", "").substr(0, 260);
-    out.cover = root.value("cover", "").substr(0, 4000);
+    out.published_as = utf8_prefix(root.value("published_as", ""), 260);
+    out.cover = utf8_prefix(root.value("cover", ""), 4000);
     if (root.contains("off") && root.at("off").is_array() && root.at("off").size() <= 4000)
         for (const auto& name : root.at("off"))
             if (name.is_string() && !name.string().empty()) out.off.insert(name.string());

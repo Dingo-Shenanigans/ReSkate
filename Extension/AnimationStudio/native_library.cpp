@@ -519,9 +519,11 @@ void write_file(const std::filesystem::path& path, std::span<const std::byte> by
     {
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!out) throw std::runtime_error("Could not write " + path.filename().string());
+        if (!out) throw WriteFailed("could not write " + path.filename().string());
     }
-    std::filesystem::rename(temp, path);
+    std::error_code error;
+    std::filesystem::rename(temp, path, error);
+    if (error) throw WriteFailed("could not write " + path.filename().string() + ": " + error.message());
 }
 void write_text(const std::filesystem::path& path, const std::string& text) {
     write_file(path, std::span<const std::byte>(reinterpret_cast<const std::byte*>(text.data()), text.size()));
@@ -803,7 +805,7 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
             const auto text = r.le<std::uint32_t>(16), size = r.le<std::uint32_t>(20);
             const auto end = s + 1 < starts.size() ? starts[s + 1] : static_cast<std::int64_t>(ids.size());
             const auto count = end - starts[s];
-            require(count >= 0 && text == 32 + 32 * count && text + size <= blob.size(), "Unsupported cached DOF layout");
+            require(count >= 0 && text == 32 + 32 * count && std::uint64_t{text} + size <= blob.size(), "Unsupported cached DOF layout");
             for (std::int64_t j = 0; j < count; ++j) {
                 const auto at = r.le<std::uint32_t>(32 + static_cast<std::size_t>(j) * 32 + 12);
                 require(at < size, "DOF name outside layout");
@@ -938,6 +940,8 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
             entries.emplace_back(entry_category, label, pop, std::move(entry));
             ++report.clips;
         } catch (const Stopped&) {
+            throw;
+        } catch (const WriteFailed&) {
             throw;
         } catch (const Unsupported& e) {
             row.state = "unsupported";

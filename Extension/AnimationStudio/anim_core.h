@@ -10,6 +10,7 @@
 #include <optional>
 #include <limits>
 #include <memory>
+#include "utf8_text.h"
 
 // FOURTH Animation Studio's own data: a trick recorded from the game, and the keyframes a player puts
 // on it. Nothing here touches the game. The game side (anim_studio.cpp) copies the pose the native
@@ -162,8 +163,9 @@ struct Animation {
     // What the game said at takeoff when it was recorded: rolling fakie, and the board turned backwards
     // under him. Empty for recordings from before these were kept.
     std::optional<bool> fakie, board_backwards;
-    // A stance version of a trick (its fakie, switch or switch fakie copy) keeps the foot it leads with: the studio shows
-    // it in your own stance to edit, and puts it back on this foot when it is saved. Empty: whatever foot it was saved on.
+    // The foot a trick leads with, kept: the studio shows it in your own stance to edit, and puts it back on this foot
+    // when it is saved. Set on a stance version (its fakie, switch or switch fakie copy) and on any trick the studio
+    // shows mirrored. Empty: whatever foot it was saved on.
     std::optional<bool> keep_leads_right;
     // Which upgrade this file has had (empty: made before upgrades). Older builds ignore it.
     std::string upgraded;

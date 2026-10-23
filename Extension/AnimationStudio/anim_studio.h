@@ -59,6 +59,10 @@ struct View {
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
     bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
+    // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
+    // and its name. Opening another trick to edit drops it, so ask first.
+    bool kept_dirty{};
+    std::string kept_name;
     bool room{true}; // the studio opens in its room (studio_room.h)
     bool solo{};     // a turn moves one joint alone (set_solo)
     // Which way round the skater stands in the studio: 0 as the game has him, 1 regular, 2 goofy, and
@@ -251,7 +255,7 @@ void open_pack(const std::string& name); // the pack open in PACKS; "" for the l
 bool set_pack_on(const std::string& name, bool on, std::string& message);
 bool set_pack_member(const std::string& pack, const std::string& animation, bool in, std::string& message);
 // Where the pack has more than one of a trick and pop (`slot`, preset_slot): Fixed plays its first one,
-// Alternate the ones linked into its cycle, in turns.
+// Alternate one of the ones linked into its cycle each attempt, at random (never the same twice running).
 bool set_pack_mode(const std::string& pack, const std::string& slot, bool alternate, std::string& message);
 bool set_pack_fixed(const std::string& pack, const std::string& animation, std::string& message); // the one that plays
 bool set_pack_linked(const std::string& pack, const std::string& animation, bool linked, std::string& message);
@@ -304,8 +308,11 @@ bool share_pack(const std::string& pack, SharedPack& out, std::string& message);
 // It went up on Thunderstore as this version of this package (Team-Name): its next update goes to the same package.
 void pack_published(const std::string& pack, const std::string& version, const std::string& published_as);
 // One zip of packs put in the library (as IMPORT does, for the zip named): the MARKET's installs. `made`, when given,
-// gets the names the packs in it have in the library (a name already taken gets a number).
-bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made = nullptr);
+// gets the names the packs in it have in the library (a name already taken gets a number). `replace`: the pack an
+// earlier version of this package became (an UPDATE or a REINSTALL): it is replaced in place, under its name, staying
+// on or off as it was, and its tricks made elsewhere that no other pack has go first, so none is left as a copy.
+bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made = nullptr,
+                     const std::string& replace = {});
 std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
 // A trick in a pack switched off (it stays in the pack, but does not play) or on again.
