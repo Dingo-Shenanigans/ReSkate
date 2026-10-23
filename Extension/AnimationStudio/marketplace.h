@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -26,6 +27,27 @@ inline constexpr char category[] = "misc";
 inline constexpr char studio_url[] = "https://github.com/FourthStudio/ReSkate-Animator-Studio";
 inline constexpr char description_tag[] = "Animator Studio pack: ";
 
+// THE CREW: the testers who shaped the Animator Studio, by their Thunderstore team. Their packs are marked CREW, come
+// first in the shop's own picks, and each of them has a page of their own in the MARKET. Kept here, with the studio:
+// a new tester comes in with a new build.
+struct CrewMember {
+    std::string_view team, name, role, about;
+};
+inline constexpr std::array crew_members{
+    CrewMember{"Fourth_Studio", "Fourth", "Made the studio", "Fourth Studio: the Animator Studio, Board Break, Road Rash and a pile of cosmetics."},
+};
+// Packs the shop puts up front (FEATURED), by Team-Name, in this order. With none, or none of them out, it picks: the
+// crew's newest, then the most liked.
+inline constexpr std::array<std::string_view, 0> featured_packs{};
+inline const CrewMember* crew_member(std::string_view team) {
+    for (const auto& member : crew_members)
+        if (member.team.size() == team.size() && std::equal(team.begin(), team.end(), member.team.begin(), [](char a, char b) {
+                return (a >= 'A' && a <= 'Z' ? a + 32 : a) == (b >= 'A' && b <= 'Z' ? b + 32 : b);
+            }))
+            return &member;
+    return nullptr;
+}
+
 struct Pack {
     std::string full_name;      // Owner-Name
     std::string owner, name;    // the team, and the package's name
@@ -34,11 +56,19 @@ struct Pack {
     std::string description;    // its short description, without the studio's tag
     std::string icon_url, download_url, package_url;
     std::string updated;        // when its newest version came out ("2026-10-23")
+    std::string created;        // when it first came out ("2026-10-23"): TOP OF THE WEEK and OF THE MONTH go by it
     std::uint64_t downloads{};  // every version's together
     int rating{};
     std::string icon_file;      // its icon once downloaded (UTF-8 path), "" until then
-    bool favorite{}, mine{};
+    bool favorite{}, mine{};    // favorite: liked here (the heart)
+    bool crew{};                // made by one of THE CREW
     std::string installed;      // the version installed here, "" none
+    std::string installed_as;   // the pack it became in the library ("" not known: installed before this was kept)
+    // Its README, read in the background for every pack (so a search finds a pack by the tricks in it): what its maker
+    // says of it and its tricks, a line each. `readme` 0 not read yet, 1 being read, 2 read, 3 could not be read.
+    std::string about;
+    std::vector<std::string> tricks;
+    int readme{};
 };
 struct Detail {
     std::string full_name, version;
@@ -60,6 +90,7 @@ struct View {
     std::string error;
     std::vector<Pack> packs;
     std::string team; // the linked Thunderstore team, "" none
+    bool like_prompt{true}; // a like asks to like it on Thunderstore too
     Job job;
     Detail detail;
 };
@@ -69,16 +100,25 @@ void refresh(bool force);
 // Each pack's icon downloaded in the background, for the cards.
 void want_icons(const std::vector<std::string>& full_names);
 void load_detail(const std::string& full_name);
-void set_favorite(const std::string& full_name, bool on);
+// The packs' READMEs read in the background (kept on disk by version): a pack's `about` and `tricks` once read.
+void want_readmes(const std::vector<std::string>& full_names);
+void set_favorite(const std::string& full_name, bool on); // the heart: liked here
+// Whether a like asks to like the pack on Thunderstore too. (Thunderstore takes likes only from a person signed in on
+// its site, never from an app's token, so the studio opens the pack's page there for it.)
+void set_like_prompt(bool on);
+// The pack's page on Thunderstore, in the browser: thunderstore.io only.
+void open_page(const std::string& full_name);
 // Downloads the pack and puts it in the library (the studio's import), in the background.
 void install(const std::string& full_name);
 // Links a Thunderstore team for publishing: its name and a service account token of it.
 bool link_account(const std::string& team, const std::string& token, std::string& message);
 void unlink_account();
-// Builds the pack as a Thunderstore package and publishes it, in the background. `pack` is a pack of the library.
-void publish(const std::string& pack);
+// Builds the pack as a Thunderstore package and publishes it, in the background. `pack` is a pack of the library;
+// `version` the version it goes up as ("" the next one). A pack published before goes to the same package (an update);
+// `package` (Team-Name) names the package to update when the pack does not know it (one uploaded by hand).
+void publish(const std::string& pack, const std::string& version = {}, const std::string& package = {});
 // The same package written to the exports folder, to upload on thunderstore.io by hand. Returns its path, "" when not.
-std::string export_package(const std::string& pack, std::string& message);
+std::string export_package(const std::string& pack, std::string& message, const std::string& version = {});
 // Packs installed with the ReSkate launcher (Mods/<Team-Pack> holding reskate-animations.json): put in the library once
 // for each version. Any thread.
 void take_installed_mods();
@@ -150,6 +190,33 @@ inline std::string version_from_icon(std::string_view icon_url, std::string_view
     if (full_name.empty() || !file.starts_with(head) || !file.ends_with(".png")) return {};
     const auto version = file.substr(head.size(), file.size() - head.size() - 4);
     return plain_version(version) ? std::string(version) : std::string{};
+}
+
+// Whether version `a` comes after `b` (1.0.10 after 1.0.9). Versions not in that form come after nothing.
+inline bool version_after(const std::string& a, const std::string& b) {
+    int a1 = 0, a2 = 0, a3 = 0, b1 = 0, b2 = 0, b3 = 0;
+    if (!plain_version(a) || sscanf_s(a.c_str(), "%d.%d.%d", &a1, &a2, &a3) != 3) return false;
+    if (b.empty()) return true;
+    if (sscanf_s(b.c_str(), "%d.%d.%d", &b1, &b2, &b3) != 3) return true;
+    return a1 != b1 ? a1 > b1 : a2 != b2 ? a2 > b2 : a3 > b3;
+}
+// Days from 1970-01-01 to a date written 2026-10-23 (only its first ten letters are read); -1 when it is not one.
+inline long long day_number(std::string_view date) {
+    int y = 0, m = 0, d = 0;
+    if (date.size() < 10 || date[4] != '-' || date[7] != '-') return -1;
+    for (std::size_t i : {0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u})
+        if (date[i] < '0' || date[i] > '9') return -1;
+    y = (date[0] - '0') * 1000 + (date[1] - '0') * 100 + (date[2] - '0') * 10 + (date[3] - '0');
+    m = (date[5] - '0') * 10 + (date[6] - '0');
+    d = (date[8] - '0') * 10 + (date[9] - '0');
+    if (m < 1 || m > 12 || d < 1 || d > 31) return -1;
+    // Howard Hinnant's days_from_civil.
+    y -= m <= 2;
+    const long long era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);
+    const unsigned doy = (153 * (static_cast<unsigned>(m) + (m > 2 ? -3 : 9)) + 2) / 5 + static_cast<unsigned>(d) - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + static_cast<long long>(doe) - 719468;
 }
 
 // The next version: one past the one published last, else the pack's own.

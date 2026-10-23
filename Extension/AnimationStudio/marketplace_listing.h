@@ -49,6 +49,8 @@ inline std::vector<Pack> read_search(const std::string& text, std::string& next)
             if (!p.version.empty()) p.download_url = std::string(site) + "/package/download/" + p.owner + "/" + p.name + "/" + p.version + "/";
             p.package_url = std::string(site) + "/c/" + community + "/p/" + p.owner + "/" + p.name + "/";
             p.updated = str("last_updated").substr(0, 10);
+            p.created = str("datetime_created").substr(0, 10);
+            if (p.created.empty()) p.created = p.updated;
             p.downloads = static_cast<std::uint64_t>(std::max(0.0, num("download_count")));
             p.rating = static_cast<int>(std::max(0.0, num("rating_count")));
             out.push_back(std::move(p));

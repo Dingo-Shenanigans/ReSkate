@@ -45,7 +45,7 @@ constexpr std::array<Place, 3> kickflip_places{{
     {ui::bam_toc, ui::bam_bundle},
 }};
 
-constexpr std::size_t picture_count = 10, backdrop_index = 4, backdrop_right_index = 5, first_icon = 6;
+constexpr std::size_t picture_count = 12, backdrop_index = 4, backdrop_right_index = 5, first_icon = 6, market_index = 10, market_right_index = 11;
 constexpr std::array<const wchar_t*, 4> icon_names{L"studio", L"skater", L"tricks", L"packs"};
 constexpr std::array<const wchar_t*, 4> icon_resources{L"STUDIO_ICON_STUDIO", L"STUDIO_ICON_SKATER", L"STUDIO_ICON_TRICKS", L"STUDIO_ICON_PACKS"};
 struct Source {
@@ -55,7 +55,7 @@ struct Source {
 };
 constexpr std::array<Source, picture_count> sources{{
     {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152}, {nullptr, 0}, {nullptr, 0},
-    {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0},
+    {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0},
 }};
 using Images = std::array<std::optional<frostbite::Image>, picture_count>;
 
@@ -121,6 +121,21 @@ std::optional<frostbite::Image> read_backdrop() {
                          out->width, out->height, own ? path.string() : std::string("the one built in"));
     else logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: no loading picture was read.");
     return out;
+}
+// The MARKET's wallpaper: market.jpg (or .png) beside the tricks' folder when there is one, else the one built in
+// (assets/animator_studio/market.jpg). Kept at up to 1920 across: it is shown dimmed behind the shop.
+std::optional<frostbite::Image> read_market() {
+    const auto folder = backdrop_path().parent_path();
+    std::vector<unsigned char> bytes;
+    std::error_code error;
+    for (const auto* name : {L"market.jpg", L"market.png"})
+        if (const auto own = folder / name; !folder.empty() && std::filesystem::is_regular_file(own, error)) {
+            std::ifstream in(own, std::ios::binary);
+            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            break;
+        }
+    if (bytes.empty()) bytes = built_in(L"STUDIO_MARKET");
+    return decode_bytes(bytes, 1920.0f, 1080.0f);
 }
 // One of SETTINGS' icons: icons/<name>.png beside the tricks' folder when there is one, else the one built in.
 std::optional<frostbite::Image> read_icon(std::size_t which) {
@@ -190,7 +205,14 @@ Images decode() {
                 }
                 continue;
             }
-            if (index == backdrop_right_index) continue; // filled with its left half
+            if (index == backdrop_right_index || index == market_right_index) continue; // filled with its left half
+            if (index == market_index) {
+                if (const auto whole = read_market()) {
+                    result[market_index] = half_of(*whole, false);
+                    result[market_right_index] = half_of(*whole, true);
+                }
+                continue;
+            }
             if (index >= first_icon) {
                 result[index] = read_icon(index - first_icon);
                 continue;
@@ -339,11 +361,11 @@ bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 m
     draw->AddImage(loaded().atlas->TexID, min, max, a, b, tint);
     return true;
 }
-bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+static bool draw_halves_cover(ImDrawList* draw, StudioPicture left_picture, StudioPicture right_picture, ImVec2 min, ImVec2 max, ImU32 tint) {
     Found left, right;
-    if (!find(StudioPicture::backdrop, left) || !find(StudioPicture::backdrop_right, right)) return false;
-    const auto& left_size = loaded().sizes[static_cast<std::size_t>(StudioPicture::backdrop)];
-    const auto& right_size = loaded().sizes[static_cast<std::size_t>(StudioPicture::backdrop_right)];
+    if (!find(left_picture, left) || !find(right_picture, right)) return false;
+    const auto& left_size = loaded().sizes[static_cast<std::size_t>(left_picture)];
+    const auto& right_size = loaded().sizes[static_cast<std::size_t>(right_picture)];
     const float whole_w = static_cast<float>(left_size.first + right_size.first), whole_h = static_cast<float>(left_size.second);
     const float box_w = max.x - min.x, box_h = max.y - min.y;
     if (!(whole_w > 0 && whole_h > 0 && box_w > 0 && box_h > 0)) return false;
@@ -372,6 +394,12 @@ bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 
     piece(left, 0, static_cast<float>(left_size.first), 0, texel);
     piece(right, static_cast<float>(left_size.first), whole_w, texel, 0);
     return true;
+}
+bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+    return draw_halves_cover(draw, StudioPicture::backdrop, StudioPicture::backdrop_right, min, max, tint);
+}
+bool draw_studio_market_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+    return draw_halves_cover(draw, StudioPicture::market, StudioPicture::market_right, min, max, tint);
 }
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {
     Found found;

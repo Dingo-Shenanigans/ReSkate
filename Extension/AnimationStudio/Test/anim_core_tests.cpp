@@ -80,6 +80,19 @@ void market_package_words() {
     check(found[1].full_name == "Someone-Bare" && found[1].version.empty() && found[1].icon_url.empty(),
           "A pack with nothing but its name is kept, its version to be asked for");
     check(next == "https://thunderstore.io/api/cyberstorm/listing/reskate/?page=2&q=Animator", "The next page's address is read");
+    check(found[0].created == "2026-10-23" && found[1].created.empty(), "When a pack came out is read");
+    // An update has to go past what is up.
+    check(version_after("1.0.1", "1.0.0") && version_after("1.0.10", "1.0.9") && version_after("2.0.0", "1.9.9") && !version_after("1.0.0", "1.0.0") &&
+              !version_after("0.9.0", "1.0.0") && version_after("1.0.0", "") && !version_after("1.0", "") && !version_after("x", "1.0.0"),
+          "Versions are compared number by number");
+    check(day_number("2026-10-23") - day_number("2026-10-16") == 7 && day_number("2026-03-01") - day_number("2026-02-28") == 1 &&
+              day_number("1970-01-01") == 0 && day_number("2026-10-23T09:56:44Z") == day_number("2026-10-23") && day_number("") == -1 &&
+              day_number("2026-13-01") == -1,
+          "Dates count in days");
+    check(crew_member("fourth_studio") != nullptr && crew_member("Someone") == nullptr, "THE CREW is found by team, in any case");
+    pack.published = "1.0.0";
+    pack.published_as = "Fourth_Studio-Street";
+    check(read_pack_json(pack_json(pack)).published_as == "Fourth_Studio-Street", "A pack keeps the package it went up as");
 }
 
 // Packs: tricks switched off, a maker's lock, the playlist, and a trick's stance versions.

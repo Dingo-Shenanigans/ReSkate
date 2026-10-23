@@ -59,6 +59,7 @@ struct PresetPack {
     std::string description;       // what its maker says of it, shown wherever it is shared (MARKET, an import)
     std::string version{"1.0.0"};  // its version on Thunderstore: the next published is this, or one past it
     std::string published;         // the version last published from this PC, "" never
+    std::string published_as;      // the Thunderstore package it went up as (Team-Name): an update goes to the same one
     bool alternates(const std::string& slot) const {
         const auto found = slot_alternate.find(slot);
         return found != slot_alternate.end() ? found->second : alternate;
@@ -299,6 +300,7 @@ inline Json pack_json(const PresetPack& pack) {
     if (!pack.description.empty()) out["description"] = pack.description;
     if (pack.version != "1.0.0") out["release"] = pack.version; // "version" is the file format
     if (!pack.published.empty()) out["published"] = pack.published;
+    if (!pack.published_as.empty()) out["published_as"] = pack.published_as;
     return out;
 }
 inline PresetPack read_pack_json(const Json& root) {
@@ -330,6 +332,7 @@ inline PresetPack read_pack_json(const Json& root) {
     out.description = root.value("description", "").substr(0, 2000);
     out.version = root.value("release", "1.0.0").substr(0, 32);
     out.published = root.value("published", "").substr(0, 32);
+    out.published_as = root.value("published_as", "").substr(0, 260);
     if (root.contains("off") && root.at("off").is_array() && root.at("off").size() <= 4000)
         for (const auto& name : root.at("off"))
             if (name.is_string() && !name.string().empty()) out.off.insert(name.string());

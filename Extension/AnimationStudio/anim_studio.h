@@ -313,14 +313,17 @@ bool set_pack_description(const std::string& pack, const std::string& descriptio
 // be: a trick in it made by someone else, or nothing saved in it.
 struct SharedPack {
     std::string name, made_by, description, version, published;
+    std::string published_as; // the Thunderstore package it went up as (Team-Name), "" none
     std::vector<std::pair<std::string, std::string>> files; // path in the zip, bytes
     std::vector<std::string> tricks;
     std::string picture;
 };
 bool share_pack(const std::string& pack, SharedPack& out, std::string& message);
-void pack_published(const std::string& pack, const std::string& version); // it went up on Thunderstore as this version
-// One zip of packs put in the library (as IMPORT does, for the zip named): the MARKET's installs.
-bool import_pack_zip(const std::filesystem::path& zip, std::string& message);
+// It went up on Thunderstore as this version of this package (Team-Name): its next update goes to the same package.
+void pack_published(const std::string& pack, const std::string& version, const std::string& published_as);
+// One zip of packs put in the library (as IMPORT does, for the zip named): the MARKET's installs. `made`, when given,
+// gets the names the packs in it have in the library (a name already taken gets a number).
+bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made = nullptr);
 std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
 // A trick in a pack switched off (it stays in the pack, but does not play) or on again.

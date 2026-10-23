@@ -5862,7 +5862,8 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
     return out;
 }
 } // namespace
-bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message); // below
+bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
+                        std::vector<std::string>* made_packs = nullptr); // below
 bool share_pack(const std::string& pack_name, SharedPack& out, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -5874,6 +5875,7 @@ bool share_pack(const std::string& pack_name, SharedPack& out, std::string& mess
         out.description = shared.pack.description;
         out.version = shared.pack.version;
         out.published = shared.pack.published;
+        out.published_as = shared.pack.published_as;
         out.files = std::move(shared.files);
         out.tricks = std::move(shared.tricks);
         std::error_code error;
@@ -5886,13 +5888,14 @@ bool share_pack(const std::string& pack_name, SharedPack& out, std::string& mess
         return false;
     }
 }
-void pack_published(const std::string& pack_name, const std::string& version) {
+void pack_published(const std::string& pack_name, const std::string& version, const std::string& published_as) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     std::string message = pack_name + " " + version + " is on Thunderstore.";
     (void)change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
         pack.version = version;
         pack.published = version;
+        if (!published_as.empty()) pack.published_as = published_as;
     });
 }
 bool set_pack_description(const std::string& pack_name, const std::string& description, std::string& message) {
@@ -5901,10 +5904,10 @@ bool set_pack_description(const std::string& pack_name, const std::string& descr
     message = "Description saved.";
     return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) { pack.description = description.substr(0, 2000); });
 }
-bool import_pack_zip(const std::filesystem::path& zip, std::string& message) {
+bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    return import_zips_locked(s, {zip}, false, message);
+    return import_zips_locked(s, {zip}, false, message, made);
 }
 std::filesystem::path studio_folder() { return library_folder(); }
 std::filesystem::path pack_export_folder() {
@@ -5941,7 +5944,8 @@ bool export_pack(const std::string& pack_name, std::string& message) {
     }
 }
 
-bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message);
+bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
+                        std::vector<std::string>* made_packs);
 bool import_packs(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -5963,7 +5967,8 @@ bool import_packs(std::string& message) {
 // Takes in `zips` (moved into the inbox's imported folder after, with `move_done`): every animation, pack and picture in
 // them checked first, names already taken given the next variation. A Thunderstore package's own files (manifest.json,
 // reskate-animations.json, icon.png, README.md) are passed over.
-bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message) {
+bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
+                        std::vector<std::string>* made_packs) {
     const auto folder = library_folder();
     const auto inbox = pack_import_folder(s);
     std::error_code error;
@@ -6069,6 +6074,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
             for (auto& [pack_name, text] : pack_files) {
                 auto pack = read_pack_json(Json::parse(text));
                 pack.published.clear(); // its maker's, not this PC's
+                pack.published_as.clear();
                 for (auto& [slot, list] : pack.slots)
                     for (auto& name : list)
                         if (const auto r = rename.find(name); r != rename.end()) name = r->second;
@@ -6078,6 +6084,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     target = variation_name(file_safe(pack_name), n);
                 }
                 pack.name = target;
+                if (made_packs) made_packs->push_back(target);
                 write_preset_file(folder / L"presets" / (target + ".json"), pack_json(pack).dump(2));
                 if (const auto picture = pack_pictures.find(pack_name); picture != pack_pictures.end())
                     write_preset_file(pack_thumbnail_file(target), picture->second);

@@ -239,9 +239,18 @@ struct Package {
 };
 // A pack as a Thunderstore package: manifest.json, icon.png, README.md and the studio's marker at the top, the pack's
 // own files (its pack file and picture, its tricks) under them, as EXPORT lays them out.
-Package build_package(const SharedPack& pack, const std::string& version) {
+// The package a pack goes up as: the one it went up as before (an update, even after the pack is renamed), else one named
+// after it.
+std::string package_of(const SharedPack& pack, const std::string& team) {
+    if (const auto dash = pack.published_as.find('-'); dash != std::string::npos) {
+        const auto owner = pack.published_as.substr(0, dash), name = pack.published_as.substr(dash + 1);
+        if (plain_name(owner) && plain_name(name) && (team.empty() || _stricmp(owner.c_str(), team.c_str()) == 0)) return name;
+    }
+    return package_name(pack.name);
+}
+Package build_package(const SharedPack& pack, const std::string& version, const std::string& team) {
     Package out;
-    out.name = package_name(pack.name);
+    out.name = package_of(pack, team);
     out.version = version;
     std::string summary = pack.description.substr(0, pack.description.find('\n'));
     if (summary.empty()) summary = std::to_string(pack.tricks.size()) + " tricks made in the ReSkate Animator Studio.";
@@ -281,12 +290,22 @@ struct Market {
     bool ever{};
     std::set<std::string> favorites;
     std::map<std::string, std::string> installed; // full name (or "mod:<folder>") -> version
+    std::map<std::string, std::string> installed_as; // full name -> the pack it became in the library
+    bool like_prompt{true};
     std::string team;
     Job job;
     Detail detail;
     std::deque<std::string> icon_queue;
     std::set<std::string> icons_asked;
     bool icon_worker{};
+    struct Readme {
+        std::string version, about;
+        std::vector<std::string> tricks;
+        int state{}; // 1 being read, 2 read, 3 could not be read
+    };
+    std::map<std::string, Readme> readmes; // full name -> its README, for the version read
+    std::deque<std::string> readme_queue;
+    bool readme_worker{};
     bool settings_read{};
 };
 Market& market() {
@@ -295,10 +314,12 @@ Market& market() {
 }
 void save_lists_locked(const Market& m) {
     try {
-        Json favorites = Json::array(), installed = Json::object();
+        Json favorites = Json::array(), installed = Json::object(), installed_as = Json::object();
         for (const auto& f : m.favorites) favorites.push_back(f);
         for (const auto& [name, version] : m.installed) installed[name] = version;
-        write_file(folder() / L"market.json", Json{{"favorites", std::move(favorites)}, {"installed", std::move(installed)}}.dump(2));
+        for (const auto& [name, pack] : m.installed_as) installed_as[name] = pack;
+        write_file(folder() / L"market.json", Json{{"favorites", std::move(favorites)}, {"installed", std::move(installed)},
+                                                   {"installed_as", std::move(installed_as)}, {"like_prompt", m.like_prompt}}.dump(2));
     } catch (...) {}
 }
 void read_settings_locked(Market& m) {
@@ -313,6 +334,10 @@ void read_settings_locked(Market& m) {
             if (root.contains("installed") && root.at("installed").is_object())
                 for (const auto& [name, version] : root.at("installed").items())
                     if (version.is_string()) m.installed[name] = version.string();
+            if (root.contains("installed_as") && root.at("installed_as").is_object())
+                for (const auto& [name, pack] : root.at("installed_as").items())
+                    if (pack.is_string()) m.installed_as[name] = pack.string();
+            m.like_prompt = root.value("like_prompt", true);
         }
         if (const auto text = read_file(account_file()); !text.empty()) m.team = Json::parse(text).value("team", "");
     } catch (...) {}
@@ -340,6 +365,8 @@ std::vector<Pack> read_listing(const std::string& text) {
             p.download_url = newest.value("download_url", "");
             p.package_url = package.value("package_url", "");
             p.updated = newest.value("date_created", "").substr(0, 10);
+            p.created = package.value("date_created", "").substr(0, 10);
+            if (p.created.empty()) p.created = p.updated;
             p.rating = static_cast<int>(package.value("rating_score", 0.0));
             for (const auto& v : package.at("versions")) p.downloads += static_cast<std::uint64_t>(std::max(0.0, v.value("downloads", 0.0)));
             if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
@@ -371,7 +398,8 @@ std::string packs_json(const std::vector<Pack>& packs) {
     for (const auto& p : packs)
         out.push_back(Json{{"full_name", p.full_name}, {"owner", p.owner}, {"name", p.name}, {"version", p.version},
                            {"description", p.description}, {"icon_url", p.icon_url}, {"download_url", p.download_url},
-                           {"package_url", p.package_url}, {"updated", p.updated}, {"downloads", p.downloads}, {"rating", p.rating}});
+                           {"package_url", p.package_url}, {"updated", p.updated}, {"created", p.created}, {"downloads", p.downloads},
+                           {"rating", p.rating}});
     return out.dump(2);
 }
 std::vector<Pack> read_packs_json(const std::string& text) {
@@ -393,6 +421,7 @@ std::vector<Pack> read_packs_json(const std::string& text) {
             p.download_url = j.value("download_url", "");
             p.package_url = j.value("package_url", "");
             p.updated = j.value("updated", "");
+            p.created = j.value("created", p.updated);
             p.downloads = static_cast<std::uint64_t>(std::max(0.0, j.value("downloads", 0.0)));
             p.rating = static_cast<int>(j.value("rating", 0.0));
             if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
@@ -460,6 +489,47 @@ void icon_worker() {
         else std::filesystem::remove(temporary, error);
     }
 }
+// The READMEs, one after another: from disk when this version's was read before, else from Thunderstore.
+std::filesystem::path readme_path(const std::string& full_name, const std::string& version) {
+    return folder() / L"readmes" / widen(full_name + "-" + version + ".md");
+}
+void readme_worker() {
+    auto& m = market();
+    for (;;) {
+        std::string full_name, owner, name, version;
+        {
+            std::lock_guard lock(m.mutex);
+            if (m.readme_queue.empty()) {
+                m.readme_worker = false;
+                return;
+            }
+            full_name = m.readme_queue.front();
+            m.readme_queue.pop_front();
+            const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == full_name; });
+            if (found == m.packs.end() || !plain_name(found->owner) || !plain_name(found->name) || !plain_version(found->version)) continue;
+            owner = found->owner, name = found->name, version = found->version;
+        }
+        Market::Readme readme;
+        readme.version = version;
+        const auto path = readme_path(full_name, version);
+        std::string markdown = read_file(path);
+        if (markdown.empty()) {
+            const auto text = https::get_text(widen(std::string(site) + "/api/experimental/package/" + owner + "/" + name + "/" + version + "/readme/"),
+                                              1024 * 1024, 30, agent);
+            try {
+                if (text) markdown = Json::parse(*text).value("markdown", "");
+                if (!markdown.empty()) write_file(path, markdown);
+            } catch (...) { markdown.clear(); }
+        }
+        if (markdown.empty()) readme.state = 3;
+        else {
+            read_readme(markdown, readme.about, readme.tricks);
+            readme.state = 2;
+        }
+        std::lock_guard lock(m.mutex);
+        m.readmes[full_name] = std::move(readme);
+    }
+}
 void start_job(const std::string& what, std::function<void(Job&)> work) {
     auto& m = market();
     {
@@ -503,6 +573,7 @@ View view() {
     v.loading = m.loading;
     v.error = m.error;
     v.team = m.team;
+    v.like_prompt = m.like_prompt;
     v.job = m.job;
     v.detail = m.detail;
     v.packs = m.packs;
@@ -511,6 +582,13 @@ View view() {
         p.favorite = m.favorites.contains(p.full_name);
         p.mine = !m.team.empty() && _stricmp(p.owner.c_str(), m.team.c_str()) == 0;
         if (const auto found = m.installed.find(p.full_name); found != m.installed.end()) p.installed = found->second;
+        if (const auto found = m.installed_as.find(p.full_name); found != m.installed_as.end()) p.installed_as = found->second;
+        if (const auto found = m.readmes.find(p.full_name); found != m.readmes.end() && found->second.version == p.version) {
+            p.about = found->second.about;
+            p.tricks = found->second.tricks;
+            p.readme = found->second.state;
+        }
+        p.crew = crew_member(p.owner) != nullptr;
         if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
     }
     return v;
@@ -527,6 +605,16 @@ void refresh(bool force) {
                 if (const auto text = read_file(folder() / L"packs.json"); !text.empty()) m.packs = read_packs_json(text);
                 else if (const auto old = read_file(folder() / L"listing.json"); !old.empty()) m.packs = read_listing(old);
             } catch (...) {}
+            for (const auto& p : m.packs) {
+                // What was read before, from disk, so the search has it at once.
+                Market::Readme readme;
+                readme.version = p.version;
+                if (const auto markdown = read_file(readme_path(p.full_name, p.version)); !markdown.empty()) {
+                    read_readme(markdown, readme.about, readme.tricks);
+                    readme.state = 2;
+                    m.readmes[p.full_name] = std::move(readme);
+                }
+            }
         }
         // Fetched again when the MARKET is opened a minute or more after the last time (Thunderstore's search is up to
         // date within a minute), or when asked.
@@ -568,6 +656,15 @@ void refresh(bool force) {
             m.error = error;
             if (error.empty()) m.packs = std::move(packs);
         }
+        {
+            std::vector<std::string> names;
+            {
+                std::lock_guard lock(m.mutex);
+                for (const auto& p : m.packs)
+                    if (names.size() < 400) names.push_back(p.full_name);
+            }
+            want_readmes(names);
+        }
         take_installed_mods();
     }).detach();
 }
@@ -586,6 +683,24 @@ void want_icons(const std::vector<std::string>& full_names) {
     if (!m.icon_queue.empty() && !m.icon_worker) {
         m.icon_worker = true;
         std::thread(icon_worker).detach();
+    }
+}
+void want_readmes(const std::vector<std::string>& full_names) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    for (const auto& name : full_names) {
+        const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == name; });
+        if (found == m.packs.end()) continue;
+        auto& readme = m.readmes[name];
+        if (readme.version == found->version && readme.state != 0) continue; // read, or being read
+        readme = {};
+        readme.version = found->version;
+        readme.state = 1;
+        m.readme_queue.push_back(name);
+    }
+    if (!m.readme_queue.empty() && !m.readme_worker) {
+        m.readme_worker = true;
+        std::thread(readme_worker).detach();
     }
 }
 void load_detail(const std::string& full_name) {
@@ -627,6 +742,24 @@ void set_favorite(const std::string& full_name, bool on) {
     if (on) m.favorites.insert(full_name);
     else m.favorites.erase(full_name);
     save_lists_locked(m);
+}
+void set_like_prompt(bool on) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    read_settings_locked(m);
+    m.like_prompt = on;
+    save_lists_locked(m);
+}
+void open_page(const std::string& full_name) {
+    std::string url;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == full_name; });
+        if (found == m.packs.end()) return;
+        url = found->package_url;
+    }
+    if (url.starts_with(std::string(site) + "/")) ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 void install(const std::string& full_name) {
     Pack pack;
@@ -676,13 +809,15 @@ void install(const std::string& full_name) {
         }
         progress(0.95f);
         std::string message;
-        const bool ok = import_pack_zip(zip, message);
+        std::vector<std::string> made;
+        const bool ok = import_pack_zip(zip, message, &made);
         std::filesystem::remove(zip, error);
         if (!ok) throw std::runtime_error(message);
         auto& m = market();
         {
             std::lock_guard lock(m.mutex);
             m.installed[pack.full_name] = pack.version;
+            if (!made.empty()) m.installed_as[pack.full_name] = made.front();
             save_lists_locked(m);
         }
         result.message = "Installed " + pack.title + " " + pack.version + ". " + message;
@@ -725,13 +860,15 @@ void unlink_account() {
     std::lock_guard lock(m.mutex);
     m.team.clear();
 }
-std::string export_package(const std::string& pack_name, std::string& message) {
+std::string export_package(const std::string& pack_name, std::string& message, const std::string& version) {
     try {
         SharedPack pack;
         if (!share_pack(pack_name, pack, message)) return {};
         const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         Package package;
-        try { package = build_package(pack, next_version(pack.version, pack.published)); } catch (...) {
+        try {
+            package = build_package(pack, plain_version(version) ? version : next_version(pack.version, pack.published), market().team);
+        } catch (...) {
             if (SUCCEEDED(com)) CoUninitialize();
             throw;
         }
@@ -746,7 +883,7 @@ std::string export_package(const std::string& pack_name, std::string& message) {
         return {};
     }
 }
-void publish(const std::string& pack_name) {
+void publish(const std::string& pack_name, const std::string& wanted_version, const std::string& wanted_package) {
     std::string team;
     {
         auto& m = market();
@@ -754,7 +891,7 @@ void publish(const std::string& pack_name) {
         read_settings_locked(m);
         team = m.team;
     }
-    start_job("Publishing " + pack_name, [pack_name, team](Job& result) {
+    start_job("Publishing " + pack_name, [pack_name, team, wanted_version, wanted_package](Job& result) {
         if (team.empty()) throw std::runtime_error("Link your Thunderstore team first (MARKET > SIGN IN).");
         const auto token = read_token();
         if (token.empty()) throw std::runtime_error("Your Thunderstore token is missing: link your team again.");
@@ -762,8 +899,13 @@ void publish(const std::string& pack_name) {
         SharedPack pack;
         std::string message;
         if (!share_pack(pack_name, pack, message)) throw std::runtime_error(message);
-        const auto version = next_version(pack.version, pack.published);
-        const auto package = build_package(pack, version);
+        if (pack.published_as.empty() && !wanted_package.empty()) pack.published_as = wanted_package;
+        const auto version = wanted_version.empty() ? next_version(pack.version, pack.published) : wanted_version;
+        if (!plain_version(version) || std::count(version.begin(), version.end(), '.') != 2)
+            throw std::runtime_error("A version is three numbers with dots between them, as 1.0.1.");
+        if (!pack.published.empty() && !version_after(version, pack.published))
+            throw std::runtime_error("Thunderstore takes an update only with a higher version than " + pack.published + ".");
+        const auto package = build_package(pack, version, team);
         progress(0.1f);
         const auto api = std::string(site) + "/api/experimental/";
         // 1. Where to put it.
@@ -823,9 +965,10 @@ void publish(const std::string& pack_name) {
         submit["upload_uuid"] = uuid;
         const auto submitted = request(L"POST", api + "submission/submit/", {auth, L"Content-Type: application/json"}, submit.dump(), 180000);
         if (submitted.status != 200 && submitted.status != 201) throw std::runtime_error("Thunderstore did not take the pack: " + said(submitted));
-        pack_published(pack_name, version);
+        pack_published(pack_name, version, team + "-" + package.name);
         result.url = std::string(site) + "/c/" + community + "/p/" + team + "/" + package.name + "/";
-        result.message = "Published " + pack.name + " " + version + " to Thunderstore as " + team + "-" + package.name + ". It shows in MARKET once Thunderstore has listed it.";
+        result.message = (pack.published.empty() ? "Published " : "Updated ") + pack.name + " to " + version + " on Thunderstore as " + team + "-" +
+                         package.name + ". It shows in the MARKET within a minute.";
         progress(1);
         refresh(true);
     });

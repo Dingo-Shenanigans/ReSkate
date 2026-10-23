@@ -179,18 +179,29 @@ struct Ui {
     bool menu{true};
     bool was_open{};  // the studio was open last frame
     int menu_tab{0};  // 0 TRICKS, 1 PACKS, 2 MARKET, 3 SETTINGS
-    // MARKET: what is shown (all, downloads, new, rated, favorites, installed, mine), the search, the pack open beside the
-    // grid, and the cards over it (sign in, share).
-    std::string market_list{"all"};
+    // MARKET, the shop: the part shown (featured, browse, crew, liked, installed, mine), BROWSE's order and whether it
+    // shows only the crew's, the search, the pack whose page is open, the crew member whose page is open, the spotlight's
+    // pick and since when, the wall's fade, and the cards over it (sign in, share, liked).
+    std::string market_list{"featured"};
+    std::string market_sort{"top"};
+    bool market_crew_only{};
     std::array<char, 64> market_query{};
+    std::string market_query_seen;
     std::string market_open;
+    std::string market_crew;
     float market_scroll{}, market_detail_scroll{}, market_lists_scroll{};
+    int spotlight{};
+    double spotlight_since{};
+    float market_fade{};
+    std::string like_pack; // the LIKED! card's pack ("" closed)
     bool sign_in{};
     std::array<char, 64> ts_team{};
     std::array<char, 512> ts_token{};
-    std::string share_pack;                   // the pack the SHARE card is for ("" closed)
+    std::string share_pack;                   // the pack the SHARE (or UPDATE) card is for ("" closed)
     std::array<char, 2001> share_description{};
     std::string share_description_for;
+    std::array<char, 64> share_version{};     // the version it goes up as
+    std::string share_version_for;
     float menu_fade{}; // eased in as it comes up
     bool blocked{};   // a card or the round menu is over the editor: the skater and the timeline take no clicks
     // TRICKS: the kind shown ("*mine" MY TRICKS, "*assets" the game's animation tree, or a category) and the saved trick
@@ -2152,7 +2163,7 @@ void step_joint(int by) {
 bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
-           !u.share_pack.empty();
+           !u.share_pack.empty() || !u.like_pack.empty();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -2181,6 +2192,7 @@ bool close_card(const studio::View& v) {
     else if (u.conflicts_open) conflicts_done(v);
     else if (!u.stance_pack.empty()) u.stance_pack.clear();
     else if (u.sign_in) u.sign_in = false;
+    else if (!u.like_pack.empty()) u.like_pack.clear();
     else if (!u.share_pack.empty()) u.share_pack.clear();
     else if (u.save_card) u.save_card = false;
     else if (!v.test_returned.empty()) studio::clear_test_returned();
@@ -2210,6 +2222,26 @@ void menu_back(const studio::View& v) {
     if (u.menu_tab == 3 && u.settings_page >= 0) {
         u.settings_page = -1;
         return;
+    }
+    if (u.menu_tab == 2) {
+        if (!u.market_open.empty()) {
+            u.market_open.clear();
+            return;
+        }
+        if (!u.market_crew.empty()) {
+            u.market_crew.clear();
+            u.market_scroll = 0;
+            return;
+        }
+        if (u.market_query[0]) {
+            u.market_query.fill(0);
+            return;
+        }
+        if (u.market_list != "featured") {
+            u.market_list = "featured";
+            u.market_scroll = 0;
+            return;
+        }
     }
     if (u.menu_tab == 1 && u.pack_page) {
         u.pack_page = false;
@@ -3760,6 +3792,25 @@ ImU32 accent_of(const std::string& name) {
     return colours[hash % colours.size()];
 }
 // Its picture, or a cover drawn for it: its initials on a strip of tape in its colour.
+// A pack's package on Thunderstore while it is up there: the one it was published as, else one of the linked team's named
+// after it (a pack uploaded by hand). nullptr when it is not up, or the listing does not have it yet.
+const studio::market::Pack* live_package(const studio::market::View& m, const studio::View::PackView& pack) {
+    for (const auto& p : m.packs)
+        if (!pack.pack.published_as.empty() ? _stricmp(p.full_name.c_str(), pack.pack.published_as.c_str()) == 0
+                                             : p.mine && p.name == studio::market::package_name(pack.name))
+            return &p;
+    return nullptr;
+}
+// Whether the pack is on Thunderstore already: SHARE is UPDATE then.
+bool pack_is_published(const studio::market::View& m, const studio::View::PackView& pack) {
+    return !pack.pack.published.empty() || !pack.pack.published_as.empty() || live_package(m, pack) != nullptr;
+}
+// The version an update goes up as: one past the highest out, published from here or up on Thunderstore.
+std::string next_update_version(const studio::market::View& m, const studio::View::PackView& pack) {
+    std::string last = pack.pack.published;
+    if (const auto* live = live_package(m, pack); live && studio::market::version_after(live->version, last)) last = live->version;
+    return last.empty() ? pack.pack.version : studio::market::next_version(last, last);
+}
 void pack_cover(ImDrawList* d, const Fonts& f, const studio::View::PackView& pack, ImVec2 a, ImVec2 b) {
     ImTextureID texture{};
     ImVec2 uv0{}, uv1{};
@@ -4065,9 +4116,11 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             say(m);
         }
         y += 46 * k;
-        if (action(d, f, "##export", ImVec2(x, y), ImVec2(half, 38 * k), "SHARE", Look::paper)) {
+        const bool published = pack_is_published(studio::market::view(), pack);
+        if (action(d, f, "##export", ImVec2(x, y), ImVec2(half, 38 * k), published ? "UPDATE" : "SHARE", published ? Look::blue : Look::paper)) {
             u.share_pack = pack.name;
             u.share_description_for.clear();
+            u.share_version_for.clear();
         }
         const std::string confirm = "pack:" + pack.name;
         if (action(d, f, "##deletepack", ImVec2(x + half + 8 * k, y), ImVec2(half, 38 * k), u.confirm_delete == confirm ? "AGAIN TO DELETE" : "DELETE", Look::danger)) {
@@ -4419,15 +4472,31 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     }
     end_region(d, pa, pb, qy + u.playlist_pick_scroll - pa.y, u.playlist_pick_scroll, k);
 }
-// ---- MARKET --------------------------------------------------------------------------------------
-// Animation packs made in the studio and shared on Thunderstore: searched, sorted (most downloaded, newest, top rated),
-// starred, opened beside the grid with what is in them, and installed in a press; and the player's own published there.
+// ---- MARKET: the shop ----------------------------------------------------------------------------
+// Animation packs made in the studio and shared on Thunderstore, laid out as a shop: up front a spotlight and the top of
+// the week, then shelves (the month's best, everyone's favorites, the crew's, the newest); BROWSE for every pack; THE
+// CREW, with a page for each tester; and what you liked, installed and put up. The search is always at the top and
+// finds a pack by its name, its maker or a trick in it. A pack's own page has what is in it, the heart and GET.
+using MarketPack = studio::market::Pack;
+using PackList = std::vector<const MarketPack*>;
 std::string thousands(std::uint64_t n) {
     auto text = std::to_string(n);
     for (int i = static_cast<int>(text.size()) - 3; i > 0; i -= 3) text.insert(static_cast<std::size_t>(i), ",");
     return text;
 }
-void market_icon(ImDrawList* d, const Fonts& f, const studio::market::Pack& pack, ImVec2 a, ImVec2 b) {
+// A count as shops write it: 999, 1.2K, 12K, 1.2M.
+std::string short_count(std::uint64_t n) {
+    char buffer[32]{};
+    if (n < 1000) return std::to_string(n);
+    if (n < 10000) {
+        std::snprintf(buffer, sizeof buffer, "%.1fK", static_cast<double>(n) / 1000.0);
+        return buffer;
+    }
+    if (n < 1000000) return std::to_string(n / 1000) + "K";
+    std::snprintf(buffer, sizeof buffer, "%.1fM", static_cast<double>(n) / 1000000.0);
+    return buffer;
+}
+void market_icon(ImDrawList* d, const Fonts& f, const MarketPack& pack, ImVec2 a, ImVec2 b) {
     ImTextureID texture{};
     ImVec2 uv0{}, uv1{};
     if (!pack.icon_file.empty() && detail::studio_pack_picture("market|" + pack.full_name + "|" + pack.version, texture, uv0, uv1)) {
@@ -4438,222 +4507,894 @@ void market_icon(ImDrawList* d, const Fonts& f, const studio::market::Pack& pack
     drawn.name = pack.title;
     pack_cover(d, f, drawn, a, b);
 }
-void market_detail(ImDrawList* d, const Fonts& f, const studio::market::View& m, const studio::market::Pack& pack, ImVec2 a, ImVec2 b) {
+// ---- the shop's little drawings: a heart (likes), a download arrow, a magnifier, a sticker ----
+void heart_icon(ImDrawList* d, ImVec2 c, float s, ImU32 colour, bool filled) {
+    constexpr float pi = 3.14159265f;
+    const float r = s * 0.27f, cy = c.y - s * 0.1f;
+    const ImVec2 left(c.x - r * 0.95f, cy), right(c.x + r * 0.95f, cy), tip(c.x, c.y + s * 0.42f);
+    if (filled) {
+        d->AddCircleFilled(left, r, colour, 18);
+        d->AddCircleFilled(right, r, colour, 18);
+        d->AddTriangleFilled(ImVec2(left.x - r * 0.81f, cy + r * 0.59f), ImVec2(right.x + r * 0.81f, cy + r * 0.59f), tip, colour);
+        d->AddTriangleFilled(ImVec2(left.x - r * 0.97f, cy + r * 0.2f), ImVec2(right.x + r * 0.97f, cy + r * 0.2f), ImVec2(c.x, cy + r * 1.4f), colour);
+        return;
+    }
+    // Round its two lobes from the lower left, over the top, to the lower right, and down to its point.
+    d->PathArcTo(left, r, pi * 0.8f, pi * 1.9f, 14);
+    d->PathArcTo(right, r, pi * 1.1f, pi * 2.2f, 14);
+    d->PathLineTo(tip);
+    d->PathStroke(colour, ImDrawFlags_Closed, std::max(1.4f, s * 0.1f));
+}
+void download_icon(ImDrawList* d, ImVec2 c, float s, ImU32 colour) {
+    const float t = std::max(1.4f, s * 0.13f);
+    d->AddLine(ImVec2(c.x, c.y - s * 0.45f), ImVec2(c.x, c.y + s * 0.02f), colour, t);
+    d->AddTriangleFilled(ImVec2(c.x - s * 0.3f, c.y - s * 0.04f), ImVec2(c.x + s * 0.3f, c.y - s * 0.04f), ImVec2(c.x, c.y + s * 0.3f), colour);
+    d->AddLine(ImVec2(c.x - s * 0.42f, c.y + s * 0.45f), ImVec2(c.x + s * 0.42f, c.y + s * 0.45f), colour, t);
+}
+void search_icon(ImDrawList* d, ImVec2 c, float s, ImU32 colour) {
+    const float t = std::max(1.5f, s * 0.12f);
+    d->AddCircle(ImVec2(c.x - s * 0.08f, c.y - s * 0.08f), s * 0.3f, colour, 20, t);
+    d->AddLine(ImVec2(c.x + s * 0.14f, c.y + s * 0.14f), ImVec2(c.x + s * 0.42f, c.y + s * 0.42f), colour, t * 1.3f);
+}
+// A sticker on a cover or by a name: CREW, NEW, INSTALLED. Returns its width.
+float sticker(ImDrawList* d, const Fonts& f, ImVec2 at, const std::string& label, ImU32 fill, ImU32 ink, float size = 11) {
+    const float k = f.k, fs = size * k;
+    const auto t = text_size(f.heading, fs, label.c_str());
+    const ImVec2 b(at.x + t.x + 14 * k, at.y + fs + 10 * k);
+    skate_theme::rough_rect(d, at, b, fill, seed_of(at), k * 0.5f);
+    text(d, f.heading, fs, ImVec2(at.x + 7 * k, at.y + (b.y - at.y - t.y) * 0.5f), ink, label);
+    return b.x - at.x;
+}
+float sticker_width(const Fonts& f, const std::string& label, float size = 11) { return text_size(f.heading, size * f.k, label.c_str()).x + 14 * f.k; }
+// A part's name on the blue brush, with what it is beside it. Returns the brush's right edge.
+float shelf_title(ImDrawList* d, const Fonts& f, ImVec2 at, const std::string& title, const std::string& about) {
+    const float k = f.k;
+    const auto t = text_size(f.heading, 19 * k, title.c_str());
+    const ImVec2 ta(at.x, at.y), tb(at.x + t.x + 38 * k, at.y + 40 * k);
+    if (!draw_studio_brush(d, ta, tb, blue)) skate_theme::rough_rect(d, ta, tb, blue, seed_of(ta), k);
+    text(d, f.heading, 19 * k, ImVec2(ta.x + 19 * k, ta.y + (40 * k - t.y) * 0.5f), white, title);
+    if (!about.empty()) text(d, f.bold, 13 * k, ImVec2(tb.x + 14 * k, at.y + 13 * k), soft, about);
+    return tb.x;
+}
+// ---- what the shop knows of a pack ----
+std::uint64_t score_of(const MarketPack& p) { return p.downloads + 25ull * static_cast<std::uint64_t>(std::max(0, p.rating)); }
+long long days_old(const MarketPack& p) {
+    const auto today = std::chrono::duration_cast<std::chrono::hours>(std::chrono::system_clock::now().time_since_epoch()).count() / 24;
+    const auto day = studio::market::day_number(p.created.empty() ? p.updated : p.created);
+    return day < 0 ? 1000000 : today - day;
+}
+bool is_new(const MarketPack& p) { return days_old(p) <= 7; }
+PackList sorted(PackList list, const std::string& order) {
+    const auto when = [](const MarketPack* p) -> const std::string& { return p->created.empty() ? p->updated : p->created; };
+    if (order == "new") std::stable_sort(list.begin(), list.end(), [&](const auto* a, const auto* b) { return when(a) > when(b); });
+    else if (order == "liked")
+        std::stable_sort(list.begin(), list.end(), [](const auto* a, const auto* b) { return a->rating != b->rating ? a->rating > b->rating : a->downloads > b->downloads; });
+    else if (order == "az") std::stable_sort(list.begin(), list.end(), [](const auto* a, const auto* b) { return _stricmp(a->title.c_str(), b->title.c_str()) < 0; });
+    else if (order == "downloads") std::stable_sort(list.begin(), list.end(), [](const auto* a, const auto* b) { return a->downloads > b->downloads; });
+    else std::stable_sort(list.begin(), list.end(), [](const auto* a, const auto* b) { return score_of(*a) > score_of(*b); });
+    return list;
+}
+bool same_team(const std::string& a, std::string_view b) { return a.size() == b.size() && _strnicmp(a.c_str(), b.data(), b.size()) == 0; }
+// Installed from the MARKET, but its pack is no longer in the library (deleted in PACKS): it can be put back.
+bool removed_here(const studio::View& v, const MarketPack& p) {
+    if (p.installed.empty()) return false;
+    if (!p.installed_as.empty()) return pack_named(v, p.installed_as) == nullptr;
+    // Installed before what it became was kept: a pack of its name.
+    for (const auto& pack : v.packs)
+        if (studio::market::package_name(pack.name) == p.name || _stricmp(pack.name.c_str(), p.title.c_str()) == 0) return false;
+    return true;
+}
+struct GetButton {
+    std::string label;
+    bool enabled{};
+};
+GetButton get_button(const studio::View& v, const studio::market::View& m, const MarketPack& p) {
+    if (m.job.running)
+        return {m.job.what.find(p.title) != std::string::npos ? std::to_string(static_cast<int>(m.job.fraction * 100)) + "%" : "BUSY...", false};
+    if (p.installed.empty()) return {"GET IT", true};
+    if (removed_here(v, p)) return {"REINSTALL", true};
+    if (p.installed != p.version) return {"UPDATE TO " + p.version, true};
+    return {"INSTALLED", false};
+}
+void state_sticker(ImDrawList* d, const Fonts& f, const studio::View& v, const MarketPack& p, ImVec2 at) {
+    if (p.installed.empty()) return;
+    if (removed_here(v, p)) sticker(d, f, at, "REMOVED", IM_COL32(64, 66, 72, 245), white);
+    else if (p.installed != p.version) sticker(d, f, at, "UPDATE", skate_theme::warning, IM_COL32(18, 18, 20, 255));
+    else sticker(d, f, at, "INSTALLED", IM_COL32(36, 150, 76, 255), white);
+}
+bool pack_matches(const MarketPack& p, const std::vector<std::string>& terms) {
+    if (terms.empty()) return true;
+    std::string words = p.title + " " + p.owner + " " + p.description + " " + p.about;
+    for (const auto& trick : p.tricks) words += " " + trick;
+    return studio::native_search_matches(studio::native_search_key(words), terms);
+}
+// The covers the page drew: their icons fetched, and up to 30 of them shown (the picture texture holds 32).
+struct Covers {
+    std::vector<std::string> names;
+    std::vector<std::pair<std::string, std::string>> pictures;
+    void add(const MarketPack& p) {
+        if (std::find(names.begin(), names.end(), p.full_name) == names.end()) names.push_back(p.full_name);
+        if (p.icon_file.empty() || pictures.size() >= 30) return;
+        auto key = "market|" + p.full_name + "|" + p.version;
+        for (const auto& x : pictures)
+            if (x.first == key) return;
+        pictures.emplace_back(std::move(key), p.icon_file);
+    }
+    void ask() {
+        studio::market::want_icons(names);
+        std::sort(pictures.begin(), pictures.end()); // the same covers in another order are the same ask
+        detail::want_studio_pack_pictures(pictures);
+    }
+};
+void open_market_pack(const MarketPack& p) {
+    auto& u = ui();
+    u.market_open = p.full_name;
+    u.market_detail_scroll = 0;
+    studio::market::want_readmes({p.full_name});
+}
+// The heart: liked here (LIKED), and, once liked, the offer to like it on Thunderstore too.
+void like_pack(const studio::market::View& m, const MarketPack& p) {
+    studio::market::set_favorite(p.full_name, !p.favorite);
+    if (!p.favorite && m.like_prompt) ui().like_pack = p.full_name;
+    else say(p.favorite ? p.title + " is out of LIKED." : "Liked " + p.title + ": it is in LIKED.");
+}
+// LIKE / LIKED, the heart and its word, on a pack's page and the spotlight.
+void like_button(ImDrawList* d, const Fonts& f, const studio::market::View& m, const MarketPack& p, const char* id, ImVec2 at, ImVec2 size) {
+    const float k = f.k;
+    const ImVec2 b(at.x + size.x, at.y + size.y);
+    bool lit = false;
+    const bool pressed = hit(id, at, b, &lit);
+    if (p.favorite) skate_theme::rough_rect(d, at, b, lit ? IM_COL32(255, 255, 255, 255) : IM_COL32(236, 236, 232, 250), seed_of(at), k * 0.7f);
+    else {
+        d->AddRectFilled(at, b, lit ? IM_COL32(255, 255, 255, 30) : IM_COL32(255, 255, 255, 0), 3 * k);
+        d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 150 : 70), 3 * k, 0, 1.4f * k);
+    }
+    const ImU32 ink = p.favorite ? blue : white;
+    const std::string label = p.favorite ? "LIKED" : "LIKE";
+    const float fs = std::min(16 * k, size.y * 0.42f);
+    const auto t = text_size(f.bold, fs, label.c_str());
+    const float x0 = at.x + (size.x - (28 * k + t.x)) * 0.5f;
+    heart_icon(d, ImVec2(x0 + 10 * k, at.y + size.y * 0.5f), 20 * k, ink, p.favorite);
+    text(d, f.bold, fs, ImVec2(x0 + 28 * k, at.y + (size.y - t.y) * 0.5f), ink, label);
+    if (lit && nav().keys) chosen_outline(d, at, b, k);
+    if (pressed) like_pack(m, p);
+}
+// ---- a pack on a shelf or in a grid ----
+float product_card_height(const Fonts& f, float w) { return w + 70 * f.k; }
+// Its cover with stickers on it (CREW, NEW, INSTALLED, how many tricks), its name and maker, its likes and downloads, and
+// the heart. Pressed, its page opens. Hovered, it lifts off the shelf.
+void product_card(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const MarketPack& p, ImVec2 a, float w,
+                  Covers& covers) {
+    const float k = f.k, h = product_card_height(f, w), pad = 8 * k, hr = 16 * k;
+    covers.add(p);
+    ImGui::PushID(p.full_name.c_str());
+    const ImVec2 hc(a.x + w - pad - 22 * k, a.y + pad + 22 * k);
+    bool heart_lit = false, lit = false;
+    // The heart first: it lies on the card, and of two things on top of each other the first takes the mouse.
+    const bool hearted = hit("##heart", ImVec2(hc.x - hr, hc.y - hr), ImVec2(hc.x + hr, hc.y + hr), &heart_lit);
+    const bool pressed = hit("##card", a, ImVec2(a.x + w, a.y + h), &lit);
+    const float lift = lit || heart_lit ? 4 * k : 0;
+    const ImVec2 ca(a.x, a.y - lift), cb(a.x + w, a.y + h - lift);
+    if (lift > 0) d->AddRectFilled(ImVec2(ca.x + 5 * k, ca.y + 9 * k), ImVec2(cb.x + 5 * k, cb.y + 9 * k), IM_COL32(0, 0, 0, 130), 6 * k);
+    skate_theme::rough_rect(d, ca, cb, lift > 0 ? IM_COL32(32, 34, 40, 252) : IM_COL32(20, 21, 25, 244), seed_of(a), k * 0.7f);
+    const float side = w - 2 * pad;
+    const ImVec2 ia(ca.x + pad, ca.y + pad), ib(ia.x + side, ia.y + side);
+    market_icon(d, f, p, ia, ib);
+    float sx = ia.x + 6 * k;
+    if (p.crew) sx += sticker(d, f, ImVec2(sx, ia.y + 6 * k), "CREW", white, blue) + 4 * k;
+    if (is_new(p)) sticker(d, f, ImVec2(sx, ia.y + 6 * k), "NEW", blue, white);
+    state_sticker(d, f, v, p, ImVec2(ia.x + 6 * k, ib.y - 27 * k));
+    if (!p.tricks.empty()) {
+        const auto count = std::to_string(p.tricks.size()) + (p.tricks.size() == 1 ? " TRICK" : " TRICKS");
+        sticker(d, f, ImVec2(ib.x - 6 * k - sticker_width(f, count), ib.y - 27 * k), count, IM_COL32(10, 10, 12, 220), white);
+    }
+    const ImVec2 hcl(hc.x, hc.y - lift);
+    d->AddCircleFilled(hcl, hr, heart_lit ? IM_COL32(0, 0, 0, 235) : IM_COL32(0, 0, 0, 165), 24);
+    heart_icon(d, ImVec2(hcl.x, hcl.y + 1 * k), hr * 1.1f, p.favorite ? blue_light : white, p.favorite);
+    text(d, f.heading, 15 * k, ImVec2(ia.x, ib.y + 9 * k), white, elide(f.heading, 15 * k, upper(p.title), side));
+    text(d, f.bold, 12 * k, ImVec2(ia.x, ib.y + 30 * k), p.crew ? blue_light : soft, elide(f.bold, 12 * k, "by " + p.owner, side));
+    const float sy = ib.y + 49 * k;
+    const auto likes = short_count(static_cast<std::uint64_t>(std::max(0, p.rating)));
+    heart_icon(d, ImVec2(ia.x + 7 * k, sy + 7 * k), 14 * k, soft, true);
+    text(d, f.bold, 12 * k, ImVec2(ia.x + 18 * k, sy), soft, likes);
+    const float dx = ia.x + 18 * k + text_size(f.bold, 12 * k, likes.c_str()).x + 14 * k;
+    download_icon(d, ImVec2(dx + 6 * k, sy + 7 * k), 13 * k, soft);
+    text(d, f.bold, 12 * k, ImVec2(dx + 17 * k, sy), soft, short_count(p.downloads));
+    if (lift > 0) d->AddRect(ca, cb, IM_COL32(1, 131, 255, 200), 3 * k, 0, 2 * k);
+    if ((lit || heart_lit) && nav().keys) chosen_outline(d, ca, cb, k);
+    ImGui::PopID();
+    if (hearted) like_pack(m, p);
+    else if (pressed) open_market_pack(p);
+}
+// Packs in rows across `width`, as many to a row as fit; only the rows between `top` and `bottom` are drawn. Returns how
+// tall it came out.
+float pack_grid(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const PackList& packs, ImVec2 at, float width,
+                float top, float bottom, Covers& covers) {
+    const float k = f.k, gap = 18 * k;
+    const std::size_t columns = static_cast<std::size_t>(std::max(1, static_cast<int>((width + gap) / (200 * k + gap))));
+    const float w = (width - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+    const float h = product_card_height(f, w);
+    for (std::size_t i = 0; i < packs.size(); ++i) {
+        const ImVec2 ca(at.x + static_cast<float>(i % columns) * (w + gap), at.y + static_cast<float>(i / columns) * (h + gap));
+        if (ca.y + h < top || ca.y > bottom) continue;
+        product_card(d, f, v, m, *packs[i], ca, w, covers);
+    }
+    return static_cast<float>((packs.size() + columns - 1) / columns) * (h + gap);
+}
+// ---- a shelf: a row of packs across the page ----
+struct ShelfState {
+    float at{}, target{}; // the first card shown, eased to where it is going
+};
+std::unordered_map<std::string, ShelfState>& shelves() {
+    static auto* s = new std::unordered_map<std::string, ShelfState>;
+    return *s;
+}
+float shelf_height(const Fonts& f) { return 54 * f.k + product_card_height(f, 206 * f.k) + 34 * f.k; }
+// Its name and what it is, SEE ALL (BROWSE in its order, or another part of the shop), and arrows when there are more than
+// fit. Nothing when it is empty. Returns how tall it came out.
+float shelf(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const char* id, const std::string& title,
+            const std::string& about, const PackList& packs, ImVec2 at, float width, const std::function<void()>& see_all, float top, float bottom,
+            Covers& covers) {
+    if (packs.empty()) return 0;
+    const float k = f.k, gap = 18 * k, cw = 206 * k, ch = product_card_height(f, cw), height = shelf_height(f);
+    if (at.y > bottom || at.y + height < top) return height; // off the page: only its room is kept
+    auto& s = shelves()[id];
+    const int fit = std::max(1, static_cast<int>((width + gap) / (cw + gap)));
+    const float most = static_cast<float>(std::max(0, static_cast<int>(packs.size()) - fit));
+    ImGui::PushID(id);
+    shelf_title(d, f, at, title, about);
+    float rx = at.x + width;
+    if (see_all) {
+        rx -= 112 * k;
+        if (action(d, f, "##seeall", ImVec2(rx, at.y + 2 * k), ImVec2(112 * k, 36 * k), "SEE ALL", Look::ghost)) see_all();
+        rx -= 10 * k;
+    }
+    if (static_cast<int>(packs.size()) > fit) {
+        rx -= 40 * k;
+        if (action(d, f, "##next", ImVec2(rx, at.y + 2 * k), ImVec2(40 * k, 36 * k), ">", Look::dark, s.target < most))
+            s.target = std::min(most, s.target + static_cast<float>(fit));
+        rx -= 46 * k;
+        if (action(d, f, "##back", ImVec2(rx, at.y + 2 * k), ImVec2(40 * k, 36 * k), "<", Look::dark, s.target > 0))
+            s.target = std::max(0.0f, s.target - static_cast<float>(fit));
+    }
+    // The pad's choice on a card past either end brings the shelf round to it.
+    for (std::size_t i = 0; i < packs.size() && nav().keys; ++i) {
+        ImGui::PushID(packs[i]->full_name.c_str());
+        const bool chosen = nav().focus == ImGui::GetID("##card") || nav().focus == ImGui::GetID("##heart");
+        ImGui::PopID();
+        if (!chosen) continue;
+        const float index = static_cast<float>(i);
+        if (index < s.target) s.target = index;
+        else if (index >= s.target + static_cast<float>(fit)) s.target = index - static_cast<float>(fit) + 1;
+    }
+    s.target = std::clamp(s.target, 0.0f, most);
+    s.at += (s.target - s.at) * std::min(1.0f, ImGui::GetIO().DeltaTime * 12);
+    if (std::abs(s.target - s.at) < 0.002f) s.at = s.target;
+    const float row_y = at.y + 54 * k;
+    ImGui::PushClipRect(ImVec2(at.x - 6 * k, row_y - 12 * k), ImVec2(at.x + width + 6 * k, row_y + ch + 16 * k), true);
+    for (std::size_t i = 0; i < packs.size(); ++i) {
+        const float x = at.x + (static_cast<float>(i) - s.at) * (cw + gap);
+        if (x + cw < at.x - 6 * k || x > at.x + width + 6 * k) continue;
+        product_card(d, f, v, m, *packs[i], ImVec2(x, row_y), cw, covers);
+    }
+    ImGui::PopClipRect();
+    // Past either end, the cards fade into the wall.
+    if (s.at > 0.01f)
+        d->AddRectFilledMultiColor(ImVec2(at.x - 6 * k, row_y - 12 * k), ImVec2(at.x + 40 * k, row_y + ch + 16 * k), IM_COL32(8, 9, 11, 200),
+                                   IM_COL32(8, 9, 11, 0), IM_COL32(8, 9, 11, 0), IM_COL32(8, 9, 11, 200));
+    if (s.at < most - 0.01f)
+        d->AddRectFilledMultiColor(ImVec2(at.x + width - 40 * k, row_y - 12 * k), ImVec2(at.x + width + 6 * k, row_y + ch + 16 * k), IM_COL32(8, 9, 11, 0),
+                                   IM_COL32(8, 9, 11, 200), IM_COL32(8, 9, 11, 200), IM_COL32(8, 9, 11, 0));
+    ImGui::PopID();
+    return height;
+}
+// ---- the spotlight: the shop's picks, one at a time, taped up big ----
+void tilted_cover(ImDrawList* d, const Fonts& f, const MarketPack& p, ImVec2 c, float side, float angle) {
+    const float k = f.k, s = std::sin(angle), co = std::cos(angle), h = side * 0.5f, edge = h + 7 * k;
+    const auto at = [&](float x, float y, float dx = 0, float dy = 0) { return ImVec2(c.x + x * co - y * s + dx, c.y + x * s + y * co + dy); };
+    d->AddQuadFilled(at(-edge, -edge, 12 * k, 16 * k), at(edge, -edge, 12 * k, 16 * k), at(edge, edge, 12 * k, 16 * k), at(-edge, edge, 12 * k, 16 * k),
+                     IM_COL32(0, 0, 0, 140));
+    d->AddQuadFilled(at(-edge, -edge), at(edge, -edge), at(edge, edge), at(-edge, edge), IM_COL32(238, 238, 234, 255));
+    ImTextureID texture{};
+    ImVec2 uv0{}, uv1{};
+    if (!p.icon_file.empty() && detail::studio_pack_picture("market|" + p.full_name + "|" + p.version, texture, uv0, uv1))
+        d->AddImageQuad(texture, at(-h, -h), at(h, -h), at(h, h), at(-h, h), uv0, ImVec2(uv1.x, uv0.y), uv1, ImVec2(uv0.x, uv1.y));
+    else market_icon(d, f, p, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h));
+    // A strip of tape over its top edge.
+    const float tw = side * 0.34f, th = 26 * k;
+    d->AddQuadFilled(at(-tw * 0.5f, -edge - th * 0.45f), at(tw * 0.5f, -edge - th * 0.45f), at(tw * 0.5f, -edge + th * 0.55f), at(-tw * 0.5f, -edge + th * 0.55f),
+                     IM_COL32(236, 232, 214, 175));
+}
+void spotlight(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const PackList& picks, ImVec2 a, ImVec2 b,
+               Covers& covers) {
     auto& u = ui();
     const float k = f.k;
-    skate_theme::rough_rect(d, a, b, IM_COL32(18, 19, 22, 250), seed_of(a), k);
-    if (action(d, f, "##marketclose", ImVec2(b.x - 52 * k, a.y + 14 * k), ImVec2(38 * k, 34 * k), "X", Look::ghost)) {
+    skate_theme::rough_rect(d, a, b, IM_COL32(12, 13, 16, 238), seed_of(a), k);
+    if (picks.empty()) {
+        text(d, f.title, 44 * k, ImVec2(a.x + 40 * k, a.y + 40 * k), white, "THE TRICK SHOP");
+        paragraph(d, f.bold, 16 * k, ImVec2(a.x + 42 * k, a.y + 110 * k), b.x - a.x - 84 * k, soft,
+                  m.loading ? "Reading Thunderstore..." : "No packs out yet. Be the first: open a pack in PACKS and press SHARE.");
+        return;
+    }
+    const double now = ImGui::GetTime();
+    if (u.spotlight >= static_cast<int>(picks.size()) || u.spotlight < 0) u.spotlight = 0;
+    // It turns to the next pick every few seconds, and holds while the mouse is on it.
+    if (ImGui::IsMouseHoveringRect(a, b) || u.spotlight_since <= 0) u.spotlight_since = now;
+    else if (picks.size() > 1 && now - u.spotlight_since > 7) {
+        u.spotlight = (u.spotlight + 1) % static_cast<int>(picks.size());
+        u.spotlight_since = now;
+    }
+    const auto& p = *picks[static_cast<std::size_t>(u.spotlight)];
+    covers.add(p);
+    const float side = std::min(b.y - a.y - 70 * k, (b.x - a.x) * 0.4f);
+    const ImVec2 cc(b.x - 44 * k - side * 0.5f, (a.y + b.y) * 0.5f + 6 * k);
+    d->AddRectFilledMultiColor(a, ImVec2(cc.x, b.y), IM_COL32(1, 131, 255, 44), IM_COL32(1, 131, 255, 0), IM_COL32(1, 131, 255, 0), IM_COL32(1, 131, 255, 44));
+    theme::halftone(d, ImVec2(a.x + 18 * k, b.y - 64 * k), 16, 4, IM_COL32(255, 255, 255, 20));
+    tilted_cover(d, f, p, cc, side, -0.045f);
+    if (hit("##spotcover", ImVec2(cc.x - side * 0.5f, cc.y - side * 0.5f), ImVec2(cc.x + side * 0.5f, cc.y + side * 0.5f))) open_market_pack(p);
+    const float x = a.x + 40 * k, w = cc.x - side * 0.5f - 56 * k - x;
+    float y = a.y + 28 * k;
+    float sx = x;
+    sx += sticker(d, f, ImVec2(sx, y), "SPOTLIGHT", blue, white, 12) + 6 * k;
+    if (p.crew) sx += sticker(d, f, ImVec2(sx, y), "CREW PICK", white, blue, 12) + 6 * k;
+    if (is_new(p)) sticker(d, f, ImVec2(sx, y), "NEW", IM_COL32(255, 255, 255, 40), white, 12);
+    // Which pick, and the others to jump to.
+    for (std::size_t i = 0; picks.size() > 1 && i < picks.size(); ++i) {
+        const ImVec2 dc(x + w - static_cast<float>(picks.size() - i) * 20 * k + 8 * k, y + 12 * k);
+        ImGui::PushID(static_cast<int>(i));
+        bool lit = false;
+        if (hit("##spotdot", ImVec2(dc.x - 9 * k, dc.y - 9 * k), ImVec2(dc.x + 9 * k, dc.y + 9 * k), &lit)) {
+            u.spotlight = static_cast<int>(i);
+            u.spotlight_since = now;
+        }
+        ImGui::PopID();
+        const bool on = static_cast<int>(i) == u.spotlight;
+        d->AddCircleFilled(dc, on ? 6 * k : 4.5f * k, on ? blue_light : IM_COL32(255, 255, 255, lit ? 200 : 90), 16);
+    }
+    y += 40 * k;
+    // Its name, as big as fits in two lines.
+    const auto title = upper(p.title);
+    float ts = 58 * k;
+    while (ts > 30 * k && f.title->CalcTextSizeA(ts, FLT_MAX, w, title.c_str()).y > ts * 2.4f) ts -= 4 * k;
+    y += paragraph(d, f.title, ts, ImVec2(x, y), w, white, title) + 2 * k;
+    text(d, f.heading, 15 * k, ImVec2(x, y), blue_light, "BY " + upper(p.owner));
+    y += 30 * k;
+    const float by = b.y - 78 * k;
+    {
+        const auto about = p.about.empty() ? p.description : p.about;
+        const float box = std::max(0.0f, std::min(3 * 21 * k, by - 54 * k - y));
+        ImGui::PushClipRect(ImVec2(x, y), ImVec2(x + w, y + box), true);
+        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, IM_COL32(220, 222, 228, 255), about.empty() ? "An animation pack made in the Animator Studio." : about);
+        ImGui::PopClipRect();
+    }
+    // Its numbers, over the buttons.
+    {
+        float nx = x;
+        const float ny = by - 34 * k;
+        const auto add = [&](const std::string& value, const char* word, int icon) {
+            if (icon == 0) heart_icon(d, ImVec2(nx + 8 * k, ny + 9 * k), 16 * k, blue_light, true);
+            else if (icon == 1) download_icon(d, ImVec2(nx + 8 * k, ny + 9 * k), 15 * k, blue_light);
+            const float tx = nx + (icon >= 0 ? 22 * k : 0);
+            text(d, f.heading, 15 * k, ImVec2(tx, ny), white, value);
+            const float vw = text_size(f.heading, 15 * k, value.c_str()).x;
+            text(d, f.bold, 12 * k, ImVec2(tx + vw + 6 * k, ny + 2 * k), soft, word);
+            nx = tx + vw + 6 * k + text_size(f.bold, 12 * k, word).x + 24 * k;
+        };
+        add(short_count(static_cast<std::uint64_t>(std::max(0, p.rating))), "LIKES", 0);
+        add(short_count(p.downloads), "DOWNLOADS", 1);
+        if (!p.tricks.empty()) add(std::to_string(p.tricks.size()), "TRICKS", -1);
+    }
+    const auto g = get_button(v, m, p);
+    if (action(d, f, "##spotget", ImVec2(x, by), ImVec2(200 * k, 50 * k), g.label, Look::blue, g.enabled)) studio::market::install(p.full_name);
+    if (action(d, f, "##spotview", ImVec2(x + 210 * k, by), ImVec2(150 * k, 50 * k), "VIEW PACK", Look::ghost)) open_market_pack(p);
+    like_button(d, f, m, p, "##spotlike", ImVec2(x + 370 * k, by), ImVec2(130 * k, 50 * k));
+}
+// ---- a chart: the top five, ranked ----
+void top_chart(ImDrawList* d, const Fonts& f, const std::string& title, const std::string& empty, const PackList& packs, ImVec2 a, ImVec2 b,
+               Covers& covers) {
+    const float k = f.k;
+    skate_theme::rough_rect(d, a, b, IM_COL32(12, 13, 16, 238), seed_of(a), k);
+    shelf_title(d, f, ImVec2(a.x + 20 * k, a.y + 18 * k), title, "");
+    float y = a.y + 74 * k;
+    if (packs.empty()) {
+        paragraph(d, f.bold, 14 * k, ImVec2(a.x + 24 * k, y), b.x - a.x - 48 * k, soft, empty);
+        return;
+    }
+    const std::size_t count = std::min<std::size_t>(5, packs.size());
+    const float row = std::min(66 * k, (b.y - y - 14 * k) / static_cast<float>(count));
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& p = *packs[i];
+        covers.add(p);
+        const ImVec2 ra(a.x + 12 * k, y), rb(b.x - 12 * k, y + row - 6 * k);
+        const float mid = (ra.y + rb.y) * 0.5f;
+        ImGui::PushID(p.full_name.c_str());
+        bool lit = false;
+        if (hit("##chartrow", ra, rb, &lit)) open_market_pack(p);
+        ImGui::PopID();
+        if (lit) skate_theme::rough_rect(d, ra, rb, IM_COL32(255, 255, 255, 20), seed_of(ra), k * 0.5f);
+        const auto rank = std::to_string(i + 1);
+        const auto rs = text_size(f.title, 34 * k, rank.c_str());
+        text(d, f.title, 34 * k, ImVec2(ra.x + 24 * k - rs.x * 0.5f, mid - rs.y * 0.5f), i == 0 ? blue_light : white, rank);
+        const float icon = rb.y - ra.y - 8 * k;
+        const ImVec2 ia(ra.x + 50 * k, ra.y + 4 * k);
+        market_icon(d, f, p, ia, ImVec2(ia.x + icon, ia.y + icon));
+        const auto downloads = short_count(p.downloads);
+        const auto dw = text_size(f.bold, 13 * k, downloads.c_str());
+        const float tx = ia.x + icon + 12 * k, tw = rb.x - tx - dw.x - 40 * k;
+        text(d, f.heading, 14 * k, ImVec2(tx, mid - 19 * k), white, elide(f.heading, 14 * k, upper(p.title), tw));
+        text(d, f.bold, 12 * k, ImVec2(tx, mid + 2 * k), p.crew ? blue_light : soft, elide(f.bold, 12 * k, "by " + p.owner, tw));
+        download_icon(d, ImVec2(rb.x - 22 * k - dw.x, mid), 13 * k, soft);
+        text(d, f.bold, 13 * k, ImVec2(rb.x - 10 * k - dw.x, mid - dw.y * 0.5f), soft, downloads);
+        if (lit && nav().keys) chosen_outline(d, ra, rb, k);
+        y += row;
+    }
+}
+// ---- the parts of the shop ----
+void see_browse(const char* order) {
+    auto& u = ui();
+    u.market_list = "browse";
+    u.market_sort = order;
+    u.market_scroll = 0;
+}
+void featured_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const PackList& all, ImVec2 a, ImVec2 b,
+                   Covers& covers) {
+    auto& u = ui();
+    const float k = f.k;
+    // The shop's picks: the ones named up front, else the crew's newest and then the best liked, five at most.
+    PackList picks;
+    for (const auto name : studio::market::featured_packs)
+        for (const auto* p : all)
+            if (p->full_name == name) picks.push_back(p);
+    if (picks.empty()) {
+        PackList crew;
+        for (const auto* p : all)
+            if (p->crew) crew.push_back(p);
+        for (const auto* p : sorted(crew, "new"))
+            if (picks.size() < 2) picks.push_back(p);
+        for (const auto* p : sorted(all, "top"))
+            if (picks.size() < 5 && std::find(picks.begin(), picks.end(), p) == picks.end()) picks.push_back(p);
+    }
+    PackList week, month, crew_packs;
+    for (const auto* p : all) {
+        const auto age = days_old(*p);
+        if (age <= 7) week.push_back(p);
+        if (age <= 31) month.push_back(p);
+        if (p->crew) crew_packs.push_back(p);
+    }
+    week = sorted(week, "top");
+    month = sorted(month, "top");
+    begin_region(72, a, b, u.market_scroll, k);
+    float y = a.y + 6 * k - u.market_scroll;
+    const float width = b.x - a.x - 14 * k;
+    const float hero_h = 390 * k, chart_w = std::min(480 * k, width * 0.34f);
+    if (y + hero_h > a.y) {
+        spotlight(d, f, v, m, picks, ImVec2(a.x, y), ImVec2(a.x + width - chart_w - 18 * k, y + hero_h), covers);
+        top_chart(d, f, "TOP OF THE WEEK", "Nothing new came out this week yet. Make the first: share a pack from PACKS.", week,
+                  ImVec2(a.x + width - chart_w, y), ImVec2(a.x + width, y + hero_h), covers);
+    }
+    y += hero_h + 34 * k;
+    const auto row = [&](const char* id, const std::string& title, const std::string& about, const PackList& list, std::function<void()> see_all) {
+        const float h = shelf(d, f, v, m, id, title, about, list, ImVec2(a.x, y), width, see_all, a.y, b.y, covers);
+        if (h > 0) y += h;
+    };
+    row("month", "TOP OF THE MONTH", "The most downloaded and liked of this month's packs", month, [] { see_browse("top"); });
+    row("liked", "ALL-TIME FAVORITES", "The packs with the most likes, ever", sorted(all, "liked"), [] { see_browse("liked"); });
+    row("crew", "FROM THE CREW", "Packs by the testers who shaped the studio", sorted(crew_packs, "new"), [] {
+        ui().market_list = "crew";
+        ui().market_crew.clear();
+        ui().market_scroll = 0;
+    });
+    row("new", "NEW DROPS", "Just out", sorted(all, "new"), [] { see_browse("new"); });
+    if (all.size() >= 8) row("downloads", "MOST DOWNLOADED", "", sorted(all, "downloads"), [] { see_browse("downloads"); });
+    end_region(d, a, b, y + u.market_scroll - a.y + 10 * k, u.market_scroll, k);
+}
+// A grid of packs under a heading: BROWSE (with its orders), LIKED, INSTALLED, MY UPLOADS, a search's results.
+void grid_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const std::string& heading, const std::string& about,
+               PackList list, bool orders, const std::string& empty, ImVec2 a, ImVec2 b, Covers& covers) {
+    auto& u = ui();
+    const float k = f.k;
+    float y = a.y;
+    text(d, f.title, 36 * k, ImVec2(a.x, y - 6 * k), white, heading);
+    const float hw = text_size(f.title, 36 * k, heading.c_str()).x;
+    if (orders) {
+        static const std::array<const char*, 5> keys{"top", "downloads", "new", "liked", "az"};
+        int chosen = 0;
+        for (std::size_t i = 0; i < keys.size(); ++i)
+            if (u.market_sort == keys[i]) chosen = static_cast<int>(i);
+        const float sw = std::min(640 * k, b.x - a.x - hw - 220 * k);
+        if (const int pressed = segmented(d, f, "##browseorder", ImVec2(b.x - 14 * k - sw - 140 * k, y), sw, 40 * k,
+                                          {"TOP", "MOST DOWNLOADED", "NEWEST", "MOST LIKED", "A-Z"}, chosen);
+            pressed >= 0) {
+            u.market_sort = keys[static_cast<std::size_t>(pressed)];
+            u.market_scroll = 0;
+        }
+        if (chip(d, f, "##crewonly", ImVec2(b.x - 14 * k - 128 * k, y + 4 * k), "CREW ONLY", u.market_crew_only, nullptr, 32 * k)) {
+            u.market_crew_only = !u.market_crew_only;
+            u.market_scroll = 0;
+        }
+        if (u.market_crew_only) std::erase_if(list, [](const MarketPack* p) { return !p->crew; });
+        list = sorted(std::move(list), u.market_sort);
+    }
+    const auto count = std::to_string(list.size()) + (list.size() == 1 ? " PACK" : " PACKS");
+    text(d, f.bold, 14 * k, ImVec2(a.x + hw + 16 * k, y + 14 * k), soft, count);
+    y += 52 * k;
+    if (!about.empty()) y += paragraph(d, f.bold, 14 * k, ImVec2(a.x, y), b.x - a.x - 14 * k, soft, about) + 14 * k;
+    if (list.empty()) {
+        paragraph(d, f.bold, 16 * k, ImVec2(a.x, y + 10 * k), b.x - a.x - 14 * k, soft, empty);
+        return;
+    }
+    begin_region(72, ImVec2(a.x, y), b, u.market_scroll, k);
+    const float h = pack_grid(d, f, v, m, list, ImVec2(a.x, y + 8 * k - u.market_scroll), b.x - a.x - 14 * k, y, b.y, covers);
+    end_region(d, ImVec2(a.x, y), b, h + 20 * k, u.market_scroll, k);
+}
+// THE CREW's own: a member's packs and what they are counted at.
+struct CrewStats {
+    PackList packs;
+    std::uint64_t downloads{};
+    int likes{};
+};
+CrewStats crew_stats(const PackList& all, std::string_view team) {
+    CrewStats out;
+    for (const auto* p : all)
+        if (same_team(p->owner, team)) {
+            out.packs.push_back(p);
+            out.downloads += p->downloads;
+            out.likes += std::max(0, p->rating);
+        }
+    out.packs = sorted(std::move(out.packs), "new");
+    return out;
+}
+void crew_avatar(ImDrawList* d, const Fonts& f, const CrewStats& stats, const studio::market::CrewMember& member, ImVec2 a, ImVec2 b, Covers& covers) {
+    if (!stats.packs.empty()) {
+        covers.add(*stats.packs.front());
+        market_icon(d, f, *stats.packs.front(), a, b);
+    } else {
+        studio::View::PackView drawn;
+        drawn.name = std::string(member.name);
+        pack_cover(d, f, drawn, a, b);
+    }
+}
+void crew_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const PackList& all, ImVec2 a, ImVec2 b, Covers& covers) {
+    auto& u = ui();
+    const float k = f.k;
+    const float width = b.x - a.x - 14 * k;
+    if (const auto* member = studio::market::crew_member(u.market_crew)) {
+        // A member's own page: who they are, and their packs.
+        const auto stats = crew_stats(all, member->team);
+        if (action(d, f, "##crewback", a, ImVec2(160 * k, 40 * k), "< THE CREW", Look::ghost)) {
+            u.market_crew.clear();
+            u.market_scroll = 0;
+            return;
+        }
+        const ImVec2 ba(a.x, a.y + 54 * k), bb(a.x + width, a.y + 54 * k + 230 * k);
+        skate_theme::rough_rect(d, ba, bb, IM_COL32(12, 13, 16, 240), seed_of(ba), k);
+        d->AddRectFilledMultiColor(ba, bb, IM_COL32(1, 131, 255, 70), IM_COL32(1, 131, 255, 0), IM_COL32(1, 131, 255, 0), IM_COL32(1, 131, 255, 70));
+        theme::halftone(d, ImVec2(bb.x - 260 * k, ba.y + 20 * k), 14, 8, IM_COL32(255, 255, 255, 18));
+        const float av = 230 * k - 48 * k;
+        crew_avatar(d, f, stats, *member, ImVec2(ba.x + 24 * k, ba.y + 24 * k), ImVec2(ba.x + 24 * k + av, ba.y + 24 * k + av), covers);
+        const float tx = ba.x + 48 * k + av, tw = bb.x - tx - 30 * k;
+        float ty = ba.y + 22 * k;
+        float sx = tx;
+        sx += sticker(d, f, ImVec2(sx, ty), "CREW", white, blue, 12) + 6 * k;
+        sticker(d, f, ImVec2(sx, ty), upper(std::string(member->role)), blue, white, 12);
+        ty += 34 * k;
+        text(d, f.title, 60 * k, ImVec2(tx, ty), white, upper(std::string(member->name)));
+        ty += 70 * k;
+        ty += paragraph(d, f.bold, 15 * k, ImVec2(tx, ty), tw, IM_COL32(220, 222, 228, 255), std::string(member->about)) + 10 * k;
+        text(d, f.heading, 15 * k, ImVec2(tx, bb.y - 40 * k), blue_light,
+             std::to_string(stats.packs.size()) + (stats.packs.size() == 1 ? " PACK" : " PACKS") + "    " + short_count(static_cast<std::uint64_t>(stats.likes)) +
+                 " LIKES    " + short_count(stats.downloads) + " DOWNLOADS");
+        grid_page(d, f, v, m, "THEIR PACKS", "", stats.packs, false, std::string(member->name) + " has nothing out yet.", ImVec2(a.x, bb.y + 26 * k), b, covers);
+        return;
+    }
+    u.market_crew.clear();
+    // The crew's page: who they are, a card each.
+    const ImVec2 ba(a.x, a.y), bb(a.x + width, a.y + 150 * k);
+    skate_theme::rough_rect(d, ba, bb, IM_COL32(12, 13, 16, 240), seed_of(ba), k);
+    d->AddRectFilledMultiColor(ba, bb, IM_COL32(1, 131, 255, 70), IM_COL32(1, 131, 255, 0), IM_COL32(1, 131, 255, 0), IM_COL32(1, 131, 255, 70));
+    theme::halftone(d, ImVec2(bb.x - 300 * k, ba.y + 18 * k), 18, 7, IM_COL32(255, 255, 255, 18));
+    text(d, f.title, 64 * k, ImVec2(ba.x + 34 * k, ba.y + 16 * k), white, "THE CREW");
+    paragraph(d, f.bold, 15 * k, ImVec2(ba.x + 36 * k, ba.y + 96 * k), width - 72 * k, IM_COL32(220, 222, 228, 255),
+              "The testers who shaped the Animator Studio with us. Their packs carry the CREW sticker all over the shop.");
+    const float top = bb.y + 26 * k;
+    begin_region(72, ImVec2(a.x, top), b, u.market_scroll, k);
+    const float gap = 18 * k;
+    const std::size_t columns = static_cast<std::size_t>(std::max(1, static_cast<int>((width + gap) / (520 * k + gap))));
+    const float cw = (width - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns), ch = 220 * k;
+    std::size_t i = 0;
+    for (const auto& member : studio::market::crew_members) {
+        const ImVec2 ca(a.x + static_cast<float>(i % columns) * (cw + gap), top + 4 * k - u.market_scroll + static_cast<float>(i / columns) * (ch + gap));
+        const ImVec2 cb(ca.x + cw, ca.y + ch);
+        ++i;
+        if (cb.y < top || ca.y > b.y) continue;
+        const auto stats = crew_stats(all, member.team);
+        ImGui::PushID(std::string(member.team).c_str());
+        bool lit = false;
+        if (hit("##crewcard", ca, cb, &lit)) {
+            u.market_crew = std::string(member.team);
+            u.market_scroll = 0;
+        }
+        ImGui::PopID();
+        skate_theme::rough_rect(d, ca, cb, lit ? IM_COL32(32, 34, 40, 252) : IM_COL32(18, 19, 23, 244), seed_of(ca), k * 0.7f);
+        const float av = ch - 36 * k;
+        crew_avatar(d, f, stats, member, ImVec2(ca.x + 18 * k, ca.y + 18 * k), ImVec2(ca.x + 18 * k + av, ca.y + 18 * k + av), covers);
+        const float tx = ca.x + 36 * k + av, tw = cb.x - tx - 20 * k;
+        float ty = ca.y + 18 * k;
+        sticker(d, f, ImVec2(tx, ty), upper(std::string(member.role)), blue, white);
+        ty += 30 * k;
+        text(d, f.title, 34 * k, ImVec2(tx, ty), white, elide(f.title, 34 * k, upper(std::string(member.name)), tw));
+        ty += 44 * k;
+        ImGui::PushClipRect(ImVec2(tx, ty), ImVec2(tx + tw, cb.y - 44 * k), true);
+        paragraph(d, f.bold, 13 * k, ImVec2(tx, ty), tw, soft, std::string(member.about));
+        ImGui::PopClipRect();
+        text(d, f.heading, 13 * k, ImVec2(tx, cb.y - 34 * k), lit ? white : blue_light,
+             std::to_string(stats.packs.size()) + (stats.packs.size() == 1 ? " PACK" : " PACKS") + "   " + short_count(static_cast<std::uint64_t>(stats.likes)) +
+                 " LIKES   SEE THEIR PAGE >");
+        if (lit) d->AddRect(ca, cb, IM_COL32(1, 131, 255, 200), 3 * k, 0, 2 * k);
+        if (lit && nav().keys) chosen_outline(d, ca, cb, k);
+    }
+    const float rows = static_cast<float>((studio::market::crew_members.size() + columns - 1) / columns);
+    end_region(d, ImVec2(a.x, top), b, rows * (ch + gap) + 20 * k, u.market_scroll, k);
+}
+// ---- a pack's own page ----
+void product_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const MarketPack& p, const PackList& all,
+                  ImVec2 a, ImVec2 b, Covers& covers) {
+    auto& u = ui();
+    const float k = f.k;
+    covers.add(p);
+    if (p.readme == 0) studio::market::want_readmes({p.full_name});
+    if (action(d, f, "##packback", a, ImVec2(120 * k, 40 * k), "< BACK", Look::ghost)) {
         u.market_open.clear();
         return;
     }
-    studio::market::load_detail(pack.full_name);
-    const float x = a.x + 26 * k, w = b.x - a.x - 52 * k;
-    float y = a.y + 22 * k;
-    const float icon = 180 * k;
-    market_icon(d, f, pack, ImVec2(x, y), ImVec2(x + icon, y + icon));
-    const float tx = x + icon + 20 * k, tw = w - icon - 20 * k;
-    float ty = y + paragraph(d, f.title, 30 * k, ImVec2(tx, y), tw, white, upper(pack.title)) + 6 * k;
-    text(d, f.bold, 14 * k, ImVec2(tx, ty), soft, "BY " + upper(pack.owner));
-    ty += 22 * k;
-    text(d, f.bold, 13 * k, ImVec2(tx, ty), faint, "VERSION " + pack.version + "   " + pack.updated);
-    ty += 20 * k;
-    text(d, f.bold, 13 * k, ImVec2(tx, ty), faint, thousands(pack.downloads) + " DOWNLOADS   " + std::to_string(pack.rating) + " LIKES");
-    ty += 30 * k;
-    if (toggle(d, f, "##marketfav", ImVec2(tx, ty), pack.favorite, 0.8f)) studio::market::set_favorite(pack.full_name, !pack.favorite);
-    text(d, f.bold, 13 * k, ImVec2(tx + 62 * k, ty + 4 * k), pack.favorite ? IM_COL32(255, 210, 60, 255) : soft, pack.favorite ? "FAVORITE" : "ADD TO FAVORITES");
-    y += icon + 22 * k;
-    // Install, update, installed.
-    const bool installed = !pack.installed.empty(), update = installed && pack.installed != pack.version;
-    const std::string label = m.job.running ? upper(m.job.what) + "  " + std::to_string(static_cast<int>(m.job.fraction * 100)) + "%"
-                              : update ? "UPDATE TO " + pack.version : installed ? "INSTALLED" : "INSTALL";
-    if (action(d, f, "##marketinstall", ImVec2(x, y), ImVec2(w * 0.55f, 46 * k), label, Look::blue, !m.job.running && (!installed || update)))
-        studio::market::install(pack.full_name);
-    if (action(d, f, "##marketpage", ImVec2(x + w * 0.55f + 10 * k, y), ImVec2(w * 0.45f - 10 * k, 46 * k), "ON THUNDERSTORE", Look::ghost) &&
-        pack.package_url.starts_with("https://thunderstore.io/"))
-        ShellExecuteW(nullptr, L"open", std::wstring(pack.package_url.begin(), pack.package_url.end()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    y += 58 * k;
-    if (installed && !update) {
-        y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, blue_light, "In your library: switch it on, or preview its tricks, in PACKS.") + 10 * k;
-        if (action(d, f, "##marketpacks", ImVec2(x, y), ImVec2(w, 38 * k), "GO TO PACKS", Look::dark)) {
+    const float top = a.y + 56 * k, width = b.x - a.x - 14 * k;
+    begin_region(71, ImVec2(a.x, top), b, u.market_detail_scroll, k);
+    float y = top + 12 * k - u.market_detail_scroll;
+    // The cover, taped up, with its numbers under it.
+    const float side = std::min(400 * k, width * 0.3f);
+    tilted_cover(d, f, p, ImVec2(a.x + 24 * k + side * 0.5f, y + 18 * k + side * 0.5f), side, -0.03f);
+    float ly = y + side + 56 * k;
+    {
+        const float tw = (side - 10 * k) * 0.5f, th = 74 * k;
+        const std::array<std::pair<std::string, std::string>, 4> tiles{{{short_count(static_cast<std::uint64_t>(std::max(0, p.rating))), "LIKES"},
+                                                                        {short_count(p.downloads), "DOWNLOADS"},
+                                                                        {p.version, "VERSION"},
+                                                                        {p.created.empty() ? p.updated : p.created, "OUT SINCE"}}};
+        for (std::size_t i = 0; i < tiles.size(); ++i) {
+            const ImVec2 ta(a.x + 24 * k + static_cast<float>(i % 2) * (tw + 10 * k), ly + static_cast<float>(i / 2) * (th + 10 * k));
+            skate_theme::rough_rect(d, ta, ImVec2(ta.x + tw, ta.y + th), IM_COL32(18, 19, 23, 240), seed_of(ta), k * 0.6f);
+            text(d, f.heading, 22 * k, ImVec2(ta.x + 14 * k, ta.y + 12 * k), white, elide(f.heading, 22 * k, tiles[i].first, tw - 28 * k));
+            text(d, f.bold, 11 * k, ImVec2(ta.x + 14 * k, ta.y + 46 * k), soft, tiles[i].second);
+        }
+        ly += 2 * (th + 10 * k);
+    }
+    // Beside it: what it is, GET, the heart, and what is in it.
+    const float x = a.x + side + 80 * k, w = a.x + width - x;
+    float ry = y;
+    {
+        float sx = x;
+        if (p.crew) sx += sticker(d, f, ImVec2(sx, ry), "CREW", white, blue, 12) + 6 * k;
+        if (is_new(p)) sx += sticker(d, f, ImVec2(sx, ry), "NEW", blue, white, 12) + 6 * k;
+        state_sticker(d, f, v, p, ImVec2(sx, ry));
+        ry += 36 * k;
+    }
+    const auto title = upper(p.title);
+    float ts = 64 * k;
+    while (ts > 32 * k && f.title->CalcTextSizeA(ts, FLT_MAX, w, title.c_str()).y > ts * 2.4f) ts -= 4 * k;
+    ry += paragraph(d, f.title, ts, ImVec2(x, ry), w, white, title) + 4 * k;
+    {
+        // The maker: one of the crew opens their page.
+        const auto by = "BY " + upper(p.owner) + (p.crew ? "   >" : "");
+        const auto bw = text_size(f.heading, 17 * k, by.c_str());
+        bool lit = false;
+        if (p.crew && hit("##packmaker", ImVec2(x, ry), ImVec2(x + bw.x, ry + bw.y), &lit)) {
+            u.market_list = "crew";
+            u.market_crew = p.owner;
+            u.market_open.clear();
+            u.market_scroll = 0;
+        }
+        text(d, f.heading, 17 * k, ImVec2(x, ry), lit ? white : blue_light, by);
+        ry += 40 * k;
+    }
+    const auto g = get_button(v, m, p);
+    if (action(d, f, "##packget", ImVec2(x, ry), ImVec2(240 * k, 56 * k), g.label, Look::blue, g.enabled)) studio::market::install(p.full_name);
+    like_button(d, f, m, p, "##packlike", ImVec2(x + 252 * k, ry), ImVec2(150 * k, 56 * k));
+    if (action(d, f, "##packts", ImVec2(x + 414 * k, ry), ImVec2(200 * k, 56 * k), "ON THUNDERSTORE", Look::ghost)) studio::market::open_page(p.full_name);
+    ry += 70 * k;
+    if (!m.job.message.empty() && m.job.what.find(p.title) != std::string::npos)
+        ry += paragraph(d, f.bold, 13 * k, ImVec2(x, ry), w, m.job.failed ? skate_theme::warning : soft, m.job.message) + 10 * k;
+    if (!p.installed.empty() && !removed_here(v, p)) {
+        const auto where = p.installed_as.empty() ? std::string("your library") : p.installed_as;
+        ry += paragraph(d, f.bold, 13 * k, ImVec2(x, ry), w - 180 * k, blue_light, "In " + where + ": switch it on, or preview its tricks, in PACKS.") + 6 * k;
+        if (action(d, f, "##packgopacks", ImVec2(x, ry), ImVec2(170 * k, 36 * k), "GO TO PACKS", Look::dark)) {
             u.menu_tab = 1;
             u.pack_page = false;
         }
-        y += 50 * k;
+        ry += 50 * k;
+    } else if (removed_here(v, p)) {
+        ry += paragraph(d, f.bold, 13 * k, ImVec2(x, ry), w, skate_theme::warning, "It was installed here, and its pack has been deleted since: REINSTALL puts it back.") +
+              14 * k;
     }
-    if (!m.job.running && !m.job.message.empty() && m.job.what.find(pack.title) != std::string::npos)
-        y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, m.job.failed ? skate_theme::warning : soft, m.job.message) + 10 * k;
-    // What its maker says of it, and what is in it.
-    begin_region(71, ImVec2(a.x, y), ImVec2(b.x, b.y - 10 * k), u.market_detail_scroll, k);
-    const float top = y;
-    y -= u.market_detail_scroll;
-    const bool here = m.detail.full_name == pack.full_name;
-    heading(d, f, ImVec2(x, y), w, "About it");
-    y += 32 * k;
-    const std::string about = here && m.detail.ok && !m.detail.about.empty() ? m.detail.about : pack.description;
-    y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, IM_COL32(222, 222, 226, 255), about.empty() ? "No description." : about) + 18 * k;
-    heading(d, f, ImVec2(x, y), w, "In it", here && m.detail.ok ? std::to_string(m.detail.tricks.size()) : std::string{});
-    y += 32 * k;
-    if (!here || m.detail.loading) y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint, "Reading what is in it...") + 8 * k;
-    else if (!m.detail.ok) y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint, "Its list could not be read: " + m.detail.error) + 8 * k;
-    else
-        for (const auto& trick : m.detail.tricks) {
-            d->AddCircleFilled(ImVec2(x + 5 * k, y + 9 * k), 3 * k, blue_light);
-            y += paragraph(d, f.bold, 14 * k, ImVec2(x + 16 * k, y), w - 16 * k, white, trick) + 6 * k;
+    heading(d, f, ImVec2(x, ry), w, "About it");
+    ry += 34 * k;
+    const auto about = p.about.empty() ? p.description : p.about;
+    ry += paragraph(d, f.bold, 15 * k, ImVec2(x, ry), w, IM_COL32(222, 222, 226, 255), about.empty() ? "No description." : about) + 22 * k;
+    heading(d, f, ImVec2(x, ry), w, "What's in it", p.readme == 2 ? std::to_string(p.tricks.size()) + (p.tricks.size() == 1 ? " TRICK" : " TRICKS") : "");
+    ry += 36 * k;
+    if (p.readme <= 1) ry += paragraph(d, f.bold, 13 * k, ImVec2(x, ry), w, faint, "Reading what is in it...") + 8 * k;
+    else if (p.readme == 3) ry += paragraph(d, f.bold, 13 * k, ImVec2(x, ry), w, faint, "Its list could not be read.") + 8 * k;
+    else {
+        // Its tricks as tags, line after line.
+        float tx = x;
+        const float th = 30 * k;
+        for (const auto& trick : p.tricks) {
+            const auto tw = text_size(f.bold, 13 * k, trick.c_str()).x + 24 * k;
+            if (tx > x && tx + tw > x + w) {
+                tx = x;
+                ry += th + 8 * k;
+            }
+            d->AddRectFilled(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), IM_COL32(30, 32, 38, 245), th * 0.5f);
+            d->AddRect(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), IM_COL32(1, 131, 255, 110), th * 0.5f, 0, 1.2f * k);
+            text(d, f.bold, 13 * k, ImVec2(tx + 12 * k, ry + (th - 13 * k) * 0.5f - 1 * k), white, trick);
+            tx += tw + 8 * k;
         }
-    end_region(d, ImVec2(a.x, top), ImVec2(b.x, b.y - 10 * k), y + u.market_detail_scroll - top, u.market_detail_scroll, k);
+        ry += th + 8 * k;
+    }
+    float bottom = std::max(ly, ry) + 30 * k;
+    // More from its maker.
+    PackList more;
+    for (const auto* q : all)
+        if (q != &p && same_team(q->owner, p.owner)) more.push_back(q);
+    if (!more.empty()) {
+        const auto owner = p.owner;
+        bottom += shelf(d, f, v, m, "more", "MORE FROM " + upper(p.owner), "", sorted(more, "new"), ImVec2(a.x, bottom), width,
+                        p.crew ? std::function<void()>([owner] {
+                            auto& state = ui();
+                            state.market_list = "crew";
+                            state.market_crew = owner;
+                            state.market_open.clear();
+                            state.market_scroll = 0;
+                        })
+                               : std::function<void()>{},
+                        top, b.y, covers);
+    }
+    end_region(d, ImVec2(a.x, top), b, bottom + u.market_detail_scroll - top, u.market_detail_scroll, k);
 }
-void market_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 a, ImVec2 b) {
+// ---- the wall behind it ----
+void market_backdrop(ImDrawList* d, ImVec2 display, float fade) {
+    if (fade <= 0) return;
+    if (!draw_studio_market_cover(d, ImVec2(0, 0), display, IM_COL32(205, 210, 220, static_cast<int>(255 * fade)))) return;
+    // Dimmed so the shop reads over it: most under the tabs at the top, and at the foot.
+    const ImU32 top = IM_COL32(6, 7, 9, static_cast<int>(215 * fade)), mid = IM_COL32(6, 7, 9, static_cast<int>(110 * fade)),
+                foot = IM_COL32(6, 7, 9, static_cast<int>(190 * fade));
+    d->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(display.x, display.y * 0.2f), top, top, mid, mid);
+    d->AddRectFilled(ImVec2(0, display.y * 0.2f), ImVec2(display.x, display.y * 0.78f), mid);
+    d->AddRectFilledMultiColor(ImVec2(0, display.y * 0.78f), display, mid, mid, foot, foot);
+}
+// ---- the shop ----
+void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
     studio::market::refresh(false);
     const auto m = studio::market::view();
-    // ---- the top: what this is, the account, a refresh ----
-    page_heading(d, f, a, "MARKET", "Animation packs made in the Animator Studio, shared on Thunderstore. Install one and it is in PACKS.");
-    {
-        float x = b.x;
-        const auto button = [&](const char* id, float w, const std::string& label, Look look) {
-            x -= w;
-            const bool pressed = action(d, f, id, ImVec2(x, a.y + 6 * k), ImVec2(w, 42 * k), label, look);
-            x -= 10 * k;
-            return pressed;
-        };
-        if (button("##marketaccount", 300 * k, m.team.empty() ? "SIGN IN TO THUNDERSTORE" : "THUNDERSTORE: " + upper(m.team), m.team.empty() ? Look::blue : Look::dark))
-            u.sign_in = true;
-        if (button("##marketrefresh", 140 * k, m.loading ? "LOADING..." : "REFRESH", Look::ghost)) studio::market::refresh(true);
-    }
-    // ---- the left: the search and the lists ----
-    const float col_w = 340 * k;
-    float y = a.y + 84 * k;
-    text(d, f.heading, 14 * k, ImVec2(a.x, y), blue_light, "SEARCH");
-    field(f, "##marketsearch", u.market_query, ImVec2(a.x, y + 22 * k), col_w, "Pack name, maker, a word in it");
-    const auto terms = studio::native_search_terms(u.market_query.data());
-    std::size_t favorites = 0, installed = 0, mine = 0;
-    for (const auto& p : m.packs) favorites += p.favorite, installed += !p.installed.empty(), mine += p.mine;
-    struct List {
+    Covers covers;
+    PackList all;
+    for (const auto& p : m.packs) all.push_back(&p);
+    // ---- along the top: the shop's parts, the search, the account ----
+    std::size_t liked = 0, installed = 0, mine = 0;
+    for (const auto& p : m.packs) liked += p.favorite, installed += !p.installed.empty(), mine += p.mine;
+    struct Part {
         const char* key;
         const char* label;
         std::size_t count;
         bool shown;
     };
-    const std::array<List, 7> lists{{{"all", "ALL PACKS", m.packs.size(), true},
-                                     {"downloads", "MOST DOWNLOADED", 0, true},
-                                     {"new", "NEWEST", 0, true},
-                                     {"rated", "TOP RATED", 0, true},
-                                     {"favorites", "FAVORITES", favorites, true},
+    const std::array<Part, 6> parts{{{"featured", "FEATURED", 0, true},
+                                     {"browse", "BROWSE", all.size(), true},
+                                     {"crew", "THE CREW", studio::market::crew_members.size(), true},
+                                     {"liked", "LIKED", liked, true},
                                      {"installed", "INSTALLED", installed, true},
                                      {"mine", "MY UPLOADS", mine, !m.team.empty()}}};
-    float ly = y + 76 * k;
-    for (const auto& list : lists) {
-        if (!list.shown) continue;
-        if (std::string_view(list.key) == "favorites") ly += 10 * k;
-        const ImVec2 ra(a.x, ly), rb(a.x + col_w - 12 * k, ly + 46 * k);
-        ly += 52 * k;
-        ImGui::PushID(list.key);
+    const float bar_h = 46 * k;
+    float x = a.x;
+    for (const auto& part : parts) {
+        if (!part.shown) continue;
+        const auto t = text_size(f.heading, 17 * k, part.label);
+        const auto count = part.count ? std::to_string(part.count) : std::string{};
+        const float cw = count.empty() ? 0 : text_size(f.bold, 12 * k, count.c_str()).x + 16 * k;
+        const ImVec2 pa(x, a.y), pb(x + t.x + 32 * k + (cw > 0 ? cw + 6 * k : 0), a.y + bar_h);
+        ImGui::PushID(part.key);
         bool lit = false;
-        if (hit("##marketlist", ra, rb, &lit)) {
-            u.market_list = list.key;
+        if (hit("##marketpart", pa, pb, &lit)) {
+            u.market_list = part.key;
+            u.market_open.clear();
+            u.market_crew.clear();
+            u.market_query.fill(0);
             u.market_scroll = 0;
         }
         ImGui::PopID();
-        const bool chosen = u.market_list == list.key;
-        if (chosen) skate_theme::rough_rect(d, ra, rb, blue, seed_of(ra), k);
-        else skate_theme::rough_rect(d, ra, rb, lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(24, 25, 28, 240), seed_of(ra), k);
-        text(d, f.bold, 17 * k, ImVec2(ra.x + 18 * k, ra.y + 12 * k), white, list.label);
-        if (list.count) {
-            const auto count = std::to_string(list.count);
-            const auto tw = text_size(f.bold, 14 * k, count.c_str());
-            text(d, f.bold, 14 * k, ImVec2(rb.x - tw.x - 16 * k, ra.y + 14 * k), chosen ? white : soft, count);
+        const bool chosen = u.market_list == part.key && u.market_open.empty() && !u.market_query[0];
+        if (chosen) {
+            if (!draw_studio_brush(d, ImVec2(pa.x - 4 * k, pa.y + 3 * k), ImVec2(pb.x + 4 * k, pb.y - 3 * k), blue)) skate_theme::rough_rect(d, pa, pb, blue, seed_of(pa), k);
+        } else if (lit) skate_theme::rough_rect(d, pa, pb, IM_COL32(255, 255, 255, 24), seed_of(pa), k);
+        if (lit && nav().keys) chosen_outline(d, pa, pb, k);
+        text(d, f.heading, 17 * k, ImVec2(pa.x + 16 * k, pa.y + (bar_h - t.y) * 0.5f), chosen || lit ? white : IM_COL32(190, 192, 198, 255), part.label);
+        if (cw > 0) {
+            const ImVec2 qa(pa.x + 16 * k + t.x + 8 * k, pa.y + (bar_h - 20 * k) * 0.5f);
+            d->AddRectFilled(qa, ImVec2(qa.x + cw, qa.y + 20 * k), chosen ? IM_COL32(255, 255, 255, 60) : IM_COL32(255, 255, 255, 26), 10 * k);
+            text(d, f.bold, 12 * k, ImVec2(qa.x + 8 * k, qa.y + (20 * k - 12 * k) * 0.5f - 1 * k), white, count);
+        }
+        x = pb.x + 6 * k;
+    }
+    {
+        // The account and a refresh at the right, the search left of them: wide, and always there.
+        float rx = b.x;
+        rx -= 112 * k;
+        if (action(d, f, "##marketrefresh", ImVec2(rx, a.y + 4 * k), ImVec2(112 * k, 38 * k), m.loading ? "LOADING" : "REFRESH", Look::ghost))
+            studio::market::refresh(true);
+        rx -= 10 * k + 236 * k;
+        if (action(d, f, "##marketaccount", ImVec2(rx, a.y + 4 * k), ImVec2(236 * k, 38 * k), m.team.empty() ? "SIGN IN TO THUNDERSTORE" : "TEAM: " + upper(m.team),
+                   m.team.empty() ? Look::blue : Look::dark))
+            u.sign_in = true;
+        const float search_w = std::clamp(rx - 16 * k - (x + 46 * k), 220 * k, 520 * k);
+        const float sx = rx - 16 * k - search_w;
+        search_icon(d, ImVec2(sx - 20 * k, a.y + 21 * k), 22 * k, u.market_query[0] ? blue_light : soft);
+        if (field(f, "##marketsearch", u.market_query, ImVec2(sx, a.y + 4 * k), search_w, "Search: a trick, a pack, a maker")) u.market_open.clear();
+        if (std::string(u.market_query.data()) != u.market_query_seen) {
+            u.market_query_seen = u.market_query.data();
+            if (!u.market_query_seen.empty()) {
+                u.market_open.clear();
+                u.market_scroll = 0;
+            }
         }
     }
-    // ---- the right: the packs ----
-    std::vector<const studio::market::Pack*> shown;
-    for (const auto& p : m.packs) {
-        if (u.market_list == "favorites" && !p.favorite) continue;
-        if (u.market_list == "installed" && p.installed.empty()) continue;
-        if (u.market_list == "mine" && !p.mine) continue;
-        if (!terms.empty() && !studio::native_search_matches(studio::native_search_key(p.title + " " + p.owner + " " + p.description), terms)) continue;
-        shown.push_back(&p);
-    }
-    const auto by_downloads = [](const auto* x, const auto* y) { return x->downloads > y->downloads; };
-    if (u.market_list == "new") std::stable_sort(shown.begin(), shown.end(), [](const auto* x, const auto* y) { return x->updated > y->updated; });
-    else if (u.market_list == "rated") std::stable_sort(shown.begin(), shown.end(), [](const auto* x, const auto* y) { return x->rating > y->rating; });
-    else std::stable_sort(shown.begin(), shown.end(), by_downloads);
-    const ImVec2 ra(a.x + col_w + 36 * k, a.y + 84 * k), rb = b;
-    const studio::market::Pack* open = nullptr;
-    for (const auto* p : shown)
+    // ---- under it: what is going on, then the part shown ----
+    float top = a.y + bar_h + 20 * k;
+    const auto banner = [&](const std::string& line, ImU32 colour, float fraction) {
+        const ImVec2 ba(a.x, top), bb(b.x - 14 * k, top + 34 * k);
+        d->AddRectFilled(ba, bb, IM_COL32(12, 13, 16, 230), 3 * k);
+        text(d, f.bold, 13 * k, ImVec2(ba.x + 14 * k, ba.y + 10 * k), colour, elide(f.bold, 13 * k, line, bb.x - ba.x - 28 * k));
+        if (fraction >= 0) d->AddRectFilled(ImVec2(ba.x, bb.y - 4 * k), ImVec2(ba.x + (bb.x - ba.x) * fraction, bb.y), blue, 2 * k);
+        top += 44 * k;
+    };
+    if (!m.error.empty()) banner(m.error, skate_theme::warning, -1);
+    if (m.job.running) banner(upper(m.job.what) + "  " + std::to_string(static_cast<int>(m.job.fraction * 100)) + "%", blue_light, m.job.fraction);
+    const ImVec2 ca(a.x, top);
+    const auto terms = studio::native_search_terms(u.market_query.data());
+    const MarketPack* open = nullptr;
+    for (const auto* p : all)
         if (p->full_name == u.market_open) open = p;
-    if (!open)
-        for (const auto& p : m.packs)
-            if (p.full_name == u.market_open) open = &p;
-    const float drawer_w = 520 * k;
-    const ImVec2 grid_a = ra, grid_b(open ? rb.x - drawer_w - 24 * k : rb.x, rb.y);
-    // Its state: loading, a problem, an install under way.
-    float gy = grid_a.y;
-    if (m.loading && m.packs.empty()) {
-        text(d, f.bold, 17 * k, ImVec2(grid_a.x, gy), soft, "Reading Thunderstore...");
-        gy += 34 * k;
-    }
-    if (!m.error.empty()) {
-        gy += paragraph(d, f.bold, 14 * k, ImVec2(grid_a.x, gy), grid_b.x - grid_a.x, skate_theme::warning, m.error) + 12 * k;
-    }
-    if (m.job.running) {
-        text(d, f.bold, 14 * k, ImVec2(grid_a.x, gy), blue_light, upper(m.job.what) + "  " + std::to_string(static_cast<int>(m.job.fraction * 100)) + "%");
-        d->AddRectFilled(ImVec2(grid_a.x, gy + 22 * k), ImVec2(grid_b.x - 14 * k, gy + 28 * k), IM_COL32(255, 255, 255, 40), 3 * k);
-        d->AddRectFilled(ImVec2(grid_a.x, gy + 22 * k), ImVec2(grid_a.x + (grid_b.x - 14 * k - grid_a.x) * m.job.fraction, gy + 28 * k), blue, 3 * k);
-        gy += 40 * k;
-    }
-    if (!m.loading && shown.empty() && m.error.empty())
-        paragraph(d, f.bold, 16 * k, ImVec2(grid_a.x, gy), grid_b.x - grid_a.x, soft,
-                  m.packs.empty() ? "No packs on the market yet. Be the first: open a pack in PACKS, press SHARE and publish it."
-                  : u.market_list == "mine" ? "Nothing published by " + m.team + " yet: open a pack in PACKS, press SHARE and publish it."
-                                            : "Nothing here. Try fewer words, or another list.");
-    const float gap = 16 * k, min_w = 420 * k, card_h = 170 * k;
-    const float grid_w = grid_b.x - grid_a.x - 14 * k;
-    const int columns = std::max(1, static_cast<int>((grid_w + gap) / (min_w + gap)));
-    const float card_w = (grid_w - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
-    const ImVec2 area_a(grid_a.x, gy);
-    begin_region(72, area_a, grid_b, u.market_scroll, k);
-    const float top = area_a.y - u.market_scroll;
-    std::vector<std::string> icons;
-    std::vector<std::pair<std::string, std::string>> pictures;
-    for (std::size_t i = 0; i < shown.size(); ++i) {
-        const auto& p = *shown[i];
-        const ImVec2 ca(area_a.x + static_cast<float>(i % static_cast<std::size_t>(columns)) * (card_w + gap),
-                        top + static_cast<float>(i / static_cast<std::size_t>(columns)) * (card_h + gap));
-        const ImVec2 cb(ca.x + card_w, ca.y + card_h);
-        if (cb.y < area_a.y - card_h || ca.y > grid_b.y + card_h) continue; // off the page
-        icons.push_back(p.full_name);
-        if (!p.icon_file.empty() && pictures.size() < 28) pictures.emplace_back("market|" + p.full_name + "|" + p.version, p.icon_file);
-        ImGui::PushID(p.full_name.c_str());
-        bool lit = false;
-        if (hit("##marketcard", ca, cb, &lit)) {
-            u.market_open = p.full_name;
-            u.market_detail_scroll = 0;
-        }
-        const bool chosen = u.market_open == p.full_name;
-        skate_theme::rough_rect(d, ca, cb, chosen ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(ca), k);
-        const float icon = card_h - 24 * k;
-        market_icon(d, f, p, ImVec2(ca.x + 12 * k, ca.y + 12 * k), ImVec2(ca.x + 12 * k + icon, ca.y + 12 * k + icon));
-        const float tx = ca.x + icon + 28 * k, tw = cb.x - tx - 16 * k;
-        text(d, f.bold, 20 * k, ImVec2(tx, ca.y + 14 * k), white, elide(f.bold, 20 * k, p.title, tw - 30 * k));
-        text(d, f.bold, 12 * k, ImVec2(tx, ca.y + 42 * k), soft, elide(f.bold, 12 * k, "BY " + upper(p.owner) + "   V" + p.version, tw));
-        paragraph(d, f.bold, 12 * k, ImVec2(tx, ca.y + 62 * k), tw, IM_COL32(200, 202, 208, 255), elide(f.bold, 12 * k, p.description, tw * 2.0f));
-        text(d, f.bold, 12 * k, ImVec2(tx, cb.y - 32 * k), faint, thousands(p.downloads) + " DOWNLOADS   " + std::to_string(p.rating) + " LIKES");
-        float right = cb.x - 14 * k;
-        if (!p.installed.empty()) {
-            const char* state = p.installed != p.version ? "UPDATE" : "INSTALLED";
-            right -= tag_width(f, state);
-            tag(d, f, ImVec2(right, cb.y - 36 * k), state, p.installed != p.version ? skate_theme::warning : IM_COL32(36, 150, 76, 255));
-        }
-        if (p.favorite) d->AddCircleFilled(ImVec2(cb.x - 20 * k, ca.y + 20 * k), 7 * k, IM_COL32(255, 196, 0, 255));
-        if (lit && nav().keys) chosen_outline(d, ca, cb, k);
-        ImGui::PopID();
-    }
-    const float rows = static_cast<float>((shown.size() + static_cast<std::size_t>(columns) - 1) / static_cast<std::size_t>(columns));
-    end_region(d, area_a, grid_b, rows * (card_h + gap) + 20 * k, u.market_scroll, k);
-    studio::market::want_icons(icons);
-    detail::want_studio_pack_pictures(pictures);
-    if (open) market_detail(d, f, m, *open, ImVec2(rb.x - drawer_w, ra.y), rb);
+    if (!open) u.market_open.clear();
+    if (open) product_page(d, f, v, m, *open, all, ca, b, covers);
+    else if (!terms.empty()) {
+        PackList found;
+        for (const auto* p : all)
+            if (pack_matches(*p, terms)) found.push_back(p);
+        grid_page(d, f, v, m, "RESULTS", "For \"" + std::string(u.market_query.data()) + "\": names, makers, and the tricks in each pack.", std::move(found), true,
+                  "Nothing matches. Try a trick's name (kickflip, nollie), a maker, or fewer words.", ca, b, covers);
+    } else if (u.market_list == "browse")
+        grid_page(d, f, v, m, "ALL PACKS", "", all, true, m.loading ? "Reading Thunderstore..." : "No packs out yet. Be the first: open a pack in PACKS and press SHARE.", ca,
+                  b, covers);
+    else if (u.market_list == "crew") crew_page(d, f, v, m, all, ca, b, covers);
+    else if (u.market_list == "liked") {
+        PackList list;
+        for (const auto* p : all)
+            if (p->favorite) list.push_back(p);
+        grid_page(d, f, v, m, "LIKED", "", sorted(std::move(list), "az"), false, "Nothing liked yet: press the heart on a pack you like.", ca, b, covers);
+    } else if (u.market_list == "installed") {
+        PackList list;
+        for (const auto* p : all)
+            if (!p->installed.empty()) list.push_back(p);
+        grid_page(d, f, v, m, "INSTALLED", "Packs you got from the MARKET. One marked REMOVED was deleted in PACKS: open it and REINSTALL to put it back.",
+                  sorted(std::move(list), "az"), false, "Nothing installed from the MARKET yet.", ca, b, covers);
+    } else if (u.market_list == "mine") {
+        PackList list;
+        for (const auto* p : all)
+            if (p->mine) list.push_back(p);
+        grid_page(d, f, v, m, "MY UPLOADS", "Your team's packs on Thunderstore. To put out a new version, open the pack in PACKS and press UPDATE.",
+                  sorted(std::move(list), "new"), false, "Nothing out from " + m.team + " yet: open a pack in PACKS and press SHARE.", ca, b, covers);
+    } else featured_page(d, f, v, m, all, ca, b, covers);
+    covers.ask();
 }
 void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
@@ -5439,6 +6180,35 @@ void sign_in_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVe
 }
 // SHARE: a pack's description, and the ways to share it - a zip to send, a Thunderstore package, or published straight to
 // the MARKET with a linked team.
+// The heart's card: liked here; Thunderstore counts a like only made on its own site, so it offers to open the pack there.
+void like_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto m = studio::market::view();
+    const MarketPack* p = nullptr;
+    for (const auto& q : m.packs)
+        if (q.full_name == u.like_pack) p = &q;
+    if (!p) {
+        u.like_pack.clear();
+        return;
+    }
+    const auto [a, b] = card_box(d, f, display, 760 * k, 420 * k, "LIKED!");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 100 * k;
+    heart_icon(d, ImVec2(b.x - 90 * k, a.y + 52 * k), 54 * k, blue, true);
+    y += paragraph(d, f.heading, 18 * k, ImVec2(x, y), w - 60 * k, white, upper(p->title) + " IS IN YOUR LIKED LIST.") + 14 * k;
+    y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
+                   "Thunderstore counts a like only when it is made on its own site, by someone signed in there, so the studio cannot add yours for you. "
+                   "Open the pack's page and press its thumbs up to count it there too.") +
+         22 * k;
+    if (toggle(d, f, "##likeask", ImVec2(x, y), m.like_prompt)) studio::market::set_like_prompt(!m.like_prompt);
+    text(d, f.bold, 14 * k, ImVec2(x + 76 * k, y + 6 * k), soft, "Ask every time I like a pack");
+    if (action(d, f, "##likeopen", ImVec2(x, b.y - 70 * k), ImVec2(260 * k, 46 * k), "OPEN ITS PAGE", Look::blue)) {
+        studio::market::open_page(p->full_name);
+        u.like_pack.clear();
+    }
+    if (action(d, f, "##likelater", ImVec2(x + 272 * k, b.y - 70 * k), ImVec2(170 * k, 46 * k), "NOT NOW", Look::paper)) u.like_pack.clear();
+}
 void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
@@ -5448,13 +6218,16 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         return;
     }
     const auto market = studio::market::view();
-    const auto [a, b] = card_box(d, f, display, 1100 * k, 700 * k, "SHARE " + upper(pack->name));
+    const bool updating = pack_is_published(market, *pack);
+    const auto [a, b] = card_box(d, f, display, 1100 * k, 700 * k, (updating ? "UPDATE " : "SHARE ") + upper(pack->name));
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k, cover = 230 * k;
     float y = a.y + 92 * k;
     pack_cover(d, f, *pack, ImVec2(x, y), ImVec2(x + cover, y + cover));
     const float rx = x + cover + 30 * k, rw = w - cover - 30 * k;
     text(d, f.heading, 14 * k, ImVec2(rx, y), blue_light, "DESCRIPTION");
-    text(d, f.bold, 12 * k, ImVec2(rx + 140 * k, y + 2 * k), faint, "What people see when they open it in the MARKET (the first line is its summary).");
+    text(d, f.bold, 12 * k, ImVec2(rx + 140 * k, y + 2 * k), faint,
+         updating ? "Say what is new: it is what people see in the MARKET (the first line is its summary)."
+                  : "What people see when they open it in the MARKET (the first line is its summary).");
     if (u.share_description_for != pack->name && !ImGui::IsAnyItemActive()) {
         std::snprintf(u.share_description.data(), u.share_description.size(), "%s", pack->pack.description.c_str());
         u.share_description_for = pack->name;
@@ -5481,23 +6254,41 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
         studio::set_pack_description(pack->name, u.share_description.data(), m);
     }
     y += cover + 22 * k;
-    // What goes with it.
+    // What goes with it, and as what version: for an update, one past what is up, and it goes to the same package.
     const auto& sp = pack->pack;
-    std::string next = sp.version;
-    if (!sp.published.empty() && sp.published == sp.version) {
-        int ma = 1, mi = 0, pa = 0;
-        if (sscanf_s(sp.version.c_str(), "%d.%d.%d", &ma, &mi, &pa) == 3) next = std::to_string(ma) + "." + std::to_string(mi) + "." + std::to_string(pa + 1);
+    const auto* live = live_package(market, *pack);
+    if (u.share_version_for != pack->name) {
+        const auto next = updating ? next_update_version(market, *pack) : studio::market::next_version(sp.version, sp.published);
+        std::snprintf(u.share_version.data(), u.share_version.size(), "%s", next.c_str());
+        u.share_version_for = pack->name;
     }
-    text(d, f.bold, 14 * k, ImVec2(x, y), white,
-         std::to_string(saved_count(v, *pack)) + " tricks.   On Thunderstore as " + studio::market::package_name(pack->name) + ", version " + next +
-             (sp.published.empty() ? " (not published yet)." : " (" + sp.published + " is up)."));
-    y += 26 * k;
+    const std::string version = u.share_version.data();
+    const std::string last = live && studio::market::version_after(live->version, sp.published) ? live->version : sp.published;
+    const bool version_ok = studio::market::plain_version(version) && std::count(version.begin(), version.end(), '.') == 2 &&
+                            (last.empty() || studio::market::version_after(version, last));
+    const std::string package = live ? live->full_name
+                                     : !sp.published_as.empty() ? sp.published_as
+                                                                : (market.team.empty() ? std::string{} : market.team + "-") + studio::market::package_name(pack->name);
+    text(d, f.heading, 14 * k, ImVec2(x, y + 9 * k), blue_light, "VERSION");
+    field(f, "##shareversion", u.share_version, ImVec2(x + 92 * k, y), 140 * k, "1.0.1");
+    {
+        const auto tricks = std::to_string(saved_count(v, *pack)) + " tricks";
+        const std::string line = !version_ok ? (last.empty() ? "A version is three numbers with dots between them: 1.0.0."
+                                                             : "It has to be higher than " + last + ", the version up now.")
+                                 : updating ? tricks + ", as an update of " + package + (last.empty() ? "." : " (" + last + " is up now).")
+                                            : tricks + ", on Thunderstore as " + package + ".";
+        text(d, f.bold, 13 * k, ImVec2(x + 248 * k, y + 9 * k), version_ok ? white : skate_theme::warning,
+             elide(f.bold, 13 * k, line, w - 248 * k - (live ? 150 * k : 0)));
+    }
+    if (live && action(d, f, "##sharelive", ImVec2(b.x - 30 * k - 140 * k, y), ImVec2(140 * k, 34 * k), "ITS PAGE", Look::ghost))
+        studio::market::open_page(live->full_name);
+    y += 46 * k;
     text(d, f.bold, 13 * k, ImVec2(x, y), sp.editable ? blue_light : soft,
          sp.editable ? "Others can open its tricks to edit and copy them (OTHERS CAN EDIT is on)." : "Locked for others: its tricks play and preview, but cannot be opened or copied.");
     y += 40 * k;
     // The three ways.
     const float bw = (w - 20 * k) / 3, bh = 120 * k;
-    const auto way = [&](const char* id, float bx, const char* title, const char* about, Look look, bool enabled) {
+    const auto way = [&](const char* id, float bx, const std::string& title, const std::string& about, Look look, bool enabled) {
         const ImVec2 wa(bx, y), wb(bx + bw, y + bh);
         bool lit = false;
         const bool pressed = hit(id, wa, wb, &lit, enabled);
@@ -5516,21 +6307,22 @@ void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     if (way("##sharets", x + bw + 10 * k, "THUNDERSTORE ZIP", "The pack as a Thunderstore package (manifest, icon, README, tricks), to upload on thunderstore.io yourself.",
             Look::dark, true)) {
         std::string m;
-        studio::market::export_package(pack->name, m);
+        studio::market::export_package(pack->name, m, version_ok ? version : std::string{});
         say(m);
     }
     const bool linked = !market.team.empty();
-    if (way("##sharepublish", x + 2 * (bw + 10 * k), linked ? "PUBLISH TO MARKET" : "SIGN IN TO PUBLISH",
-            linked ? "Uploads it to Thunderstore as your team, with everything set, and it shows in everyone's MARKET."
-                   : "Link your Thunderstore team once, and publish your packs from here.",
-            Look::blue, !market.job.running)) {
+    if (way("##sharepublish", x + 2 * (bw + 10 * k), !linked ? "SIGN IN TO PUBLISH" : updating ? "PUBLISH UPDATE" : "PUBLISH TO MARKET",
+            !linked    ? "Link your Thunderstore team once, and publish your packs from here."
+            : updating ? "Puts " + version + " up as an update of " + package + ": everyone who has it gets UPDATE in their MARKET."
+                       : "Uploads it to Thunderstore as your team, with everything set, and it shows in everyone's MARKET.",
+            Look::blue, !market.job.running && (!linked || version_ok))) {
         if (!linked) u.sign_in = true;
         else {
             if (std::string(u.share_description.data()) != pack->pack.description) {
                 std::string m;
                 studio::set_pack_description(pack->name, u.share_description.data(), m);
             }
-            studio::market::publish(pack->name);
+            studio::market::publish(pack->name, version, live ? live->full_name : std::string{});
         }
     }
     y += bh + 16 * k;
@@ -5918,6 +6710,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (u.conflicts_open) conflicts_card(d, f, v, display);
     else if (!u.stance_pack.empty()) stance_card(d, f, v, display);
     else if (u.sign_in) sign_in_card(d, f, v, display);
+    else if (!u.like_pack.empty()) like_card(d, f, v, display);
     else if (!u.share_pack.empty()) share_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
@@ -7665,6 +8458,9 @@ void draw_animation_studio() {
     if (u.menu) {
         u.menu_fade = std::min(1.0f, u.menu_fade + ImGui::GetIO().DeltaTime * 8);
         menu_backdrop(d, f, display, 0.6f + 0.4f * u.menu_fade);
+        // The MARKET has its own wall behind it, faded in as it is opened.
+        u.market_fade = u.menu_tab == 2 ? std::min(1.0f, u.market_fade + ImGui::GetIO().DeltaTime * 4) : 0.0f;
+        market_backdrop(d, display, u.market_fade * (0.6f + 0.4f * u.menu_fade));
         menu_header(d, f, v, display, left, right);
         const ImVec2 ca(left + 48 * k, 124 * k), cb(right - 48 * k, display.y - 76 * k);
         switch (u.menu_tab) {
