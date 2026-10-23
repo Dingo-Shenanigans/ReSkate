@@ -382,6 +382,10 @@ struct LibraryBuild {
 LibraryBuild library_build();
 void start_library_build(); // nothing when one is running
 void stop_library_build();  // the build stops soon after; the library stays as it was
+// Asked every frame: with no trick library yet (a fresh install) or one built from another version of the game, the build
+// starts by itself, once a session: `now` when the studio is open, else a little after the game has started. A build
+// that failed waits for TRY AGAIN.
+void build_library_when_needed(bool now);
 bool export_diagnostics(std::string& message);
 bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);

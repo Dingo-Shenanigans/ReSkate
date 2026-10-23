@@ -34,18 +34,18 @@ inline constexpr char description_tag[] = "Animator Studio pack: ";
 // under, which only that team's members can publish to. A new tester comes in with a new build. (Each team was read
 // off the tester's own service key with Thunderstore's current-user call; the keys themselves are not kept anywhere.)
 struct CrewMember {
-    std::string_view team, name, role, about;
+    std::string_view team, name, about;
 };
 inline constexpr std::array crew_members{
-    CrewMember{"leafbro", "leaf.bro", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"Myawsometeam", "Setsu", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"smonky", "smonk", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"reskate_animation_editor", "philsteezy", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"leafbro", "leaf.bro", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"Myawsometeam", "Setsu", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"smonky", "smonk", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"reskate_animation_editor", "philsteezy", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
 };
 // Sample packs, so the shop can be seen full before it is: shown after the real ones, with covers made by the cover
-// designer, and nothing to GET. Switched off for release.
-inline constexpr bool show_samples = true;
+// designer, and nothing to GET. Off: the release shows the real packs only.
+inline constexpr bool show_samples = false;
 struct SamplePack {
     std::string_view title, owner;
     int tricks;
@@ -146,6 +146,9 @@ void set_favorite(const std::string& full_name, bool on); // the heart: liked he
 void set_like_prompt(bool on);
 // The pack's page on Thunderstore, in the browser: thunderstore.io only.
 void open_page(const std::string& full_name);
+// A team's page on Thunderstore (its packs in the ReSkate community): THE CREW's link on ABOUT.
+inline std::string team_page(std::string_view team) { return std::string(site) + "/c/" + community + "/p/" + std::string(team) + "/"; }
+void open_team_page(std::string_view team); // in the browser; a team's name of letters, figures and _ only
 // Downloads the pack and puts it in the library (the studio's import), in the background.
 void install(const std::string& full_name);
 // Links a Thunderstore team for publishing: its name and a service account token of it.

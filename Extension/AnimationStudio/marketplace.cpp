@@ -578,7 +578,7 @@ View view() {
     v.detail = m.detail;
     v.packs = m.packs;
     std::error_code error;
-    if (show_samples) {
+    if constexpr (show_samples) {
         // The samples, after the real ones: a few tricks named for their pages, their covers once they are made.
         static constexpr std::array<std::string_view, 18> names{"Kickflip", "Heelflip", "Tre Flip", "Hardflip", "Varial Flip", "Inward Heel",
                                                                 "Laser Flip", "Impossible", "Nollie Flip", "Nollie Heel", "Late Flip", "Dark Catch",
@@ -791,6 +791,10 @@ void open_page(const std::string& full_name) {
         url = found->package_url;
     }
     if (url.starts_with(std::string(site) + "/")) ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+void open_team_page(std::string_view team) {
+    if (team.empty() || !std::all_of(team.begin(), team.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; })) return;
+    ShellExecuteW(nullptr, L"open", widen(team_page(team)).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 void install(const std::string& full_name) {
     Pack pack;

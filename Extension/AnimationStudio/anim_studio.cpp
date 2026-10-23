@@ -29,6 +29,7 @@
 #include <shellapi.h>
 #include <bcrypt.h>
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -6625,6 +6626,18 @@ void start_library_build() {
     }
 }
 void stop_library_build() { library_builder().stop.store(true, std::memory_order_release); }
+void build_library_when_needed(bool now) {
+    static std::atomic<bool> looked{false};
+    static const auto since = std::chrono::steady_clock::now();
+    if (looked.load(std::memory_order_acquire)) return;
+    if (!now && std::chrono::steady_clock::now() - since < std::chrono::seconds(20)) return; // the game's own loading first
+    looked.store(true, std::memory_order_release);
+    const auto build = library_build();
+    if (build.running || (build.exists && !build.outdated)) return;
+    if (build.exists) logging::log(Level::info, Channel::skater, "Animation Studio: the trick library is from another version of the game: rebuilding it.");
+    else logging::log(Level::info, Channel::skater, "Animation Studio: no trick library yet: building it from the game's files.");
+    start_library_build();
+}
 bool recorded_tricks() {
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(library_folder() / L"recorded", error))

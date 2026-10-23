@@ -3470,8 +3470,8 @@ float library_panel(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         float y = pa.y + 84 * k;
         y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), text_w, IM_COL32(222, 222, 226, 255),
                        "The studio makes its tricks from your own copy of skate.: every flip trick, grind, grab and manual the game "
-                       "has, ready to open and change. It only reads the game's files, never changes them. Takes about a minute and "
-                       "1.6 GB on this PC; do it once, and again after a game update.");
+                       "has, ready to open and change. It only reads the game's files, never changes them. It does this by itself the "
+                       "first time, and again after a game update: about a minute, and 1.6 GB on this PC.");
         y += 24 * k;
         if (build.running) {
             text(d, f.heading, 14 * k, ImVec2(x, y), blue_light, upper(build.step));
@@ -4725,6 +4725,71 @@ void draw_paper(ImDrawList* d, const Fonts& f, const torn::Paper& shape, ImVec2 
     paper.flush(d);
     d->PopTextureID();
 }
+// A strip of silver duct tape `w` long and `h` wide, its middle at `centre`, turned `deg`: straight sides, ends torn in
+// teeth, the weave of its cloth showing, a sheen along it and a thin shadow under it.
+void duct_tape(ImDrawList* d, const Fonts& f, ImVec2 centre, float w, float h, float deg, std::uint32_t seed) {
+    const float k = f.k;
+    const auto shape = torn::tape(w, h, seed, 6 * k, 3.2f * k);
+    const float angle = deg * shop_pi / 180;
+    const PaperPlace place{ImVec2(centre.x - w * 0.5f, centre.y - h * 0.5f), std::cos(angle), std::sin(angle), ImVec2(w * 0.5f, h * 0.5f)};
+    const ImVec2 white_uv = ImGui::GetFontTexUvWhitePixel();
+    const auto flat = [&](float, float, float) { return white_uv; };
+    Mesh m;
+    const ImVec2 off(1.5f * k, 3 * k);
+    const ImU32 shade = IM_COL32(0, 0, 0, 80), silver = IM_COL32(178, 181, 187, 238);
+    paper_mesh(m, shape, place, off, shade, flat, 0, 0, 1);
+    paper_fringe(m, shape, place, off, shade, flat, 0, 0, 1);
+    paper_mesh(m, shape, place, ImVec2(0, 0), silver, flat, 0, 0, 1);
+    paper_fringe(m, shape, place, ImVec2(0, 0), silver, flat, 0, 0, 1);
+    m.flush(d);
+    // The cloth under the shine: threads along it and across it, kept off the torn teeth.
+    const float inset = 6.5f * k;
+    const auto band = [&](float y0, float y1, ImU32 col) {
+        d->AddQuadFilled(place.xf(inset, y0), place.xf(w - inset, y0), place.xf(w - inset, y1), place.xf(inset, y1), col);
+    };
+    band(h * 0.10f, h * 0.42f, IM_COL32(255, 255, 255, 46)); // the sheen
+    band(h * 0.80f, h * 0.97f, IM_COL32(30, 32, 38, 34));    // a darker foot
+    // Threads: fine and close along it, uneven and fainter across it, as the cloth shows through the coat.
+    torn::Random r(seed + 7);
+    for (float y = 2.0f * k; y < h - 1.2f * k; y += (1.6f + r() * 1.6f) * k)
+        d->AddLine(place.xf(inset, y), place.xf(w - inset, y), IM_COL32(255, 255, 255, static_cast<int>(10 + r() * 16)), 0.7f * k);
+    for (float x = inset + 1.6f * k; x < w - inset; x += (2.6f + r() * 3.4f) * k)
+        d->AddLine(place.xf(x, 1.2f * k), place.xf(x + (r() - 0.5f) * 2 * k, h - 1.2f * k), IM_COL32(52, 55, 62, static_cast<int>(6 + r() * 10)), 0.7f * k);
+}
+// A stand-in picture for one of THE CREW until they send their own: the outline of a head and shoulders on the studio's
+// blue, round, with a white ring.
+void crew_photo(ImDrawList* d, const Fonts& f, ImVec2 c, float r) {
+    const float k = f.k;
+    d->AddCircleFilled(ImVec2(c.x + 4 * k, c.y + 6 * k), r, IM_COL32(0, 0, 0, 90), 72);
+    d->AddCircleFilled(c, r, IM_COL32(4, 60, 140, 255), 72);
+    d->AddCircleFilled(ImVec2(c.x - r * 0.25f, c.y - r * 0.3f), r * 0.62f, IM_COL32(255, 255, 255, 14), 48); // a little light from the top
+    const ImU32 figure = IM_COL32(226, 233, 246, 240);
+    // The shoulders: an ellipse cut to the round (both are convex, so what they share is: the points of each inside the
+    // other, in order round their middle).
+    {
+        const ImVec2 ec(c.x, c.y + r * 0.8f);
+        const float rx = r * 0.64f, ry = r * 0.52f;
+        std::vector<ImVec2> points;
+        for (int i = 0; i < 96; ++i) {
+            const float a = static_cast<float>(i) * 2 * shop_pi / 96;
+            const ImVec2 on_ellipse(ec.x + rx * std::cos(a), ec.y + ry * std::sin(a)), on_round(c.x + r * std::cos(a), c.y + r * std::sin(a));
+            const float ex = (on_round.x - ec.x) / rx, ey = (on_round.y - ec.y) / ry;
+            const float dx = on_ellipse.x - c.x, dy = on_ellipse.y - c.y;
+            if (dx * dx + dy * dy <= r * r) points.push_back(on_ellipse);
+            if (ex * ex + ey * ey <= 1) points.push_back(on_round);
+        }
+        if (points.size() >= 3) {
+            ImVec2 mid(0, 0);
+            for (const auto& q : points) mid.x += q.x, mid.y += q.y;
+            mid.x /= static_cast<float>(points.size()), mid.y /= static_cast<float>(points.size());
+            std::sort(points.begin(), points.end(),
+                      [&](ImVec2 a, ImVec2 b) { return std::atan2(a.y - mid.y, a.x - mid.x) < std::atan2(b.y - mid.y, b.x - mid.x); });
+            d->AddConvexPolyFilled(points.data(), static_cast<int>(points.size()), figure);
+        }
+    }
+    d->AddCircleFilled(ImVec2(c.x, c.y - r * 0.14f), r * 0.3f, figure, 40);
+    d->AddCircle(c, r, IM_COL32_WHITE, 72, 3 * k);
+}
 // Words on a torn paper label, its top left at `at` before it is turned `deg` about its middle. Returns its size.
 ImVec2 paper_label(ImDrawList* d, const Fonts& f, ImFont* font, float size, ImVec2 at, std::string_view words, PaperKind kind, std::uint32_t seed,
                    float deg, ImU32 ink, ImVec2 pad, float spacing = 0, float edge = 2.6f, float ends = 10) {
@@ -4958,8 +5023,9 @@ template <class Picture> void print_card(ImDrawList* d, const Fonts& f, ImVec2 a
         d->AddText(sharp(marker(f, caption_size * k), caption_size * k), caption_size * k, ImVec2(at.x + side + 2 * k, b.y - foot + 6 * k), shop_ink, caption.data(),
                    caption.data() + caption.size());
     if (tape) {
-        const float tw = 130 * k, th = 34 * k, tx = at.x + (b.x - at.x - tw) * 0.5f, ty = at.y - 16 * k;
-        d->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + tw, ty + th), IM_COL32(236, 232, 214, 200), soft_edge);
+        std::uint32_t seed = 17;
+        for (const char c : caption) seed = seed * 31 + static_cast<unsigned char>(c);
+        duct_tape(d, f, ImVec2((at.x + b.x) * 0.5f, at.y + 1 * k), 130 * k, 34 * k, (seed % 2 ? 3.0f : -2.5f), seed);
     }
     rotate_since(d, start, deg * shop_pi / 180, ImVec2((at.x + b.x) * 0.5f, (at.y + b.y) * 0.5f));
 }
@@ -5347,9 +5413,7 @@ void member_card(ImDrawList* d, const Fonts& f, const studio::market::CrewMember
     ImFont* nf = anton(f, 38 * k);
     const auto [nt, nb] = caps_of(nf, 38 * k);
     d->AddText(sharp(nf, 38 * k), 38 * k, ImVec2(ca.x + 18 * k, y - nt), IM_COL32_WHITE, upper(std::string(member.name)).c_str());
-    y += (nb - nt) + 12 * k;
-    text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(ca.x + 18 * k, y), blue_light, upper(std::string(member.role)), 1.8f * k);
-    y += 24 * k;
+    y += (nb - nt) + 14 * k;
     ImGui::PushClipRect(ImVec2(ca.x + 18 * k, y), ImVec2(cb.x - 18 * k, y + 60 * k), true);
     paragraph(d, body(f, 13 * k), 13 * k, ImVec2(ca.x + 18 * k, y), w - 36 * k, IM_COL32(243, 243, 239, 190), std::string(member.about));
     ImGui::PopClipRect();
@@ -5536,7 +5600,7 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         fx += 30 * k;
         fx += text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(fx, y + 6 * k), faint, "PACKS LIVE ON THUNDERSTORE", 1.5f * k) + 30 * k;
         text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(fx, y + 6 * k), faint, "BUILT BY 22SH, FOURTH, NORMS, STEEZ", 1.5f * k);
-        if (studio::market::show_samples) {
+        if constexpr (studio::market::show_samples) {
             const float sw = spaced_width(mont(f, 12 * k), 12 * k, "SAMPLE PACKS SHOWN", 1.5f * k);
             text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(ix + iw - sw, y + 6 * k), faint, "SAMPLE PACKS SHOWN", 1.5f * k);
         }
@@ -5812,33 +5876,35 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
 
 // ---- the sample covers, made once ----
 void make_sample_covers() {
-    static std::atomic<bool> started{};
-    if (!studio::market::show_samples || started.exchange(true)) return;
-    try {
-        std::thread([] {
-            std::error_code error;
-            for (std::size_t i = 0; i < studio::market::samples.size(); ++i) {
-                const auto path = studio::market::sample_cover(i);
-                if (std::filesystem::is_regular_file(path, error)) continue;
-                const auto& s = studio::market::samples[i];
-                CoverDesign c;
-                c.base = std::string(s.base);
-                c.banner = std::string(s.banner);
-                c.font = std::string(s.font);
-                c.place = std::string(s.place);
-                c.title = std::string(s.title);
-                c.tag = std::string(s.stance);
-                c.seed = static_cast<std::uint32_t>(i * 7 + 3);
-                const auto rgba = make_cover(c, 512);
-                const auto png = cover_png(rgba, 512);
-                if (png.empty()) continue;
-                std::filesystem::create_directories(path.parent_path(), error);
-                std::ofstream out(path, std::ios::binary);
-                out.write(png.data(), static_cast<std::streamsize>(png.size()));
-            }
-            release_cover_art();
-        }).detach();
-    } catch (...) {}
+    if constexpr (studio::market::show_samples) {
+        static std::atomic<bool> started{};
+        if (started.exchange(true)) return;
+        try {
+            std::thread([] {
+                std::error_code error;
+                for (std::size_t i = 0; i < studio::market::samples.size(); ++i) {
+                    const auto path = studio::market::sample_cover(i);
+                    if (std::filesystem::is_regular_file(path, error)) continue;
+                    const auto& s = studio::market::samples[i];
+                    CoverDesign c;
+                    c.base = std::string(s.base);
+                    c.banner = std::string(s.banner);
+                    c.font = std::string(s.font);
+                    c.place = std::string(s.place);
+                    c.title = std::string(s.title);
+                    c.tag = std::string(s.stance);
+                    c.seed = static_cast<std::uint32_t>(i * 7 + 3);
+                    const auto rgba = make_cover(c, 512);
+                    const auto png = cover_png(rgba, 512);
+                    if (png.empty()) continue;
+                    std::filesystem::create_directories(path.parent_path(), error);
+                    std::ofstream out(path, std::ios::binary);
+                    out.write(png.data(), static_cast<std::streamsize>(png.size()));
+                }
+                release_cover_art();
+            }).detach();
+        } catch (...) {}
+    }
 }
 
 // ---- the shop ----
@@ -6025,18 +6091,75 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
             if (!line.empty())
                 text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(x + 26 * k, y + 30 * k + (nb - nt) + 18 * k), blue_light, line, 1.8f * k);
             // A strip of tape holding it up.
-            const int start = d->VtxBuffer.Size;
-            d->AddRectFilled(ImVec2(x + w * 0.5f - 50 * k, y - 14 * k), ImVec2(x + w * 0.5f + 50 * k, y + 14 * k), IM_COL32(236, 232, 214, 190), soft_edge);
-            rotate_since(d, start, ((s++ % 2) ? -3.0f : 4.0f) * shop_pi / 180, ImVec2(x + w * 0.5f, y));
+            duct_tape(d, f, ImVec2(x + w * 0.5f, y), 104 * k, 28 * k, (s % 2) ? -3.0f : 4.0f, s);
+            ++s;
             x += w + gap;
         }
         y += h + 60 * k;
     };
     names_row("BUILT BY", PaperKind::blue, 111, {{"22SH", ""}, {"FOURTH", ""}, {"NORMS", ""}, {"STEEZ", ""}});
+    // THE CREW: a card each with their picture, their name and their page on Thunderstore (the card opens it).
     {
-        std::vector<std::pair<std::string, std::string>> crew;
-        for (const auto& member : studio::market::crew_members) crew.emplace_back(upper(std::string(member.name)), upper(std::string(member.role)));
-        names_row("THE CREW", PaperKind::white, 121, crew);
+        const auto head = paper_label(d, f, anton(f, 40 * k), 40 * k, ImVec2(ix, y), "THE CREW", PaperKind::white, 121, -1.2f, shop_ink,
+                                      ImVec2(26 * k, 13 * k), 1 * k);
+        y += head.y + 30 * k;
+        const auto& crew = studio::market::crew_members;
+        const float gap = 22 * k, count = static_cast<float>(std::clamp<std::size_t>(crew.size(), 4, 5));
+        const float w = (iw - gap * (count - 1)) / count, h = 296 * k;
+        const ImU32 card = IM_COL32(14, 15, 18, 250);
+        float x = ix;
+        std::uint32_t s = 121;
+        for (const auto& member : crew) {
+            if (x + w > ix + iw + 1) x = ix, y += h + gap;
+            ImGui::PushID(std::string(member.team).c_str());
+            bool lit = false;
+            const bool pressed = hit("##crewpage", ImVec2(x, y), ImVec2(x + w, y + h), &lit);
+            ImGui::PopID();
+            const float lift = lit ? 4 * k : 0;
+            const ImVec2 ca(x, y - lift), cb(x + w, y + h - lift);
+            d->AddRectFilled(ImVec2(ca.x + 8 * k, ca.y + 10 * k + lift), ImVec2(cb.x + 8 * k, cb.y + 10 * k + lift), IM_COL32(0, 0, 0, 90));
+            d->AddRectFilled(ca, cb, card);
+            d->AddRectFilled(ca, ImVec2(cb.x, ca.y + 4 * k), blue);
+            const float r = 62 * k;
+            crew_photo(d, f, ImVec2((ca.x + cb.x) * 0.5f, ca.y + 34 * k + r), r);
+            float ty = ca.y + 34 * k + r * 2 + 30 * k;
+            ImFont* nf = anton(f, 40 * k);
+            const auto [nt, nb] = caps_of(nf, 40 * k);
+            const auto name = elide(nf, 40 * k, upper(std::string(member.name)), w - 32 * k);
+            const float nw = text_size(nf, 40 * k, name.c_str()).x;
+            d->AddText(nf, 40 * k, ImVec2((ca.x + cb.x - nw) * 0.5f, ty - nt), IM_COL32_WHITE, name.c_str());
+            ty += (nb - nt) + 16 * k;
+            // THUNDERSTORE and an arrow out, then where it goes.
+            ImFont* lf = mont(f, 12 * k);
+            const auto [lt, lb] = caps_of(lf, 12 * k);
+            const float lw = spaced_width(lf, 12 * k, "THUNDERSTORE", 1.8f * k), aw = 16 * k;
+            const float lx = (ca.x + cb.x - lw - aw) * 0.5f;
+            const ImU32 link = lit ? IM_COL32_WHITE : blue_light;
+            text_spaced(d, lf, 12 * k, ImVec2(lx, ty - lt), link, "THUNDERSTORE", 1.8f * k);
+            {
+                const ImVec2 a0(lx + lw + 7 * k, ty + (lb - lt) - 1 * k), a1(a0.x + 8 * k, a0.y - 8 * k);
+                d->AddLine(a0, a1, link, 1.8f * k);
+                d->AddLine(ImVec2(a1.x - 5.5f * k, a1.y), a1, link, 1.8f * k);
+                d->AddLine(ImVec2(a1.x, a1.y + 5.5f * k), a1, link, 1.8f * k);
+            }
+            ty += (lb - lt) + 12 * k;
+            {
+                const auto where = "/p/" + std::string(member.team);
+                ImFont* wf = body(f, 12 * k);
+                const auto shown = elide(wf, 12 * k, where, w - 32 * k);
+                const float ww = text_size(wf, 12 * k, shown.c_str()).x;
+                text(d, wf, 12 * k, ImVec2((ca.x + cb.x - ww) * 0.5f, ty), IM_COL32(243, 243, 239, 150), shown);
+            }
+            duct_tape(d, f, ImVec2((ca.x + cb.x) * 0.5f, ca.y), 104 * k, 28 * k, (s % 2) ? 3.5f : -3.0f, s);
+            ++s;
+            if (lit && nav().keys) chosen_outline(d, ca, cb, k);
+            if (pressed) {
+                studio::market::open_team_page(member.team);
+                say("Opening " + std::string(member.name) + "'s page on Thunderstore in your browser.");
+            }
+            x += w + gap;
+        }
+        y += h + 60 * k;
     }
     // What it stands on, line by line.
     const auto lines = [&](std::string_view title, PaperKind kind, std::uint32_t seed, const std::vector<std::pair<std::string, std::string>>& rows) {
@@ -9370,6 +9493,7 @@ void draw_animation_studio_loading() {
 void draw_animation_studio() {
     auto& s = state();
     auto& u = ui();
+    studio::build_library_when_needed(studio::is_open());
     if (!studio::is_open()) {
         u.was_open = false;
         return;

@@ -62,6 +62,34 @@ inline Paper piece(float w, float h, std::uint32_t seed, float edge = 3.2f, floa
         p.right.push_back({x1 + (ends * 0.25f + std::abs(wr(y) + (r() - 0.5f) * ends * (r() < 0.15f ? 1.6f : 0.8f))), y});
     return p;
 }
+// A strip of tape w x h torn off its roll: straight along its sides, its ends torn across in sharp teeth (`teeth` deep,
+// about `step` apart).
+inline Paper tape(float w, float h, std::uint32_t seed, float teeth = 6, float step = 3) {
+    Random r(seed);
+    Paper p;
+    const float x0 = teeth, x1 = std::max(x0 + 1, w - teeth);
+    const float across = std::max(8.0f, (x1 - x0) / 10);
+    for (float x = x0;; x += across) {
+        const float cx = std::min(x, x1);
+        p.top.push_back({cx, (r() - 0.5f) * 0.5f});
+        p.foot.push_back({cx, h + (r() - 0.5f) * 0.5f});
+        if (cx >= x1) break;
+    }
+    // A tear runs a little slanted across the tape, its teeth long and short by turns.
+    const auto end = [&](std::vector<Point>& out, float base, float dir, float top, float foot) {
+        const float slant = (r() - 0.5f) * teeth * 0.8f;
+        bool tooth = r() < 0.5f;
+        for (float y = top + step * (0.3f + r() * 0.5f); y < foot - step * 0.25f; y += step * (0.55f + r() * 0.8f)) {
+            const float along = (y - top) / std::max(1.0f, foot - top) - 0.5f;
+            const float depth = tooth ? teeth * (0.55f + r() * 0.45f) : teeth * (0.08f + r() * 0.22f);
+            out.push_back({base + dir * std::max(0.5f, depth + slant * along), y});
+            tooth = !tooth;
+        }
+    };
+    end(p.left, x0, -1, p.top.front().y, p.foot.front().y);
+    end(p.right, x1, 1, p.top.back().y, p.foot.back().y);
+    return p;
+}
 // A band across the page, `w` wide (and a little past both sides), torn along its top and its foot.
 inline Paper band(float w, float h, std::uint32_t seed, float edge = 14) {
     Random r(seed);
