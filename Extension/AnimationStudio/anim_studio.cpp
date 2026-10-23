@@ -1097,13 +1097,31 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
         logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
         return tricks;
     }
-    // Test in game: that trick plays, on any pop, over whatever else there is of it.
+    // Test in game: that trick plays, on any pop, over whatever else there is of it in its own stance. Its other stance
+    // versions (the same trick and pop made fakie, switch or switch fakie: make_stance_version) play in theirs, the newest
+    // of each, so every stance is tried with its own version. (They were all stood down, and in switch the tested one
+    // played mirrored instead of the switch version made for it.)
     if (!test_trick.empty())
         if (const auto t = std::find_if(requested.begin(), requested.end(), [&](const Preset& p) { return p.name == test_trick; }); t != requested.end()) {
-            for (auto& p : requested) if (p.trick == t->trick && p.name != t->name) p.active = false;
+            const auto stance_of = [](const Preset& p) {
+                return std::pair<bool, bool>{(p.stance == "goofy") != p.switch_stance.value_or(false), p.fakie.value_or(false)};
+            };
+            std::map<std::pair<bool, bool>, Preset*> others;
+            for (auto& p : requested) {
+                if (p.trick != t->trick) continue;
+                p.active = false;
+                if (p.name == t->name || p.pop != t->pop || stance_of(p) == stance_of(*t)) continue;
+                auto& newest = others[stance_of(p)];
+                if (!newest || p.saved_at > newest->saved_at) newest = &p;
+            }
             t->active = true;
             t->pack_pop = std::string{};
-            logging::log(Level::info, Channel::skater, "Animation Studio: testing {} in game.", t->name);
+            for (auto& [stance, p] : others) {
+                p->active = true;
+                p->pack_pop = std::string{};
+            }
+            logging::log(Level::info, Channel::skater, "Animation Studio: testing {} in game{}.", t->name,
+                         others.empty() ? std::string{} : " (and its " + std::to_string(others.size()) + " other stance versions, each in its stance)");
         }
     std::map<std::string, std::shared_ptr<const Clip>> library_clips; // read once for every saved trick of a kind
     for (const auto& entry : saved_jsons(folder)) {
