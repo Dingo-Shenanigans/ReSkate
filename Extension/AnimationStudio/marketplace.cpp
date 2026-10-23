@@ -618,7 +618,7 @@ View view() {
             p.tricks = found->second.tricks;
             p.readme = found->second.state;
         }
-        p.crew = crew_member(p.owner) != nullptr;
+        p.crew = crew_member(p.owner) != nullptr || builder_of(p.owner) != nullptr; // THE CREW, and BUILT BY with a team
         if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
     }
     return v;

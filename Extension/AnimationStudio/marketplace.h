@@ -42,7 +42,7 @@ struct CrewMember {
 inline constexpr std::array crew_members{
     CrewMember{"leafbro", "leaf.bro", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
     CrewMember{"Myawsometeam", "Setsu", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
-    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them.", 0.5f, 0.42f},
     CrewMember{"smonky", "smonk", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
     CrewMember{"reskate_animation_editor", "philsteezy", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
     CrewMember{"Heatz", "Heatz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
@@ -60,6 +60,16 @@ inline constexpr std::array builders{
     Builder{"Norms", "norms", ""},
     Builder{"Steez", "steez", ""},
 };
+// One of BUILT BY by their Thunderstore team (in any case), or none: their packs are CREW CERTIFIED too.
+inline const Builder* builder_of(std::string_view team) {
+    if (team.empty()) return nullptr;
+    for (const auto& builder : builders)
+        if (builder.team.size() == team.size() && std::equal(team.begin(), team.end(), builder.team.begin(), [](char a, char b) {
+                return (a >= 'A' && a <= 'Z' ? a + 32 : a) == (b >= 'A' && b <= 'Z' ? b + 32 : b);
+            }))
+            return &builder;
+    return nullptr;
+}
 // Sample packs, so the shop can be seen full before it is: shown after the real ones, with covers made by the cover
 // designer, and nothing to GET. Off: the release shows the real packs only.
 inline constexpr bool show_samples = false;
