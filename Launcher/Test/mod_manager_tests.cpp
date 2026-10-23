@@ -466,6 +466,46 @@ int main() {
               "Only a retired mod is left out");
     }
 
+    // A mod pack's dependencies: only what its install brought in (brought-in.json), and nothing another mod needs.
+    {
+        const auto packs = root / L"pack-mods";
+        const auto manifest = [&](const char* folder, const char* dependencies) {
+            write(packs / folder / "manifest.json",
+                  std::string(R"({"name":"x","version_number":"1.0.0","dependencies":)") + dependencies + "}");
+        };
+        manifest("Me-Pack", R"(["Team-A-1.0.0","Team-B-2.0.0","Team-Had-1.0.0"])");
+        manifest("Team-A", R"(["Team-C-1.0.0"])");
+        manifest("Team-B", "[]");
+        manifest("Team-C", "[]");
+        manifest("Team-Had", "[]");
+        manifest("Me-Other", R"(["team-b-2.0.0"])");
+        manifest("Team-D", "[]");
+        const std::vector<std::string> all{"Team-D", "Team-Had", "Team-C", "Me-Other", "Team-B", "Team-A", "Me-Pack"};
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all).empty(), "A pack with no record offered mods");
+        // Team-Had was installed before the pack: its install brought in A, B and C only.
+        launcher_mods::record_brought_in(packs, "Me-Pack", {"Team-A", "Team-C"});
+        launcher_mods::record_brought_in(packs, "me-pack", {"Team-B", "Team-A"});
+        check(launcher_mods::brought_in(packs, "Me-Pack") == std::vector<std::string>{"Team-A", "Team-C", "Team-B"},
+              "What a pack brought in was not kept, or kept twice");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all) == std::vector<std::string>{"Team-C", "Team-A"},
+              "A pack's brought-in mods were not offered, or one another mod needs (or the player had) was");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack", "Me-Other"}, all) ==
+                  std::vector<std::string>{"Team-C", "Team-B", "Team-A"},
+              "A brought-in mod only removed mods need was not offered");
+        check(launcher_mods::orphaned_dependencies(packs, {"Team-D"}, all).empty(), "A mod that brought nothing in offered some");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack", "Team-A"}, all) == std::vector<std::string>{"Team-C"},
+              "A brought-in mod removed already was offered again");
+        launcher_mods::forget_brought_in(packs, {"me-pack"});
+        check(launcher_mods::brought_in(packs, "Me-Pack").empty(), "An uninstalled pack's record was kept");
+        // A dependency with a name longer than a folder's is installed cut, as thunderstore::folder_for has it.
+        const std::string long_name = "Team-" + std::string(70, 'x');
+        manifest("Me-Long", (R"([")" + long_name + R"(-1.0.0"])").c_str());
+        launcher_mods::record_brought_in(packs, "Me-Long", {long_name.substr(0, 64)});
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Long"}, {"Me-Long", long_name.substr(0, 64)}) ==
+                  std::vector<std::string>{long_name.substr(0, 64)},
+              "A dependency with a long name was not matched to its cut folder");
+    }
+
     {
         // What the mods give the game's data, for emptying the game's shader cache when it changes: the mods
         // with a layout, in load order, with their files, and the variants in play.

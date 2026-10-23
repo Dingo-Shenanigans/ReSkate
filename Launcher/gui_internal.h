@@ -617,6 +617,10 @@ struct ModsPanel {
     std::string message;
     bool message_error{};
     std::vector<std::string> confirm_remove;   // folders awaiting "Uninstall" confirmation
+    // The mods those brought in that nothing else needs (launcher_mods::orphaned_dependencies),
+    // offered with them; worked out once for the folders in remove_extras_for.
+    std::vector<std::string> remove_extras, remove_extras_for;
+    std::vector<char> remove_extras_picked;   // per entry of remove_extras: ticked to go too
     fs::path conflict_source;            // install waiting for "Replace" confirmation
     std::string conflict_name;
 
