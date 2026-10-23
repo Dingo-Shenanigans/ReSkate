@@ -1299,8 +1299,11 @@ bool face_studio_stance(State& s) {
             return mirror_animation(only).tracks;
         };
         Animation edits = s.edits;
-        // Saving puts it back on the foot it was made on (save mirrors it back): only the studio shows it mirrored.
-        if (!edits.keep_leads_right) edits.keep_leads_right = *lead;
+        // A recording is saved back on the foot it was made on (save mirrors it back): only the studio shows it mirrored.
+        // A trick of the game's own library has no foot of its own (the game plays its clips either way round): it is
+        // saved in the stance it was edited in, as it always was, so Exact stance and its stance versions stay as they were.
+        const bool own_foot = edits.source.kind != "native_asset";
+        if (own_foot && !edits.keep_leads_right) edits.keep_leads_right = *lead;
         const auto metadata = edits.clip;
         edits.clip = {};
         edits = mirror_animation(edits);
@@ -1312,8 +1315,8 @@ bool face_studio_stance(State& s) {
         s.clip = std::move(clip);
         s.edits = std::move(edits);
         s.status = std::string("Made leading with the ") + (want_right ? "left" : "right") + " foot: shown mirrored into your " +
-                   (want_right ? "goofy" : "regular") + " stance, the game's way. Left is left - edit as you see it. "
-                   "Saving keeps it on its own foot.";
+                   (want_right ? "goofy" : "regular") + " stance, the game's way. Left is left - edit as you see it." +
+                   (s.edits.keep_leads_right ? " Saving keeps it on its own foot." : "");
         logging::log(Level::info, Channel::skater, "Animation Studio: {} mirrored into the studio's {} stance for editing.",
                      s.edits.name.empty() ? std::string("the trick") : s.edits.name, want_right ? "goofy" : "regular");
         return true;
