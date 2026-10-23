@@ -4923,11 +4923,11 @@ ImVec2 label_size(const Fonts& f, ImFont* font, float size, std::string_view wor
     (void)f;
     return ImVec2(tw + pad.x * 2, (cap_foot - cap_top) + pad.y * 2);
 }
-// The "crew certified" stamp: worn paper, marker. Returns its size.
-ImVec2 crew_stamp(ImDrawList* d, const Fonts& f, ImVec2 at, float size, std::uint32_t seed, float deg = -3, PaperKind kind = PaperKind::white) {
-    const float k = f.k;
-    (void)k;
-    return paper_label(d, f, marker(f, size), size, at, "crew certified", kind, seed, deg, shop_ink, ImVec2(size * 0.75f, size * 0.42f), 0, 1.8f, 6);
+// The "crew certified" stamp: worn paper, marker; "dev" on blue paper for a pack by one of BUILT BY. Returns its size.
+ImVec2 crew_stamp(ImDrawList* d, const Fonts& f, ImVec2 at, float size, std::uint32_t seed, float deg = -3, PaperKind kind = PaperKind::white,
+                  bool dev = false) {
+    return paper_label(d, f, marker(f, size), size, at, dev ? "dev" : "crew certified", dev ? PaperKind::blue : kind, seed, deg, shop_ink,
+                       ImVec2(size * 0.75f, size * 0.42f), 0, 1.8f, 6);
 }
 // A band of torn paper right across the screen, `top` to `top + h`.
 void paper_band(ImDrawList* d, const Fonts& f, float width, float top, float h, PaperKind kind, std::uint32_t seed, float shadow = 0.5f, float edge = 14) {
@@ -5178,7 +5178,7 @@ void shop_card(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     const std::string by = "by " + maker_of(p);
     const float by_w = text_size(mont(f, 12 * k), 12 * k, by.c_str()).x;
     d->AddText(sharp(mont(f, 12 * k), 12 * k), 12 * k, ImVec2(x, ia.y + 45 * k), p.crew ? blue_light : soft, by.c_str());
-    if (p.crew) crew_stamp(d, f, ImVec2(x + by_w + 10 * k, ia.y + 42 * k), 12 * k, static_cast<std::uint32_t>(p.full_name.size() * 31 + 300));
+    if (p.crew) crew_stamp(d, f, ImVec2(x + by_w + 10 * k, ia.y + 42 * k), 12 * k, static_cast<std::uint32_t>(p.full_name.size() * 31 + 300), -3, PaperKind::white, p.dev);
     // tricks | stance                downloads
     const float my = ia.y + 74 * k;
     const ImU32 meta = IM_COL32(243, 243, 239, 190);
@@ -5427,7 +5427,8 @@ float spotlight_section(ImDrawList* d, const Fonts& f, const studio::View& v, co
     const float byw = text_size(mont(f, 20 * k), 20 * k, "by ").x;
     const auto maker = upper(maker_of(p));
     d->AddText(sharp(mont(f, 20 * k), 20 * k), 20 * k, ImVec2(x + byw + 4 * k, ty), blue_light, maker.c_str());
-    if (p.crew) crew_stamp(d, f, ImVec2(x + byw + 18 * k + text_size(mont(f, 20 * k), 20 * k, maker.c_str()).x, ty - 2 * k), 17 * k, 91 + static_cast<std::uint32_t>(u.spotlight));
+    if (p.crew) crew_stamp(d, f, ImVec2(x + byw + 18 * k + text_size(mont(f, 20 * k), 20 * k, maker.c_str()).x, ty - 2 * k), 17 * k, 91 + static_cast<std::uint32_t>(u.spotlight),
+                           -3, PaperKind::white, p.dev);
     ty += 38 * k;
     std::string meta = std::to_string(p.tricks.size()) + " TRICKS";
     if (!p.stance.empty()) meta += "  /  " + p.stance;
@@ -5797,8 +5798,13 @@ void crew_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         x += w + gap;
     }
     y += 470 * k;
-    const auto* chosen = studio::market::crew_member(u.market_crew);
-    const std::string title = chosen ? "PACKS BY " + upper(std::string(chosen->name)) : "CREW CERTIFIED PACKS";
+    // One of THE CREW, or one of BUILT BY (a pack's maker clicked): their packs alone.
+    const auto* member = studio::market::crew_member(u.market_crew);
+    const auto* dev = member ? nullptr : studio::market::builder_of(u.market_crew);
+    const std::string chosen_name = member ? std::string(member->name) : dev ? std::string(dev->name) : std::string{};
+    const std::string_view chosen_team = member ? member->team : dev ? dev->team : std::string_view{};
+    const bool chosen = !chosen_name.empty();
+    const std::string title = chosen ? "PACKS BY " + upper(chosen_name) : "CREW CERTIFIED PACKS";
     const auto label = paper_label(d, f, anton(f, 40 * k), 40 * k, ImVec2(ix, y), title, PaperKind::blue, 61, -1.2f, IM_COL32_WHITE, ImVec2(26 * k, 13 * k), 1 * k);
     if (chosen) {
         const float bw = shop_button_width(f, "ALL THE CREW", 40 * k);
@@ -5808,10 +5814,11 @@ void crew_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     y += label.y + 30 * k;
     PackList theirs;
     for (const auto* p : all)
-        if (chosen ? same_team(p->owner, chosen->team) : p->crew) theirs.push_back(p);
+        if (chosen ? same_team(p->owner, chosen_team) : p->crew) theirs.push_back(p);
     if (theirs.empty())
         y += paragraph(d, body(f, 17 * k), 17 * k, ImVec2(ix, y), std::min(iw, 820 * k), soft,
-                       chosen ? "No packs out yet. Their first one lands here, and all over the shop, with the CREW CERTIFIED stamp on it."
+                       dev     ? "No packs out yet. Their first one lands here, and all over the shop, with the DEV stamp on it."
+                       : chosen ? "No packs out yet. Their first one lands here, and all over the shop, with the CREW CERTIFIED stamp on it."
                               : "No crew packs out yet. Their first ones land here, and all over the shop, with the CREW CERTIFIED stamp on them.") +
              40 * k;
     else y += shop_grid(d, f, v, m, sorted(std::move(theirs), "new"), ImVec2(ix, y), iw, top, bottom, covers);
@@ -5844,7 +5851,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     // Its stickers.
     {
         float sx = x;
-        if (p.crew) sx += crew_stamp(d, f, ImVec2(sx, ry), 18 * k, 600 + static_cast<std::uint32_t>(p.title.size()), -2).x + 18 * k;
+        if (p.crew) sx += crew_stamp(d, f, ImVec2(sx, ry), 18 * k, 600 + static_cast<std::uint32_t>(p.title.size()), -2, PaperKind::white, p.dev).x + 18 * k;
         if (is_new(p)) sx += paper_label(d, f, marker(f, 18 * k), 18 * k, ImVec2(sx, ry), "new drop", PaperKind::blue, 610, 2, shop_ink, ImVec2(14 * k, 7 * k)).x + 18 * k;
         if (!p.stance.empty()) {
             auto low = p.stance;
@@ -6154,6 +6161,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
         std::string name;
         std::string_view pictures, team, about;
         ImVec2 focus;
+        bool dev{}; // one of BUILT BY: a DEV sticker on the card
     };
     const auto profile_row = [&](std::string_view title, PaperKind kind, std::uint32_t seed, const std::vector<Profile>& people) {
         const auto head = paper_label(d, f, anton(f, 40 * k), 40 * k, ImVec2(ix, y), title, kind, seed, -1.2f, kind == PaperKind::white ? shop_ink : IM_COL32_WHITE,
@@ -6186,6 +6194,9 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
             d->AddRectFilled(ca, cb, card);
             crew_band(d, person.pictures, person.focus, ca, ImVec2(cb.x, ca.y + band), card);
             d->AddRectFilled(ca, ImVec2(cb.x, ca.y + 4 * k), blue);
+            if (person.dev)
+                paper_label(d, f, marker(f, 22 * k), 22 * k, ImVec2(ca.x + 16 * k, ca.y + 20 * k), "dev", PaperKind::blue, s * 13 + 5, -4, shop_ink,
+                            ImVec2(16 * k, 8 * k), 0, 1.8f, 6);
             const float r = 46 * k;
             crew_avatar(d, f, person.pictures, ImVec2(ca.x + 20 * k + r, ca.y + band), r);
             {
@@ -6232,7 +6243,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
     {
         std::vector<Profile> built;
         for (const auto& builder : studio::market::builders)
-            built.push_back({std::string(builder.name), builder.pictures, builder.team, builder.about, ImVec2(builder.focus_x, builder.focus_y)});
+            built.push_back({std::string(builder.name), builder.pictures, builder.team, builder.about, ImVec2(builder.focus_x, builder.focus_y), true});
         profile_row("BUILT BY", PaperKind::blue, 111, built);
         std::vector<Profile> crew;
         for (const auto& m : studio::market::crew_members) crew.push_back({std::string(m.name), m.team, m.team, m.about, ImVec2(m.focus_x, m.focus_y)});

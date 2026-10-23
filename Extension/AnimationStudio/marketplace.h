@@ -61,7 +61,7 @@ inline constexpr std::array builders{
     Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher. Spots a missing semicolon faster than you spot a pebble in your run-up.", 0.5f, 0.39f},
     Builder{"Steez", "steez", "Worthless", "Animation King and back-up scripter. Keys a tre flip by hand, then fixes the script it runs on.", 0.48f, 0.4f},
 };
-// One of BUILT BY by their Thunderstore team (in any case), or none: their packs are CREW CERTIFIED too.
+// One of BUILT BY by their Thunderstore team (in any case), or none: their packs are stamped DEV.
 inline const Builder* builder_of(std::string_view team) {
     if (team.empty()) return nullptr;
     for (const auto& builder : builders)
@@ -96,7 +96,8 @@ struct Pack {
     int rating{};
     std::string icon_file;      // its icon once downloaded (UTF-8 path), "" until then
     bool favorite{}, mine{};    // favorite: liked here (the heart)
-    bool crew{};                // made by one of THE CREW
+    bool crew{};                // made by one of THE CREW, or one of BUILT BY (with `dev`)
+    bool dev{};                 // made by one of BUILT BY: stamped DEV, not CREW CERTIFIED
     std::string installed;      // the version installed here, "" none
     std::string installed_as;   // the pack it became in the library ("" not known: installed before this was kept)
     // Its README, read in the background for every pack (so a search finds a pack by the tricks in it): what its maker

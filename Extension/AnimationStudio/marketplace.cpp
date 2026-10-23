@@ -596,7 +596,8 @@ View view() {
             p.tricks = found->second.tricks;
             p.readme = found->second.state;
         }
-        p.crew = crew_member(p.owner) != nullptr || builder_of(p.owner) != nullptr; // THE CREW, and BUILT BY with a team
+        p.dev = builder_of(p.owner) != nullptr;                // BUILT BY, with a team: DEV
+        p.crew = crew_member(p.owner) != nullptr || p.dev; // THE CREW: CREW CERTIFIED (and in the crew's lists, the devs too)
         if (const auto path = icon_path(p); std::filesystem::is_regular_file(path, error)) p.icon_file = utf8(path);
     }
     return v;
