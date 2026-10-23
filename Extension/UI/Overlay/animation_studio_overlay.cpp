@@ -237,6 +237,26 @@ struct Ui {
     bool browse_assets{};
     bool asset_ready_only{}, asset_inspect{};
     std::array<char, 64> asset_query{}; // the search box over TRICKS
+    std::array<char, 64> pack_query{};  // the search box over MY PACKS
+    bool pack_settings{};               // PACKS > SETTINGS is open (the playlist)
+    float pack_settings_scroll{}, playlist_pick_scroll{};
+    // Watching a saved trick (preview mode): the pack it is from, and where to go back to.
+    std::string preview_pack, preview_name;
+    bool preview_from_pack{};
+    // A trick just put in a pack: the card asking for its other stances in that pack.
+    std::string stance_pack, stance_name;
+    // TRICKS' hover preview: the card under the mouse, since when, and its trick as lines.
+    struct Hover {
+        std::string key;
+        double since{-1};
+        ImVec2 a{}, b{};
+        std::function<std::shared_ptr<const studio::PreviewMotion>()> make;
+        std::shared_ptr<const studio::PreviewMotion> motion;
+        bool tried{};
+    } hover;
+    std::string hover_candidate;
+    ImVec2 hover_candidate_a{}, hover_candidate_b{};
+    std::function<std::shared_ptr<const studio::PreviewMotion>()> hover_candidate_make;
     std::string asset_filter;
     std::string asset_document, asset_json_path;
     std::vector<std::pair<std::string, std::string>> asset_history;
@@ -2015,7 +2035,7 @@ void step_joint(int by) {
 // ---- the screen's state: the menu, the cards over it ----------------------------------------------
 bool any_card_open(const studio::View& v) {
     const auto& u = ui();
-    return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding;
+    return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -2042,6 +2062,7 @@ bool close_card(const studio::View& v) {
     if (u.browser.open) u.browser.open = false;
     else if (u.pack_adding) u.pack_adding = false;
     else if (u.conflicts_open) conflicts_done(v);
+    else if (!u.stance_pack.empty()) u.stance_pack.clear();
     else if (u.save_card) u.save_card = false;
     else if (!v.test_returned.empty()) studio::clear_test_returned();
     else return false;
@@ -2708,6 +2729,86 @@ void open_saved(const std::string& name) {
     say(m);
     ui().names_for = 0;
 }
+// Watching a saved trick (preview mode): the studio plays it with nothing else on screen but a card about it and the
+// buttons to watch it by. `pack`: the pack it was opened from, shown on the card ("" none).
+void preview_trick(const std::string& pack, const std::string& name, bool from_pack) {
+    auto& u = ui();
+    std::string m;
+    if (!studio::preview_saved(name, m)) {
+        say(m);
+        return;
+    }
+    u.preview_pack = pack;
+    u.preview_name = name;
+    u.preview_from_pack = from_pack;
+    u.menu = false;
+    u.names_for = 0;
+}
+// Opens a saved trick to edit, or - one locked to its maker - to watch.
+void open_or_preview(const studio::View& v, const std::string& name, const std::string& pack = {}) {
+    const auto* p = preset_named(v, name);
+    if (p && p->locked) preview_trick(pack, name, !pack.empty());
+    else open_saved(name);
+}
+// A tick box: ticked or not, drawn (the fonts have no tick).
+void tick_box(ImDrawList* d, ImVec2 c, float half, bool ticked, ImU32 colour, float k) {
+    d->AddRect(ImVec2(c.x - half, c.y - half), ImVec2(c.x + half, c.y + half), colour, 2 * k, 0, 2 * k);
+    if (!ticked) return;
+    d->AddLine(ImVec2(c.x - half * 0.6f, c.y), ImVec2(c.x - half * 0.1f, c.y + half * 0.5f), colour, 2.4f * k);
+    d->AddLine(ImVec2(c.x - half * 0.1f, c.y + half * 0.5f), ImVec2(c.x + half * 0.75f, c.y - half * 0.6f), colour, 2.4f * k);
+}
+// The stance versions of a trick: your own stance, fakie, switch and switch fakie, ticked where there is one (among
+// `among`, or all your saved tricks when empty). A ticked one opens it; an empty one makes it from `name` and opens it.
+// Returns the height it took.
+float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w,
+                      const std::vector<std::string>& among = {}, const std::string& pack = {}, bool* acted = nullptr) {
+    const auto* p = preset_named(v, name);
+    if (!p || p->trick.starts_with("native:")) return 0;
+    const float k = f.k;
+    std::array<std::string, 4> have{};
+    for (const auto& q : v.presets) {
+        if (q.trick != p->trick || q.pop != p->pop) continue;
+        if (!among.empty() && std::find(among.begin(), among.end(), q.name) == among.end()) continue;
+        const auto version = static_cast<std::size_t>(studio::stance_version(q.stance, q.switch_stance, q.fakie, v.own_lead_right));
+        if (have[version].empty() || q.name == name) have[version] = q.name;
+    }
+    static constexpr std::array<const char*, 4> labels{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+    float x = at.x, y = at.y;
+    text(d, f.bold, 11 * k, ImVec2(x, y + 9 * k), faint, "STANCES");
+    x += 70 * k;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        const float cw = text_size(f.bold, 12 * k, labels[i]).x + 40 * k;
+        if (x + cw > at.x + w) x = at.x + 70 * k, y += 34 * k;
+        const ImVec2 a(x, y), b(x + cw, y + 30 * k);
+        ImGui::PushID(static_cast<int>(i));
+        bool lit = false;
+        const bool done = !have[i].empty();
+        if (hit("##stance", a, b, &lit, !p->locked || done)) {
+            if (acted) *acted = true;
+            if (done) open_or_preview(v, have[i], pack);
+            else {
+                std::string made, m;
+                if (studio::make_stance_version(name, static_cast<int>(i), made, m)) open_saved(made);
+                say(m);
+            }
+        }
+        d->AddRectFilled(a, b, lit ? IM_COL32(60, 62, 70, 240) : done ? IM_COL32(18, 52, 92, 240) : IM_COL32(28, 29, 33, 240), 4 * k);
+        tick_box(d, ImVec2(a.x + 14 * k, a.y + 15 * k), 6 * k, done, done ? blue_light : soft, k);
+        text(d, f.bold, 12 * k, ImVec2(a.x + 28 * k, a.y + 8 * k), done ? white : soft, labels[i]);
+        ImGui::PopID();
+        x += cw + 6 * k;
+    }
+    return y + 34 * k - at.y;
+}
+// A trick was put in a pack: the card asks for its other stances there (only for a whole trick, and only when the pack
+// is missing one).
+void ask_stances(const studio::View& v, const std::string& pack, const std::string& name) {
+    const auto* p = preset_named(v, name);
+    if (!p || p->trick.starts_with("native:")) return;
+    auto& u = ui();
+    u.stance_pack = pack;
+    u.stance_name = name;
+}
 // One of the game's tricks: its name and kind, how many of yours there are of it, and its pops to open.
 void game_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const TrickCard& c, ImVec2 a, ImVec2 size, int saved) {
     const float k = f.k, strip = 46 * k;
@@ -2891,6 +2992,11 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         tag(d, f, ImVec2(right_edge, a.y + 14 * k), "PLAYS", IM_COL32(36, 150, 76, 255));
         right_edge -= 6 * k;
     }
+    if (p && p->locked) {
+        right_edge -= tag_width(f, "LOCKED");
+        tag(d, f, ImVec2(right_edge, a.y + 14 * k), "LOCKED", IM_COL32(120, 34, 36, 255));
+        right_edge -= 6 * k;
+    }
     std::size_t packs = 0;
     for (const auto& pack : v.packs) packs += std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end();
     if (packs) {
@@ -2905,7 +3011,10 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, what, size.x - 36 * k));
     if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
     const float bw = (size.x - 28 * k - 8 * k) / 2;
-    if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "EDIT", Look::blue)) open_saved(name);
+    if (p && p->locked) {
+        if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "PREVIEW", Look::blue)) preview_trick({}, name, false);
+    } else if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "EDIT", Look::blue))
+        open_saved(name);
     if (action(d, f, "##test", ImVec2(a.x + 22 * k + bw, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "TEST IN GAME")) {
         std::string m;
         studio::clear_test_returned();
@@ -3002,7 +3111,7 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
             ImGui::PushID(pack.name.c_str());
             if (chip(d, f, "##inpack", ImVec2(cx, y), pack.name, in)) {
                 std::string m;
-                studio::set_pack_member(pack.name, name, !in, m);
+                if (studio::set_pack_member(pack.name, name, !in, m) && !in) ask_stances(v, pack.name, name);
                 say(m);
             }
             ImGui::PopID();
@@ -3013,13 +3122,29 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         if (chip(d, f, "##newpackwith", ImVec2(cx, y), "+ NEW PACK", false)) {
             const auto pack = unique_pack_name(v);
             std::string m;
-            if (studio::create_preset_pack(m, pack)) studio::set_pack_member(pack, name, true, m);
+            if (studio::create_preset_pack(m, pack) && studio::set_pack_member(pack, name, true, m)) ask_stances(v, pack, name);
             say(m);
         }
         y += 48 * k;
     }
+    if (p && !p->trick.starts_with("native:")) {
+        heading(d, f, ImVec2(x, y), w, "Its stances");
+        y += 32 * k;
+        y += stance_versions(d, f, v, name, ImVec2(x, y), w) + 4 * k;
+        y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
+                       "A version for each stance, to change on its own: with Trick matching on Exact stance each plays only in its "
+                       "stance, so every way you do the trick can look its own.") + 14 * k;
+    }
+    if (p && p->locked) {
+        y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, skate_theme::warning,
+                       "Locked to its maker" + (p->made_by.empty() ? std::string{} : " (" + p->made_by + ")") +
+                           ": it plays, tests and previews, but cannot be opened to edit, copied or shared again.") + 12 * k;
+    }
     const float half = (w - 10 * k) / 2;
-    if (action(d, f, "##drawedit", ImVec2(x, y), ImVec2(half, 42 * k), "OPEN IN EDITOR", Look::blue)) open_saved(name);
+    if (p && p->locked) {
+        if (action(d, f, "##drawedit", ImVec2(x, y), ImVec2(half, 42 * k), "PREVIEW", Look::blue)) preview_trick({}, name, false);
+    } else if (action(d, f, "##drawedit", ImVec2(x, y), ImVec2(half, 42 * k), "OPEN IN EDITOR", Look::blue))
+        open_saved(name);
     if (action(d, f, "##drawtest", ImVec2(x + half + 10 * k, y), ImVec2(half, 42 * k), "TEST IN GAME", Look::paper)) {
         std::string m;
         studio::clear_test_returned();
@@ -3172,8 +3297,106 @@ void library_news() {
     if (was_running && !build.running && !build.message.empty()) say(build.message);
     was_running = build.running;
 }
+// ---- the hover preview ----------------------------------------------------------------------------
+// With PREVIEW on (TRICKS, top right), a trick card held under the mouse a moment plays its trick in a little window
+// beside it - the skater as lines, his board in blue - once, and fades away. Nothing is loaded into the studio.
+void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<std::shared_ptr<const studio::PreviewMotion>()> make) {
+    if (!ImGui::IsMouseHoveringRect(a, b) || !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) return;
+    auto& u = ui();
+    u.hover_candidate = key;
+    u.hover_candidate_a = a;
+    u.hover_candidate_b = b;
+    u.hover_candidate_make = std::move(make);
+}
+void hover_preview(const Fonts& f, const studio::View& v) {
+    auto& u = ui();
+    auto& h = u.hover;
+    const double now = ImGui::GetTime();
+    if (!v.hover_preview || u.hover_candidate.empty() || u.blocked) {
+        h = {};
+        return;
+    }
+    if (h.key != u.hover_candidate) {
+        h = {};
+        h.key = u.hover_candidate;
+        h.since = now;
+        h.a = u.hover_candidate_a;
+        h.b = u.hover_candidate_b;
+        h.make = u.hover_candidate_make;
+    }
+    if (!h.tried) {
+        if (now - h.since < 0.35) return; // a moment held on it, not passed over
+        h.tried = true;
+        h.motion = h.make ? h.make() : nullptr;
+        h.since = now; // it plays from here
+    }
+    if (!h.motion || h.motion->frames.empty()) return;
+    const float k = f.k, played = static_cast<float>(now - h.since), length = std::max(h.motion->duration, 0.1f);
+    float alpha = std::min(1.0f, played / 0.15f);
+    if (played > length + 0.3f) alpha = 1.0f - (played - length - 0.3f) / 0.4f;
+    if (alpha <= 0) return; // played, and gone until another card is held
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float w = 300 * k, hgt = 330 * k;
+    ImVec2 a(h.b.x + 14 * k, h.a.y - 40 * k);
+    if (a.x + w > display.x - 10 * k) a.x = h.a.x - 14 * k - w;
+    a.y = std::clamp(a.y, 10 * k, display.y - hgt - 10 * k);
+    const ImVec2 b(a.x + w, a.y + hgt);
+    auto* d = ImGui::GetForegroundDrawList();
+    const auto fade = [&](ImU32 c) { return (c & 0x00FFFFFFu) | (static_cast<ImU32>(static_cast<float>(c >> 24) * alpha) << 24); };
+    d->AddRectFilled(ImVec2(a.x + 6 * k, a.y + 8 * k), ImVec2(b.x + 6 * k, b.y + 8 * k), fade(IM_COL32(0, 0, 0, 120)), 8 * k);
+    d->AddRectFilled(a, b, fade(IM_COL32(16, 17, 20, 246)), 8 * k);
+    d->AddRect(a, b, fade(IM_COL32(1, 131, 255, 160)), 8 * k, 0, 2 * k);
+    text(d, f.heading, 11 * k, ImVec2(a.x + 14 * k, a.y + 10 * k), fade(blue_light), "PREVIEW");
+    // A three-quarter view, fitted to everything the trick does.
+    constexpr float yaw = 0.62f, pitch = 0.24f;
+    const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
+    const auto flat = [&](const studio::Vec3& q) {
+        const float x = q[0] * cy + q[2] * sy, z = -q[0] * sy + q[2] * cy;
+        return ImVec2(x, -(q[1] * cp - z * sp));
+    };
+    ImVec2 lo(1e9f, 1e9f), hi(-1e9f, -1e9f);
+    for (int c = 0; c < 8; ++c) {
+        const studio::Vec3 corner{(c & 1) ? h.motion->high[0] : h.motion->low[0], (c & 2) ? h.motion->high[1] : h.motion->low[1],
+                                  (c & 4) ? h.motion->high[2] : h.motion->low[2]};
+        const auto s = flat(corner);
+        lo = ImVec2(std::min(lo.x, s.x), std::min(lo.y, s.y));
+        hi = ImVec2(std::max(hi.x, s.x), std::max(hi.y, s.y));
+    }
+    const ImVec2 ia(a.x + 20 * k, a.y + 34 * k), ib(b.x - 20 * k, b.y - 44 * k);
+    const float scale = std::min((ib.x - ia.x) / std::max(hi.x - lo.x, 0.3f), (ib.y - ia.y) / std::max(hi.y - lo.y, 0.3f));
+    const ImVec2 mid((ia.x + ib.x) * 0.5f, (ia.y + ib.y) * 0.5f), centre((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+    const auto to_screen = [&](const studio::Vec3& q) {
+        const auto s = flat(q);
+        return ImVec2(mid.x + (s.x - centre.x) * scale, mid.y + (s.y - centre.y) * scale);
+    };
+    // The floor, under where he starts.
+    {
+        const float floor = h.motion->low[1];
+        const auto l = to_screen({h.motion->low[0] - 0.3f, floor, 0}), r = to_screen({h.motion->high[0] + 0.3f, floor, 0});
+        d->AddLine(l, r, fade(IM_COL32(255, 255, 255, 40)), 2 * k);
+    }
+    const auto& frames = h.motion->frames;
+    const auto& points = frames[std::min(frames.size() - 1, static_cast<std::size_t>(std::max(0.0f, played) * 30.0f))];
+    // The board first, under him: nose to tail, and across.
+    {
+        const auto nose = to_screen(points[16]), tail = to_screen(points[17]);
+        d->AddLine(nose, tail, fade(blue), 7 * k);
+        const ImVec2 middle((nose.x + tail.x) * 0.5f, (nose.y + tail.y) * 0.5f), across = to_screen(points[18]);
+        d->AddLine(ImVec2(middle.x * 2 - across.x, middle.y * 2 - across.y), across, fade(blue_light), 3 * k);
+    }
+    for (std::size_t i = 0; i + 1 < studio::preview_bones.size(); ++i) {
+        const auto [from, to] = studio::preview_bones[i];
+        d->AddLine(to_screen(points[static_cast<std::size_t>(from)]), to_screen(points[static_cast<std::size_t>(to)]), fade(white), 3.5f * k);
+    }
+    d->AddCircleFilled(to_screen(points[3]), 7 * k, fade(white), 16); // his head
+    // How far it has got.
+    const float u_played = std::clamp(played / length, 0.0f, 1.0f);
+    d->AddRectFilled(ImVec2(a.x + 14 * k, b.y - 22 * k), ImVec2(b.x - 14 * k, b.y - 18 * k), fade(IM_COL32(255, 255, 255, 40)), 2 * k);
+    d->AddRectFilled(ImVec2(a.x + 14 * k, b.y - 22 * k), ImVec2(a.x + 14 * k + (w - 28 * k) * u_played, b.y - 18 * k), fade(blue), 2 * k);
+}
 void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
+    u.hover_candidate.clear();
     const float k = f.k;
     const auto tricks = studio::game_tricks();
     const auto& cards = trick_cards(tricks);
@@ -3245,6 +3468,12 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     else if (u.trick_group == "*assets") title = "GAME ANIMATIONS", about = "Every piece of the game's animation: setups, loops, exits, grind phases.";
     else title = upper(u.trick_group), about = "Pick a pop to open it in the editor. The card opens its mid pop.";
     page_heading(d, f, ra, title, about);
+    {
+        const char* label = v.hover_preview ? "PREVIEW ON" : "PREVIEW OFF";
+        const float pw = chip_width(f, label);
+        if (chip(d, f, "##hoverpreview", ImVec2(rb.x - pw - 14 * k, ra.y + 8 * k), label, v.hover_preview))
+            studio::set_hover_preview(!v.hover_preview);
+    }
     ImVec2 area_a(ra.x, ra.y + 84 * k);
     area_a.y += library_panel(d, f, area_a, rb);
     if (u.trick_group == "*assets" && !searching) {
@@ -3292,7 +3521,11 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         heading(d, f, ImVec2(grid_a.x, top), grid_w, "Yours", std::to_string(mine.size()));
         top += 34 * k;
     }
-    for (const auto& name : mine) my_trick_card(d, f, v, name, place(i++), ImVec2(card_w, card_h));
+    for (const auto& name : mine) {
+        const auto at = place(i++);
+        my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
+        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name] { return studio::preview_saved_motion(name); });
+    }
     if (!mine.empty()) {
         top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
         i = 0;
@@ -3302,10 +3535,24 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         top += 34 * k;
     }
     for (const auto* c : game) {
+        const auto at = place(i);
+        const ImVec2 end(at.x + card_w, at.y + card_h);
         if (c->pieces.empty()) {
             game_trick_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved_of.contains(c->trick) ? saved_of[c->trick] : 0);
+            // Its mid pop, or the one it has.
+            for (const std::size_t pop : {1, 0, 2, 3})
+                if (c->pops[pop]) {
+                    const studio::GameTrick trick = *c->pops[pop];
+                    note_hover("game|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); });
+                    break;
+                }
             continue;
         }
+        if (!c->sides.empty())
+            if (const auto* piece = main_piece(*c, c->sides.front()); piece && piece->clip) {
+                const studio::GameTrick trick = *piece->clip;
+                note_hover("piece|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); });
+            }
         int saved = 0;
         for (const auto& piece : c->pieces)
             if (const auto found = saved_of.find(piece_trick(piece)); found != saved_of.end()) saved += found->second;
@@ -3319,6 +3566,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     if (pieces_open && (u.trick_page.empty() || !(u.trick_group == "*mine" || searching)))
         piece_drawer(d, f, v, *pieces_open, ImVec2(rb.x - drawer_w, area_a.y), rb);
     else if (drawer) trick_drawer(d, f, v, ImVec2(rb.x - drawer_w, area_a.y), rb);
+    hover_preview(f, v);
 }
 
 // ---- PACKS ----------------------------------------------------------------------------------------
@@ -3420,13 +3668,30 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
         y += paragraph(d, f.bold, 15 * k, ImVec2(a.x, y), width, soft, "No tricks in it yet. ADD TRICKS puts your saved tricks in it.");
         return y - a.y;
     }
+    // At the end of each row: watch it, switch it off in this pack (it stays in it), take it out.
     const auto out_button = [&](const std::string& member, float row_y, float row_h) {
         ImGui::PushID(member.c_str());
-        if (action(d, f, "##out", ImVec2(a.x + width - 70 * k, row_y + (row_h - 30 * k) * 0.5f), ImVec2(62 * k, 30 * k), "OUT", Look::ghost)) {
+        const float by = row_y + (row_h - 30 * k) * 0.5f;
+        if (action(d, f, "##out", ImVec2(a.x + width - 70 * k, by), ImVec2(62 * k, 30 * k), "OUT", Look::ghost)) {
             std::string m;
             studio::set_pack_member(pack.name, member, false, m);
             say(m);
         }
+        const bool on = !pack.pack.off.contains(member);
+        if (toggle(d, f, "##trickon", ImVec2(a.x + width - 136 * k, by + 2 * k), on, 0.8f)) {
+            std::string m;
+            studio::set_pack_trick_on(pack.name, member, !on, m);
+            say(m);
+        }
+        if (action(d, f, "##preview", ImVec2(a.x + width - 236 * k, by), ImVec2(92 * k, 30 * k), "PREVIEW", Look::dark))
+            preview_trick(pack.name, member, true);
+        ImGui::PopID();
+    };
+    // Under each trick: its stance versions in this pack, ticked, and the missing ones to make.
+    const auto stances_line = [&](const Slot& s, float& row_y) {
+        if (s.trick.starts_with("native:")) return;
+        ImGui::PushID("stances");
+        row_y += stance_versions(d, f, v, s.members.front(), ImVec2(a.x + 16 * k, row_y), width - 40 * k, s.members, pack.name) + 4 * k;
         ImGui::PopID();
     };
     const std::string forced = pack.pack.pop_rule;
@@ -3442,15 +3707,19 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const float row_h = 46 * k;
                 const auto& member = s.members.front();
                 bool lit = false;
-                if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 80 * k, y + row_h), &lit)) open_saved(member);
+                if (hit("##one", ImVec2(a.x, y), ImVec2(a.x + width - 246 * k, y + row_h), &lit)) open_or_preview(v, member, pack.name);
                 skate_theme::rough_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + row_h), lit ? IM_COL32(48, 50, 56, 248) : IM_COL32(26, 27, 30, 240),
                                         seed_of(ImVec2(a.x, y)), k * 0.7f);
                 if (lit && nav().keys) chosen_outline(d, ImVec2(a.x, y), ImVec2(a.x + width - 80 * k, y + row_h), k);
-                float right = a.x + width - 90 * k;
+                float right = a.x + width - 250 * k;
+                const bool member_on = !pack.pack.off.contains(member);
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, y + 13 * k);
-                text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), white, elide(f.bold, 17 * k, shown_name(v, member), right - a.x - 30 * k));
+                text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), member_on ? white : faint,
+                     elide(f.bold, 17 * k, shown_name(v, member) + (member_on ? "" : "  (OFF)"), right - a.x - 30 * k));
                 out_button(member, y, row_h);
-                y += row_h + 6 * k;
+                y += row_h + 4 * k;
+                stances_line(s, y);
+                y += 4 * k;
                 ImGui::PopID();
                 continue;
             }
@@ -3471,7 +3740,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const auto& member = s.members[i];
                 const float row_h = 40 * k;
                 ImGui::PushID(member.c_str());
-                const ImVec2 ra(a.x + 26 * k, y), rb(a.x + width - 80 * k, y + row_h);
+                const ImVec2 ra(a.x + 26 * k, y), rb(a.x + width - 246 * k, y + row_h);
                 bool lit = false;
                 const bool in_cycle = !pack.pack.unlinked.contains(member);
                 const bool plays = cycle ? in_cycle : i == 0;
@@ -3510,6 +3779,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 ImGui::PopID();
                 y += row_h + 4 * k;
             }
+            stances_line(s, y);
             y += 6 * k;
             ImGui::PopID();
         }
@@ -3595,6 +3865,22 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             say(m);
         }
         y += 44 * k;
+        if (!pack.installed) {
+            text(d, f.bold, 16 * k, ImVec2(x, y + 6 * k), white, pack.pack.editable ? "OTHERS CAN EDIT" : "LOCKED FOR OTHERS");
+            if (toggle(d, f, "##editable", ImVec2(x + w - 64 * k, y), pack.pack.editable)) {
+                std::string m;
+                studio::set_pack_editable(pack.name, !pack.pack.editable, m);
+                say(m);
+            }
+            y += 34 * k;
+            y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
+                           pack.pack.editable ? "Shared, its tricks can be opened, changed and copied by whoever installs it."
+                                              : "Shared, its tricks play and preview for others but cannot be opened, copied or shared again.") + 10 * k;
+        } else {
+            text(d, f.bold, 14 * k, ImVec2(x, y + 6 * k), pack.pack.editable ? blue_light : skate_theme::warning,
+                 pack.pack.editable ? "ITS MAKER LETS YOU EDIT IT" : "LOCKED BY ITS MAKER: PLAY AND PREVIEW");
+            y += 36 * k;
+        }
         const bool making = detail::studio_pack_picture_making();
         const float half = (w - 8 * k) / 2;
         if (action(d, f, "##picture", ImVec2(x, y), ImVec2(pack.thumbnail.empty() ? w : half, 38 * k),
@@ -3652,7 +3938,27 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
                             : chosen == 1 ? "Every trick in the pack plays on any pop: low, mid or high."
                                           : "Every trick in the pack plays on that pop only; the game's own plays on the others.";
         text(d, f.bold, 13 * k, ImVec2(sx + sw + 18 * k, y + 11 * k), faint, elide(f.bold, 13 * k, about, x + w - (sx + sw + 18 * k)));
-        y += 58 * k;
+        y += 50 * k;
+        // What the pops are, so a pack's tags can be read as what they will look like in game.
+        const ImVec2 ha(x, y), hb(x + w, y + 92 * k);
+        skate_theme::rough_rect(d, ha, hb, IM_COL32(18, 22, 30, 236), seed_of(ha), k * 0.6f);
+        d->AddRectFilled(ha, ImVec2(ha.x + 5 * k, hb.y), blue);
+        static constexpr std::array<std::pair<const char*, const char*>, 4> pops{{
+            {"LOW", "a quick, short flick: a little hop, about a third of a second in the air. Tricks look tight and fast."},
+            {"MID", "an ordinary flick: the height most tricks are done at, and what most tricks are made on."},
+            {"HIGH", "a long, hard flick: a big pop that floats, more air time, so the trick has time to stretch out."},
+            {"ANY", "plays on every pop the game does that has no trick of its own for that height in your packs."},
+        }};
+        float py = ha.y + 8 * k;
+        text(d, f.heading, 12 * k, ImVec2(ha.x + 18 * k, py), blue_light, "POP HEIGHT: HOW HARD YOU POP IN GAME (THE GAME GRADES EVERY POP)");
+        py += 20 * k;
+        const float half_w = (w - 40 * k) / 2;
+        for (std::size_t i = 0; i < pops.size(); ++i) {
+            const float px = ha.x + 18 * k + static_cast<float>(i % 2) * (half_w + 10 * k), row = py + static_cast<float>(i / 2) * 32 * k;
+            text(d, f.bold, 12 * k, ImVec2(px, row), white, pops[i].first);
+            paragraph(d, f.bold, 11 * k, ImVec2(px + 42 * k, row), half_w - 46 * k, IM_COL32(200, 204, 212, 255), pops[i].second);
+        }
+        y += 100 * k;
     }
     y += pack_duplicates(d, f, v, pack, ImVec2(x, y), w);
     heading(d, f, ImVec2(x, y + 10 * k), w - 230 * k, "Tricks in this pack", std::to_string(count));
@@ -3704,8 +4010,19 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             make_pack(v);
             u.pack_page = true;
         }
+        if (button("##packsettings", 150 * k, "SETTINGS", Look::paper)) {
+            u.pack_settings = true;
+            u.pack_settings_scroll = 0;
+        }
     }
     float y = a.y + 84 * k;
+    // The search, and the playlist's state when it is on (it decides what plays then, not the packs that are on).
+    field(f, "##packsearch", u.pack_query, ImVec2(a.x, y), std::min(420 * k, b.x - a.x), "Search packs: name, maker, a trick in it");
+    if (v.playlist_on) {
+        const std::string line = "PLAYLIST ON (" + std::to_string(v.playlist.size()) + "): it decides what plays in game. PACKS > SETTINGS to change it.";
+        text(d, f.bold, 13 * k, ImVec2(a.x + std::min(420 * k, b.x - a.x) + 20 * k, y + 9 * k), blue_light, elide(f.bold, 13 * k, line, b.x - a.x - 460 * k));
+    }
+    y += 50 * k;
     if (!v.conflicts.empty()) {
         const ImVec2 ca(a.x, y), cb(b.x, y + 52 * k);
         skate_theme::rough_rect(d, ca, cb, IM_COL32(56, 38, 8, 240), seed_of(ca), k * 0.7f);
@@ -3720,11 +4037,27 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         }
         y += 66 * k;
     }
+    // The packs to show: those the search finds, starred ones first.
+    std::vector<const studio::View::PackView*> shown;
+    {
+        const auto terms = studio::native_search_terms(u.pack_query.data());
+        for (const auto& pack : v.packs) {
+            if (!terms.empty()) {
+                std::string words = pack.name + " " + pack.made_by;
+                for (const auto& member : pack.members) words += " " + shown_name(v, member);
+                if (!studio::native_search_matches(studio::native_search_key(words), terms)) continue;
+            }
+            shown.push_back(&pack);
+        }
+        std::stable_sort(shown.begin(), shown.end(), [](const auto* x, const auto* y) { return x->favorite && !y->favorite; });
+    }
+    if (shown.empty() && !v.packs.empty())
+        text(d, f.bold, 16 * k, ImVec2(a.x, y + 10 * k), soft, "No pack of that name. Try fewer letters.");
     // The covers, in rows, in the middle of the page.
     const float card_w = 290 * k, info_h = 92 * k, card_h = card_w + info_h, gap = 26 * k;
     const float room = b.x - a.x - 14 * k;
     const int columns = std::max(1, static_cast<int>((room + gap) / (card_w + gap)));
-    const std::size_t count = v.packs.size() + 1;
+    const std::size_t count = shown.size() + 1;
     const int used = static_cast<int>(std::min<std::size_t>(count, static_cast<std::size_t>(columns)));
     const float grid_w = static_cast<float>(used) * card_w + static_cast<float>(used - 1) * gap;
     const float x0 = a.x + std::max(0.0f, (room - grid_w) * 0.5f);
@@ -3737,7 +4070,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
                         top + static_cast<float>(i / static_cast<std::size_t>(columns)) * (card_h + gap));
         const ImVec2 cover_b(ca.x + card_w, ca.y + card_w), cb(ca.x + card_w, ca.y + card_h);
         ImGui::PushID(static_cast<int>(i));
-        if (i == v.packs.size()) {
+        if (i == shown.size()) {
             bool lit = false;
             if (hit("##newpackcard", ca, cover_b, &lit)) {
                 make_pack(v);
@@ -3760,8 +4093,13 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             ImGui::PopID();
             continue;
         }
-        const auto& pack = v.packs[i];
+        const auto& pack = *shown[i];
+        ImGui::PushID(pack.name.c_str());
         bool lit = false, info_lit = false;
+        // The star: pressed, the pack is starred and comes first.
+        const ImVec2 star_a(cover_b.x - 46 * k, ca.y + 8 * k), star_b(cover_b.x - 8 * k, ca.y + 46 * k);
+        bool star_lit = false;
+        if (hit("##star", star_a, star_b, &star_lit)) studio::set_pack_favorite(pack.name, !pack.favorite);
         bool open = hit("##hubcover", ca, cover_b, &lit);
         open |= hit("##hubinfo", ImVec2(ca.x, cover_b.y), ImVec2(cb.x - 84 * k, cb.y), &info_lit);
         lit |= info_lit;
@@ -3769,6 +4107,19 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         pack_cover(d, f, pack, ca, cover_b);
         if (!lit) d->AddRectFilled(ca, cover_b, IM_COL32(0, 0, 0, 50));
         if (pack.on) tag(d, f, ImVec2(ca.x + 12 * k, ca.y + 12 * k), "ON", blue);
+        if (pack.installed) tag(d, f, ImVec2(ca.x + 12 * k, ca.y + (pack.on ? 38 : 12) * k), "INSTALLED", IM_COL32(0, 0, 0, 170));
+        {
+            // A five-pointed star, filled when starred.
+            const ImVec2 c((star_a.x + star_b.x) * 0.5f, (star_a.y + star_b.y) * 0.5f);
+            std::array<ImVec2, 10> points{};
+            for (int s = 0; s < 10; ++s) {
+                const float r = (s % 2 ? 7.0f : 16.0f) * k, angle = -1.5707963f + static_cast<float>(s) * 0.6283185f;
+                points[static_cast<std::size_t>(s)] = ImVec2(c.x + std::cos(angle) * r, c.y + std::sin(angle) * r);
+            }
+            d->AddCircleFilled(c, 19 * k, IM_COL32(0, 0, 0, star_lit ? 200 : 140));
+            if (pack.favorite) d->AddConcavePolyFilled(points.data(), 10, IM_COL32(255, 196, 0, 255));
+            d->AddPolyline(points.data(), 10, pack.favorite ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 255, 255, star_lit ? 255 : 170), ImDrawFlags_Closed, 2 * k);
+        }
         skate_theme::rough_rect(d, ImVec2(ca.x, cover_b.y), cb, lit ? IM_COL32(236, 236, 234, 252) : IM_COL32(22, 23, 26, 248), seed_of(ca), k * 0.6f);
         const ImU32 ink = lit ? IM_COL32(18, 18, 20, 255) : white, ink_soft = lit ? IM_COL32(80, 80, 86, 255) : soft;
         text(d, f.bold, 19 * k, ImVec2(ca.x + 14 * k, cover_b.y + 12 * k), ink, elide(f.bold, 19 * k, pack.name, card_w - 100 * k));
@@ -3785,13 +4136,124 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         if (lit && n.keys) chosen_outline(d, ca, cb, k);
         if (open) open_pack_page(pack.name);
         ImGui::PopID();
+        ImGui::PopID();
     }
     const float rows = static_cast<float>((count + static_cast<std::size_t>(columns) - 1) / static_cast<std::size_t>(columns));
     end_region(d, ga, gb, rows * (card_h + gap) + 20 * k, u.hub_scroll, k);
 }
+// PACKS > SETTINGS: the playlist - whole packs and single tricks, in order, and how the same trick from more than one of
+// them takes turns. On, it decides what plays in game; off, the packs that are on do.
+void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
+    auto& u = ui();
+    const float k = f.k;
+    if (action(d, f, "##backfromsettings", a, ImVec2(190 * k, 36 * k), "< MY PACKS", Look::ghost)) {
+        u.pack_settings = false;
+        return;
+    }
+    text(d, f.title, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "PACK SETTINGS");
+    const float col = std::min(760 * k, (b.x - a.x) * 0.52f);
+    const float x = a.x, w = col;
+    float y = a.y + 116 * k;
+    // ---- the playlist itself ----
+    heading(d, f, ImVec2(x, y), w - 90 * k, "Trick playlist", std::to_string(v.playlist.size()));
+    if (toggle(d, f, "##playliston", ImVec2(x + w - 70 * k, y - 2 * k), v.playlist_on)) {
+        std::string m;
+        studio::set_playlist_on(!v.playlist_on, m);
+        say(m);
+    }
+    y += 36 * k;
+    y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, soft,
+                   v.playlist_on ? "On: what is in it plays in game, from the top down, and nothing else of yours. The packs' own ON switches wait until it is off."
+                                 : "Off: the packs that are on play, as before. Put whole packs or single tricks in it, then switch it on.") + 14 * k;
+    {
+        text(d, f.heading, 14 * k, ImVec2(x, y + 9 * k), white, "THE SAME TRICK MORE THAN ONCE");
+        const int chosen = static_cast<int>(v.playlist_mode);
+        const int picked = segmented(d, f, "##playlistmode", ImVec2(x + 300 * k, y), w - 300 * k, 36 * k, {"FIXED", "IN TURNS", "SHUFFLE"}, chosen);
+        if (picked >= 0 && picked != chosen) {
+            std::string m;
+            studio::set_playlist_mode(static_cast<studio::PlaylistMode>(picked), m);
+            say(m);
+        }
+        y += 44 * k;
+        y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
+                       chosen == 0 ? "Fixed: the one highest in the playlist plays every time."
+                       : chosen == 1 ? "In turns: one after another, top to bottom, attempt by attempt."
+                                     : "Shuffle: any of them at random, never the same one twice running.") + 14 * k;
+    }
+    const ImVec2 la(x, y), lb(x + w, b.y);
+    begin_region(57, la, lb, u.pack_settings_scroll, k);
+    float ly = la.y - u.pack_settings_scroll;
+    if (v.playlist.empty())
+        ly += paragraph(d, f.bold, 15 * k, ImVec2(x, ly), w - 14 * k, soft, "Empty. Add whole packs or single tricks from the right.") + 10 * k;
+    for (std::size_t i = 0; i < v.playlist.size(); ++i) {
+        const auto& e = v.playlist[i];
+        ImGui::PushID(static_cast<int>(i));
+        const ImVec2 ra(x, ly), rb(x + w - 14 * k, ly + 48 * k);
+        skate_theme::rough_rect(d, ra, rb, IM_COL32(26, 27, 30, 244), seed_of(ra), k * 0.6f);
+        text(d, f.bold, 14 * k, ImVec2(ra.x + 14 * k, ra.y + 15 * k), faint, std::to_string(i + 1));
+        const std::string what = e.animation.empty() ? "PACK" : "TRICK";
+        tag(d, f, ImVec2(ra.x + 44 * k, ra.y + 14 * k), what, e.animation.empty() ? blue : IM_COL32(255, 255, 255, 46));
+        const std::string label = e.animation.empty() ? e.pack : shown_name(v, e.animation) + (e.pack.empty() ? "" : "   from " + e.pack);
+        text(d, f.bold, 16 * k, ImVec2(ra.x + 110 * k, ra.y + 13 * k), white, elide(f.bold, 16 * k, label, rb.x - ra.x - 300 * k));
+        if (action(d, f, "##up", ImVec2(rb.x - 176 * k, ra.y + 8 * k), ImVec2(50 * k, 32 * k), "UP", Look::ghost, i > 0)) studio::playlist_move(i, -1);
+        if (action(d, f, "##down", ImVec2(rb.x - 120 * k, ra.y + 8 * k), ImVec2(56 * k, 32 * k), "DOWN", Look::ghost, i + 1 < v.playlist.size()))
+            studio::playlist_move(i, 1);
+        if (action(d, f, "##remove", ImVec2(rb.x - 58 * k, ra.y + 8 * k), ImVec2(50 * k, 32 * k), "X", Look::danger)) studio::playlist_remove(i);
+        ImGui::PopID();
+        ly += 54 * k;
+    }
+    end_region(d, la, lb, ly + u.pack_settings_scroll - la.y, u.pack_settings_scroll, k);
+    // ---- what can go in it: each pack whole, or any one of its tricks; and your own tricks ----
+    const float px = x + w + 40 * k, pw = b.x - px;
+    float py = a.y + 116 * k;
+    heading(d, f, ImVec2(px, py), pw, "Add to the playlist");
+    py += 36 * k;
+    const ImVec2 pa(px, py), pb(b.x, b.y);
+    begin_region(58, pa, pb, u.playlist_pick_scroll, k);
+    float qy = pa.y - u.playlist_pick_scroll;
+    const auto in_playlist = [&](const studio::PlaylistEntry& e) { return std::find(v.playlist.begin(), v.playlist.end(), e) != v.playlist.end(); };
+    const auto add_row = [&](const studio::PlaylistEntry& e, const std::string& label, bool whole) {
+        ImGui::PushID((e.pack + "|" + e.animation).c_str());
+        const bool have = in_playlist(e);
+        const ImVec2 ra(px + (whole ? 0 : 22 * k), qy), rb(px + pw - 14 * k, qy + (whole ? 44 : 36) * k);
+        skate_theme::rough_rect(d, ra, rb, whole ? IM_COL32(30, 32, 38, 244) : IM_COL32(22, 23, 26, 240), seed_of(ra), k * 0.6f);
+        text(d, whole ? f.heading : f.bold, (whole ? 15 : 14) * k, ImVec2(ra.x + 14 * k, ra.y + (whole ? 13 : 9) * k), have ? faint : white,
+             elide(f.bold, 15 * k, label, rb.x - ra.x - 140 * k));
+        if (action(d, f, "##add", ImVec2(rb.x - 110 * k, ra.y + 4 * k), ImVec2(100 * k, rb.y - ra.y - 8 * k), have ? "ADDED" : "+ ADD", have ? Look::ghost : Look::blue, !have)) {
+            std::string m;
+            studio::playlist_add(e, m);
+            say(m);
+        }
+        ImGui::PopID();
+        qy = rb.y + 6 * k;
+    };
+    for (const auto& pack : v.packs) {
+        add_row({pack.name, ""}, upper(pack.name) + "  (WHOLE PACK, " + std::to_string(pack.members.size()) + ")", true);
+        for (const auto& member : pack.members) add_row({pack.name, member}, shown_name(v, member), false);
+        qy += 8 * k;
+    }
+    {
+        // Your own tricks that are in no pack.
+        bool any = false;
+        for (const auto& p : v.presets) {
+            if (std::any_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); })) continue;
+            if (!any) {
+                heading(d, f, ImVec2(px, qy), pw - 14 * k, "Your tricks in no pack");
+                qy += 34 * k;
+                any = true;
+            }
+            add_row({"", p.name}, shown_name(v, p.name), false);
+        }
+    }
+    end_region(d, pa, pb, qy + u.playlist_pick_scroll - pa.y, u.playlist_pick_scroll, k);
+}
 void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     want_pack_pictures(v);
+    if (u.pack_settings) {
+        pack_settings_page(d, f, v, a, b);
+        return;
+    }
     if (u.pack_page)
         if (const auto* pack = pack_named(v, v.open_pack)) {
             pack_page(d, f, v, *pack, a, b);
@@ -4488,7 +4950,7 @@ float pack_chips(ImDrawList* d, const Fonts& f, const studio::View& v, const std
         ImGui::PushID(pack.name.c_str());
         if (chip(d, f, "##packchip", ImVec2(x, y), pack.name, in, nullptr, 32 * k)) {
             std::string m;
-            studio::set_pack_member(pack.name, name, !in, m);
+            if (studio::set_pack_member(pack.name, name, !in, m) && !in) ask_stances(v, pack.name, name);
             say(m);
         }
         ImGui::PopID();
@@ -4499,10 +4961,33 @@ float pack_chips(ImDrawList* d, const Fonts& f, const studio::View& v, const std
     if (chip(d, f, "##packchipnew", ImVec2(x, y), "+ NEW PACK", false, nullptr, 32 * k)) {
         const auto pack = unique_pack_name(v);
         std::string m;
-        if (studio::create_preset_pack(m, pack)) studio::set_pack_member(pack, name, true, m);
+        if (studio::create_preset_pack(m, pack) && studio::set_pack_member(pack, name, true, m)) ask_stances(v, pack, name);
         say(m);
     }
     return y + 38 * k - at.y;
+}
+// A trick just put in a pack: its stance versions in that pack, ticked where the pack has them, the missing ones to make.
+void stance_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto* pack = pack_named(v, u.stance_pack);
+    if (!pack || !preset_named(v, u.stance_name)) {
+        u.stance_pack.clear();
+        return;
+    }
+    const auto [a, b] = card_box(d, f, display, 860 * k, 430 * k, "ITS STANCES");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 92 * k;
+    y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
+                   shown_name(v, u.stance_name) + " is in " + pack->name + ". Make its other stances for the pack too? Ticked: the pack has that "
+                   "stance. An empty one makes it from this trick, puts it in the pack and opens it to change.") + 18 * k;
+    bool acted = false;
+    y += stance_versions(d, f, v, u.stance_name, ImVec2(x, y), w, pack->members, pack->name, &acted) + 10 * k;
+    paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
+              "With Trick matching on Exact stance each version plays only in its own stance, so every way you do the trick can look its own. "
+              "The pack shows these ticks under each trick, to make the rest later.");
+    if (acted) u.stance_pack.clear();
+    if (action(d, f, "##stancesdone", ImVec2(b.x - 30 * k - 200 * k, b.y - 70 * k), ImVec2(200 * k, 46 * k), "NOT NOW", Look::dark)) u.stance_pack.clear();
 }
 void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
@@ -4539,6 +5024,119 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
         u.trick_group = "*mine";
         u.trick_page = name;
         u.label_for.clear();
+    }
+}
+// ---- preview mode -----------------------------------------------------------------------------------
+// Watching a saved trick - one from a pack, or another maker's: nothing of the editor, only a card about it on the left
+// and the buttons to watch it by along the bottom. Space plays and pauses, R starts it again, 1-4 the views, Esc goes back.
+void leave_preview() {
+    auto& u = ui();
+    studio::end_preview();
+    if (u.preview_from_pack && !u.preview_pack.empty()) {
+        open_menu(1);
+        open_pack_page(u.preview_pack);
+    } else open_menu(0);
+    u.preview_pack.clear();
+    u.preview_name.clear();
+}
+void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto* p = preset_named(v, u.preview_name.empty() ? v.name : u.preview_name);
+    const auto* pack = u.preview_pack.empty() ? nullptr : pack_named(v, u.preview_pack);
+    // ---- the card: the pack and the trick ----
+    {
+        const ImVec2 a(28 * k, 110 * k);
+        const float w = 380 * k;
+        float y = a.y + 18 * k;
+        const float x = a.x + 20 * k, iw = w - 40 * k;
+        // Its height is known once it is laid out: drawn into a channel under its contents.
+        d->ChannelsSplit(2);
+        d->ChannelsSetCurrent(1);
+        if (pack) {
+            const float cover = 120 * k;
+            pack_cover(d, f, *pack, ImVec2(x, y), ImVec2(x + cover, y + cover));
+            text(d, f.heading, 12 * k, ImVec2(x + cover + 16 * k, y + 4 * k), blue_light, "PACK");
+            paragraph(d, f.title, 24 * k, ImVec2(x + cover + 16 * k, y + 22 * k), iw - cover - 16 * k, white, upper(pack->name));
+            if (!pack->made_by.empty())
+                text(d, f.bold, 12 * k, ImVec2(x + cover + 16 * k, y + cover - 18 * k), soft, elide(f.bold, 12 * k, "BY " + upper(pack->made_by), iw - cover - 16 * k));
+            y += cover + 18 * k;
+        }
+        text(d, f.heading, 12 * k, ImVec2(x, y), blue_light, "TRICK");
+        y += 20 * k;
+        y += paragraph(d, f.title, 30 * k, ImVec2(x, y), iw, white, upper(shown_name(v, u.preview_name.empty() ? v.name : u.preview_name))) + 6 * k;
+        if (p) {
+            text(d, f.bold, 14 * k, ImVec2(x, y), soft, elide(f.bold, 14 * k, trick_label(p->trick) + (p->made_by.empty() ? "" : "   by " + p->made_by), iw));
+            y += 26 * k;
+            float right = x + iw;
+            const auto tags = tags_of(*p, pack ? pack->pack.pop_rule : std::string{});
+            float tx = x;
+            for (const auto& [label, colour] : tags) {
+                if (tx + tag_width(f, label) > right) tx = x, y += 26 * k;
+                tx += tag(d, f, ImVec2(tx, y), label, colour) + 6 * k;
+            }
+            y += 30 * k;
+            y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, faint,
+                           v.front_foot ? "In game: do this trick with its pop. Trick matching is on Front foot: it plays in any stance."
+                                        : "In game: do this trick with its pop, in the stance on its tags (Trick matching is on Exact stance).") + 8 * k;
+            if (p->locked)
+                y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, skate_theme::warning, "Locked by its maker: it plays and previews, it is not opened to edit.") + 8 * k;
+        }
+        d->ChannelsSetCurrent(0);
+        skate_theme::rough_rect(d, a, ImVec2(a.x + w, y + 14 * k), IM_COL32(16, 17, 20, 236), seed_of(a), k);
+        d->AddRectFilled(a, ImVec2(a.x + 6 * k, y + 14 * k), blue);
+        d->ChannelsMerge();
+    }
+    // ---- the buttons ----
+    const float bar_w = std::min(1100 * k, display.x - 80 * k), bar_h = 128 * k;
+    const ImVec2 a((display.x - bar_w) * 0.5f, display.y - bar_h - 26 * k), b(a.x + bar_w, a.y + bar_h);
+    skate_theme::rough_rect(d, a, b, IM_COL32(14, 14, 16, 230), seed_of(a), k);
+    {
+        // Where it is: a bar to click or drag along.
+        const ImVec2 la(a.x + 24 * k, a.y + 18 * k), lb(b.x - 24 * k, a.y + 30 * k);
+        const float at = v.duration > 0 ? std::clamp(v.time / v.duration, 0.0f, 1.0f) : 0.0f;
+        d->AddRectFilled(la, lb, IM_COL32(255, 255, 255, 40), 6 * k);
+        d->AddRectFilled(la, ImVec2(la.x + (lb.x - la.x) * at, lb.y), blue, 6 * k);
+        d->AddCircleFilled(ImVec2(la.x + (lb.x - la.x) * at, (la.y + lb.y) * 0.5f), 9 * k, white, 20);
+        ImGui::SetCursorScreenPos(ImVec2(la.x, la.y - 8 * k));
+        ImGui::InvisibleButton("##previewscrub", ImVec2(lb.x - la.x, lb.y - la.y + 16 * k));
+        if (ImGui::IsItemActive() && v.duration > 0) {
+            studio::set_playing(false);
+            studio::set_time(std::clamp((ImGui::GetIO().MousePos.x - la.x) / (lb.x - la.x), 0.0f, 1.0f) * v.duration);
+        }
+    }
+    float x = a.x + 24 * k;
+    const float by = a.y + 52 * k, bh = 50 * k;
+    const auto button = [&](const char* id, float w, const std::string& label, Look look, bool on = false) {
+        const bool pressed = action(d, f, id, ImVec2(x, by), ImVec2(w, bh), label, look, true, on);
+        x += w + 10 * k;
+        return pressed;
+    };
+    if (button("##previewplay", 150 * k, v.playing ? "PAUSE" : "PLAY", Look::blue)) studio::set_playing(!v.playing);
+    if (button("##previewrestart", 130 * k, "RESTART", Look::dark)) {
+        studio::set_time(0);
+        studio::set_playing(true);
+    }
+    if (button("##previewloop", 110 * k, "LOOP", Look::dark, v.loop)) studio::set_loop(!v.loop);
+    if (button("##previewslow", 110 * k, v.speed < 0.99f ? "0.5X" : "1X", Look::dark, v.speed < 0.99f)) studio::set_speed(v.speed < 0.99f ? 1.0f : 0.5f);
+    x += 14 * k;
+    static constexpr std::array<std::pair<const char*, int>, 4> views{{{"FRONT", 1}, {"SIDE", 2}, {"BACK", 3}, {"TOP", 4}}};
+    for (const auto& [label, shot] : views) {
+        ImGui::PushID(shot);
+        if (button("##previewview", 90 * k, label, Look::ghost, u.camera_shot == shot)) take_shot(v, shot);
+        ImGui::PopID();
+    }
+    const float exit_w = std::max(120 * k, b.x - 24 * k - x);
+    if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - std::min(exit_w, 220 * k), by), ImVec2(std::min(exit_w, 220 * k), bh),
+               u.preview_from_pack ? "< BACK TO PACK" : "< BACK", Look::paper))
+        leave_preview();
+    // The keys.
+    if (!ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) studio::set_playing(!v.playing);
+        if (ImGui::IsKeyPressed(ImGuiKey_R, false)) studio::set_time(0), studio::set_playing(true);
+        for (const auto& [label, shot] : views)
+            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_0 + shot), false)) take_shot(v, shot);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) leave_preview();
     }
 }
 // Something said when you are back from testing a trick: picked at random, one each time.
@@ -4699,7 +5297,7 @@ void adding_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
             bool lit = false;
             if (hit("##add", ra, rb, &lit)) {
                 std::string m;
-                studio::set_pack_member(pack->name, name, !in, m);
+                if (studio::set_pack_member(pack->name, name, !in, m) && !in) ask_stances(v, pack->name, name);
                 say(m);
             }
             ImGui::PopID();
@@ -4733,6 +5331,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     if (u.browser.open) browser_card(d, f, v, display);
     else if (u.pack_adding) adding_card(d, f, v, display);
     else if (u.conflicts_open) conflicts_card(d, f, v, display);
+    else if (!u.stance_pack.empty()) stance_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
     end_card();
@@ -6475,6 +7074,14 @@ void draw_animation_studio() {
     } else {
         u.menu_fade = 0;
         if (lens().on) draw_fisheye(d, display);
+        if (v.previewing) {
+            preview_screen(d, f, v, display);
+            ImGui::End();
+            ImGui::PopStyleVar(2);
+            draw_cards(f, v, display);
+            nav_end_frame();
+            return;
+        }
         viewport(d, f, v, project, view_min, view_max);
         if (u.hide_ui) {
             // Only the skater and the room he stands in: for filming a trick or taking a picture of it. The camera and the

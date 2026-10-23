@@ -140,6 +140,8 @@ struct Animation {
     std::string name;  // the profile's name, also its file name
     std::string trick;  // what the player says it is (Kickflip, Heelflip ...)
     std::string author; // who made it, kept with it so a shared trick says whose it is
+    std::string maker_key; // the key of the PC it was made on: on any other it plays, but is not opened to edit or copied
+    bool editable{};       // its maker let others edit and copy it (the pack it was shared in said so)
     std::string label;  // the name it is shown by in MY TRICKS and the packs (PACKS); empty: its name
     Clip clip;
     std::vector<Track> tracks;
@@ -160,6 +162,9 @@ struct Animation {
     // What the game said at takeoff when it was recorded: rolling fakie, and the board turned backwards
     // under him. Empty for recordings from before these were kept.
     std::optional<bool> fakie, board_backwards;
+    // A stance version of a trick (its fakie, switch or switch fakie copy) keeps the foot it leads with: the studio shows
+    // it in your own stance to edit, and puts it back on this foot when it is saved. Empty: whatever foot it was saved on.
+    std::optional<bool> keep_leads_right;
     // Which upgrade this file has had (empty: made before upgrades). Older builds ignore it.
     std::string upgraded;
     // The board's keys are in the board's nose-forward frame (every save since 2026-10-22). Older files

@@ -58,11 +58,13 @@ struct View {
     std::size_t source_pose_count{};
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
+    bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
     bool room{true}; // the studio opens in its room (studio_room.h)
     bool solo{};     // a turn moves one joint alone (set_solo)
     // Which way round the skater stands in the studio: 0 as the game has him, 1 regular, 2 goofy, and
     // which that works out to right now.
     int stance_choice{};
+    bool own_lead_right{}; // the skater's own stance leads with the right foot (goofy): stance versions are told apart by it
     bool showing_goofy{};
     int game_stance{}; // what the game's own setting says: 0 not set, 1 regular, 2 goofy
     bool grab_board{};   // a hand near the deck closes its fingers on it
@@ -92,6 +94,8 @@ struct View {
         PresetPack pack; // its slots, which are Fixed or Alternate, and what is left out of a cycle
         std::string thumbnail;        // its picture (presets/<pack>.png, thumbnail_side square), "" none
         std::int64_t thumbnail_stamp{}; // when that was last written: a new one is read again
+        bool favorite{};                // starred: shown first in PACKS
+        bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
     };
     std::vector<PackConflict> conflicts; // tricks more than one pack that is on has, and what plays them
     // Where packs are exported to and imported from: as set (SETTINGS > Packs), or "" for ReSkate.Tricks\exports and \import.
@@ -102,6 +106,11 @@ struct View {
     std::string test_returned; // back from testing it: the studio says something about it (clear_test_returned)
     std::vector<PackView> packs;
     std::string open_pack; // the pack open in PACKS
+    // The playlist (PACKS > SETTINGS): when on, what plays in game instead of the packs that are on.
+    bool playlist_on{};
+    PlaylistMode playlist_mode{PlaylistMode::fixed};
+    std::vector<PlaylistEntry> playlist;
+    bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
     std::string your_name; // MADE BY, remembered for new recordings and packs
     Recording recording{};
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
@@ -292,7 +301,24 @@ bool set_label(const std::string& animation, const std::string& label, std::stri
 bool set_saved_pop(const std::string& animation, const std::string& pop, std::string& message);
 // A low, a mid and a high copy of a saved trick, put in every pack it is in.
 bool copy_saved_to_pops(const std::string& animation, std::string& message);
+// A stance version of a saved trick, put in every pack it is in: 0 your own stance, 1 fakie, 2 switch, 3 switch fakie.
+// Switch is the other foot leading (the trick and its keys mirrored), fakie rolling backwards (the same trick; in game
+// the one made fakie plays when he rolls fakie). It keeps its foot when it is edited and saved. `made` is its name.
+bool make_stance_version(const std::string& animation, int version, std::string& made, std::string& message);
 bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
+// A trick in a pack switched off (it stays in the pack, but does not play) or on again.
+bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
+void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in PACKS
+// Whether others may open the pack's tricks to edit and copy them once it is shared (its maker's choice; locked unless
+// set). It goes with the pack when it is exported.
+bool set_pack_editable(const std::string& pack, bool editable, std::string& message);
+// The playlist: on (it decides what plays) or off (the packs that are on do), how its tricks take turns, and what is in it.
+void set_playlist_on(bool on, std::string& message);
+void set_playlist_mode(PlaylistMode mode, std::string& message);
+bool playlist_add(const PlaylistEntry& entry, std::string& message);
+void playlist_remove(std::size_t index);
+void playlist_move(std::size_t index, int by); // up (-1) or down (1)
+void set_hover_preview(bool on);
 // A pack (saved first if it has changes), or every saved animation for "", as
 // ReSkate.Tricks/exports/<name>.zip, laid out like the tricks folder so it can be unzipped straight into it.
 bool export_pack(const std::string& pack_name, std::string& message);
@@ -300,6 +326,10 @@ bool export_pack(const std::string& pack_name, std::string& message);
 // variation, older animations upgraded, and the zip moved to import/imported.
 bool import_packs(std::string& message);
 bool load(const std::string& name, std::string& message);
+// A saved trick open to watch only, a pack's or anyone's (one locked to its maker too): it plays, the camera moves, but
+// nothing is keyed or saved. end_preview closes it.
+bool preview_saved(const std::string& name, std::string& message);
+void end_preview();
 // The game's own tricks as studio clips, <folder>/library/catalog.json and its .clip files: built in game from the
 // player's own copy (library_build below), or by contrib/animator-studio/make_trick_library.py.
 struct NativeAsset {
@@ -333,6 +363,26 @@ void stop_library_build();  // the build stops soon after; the library stays as 
 bool export_diagnostics(std::string& message);
 bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);
+// A trick as a few lines, to play in a little window (TRICKS' hover preview): the skater's bones and his board, 30 times
+// a second, in the trick's own frame (Y up, he faces along Z at its start). Made once and kept; nullptr when it cannot be
+// read.
+struct PreviewMotion {
+    static constexpr std::size_t points = 19; // 15 joints (preview_bones) and the board's nose, tail and both sides
+    std::vector<std::array<Vec3, points>> frames;
+    float duration{};
+    Vec3 low{}, high{}; // what it all fits in
+};
+// The bones as pairs of points: hips, chest, neck, head, each arm and each leg; then the board's outline.
+inline constexpr std::array<std::pair<int, int>, 16> preview_bones{{
+    {0, 1}, {1, 2}, {2, 3},               // hips - chest - neck - head
+    {1, 4}, {4, 5}, {5, 6},               // left arm
+    {1, 7}, {7, 8}, {8, 9},               // right arm
+    {0, 10}, {10, 11}, {11, 12},          // left leg
+    {0, 13}, {13, 14}, {14, 15},          // right leg (15 is the foot)
+    {16, 17},                             // the board, nose to tail (18 is its width)
+}};
+std::shared_ptr<const PreviewMotion> preview_motion(const GameTrick& trick);
+std::shared_ptr<const PreviewMotion> preview_saved_motion(const std::string& animation); // with its keys
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
 void set_author(const std::string& author); // whose trick it is, kept with it and shared with it

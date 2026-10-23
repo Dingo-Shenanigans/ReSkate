@@ -31,6 +31,42 @@ bool same_turn(const Quat& a, const Quat& b) {
     return d > 0.9999f;
 }
 
+// Packs: tricks switched off, a maker's lock, the playlist, and a trick's stance versions.
+void packs_and_playlist() {
+    PresetPack pack;
+    pack.name = "Street";
+    pack.slots["kickflip|mid"] = {"Kickflip a", "Kickflip b"};
+    pack.slots["heelflip|mid"] = {"Heelflip a"};
+    pack.off = {"Kickflip a"};
+    pack.maker_key = "abc";
+    pack.editable = true;
+    const auto back = read_pack_json(pack_json(pack));
+    check(back.off.contains("Kickflip a") && back.maker_key == "abc" && back.editable, "A pack keeps what is off, its maker and whether others may edit it");
+    std::vector<Preset> presets{{"Kickflip a", "kickflip", "mid"}, {"Kickflip b", "kickflip", "mid"}, {"Heelflip a", "heelflip", "mid"}, {"Mine", "ollie", "mid"}};
+    select_presets(presets, std::span<const PresetPack>(&pack, 1));
+    check(!presets[0].active && !presets[0].included && presets[1].active && presets[2].active && !presets[3].included,
+          "A trick switched off in a pack does not play from it; the next of its kind does");
+    PresetPack other;
+    other.name = "Park";
+    other.slots["kickflip|mid"] = {"Kickflip c"};
+    presets.push_back({"Kickflip c", "kickflip", "mid"});
+    const std::array<PresetPack, 2> packs{pack, other};
+    const std::vector<PlaylistEntry> playlist{{"Park", ""}, {"Street", ""}, {"", "Mine"}};
+    select_playlist(presets, packs, playlist, PlaylistMode::fixed);
+    check(presets[4].active && !presets[1].active && presets[2].active && presets[3].active && !presets[0].included,
+          "Fixed: the first in the playlist plays; whole packs, single tricks and what is off as set");
+    select_playlist(presets, packs, playlist, PlaylistMode::turns);
+    check(presets[4].active && presets[1].active && presets[4].order < presets[1].order, "In turns: all of them play, in the playlist's order");
+    check(stance_version("regular", false, false, false) == 0 && stance_version("regular", false, true, false) == 1 &&
+              stance_version("regular", true, false, false) == 2 && stance_version("goofy", false, true, false) == 3,
+          "A trick's stance version, against the skater's own stance");
+    Animation locked;
+    locked.maker_key = "k";
+    locked.keep_leads_right = true;
+    const auto read = from_json(to_json(locked));
+    check(read.maker_key == "k" && !read.editable && read.keep_leads_right == std::optional<bool>(true), "A trick keeps its maker, its lock and the foot it leads with");
+}
+
 // Every spelling the game has for a trick is one trick: what it says in the air, its scoring data, its flick list.
 void trick_names_match() {
     check(trick_key("nolliekickflip") == "n_kickflip" && trick_key("n_kickflip") == "n_kickflip" && trick_key("N_Kickflip") == "n_kickflip",
@@ -1674,6 +1710,7 @@ int main(int argc, char** argv) {
         native_names_and_search();
         native_trick_cards();
         trick_names_match();
+        packs_and_playlist();
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();

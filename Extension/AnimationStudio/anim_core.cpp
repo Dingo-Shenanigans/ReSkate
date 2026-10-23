@@ -891,6 +891,9 @@ std::string to_json(const Animation& animation) {
     root["entry"] = animation.entry;
     if (animation.fakie) root["fakie"] = *animation.fakie;
     if (animation.board_backwards) root["board_backwards"] = *animation.board_backwards;
+    if (animation.keep_leads_right) root["leads"] = *animation.keep_leads_right ? "right" : "left";
+    if (!animation.maker_key.empty()) root["maker_key"] = animation.maker_key;
+    if (animation.editable) root["editable"] = true;
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     root["start"] = animation.start;
@@ -931,6 +934,8 @@ Animation from_json(std::string_view text) {
     result.name = root.value("name", "");
     result.trick = root.value("trick", "");
     result.author = root.value("author", "");
+    result.maker_key = root.value("maker_key", "").substr(0, 64);
+    result.editable = root.value("editable", false);
     result.label = root.value("label", "").substr(0, 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
@@ -939,6 +944,7 @@ Animation from_json(std::string_view text) {
     result.entry = root.value("entry", "ground");
     if (root.contains("fakie") && root.at("fakie").is_boolean()) result.fakie = root.at("fakie").get<bool>();
     if (root.contains("board_backwards") && root.at("board_backwards").is_boolean()) result.board_backwards = root.at("board_backwards").get<bool>();
+    if (const auto leads = root.value("leads", ""); leads == "right" || leads == "left") result.keep_leads_right = leads == "right";
     result.upgraded = root.value("upgraded", "");
     require(result.upgraded.size() < 64, "bad upgrade mark");
     result.board_nose_forward = root.value("board_keys", "") == "nose-forward";

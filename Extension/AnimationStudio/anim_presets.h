@@ -7,6 +7,7 @@
 #include <vector>
 #include <optional>
 #include <set>
+#include <string_view>
 #include "Engine/Core/Json/json.h"
 
 namespace dingosdk::anim_studio {
@@ -22,6 +23,11 @@ struct Preset {
     std::int64_t saved_at{};   // when its file was last written: with no pack on, the newest of a kind plays
     // The pop it plays on, as the pack that has it on says (its Pack rules); empty when no pack says. "" any.
     std::optional<std::string> pack_pop;
+    // Made on another PC (its maker's key is not this one's): it plays, tests and previews, but is not opened to edit,
+    // copied or shared again.
+    bool locked{};
+    // Where it stands in the playlist when the playlist plays (select_playlist): the order it takes its turn in.
+    int order{-1};
 };
 // What to do with a trick and pop that more than one pack that is on has: "*" (or nothing) play any of them at random,
 // attempt by attempt; a pack's name: that pack's plays it. By slot (preset_slot).
@@ -46,6 +52,10 @@ struct PresetPack {
     // Pack rules: the pop every trick in it plays on, whatever each was saved with. "" each its own, "any" every
     // pop, or "low", "mid" or "high" only.
     std::string pop_rule;
+    std::string maker_key;     // the key of the PC it was made on (export_pack), so its tricks stay its maker's
+    std::set<std::string> off; // members switched off: kept in the pack, but they do not play
+    // Its maker lets others open its tricks to edit and copy them. Off (the default), they play for others, but are locked.
+    bool editable{};
     bool alternates(const std::string& slot) const {
         const auto found = slot_alternate.find(slot);
         return found != slot_alternate.end() ? found->second : alternate;
@@ -69,6 +79,11 @@ struct PresetPack {
         return out;
     }
 };
+// Which stance version a saved trick is (0 own stance, 1 fakie, 2 switch, 3 switch fakie: make_stance_version), for the skater's own stance.
+inline int stance_version(const std::string& stance, std::optional<bool> switch_stance, std::optional<bool> fakie, bool own_lead_right) {
+    const bool lead_right = (stance == "goofy") != switch_stance.value_or(false);
+    return (lead_right == own_lead_right ? 0 : 2) + (fakie.value_or(false) ? 1 : 0);
+}
 inline std::string preset_slot(std::string trick, const std::string& pop) {
     for (char& c : trick) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     return trick + "|" + pop;
@@ -101,6 +116,7 @@ inline std::vector<PackConflict> pack_conflicts(std::span<const Preset> presets,
             std::vector<std::string> mine;
             std::string trick, pop;
             for (const auto& name : names) {
+                if (pack.off.contains(name)) continue;
                 const auto p = std::find_if(presets.begin(), presets.end(), [&](const Preset& x) { return x.name == name; });
                 if (p == presets.end()) continue;
                 mine.push_back(name);
@@ -156,7 +172,7 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
         }
         for (std::size_t k = 0; k < packs.size(); ++k) {
             const auto place = pack_place(packs[k], slot, p.name);
-            if (!place) continue;
+            if (!place || packs[k].off.contains(p.name)) continue;
             p.included = true;
             // Its pack's rules say what pop it plays on (the first pack that has it on that says).
             const auto pop = effective_pop(packs[k], p.pop);
@@ -193,6 +209,68 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
             }
         }
 }
+// ---- the playlist ----------------------------------------------------------------------------------
+// What plays in game when the playlist is on, instead of the packs that are on: whole packs and single tricks, in the
+// order they are listed. Where more than one of them is a trick and pop for the same stance, Fixed plays the first,
+// In turns plays them one after another in the playlist's order, attempt by attempt, and Shuffle any of them at random
+// (never the same twice running).
+struct PlaylistEntry {
+    std::string pack;      // the pack it is, or the pack the trick is from ("" a trick of your own)
+    std::string animation; // "" the whole pack
+    bool operator==(const PlaylistEntry&) const = default;
+};
+enum class PlaylistMode { fixed, turns, shuffle };
+inline const char* playlist_mode_name(PlaylistMode mode) { return mode == PlaylistMode::turns ? "turns" : mode == PlaylistMode::shuffle ? "shuffle" : "fixed"; }
+inline PlaylistMode playlist_mode_named(std::string_view name) {
+    return name == "turns" ? PlaylistMode::turns : name == "shuffle" ? PlaylistMode::shuffle : PlaylistMode::fixed;
+}
+inline void select_playlist(std::span<Preset> presets, std::span<const PresetPack> packs, std::span<const PlaylistEntry> playlist, PlaylistMode mode) {
+    for (auto& p : presets) {
+        p.active = p.included = false;
+        p.pack_pop.reset();
+        p.order = -1;
+    }
+    const auto find_pack = [&](const std::string& name) -> const PresetPack* {
+        for (const auto& pack : packs) if (pack.name == name) return &pack;
+        return nullptr;
+    };
+    int order = 0;
+    const auto take = [&](const std::string& name, const PresetPack* pack) {
+        for (auto& p : presets) {
+            if (p.name != name || p.included) continue;
+            p.included = true;
+            p.order = order++;
+            if (pack && !pack->pop_rule.empty()) p.pack_pop = effective_pop(*pack, p.pop);
+        }
+    };
+    for (const auto& entry : playlist) {
+        const auto* pack = entry.pack.empty() ? nullptr : find_pack(entry.pack);
+        if (!entry.animation.empty()) {
+            if (pack && pack->off.contains(entry.animation)) continue;
+            take(entry.animation, pack);
+            continue;
+        }
+        if (!pack) continue;
+        for (const auto& [slot, names] : pack->slots)
+            for (const auto& name : names)
+                if (!pack->off.contains(name)) take(name, pack);
+    }
+    // One trick and pop, in one stance, off one kind of takeoff: Fixed plays its first; the others take turns.
+    std::map<std::string, Preset*> first;
+    for (auto& p : presets) {
+        if (!p.included) continue;
+        const auto pop = p.pack_pop ? *p.pack_pop : p.pop;
+        const auto key = preset_slot(p.trick, pop) + (p.stance == "goofy" ? "|goofy" : "|regular") + (p.switch_stance.value_or(false) ? "|switch" : "|normal") +
+                         "|" + p.entry + (p.fakie.value_or(false) ? "|fakie" : "");
+        if (mode != PlaylistMode::fixed) {
+            p.active = true;
+            continue;
+        }
+        auto& picked = first[key];
+        if (!picked || p.order < picked->order) picked = &p;
+    }
+    for (auto& [key, p] : first) p->active = true;
+}
 inline void select_presets(std::span<Preset> presets, const std::optional<PresetPack>& pack) {
     if (pack) select_presets(presets, std::span<const PresetPack>(&*pack, 1));
     else select_presets(presets, std::span<const PresetPack>{});
@@ -212,6 +290,9 @@ inline Json pack_json(const PresetPack& pack) {
     }
     if (!pack.unlinked.empty()) out["unlinked"] = Json(std::vector<std::string>(pack.unlinked.begin(), pack.unlinked.end()));
     if (!pack.pop_rule.empty()) out["pop_rule"] = pack.pop_rule;
+    if (!pack.maker_key.empty()) out["maker_key"] = pack.maker_key;
+    if (!pack.off.empty()) out["off"] = Json(std::vector<std::string>(pack.off.begin(), pack.off.end()));
+    if (pack.editable) out["editable"] = true;
     return out;
 }
 inline PresetPack read_pack_json(const Json& root) {
@@ -238,6 +319,11 @@ inline PresetPack read_pack_json(const Json& root) {
         for (const auto& name : root.at("unlinked"))
             if (name.is_string() && !name.string().empty()) out.unlinked.insert(name.string());
     if (const auto rule = root.value("pop_rule", ""); rule == "any" || rule == "low" || rule == "mid" || rule == "high") out.pop_rule = rule;
+    out.maker_key = root.value("maker_key", "").substr(0, 64);
+    out.editable = root.value("editable", false);
+    if (root.contains("off") && root.at("off").is_array() && root.at("off").size() <= 4000)
+        for (const auto& name : root.at("off"))
+            if (name.is_string() && !name.string().empty()) out.off.insert(name.string());
     return out;
 }
 } // namespace dingosdk::anim_studio
