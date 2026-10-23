@@ -184,6 +184,10 @@ struct Snapshot {
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
     std::shared_ptr<const Animation> edits; // tracks only; its clip is empty
     float time{};
+    // A trick looked at (peek_game_trick): shown instead of the open one while it is set, played from peek_since.
+    std::shared_ptr<const Clip> peek_clip;
+    std::shared_ptr<const Animation> peek_edits;
+    double peek_since{-1};
     bool open{}, play_in_game{}, armed{}, room{};
     float speed{1};
     bool goofy{}; // the way round the studio is working
@@ -214,6 +218,9 @@ struct State {
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
     bool previewing{}; // open to watch only (preview_saved)
+    std::shared_ptr<const Clip> peek_clip;          // a trick looked at from TRICKS (peek_game_trick)
+    std::shared_ptr<const Animation> peek_edits;
+    double peek_since{-1};
     std::deque<History> undo, redo;
     std::vector<std::pair<std::uint16_t, Offset>> clipboard;
     // Playback.
@@ -1238,6 +1245,9 @@ void publish_locked(State& s, bool edits_changed = true) {
     if (edits_changed || !s.published_edits) s.published_edits = std::make_shared<const Animation>(s.edits);
     snap->edits = s.published_edits;
     snap->time = s.time;
+    snap->peek_clip = s.peek_clip;
+    snap->peek_edits = s.peek_edits;
+    snap->peek_since = s.peek_since;
     snap->open = s.open;
     snap->play_in_game = s.play_in_game && !s.manual_recording;
     // The stance the studio is set to. Standing him the other way round is done by turning him about on
@@ -2781,11 +2791,14 @@ void on_animation(std::uintptr_t component) noexcept {
         }
         // The studio shows the open trick, or with none the casual stance (the idle clip's last frame,
         // no keys).
-        const bool has_trick = snap->clip && !snap->clip->empty();
-        const Clip* shown = has_trick ? snap->clip.get() : snap->idle && !snap->idle->empty() ? snap->idle.get() : nullptr;
-        const float shown_time = has_trick ? snap->time : shown ? shown->duration() : 0.0f;
+        // A trick looked at from TRICKS comes first: it plays once from its start and holds its end.
+        const bool peeking = snap->peek_clip && !snap->peek_clip->empty() && snap->peek_since >= 0;
+        const bool has_trick = peeking || (snap->clip && !snap->clip->empty());
+        const Clip* shown = peeking ? snap->peek_clip.get() : has_trick ? snap->clip.get() : snap->idle && !snap->idle->empty() ? snap->idle.get() : nullptr;
+        const float shown_time = peeking ? std::clamp(static_cast<float>(now_seconds() - snap->peek_since), 0.0f, shown->duration())
+                                 : has_trick ? snap->time : shown ? shown->duration() : 0.0f;
         static const Animation no_edits;
-        const Animation& shown_edits = has_trick ? *snap->edits : no_edits;
+        const Animation& shown_edits = peeking ? (snap->peek_edits ? *snap->peek_edits : no_edits) : has_trick ? *snap->edits : no_edits;
         // Render captures already include native contacts. Fitting their board
         // independently to the lowest foot corrupts that resolved relative pose.
         const bool fit_preview_contact = shown_edits.source.kind != "render_capture" &&
@@ -6523,86 +6536,56 @@ std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     return clip;
 }
 namespace {
-// The preview's points from a clip (and keys over it), every 1/30 s.
-std::shared_ptr<const PreviewMotion> make_preview(const Clip& clip, const Animation* edits) {
-    static constexpr std::array<std::uint16_t, 15> joints{7, 44, 101, 103, 276, 277, 278, 47, 48, 49, 341, 342, 343, 8, 9};
-    auto out = std::make_shared<PreviewMotion>();
-    out->duration = clip.duration();
-    if (clip.empty() || clip.joints != skeleton_joints || !(out->duration > 0)) return nullptr;
-    std::vector<Joint> pose(clip.joints);
-    clip.sample(0, pose);
-    // The trick's own frame: where he stands at its start, turned only about up.
-    const auto start = world(pose, placement_joint);
-    const Quat facing = conjugate(ground_turn(start));
-    const auto local = [&](const Vec3& p) {
-        return rotate(facing, Vec3{p[0] - start.position[0], p[1] - start.position[1], p[2] - start.position[2]});
-    };
-    constexpr float tip = 0.40f, side = 0.11f;
-    out->low = {1e9f, 1e9f, 1e9f};
-    out->high = {-1e9f, -1e9f, -1e9f};
-    const auto frames = static_cast<std::size_t>(std::ceil(out->duration * 30)) + 1;
-    for (std::size_t f = 0; f < frames; ++f) {
-        const float t = std::min(out->duration, static_cast<float>(f) / 30.0f);
-        clip.sample(t, pose);
-        if (edits) apply_edits(*edits, t, pose);
-        std::array<Vec3, PreviewMotion::points> points{};
-        for (std::size_t i = 0; i < joints.size(); ++i) points[i] = local(world(pose, joints[i]).position);
-        if (Joint rel; clip.sample_board(t, rel)) {
-            const auto board = compose(world(pose, placement_joint), nose_forward(clip, rel));
-            points[15] = points[14]; // keeps the leg's own end where it is (the foot)
-            const auto along = rotate(board.rotation, Vec3{0, 0, tip}), across = rotate(board.rotation, Vec3{side, 0, 0});
-            points[16] = local({board.position[0] + along[0], board.position[1] + along[1], board.position[2] + along[2]});
-            points[17] = local({board.position[0] - along[0], board.position[1] - along[1], board.position[2] - along[2]});
-            points[18] = local({board.position[0] + across[0], board.position[1] + across[1], board.position[2] + across[2]});
-        }
-        points[15] = local(world(pose, 10).position); // the right foot
-        for (const auto& p : points)
-            for (int a = 0; a < 3; ++a) out->low[a] = std::min(out->low[a], p[a]), out->high[a] = std::max(out->high[a], p[a]);
-        out->frames.push_back(points);
+// Puts a trick up to look at, turned into the studio's stance as an open one is (face_studio_stance).
+bool peek_locked(State& s, std::shared_ptr<Clip> clip, Animation edits) {
+    if (!clip || clip->empty() || clip->joints != skeleton_joints) return false;
+    const bool want_right = studio_goofy(s.stance_choice);
+    if (const auto lead = clip_leads_right(*clip); lead && *lead != want_right) {
+        clip = std::make_shared<Clip>(mirror_clip(*clip));
+        edits.clip = {};
+        edits = mirror_animation(edits);
     }
-    return out;
-}
-struct PreviewCache {
-    std::mutex mutex;
-    std::deque<std::pair<std::string, std::shared_ptr<const PreviewMotion>>> kept; // the last few, newest first
-};
-PreviewCache& preview_cache() {
-    static auto* cache = new PreviewCache;
-    return *cache;
-}
-std::shared_ptr<const PreviewMotion> cached_preview(const std::string& key, const std::function<std::shared_ptr<const PreviewMotion>()>& make) {
-    auto& cache = preview_cache();
-    {
-        std::lock_guard lock(cache.mutex);
-        for (const auto& [k, motion] : cache.kept)
-            if (k == key) return motion;
-    }
-    std::shared_ptr<const PreviewMotion> motion;
-    try { motion = make(); } catch (...) {}
-    std::lock_guard lock(cache.mutex);
-    cache.kept.emplace_front(key, motion);
-    if (cache.kept.size() > 12) cache.kept.pop_back();
-    return motion;
+    s.peek_clip = std::move(clip);
+    s.peek_edits = std::make_shared<const Animation>(std::move(edits));
+    s.peek_since = now_seconds();
+    publish_locked(s, false);
+    return true;
 }
 } // namespace
-std::shared_ptr<const PreviewMotion> preview_motion(const GameTrick& trick) {
-    return cached_preview("game|" + trick.file + "|" + std::to_string(tricks_revision.load()), [&] {
-        const auto clip = read_game_clip(trick);
-        return make_preview(*clip, nullptr);
-    });
+bool peek_game_trick(const GameTrick& trick) {
+    try {
+        auto clip = read_game_clip(trick);
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        return peek_locked(s, std::move(clip), {});
+    } catch (...) { return false; }
 }
-std::shared_ptr<const PreviewMotion> preview_saved_motion(const std::string& animation) {
-    const auto safe = file_safe(animation);
-    std::error_code error;
-    const auto when = std::filesystem::last_write_time(saved_json(safe), error);
-    return cached_preview("saved|" + safe + "|" + std::to_string(when.time_since_epoch().count()), [&]() -> std::shared_ptr<const PreviewMotion> {
+bool peek_saved(const std::string& animation) {
+    try {
+        const auto safe = file_safe(animation);
         std::ifstream json_in(saved_json(safe), std::ios::binary), clip_in(saved_clip(safe), std::ios::binary);
-        if (!json_in || !clip_in) return nullptr;
-        const auto edits = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
-        auto clip = clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {}));
-        if (edits.source.kind == "native_asset") place_native_marks(clip);
-        return make_preview(clip, &edits);
-    });
+        if (!json_in || !clip_in) return false;
+        auto edits = from_json(std::string((std::istreambuf_iterator<char>(json_in)), {}));
+        auto clip = std::make_shared<Clip>(clip_from_bytes(std::vector<std::uint8_t>((std::istreambuf_iterator<char>(clip_in)), {})));
+        if (edits.source.kind == "native_asset") place_native_marks(*clip);
+        auto& s = state();
+        std::lock_guard lock(s.mutex);
+        return peek_locked(s, std::move(clip), std::move(edits));
+    } catch (...) { return false; }
+}
+void end_peek() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.peek_clip) return;
+    s.peek_clip.reset();
+    s.peek_edits.reset();
+    s.peek_since = -1;
+    publish_locked(s, false);
+}
+float peek_duration() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return s.peek_clip ? s.peek_clip->duration() : 0.0f;
 }
 bool load_game_trick(const GameTrick& trick, std::string& message) {
     try {

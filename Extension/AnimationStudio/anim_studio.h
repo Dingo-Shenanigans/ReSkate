@@ -363,26 +363,13 @@ void stop_library_build();  // the build stops soon after; the library stays as 
 bool export_diagnostics(std::string& message);
 bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);
-// A trick as a few lines, to play in a little window (TRICKS' hover preview): the skater's bones and his board, 30 times
-// a second, in the trick's own frame (Y up, he faces along Z at its start). Made once and kept; nullptr when it cannot be
-// read.
-struct PreviewMotion {
-    static constexpr std::size_t points = 19; // 15 joints (preview_bones) and the board's nose, tail and both sides
-    std::vector<std::array<Vec3, points>> frames;
-    float duration{};
-    Vec3 low{}, high{}; // what it all fits in
-};
-// The bones as pairs of points: hips, chest, neck, head, each arm and each leg; then the board's outline.
-inline constexpr std::array<std::pair<int, int>, 16> preview_bones{{
-    {0, 1}, {1, 2}, {2, 3},               // hips - chest - neck - head
-    {1, 4}, {4, 5}, {5, 6},               // left arm
-    {1, 7}, {7, 8}, {8, 9},               // right arm
-    {0, 10}, {10, 11}, {11, 12},          // left leg
-    {0, 13}, {13, 14}, {14, 15},          // right leg (15 is the foot)
-    {16, 17},                             // the board, nose to tail (18 is its width)
-}};
-std::shared_ptr<const PreviewMotion> preview_motion(const GameTrick& trick);
-std::shared_ptr<const PreviewMotion> preview_saved_motion(const std::string& animation); // with its keys
+// A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:
+// it plays once from the start and holds its end, until end_peek. Turned into the studio's stance first. False when it
+// cannot be read.
+bool peek_game_trick(const GameTrick& trick);
+bool peek_saved(const std::string& animation);
+void end_peek();
+float peek_duration(); // the trick being looked at, in seconds (0 none)
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
 void set_author(const std::string& author); // whose trick it is, kept with it and shared with it

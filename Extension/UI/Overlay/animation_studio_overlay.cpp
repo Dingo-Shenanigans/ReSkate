@@ -127,6 +127,7 @@ struct Ui {
     float ring_from{};         // the angle round the ring where a ring drag began
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
+    bool feet_lock{};          // FEET+BOARD: the feet are locked to the deck (lock_feet_to_deck)
     bool own_lead_right{};     // the skater's own stance leads with the right foot (View::own_lead_right), for the stance tags
     // More joints chosen with the one the gizmo is on (Ctrl + click): they are turned and moved with it (move_group).
     std::vector<std::uint16_t> also;
@@ -246,18 +247,23 @@ struct Ui {
     bool preview_from_pack{};
     // A trick just put in a pack: the card asking for its other stances in that pack.
     std::string stance_pack, stance_name;
-    // TRICKS' hover preview: the card under the mouse, since when, and its trick as lines.
+    // TRICKS' hover preview: the card under the mouse, since when, and the skater doing its trick (studio::peek_...).
     struct Hover {
         std::string key;
         double since{-1};
         ImVec2 a{}, b{};
-        std::function<std::shared_ptr<const studio::PreviewMotion>()> make;
-        std::shared_ptr<const studio::PreviewMotion> motion;
-        bool tried{};
+        std::function<bool()> start;
+        bool tried{}, peeking{}, done{};
+        float duration{};
+        studio::Orbit orbit; // the camera as it was, put back after
     } hover;
     std::string hover_candidate, hover_candidate_title, hover_title;
     ImVec2 hover_candidate_a{}, hover_candidate_b{};
-    std::function<std::shared_ptr<const studio::PreviewMotion>()> hover_candidate_make;
+    std::function<bool()> hover_candidate_start;
+    // The window the skater is seen through while a trick is looked at: the menu leaves it clear (last frame's).
+    bool peek_hole{};
+    ImVec2 peek_a{}, peek_b{};
+    ImVec2 grid_a{}, grid_b{}; // where TRICKS' cards are, for the window to sit in
     std::string asset_filter;
     std::string asset_document, asset_json_path;
     std::vector<std::pair<std::string, std::string>> asset_history;
@@ -670,6 +676,8 @@ float smooth_stick(float& state, float target, float dt) {
 bool limb_end(std::uint16_t joint) { return studio::limb_chain(joint) != 0; }
 float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
+studio::Vec3 up_of(const studio::Quat& q); // below
+studio::Vec3 deck_point(const studio::Vec3& centre, const studio::Quat& turn, studio::Vec3 target, bool inside); // below
 // ---- several joints at once ------------------------------------------------------------------------
 // Ctrl + click adds a joint to the chosen ones (or takes it off). A turn or a move of the one the gizmo is on is done
 // to all of them by the same amount in the world, each about its own joint. With the board among them, the feet
@@ -691,20 +699,61 @@ void toggle_in_group(std::uint16_t joint) {
     if (const auto at = std::find(u.also.begin(), u.also.end(), joint); at != u.also.end()) u.also.erase(at);
     else u.also.push_back(joint);
 }
-// The board and both feet, the board carrying the gizmo: turn or move the board and the feet stay on it.
-void choose_feet_on_board(const studio::View& v) {
+// FEET+BOARD: the feet locked to the deck. They are put on it now (the deck brought under them first when it is too
+// far for the legs to reach), they go with it when it is moved or turned, and a foot moved slides over the deck and
+// stays inside its outline - it never leaves the deck - until the lock is let go (B, the tool again, or Esc).
+// `bring_deck`: the deck may be moved to the feet (when the lock is put on), else only the feet move.
+void snap_feet_to_deck(const studio::View& v, bool bring_deck) {
+    const auto* board = joint_view(v, studio::board_joint);
+    const auto* left = joint_view(v, 343);
+    const auto* right = joint_view(v, 10);
+    if (!board || !left || !right) return;
+    studio::Vec3 centre = board->position;
+    const auto up = up_of(board->rotation);
+    const studio::Vec3 middle{(left->position[0] + right->position[0]) * 0.5f, (left->position[1] + right->position[1]) * 0.5f,
+                              (left->position[2] + right->position[2]) * 0.5f};
+    const studio::Vec3 off{middle[0] - centre[0], middle[1] - centre[1], middle[2] - centre[2]};
+    const float gap = dot3(off, up) - studio::feet_above_board;
+    if (bring_deck && std::abs(gap) > 0.12f) {
+        // Too far for the legs: the deck comes up (or down) under the feet, its middle under theirs.
+        studio::Vec3 shift{};
+        for (int i = 0; i < 3; ++i) shift[i] = middle[i] - up[i] * studio::feet_above_board - centre[i];
+        auto next = studio::offset_of(studio::board_joint);
+        const auto local = studio::rotate(studio::conjugate(board->parent_rotation), shift);
+        for (int i = 0; i < 3; ++i) next.offset[i] += local[i] / std::max(board->parent_scale, 0.01f);
+        studio::set_offset(studio::board_joint, next);
+        for (int i = 0; i < 3; ++i) centre[i] += shift[i];
+    }
+    for (const auto* foot : {left, right})
+        studio::drag_limb(foot->joint, deck_point(centre, board->rotation, foot->position, true));
+}
+void lock_feet_to_deck(const studio::View& v) {
     auto& u = ui();
-    if (!joint_view(v, studio::board_joint)) {
-        say("No board in this trick to put the feet on.");
+    if (!v.has_clip || !joint_view(v, studio::board_joint)) {
+        say("No board in this trick to lock the feet to.");
         return;
     }
+    studio::begin_change();
+    snap_feet_to_deck(v, true);
+    u.feet_lock = true;
     u.selected = studio::board_joint;
     u.also = {343, 10}; // the left and right foot
-    say("Board and feet chosen: turn or move the board and the feet stay on the deck. Esc lets go of the feet.");
+    say("Feet locked to the deck: move or turn the board and they stay on it; a foot slides over the deck but cannot leave it. B lets go.");
+}
+void unlock_feet() {
+    auto& u = ui();
+    u.feet_lock = false;
+    u.also.clear();
+    say("Feet free of the deck.");
 }
 void begin_group(const studio::View& v) {
     auto& u = ui();
     u.group_start.clear();
+    if (u.feet_lock && u.selected == studio::board_joint) {
+        for (const std::uint16_t foot : {std::uint16_t{343}, std::uint16_t{10}})
+            if (std::find(u.also.begin(), u.also.end(), foot) == u.also.end()) u.also.push_back(foot);
+        snap_feet_to_deck(v, false); // on this frame too, before it moves
+    }
     if (const auto* board = joint_view(v, studio::board_joint)) u.board_point = board->position;
     for (const auto joint : u.also) {
         const auto* view = joint_view(v, joint);
@@ -793,16 +842,26 @@ studio::Vec3 up_of(const studio::Quat& q) {
 // Wherever the board is, which is the point: on the ground that is the board the game has already put
 // under the lower foot (board_on_feet), in the air the one the clip and its keys put there. Snapping a
 // foot onto it is right either way, so this asks nothing about the trick but whether the board is known.
-bool snapping_now(const studio::View& v) { return ui().snap && v.has_clip; }
+bool snapping_now(const studio::View& v) { return (ui().snap || ui().feet_lock) && v.has_clip; }
+// A point on the deck of a board at `centre` turned `turn`: at the feet's height over it, and - with the feet locked to
+// it - inside its outline (along it short of the kicks, across it inside its edges).
+studio::Vec3 deck_point(const studio::Vec3& centre, const studio::Quat& turn, studio::Vec3 target, bool inside) {
+    const auto up = up_of(turn), along = studio::rotate(turn, studio::Vec3{0, 0, 1}), across = studio::rotate(turn, studio::Vec3{1, 0, 0});
+    const studio::Vec3 from{target[0] - centre[0], target[1] - centre[1], target[2] - centre[2]};
+    float a = dot3(from, along), c = dot3(from, across);
+    const float u_over = studio::feet_above_board;
+    if (inside) {
+        a = std::clamp(a, -0.34f, 0.34f);
+        c = std::clamp(c, -0.085f, 0.085f);
+    }
+    for (int i = 0; i < 3; ++i) target[i] = centre[i] + along[i] * a + across[i] * c + up[i] * u_over;
+    return target;
+}
 studio::Vec3 on_the_deck(const studio::View& v, std::uint16_t joint, studio::Vec3 target) {
     if ((joint != 10 && joint != 343) || !snapping_now(v)) return target;
     const auto* board = joint_view(v, studio::board_joint);
     if (!board) return target;
-    const auto up = up_of(board->rotation);
-    const studio::Vec3 from{target[0] - board->position[0], target[1] - board->position[1], target[2] - board->position[2]};
-    const float over = dot3(from, up) - studio::feet_above_board;
-    for (int i = 0; i < 3; ++i) target[i] -= up[i] * over;
-    return target;
+    return deck_point(board->position, board->rotation, target, ui().feet_lock);
 }
 
 // ---- keeping the skater out of himself ------------------------------------------------------------
@@ -2343,6 +2402,7 @@ void keyboard(const studio::View& v) {
         // Esc backs out: the round menu, then the chosen keys, then to the menu.
         if (u.radial) u.radial = false;
         else if (!u.picked.empty()) u.picked.clear();
+        else if (u.feet_lock) unlock_feet();
         else if (!u.also.empty()) u.also.clear();
         else open_menu();
         return;
@@ -2358,7 +2418,10 @@ void keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_UpArrow, true)) step_joint(-1);
     if (pressed(ImGuiKey_DownArrow, true)) step_joint(1);
     if ((pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter)) && v.has_clip) key_joint();
-    if (pressed(ImGuiKey_B) && v.has_clip) choose_feet_on_board(v);
+    if (pressed(ImGuiKey_B) && v.has_clip) {
+        if (u.feet_lock) unlock_feet();
+        else lock_feet_to_deck(v);
+    }
     if (pressed(ImGuiKey_Home)) studio::set_time(0);
     if (pressed(ImGuiKey_End)) studio::set_time(v.duration);
     if (ctrl && pressed(ImGuiKey_Z, true)) studio::undo();
@@ -2543,7 +2606,15 @@ std::string unique_pack_name(const studio::View& v) {
 void menu_backdrop(ImDrawList* d, const Fonts& f, ImVec2 display, float alpha) {
     const float k = f.k;
     const auto a8 = [&](int value) { return static_cast<int>(static_cast<float>(value) * alpha); };
-    d->AddRectFilled(ImVec2(0, 0), display, IM_COL32(10, 10, 12, a8(240)));
+    // Dark enough that nothing of the room shows through; clear only where a trick is being looked at.
+    const ImU32 fill = IM_COL32(10, 10, 12, a8(252));
+    const auto& u = ui();
+    if (u.peek_hole) {
+        d->AddRectFilled(ImVec2(0, 0), ImVec2(display.x, u.peek_a.y), fill);
+        d->AddRectFilled(ImVec2(0, u.peek_b.y), display, fill);
+        d->AddRectFilled(ImVec2(0, u.peek_a.y), ImVec2(u.peek_a.x, u.peek_b.y), fill);
+        d->AddRectFilled(ImVec2(u.peek_b.x, u.peek_a.y), ImVec2(display.x, u.peek_b.y), fill);
+    } else d->AddRectFilled(ImVec2(0, 0), display, fill);
     draw_studio_picture(d, StudioPicture::grain, ImVec2(0, 0), display, IM_COL32(255, 255, 255, a8(22)));
     // A cold light from the top, as the game's own pages have, and a little print in the corners.
     const ImU32 lit = IM_COL32(1, 131, 255, a8(26)), none = IM_COL32(1, 131, 255, 0);
@@ -3300,106 +3371,102 @@ void library_news() {
     was_running = build.running;
 }
 // ---- the hover preview ----------------------------------------------------------------------------
-// With PREVIEW on (TRICKS, top right), a trick card held under the mouse a moment plays its trick in a little window
-// beside it - the skater as lines, his board in blue - once, and fades away. Nothing is loaded into the studio.
-void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<std::shared_ptr<const studio::PreviewMotion>()> make,
-                const std::string& title = {}) {
+// With PREVIEW on (TRICKS, top right), a trick card held under the mouse a moment has the skater himself do its trick:
+// the menu leaves a window clear beside the card, the camera holds on him and his board from the side, and he does it
+// once. Nothing is opened: what is open in the studio stays as it is, and the camera goes back as it was.
+void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<bool()> start, const std::string& title = {}) {
     if (!ImGui::IsMouseHoveringRect(a, b) || !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) return;
     auto& u = ui();
     u.hover_candidate = key;
     u.hover_candidate_a = a;
     u.hover_candidate_b = b;
-    u.hover_candidate_make = std::move(make);
+    u.hover_candidate_start = std::move(start);
     u.hover_candidate_title = title;
+}
+// Whether a card lies under the preview's window (it is not drawn then: the skater is seen there).
+bool under_peek(ImVec2 a, ImVec2 b) {
+    const auto& u = ui();
+    return u.peek_hole && a.x < u.peek_b.x && b.x > u.peek_a.x && a.y < u.peek_b.y && b.y > u.peek_a.y;
+}
+void stop_hover_peek() {
+    auto& h = ui().hover;
+    if (h.peeking) {
+        studio::end_peek();
+        studio::set_orbit(h.orbit);
+        studio::set_camera_follow(ui().camera_shot != 0);
+    }
+    h.peeking = false;
+    ui().peek_hole = false;
 }
 void hover_preview(const Fonts& f, const studio::View& v) {
     auto& u = ui();
     auto& h = u.hover;
     const double now = ImGui::GetTime();
-    if (!v.hover_preview || u.hover_candidate.empty() || any_card_open(v)) {
+    if (!v.hover_preview || u.hover_candidate.empty() || any_card_open(v) || !u.menu || u.menu_tab != 0) {
+        stop_hover_peek();
         h = {};
         return;
     }
     if (h.key != u.hover_candidate) {
+        stop_hover_peek();
         h = {};
         h.key = u.hover_candidate;
         h.since = now;
         h.a = u.hover_candidate_a;
         h.b = u.hover_candidate_b;
-        h.make = u.hover_candidate_make;
+        h.start = u.hover_candidate_start;
         u.hover_title = u.hover_candidate_title;
     }
+    if (h.done) return;
     if (!h.tried) {
         if (now - h.since < 0.35) return; // a moment held on it, not passed over
         h.tried = true;
-        h.motion = h.make ? h.make() : nullptr;
-        h.since = now; // it plays from here
+        if (!h.start || !h.start()) return;
+        h.peeking = true;
+        h.since = now;
+        h.duration = std::max(0.3f, studio::peek_duration());
+        h.orbit = v.orbit;
+        // From his side, far enough back for the whole trick and the board, held on him.
+        studio::Orbit orbit = v.orbit;
+        orbit.pitch = 0.08f;
+        orbit.distance = 4.6f;
+        orbit.pan = {};
+        if (const auto facing = chest_facing(v)) orbit.yaw = std::atan2(facing->at(2), -facing->at(0)) - v.base_yaw;
+        studio::set_camera_follow(true);
+        studio::set_focus(studio::all_joints);
+        studio::set_orbit(orbit);
     }
-    if (!h.motion || h.motion->frames.empty()) return;
-    const float k = f.k, played = static_cast<float>(now - h.since), length = std::max(h.motion->duration, 0.1f);
-    float alpha = std::min(1.0f, played / 0.15f);
-    if (played > length + 0.3f) alpha = 1.0f - (played - length - 0.3f) / 0.4f;
-    if (alpha <= 0) return; // played, and gone until another card is held
-    const auto display = ImGui::GetIO().DisplaySize;
-    const float w = 300 * k, hgt = 330 * k;
-    ImVec2 a(h.b.x + 14 * k, h.a.y - 40 * k);
-    if (a.x + w > display.x - 10 * k) a.x = h.a.x - 14 * k - w;
-    a.y = std::clamp(a.y, 10 * k, display.y - hgt - 10 * k);
+    if (!h.peeking) return;
+    const float k = f.k, played = static_cast<float>(now - h.since);
+    if (played > h.duration + 0.9f) { // done, and the window closes until another card is held
+        stop_hover_peek();
+        h.done = true;
+        return;
+    }
+    // The window: beside the card, inside the cards' area, as tall as a skater in the air needs.
+    const float w = std::min(460 * k, (u.grid_b.x - u.grid_a.x) * 0.48f), hgt = std::min(560 * k, u.grid_b.y - u.grid_a.y);
+    ImVec2 a(h.b.x + 16 * k, h.a.y - 60 * k);
+    if (a.x + w > u.grid_b.x) a.x = h.a.x - 16 * k - w;
+    if (a.x < u.grid_a.x) a.x = std::min(u.grid_b.x - w, h.b.x + 16 * k);
+    a.y = std::clamp(a.y, u.grid_a.y, std::max(u.grid_a.y, u.grid_b.y - hgt));
     const ImVec2 b(a.x + w, a.y + hgt);
+    u.peek_hole = true;
+    u.peek_a = a;
+    u.peek_b = b;
+    // The camera aims so he stands in the middle of the window.
+    const auto display = ImGui::GetIO().DisplaySize;
+    const ImVec2 middle((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f + 40 * k);
+    studio::set_view_shift((display.y * 0.5f - middle.y) / display.y, (middle.x - display.x * 0.5f) / display.y);
     auto* d = ImGui::GetForegroundDrawList();
-    const auto fade = [&](ImU32 c) { return (c & 0x00FFFFFFu) | (static_cast<ImU32>(static_cast<float>(c >> 24) * alpha) << 24); };
-    d->AddRectFilled(ImVec2(a.x + 6 * k, a.y + 8 * k), ImVec2(b.x + 6 * k, b.y + 8 * k), fade(IM_COL32(0, 0, 0, 120)), 8 * k);
-    d->AddRectFilled(a, b, fade(IM_COL32(16, 17, 20, 255)), 8 * k);
-    d->AddRect(a, b, fade(IM_COL32(1, 131, 255, 160)), 8 * k, 0, 2 * k);
-    text(d, f.heading, 11 * k, ImVec2(a.x + 14 * k, a.y + 10 * k), fade(blue_light), "PREVIEW");
-    if (!u.hover_title.empty())
-        text(d, f.bold, 15 * k, ImVec2(a.x + 14 * k, b.y - 44 * k), fade(white), elide(f.bold, 15 * k, u.hover_title, w - 28 * k));
-    // A three-quarter view, fitted to everything the trick does.
-    constexpr float yaw = 0.62f, pitch = 0.24f;
-    const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
-    const auto flat = [&](const studio::Vec3& q) {
-        const float x = q[0] * cy + q[2] * sy, z = -q[0] * sy + q[2] * cy;
-        return ImVec2(x, -(q[1] * cp - z * sp));
-    };
-    ImVec2 lo(1e9f, 1e9f), hi(-1e9f, -1e9f);
-    for (int c = 0; c < 8; ++c) {
-        const studio::Vec3 corner{(c & 1) ? h.motion->high[0] : h.motion->low[0], (c & 2) ? h.motion->high[1] : h.motion->low[1],
-                                  (c & 4) ? h.motion->high[2] : h.motion->low[2]};
-        const auto s = flat(corner);
-        lo = ImVec2(std::min(lo.x, s.x), std::min(lo.y, s.y));
-        hi = ImVec2(std::max(hi.x, s.x), std::max(hi.y, s.y));
-    }
-    const ImVec2 ia(a.x + 20 * k, a.y + 34 * k), ib(b.x - 20 * k, b.y - 56 * k);
-    const float scale = std::min((ib.x - ia.x) / std::max(hi.x - lo.x, 0.3f), (ib.y - ia.y) / std::max(hi.y - lo.y, 0.3f));
-    const ImVec2 mid((ia.x + ib.x) * 0.5f, (ia.y + ib.y) * 0.5f), centre((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
-    const auto to_screen = [&](const studio::Vec3& q) {
-        const auto s = flat(q);
-        return ImVec2(mid.x + (s.x - centre.x) * scale, mid.y + (s.y - centre.y) * scale);
-    };
-    // The floor, under where he starts.
-    {
-        const float floor = h.motion->low[1];
-        const auto l = to_screen({h.motion->low[0] - 0.3f, floor, 0}), r = to_screen({h.motion->high[0] + 0.3f, floor, 0});
-        d->AddLine(l, r, fade(IM_COL32(255, 255, 255, 40)), 2 * k);
-    }
-    const auto& frames = h.motion->frames;
-    const auto& points = frames[std::min(frames.size() - 1, static_cast<std::size_t>(std::max(0.0f, played) * 30.0f))];
-    // The board first, under him: nose to tail, and across.
-    {
-        const auto nose = to_screen(points[16]), tail = to_screen(points[17]);
-        d->AddLine(nose, tail, fade(blue), 7 * k);
-        const ImVec2 middle((nose.x + tail.x) * 0.5f, (nose.y + tail.y) * 0.5f), across = to_screen(points[18]);
-        d->AddLine(ImVec2(middle.x * 2 - across.x, middle.y * 2 - across.y), across, fade(blue_light), 3 * k);
-    }
-    for (std::size_t i = 0; i + 1 < studio::preview_bones.size(); ++i) {
-        const auto [from, to] = studio::preview_bones[i];
-        d->AddLine(to_screen(points[static_cast<std::size_t>(from)]), to_screen(points[static_cast<std::size_t>(to)]), fade(white), 3.5f * k);
-    }
-    d->AddCircleFilled(to_screen(points[3]), 7 * k, fade(white), 16); // his head
-    // How far it has got.
-    const float u_played = std::clamp(played / length, 0.0f, 1.0f);
-    d->AddRectFilled(ImVec2(a.x + 14 * k, b.y - 22 * k), ImVec2(b.x - 14 * k, b.y - 18 * k), fade(IM_COL32(255, 255, 255, 40)), 2 * k);
-    d->AddRectFilled(ImVec2(a.x + 14 * k, b.y - 22 * k), ImVec2(a.x + 14 * k + (w - 28 * k) * u_played, b.y - 18 * k), fade(blue), 2 * k);
+    const float fade_in = std::clamp(played / 0.25f, 0.0f, 1.0f);
+    // Its frame: the name across the top, how far it has got along the bottom.
+    d->AddRect(a, b, IM_COL32(1, 131, 255, static_cast<int>(200 * fade_in)), 6 * k, 0, 3 * k);
+    d->AddRectFilled(ImVec2(a.x, a.y), ImVec2(b.x, a.y + 40 * k), IM_COL32(12, 12, 14, 235), 6 * k, ImDrawFlags_RoundCornersTop);
+    text(d, f.heading, 11 * k, ImVec2(a.x + 14 * k, a.y + 6 * k), blue_light, "PREVIEW");
+    text(d, f.bold, 15 * k, ImVec2(a.x + 14 * k, a.y + 19 * k), white, elide(f.bold, 15 * k, u.hover_title, w - 28 * k));
+    const float at = std::clamp(played / h.duration, 0.0f, 1.0f);
+    d->AddRectFilled(ImVec2(a.x, b.y - 10 * k), b, IM_COL32(12, 12, 14, 235), 6 * k, ImDrawFlags_RoundCornersBottom);
+    d->AddRectFilled(ImVec2(a.x + 10 * k, b.y - 7 * k), ImVec2(a.x + 10 * k + (w - 20 * k) * at, b.y - 3 * k), blue, 2 * k);
 }
 void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
@@ -3533,10 +3600,13 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         heading(d, f, ImVec2(grid_a.x, top), grid_w, "Yours", std::to_string(mine.size()));
         top += 34 * k;
     }
+    u.grid_a = grid_a;
+    u.grid_b = grid_b;
     for (const auto& name : mine) {
         const auto at = place(i++);
+        if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
         my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
-        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name] { return studio::preview_saved_motion(name); }, shown_name(v, name));
+        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name] { return studio::peek_saved(name); }, shown_name(v, name));
     }
     if (!mine.empty()) {
         top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
@@ -3549,13 +3619,17 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     for (const auto* c : game) {
         const auto at = place(i);
         const ImVec2 end(at.x + card_w, at.y + card_h);
+        if (under_peek(at, end)) {
+            ++i;
+            continue;
+        }
         if (c->pieces.empty()) {
             game_trick_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved_of.contains(c->trick) ? saved_of[c->trick] : 0);
             // Its mid pop, or the one it has.
             for (const std::size_t pop : {1, 0, 2, 3})
                 if (c->pops[pop]) {
                     const studio::GameTrick trick = *c->pops[pop];
-                    note_hover("game|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); }, c->label + " (" + trick.pop + " pop)");
+                    note_hover("game|" + trick.file, at, end, [trick] { return studio::peek_game_trick(trick); }, c->label + " (" + trick.pop + " pop)");
                     break;
                 }
             continue;
@@ -3563,7 +3637,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         if (!c->sides.empty())
             if (const auto* piece = main_piece(*c, c->sides.front()); piece && piece->clip) {
                 const studio::GameTrick trick = *piece->clip;
-                note_hover("piece|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); },
+                note_hover("piece|" + trick.file, at, end, [trick] { return studio::peek_game_trick(trick); },
                            c->label + " (" + (piece->side.empty() ? piece->part : piece->side + " " + piece->part) + ")");
             }
         int saved = 0;
@@ -3940,8 +4014,8 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         int chosen = 0;
         for (std::size_t i = 0; i < rules.size(); ++i)
             if (pack.pack.pop_rule == rules[i]) chosen = static_cast<int>(i);
-        const float sx = x + 240 * k, sw = std::min(460 * k, w - 240 * k);
-        const int picked = segmented(d, f, "##poprule", ImVec2(sx, y), sw, 38 * k, {"ITS OWN POP", "ANY", "LOW", "MID", "HIGH"}, chosen);
+        const float sx = x + 240 * k, sw = std::min(560 * k, w - 240 * k);
+        const int picked = segmented(d, f, "##poprule", ImVec2(sx, y), sw, 38 * k, {"OWN POP", "ANY", "LOW", "MID", "HIGH"}, chosen);
         if (picked >= 0 && picked != chosen) {
             std::string m;
             studio::set_pack_pop_rule(pack.name, rules[static_cast<std::size_t>(picked)], m);
@@ -5434,10 +5508,11 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     gap(h + 6 * k);
     if (tool("##snap", "SNAP", "N", u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
     gap(h + 6 * k);
-    if (tool("##feetboard", "FEET+BOARD", "B", in_group(studio::board_joint) && in_group(343) && in_group(10),
-             "Chooses the board and both feet: turn or move the board and the feet stay on the deck. Ctrl + click a joint to add it to what you turn.")) {
-        if (in_group(studio::board_joint) && in_group(343) && in_group(10)) ui().also.clear();
-        else choose_feet_on_board(v);
+    if (tool("##feetboard", "FEET+BOARD", "B", u.feet_lock,
+             "Locks the feet to the deck: they are put on it, go with it when you move or turn the board, and slide over it but never leave "
+             "it, until you let go (B again). Ctrl + click a joint to add it to what you turn.")) {
+        if (u.feet_lock) unlock_feet();
+        else lock_feet_to_deck(v);
     }
     gap(h + 6 * k);
     if (tool("##limits", "LIMITS", "", v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
