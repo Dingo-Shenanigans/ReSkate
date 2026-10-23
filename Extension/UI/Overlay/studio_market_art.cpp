@@ -1,6 +1,7 @@
 #include "studio_market_art.h"
 #include "overlay_internal.h"
 #include "Engine/Core/Log/logging.h"
+#include "Extension/AnimationStudio/marketplace.h"
 
 #include <windows.h>
 #include <wincodec.h>
@@ -8,8 +9,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 
 // The MARKET's art on its way to the GPU (studio_market_art.h): read from the DLL off the render thread, the wall in a
@@ -28,6 +32,7 @@ struct Art {
     bool wall_waiting{}, sheet_waiting{}, preview_waiting{};
     unsigned serial{}, preview_serial{};
     std::array<ArtPlace, static_cast<std::size_t>(MarketArt::count)> places{};
+    std::map<std::string, ArtPlace> crew; // "<team, lower case>|profile" or "|thumbnail"
     ImTextureID wall_texture{}, sheet_texture{}, preview_texture{};
     std::vector<std::uint8_t> preview_kept; // the preview again after the device is lost
     int preview_side{};
@@ -37,6 +42,11 @@ Art& art() {
     return *value;
 }
 
+std::string crew_key(std::string_view team, CrewArt which) {
+    std::string key;
+    for (const char c : team) key += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return key + (which == CrewArt::profile ? "|profile" : "|thumbnail");
+}
 std::optional<ArtPixels> decode_with(IWICImagingFactory* factory, IWICBitmapDecoder* decoder, int most_wide) {
     ComPtr<IWICBitmapFrameDecode> frame;
     UINT width{}, height{};
@@ -131,9 +141,39 @@ void read_art() {
     int row_width = 0, row_height = 0;
     for (std::size_t i = 3; i < items.size(); ++i)
         if (pictures[i]) row_width += pictures[i]->width + 8, row_height = std::max(row_height, pictures[i]->height);
+    // THE CREW's pictures, those who sent theirs: in rows under the rest, as many to a row as fit.
+    struct CrewPicture {
+        std::string key;
+        ArtPixels pixels;
+        int x{}, y{};
+    };
+    std::vector<CrewPicture> crew;
+    for (const auto& member : anim_studio::market::crew_members)
+        for (const auto which : {CrewArt::profile, CrewArt::thumbnail}) {
+            std::wstring name = L"STUDIO_CREW_";
+            for (const char c : member.team) name += static_cast<wchar_t>(std::toupper(static_cast<unsigned char>(c)));
+            name += which == CrewArt::profile ? L"_PROFILE" : L"_THUMBNAIL";
+            if (!studio_resource_bytes(name.c_str()).first) continue; // not sent yet
+            if (auto pixels = decode_studio_resource(name.c_str(), which == CrewArt::profile ? 384 : 960))
+                crew.push_back({crew_key(member.team, which), std::move(*pixels)});
+            else log_missing("a picture of THE CREW");
+        }
+    const int sheet_width = std::max({cell * 3, row_width, crew.empty() ? 0 : 4096});
+    int crew_height = 0;
+    {
+        int cx = 0, cy = 0, line = 0;
+        for (auto& c : crew) {
+            if (cx > 0 && cx + c.pixels.width > sheet_width) cx = 0, cy += line + 8, line = 0;
+            c.x = cx;
+            c.y = cy;
+            cx += c.pixels.width + 8;
+            line = std::max(line, c.pixels.height);
+        }
+        if (!crew.empty()) crew_height = cy + line + 8;
+    }
     Canvas sheet;
-    sheet.width = std::max(cell * 3, row_width);
-    sheet.height = cell + row_height;
+    sheet.width = sheet_width;
+    sheet.height = cell + row_height + 8 + crew_height;
     sheet.rgba.assign(static_cast<std::size_t>(sheet.width) * sheet.height * 4, 0);
     std::array<ArtPlace, static_cast<std::size_t>(MarketArt::count)> places{};
     const float sw = static_cast<float>(sheet.width), sh = static_cast<float>(sheet.height);
@@ -157,6 +197,17 @@ void read_art() {
             x += pictures[i]->width + 8;
         }
     }
+    std::map<std::string, ArtPlace> crew_places;
+    for (const auto& c : crew) {
+        const int y = cell + row_height + 8 + c.y;
+        blit(sheet, c.pixels, c.x, y);
+        ArtPlace place;
+        place.uv0 = ImVec2(c.x / sw, y / sh);
+        place.uv1 = ImVec2((c.x + c.pixels.width) / sw, (y + c.pixels.height) / sh);
+        place.width = static_cast<float>(c.pixels.width);
+        place.height = static_cast<float>(c.pixels.height);
+        crew_places[c.key] = place;
+    }
     if (!wall.rgba.empty()) {
         auto& place = places[static_cast<std::size_t>(MarketArt::wallpaper)];
         place.uv0 = ImVec2(0, 0);
@@ -166,6 +217,7 @@ void read_art() {
     }
     std::lock_guard lock(a.mutex);
     a.places = places;
+    a.crew = std::move(crew_places);
     a.wall = std::move(wall);
     a.wall.serial = ++a.serial;
     a.wall_waiting = !a.wall.rgba.empty();
@@ -232,6 +284,17 @@ bool market_art(MarketArt which, ArtPlace& out) noexcept {
     out = a.places[static_cast<std::size_t>(which)];
     out.texture = which == MarketArt::wallpaper ? a.wall_texture : a.sheet_texture;
     return out.texture != ImTextureID{} && out.width > 0;
+}
+bool crew_art(std::string_view team, CrewArt which, ArtPlace& out) noexcept {
+    try {
+        auto& a = art();
+        std::lock_guard lock(a.mutex);
+        const auto found = a.crew.find(crew_key(team, which));
+        if (found == a.crew.end() || !a.sheet_texture) return false;
+        out = found->second;
+        out.texture = a.sheet_texture;
+        return out.width > 0;
+    } catch (...) { return false; }
 }
 void show_cover_preview(std::vector<std::uint8_t> rgba, int side) {
     auto& a = art();

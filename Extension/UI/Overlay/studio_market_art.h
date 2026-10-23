@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,6 +25,10 @@ struct ArtPlace {
     float border{};          // a tile's wrapped border, in texels
 };
 bool market_art(MarketArt art, ArtPlace& out) noexcept;
+// THE CREW's own pictures (built in from assets/animator_studio/crew), on the same sheet: a member's round profile
+// picture and the wide shot across the top of their cards. False for one who has not sent theirs, and until it is there.
+enum class CrewArt { profile, thumbnail };
+bool crew_art(std::string_view team, CrewArt which, ArtPlace& out) noexcept;
 
 // For the cover maker, off the render thread: a picture of the market's art decoded from the DLL (its own size, RGBA),
 // by its resource name (STUDIO_ART_...); and a font file the studio carries (FONT_...), as it is in the DLL.

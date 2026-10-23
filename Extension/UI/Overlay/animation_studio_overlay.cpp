@@ -4786,6 +4786,19 @@ void duct_tape(ImDrawList* d, const Fonts& f, ImVec2 centre, float w, float h, f
     for (float x = inset + 1.6f * k; x < w - inset; x += (2.6f + r() * 3.4f) * k)
         d->AddLine(place.xf(x, 1.2f * k), place.xf(x + (r() - 0.5f) * 2 * k, h - 1.2f * k), IM_COL32(52, 55, 62, static_cast<int>(6 + r() * 10)), 0.7f * k);
 }
+// A picture filling a box with its shape kept, cut round `focus` (0..1 across and down it); `rounding` as ImGui's (a box
+// rounded by half its side is a circle).
+void picture_cover(ImDrawList* d, const ArtPlace& art, ImVec2 a, ImVec2 b, ImVec2 focus, float rounding = 0, ImU32 tint = IM_COL32_WHITE) {
+    if (b.x <= a.x || b.y <= a.y || art.width <= 0 || art.height <= 0) return;
+    const float box = (b.x - a.x) / (b.y - a.y), shape = art.width / art.height;
+    float uw = 1, vh = 1;
+    if (shape > box) uw = box / shape;
+    else vh = shape / box;
+    const float u0 = std::clamp(focus.x - uw * 0.5f, 0.0f, 1 - uw), v0 = std::clamp(focus.y - vh * 0.5f, 0.0f, 1 - vh);
+    const ImVec2 span(art.uv1.x - art.uv0.x, art.uv1.y - art.uv0.y);
+    d->AddImageRounded(art.texture, a, b, ImVec2(art.uv0.x + span.x * u0, art.uv0.y + span.y * v0),
+                       ImVec2(art.uv0.x + span.x * (u0 + uw), art.uv0.y + span.y * (v0 + vh)), tint, rounding);
+}
 // A stand-in picture for one of THE CREW until they send their own: the outline of a head and shoulders on the studio's
 // blue, round, with a white ring.
 void crew_photo(ImDrawList* d, const Fonts& f, ImVec2 c, float r) {
@@ -4819,6 +4832,30 @@ void crew_photo(ImDrawList* d, const Fonts& f, ImVec2 c, float r) {
     }
     d->AddCircleFilled(ImVec2(c.x, c.y - r * 0.14f), r * 0.3f, figure, 40);
     d->AddCircle(c, r, IM_COL32_WHITE, 72, 3 * k);
+}
+// One of THE CREW's round picture: theirs, or the stand-in until they send it; a shadow under it, a white ring round it.
+void crew_avatar(ImDrawList* d, const Fonts& f, const studio::market::CrewMember& member, ImVec2 c, float r) {
+    const float k = f.k;
+    ArtPlace art;
+    if (!crew_art(member.team, CrewArt::profile, art)) {
+        crew_photo(d, f, c, r);
+        return;
+    }
+    d->AddCircleFilled(ImVec2(c.x + 4 * k, c.y + 6 * k), r, IM_COL32(0, 0, 0, 90), 72);
+    picture_cover(d, art, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ImVec2(0.5f, 0.5f), r);
+    d->AddCircle(c, r, IM_COL32_WHITE, 72, 3 * k);
+}
+// The band across the top of one of THE CREW's cards: their shot when they sent one, else the studio's blue; darker at
+// its foot, so the picture sitting on its edge stands out.
+void crew_band(ImDrawList* d, const studio::market::CrewMember& member, ImVec2 a, ImVec2 b, ImU32 card) {
+    ArtPlace art;
+    if (crew_art(member.team, CrewArt::thumbnail, art)) picture_cover(d, art, a, b, ImVec2(member.focus_x, member.focus_y));
+    else {
+        d->AddRectFilledMultiColor(a, b, IM_COL32(1, 131, 255, 255), IM_COL32(1, 131, 255, 255), IM_COL32(4, 60, 140, 255), IM_COL32(4, 60, 140, 255));
+        theme::halftone(d, ImVec2(b.x - 70, a.y + 12), 8, 4, IM_COL32(255, 255, 255, 40));
+    }
+    const float fade = (b.y - a.y) * 0.45f;
+    d->AddRectFilledMultiColor(ImVec2(a.x, b.y - fade), b, card & 0x00FFFFFF, card & 0x00FFFFFF, card, card);
 }
 // Words on a torn paper label, its top left at `at` before it is turned `deg` about its middle. Returns its size.
 ImVec2 paper_label(ImDrawList* d, const Fonts& f, ImFont* font, float size, ImVec2 at, std::string_view words, PaperKind kind, std::uint32_t seed,
@@ -5426,8 +5463,10 @@ void member_card(ImDrawList* d, const Fonts& f, const studio::market::CrewMember
     const ImVec2 ca(a.x, a.y - lift), cb(a.x + w, a.y + h - lift);
     d->AddRectFilled(ImVec2(ca.x + 8 * k, ca.y + 10 * k), ImVec2(cb.x + 8 * k, cb.y + 10 * k), IM_COL32(0, 0, 0, 90));
     d->AddRectFilled(ca, cb, IM_COL32(14, 15, 18, 255));
-    // The photo: their newest cover, its middle across.
-    if (!theirs.empty()) {
+    // The photo: their own shot when they sent one, else their newest cover, its middle across.
+    ArtPlace shot;
+    if (crew_art(member.team, CrewArt::thumbnail, shot)) picture_cover(d, shot, ca, ImVec2(cb.x, ca.y + ph), ImVec2(member.focus_x, member.focus_y));
+    else if (!theirs.empty()) {
         const auto& p = *theirs.front();
         covers.add(p);
         ImTextureID texture{};
@@ -5440,9 +5479,13 @@ void member_card(ImDrawList* d, const Fonts& f, const studio::market::CrewMember
         } else market_icon(d, f, p, pa, pb);
     } else d->AddRectFilled(ca, ImVec2(cb.x, ca.y + ph), IM_COL32(4, 60, 140, 255));
     float y = ca.y + ph + 14 * k;
+    // Their picture on the photo's edge, their name beside it.
+    const float ar = 30 * k;
+    crew_avatar(d, f, member, ImVec2(ca.x + 18 * k + ar, ca.y + ph), ar);
     ImFont* nf = anton(f, 38 * k);
     const auto [nt, nb] = caps_of(nf, 38 * k);
-    d->AddText(sharp(nf, 38 * k), 38 * k, ImVec2(ca.x + 18 * k, y - nt), IM_COL32_WHITE, upper(std::string(member.name)).c_str());
+    const float nx = ca.x + 18 * k + ar * 2 + 14 * k;
+    d->AddText(sharp(nf, 38 * k), 38 * k, ImVec2(nx, y - nt), IM_COL32_WHITE, elide(nf, 38 * k, upper(std::string(member.name)), cb.x - nx - 14 * k).c_str());
     y += (nb - nt) + 14 * k;
     ImGui::PushClipRect(ImVec2(ca.x + 18 * k, y), ImVec2(cb.x - 18 * k, y + 60 * k), true);
     paragraph(d, body(f, 13 * k), 13 * k, ImVec2(ca.x + 18 * k, y), w - 36 * k, IM_COL32(243, 243, 239, 190), std::string(member.about));
@@ -6135,7 +6178,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
         y += head.y + 30 * k;
         const auto& crew = studio::market::crew_members;
         const float gap = 22 * k, count = static_cast<float>(std::clamp<std::size_t>(crew.size(), 4, 5));
-        const float w = (iw - gap * (count - 1)) / count, h = 296 * k;
+        const float w = (iw - gap * (count - 1)) / count, h = 286 * k, band = 170 * k;
         const ImU32 card = IM_COL32(14, 15, 18, 250);
         float x = ix;
         std::uint32_t s = 121;
@@ -6149,21 +6192,23 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
             const ImVec2 ca(x, y - lift), cb(x + w, y + h - lift);
             d->AddRectFilled(ImVec2(ca.x + 8 * k, ca.y + 10 * k + lift), ImVec2(cb.x + 8 * k, cb.y + 10 * k + lift), IM_COL32(0, 0, 0, 90));
             d->AddRectFilled(ca, cb, card);
+            crew_band(d, member, ca, ImVec2(cb.x, ca.y + band), card);
             d->AddRectFilled(ca, ImVec2(cb.x, ca.y + 4 * k), blue);
-            const float r = 62 * k;
-            crew_photo(d, f, ImVec2((ca.x + cb.x) * 0.5f, ca.y + 34 * k + r), r);
-            float ty = ca.y + 34 * k + r * 2 + 30 * k;
-            ImFont* nf = anton(f, 40 * k);
-            const auto [nt, nb] = caps_of(nf, 40 * k);
-            const auto name = elide(nf, 40 * k, upper(std::string(member.name)), w - 32 * k);
-            const float nw = text_size(nf, 40 * k, name.c_str()).x;
-            d->AddText(nf, 40 * k, ImVec2((ca.x + cb.x - nw) * 0.5f, ty - nt), IM_COL32_WHITE, name.c_str());
-            ty += (nb - nt) + 16 * k;
-            // THUNDERSTORE and an arrow out, then where it goes.
+            // As a profile's head: their shot across the top, their picture on its edge at the left, their name beside it.
+            const float r = 46 * k;
+            crew_avatar(d, f, member, ImVec2(ca.x + 20 * k + r, ca.y + band), r);
+            {
+                ImFont* nf = anton(f, 36 * k);
+                const auto [nt, nb] = caps_of(nf, 36 * k);
+                const float nx = ca.x + 20 * k + r * 2 + 14 * k;
+                const auto name = elide(nf, 36 * k, upper(std::string(member.name)), cb.x - nx - 14 * k);
+                d->AddText(nf, 36 * k, ImVec2(nx, ca.y + band + 14 * k - nt), IM_COL32_WHITE, name.c_str());
+            }
+            // Under them: THUNDERSTORE and an arrow out, then where it goes.
+            const float ty = ca.y + band + r + 24 * k;
             ImFont* lf = mont(f, 12 * k);
             const auto [lt, lb] = caps_of(lf, 12 * k);
-            const float lw = spaced_width(lf, 12 * k, "THUNDERSTORE", 1.8f * k), aw = 16 * k;
-            const float lx = (ca.x + cb.x - lw - aw) * 0.5f;
+            const float lx = ca.x + 22 * k, lw = spaced_width(lf, 12 * k, "THUNDERSTORE", 1.8f * k);
             const ImU32 link = lit ? IM_COL32_WHITE : blue_light;
             text_spaced(d, lf, 12 * k, ImVec2(lx, ty - lt), link, "THUNDERSTORE", 1.8f * k);
             {
@@ -6172,13 +6217,12 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
                 d->AddLine(ImVec2(a1.x - 5.5f * k, a1.y), a1, link, 1.8f * k);
                 d->AddLine(ImVec2(a1.x, a1.y + 5.5f * k), a1, link, 1.8f * k);
             }
-            ty += (lb - lt) + 12 * k;
             {
-                const auto where = "/p/" + std::string(member.team);
                 ImFont* wf = body(f, 12 * k);
-                const auto shown = elide(wf, 12 * k, where, w - 32 * k);
-                const float ww = text_size(wf, 12 * k, shown.c_str()).x;
-                text(d, wf, 12 * k, ImVec2((ca.x + cb.x - ww) * 0.5f, ty), IM_COL32(243, 243, 239, 150), shown);
+                const float wx = lx + lw + 30 * k;
+                const auto shown = elide(wf, 12 * k, "/p/" + std::string(member.team), cb.x - wx - 14 * k);
+                const auto [wt, wb] = caps_of(wf, 12 * k);
+                text(d, wf, 12 * k, ImVec2(wx, ty + (lb - lt) - wb), IM_COL32(243, 243, 239, 150), shown);
             }
             duct_tape(d, f, ImVec2((ca.x + cb.x) * 0.5f, ca.y), 104 * k, 28 * k, (s % 2) ? 3.5f : -3.0f, s);
             ++s;

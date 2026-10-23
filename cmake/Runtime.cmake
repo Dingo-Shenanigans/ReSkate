@@ -366,6 +366,18 @@ if(EXISTS "${dingosdk_studio_loading}")
             string(APPEND dingosdk_studio_resources "STUDIO_ART_${dingosdk_art_upper} RCDATA \"${dingosdk_art_native}\"\n")
         endif()
     endforeach()
+    # THE CREW's pictures (contrib/animator-studio/crew/make_crew_pictures.py): <team>_profile.jpg and <team>_thumbnail.jpg,
+    # as STUDIO_CREW_<TEAM>_PROFILE and _THUMBNAIL (studio_market_art.h, crew_art).
+    file(GLOB dingosdk_crew_pictures "${PROJECT_SOURCE_DIR}/assets/animator_studio/crew/*.jpg")
+    list(SORT dingosdk_crew_pictures)
+    foreach(dingosdk_crew_picture ${dingosdk_crew_pictures})
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_crew_picture}")
+        get_filename_component(dingosdk_crew_stem "${dingosdk_crew_picture}" NAME_WE)
+        string(TOUPPER "${dingosdk_crew_stem}" dingosdk_crew_upper)
+        file(TO_NATIVE_PATH "${dingosdk_crew_picture}" dingosdk_crew_native)
+        string(REPLACE "\\" "\\\\" dingosdk_crew_native "${dingosdk_crew_native}")
+        string(APPEND dingosdk_studio_resources "STUDIO_CREW_${dingosdk_crew_upper} RCDATA \"${dingosdk_crew_native}\"\n")
+    endforeach()
     # The settings tiles' icons (contrib/animator-studio/make_studio_icons.py), in skate.'s own grungy white style.
     foreach(dingosdk_studio_icon studio skater tricks packs)
         set(dingosdk_studio_icon_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/icon_${dingosdk_studio_icon}.png")
