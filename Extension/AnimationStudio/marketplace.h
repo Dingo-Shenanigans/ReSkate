@@ -58,8 +58,8 @@ struct Builder {
 inline constexpr std::array builders{
     Builder{"22SH", "22sh", "", "Responsible for getting all the animations in the game."},
     Builder{"Fourth", "fourth", "Fourth_Studio", "Well... do we need to explain this?", 0.5f, 0.45f},
-    Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher."},
-    Builder{"Steez", "steez", "", "Animation King and back-up scripter.", 0.48f, 0.4f},
+    Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher.", 0.5f, 0.39f},
+    Builder{"Steez", "steez", "Worthless", "Animation King and back-up scripter.", 0.48f, 0.4f},
 };
 // One of BUILT BY by their Thunderstore team (in any case), or none: their packs are CREW CERTIFIED too.
 inline const Builder* builder_of(std::string_view team) {

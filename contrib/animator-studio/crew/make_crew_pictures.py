@@ -26,6 +26,7 @@ CREW = {
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "fourth": ("fourth_portrait.webp", (995, 520, 940), "fourth_shot.webp"),
     "steez": ("steez_portrait.png", (110, 124, 220), "steez_shot.webp"),
+    "norms": ("norms_portrait.webp", (560, 470, 270), "norms_portrait.webp"),  # one photo for both
 }
 
 
