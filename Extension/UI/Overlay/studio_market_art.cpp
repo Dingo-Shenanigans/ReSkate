@@ -148,14 +148,17 @@ void read_art() {
         int x{}, y{};
     };
     std::vector<CrewPicture> crew;
-    for (const auto& member : anim_studio::market::crew_members)
+    std::vector<std::string_view> owners; // THE CREW by team, BUILT BY by their pictures' name
+    for (const auto& member : anim_studio::market::crew_members) owners.push_back(member.team);
+    for (const auto& builder : anim_studio::market::builders) owners.push_back(builder.pictures);
+    for (const auto owner : owners)
         for (const auto which : {CrewArt::profile, CrewArt::thumbnail}) {
             std::wstring name = L"STUDIO_CREW_";
-            for (const char c : member.team) name += static_cast<wchar_t>(std::toupper(static_cast<unsigned char>(c)));
+            for (const char c : owner) name += static_cast<wchar_t>(std::toupper(static_cast<unsigned char>(c)));
             name += which == CrewArt::profile ? L"_PROFILE" : L"_THUMBNAIL";
             if (!studio_resource_bytes(name.c_str()).first) continue; // not sent yet
             if (auto pixels = decode_studio_resource(name.c_str(), which == CrewArt::profile ? 384 : 960))
-                crew.push_back({crew_key(member.team, which), std::move(*pixels)});
+                crew.push_back({crew_key(owner, which), std::move(*pixels)});
             else log_missing("a picture of THE CREW");
         }
     const int sheet_width = std::max({cell * 3, row_width, crew.empty() ? 0 : 4096});

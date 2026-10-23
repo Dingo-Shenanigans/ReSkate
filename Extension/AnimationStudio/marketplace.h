@@ -48,6 +48,18 @@ inline constexpr std::array crew_members{
     CrewMember{"Heatz", "Heatz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
     CrewMember{"Bonksz", "Bonksz", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them.", 0.6f, 0.42f},
 };
+// BUILT BY, on ABOUT: who made the Animator Studio. Their pictures are found by `pictures` (assets/animator_studio/crew/
+// <pictures>_profile.jpg and _thumbnail.jpg, as THE CREW's); `team` is their Thunderstore team where there is one to link to.
+struct Builder {
+    std::string_view name, pictures, team;
+    float focus_x{0.5f}, focus_y{0.5f}; // where their shot is cut round, as CrewMember's
+};
+inline constexpr std::array builders{
+    Builder{"22SH", "22sh", ""},
+    Builder{"Fourth", "fourth", "Fourth_Studio", 0.5f, 0.45f},
+    Builder{"Norms", "norms", ""},
+    Builder{"Steez", "steez", ""},
+};
 // Sample packs, so the shop can be seen full before it is: shown after the real ones, with covers made by the cover
 // designer, and nothing to GET. Off: the release shows the real packs only.
 inline constexpr bool show_samples = false;

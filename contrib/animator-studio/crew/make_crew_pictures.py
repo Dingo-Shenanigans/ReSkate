@@ -3,7 +3,7 @@
     assets/animator_studio/crew/<team>_profile.jpg    384 x 384, head and shoulders: drawn round on ABOUT and the MARKET
     assets/animator_studio/crew/<team>_thumbnail.jpg  960 wide, the whole shot: across the top of their crew cards
 
-<team> is their Thunderstore team, lower case (studio::market::crew_members). Each member's sources are in source/, and
+<team> is their Thunderstore team, lower case (studio::market::crew_members), or a builder's picture name (builders). Each member's sources are in source/, and
 where the face sits in the portrait is set below. Run with Python and Pillow:
 
     python make_crew_pictures.py
@@ -19,6 +19,8 @@ OUT = HERE.parents[2] / "assets" / "animator_studio" / "crew"
 # team: (portrait, (centre x, centre y, side) of the head-and-shoulders square in it, the shot)
 CREW = {
     "bonksz": ("bonksz_portrait.webp", (312, 336, 600), "bonksz_shot.webp"),
+    # BUILT BY (studio::market::builders), by the name their pictures go under.
+    "fourth": ("fourth_portrait.webp", (995, 520, 940), "fourth_shot.webp"),
 }
 
 

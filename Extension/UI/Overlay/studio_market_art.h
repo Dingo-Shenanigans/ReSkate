@@ -26,7 +26,8 @@ struct ArtPlace {
 };
 bool market_art(MarketArt art, ArtPlace& out) noexcept;
 // THE CREW's own pictures (built in from assets/animator_studio/crew), on the same sheet: a member's round profile
-// picture and the wide shot across the top of their cards. False for one who has not sent theirs, and until it is there.
+// picture and the wide shot across the top of their cards, by their team (BUILT BY: by their pictures' name). False for
+// one who has not sent theirs, and until it is there.
 enum class CrewArt { profile, thumbnail };
 bool crew_art(std::string_view team, CrewArt which, ArtPlace& out) noexcept;
 
