@@ -380,7 +380,13 @@ bool setup_graphics() {
     ImGui::GetIO().LogFilename = nullptr;
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
-    dingosdk::overlay::load_skate_fonts(s.menu);
+    {
+        // The Animator Studio lays itself out on a 1920 x 1080 page scaled to the screen (its height, and up to a 21:9
+        // frame across): its faces are made at that scale.
+        const float w = static_cast<float>(description.BufferDesc.Width), h = static_cast<float>(description.BufferDesc.Height);
+        const float frame = std::min(w, h * 21.0f / 9.0f);
+        dingosdk::overlay::load_skate_fonts(s.menu, h > 0 ? std::min(h / 1080.0f, frame / 1700.0f) : 1.0f);
+    }
     // Thumbnails are read from the game's own data at startup; the read is
     // normally long finished by the time the first frame gets here.
     // Emotes, Hall of Meat's and the Animator Studio's images reserve their room before the park previews build the atlas, and fill it after.

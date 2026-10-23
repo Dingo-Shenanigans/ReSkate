@@ -834,7 +834,7 @@ const char* group_of(int page) {
 }
 }
 
-void load_skate_fonts(SkateMenu& menu) {
+void load_skate_fonts(SkateMenu& menu, float studio_scale) {
     auto* atlas = ImGui::GetIO().Fonts;
     atlas->TexGlyphPadding = 2;
     // Latin, Cyrillic and general punctuation cover player and lobby names.
@@ -869,17 +869,30 @@ void load_skate_fonts(SkateMenu& menu) {
     // The loading screen's wordmark: lowercase, the full stop and the space only, at one big size.
     static const ImWchar logo[]{0x0020, 0x0020, 0x002E, 0x002E, 0x0061, 0x007A, 0};
     menu.logo = font(L"FONT_HEADING", "arialbd.ttf", 160, logo);
-    // The MARKET's headline font at two sizes (a font scaled up blurs, scaled far down it flickers), and the cover fonts for
-    // their buttons: plain Latin only.
+    // The Animator Studio's MARKET and ABOUT faces, made at the screen's scale: a face scaled up blurs, scaled far down it
+    // flickers, so each comes at a few sizes and the nearest is drawn. The biggest Anton only for capitals, figures and
+    // punctuation (headlines are in capitals), so the atlas stays small.
     static const ImWchar plain[]{0x0020, 0x007E, 0};
-    menu.display = font(L"FONT_ANTON", "impact.ttf", 48, plain);
-    menu.display_big = font(L"FONT_ANTON", "impact.ttf", 176, plain);
-    menu.display_small = font(L"FONT_ANTON", "impact.ttf", 24, plain);
-    menu.marker_small = font(L"FONT_BRUSH", "arialbi.ttf", 24, plain);
-    menu.cover_bebas = font(L"FONT_BEBAS", "impact.ttf", 34, plain);
-    menu.cover_dirt = font(L"FONT_DIRT", "impact.ttf", 34, plain);
-    menu.cover_sedgwick = font(L"FONT_SEDGWICK", "impact.ttf", 34, plain);
-    menu.cover_knewave = font(L"FONT_KNEWAVE", "impact.ttf", 34, plain);
+    static const ImWchar capitals[]{0x0020, 0x0040, 0x0041, 0x005A, 0};
+    const float scale = std::clamp(studio_scale, 0.45f, 3.0f);
+    menu.studio_scale = scale;
+    const auto face = [&](SkateMenu::StudioFace& out, const wchar_t* resource, const char* file, std::initializer_list<float> sizes,
+                          const ImWchar* small_glyphs, const ImWchar* big_glyphs, float big_from) {
+        out = {};
+        for (const float size : sizes) {
+            if (out.count >= static_cast<int>(out.fonts.size())) break;
+            out.sizes[static_cast<std::size_t>(out.count)] = size;
+            out.fonts[static_cast<std::size_t>(out.count)] = font(resource, file, std::round(size * scale), size >= big_from ? big_glyphs : small_glyphs);
+            ++out.count;
+        }
+    };
+    face(menu.studio_anton, L"FONT_ANTON", "impact.ttf", {20, 30, 44, 66, 112, 190}, plain, capitals, 100);
+    face(menu.studio_heading, L"FONT_HEADING", "arialbd.ttf", {12, 15, 20, 26}, latin, latin, 1000);
+    face(menu.studio_body, L"FONT_BODY", "arial.ttf", {14, 17}, latin, latin, 1000);
+    face(menu.studio_marker, L"FONT_BRUSH", "arialbi.ttf", {16, 30}, plain, plain, 1000);
+    menu.studio_covers = {font(L"FONT_BEBAS", "impact.ttf", std::round(24 * scale), plain), font(L"FONT_DIRT", "impact.ttf", std::round(24 * scale), plain),
+                          font(L"FONT_SEDGWICK", "impact.ttf", std::round(24 * scale), plain),
+                          font(L"FONT_KNEWAVE", "impact.ttf", std::round(24 * scale), plain)};
 }
 
 namespace menu {

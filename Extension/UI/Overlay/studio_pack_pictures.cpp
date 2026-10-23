@@ -23,8 +23,8 @@
 namespace dingosdk::overlay {
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr UINT cell = 384, columns = 8; // 384: the MARKET shows covers big, and stays sharp on a 1440p screen
-constexpr std::size_t most = 32;
+constexpr UINT cell = 512, columns = 8; // 512: the MARKET shows covers big, and they stay sharp on a 1440p screen
+constexpr std::size_t most = 24;
 
 struct Pictures {
     std::mutex mutex;

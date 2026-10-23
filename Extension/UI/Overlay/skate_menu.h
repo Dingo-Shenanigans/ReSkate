@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #include "overlay.h"
 #include "park_editor.h"
@@ -117,22 +118,25 @@ struct SkateMenu {
     ImFont* heading_large = nullptr;
     ImFont* title_large = nullptr;
     ImFont* logo = nullptr;     // the Animator Studio's loading screen: big lowercase, as the reskate. wordmark
-    // The Animator Studio MARKET's headlines (Anton): a size for headings and a big one for its biggest words; and the cover
-    // designer's fonts, each drawn as itself on its button (Bebas Neue, Rubik Dirt, Sedgwick Ave Display, Knewave).
-    ImFont* display = nullptr;
-    ImFont* display_big = nullptr;
-    ImFont* display_small = nullptr; // and small: a font shrunk far is jagged
-    ImFont* marker_small = nullptr;  // the brush face small, for the shop's stamps
-    ImFont* cover_bebas = nullptr;
-    ImFont* cover_dirt = nullptr;
-    ImFont* cover_sedgwick = nullptr;
-    ImFont* cover_knewave = nullptr;
+    // The Animator Studio's MARKET and ABOUT: their faces made at the screen's own scale (studio_scale, the studio's page
+    // scale when the overlay was set up), each at a few sizes (on the 1080p page), so words are drawn at the size they were
+    // made at or a little under - sharp - rather than stretched. Anton for the headlines, Montserrat, the brush face for
+    // stamps; and the cover designer's fonts for their buttons (Bebas Neue, Rubik Dirt, Sedgwick Ave Display, Knewave).
+    struct StudioFace {
+        std::array<float, 6> sizes{};
+        std::array<ImFont*, 6> fonts{};
+        int count = 0;
+    };
+    float studio_scale = 1;
+    StudioFace studio_anton, studio_heading, studio_body, studio_marker;
+    std::array<ImFont*, 4> studio_covers{};
     // Full screen: the page's section rail (its first row of tabs, drawn down the left), indenting
     // what follows it until the page is done.
     float rail_indent = 0;
 };
 inline constexpr float large_font_ratio = 30.0f / 17.0f;
-void load_skate_fonts(SkateMenu& menu);
+// `studio_scale`: the Animator Studio's page scale on this screen (its 1080p page to the screen), which its faces are made at.
+void load_skate_fonts(SkateMenu& menu, float studio_scale = 1);
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible);
 }
