@@ -83,7 +83,9 @@ void destroy_graphics() {
     menu_map_pixels_lost();
     s.mod_icon_texture.Reset(); s.mod_icon_upload.Reset();
     mod_icon_lost();
-    s.studio_pack_texture.Reset(); s.studio_pack_upload.Reset();
+    s.studio_pack_texture.Reset();
+    for (auto& upload : s.studio_pack_uploads) upload = {};
+    s.studio_pack_id = {};
     studio_pack_pixels_lost();
     s.studio_frame.Reset();
     studio_frame_lost();
@@ -706,13 +708,110 @@ void upload_menu_map_image(State& s) {
     if (const auto id = upload_image(s, pixels, 2, s.menu_map_texture, s.menu_map_upload)) menu_map_pixels_uploaded(id, pixels.serial);
 }
 
-// The Animator Studio's pack pictures (studio_pack_pictures.cpp), when a new set is waiting.
+// The Animator Studio's pack pictures (studio_pack_pictures.cpp): their one texture, made the first time a picture is
+// ready, and the new pictures copied into their squares, a few a frame, ahead of the frame's draws. The texture is never
+// made again while the device lives, so the frame being drawn always samples the texture its squares were read from.
 void upload_studio_pack_image(State& s) {
-    if (!s.device || !s.srvs) return;
-    if (s.studio_pack_texture && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) return;
-    CardPixels pixels;
-    if (!take_studio_pack_pixels(pixels) || pixels.rgba.empty()) return;
-    if (const auto id = upload_image(s, pixels, 4, s.studio_pack_texture, s.studio_pack_upload)) studio_pack_pixels_uploaded(id, pixels.serial);
+    if (!s.device || !s.srvs || !s.commands) return;
+    constexpr UINT side = studio_pack_cell;
+    constexpr std::size_t a_frame = 4;
+    constexpr UINT64 cell_bytes = UINT64{side} * side * 4; // 1 MiB: a multiple of the 512-byte placement alignment
+    State::StudioPackUpload* upload = nullptr;
+    for (auto& candidate : s.studio_pack_uploads)
+        if (!candidate.buffer || completed(candidate.fence, 0)) {
+            upload = &candidate;
+            break;
+        }
+    if (!upload) return; // every buffer is still being copied from: next frame
+    std::vector<PackCell> cells;
+    if (!take_studio_pack_cells(cells, a_frame)) return;
+    bool made = false;
+    if (!s.studio_pack_texture) {
+        D3D12_RESOURCE_DESC texture{};
+        texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texture.Width = side * studio_pack_columns;
+        texture.Height = side * studio_pack_rows;
+        texture.DepthOrArraySize = 1;
+        texture.MipLevels = 1;
+        texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texture.SampleDesc.Count = 1;
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        if (FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                     IID_PPV_ARGS(&s.studio_pack_texture)))) {
+            s.studio_pack_texture.Reset();
+            studio_pack_pixels_lost(); // asked for again, read again
+            return;
+        }
+        const auto step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        auto cpu = s.srvs->GetCPUDescriptorHandleForHeapStart();
+        auto gpu = s.srvs->GetGPUDescriptorHandleForHeapStart();
+        cpu.ptr += std::size_t{step} * 4;
+        gpu.ptr += std::uint64_t{step} * 4;
+        D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = texture.Format;
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Texture2D.MipLevels = 1;
+        s.device->CreateShaderResourceView(s.studio_pack_texture.Get(), &view, cpu);
+        s.studio_pack_id = static_cast<ImTextureID>(gpu.ptr);
+        made = true;
+    }
+    if (!upload->buffer) {
+        D3D12_RESOURCE_DESC buffer{};
+        buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        buffer.Width = cell_bytes * a_frame;
+        buffer.Height = 1;
+        buffer.DepthOrArraySize = 1;
+        buffer.MipLevels = 1;
+        buffer.SampleDesc.Count = 1;
+        buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        if (FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                     IID_PPV_ARGS(&upload->buffer)))) {
+            upload->buffer.Reset();
+            studio_pack_pixels_lost();
+            return;
+        }
+    }
+    void* mapped{};
+    const D3D12_RANGE none{};
+    if (FAILED(upload->buffer->Map(0, &none, &mapped)) || !mapped) {
+        studio_pack_pixels_lost();
+        return;
+    }
+    for (std::size_t i = 0; i < cells.size(); ++i)
+        if (cells[i].rgba.size() == cell_bytes) std::memcpy(static_cast<unsigned char*>(mapped) + cell_bytes * i, cells[i].rgba.data(), cell_bytes);
+    upload->buffer->Unmap(0, nullptr);
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = s.studio_pack_texture.Get();
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    if (!made) s.commands->ResourceBarrier(1, &barrier); // a new texture starts as a copy's target
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        if (cells[i].rgba.size() != cell_bytes) continue;
+        D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+        to.pResource = s.studio_pack_texture.Get();
+        to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        to.SubresourceIndex = 0;
+        from.pResource = upload->buffer.Get();
+        from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        from.PlacedFootprint.Offset = cell_bytes * i;
+        from.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        from.PlacedFootprint.Footprint.Width = side;
+        from.PlacedFootprint.Footprint.Height = side;
+        from.PlacedFootprint.Footprint.Depth = 1;
+        from.PlacedFootprint.Footprint.RowPitch = side * 4; // 2048: a multiple of the 256-byte pitch alignment
+        const UINT x = (cells[i].cell % studio_pack_columns) * side, y = (cells[i].cell / studio_pack_columns) * side;
+        s.commands->CopyTextureRegion(&to, x, y, 0, &from, nullptr);
+    }
+    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    s.commands->ResourceBarrier(1, &barrier);
+    upload->fence = s.next_fence + 1; // this frame's signal
+    studio_pack_cells_uploaded(s.studio_pack_id, cells);
 }
 
 // The Animator Studio MARKET's art (studio_market_art.cpp): its wall and its sheet once, when they are read, and the

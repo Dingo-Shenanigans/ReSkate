@@ -746,6 +746,8 @@ void toggle_in_group(std::uint16_t joint) {
     if (const auto at = std::find(u.also.begin(), u.also.end(), joint); at != u.also.end()) u.also.erase(at);
     else u.also.push_back(joint);
 }
+// FEET+BOARD is offered (its tool and its B key): off for now.
+constexpr bool feet_lock_offered = false;
 // FEET+BOARD: the feet locked to the deck. They are put on it now (the deck brought under them first when it is too
 // far for the legs to reach), they go with it when it is moved or turned, and a foot moved slides over the deck and
 // stays inside its outline - it never leaves the deck - until the lock is let go (B, the tool again, or Esc).
@@ -2528,9 +2530,11 @@ void keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_UpArrow, true)) step_joint(-1);
     if (pressed(ImGuiKey_DownArrow, true)) step_joint(1);
     if ((pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter)) && v.has_clip) key_joint();
-    if (pressed(ImGuiKey_B) && v.has_clip) {
-        if (u.feet_lock) unlock_feet();
-        else lock_feet_to_deck(v);
+    if constexpr (feet_lock_offered) {
+        if (pressed(ImGuiKey_B) && v.has_clip) {
+            if (u.feet_lock) unlock_feet();
+            else lock_feet_to_deck(v);
+        }
     }
     if (pressed(ImGuiKey_Home)) studio::set_time(0);
     if (pressed(ImGuiKey_End)) studio::set_time(v.duration);
@@ -4571,6 +4575,9 @@ float text_spaced(ImDrawList* d, ImFont* font, float size, ImVec2 at, ImU32 colo
     return words.empty() ? 0 : x - at.x - spacing;
 }
 // What was drawn since `start` (vertices of the list), turned `angle` about `centre`: a label's words with its paper.
+// Rounding that makes ImGui fill a rectangle or picture as a shape, with its one-pixel smoothed edge: too small to see,
+// and the edge stays smooth when the shape is turned (rotate_since). Plain rectangles and pictures have none.
+constexpr float soft_edge = 0.5f;
 void rotate_since(ImDrawList* d, int start, float angle, ImVec2 centre) {
     const float c = std::cos(angle), s = std::sin(angle);
     for (int i = start; i < d->VtxBuffer.Size; ++i) {
@@ -4935,7 +4942,7 @@ void market_icon(ImDrawList* d, const Fonts& f, const MarketPack& pack, ImVec2 a
     ImTextureID texture{};
     ImVec2 uv0{}, uv1{};
     if (!pack.icon_file.empty() && detail::studio_pack_picture("market|" + pack.full_name + "|" + pack.version, texture, uv0, uv1)) {
-        d->AddImage(texture, a, b, uv0, uv1, tint);
+        d->AddImageRounded(texture, a, b, uv0, uv1, tint, soft_edge);
         return;
     }
     studio::View::PackView drawn;
@@ -4963,15 +4970,15 @@ template <class Picture> void print_card(ImDrawList* d, const Fonts& f, ImVec2 a
     const float k = f.k, side = 14 * k, foot = 46 * k;
     const ImVec2 b(at.x + size.x + side * 2, at.y + size.y + side + foot);
     const int start = d->VtxBuffer.Size;
-    d->AddRectFilled(ImVec2(at.x + 10 * k, at.y + 14 * k), ImVec2(b.x + 10 * k, b.y + 14 * k), IM_COL32(0, 0, 0, 115));
-    d->AddRectFilled(at, b, IM_COL32(241, 239, 232, 255));
+    d->AddRectFilled(ImVec2(at.x + 10 * k, at.y + 14 * k), ImVec2(b.x + 10 * k, b.y + 14 * k), IM_COL32(0, 0, 0, 115), soft_edge);
+    d->AddRectFilled(at, b, IM_COL32(241, 239, 232, 255), soft_edge);
     picture(ImVec2(at.x + side, at.y + side), ImVec2(at.x + side + size.x, at.y + side + size.y));
     if (!caption.empty())
         d->AddText(marker(f, caption_size * k), caption_size * k, ImVec2(at.x + side + 2 * k, b.y - foot + 6 * k), shop_ink, caption.data(),
                    caption.data() + caption.size());
     if (tape) {
         const float tw = 130 * k, th = 34 * k, tx = at.x + (b.x - at.x - tw) * 0.5f, ty = at.y - 16 * k;
-        d->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + tw, ty + th), IM_COL32(236, 232, 214, 200));
+        d->AddRectFilled(ImVec2(tx, ty), ImVec2(tx + tw, ty + th), IM_COL32(236, 232, 214, 200), soft_edge);
     }
     rotate_since(d, start, deg * shop_pi / 180, ImVec2((at.x + b.x) * 0.5f, (at.y + b.y) * 0.5f));
 }
@@ -5120,7 +5127,7 @@ float welcome_section(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         const bool have = market_art(MarketArt::skater, skater);
         print_card(d, f, at, size, 3, "the studio, 2026", true, [&](ImVec2 a, ImVec2 b) {
             if (!have) {
-                d->AddRectFilled(a, b, IM_COL32(4, 60, 140, 255));
+                d->AddRectFilled(a, b, IM_COL32(4, 60, 140, 255), soft_edge);
                 return;
             }
             // Cover-fit, held at 30% across and 40% down, as the mockup's.
@@ -5130,8 +5137,8 @@ float welcome_section(ImDrawList* d, const Fonts& f, const studio::View& v, cons
             else vh = shape / box;
             const float u0 = (1 - uw) * 0.3f, v0 = (1 - vh) * 0.4f;
             const ImVec2 span(skater.uv1.x - skater.uv0.x, skater.uv1.y - skater.uv0.y);
-            d->AddImage(skater.texture, a, b, ImVec2(skater.uv0.x + span.x * u0, skater.uv0.y + span.y * v0),
-                        ImVec2(skater.uv0.x + span.x * (u0 + uw), skater.uv0.y + span.y * (v0 + vh)));
+            d->AddImageRounded(skater.texture, a, b, ImVec2(skater.uv0.x + span.x * u0, skater.uv0.y + span.y * v0),
+                               ImVec2(skater.uv0.x + span.x * (u0 + uw), skater.uv0.y + span.y * (v0 + vh)), IM_COL32_WHITE, soft_edge);
         });
     }
     // WELCOME TO THE on worn paper, MARKETPLACE clean and big.
@@ -5962,8 +5969,8 @@ void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
 }
 
 // ---- ABOUT: who made it ---------------------------------------------------------------------------
-// The studio's credits, in the shop's dress: who built it, the crew who tested it, what it stands on, and the type it is
-// set in; and a word on whose game this is.
+// The studio's credits, in the shop's dress: who built it, the crew who tested it (the testers only: the builders are
+// BUILT BY), what it stands on; and a word on whose game this is.
 void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 /*a*/, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
@@ -6009,7 +6016,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
                 text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(x + 26 * k, y + 30 * k + (nb - nt) + 18 * k), blue_light, line, 1.8f * k);
             // A strip of tape holding it up.
             const int start = d->VtxBuffer.Size;
-            d->AddRectFilled(ImVec2(x + w * 0.5f - 50 * k, y - 14 * k), ImVec2(x + w * 0.5f + 50 * k, y + 14 * k), IM_COL32(236, 232, 214, 190));
+            d->AddRectFilled(ImVec2(x + w * 0.5f - 50 * k, y - 14 * k), ImVec2(x + w * 0.5f + 50 * k, y + 14 * k), IM_COL32(236, 232, 214, 190), soft_edge);
             rotate_since(d, start, ((s++ % 2) ? -3.0f : 4.0f) * shop_pi / 180, ImVec2(x + w * 0.5f, y));
             x += w + gap;
         }
@@ -6039,14 +6046,6 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
     lines("BUILT ON", PaperKind::grip, 131,
           {{"RESKATE", "The mod loader the studio lives in, by Dingo Shenanigans and everyone behind ReSkate."},
            {"THUNDERSTORE", "Where the MARKET's packs live: thunderstore.io/c/reskate."}});
-    lines("TYPE", PaperKind::white, 141,
-          {{"ANTON", "The Anton Project Authors. SIL Open Font License."},
-           {"MONTSERRAT", "The Montserrat Project Authors (Julieta Ulanovsky). SIL Open Font License."},
-           {"PERMANENT MARKER", "Font Diner. Apache License 2.0."},
-           {"BEBAS NEUE", "Dharma Type. SIL Open Font License."},
-           {"RUBIK DIRT", "The Rubik Filtered Project Authors. SIL Open Font License."},
-           {"SEDGWICK AVE DISPLAY", "The Sedgwick Ave Project Authors. SIL Open Font License."},
-           {"KNEWAVE", "Tyler Finck. SIL Open Font License."}});
     // Thanks, on blue paper across the screen.
     paper_band(d, f, display.x, y, 200 * k, PaperKind::blue, 151);
     {
@@ -7790,13 +7789,15 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     y += row;
     if (tool("##snap", "SNAP", "N", u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
     y += row;
-    if (tool("##feetboard", "FEET+BOARD", "B", u.feet_lock,
-             "Locks the feet to the deck: they go with the board when you move or turn it, and slide along it but never leave it. "
-             "B again lets go. Ctrl + click a joint to turn it too.")) {
-        if (u.feet_lock) unlock_feet();
-        else lock_feet_to_deck(v);
+    if constexpr (feet_lock_offered) {
+        if (tool("##feetboard", "FEET+BOARD", "B", u.feet_lock,
+                 "Locks the feet to the deck: they go with the board when you move or turn it, and slide along it but never leave it. "
+                 "B again lets go. Ctrl + click a joint to turn it too.")) {
+            if (u.feet_lock) unlock_feet();
+            else lock_feet_to_deck(v);
+        }
+        y += row;
     }
-    y += row;
     if (tool("##limits", "LIMITS", "M", v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
         studio::set_joint_limits(!v.limits);
     y += row;

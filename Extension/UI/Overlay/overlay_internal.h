@@ -185,8 +185,16 @@ struct State {
     ComPtr<ID3D12Resource> menu_map_texture, menu_map_upload;
     // The icon of the mod the highlighted item is from (item_browser_overlay.cpp), in the fourth.
     ComPtr<ID3D12Resource> mod_icon_texture, mod_icon_upload;
-    // The Animator Studio's pack pictures (studio_pack_pictures.cpp), in the fifth.
-    ComPtr<ID3D12Resource> studio_pack_texture, studio_pack_upload;
+    // The Animator Studio's pack pictures (studio_pack_pictures.cpp), in the fifth: one texture made once, a square for
+    // each picture, new pictures copied into their squares a few a frame, each lot from an upload buffer kept until the
+    // frame that copied it is done.
+    struct StudioPackUpload {
+        ComPtr<ID3D12Resource> buffer;
+        UINT64 fence{};
+    };
+    ComPtr<ID3D12Resource> studio_pack_texture;
+    std::array<StudioPackUpload, 3> studio_pack_uploads;
+    ImTextureID studio_pack_id{};
     // The game's finished frame, copied for the Animator Studio's fisheye (copy_studio_frame), in the sixth.
     ComPtr<ID3D12Resource> studio_frame;
     // The Animator Studio MARKET's art (studio_market_art.cpp): its wall in the seventh slot, the sheet of the rest in the
@@ -342,8 +350,20 @@ bool studio_pack_picture(const std::string& key, ImTextureID& texture, ImVec2& u
 // A picture file (UTF-8 path) made into the pack's picture, off the render thread: cut square from its middle, scaled.
 void make_studio_pack_picture(const std::string& pack, const std::string& file);
 bool studio_pack_picture_making();
-bool take_studio_pack_pixels(CardPixels& pixels);
-void studio_pack_pixels_uploaded(ImTextureID texture, unsigned serial);
+// The pictures' texture: squares 512 pixels a side, 8 across and 3 down. A picture keeps its square while it is on it;
+// a new one goes into an empty square, or one whose picture is not asked for, and only two frames after nothing draws
+// what the square held, so no frame ever shows one pack's cover on another.
+constexpr UINT studio_pack_cell = 512, studio_pack_columns = 8, studio_pack_rows = 3;
+struct PackCell {
+    UINT cell{};                     // which square
+    std::string key, id;             // the picture's key, and its key and file together
+    std::vector<unsigned char> rgba; // studio_pack_cell x studio_pack_cell, RGBA
+    std::uint64_t after{};           // copied in from this render frame on
+};
+// Asked by the render thread every frame: up to `most` pictures to copy into their squares now.
+bool take_studio_pack_cells(std::vector<PackCell>& cells, std::size_t most);
+// Those copies are recorded ahead of this frame's draws: drawable from the next frame on.
+void studio_pack_cells_uploaded(ImTextureID texture, const std::vector<PackCell>& cells);
 void studio_pack_pixels_lost();
 // The MARKET's art and the cover designer's preview (studio_market_art.cpp), the same way, in the seventh to ninth slots.
 bool take_market_wall_pixels(CardPixels& pixels);

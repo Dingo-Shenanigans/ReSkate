@@ -5,42 +5,56 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
-// The Animator Studio's pack pictures (PACKS): each pack's presets/<pack>.png, read off the render thread and put
-// in one texture, a square each, in the SRV heap's fifth slot (overlay_render.cpp, upload_studio_pack_image), as the
-// menu's map pictures are. And the other way: a picture chosen for a pack is cut to a square from its middle, made
-// anim_studio::thumbnail_side pixels a side and saved as a PNG with the pack (set_pack_thumbnail), so a pack never
-// carries a photo's worth of bytes around.
+// The Animator Studio's pack pictures (PACKS, and the MARKET's covers): each read off the render thread and put in
+// one texture, a square each, in the SRV heap's fifth slot (overlay_render.cpp, upload_studio_pack_image). A picture
+// keeps its square while it is there, so scrolling and swiping only read and copy in the pictures that are new; a square
+// is given to a new picture only when its own is not asked for, and filled two frames after nothing draws it any more.
+// And the other way: a picture chosen for a pack is cut to a square from its middle, made anim_studio::thumbnail_side
+// pixels a side and saved as a PNG with the pack (set_pack_thumbnail), so a pack never carries a photo's worth of bytes
+// around.
 namespace dingosdk::overlay {
 namespace {
 using Microsoft::WRL::ComPtr;
-constexpr UINT cell = 512, columns = 8; // 512: the MARKET shows covers big, and they stay sharp on a 1440p screen
-constexpr std::size_t most = 24;
+constexpr UINT cell = detail::studio_pack_cell, columns = detail::studio_pack_columns; // 512: covers stay sharp on a 1440p screen
+constexpr std::size_t most = std::size_t{detail::studio_pack_columns} * detail::studio_pack_rows;
 
 struct Pictures {
     std::mutex mutex;
-    std::string asked;   // the pictures last asked for (key and file, a line each)
-    unsigned asking{};   // goes up with every new ask: a read that finishes after a newer ask is dropped
-    detail::CardPixels current, waiting_pixels;
-    std::map<std::string, UINT> waiting_cells, ready_cells;
-    UINT width{}, height{}, ready_width{}, ready_height{};
-    bool waiting{};
-    unsigned serial{};
+    std::string asked;                    // the pictures last asked for (key and file, a line each)
+    std::set<std::string> wanted;         // those pictures, by id (key, tab, file)
+    std::set<std::string> reading;        // ids being read now
+    std::map<std::string, std::chrono::steady_clock::time_point> unreadable; // ids that could not be read, and when: tried again after a while
+    std::array<std::string, most> held{}; // the id each square holds, or is about to
+    std::array<std::uint64_t, most> used{}; // when each square's picture was last asked for: the oldest goes first
+    std::uint64_t ask_count{};
+    std::map<std::string, UINT> ready;       // key -> its square, drawable
+    std::map<UINT, detail::PackCell> waiting; // square -> the picture to copy into it
+    std::uint64_t frame{};                   // render frames seen (take_studio_pack_cells)
     ImTextureID texture{};
     bool making{}; // a picture is being made for a pack
 };
 Pictures& pictures() {
     static auto* value = new Pictures; // process lifetime
     return *value;
+}
+// Nothing draws square `c`'s picture from now on.
+void forget_square(Pictures& p, UINT c) {
+    for (auto it = p.ready.begin(); it != p.ready.end();)
+        if (it->second == c) it = p.ready.erase(it);
+        else ++it;
 }
 
 std::string read_file(const std::filesystem::path& path) {
@@ -56,47 +70,46 @@ std::string read_file(const std::filesystem::path& path) {
 }
 std::filesystem::path from_utf8(const std::string& text) { return std::filesystem::path(std::u8string(text.begin(), text.end())); }
 
-// The pictures, read and put together into one texture.
-void read_pictures(std::vector<std::pair<std::string, std::string>> wanted, unsigned asking) {
-    try {
-        std::vector<std::pair<std::string, detail::CardPixels>> squares;
-        for (const auto& [key, file] : wanted) {
-            if (squares.size() >= most) break;
-            detail::CardPixels one;
+// New pictures, read one by one and each given a square: an empty one, else the one whose picture was asked for
+// longest ago and is not asked for now. Its old picture stops being drawn at once; the new one is copied in two render
+// frames on, when no frame still being drawn can have read the old one (take_studio_pack_cells).
+void read_pictures(std::vector<std::pair<std::string, std::string>> fresh) {
+    for (const auto& [key, file] : fresh) {
+        detail::CardPixels one;
+        bool read = false;
+        try {
             const auto bytes = read_file(from_utf8(file));
-            if (!bytes.empty() && detail::decode_picture(bytes, one, cell) && one.width == cell && one.height == cell)
-                squares.emplace_back(key, std::move(one));
-        }
+            read = !bytes.empty() && detail::decode_picture(bytes, one, cell) && one.width == cell && one.height == cell &&
+                   one.rgba.size() == std::size_t{cell} * cell * 4;
+        } catch (...) {}
+        const auto id = key + '\t' + file;
         auto& p = pictures();
         std::lock_guard lock(p.mutex);
-        if (asking != p.asking) return; // asked again since: that read has it
-        if (squares.empty()) {
-            p.texture = {};
-            p.ready_cells.clear();
-            p.current = {};
-            return;
+        p.reading.erase(id);
+        if (!read) {
+            p.unreadable[id] = std::chrono::steady_clock::now();
+            continue;
         }
-        const auto count = static_cast<UINT>(squares.size());
-        detail::CardPixels atlas;
-        atlas.width = cell * std::min(count, columns);
-        atlas.height = cell * ((count + columns - 1) / columns);
-        atlas.rgba.assign(std::size_t{atlas.width} * atlas.height * 4, 0);
-        std::map<std::string, UINT> cells;
-        for (UINT i = 0; i < count; ++i) {
-            const UINT x = (i % columns) * cell, y = (i / columns) * cell;
-            for (UINT row = 0; row < cell; ++row)
-                std::memcpy(atlas.rgba.data() + (std::size_t{y + row} * atlas.width + x) * 4,
-                            squares[i].second.rgba.data() + std::size_t{row} * cell * 4, std::size_t{cell} * 4);
-            cells[squares[i].first] = i;
-        }
-        atlas.serial = ++p.serial;
-        p.width = atlas.width;
-        p.height = atlas.height;
-        p.current = atlas;
-        p.waiting_pixels = std::move(atlas);
-        p.waiting_cells = std::move(cells);
-        p.waiting = true;
-    } catch (...) { /* No pictures: the packs show their drawn covers. */ }
+        if (std::find(p.held.begin(), p.held.end(), id) != p.held.end()) continue; // read twice: it has its square
+        int chosen = -1;
+        for (std::size_t i = 0; i < most && chosen < 0; ++i)
+            if (p.held[i].empty()) chosen = static_cast<int>(i);
+        if (chosen < 0 && p.wanted.count(id))
+            for (std::size_t i = 0; i < most; ++i)
+                if (!p.wanted.count(p.held[i]) && (chosen < 0 || p.used[i] < p.used[static_cast<std::size_t>(chosen)])) chosen = static_cast<int>(i);
+        if (chosen < 0) continue; // no room: every square holds a picture asked for (or this one is not asked for any more)
+        const auto c = static_cast<UINT>(chosen);
+        forget_square(p, c);
+        p.held[c] = id;
+        p.used[c] = p.ask_count;
+        detail::PackCell item;
+        item.cell = c;
+        item.key = key;
+        item.id = id;
+        item.rgba = std::move(one.rgba);
+        item.after = p.frame + 2;
+        p.waiting[c] = std::move(item);
+    }
 }
 
 // Any picture Windows can read, cut to a square from its middle, scaled to `side` and written as a PNG.
@@ -155,30 +168,52 @@ std::string square_png(const std::filesystem::path& file, UINT side, std::string
 
 namespace detail {
 void want_studio_pack_pictures(const std::vector<std::pair<std::string, std::string>>& wanted) {
-    std::string key;
-    for (const auto& [name, file] : wanted) key += name + '\t' + file + '\n';
+    std::string ask;
+    for (const auto& [name, file] : wanted) ask += name + '\t' + file + '\n';
     auto& p = pictures();
-    unsigned asking{};
+    std::vector<std::pair<std::string, std::string>> fresh;
     {
         std::lock_guard lock(p.mutex);
-        if (key == p.asked) return;
-        p.asked = std::move(key);
-        asking = ++p.asking;
+        if (ask == p.asked) return;
+        p.asked = std::move(ask);
+        p.wanted.clear();
+        ++p.ask_count;
+        for (const auto& [key, file] : wanted) {
+            if (p.wanted.size() >= most) break;
+            auto id = key + '\t' + file;
+            if (!p.wanted.insert(id).second) continue;
+            if (const auto at = std::find(p.held.begin(), p.held.end(), id); at != p.held.end()) {
+                p.used[static_cast<std::size_t>(at - p.held.begin())] = p.ask_count;
+                continue;
+            }
+            if (p.reading.count(id)) continue;
+            if (const auto bad = p.unreadable.find(id); bad != p.unreadable.end()) {
+                if (std::chrono::steady_clock::now() - bad->second < std::chrono::seconds(5)) continue; // a half-written file, say: later
+                p.unreadable.erase(bad);
+            }
+            p.reading.insert(std::move(id));
+            fresh.emplace_back(key, file);
+        }
     }
+    if (fresh.empty()) return;
     try {
-        std::thread(read_pictures, wanted, asking).detach();
-    } catch (...) {}
+        std::thread(read_pictures, fresh).detach();
+    } catch (...) {
+        std::lock_guard lock(p.mutex);
+        for (const auto& [key, file] : fresh) p.reading.erase(key + '\t' + file);
+    }
 }
 bool studio_pack_picture(const std::string& key, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1) {
     auto& p = pictures();
     std::lock_guard lock(p.mutex);
-    if (!p.texture || !p.ready_width || !p.ready_height) return false;
-    const auto found = p.ready_cells.find(key);
-    if (found == p.ready_cells.end()) return false;
+    if (!p.texture) return false;
+    const auto found = p.ready.find(key);
+    if (found == p.ready.end()) return false;
+    constexpr float width = static_cast<float>(cell * columns), height = static_cast<float>(cell * detail::studio_pack_rows);
     const float x = static_cast<float>((found->second % columns) * cell), y = static_cast<float>((found->second / columns) * cell);
     texture = p.texture;
-    uv0 = ImVec2(x / static_cast<float>(p.ready_width), y / static_cast<float>(p.ready_height));
-    uv1 = ImVec2((x + cell) / static_cast<float>(p.ready_width), (y + cell) / static_cast<float>(p.ready_height));
+    uv0 = ImVec2(x / width, y / height);
+    uv1 = ImVec2((x + cell) / width, (y + cell) / height);
     return true;
 }
 void make_studio_pack_picture(const std::string& pack, const std::string& file) {
@@ -209,31 +244,37 @@ bool studio_pack_picture_making() {
     std::lock_guard lock(p.mutex);
     return p.making;
 }
-bool take_studio_pack_pixels(CardPixels& out) {
+bool take_studio_pack_cells(std::vector<PackCell>& out, std::size_t most_now) {
     auto& p = pictures();
     std::lock_guard lock(p.mutex);
-    if (!p.waiting) return false;
-    p.waiting = false;
-    out = std::exchange(p.waiting_pixels, {});
-    return true;
+    ++p.frame;
+    for (auto it = p.waiting.begin(); it != p.waiting.end() && out.size() < most_now;) {
+        if (it->second.after > p.frame) {
+            ++it;
+            continue;
+        }
+        out.push_back(std::move(it->second));
+        it = p.waiting.erase(it);
+    }
+    return !out.empty();
 }
-void studio_pack_pixels_uploaded(ImTextureID texture, unsigned serial) {
+void studio_pack_cells_uploaded(ImTextureID texture, const std::vector<PackCell>& cells) {
     auto& p = pictures();
     std::lock_guard lock(p.mutex);
-    if (serial != p.serial) return;
     p.texture = texture;
-    p.ready_cells = p.waiting_cells;
-    p.ready_width = p.width;
-    p.ready_height = p.height;
+    for (const auto& c : cells)
+        if (c.cell < most && p.held[c.cell] == c.id) p.ready[c.key] = c.cell; // not given to another picture since
 }
+// The texture is gone (or could not be made): every picture is read again when next asked for.
 void studio_pack_pixels_lost() {
     auto& p = pictures();
     std::lock_guard lock(p.mutex);
     p.texture = {};
-    if (!p.current.rgba.empty()) {
-        p.waiting_pixels = p.current;
-        p.waiting = true;
-    }
+    p.ready.clear();
+    p.waiting.clear();
+    p.held.fill({});
+    p.used.fill(0);
+    p.asked.clear();
 }
 } // namespace detail
 } // namespace dingosdk::overlay
