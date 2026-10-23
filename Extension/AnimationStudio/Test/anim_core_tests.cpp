@@ -1575,6 +1575,19 @@ void pieces_are_recognised_by_the_pose() {
         return clip;
     };
     const auto piece = make(9.0f, 7.0f, 0.37f), other = make(5.0f, 12.0f, 1.3f);
+    {
+        // A grind is told by the pose he holds: the saved loop it is, which way round, and where in it.
+        const std::array<const Clip*, 2> loops{&other, &piece};
+        std::vector<Joint> held(piece.frame(30).begin(), piece.frame(30).end());
+        auto fits = held_pose_fits(loops, held);
+        check(fits.size() == 2 && fits[0].piece == 1 && !fits[0].mirrored && fits[0].score < 1e-4f && std::abs(fits[0].time - 1.0f) < 1e-4f &&
+                  fits[1].score > fits[0].score,
+              "A held grind pose is told by its saved loop, the frame it holds, and the other loop is further");
+        const auto mirrored = mirror_clip(piece);
+        held.assign(mirrored.frame(12).begin(), mirrored.frame(12).end());
+        fits = held_pose_fits(loops, held);
+        check(!fits.empty() && fits[0].piece == 1 && fits[0].mirrored && fits[0].score < 1e-4f, "and held the other way round, as mirrored");
+    }
     PieceTracker tracker;
     tracker.set_pieces({&piece});
     check(tracker.looking_for() == 2, "A moving piece is looked for as it is and mirrored");

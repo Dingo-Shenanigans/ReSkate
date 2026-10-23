@@ -1259,6 +1259,36 @@ float pose_distance(const Quat& a, const Quat& b) noexcept {
     return 1 - std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
 }
 } // namespace
+std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose) {
+    // The spine and the legs: what says which grind it is. (The arms move with the game's balance.)
+    static constexpr std::array<std::uint16_t, 10> telling{42, 44, 8, 9, 10, 11, 341, 342, 343, 344};
+    std::vector<HeldPose> out;
+    if (pose.size() < skeleton_joints) return out;
+    for (std::size_t c = 0; c < clips.size(); ++c) {
+        const auto* clip = clips[c];
+        if (!clip || clip->empty() || clip->joints < skeleton_joints) continue;
+        HeldPose best;
+        best.piece = c;
+        for (const bool mirrored : {false, true})
+            for (std::size_t f = 0; f < clip->times.size(); ++f) {
+                const auto frame = clip->frame(f);
+                float sum = 0;
+                for (const auto j : telling) {
+                    const auto& live = pose[mirrored ? mirror_joint[j] : j].rotation;
+                    sum += pose_distance(live, mirrored ? mirror_rotation(frame[j].rotation) : frame[j].rotation);
+                }
+                const float score = sum / static_cast<float>(telling.size());
+                if (score < best.score) {
+                    best.score = score;
+                    best.mirrored = mirrored;
+                    best.time = clip->times[f];
+                }
+            }
+        out.push_back(best);
+    }
+    std::sort(out.begin(), out.end(), [](const HeldPose& a, const HeldPose& b) { return a.score < b.score; });
+    return out;
+}
 void PieceTracker::set_pieces(const std::vector<const Clip*>& clips) {
     models_.clear();
     reset();

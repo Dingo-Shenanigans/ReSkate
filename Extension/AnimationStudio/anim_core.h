@@ -331,6 +331,18 @@ struct PieceMatch {
     float time{};        // where in the piece, seconds
     float score{};       // how far the pose is from it: 0 is exact
 };
+// A grind, by the pose it holds. A grind barely moves: the game holds the pose of its loop and plays the loop over and
+// over with its balance layered on top, so the moving match (PieceTracker::update) seldom takes one. While the game is
+// grinding, the held pose itself says which saved loop it is: the spine and the legs (the arms are the balance's),
+// compared with every frame of each clip, as made and mirrored. Each clip's nearest frame, the nearer way round, nearest
+// first; `score` as PieceMatch's (the mean of 1 - |dot| over the joints compared: 0 is the same pose).
+struct HeldPose {
+    std::size_t piece{}; // index into the clips given
+    bool mirrored{};
+    float time{};        // its nearest frame, seconds
+    float score{1};
+};
+std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose);
 class PieceTracker {
 public:
     // The clips to look for, each as it is and mirrored. A clip that barely moves cannot be told from

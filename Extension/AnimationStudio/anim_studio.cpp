@@ -473,6 +473,19 @@ struct Live {
         bool board_backwards{};
     } piece_play;
     std::uint64_t piece_episodes{};
+    // Saved grind and slide loops (piece_tricks indices), found while grinding by the pose he holds (held_pose_fits).
+    std::vector<std::size_t> grind_loops;
+    struct GrindHold {
+        int candidate{-1};          // the loop that has been nearest, clearly, since candidate_since
+        bool candidate_mirrored{};
+        double candidate_since{-1};
+        int playing{-1};            // the loop playing, looped on its own clock
+        bool mirrored{};
+        float time{};
+        double off_since{-1};       // its pose has been off since
+        double grind_since{-1};
+        bool told{};                // what was nearest has been logged this grind
+    } grind_hold;
     // Giving way to the game. The native graph goes on underneath the authored layer the whole time, and
     // it changes its mind: a trick is refined, an obstacle turns it into something else. Then the layer
     // stands back smoothly (gave_way_at) rather than guess what the game will do.
@@ -2306,17 +2319,85 @@ float keep_board_above(Joint& board, const BoardShape& shape, float floor) noexc
 // each saved piece is looked for in the skater's pose (PieceTracker): when the body is seen moving
 // through one in step, its edits are laid over the game's pose at the time it has got to, exactly as a
 // trick's are, and let go when it stops fitting. A named trick that is playing comes first.
+// A grind: which saved loop he holds (held_pose_fits), taken once it has been the clearly nearest for a moment, then
+// played looped on its own clock until the grind ends or he holds another pose. The distances are logged once a grind,
+// so how near the game's grinds come to the saved loops can be read off a player's log.
+constexpr float grind_enter = 0.02f;  // about 23 degrees a joint on the spine and legs
+constexpr float grind_leave = 0.035f;
+constexpr float grind_apart = 0.7f;   // and well nearer than the next saved loop
+std::optional<PieceMatch> held_grind(Live& l, double at, float dt) {
+    auto& g = l.grind_hold;
+    if (g.grind_since < 0) g.grind_since = at;
+    std::vector<const Clip*> clips;
+    for (const auto i : l.grind_loops) clips.push_back(l.piece_tricks[i]->clip.get());
+    const auto fits = held_pose_fits(clips, l.pose);
+    if (fits.empty()) return std::nullopt;
+    const auto& best = fits.front();
+    const float next = fits.size() > 1 ? fits[1].score : 1.0f;
+    const int nearest = static_cast<int>(l.grind_loops[best.piece]);
+    if (!g.told && at - g.grind_since > 0.4) {
+        g.told = true;
+        logging::log(Level::info, Channel::skater,
+                     "Animation Studio: grinding; the nearest saved grind loop is {}{} ({:.4f}; the next {:.4f}). One plays under {:.3f} and at most {:.0f}% of the next.",
+                     l.piece_tricks[static_cast<std::size_t>(nearest)]->name, best.mirrored ? ", mirrored" : "", best.score, next, grind_enter,
+                     grind_apart * 100);
+    }
+    if (g.playing >= 0) {
+        const auto* playing = l.piece_tricks[static_cast<std::size_t>(g.playing)];
+        float score = 1;
+        for (const auto& f : fits)
+            if (static_cast<int>(l.grind_loops[f.piece]) == g.playing) score = f.score;
+        if (score > grind_leave) {
+            if (g.off_since < 0) g.off_since = at;
+        } else g.off_since = -1;
+        if (g.off_since >= 0 && at - g.off_since > 0.3) {
+            logging::log(Level::info, Channel::skater, "Animation Studio: grinding; {} lets go: he holds another pose now ({:.4f}).", playing->name, score);
+            g.playing = g.candidate = -1;
+            return std::nullopt;
+        }
+        const float length = playing->clip->duration();
+        g.time += dt;
+        if (length > 0) g.time = std::fmod(g.time, length);
+        return PieceMatch{static_cast<std::size_t>(g.playing), g.mirrored, g.time, score};
+    }
+    if (!(best.score < grind_enter && best.score < next * grind_apart)) {
+        g.candidate = -1;
+        return std::nullopt;
+    }
+    if (g.candidate != nearest || g.candidate_mirrored != best.mirrored) {
+        g.candidate = nearest;
+        g.candidate_mirrored = best.mirrored;
+        g.candidate_since = at;
+        return std::nullopt;
+    }
+    if (at - g.candidate_since < 0.2) return std::nullopt; // held a moment, not passed through
+    g.playing = nearest;
+    g.mirrored = best.mirrored;
+    g.time = best.time;
+    g.off_since = -1;
+    logging::log(Level::info, Channel::skater, "Animation Studio: grinding; he holds {}{} ({:.4f}, the next {:.4f}): it plays, looped.",
+                 l.piece_tricks[static_cast<std::size_t>(nearest)]->name, best.mirrored ? ", mirrored" : "", best.score, next);
+    return PieceMatch{static_cast<std::size_t>(nearest), best.mirrored, g.time, best.score};
+}
 void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generation, std::uintptr_t component,
                  const Joint& live_placement, std::shared_ptr<const GameplayPacket>& scheduled, Joint& board_target,
-                 float& board_weight) {
+                 float& board_weight, bool grinding) {
     if (l.pieces_for != snap.tricks) {
         l.pieces_for = snap.tricks;
         l.mirrored_edits.clear(); // an address can be reused by a new animation
         l.piece_tricks.clear();
+        l.grind_loops.clear();
+        l.grind_hold = {};
         std::vector<const Clip*> clips;
         if (snap.tricks)
             for (const auto& t : *snap.tricks)
                 if (t.trick.starts_with("native:") && t.clip) {
+                    // A grind or slide loop is also found by the pose he holds while grinding (held_grind).
+                    std::string asset = t.trick.substr(7);
+                    for (auto& c : asset) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (asset.find("loop") != std::string::npos &&
+                        (asset.find("grind") != std::string::npos || asset.find("slide") != std::string::npos || asset.find("rail") != std::string::npos))
+                        l.grind_loops.push_back(l.piece_tricks.size());
                     l.piece_tricks.push_back(&t);
                     clips.push_back(t.clip.get());
                 }
@@ -2332,7 +2413,12 @@ void play_pieces(Live& l, const Snapshot& snap, double at, std::uint64_t generat
     if (play.at >= 0 && at - play.at > 0.2) play = {};
     play.at = at;
     std::optional<PieceMatch> match;
-    if (!l.game_trick && !scheduled) match = l.pieces.update(at, l.pose);
+    if (!grinding) l.grind_hold = {};
+    if (grinding && !l.grind_loops.empty()) {
+        // Grinding: the saved loops are found by the pose he holds; the moving match seldom takes a grind.
+        l.pieces.reset();
+        if (!l.game_trick && !scheduled) match = held_grind(l, at, dt);
+    } else if (!l.game_trick && !scheduled) match = l.pieces.update(at, l.pose);
     else l.pieces.reset();
     // Exact stance: a piece seen playing the other way round to the way it was made is left to the game.
     if (match && !snap.front_foot && match->mirrored) match.reset();
@@ -3333,7 +3419,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.native_clock.reset();
                 }
             }
-            play_pieces(l, *snap, at, generation, component, live_placement, scheduled, board_target, board_weight);
+            play_pieces(l, *snap, at, generation, component, live_placement, scheduled, board_target, board_weight, motion == MotionState::rail);
         }
         trick_blend.store(std::clamp(snap->crossfade * 0.5f, 0.08f, 0.4f), std::memory_order_relaxed);
         publish_gameplay_packet(std::move(scheduled));
