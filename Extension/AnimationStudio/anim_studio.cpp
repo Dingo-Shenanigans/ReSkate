@@ -5425,9 +5425,9 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         anim.fakie = want_fakie;
         anim.keep_leads_right = want_right;
         // "Kickflip mid" makes "Kickflip mid switch"; a version of a version is named from the trick itself.
-        static constexpr std::array<const char*, 4> suffix{"", " fakie", " switch", " switch fakie"};
+        static constexpr std::array<const char*, 4> suffix{" normal", " fakie", " switch", " switch fakie"};
         std::string base = safe;
-        for (const char* word : {" switch fakie", " switch", " fakie"})
+        for (const char* word : {" switch fakie", " switch", " fakie", " normal"})
             if (base.size() > std::strlen(word) && base.ends_with(word)) { base.resize(base.size() - std::strlen(word)); break; }
         const std::string end = suffix[static_cast<std::size_t>(version)];
         const auto stem = base.substr(0, 48 - end.size()) + end;
@@ -5438,7 +5438,7 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         anim.name = name;
         if (!anim.label.empty()) {
             std::string label = anim.label;
-            for (const char* word : {" switch fakie", " switch", " fakie"})
+            for (const char* word : {" switch fakie", " switch", " fakie", " normal"})
                 if (label.size() > std::strlen(word) && label.ends_with(word)) { label.resize(label.size() - std::strlen(word)); break; }
             anim.label = label.substr(0, 48 - end.size()) + end;
         }
@@ -5454,9 +5454,9 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         read_library_locked(s);
         const int packs = add_copies_to_packs_locked(s, safe, {name});
         s.tricks_read = false;
-        static constexpr std::array<const char*, 4> said{"your own stance", "fakie", "switch", "switch fakie"};
+        static constexpr std::array<const char*, 4> said{"in your own stance", "fakie", "switch", "switch fakie"};
         made = name;
-        message = "Made " + name + ", the " + said[static_cast<std::size_t>(version)] + " version" +
+        message = "Made " + name + ", the version " + said[static_cast<std::size_t>(version)] +
                   (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) + ". Change it as you like.";
         s.status = message;
         publish_locked(s, false);
@@ -6372,6 +6372,31 @@ void rename_folder(const std::filesystem::path& from, const std::filesystem::pat
         Sleep(100);
     }
 }
+// The new library's files put over the old one's in place, and the old one's that the new one has not taken out: for
+// when the library's folder itself cannot be moved.
+void replace_library_files(const std::filesystem::path& staging, const std::filesystem::path& target) {
+    std::set<std::filesystem::path> fresh;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(staging, error), end; !error && it != end; it.increment(error)) {
+        const auto relative = std::filesystem::relative(it->path(), staging, error);
+        fresh.insert(relative);
+        if (it->is_directory(error)) {
+            std::filesystem::create_directories(target / relative, error);
+            continue;
+        }
+        std::filesystem::create_directories((target / relative).parent_path(), error);
+        std::error_code moved;
+        std::filesystem::rename(it->path(), target / relative, moved); // over the old file
+        if (moved) throw std::runtime_error("could not put " + utf8_path(relative) + " in place: " + moved.message());
+    }
+    std::vector<std::filesystem::path> stale;
+    for (std::filesystem::recursive_directory_iterator it(target, error), end; !error && it != end; it.increment(error))
+        if (!fresh.contains(std::filesystem::relative(it->path(), target, error))) stale.push_back(it->path());
+    // Deepest first, so a folder is empty when its turn comes.
+    std::sort(stale.begin(), stale.end(), [](const auto& a, const auto& b) { return a.native().size() > b.native().size(); });
+    for (const auto& path : stale) std::filesystem::remove(path, error);
+    std::filesystem::remove_all(staging, error);
+}
 void run_library_build() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     const auto folder = library_folder();
@@ -6400,12 +6425,26 @@ void run_library_build() {
             b.state.fraction = 1;
         }
         const bool had = std::filesystem::exists(target, error);
-        if (had) rename_folder(target, old);
-        try {
-            rename_folder(staging, target);
-        } catch (...) {
-            if (had) rename_folder(old, target);
-            throw;
+        bool moved_old = false;
+        if (had) {
+            try {
+                rename_folder(target, old);
+                moved_old = true;
+            } catch (const std::exception& e) {
+                // The folder is in use (a program is standing in it, as a command prompt opened there does): its files are
+                // replaced one by one instead.
+                logging::log(Level::info, Channel::skater, "Animation Studio: the library's folder is in use ({}); replacing its files instead.", e.what());
+            }
+        }
+        if (!had || moved_old) {
+            try {
+                rename_folder(staging, target);
+            } catch (...) {
+                if (moved_old) rename_folder(old, target);
+                throw;
+            }
+        } else {
+            replace_library_files(staging, target);
         }
         tricks_revision.fetch_add(1, std::memory_order_acq_rel);
         {

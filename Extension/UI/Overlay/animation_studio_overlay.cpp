@@ -127,6 +127,7 @@ struct Ui {
     float ring_from{};         // the angle round the ring where a ring drag began
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
+    bool own_lead_right{};     // the skater's own stance leads with the right foot (View::own_lead_right), for the stance tags
     // More joints chosen with the one the gizmo is on (Ctrl + click): they are turned and moved with it (move_group).
     std::vector<std::uint16_t> also;
     struct GroupStart {
@@ -254,7 +255,7 @@ struct Ui {
         std::shared_ptr<const studio::PreviewMotion> motion;
         bool tried{};
     } hover;
-    std::string hover_candidate;
+    std::string hover_candidate, hover_candidate_title, hover_title;
     ImVec2 hover_candidate_a{}, hover_candidate_b{};
     std::function<std::shared_ptr<const studio::PreviewMotion>()> hover_candidate_make;
     std::string asset_filter;
@@ -2479,9 +2480,10 @@ std::vector<std::pair<std::string, ImU32>> tags_of(const studio::Preset& p, cons
     std::vector<std::pair<std::string, ImU32>> tags;
     const std::string pop = pop_rule.empty() ? p.pop : pop_rule == "any" ? std::string{} : pop_rule;
     tags.emplace_back(pop.empty() ? "ANY POP" : upper(pop) + " POP", blue);
-    if (!p.stance.empty()) tags.emplace_back(upper(p.stance), IM_COL32(255, 255, 255, 46));
-    if (p.switch_stance.value_or(false)) tags.emplace_back("SWITCH", IM_COL32(196, 104, 0, 255));
-    if (p.fakie.value_or(false)) tags.emplace_back("FAKIE", IM_COL32(196, 104, 0, 255));
+    // Its stance as you ride: nothing for your own, else fakie, switch or switch fakie.
+    static constexpr std::array<const char*, 4> stances{"", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+    if (const auto version = studio::stance_version(p.stance, p.switch_stance, p.fakie, ui().own_lead_right); version > 0)
+        tags.emplace_back(stances[static_cast<std::size_t>(version)], IM_COL32(196, 104, 0, 255));
     if (p.entry == "rail") tags.emplace_back("OFF A RAIL", IM_COL32(36, 150, 76, 255));
     return tags;
 }
@@ -3300,19 +3302,21 @@ void library_news() {
 // ---- the hover preview ----------------------------------------------------------------------------
 // With PREVIEW on (TRICKS, top right), a trick card held under the mouse a moment plays its trick in a little window
 // beside it - the skater as lines, his board in blue - once, and fades away. Nothing is loaded into the studio.
-void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<std::shared_ptr<const studio::PreviewMotion>()> make) {
+void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<std::shared_ptr<const studio::PreviewMotion>()> make,
+                const std::string& title = {}) {
     if (!ImGui::IsMouseHoveringRect(a, b) || !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) return;
     auto& u = ui();
     u.hover_candidate = key;
     u.hover_candidate_a = a;
     u.hover_candidate_b = b;
     u.hover_candidate_make = std::move(make);
+    u.hover_candidate_title = title;
 }
 void hover_preview(const Fonts& f, const studio::View& v) {
     auto& u = ui();
     auto& h = u.hover;
     const double now = ImGui::GetTime();
-    if (!v.hover_preview || u.hover_candidate.empty() || u.blocked) {
+    if (!v.hover_preview || u.hover_candidate.empty() || any_card_open(v)) {
         h = {};
         return;
     }
@@ -3323,6 +3327,7 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         h.a = u.hover_candidate_a;
         h.b = u.hover_candidate_b;
         h.make = u.hover_candidate_make;
+        u.hover_title = u.hover_candidate_title;
     }
     if (!h.tried) {
         if (now - h.since < 0.35) return; // a moment held on it, not passed over
@@ -3344,9 +3349,11 @@ void hover_preview(const Fonts& f, const studio::View& v) {
     auto* d = ImGui::GetForegroundDrawList();
     const auto fade = [&](ImU32 c) { return (c & 0x00FFFFFFu) | (static_cast<ImU32>(static_cast<float>(c >> 24) * alpha) << 24); };
     d->AddRectFilled(ImVec2(a.x + 6 * k, a.y + 8 * k), ImVec2(b.x + 6 * k, b.y + 8 * k), fade(IM_COL32(0, 0, 0, 120)), 8 * k);
-    d->AddRectFilled(a, b, fade(IM_COL32(16, 17, 20, 246)), 8 * k);
+    d->AddRectFilled(a, b, fade(IM_COL32(16, 17, 20, 255)), 8 * k);
     d->AddRect(a, b, fade(IM_COL32(1, 131, 255, 160)), 8 * k, 0, 2 * k);
     text(d, f.heading, 11 * k, ImVec2(a.x + 14 * k, a.y + 10 * k), fade(blue_light), "PREVIEW");
+    if (!u.hover_title.empty())
+        text(d, f.bold, 15 * k, ImVec2(a.x + 14 * k, b.y - 44 * k), fade(white), elide(f.bold, 15 * k, u.hover_title, w - 28 * k));
     // A three-quarter view, fitted to everything the trick does.
     constexpr float yaw = 0.62f, pitch = 0.24f;
     const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
@@ -3362,7 +3369,7 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         lo = ImVec2(std::min(lo.x, s.x), std::min(lo.y, s.y));
         hi = ImVec2(std::max(hi.x, s.x), std::max(hi.y, s.y));
     }
-    const ImVec2 ia(a.x + 20 * k, a.y + 34 * k), ib(b.x - 20 * k, b.y - 44 * k);
+    const ImVec2 ia(a.x + 20 * k, a.y + 34 * k), ib(b.x - 20 * k, b.y - 56 * k);
     const float scale = std::min((ib.x - ia.x) / std::max(hi.x - lo.x, 0.3f), (ib.y - ia.y) / std::max(hi.y - lo.y, 0.3f));
     const ImVec2 mid((ia.x + ib.x) * 0.5f, (ia.y + ib.y) * 0.5f), centre((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
     const auto to_screen = [&](const studio::Vec3& q) {
@@ -3466,7 +3473,12 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         title = "MY TRICKS", about = v.library.empty() ? "Nothing saved yet: open one of the game's tricks, change it and save it."
                                                        : "Everything you saved. EDIT opens it, TEST IN GAME lets you skate it, the card holds the rest.";
     else if (u.trick_group == "*assets") title = "GAME ANIMATIONS", about = "Every piece of the game's animation: setups, loops, exits, grind phases.";
-    else title = upper(u.trick_group), about = "Pick a pop to open it in the editor. The card opens its mid pop.";
+    else {
+        title = upper(u.trick_group);
+        const bool pieces = std::any_of(cards.begin(), cards.end(), [&](const TrickCard& c) { return c.category == u.trick_group && !c.pieces.empty(); });
+        about = pieces ? "The game's own pieces of each trick. A chip opens that way of doing it; the card shows every piece (into, loop, out...)."
+                       : "Pick a pop to open it in the editor. The card opens its mid pop.";
+    }
     page_heading(d, f, ra, title, about);
     {
         const char* label = v.hover_preview ? "PREVIEW ON" : "PREVIEW OFF";
@@ -3524,7 +3536,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     for (const auto& name : mine) {
         const auto at = place(i++);
         my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
-        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name] { return studio::preview_saved_motion(name); });
+        note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name] { return studio::preview_saved_motion(name); }, shown_name(v, name));
     }
     if (!mine.empty()) {
         top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
@@ -3543,7 +3555,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
             for (const std::size_t pop : {1, 0, 2, 3})
                 if (c->pops[pop]) {
                     const studio::GameTrick trick = *c->pops[pop];
-                    note_hover("game|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); });
+                    note_hover("game|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); }, c->label + " (" + trick.pop + " pop)");
                     break;
                 }
             continue;
@@ -3551,7 +3563,8 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         if (!c->sides.empty())
             if (const auto* piece = main_piece(*c, c->sides.front()); piece && piece->clip) {
                 const studio::GameTrick trick = *piece->clip;
-                note_hover("piece|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); });
+                note_hover("piece|" + trick.file, at, end, [trick] { return studio::preview_motion(trick); },
+                           c->label + " (" + (piece->side.empty() ? piece->part : piece->side + " " + piece->part) + ")");
             }
         int saved = 0;
         for (const auto& piece : c->pieces)
@@ -3866,7 +3879,7 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         }
         y += 44 * k;
         if (!pack.installed) {
-            text(d, f.bold, 16 * k, ImVec2(x, y + 6 * k), white, pack.pack.editable ? "OTHERS CAN EDIT" : "LOCKED FOR OTHERS");
+            text(d, f.bold, 16 * k, ImVec2(x, y + 6 * k), white, "OTHERS CAN EDIT");
             if (toggle(d, f, "##editable", ImVec2(x + w - 64 * k, y), pack.pack.editable)) {
                 std::string m;
                 studio::set_pack_editable(pack.name, !pack.pack.editable, m);
@@ -5088,7 +5101,7 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         d->ChannelsMerge();
     }
     // ---- the buttons ----
-    const float bar_w = std::min(1100 * k, display.x - 80 * k), bar_h = 128 * k;
+    const float bar_w = std::min(1320 * k, display.x - 80 * k), bar_h = 128 * k;
     const ImVec2 a((display.x - bar_w) * 0.5f, display.y - bar_h - 26 * k), b(a.x + bar_w, a.y + bar_h);
     skate_theme::rough_rect(d, a, b, IM_COL32(14, 14, 16, 230), seed_of(a), k);
     {
@@ -5126,9 +5139,8 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         if (button("##previewview", 90 * k, label, Look::ghost, u.camera_shot == shot)) take_shot(v, shot);
         ImGui::PopID();
     }
-    const float exit_w = std::max(120 * k, b.x - 24 * k - x);
-    if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - std::min(exit_w, 220 * k), by), ImVec2(std::min(exit_w, 220 * k), bh),
-               u.preview_from_pack ? "< BACK TO PACK" : "< BACK", Look::paper))
+    if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - 230 * k, by), ImVec2(230 * k, bh), u.preview_from_pack ? "< BACK TO PACK" : "< BACK",
+               Look::paper))
         leave_preview();
     // The keys.
     if (!ImGui::GetIO().WantTextInput) {
@@ -6997,6 +7009,7 @@ void draw_animation_studio() {
         return;
     }
     const auto v = studio::view();
+    u.own_lead_right = v.own_lead_right;
     if (!u.was_open) {
         // Just opened: the menu when there is nothing to edit, the editor when there is.
         u.was_open = true;
