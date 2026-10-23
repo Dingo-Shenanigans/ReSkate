@@ -53,7 +53,7 @@ struct View {
     float base_yaw{}; // the yaw the orbit's own is added to (the skater's facing when the studio opened)
     // The animation being edited.
     std::string name, trick, author;
-    std::string source_kind, source_asset, entry;
+    std::string source_kind, entry;
     std::string source_position_codec;
     std::size_t source_pose_count{};
     float source_max_sample_gap{};
@@ -66,7 +66,6 @@ struct View {
     int stance_choice{};
     bool own_lead_right{}; // the skater's own stance leads with the right foot (goofy): stance versions are told apart by it
     bool showing_goofy{};
-    int game_stance{}; // what the game's own setting says: 0 not set, 1 regular, 2 goofy
     bool grab_board{};   // a hand near the deck closes its fingers on it
     bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
     bool limits{true};     // Joint limits: keyed joints stay inside the range the game's own animation uses
@@ -89,7 +88,7 @@ struct View {
     std::vector<Preset> presets;
     struct PackView {
         std::string name, made_by;
-        bool on{}, alternate{}, unsaved{};
+        bool on{}, alternate{};
         std::vector<std::string> members;
         PresetPack pack; // its slots, which are Fixed or Alternate, and what is left out of a cycle
         std::string thumbnail;        // its picture (presets/<pack>.png, thumbnail_side square), "" none
@@ -122,13 +121,6 @@ struct View {
     // Goes up every time a clip arrives: a trick opened, a saved animation loaded, a take recorded, a new
     // animation started. The overlay starts clean on it.
     std::uint64_t clip_serial{};
-    // A rail to grind on, drawn in the studio for grind and slide tricks (set_rail): the line along its top, in the
-    // world, and how thick it is. rail_choice -1 automatic, 0 off, 1 along the board, 2 across it; rail_mode is
-    // what that comes to for the trick open.
-    int rail_choice{0}, rail_mode{};
-    bool rail_valid{};
-    Vec3 rail_a{}, rail_b{};
-    float rail_radius{0.025f};
 };
 View view();
 Recording recording_state(); // the one value the overlay checks every frame while the studio is closed
@@ -166,14 +158,11 @@ void request_open(bool open);         // asks the client tick to open or close t
 void request_close();                 // closes, or asks first when there are unsaved changes
 enum class CloseAnswer { save, discard, cancel };
 void answer_close(CloseAnswer answer);
-void set_pop(const std::string& pop); // which pop this animation is for ("" any)
-bool copy_to_pops(std::string& message); // saves a low, a mid and a high copy of it, in the packs it is in
 void advance(float seconds);          // playback, by the render frame's time
 void set_time(float seconds);
 void set_playing(bool playing);
 void set_loop(bool loop);
 void set_speed(float speed);
-void record_next_trick();             // closes the studio until the next trick has been landed
 // A recording starts from a clean level: take_clean_start() once per request, so the client tick loads the
 // level again (behind the loading screen); clean_start_done() when that load is in. Nothing is recorded
 // until then.
@@ -212,10 +201,6 @@ std::uint64_t room_changes() noexcept;
 // In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
 // one trick's keys blend into the next's over half of it. Saved with the studio's settings.
 void set_crossfade(float seconds);
-// The studio's rail: -1 automatic (along the board for a grind, across it for a slide, none otherwise), 0 off, 1 along
-// the board, 2 across it. place_rail puts it under the board as the board is now.
-void set_rail(int choice);
-void place_rail();
 // Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
 // elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
 void set_joint_limits(bool on);
@@ -249,9 +234,8 @@ void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);
 // Smooths the given keys (joint, time): each eases into its neighbours and shows round. Call begin_change first.
 bool smooth_chosen_keys(std::span<const std::pair<std::uint16_t, float>> chosen, std::string& message);
-// Smooths the keys of one joint, or of every joint when `joint` is `all_joints`. Call begin_change first.
+// Every joint at once (set_focus: the camera on the whole skater).
 inline constexpr std::uint16_t all_joints = 0xffff;
-void smooth_keys(std::uint16_t joint);
 void reset_joint(std::uint16_t joint); // takes all its keys off
 void set_track_flags(std::uint16_t joint, bool hidden, bool locked);
 void copy_pose();  // every joint's edit at the current time
@@ -259,9 +243,7 @@ void paste_pose(); // keys them all at the current time
 void undo();
 void redo();
 // Library.
-void new_animation();
 bool save(std::string& message);
-bool save_preset_copy(std::string& message);
 // Packs. Any number can be on at once (a trick more than one has is chosen between: View::conflicts); with none
 // on, every saved animation plays. Every change to a pack is saved at once and plays at once.
 bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
@@ -273,8 +255,6 @@ bool set_pack_member(const std::string& pack, const std::string& animation, bool
 bool set_pack_mode(const std::string& pack, const std::string& slot, bool alternate, std::string& message);
 bool set_pack_fixed(const std::string& pack, const std::string& animation, std::string& message); // the one that plays
 bool set_pack_linked(const std::string& pack, const std::string& animation, bool linked, std::string& message);
-bool link_pack_slot(const std::string& pack, const std::string& slot, std::string& message); // all into the cycle
-bool save_pack(std::string& message);                                              // the open pack
 // Packs' pictures: a square this many pixels a side, saved as presets/<pack>.png beside the pack.
 inline constexpr unsigned thumbnail_side = 512;
 // A picture for a pack: PNG bytes of a thumbnail_side square (empty takes it off). It is exported with the pack.
@@ -390,7 +370,6 @@ void stop_library_build();  // the build stops soon after; the library stays as 
 // that failed waits for TRY AGAIN.
 void build_library_when_needed(bool now);
 bool export_diagnostics(std::string& message);
-bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);
 // A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:
 // it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's
@@ -404,7 +383,6 @@ void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
-void set_author(const std::string& author); // whose trick it is, kept with it and shared with it
 void set_your_name(const std::string& name); // MADE BY for new recordings and packs, without touching the one open
 // Camera.
 void set_orbit(const Orbit& orbit);

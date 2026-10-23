@@ -16,17 +16,6 @@ float dot(const Quat& a, const Quat& b) noexcept { return a[0] * b[0] + a[1] * b
 Vec3 lerp(const Vec3& a, const Vec3& b, float t) noexcept {
     return {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
 }
-// Cubic Hermite through p1 -> p2 with Catmull-Rom slopes from the neighbours.
-Vec3 hermite(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, float u, float left_scale, float right_scale) noexcept {
-    const float u2 = u * u, u3 = u2 * u;
-    const float h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
-    Vec3 out{};
-    for (std::size_t i = 0; i < 3; ++i) {
-        const float m1 = (p2[i] - p0[i]) * left_scale, m2 = (p3[i] - p1[i]) * right_scale;
-        out[i] = h00 * p1[i] + h10 * m1 + h01 * p2[i] + h11 * m2;
-    }
-    return out;
-}
 void require(bool ok, const char* what) {
     if (!ok) throw std::runtime_error(what);
 }
@@ -232,13 +221,6 @@ Quat quat_exp(const Quat& p) noexcept {
 Quat nearest(const Quat& q, const Quat& ref) noexcept {
     const float d = q[0] * ref[0] + q[1] * ref[1] + q[2] * ref[2] + q[3] * ref[3];
     return d < 0 ? Quat{-q[0], -q[1], -q[2], -q[3]} : q;
-}
-// Spherical Bezier control in the key's local tangent space. Timestamp-scaled velocity is
-// shared by adjacent segments; uniform SQUAD controls break this at unequally spaced keys.
-Quat rotation_control(const Quat& prev, const Quat& q, const Quat& next, float scale) noexcept {
-    const Quat inverse = conjugate(q);
-    const Quat a = quat_log(multiply(inverse, nearest(prev, q))), b = quat_log(multiply(inverse, nearest(next, q)));
-    return normalised(multiply(q, quat_exp({(b[0] - a[0]) * scale, (b[1] - a[1]) * scale, (b[2] - a[2]) * scale, 0})));
 }
 // A smooth key's slope that never overshoots (a monotone cubic, as Blender's auto-clamped handles): flat where
 // the curve turns - the key above or below both its neighbours - and at the ends, else a weighted harmonic mean

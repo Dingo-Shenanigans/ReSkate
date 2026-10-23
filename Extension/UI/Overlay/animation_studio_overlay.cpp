@@ -195,7 +195,7 @@ struct Ui {
     std::string market_query_seen;
     std::string market_open;
     std::string market_crew;
-    float market_scroll{}, market_detail_scroll{}, market_lists_scroll{};
+    float market_scroll{}, market_detail_scroll{};
     int spotlight{};
     double spotlight_since{};
     float market_fade{};
@@ -226,7 +226,7 @@ struct Ui {
     // PACKS
     bool pack_page{};         // a pack is open on its own page (else MY PACKS, every pack)
     float hub_scroll{};       // MY PACKS' scroll
-    float pack_tricks_scroll{}, rules_scroll{};
+    float pack_tricks_scroll{};
     bool pack_adding{};       // ADD TRICKS is open over the pack
     float adding_scroll{};
     bool conflicts_open{};    // the duplicate tricks card
@@ -254,7 +254,6 @@ struct Ui {
     // Saving: the card after a trick is saved the first time (name it, test it, put it in a pack), and the line the studio
     // says when you are back from testing one.
     bool save_card{};
-    std::string save_for;
     std::string test_line, test_line_for;
     // The tool strip's card about the tool under the mouse.
     std::string tool_tip, tool_tip_text;
@@ -5017,7 +5016,6 @@ void stance_icon(ImDrawList* d, ImVec2 c, float s, ImU32 colour) {
 // ---- what the shop knows of a pack ----
 std::uint64_t score_of(const MarketPack& p) { return p.downloads + 25ull * static_cast<std::uint64_t>(std::max(0, p.rating)); }
 long long days_old(const MarketPack& p) {
-    if (p.sample) return p.sample_days;
     const auto today = std::chrono::duration_cast<std::chrono::hours>(std::chrono::system_clock::now().time_since_epoch()).count() / 24;
     const auto day = studio::market::day_number(p.created.empty() ? p.updated : p.created);
     return day < 0 ? 1000000 : today - day;
@@ -5050,7 +5048,6 @@ struct GetButton {
     bool enabled{};
 };
 GetButton get_button(const studio::View& v, const studio::market::View& m, const MarketPack& p) {
-    if (p.sample) return {"SAMPLE PACK", false};
     if (m.job.running)
         return {m.job.what.find(p.title) != std::string::npos ? std::to_string(static_cast<int>(m.job.fraction * 100)) + "%" : "BUSY...", false};
     if (p.installed.empty()) return {"GET IT", true};
@@ -5069,7 +5066,7 @@ struct Covers {
     std::vector<std::string> names;
     std::vector<std::pair<std::string, std::string>> pictures;
     void add(const MarketPack& p) {
-        if (!p.sample && std::find(names.begin(), names.end(), p.full_name) == names.end()) names.push_back(p.full_name);
+        if (std::find(names.begin(), names.end(), p.full_name) == names.end()) names.push_back(p.full_name);
         if (p.icon_file.empty() || pictures.size() >= 22) return;
         auto key = "market|" + p.full_name + "|" + p.version;
         for (const auto& x : pictures)
@@ -5097,12 +5094,12 @@ void open_market_pack(const MarketPack& p) {
     auto& u = ui();
     u.market_open = p.full_name;
     u.market_detail_scroll = 0;
-    if (!p.sample) studio::market::want_readmes({p.full_name});
+    studio::market::want_readmes({p.full_name});
 }
 // The heart: liked here (LIKED), and, once liked, the offer to like it on Thunderstore too.
 void like_pack(const studio::market::View& m, const MarketPack& p) {
     studio::market::set_favorite(p.full_name, !p.favorite);
-    if (!p.favorite && m.like_prompt && !p.sample) ui().like_pack = p.full_name;
+    if (!p.favorite && m.like_prompt) ui().like_pack = p.full_name;
     else say(p.favorite ? p.title + " is out of LIKED." : "Liked " + p.title + ": it is in LIKED.");
 }
 
@@ -5704,10 +5701,6 @@ void home_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         fx += 30 * k;
         fx += text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(fx, y + 6 * k), faint, "PACKS LIVE ON THUNDERSTORE", 1.5f * k) + 30 * k;
         text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(fx, y + 6 * k), faint, "BUILT BY 22SH, FOURTH, NORMS, STEEZ", 1.5f * k);
-        if constexpr (studio::market::show_samples) {
-            const float sw = spaced_width(mont(f, 12 * k), 12 * k, "SAMPLE PACKS SHOWN", 1.5f * k);
-            text_spaced(d, mont(f, 12 * k), 12 * k, ImVec2(ix + iw - sw, y + 6 * k), faint, "SAMPLE PACKS SHOWN", 1.5f * k);
-        }
     }
     y += 60 * k;
     end_region(d, ImVec2(0, top), ImVec2(display.x, bottom), y + u.market_scroll - top, u.market_scroll, k);
@@ -5820,7 +5813,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     const ShopColumn col{std::max(0.0f, display.x / k * 0.5f - 960), std::min(1920.0f, display.x / k)};
     const float ix = col.inner() * k, iw = (col.width - 96) * k;
     covers.add(p);
-    if (p.readme == 0 && !p.sample) studio::market::want_readmes({p.full_name});
+    if (p.readme == 0) studio::market::want_readmes({p.full_name});
     const float bw = shop_button_width(f, "BACK", 40 * k) + 20 * k;
     if (shop_button(d, f, "##packback", ImVec2(ix, top + 14 * k), ImVec2(bw, 40 * k), "< BACK", ShopLook::line)) {
         u.market_open.clear();
@@ -5922,7 +5915,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         if (shop_button(d, f, "##packlike", ImVec2(x + 252 * k, ry), ImVec2(lw, bh), p.favorite ? "LIKED" : "LIKE", ShopLook::line, true, p.favorite ? 2 : 1))
             like_pack(m, p);
         const float tw = shop_button_width(f, "ON THUNDERSTORE", bh);
-        if (!p.sample && shop_button(d, f, "##packts", ImVec2(x + 264 * k + lw, ry), ImVec2(tw, bh), "ON THUNDERSTORE", ShopLook::line))
+        if (shop_button(d, f, "##packts", ImVec2(x + 264 * k + lw, ry), ImVec2(tw, bh), "ON THUNDERSTORE", ShopLook::line))
             studio::market::open_page(p.full_name);
         ry += bh + 18 * k;
     }
@@ -5978,46 +5971,12 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     end_region(d, ImVec2(0, region_top), ImVec2(display.x, bottom), bottom_of + u.market_detail_scroll - region_top, u.market_detail_scroll, k);
 }
 
-// ---- the sample covers, made once ----
-void make_sample_covers() {
-    if constexpr (studio::market::show_samples) {
-        static std::atomic<bool> started{};
-        if (started.exchange(true)) return;
-        try {
-            std::thread([] {
-                std::error_code error;
-                for (std::size_t i = 0; i < studio::market::samples.size(); ++i) {
-                    const auto path = studio::market::sample_cover(i);
-                    if (std::filesystem::is_regular_file(path, error)) continue;
-                    const auto& s = studio::market::samples[i];
-                    CoverDesign c;
-                    c.base = std::string(s.base);
-                    c.banner = std::string(s.banner);
-                    c.font = std::string(s.font);
-                    c.place = std::string(s.place);
-                    c.title = std::string(s.title);
-                    c.tag = std::string(s.stance);
-                    c.seed = static_cast<std::uint32_t>(i * 7 + 3);
-                    const auto rgba = make_cover(c, 512);
-                    const auto png = cover_png(rgba, 512);
-                    if (png.empty()) continue;
-                    std::filesystem::create_directories(path.parent_path(), error);
-                    std::ofstream out(path, std::ios::binary);
-                    out.write(png.data(), static_cast<std::streamsize>(png.size()));
-                }
-                release_cover_art();
-            }).detach();
-        } catch (...) {}
-    }
-}
-
 // ---- the shop ----
 void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
     const auto display = ImGui::GetIO().DisplaySize;
     want_market_art();
-    make_sample_covers();
     studio::market::refresh(false);
     const auto m = studio::market::view();
     Covers covers;
@@ -9093,57 +9052,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
 
 
 // The skater: dots on the joints that can be chosen, the glowing box on the chosen one, and the drag.
-// The studio's rail (View::rail_a/b, its top): a round steel bar on two posts down to the floor. Drawn over the
-// game's picture, under the dots and the gizmo; where it passes behind the camera it is left out.
-void draw_rail(ImDrawList* d, const studio::View& v, const Projector& project) {
-    if (!v.rail_valid || !project.valid) return;
-    const float r = v.rail_radius;
-    const auto at = [&](float t) {
-        return studio::Vec3{v.rail_a[0] + (v.rail_b[0] - v.rail_a[0]) * t, v.rail_a[1] - r + (v.rail_b[1] - v.rail_a[1]) * t,
-                            v.rail_a[2] + (v.rail_b[2] - v.rail_a[2]) * t};
-    };
-    const auto offset = [](const studio::Vec3& p, const studio::Vec3& by, float s) {
-        return studio::Vec3{p[0] + by[0] * s, p[1] + by[1] * s, p[2] + by[2] * s};
-    };
-    // Its posts first, so the bar is over them: square steel down to the floor.
-    const float floor = v.floor_valid ? v.floor : at(0.5f)[1] - 0.45f;
-    for (const float t : {0.12f, 0.88f}) {
-        const auto top = at(t);
-        const studio::Vec3 bottom{top[0], floor, top[2]};
-        const auto a = project(offset(top, project.right, -0.02f)), b = project(offset(top, project.right, 0.02f));
-        const auto c = project(offset(bottom, project.right, 0.02f)), e = project(offset(bottom, project.right, -0.02f));
-        if (a && b && c && e) {
-            d->AddQuadFilled(*a, *b, *c, *e, IM_COL32(58, 60, 66, 235));
-            d->AddLine(*a, *e, IM_COL32(150, 154, 162, 200), 1.0f);
-        }
-    }
-    // A quad shaded from its first edge (a, b) to its second (c, e).
-    const auto shade = [d](ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 e, ImU32 from, ImU32 to) {
-        const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
-        const auto i = static_cast<ImDrawIdx>(d->_VtxCurrentIdx);
-        d->PrimReserve(6, 4);
-        d->PrimWriteIdx(i); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 1)); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 2));
-        d->PrimWriteIdx(i); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 2)); d->PrimWriteIdx(static_cast<ImDrawIdx>(i + 3));
-        d->PrimWriteVtx(a, uv, from); d->PrimWriteVtx(b, uv, from); d->PrimWriteVtx(c, uv, to); d->PrimWriteVtx(e, uv, to);
-    };
-    // The bar: steel, lit from above, in short pieces so the part behind the camera can be left out.
-    constexpr int pieces = 32;
-    for (int i = 0; i < pieces; ++i) {
-        const float t0 = static_cast<float>(i) / pieces, t1 = static_cast<float>(i + 1) / pieces;
-        const auto c0 = at(t0), c1 = at(t1);
-        const auto top0 = project(offset(c0, project.up, r)), top1 = project(offset(c1, project.up, r));
-        const auto bot0 = project(offset(c0, project.up, -r)), bot1 = project(offset(c1, project.up, -r));
-        const auto mid0 = project(c0), mid1 = project(c1);
-        if (!top0 || !top1 || !bot0 || !bot1 || !mid0 || !mid1) continue;
-        shade(*top0, *top1, *mid1, *mid0, IM_COL32(205, 210, 218, 245), IM_COL32(120, 124, 132, 245));
-        shade(*mid0, *mid1, *bot1, *bot0, IM_COL32(120, 124, 132, 245), IM_COL32(52, 54, 60, 245));
-        d->AddLine(*top0, *top1, IM_COL32(245, 248, 252, 220), 1.5f);
-    }
-}
 void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projector& project, ImVec2 area_min, ImVec2 area_max) {
     auto& u = ui();
     const float k = f.k;
-    draw_rail(d, v, project);
     const auto mouse = ImGui::GetIO().MousePos;
     const bool inside = !u.blocked && mouse.x >= area_min.x && mouse.y >= area_min.y && mouse.x <= area_max.x && mouse.y <= area_max.y;
     // Out of the way while it plays or is scrubbed, so the motion can be watched, and on J whenever you
@@ -9289,13 +9200,7 @@ void close_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     skate_theme::rough_rect(d, a, b, IM_COL32(236, 236, 234, 252), 97, k);
     const ImU32 ink = IM_COL32(20, 20, 22, 255);
     text(d, f.title, 40 * k, ImVec2(a.x + 30 * k, a.y + 18 * k), ink, "UNSAVED CHANGES");
-    std::string packs;
-    for (const auto& pack : v.packs)
-        if (pack.unsaved) packs += (packs.empty() ? "" : ", ") + pack.name;
-    const bool animation = v.dirty && v.has_clip;
-    const std::string what = animation && !packs.empty() ? "\"" + title_of(v) + "\" and the pack " + packs + " have"
-                             : animation ? "\"" + title_of(v) + "\" has" : "The pack " + packs + " has";
-    const std::string question = what + " changes that are not saved. Save them before you go back to skating?";
+    const std::string question = "\"" + title_of(v) + "\" has changes that are not saved. Save them before you go back to skating?";
     d->AddText(sharp(f.bold, 19 * k), 19 * k, ImVec2(a.x + 30 * k, a.y + 84 * k), IM_COL32(60, 60, 66, 255), question.c_str(), nullptr, w - 60 * k);
     constexpr std::array<const char*, 3> labels{"SAVE", "DON'T SAVE", "STAY"};
     constexpr std::array<studio::CloseAnswer, 3> answers{studio::CloseAnswer::save, studio::CloseAnswer::discard, studio::CloseAnswer::cancel};

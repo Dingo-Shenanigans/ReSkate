@@ -1,8 +1,7 @@
-// The cover maker on its own (studio_cover_maker.h): every sample pack's cover, and the designer's choices one by one,
+// The cover maker on its own (studio_cover_maker.h): the designer's choices one by one,
 // written as PNGs to look at - the same code, art and fonts the studio uses (the art and fonts are built into this tool as
 // they are into ReSkate.dll). Usage: dingosdk_cover_maker_preview <folder>
 #include "Extension/UI/Overlay/studio_cover_maker.h"
-#include "Extension/AnimationStudio/marketplace.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -25,18 +24,19 @@ int main(int argc, char** argv) {
         return true;
     };
     int made = 0;
-    for (std::size_t i = 0; i < anim_studio::market::samples.size(); ++i) {
-        const auto& s = anim_studio::market::samples[i];
-        overlay::CoverDesign c;
-        c.base = std::string(s.base);
-        c.banner = std::string(s.banner);
-        c.font = std::string(s.font);
-        c.place = std::string(s.place);
-        c.title = std::string(s.title);
-        c.tag = std::string(s.stance);
-        c.seed = static_cast<std::uint32_t>(i * 7 + 3);
-        made += write("sample_" + std::to_string(i + 1), c);
-    }
+    // Each banner, in each place on the cover.
+    std::uint32_t seed = 3;
+    for (const char* banner : {"blue", "white", "grip", "tape", "none"})
+        for (const char* place : {"top", "middle", "bottom"}) {
+            overlay::CoverDesign c;
+            c.base = "concrete";
+            c.banner = banner;
+            c.place = place;
+            c.title = "Flip Theory";
+            c.tag = "ALL STANCES";
+            c.seed = seed += 7;
+            made += write(std::string("banner_") + banner + "_" + place, c);
+        }
     // Each base under the same banner, and each font on the same base.
     for (const char* base : {"skater", "print", "grip", "concrete", "paper", "blue"}) {
         overlay::CoverDesign c;

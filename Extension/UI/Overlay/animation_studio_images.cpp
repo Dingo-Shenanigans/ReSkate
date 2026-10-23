@@ -322,23 +322,6 @@ void fill_animation_studio_images(ImFontAtlas& atlas) noexcept {
     }
 }
 
-bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {
-    Found found;
-    if (!find(picture, found)) return false;
-    const auto& size = loaded().sizes[static_cast<std::size_t>(picture)];
-    const float box_w = max.x - min.x, box_h = max.y - min.y;
-    if (!(size.first && size.second && box_w > 0 && box_h > 0)) return false;
-    const float picture_shape = static_cast<float>(size.first) / static_cast<float>(size.second);
-    const float box_shape = box_w / box_h;
-    // The part of the picture that is shown: the rest is cropped, half off each side.
-    float u = 1.0f, v = 1.0f;
-    if (picture_shape > box_shape) u = box_shape / picture_shape;
-    else v = picture_shape / box_shape;
-    const ImVec2 a(found.uv0.x + (found.uv1.x - found.uv0.x) * (1 - u) * 0.5f, found.uv0.y + (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
-    const ImVec2 b(found.uv1.x - (found.uv1.x - found.uv0.x) * (1 - u) * 0.5f, found.uv1.y - (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
-    draw->AddImage(loaded().atlas->TexID, min, max, a, b, tint);
-    return true;
-}
 static bool draw_halves_cover(ImDrawList* draw, StudioPicture left_picture, StudioPicture right_picture, ImVec2 min, ImVec2 max, ImU32 tint) {
     Found left, right;
     if (!find(left_picture, left) || !find(right_picture, right)) return false;
