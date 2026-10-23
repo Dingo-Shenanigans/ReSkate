@@ -66,7 +66,7 @@ struct Decision {
     Basis basis{};
     int trigger{};            // +1 LT, -1 RT, 0 none
     int toward{};             // +1 the tester's left of travel, -1 right
-    bool switch_stance{}, lean_blocked{};
+    bool left_foot_leads{}, lean_blocked{};
     std::uint32_t state{};
     float along{}, before_side{}, after_side{}, up{}, rail_speed{}, toe_across{};
 };
@@ -86,7 +86,7 @@ struct Control {
     std::atomic<std::uint32_t> state{};
     std::atomic<std::int64_t> step_qpc{}, grind_start{};
     std::atomic<float> rail_x{}, rail_z{}, rail_speed{};
-    std::atomic<bool> switch_stance{};
+    std::atomic<bool> left_foot_leads{}; // the game's stance bit: the left foot is forward right now
     // Client tick -> the launch hook: the skater root's right axis, flattened.
     std::atomic<float> right_x{}, right_z{};
     std::atomic<std::int64_t> axes_qpc{};
@@ -200,7 +200,7 @@ void on_step(const NoBailSkater& skater, float, bool) noexcept {
     const auto now = qpc_now();
     std::uint8_t flags{};
     if (memory::peek(skater.context + gx::stance_flags_offset, flags))
-        c.switch_stance.store((flags & gx::stance_switch_mask) != 0, std::memory_order_relaxed);
+        c.left_foot_leads.store((flags & gx::left_foot_leads_mask) != 0, std::memory_order_relaxed);
     if (grind_state(state)) {
         if (!grind_state(c.last_state)) c.grind_start.store(now, std::memory_order_release);
         std::array<float, 3> v{};
@@ -295,10 +295,10 @@ void record(Control& c, const Decision& d) noexcept {
 // Which way across the rail (+1 the tester's "left" = n = (tz, -tx), the skater root's right axis
 // when riding forward; -1 the other) the claimed trigger points.
 int toward_side(Control& c, int trigger, float nx, float nz, std::int64_t now, Decision& d) noexcept {
-    d.switch_stance = c.switch_stance.load(std::memory_order_relaxed);
+    d.left_foot_leads = c.left_foot_leads.load(std::memory_order_relaxed);
     if (static_cast<Sides>(c.sides.load()) == Sides::travel) { d.basis = Basis::travel; return trigger; }
-    const auto stance = static_cast<Stance>(c.stance.load());
-    if (stance == Stance::unset) { d.basis = Basis::no_stance; return trigger; }
+    // No stance setting is needed: which foot leads comes from the game itself (left_foot_leads below), so
+    // toe and heel are right for a skater who never set one. It used to give up here until one was set.
     if (seconds(now - c.axes_qpc.load(std::memory_order_acquire)) > axes_fresh_seconds) { d.basis = Basis::no_facing; return trigger; }
     float rx = c.right_x.load(std::memory_order_relaxed), rz = c.right_z.load(std::memory_order_relaxed);
     const float length = std::hypot(rx, rz);
@@ -307,7 +307,10 @@ int toward_side(Control& c, int trigger, float nx, float nz, std::int64_t now, D
     rz /= length;
     // The toes point to the root's right axis when the right foot leads (goofy riding normal or
     // fakie: measured), to the other side when the left foot leads (regular, or goofy switch).
-    const bool right_foot_leads = (stance == Stance::goofy) != d.switch_stance;
+    // The game's bit says which foot leads outright, so that is all this needs. It was read as a switch
+    // flag and turned round by the stance setting, which comes to the same for a goofy skater and the
+    // wrong way round for a regular one: toe and heel were swapped for every regular skater.
+    const bool right_foot_leads = !d.left_foot_leads;
     const float toe_x = right_foot_leads ? rx : -rx, toe_z = right_foot_leads ? rz : -rz;
     d.toe_across = toe_x * nx + toe_z * nz;
     if (std::abs(d.toe_across) < min_toe_across) { d.basis = Basis::slide; return trigger; }
@@ -466,7 +469,7 @@ void on_client_tick(std::uintptr_t client) noexcept {
             logging::log(logging::Level::debug, logging::Channel::skater,
                          "Grind exit: {} ({} -> {}; {}; {}{}). state {}, rail speed {:.2f}, along {:.2f}, up {:.2f}, sideways {:+.2f} -> {:+.2f}, toe across {:+.2f}",
                          reason_text(d.reason), trigger, toward, d.trigger ? basis_text(d.basis) : "-",
-                         d.switch_stance ? "switch" : "normal/fakie", d.lean_blocked ? ", lean held back" : "", d.state, d.rail_speed,
+                         d.left_foot_leads ? "left foot leads" : "right foot leads", d.lean_blocked ? ", lean held back" : "", d.state, d.rail_speed,
                          d.along, d.up, d.before_side, d.after_side, d.toe_across);
         } catch (...) {}
     }

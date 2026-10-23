@@ -2,10 +2,38 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace dingosdk::anim_studio {
+// One name for a trick, however the game spelled it. The game names its tricks in more than one way: what it says in
+// the air (current_trick) is "n_kickflip", "fsimpossible"; its scoring data, where the studio's first trick list came
+// from, says "nolliekickflip", "nolliebsimpossible"; its flick list says "N_Kickflip", "FrontFoot_Impossible". A saved
+// trick and the game's trick are matched by this key, so every spelling of a trick is the same trick and a trick
+// saved under an older name still plays. Pieces of the game's animation ("native:...") are left as they are.
+inline std::string trick_key(std::string_view name) {
+    if (name.starts_with("native:")) return std::string(name);
+    std::string s;
+    for (const unsigned char c : name) {
+        const char l = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        if ((l >= 'a' && l <= 'z') || (l >= '0' && l <= '9') || l == '_') s += l;
+    }
+    bool nollie = false;
+    std::string_view rest = s;
+    if (rest.starts_with("nollie") && rest.size() > 6) nollie = true, rest.remove_prefix(6);
+    else if (rest.starts_with("n_")) nollie = true, rest.remove_prefix(2);
+    std::string word;
+    for (const char c : rest)
+        if (c != '_') word += c;
+    if (word == "frontfootimpossible" || word == "ffimpossible") word = "fsimpossible";
+    else if (word == "backfootimpossible" || word == "bfimpossible") word = "bsimpossible";
+    else if (word == "bspopshuvit") word = "popshuvit";
+    else if (word == "bs360popshuvit") word = "360popshuvit";
+    if (!nollie) return word;
+    return word.empty() ? std::string("nollie") : "n_" + word;
+}
 struct ContactWindow {
     std::optional<double> since;
     bool observe(double now, bool contact) noexcept {
@@ -58,14 +86,52 @@ inline bool episode_selection_changed(std::string_view selected, std::string_vie
     // when the native grade refines an estimate; generic bindings remain stable.
     return !reported.empty() && (selected != reported || (!selected_pop.empty() && selected_pop != wanted_pop));
 }
-inline bool playback_stance_compatible(bool recorded_goofy, std::optional<bool> recorded_switch,
-                                      bool live_goofy, std::optional<bool> live_switch) noexcept {
-    // Equal lead feet are not enough: regular switch and goofy normal have different
-    // placement/bind frames. Raw local-bone reflection is not a valid retargeter.
-    // Legacy files predate switch metadata and retain their normal-stance assumption.
-    return live_switch.has_value() && recorded_goofy == live_goofy &&
-           recorded_switch.value_or(false) == *live_switch;
+inline bool riding_switch(bool left_foot_leads, bool goofy) noexcept { return left_foot_leads == goofy; }
+// Which foot is forward. A goofy skater leads with his right; riding switch turns that round, so a regular
+// skater riding switch leads with his right too. A trick belongs to the front foot and the back foot, not
+// to the left and the right: a kickflip is flicked with the front foot whoever is standing on the board.
+inline bool leads_right(bool goofy, bool switch_stance) noexcept { return goofy != switch_stance; }
+// ---- which recording plays, from everything the game tells us at takeoff ---------------------------
+// What the game does (contrib/animator-studio/GAME_STANCE_NOTES.md): one mirror for the foot that leads
+// (regular is its goofy clips mirrored, switch flips it), fakie is the same clips with an upper-body layer
+// on top (never a mirror), nollie is its own clips and its own trick names, and board backwards (a shuvit,
+// or a push out of fakie into switch) only turns the deck under him. So a recording is described by the
+// foot it leads with and whether it was made rolling fakie; nollie is told apart by the trick's name before
+// this, and board backwards is taken care of by the board's frame when it plays.
+struct StanceCandidate {
+    bool leads_right{};        // the foot it was made leading with, read from its clip
+    std::optional<bool> fakie; // made rolling fakie; empty for a recording from before that was kept (taken as not)
+    int pop_rank{};            // playback_pop_rank against the pop the game graded; below 0 cannot play
+};
+struct LiveStance {
+    bool leads_right{}; // the game's mirror: clear when the right foot leads
+    bool fakie{};       // rolling backwards at takeoff
+};
+// The recordings that may play now, best first: exact stance only takes one made on the foot that leads now
+// and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
+// graded, then the same fakie state (a fakie recording carries the game's fakie upper body), then the same
+// lead foot (one made on the other foot is mirrored, which is exact). Only the best group is returned, so
+// cycling variants alternates between equally good recordings.
+inline std::vector<std::size_t> choose_stance_variants(std::span<const StanceCandidate> candidates, LiveStance live, bool front_foot) {
+    std::vector<std::size_t> out;
+    int best_pop = 1 << 20, best_tier = 1 << 20;
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const auto& c = candidates[i];
+        if (c.pop_rank < 0) continue;
+        const bool same_lead = c.leads_right == live.leads_right, same_fakie = c.fakie.value_or(false) == live.fakie;
+        if (!front_foot && (!same_lead || !same_fakie)) continue;
+        const int tier = (same_fakie ? 0 : 2) + (same_lead ? 0 : 1);
+        if (c.pop_rank < best_pop || (c.pop_rank == best_pop && tier < best_tier)) {
+            out.clear();
+            best_pop = c.pop_rank;
+            best_tier = tier;
+        }
+        if (c.pop_rank == best_pop && tier == best_tier) out.push_back(i);
+    }
+    return out;
 }
+// A recording made on the other foot is played mirrored, the game's way.
+inline bool plays_mirrored(const StanceCandidate& c, LiveStance live) noexcept { return c.leads_right != live.leads_right; }
 inline float advance_time(float time, float elapsed, float speed, float duration, bool loop) noexcept {
     if (!std::isfinite(elapsed) || elapsed <= 0 || !std::isfinite(speed) || speed <= 0 ||
         !std::isfinite(duration) || duration <= 0) return time;

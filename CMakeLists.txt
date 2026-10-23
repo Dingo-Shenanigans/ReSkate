@@ -388,6 +388,14 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_animation_studio_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_animation_studio_tests PRIVATE dingosdk_json)
     add_test(NAME animation_studio COMMAND dingosdk_animation_studio_tests)
+    if(WIN32 AND EXISTS "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc")
+        # The MARKET's cover maker on its own: writes covers to look at, from the same art and fonts as ReSkate.dll.
+        add_executable(dingosdk_cover_maker_preview Extension/UI/Overlay/Test/cover_maker_preview.cpp Extension/UI/Overlay/studio_cover_maker.cpp
+            Extension/UI/Overlay/studio_market_art.cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc")
+        target_include_directories(dingosdk_cover_maker_preview PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay")
+        target_link_libraries(dingosdk_cover_maker_preview PRIVATE dingosdk_imgui dingosdk_json dingosdk_logging windowscodecs ole32)
+    endif()
     if(WIN32)
         add_executable(dingosdk_trick_gesture_tests Extension/AnimationStudio/Test/trick_gesture_tests.cpp
             Extension/AnimationStudio/trick_gestures.cpp)
@@ -401,6 +409,10 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
         add_executable(dingosdk_anim_clip_channels Extension/AnimationStudio/Tools/anim_clip_channels.cpp Extension/AnimationStudio/anim_core.cpp)
         target_include_directories(dingosdk_anim_clip_channels PRIVATE "${PROJECT_SOURCE_DIR}")
         target_link_libraries(dingosdk_anim_clip_channels PRIVATE dingosdk_game_archives dingosdk_json)
+        # The trick library built offline the way the studio builds it in game (native_library.h), to check it.
+        add_executable(dingosdk_anim_library_build Extension/AnimationStudio/Tools/anim_library_build.cpp Extension/AnimationStudio/native_library.cpp)
+        target_include_directories(dingosdk_anim_library_build PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_anim_library_build PRIVATE dingosdk_game_archives dingosdk_json bcrypt)
     endif()
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)

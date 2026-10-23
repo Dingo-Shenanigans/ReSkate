@@ -17,6 +17,7 @@ struct GameTrick {
     std::string entry{"ground"};
     std::string position_codec;
     bool looping{};
+    std::optional<bool> fakie, board_backwards; // a recorded take: rolling fakie, the board backwards at takeoff
 };
 inline bool safe_library_clip(const std::string& file) {
     return !file.empty() && file.find_first_of("/\\:") == std::string::npos &&

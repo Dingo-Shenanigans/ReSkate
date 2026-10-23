@@ -1,5 +1,6 @@
 #include "skater_effectors.h"
 #include "skater_mirror.h"
+#include "skater_joint_limits.h"
 #include "anim_core.h"
 #include "animation_skeleton.h"
 #include "Engine/Core/Json/json.h"
@@ -14,17 +15,6 @@ constexpr float pi = 3.14159265358979f;
 float dot(const Quat& a, const Quat& b) noexcept { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]; }
 Vec3 lerp(const Vec3& a, const Vec3& b, float t) noexcept {
     return {a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t};
-}
-// Cubic Hermite through p1 -> p2 with Catmull-Rom slopes from the neighbours.
-Vec3 hermite(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, float u, float left_scale, float right_scale) noexcept {
-    const float u2 = u * u, u3 = u2 * u;
-    const float h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
-    Vec3 out{};
-    for (std::size_t i = 0; i < 3; ++i) {
-        const float m1 = (p2[i] - p0[i]) * left_scale, m2 = (p3[i] - p1[i]) * right_scale;
-        out[i] = h00 * p1[i] + h10 * m1 + h01 * p2[i] + h11 * m2;
-    }
-    return out;
 }
 void require(bool ok, const char* what) {
     if (!ok) throw std::runtime_error(what);
@@ -232,12 +222,22 @@ Quat nearest(const Quat& q, const Quat& ref) noexcept {
     const float d = q[0] * ref[0] + q[1] * ref[1] + q[2] * ref[2] + q[3] * ref[3];
     return d < 0 ? Quat{-q[0], -q[1], -q[2], -q[3]} : q;
 }
-// Spherical Bezier control in the key's local tangent space. Timestamp-scaled velocity is
-// shared by adjacent segments; uniform SQUAD controls break this at unequally spaced keys.
-Quat rotation_control(const Quat& prev, const Quat& q, const Quat& next, float scale) noexcept {
-    const Quat inverse = conjugate(q);
-    const Quat a = quat_log(multiply(inverse, nearest(prev, q))), b = quat_log(multiply(inverse, nearest(next, q)));
-    return normalised(multiply(q, quat_exp({(b[0] - a[0]) * scale, (b[1] - a[1]) * scale, (b[2] - a[2]) * scale, 0})));
+// A smooth key's slope that never overshoots (a monotone cubic, as Blender's auto-clamped handles): flat where
+// the curve turns - the key above or below both its neighbours - and at the ends, else a weighted harmonic mean
+// of the slopes either side, so the curve never goes past a key, and never dips the other way before a rise.
+float monotone_slope(float d0, float d1, float h0, float h1) noexcept {
+    if (!(d0 * d1 > 0) || !(h0 > 0) || !(h1 > 0)) return 0;
+    const float w1 = 2 * h1 + h0, w2 = h1 + 2 * h0;
+    return (w1 + w2) / (w1 / d0 + w2 / d1);
+}
+// One channel between keys a and b (h apart), u of the way, with its neighbours where there are any.
+float monotone_curve(std::optional<std::pair<float, float>> before, float pa, float pb, std::optional<std::pair<float, float>> after,
+                     float h, float u) noexcept {
+    const float d = h > 1e-6f ? (pb - pa) / h : 0.0f;
+    const float ma = before ? monotone_slope((pa - before->second) / before->first, d, before->first, h) : 0.0f;
+    const float mb = after ? monotone_slope(d, (after->second - pb) / after->first, h, after->first) : 0.0f;
+    const float u2 = u * u, u3 = u2 * u;
+    return (2 * u3 - 3 * u2 + 1) * pa + (u3 - 2 * u2 + u) * h * ma + (-2 * u3 + 3 * u2) * pb + (u3 - u2) * h * mb;
 }
 } // namespace
 
@@ -259,24 +259,53 @@ Offset evaluate(const Track& track, float seconds) noexcept {
         return {slerp(a.rotation, b.rotation, u), lerp(a.offset, b.offset, u)};
     case Ease::smooth:
     default: {
-        // Time-aware cubic position and rotation curves preserve velocity at uneven key spacing.
-        const auto& before = i > 0 ? keys[i - 1].offset : a.offset;
-        const auto& after = i + 2 < keys.size() ? keys[i + 2].offset : b.offset;
-        const Quat prev = i > 0 ? keys[i - 1].rotation : a.rotation, next = i + 2 < keys.size() ? keys[i + 2].rotation : b.rotation;
-        const Quat b_rotation = nearest(b.rotation, a.rotation);
-        const float before_time = i > 0 ? keys[i - 1].time : a.time - span;
-        const float after_time = i + 2 < keys.size() ? keys[i + 2].time : b.time + span;
-        const float left_scale = span / std::max(b.time - before_time, 1e-6f);
-        const float right_scale = span / std::max(after_time - a.time, 1e-6f);
-        const Quat ca = rotation_control(prev, a.rotation, b_rotation, left_scale / 3);
-        const Quat cb = rotation_control(a.rotation, b_rotation, next, -right_scale / 3);
-        const Quat qa = slerp(a.rotation, ca, u), qm = slerp(ca, cb, u), qb = slerp(cb, b_rotation, u);
-        const Quat moved = slerp(slerp(qa, qm, u), slerp(qm, qb, u), u);
-        return {normalised(moved), hermite(before, a.offset, b.offset, after, u, left_scale, right_scale)};
+        // Smooth keys never overshoot (monotone_curve): a move or a turn eases between its keys without going past
+        // either, flat at the ends - the brackets' keys - and where it turns back. (A curve shaped by its
+        // neighbours alone went past its keys: below zero before a rise off a bracket, and the board under the floor.)
+        const bool has_before = i > 0, has_after = i + 2 < keys.size();
+        const float h0 = has_before ? a.time - keys[i - 1].time : 0.0f, h2 = has_after ? keys[i + 2].time - b.time : 0.0f;
+        Vec3 offset{};
+        for (std::size_t c = 0; c < 3; ++c)
+            offset[c] = monotone_curve(has_before ? std::optional<std::pair<float, float>>({h0, keys[i - 1].offset[c]}) : std::nullopt,
+                                       a.offset[c], b.offset[c],
+                                       has_after ? std::optional<std::pair<float, float>>({h2, keys[i + 2].offset[c]}) : std::nullopt, span, u);
+        // The turn the same way, in the frame of key a: each key's turn from a as a rotation vector, each part of it
+        // eased as above, then turned back into a rotation.
+        // Each neighbour is measured from the key next to it and the steps added up, so a trick that turns on past
+        // half a turn keeps turning the same way instead of reading as a turn back.
+        const auto step = [](const Quat& from, const Quat& to) { return quat_log(multiply(conjugate(from), nearest(to, from))); };
+        const Quat lb = step(a.rotation, b.rotation);
+        Quat lp{0, 0, 0, 0}, ln{0, 0, 0, 0};
+        if (has_before) {
+            const Quat back = step(a.rotation, keys[i - 1].rotation);
+            lp = back;
+        }
+        if (has_after) {
+            const Quat on = step(b.rotation, keys[i + 2].rotation);
+            ln = {lb[0] + on[0], lb[1] + on[1], lb[2] + on[2], 0};
+        }
+        Quat turn{0, 0, 0, 0};
+        for (std::size_t c = 0; c < 3; ++c)
+            turn[c] = monotone_curve(has_before ? std::optional<std::pair<float, float>>({h0, lp[c]}) : std::nullopt, 0.0f, lb[c],
+                                     has_after ? std::optional<std::pair<float, float>>({h2, ln[c]}) : std::nullopt, span, u);
+        return {normalised(multiply(a.rotation, quat_exp(turn))), offset};
     }
     }
 }
 
+float channel_value(const Offset& edit, int channel) noexcept {
+    if (channel < 3) return to_euler(edit.rotation)[static_cast<std::size_t>(std::clamp(channel, 0, 2))];
+    return edit.offset[static_cast<std::size_t>(std::clamp(channel - 3, 0, 2))];
+}
+Offset with_channel(Offset edit, int channel, float value) noexcept {
+    if (!std::isfinite(value)) return edit;
+    if (channel < 3) {
+        auto euler = to_euler(edit.rotation);
+        euler[static_cast<std::size_t>(std::clamp(channel, 0, 2))] = value;
+        edit.rotation = from_euler(euler);
+    } else edit.offset[static_cast<std::size_t>(std::clamp(channel - 3, 0, 2))] = value;
+    return edit;
+}
 Track* Animation::track(std::uint16_t joint) noexcept {
     for (auto& t : tracks) if (t.joint == joint) return &t;
     return nullptr;
@@ -348,20 +377,223 @@ void retarget_edits(const Animation& animation, float seconds, std::span<const J
         }
     }
 }
-void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight) {
+int limb_group(std::uint16_t joint) noexcept {
+    // The arms and legs by their own chains, read off the skeleton: everything hanging under the shoulder
+    // or the thigh belongs to that limb, including the hands and the fingers.
+    for (int at = joint; at >= 0; at = parent(static_cast<std::uint16_t>(at))) {
+        switch (at) {
+        case 275: return 1; // left shoulder and below
+        case 46: return 2;  // right shoulder and below
+        case 341: return 3; // left thigh and below
+        case 8: return 4;   // right thigh and below
+        default: break;
+        }
+    }
+    return 0;
+}
+void apply_authored_edit_layer(const Animation& animation, float seconds, std::span<Joint> native, float weight,
+                               const LimbWeights* limbs, std::span<const Joint> studio, float match, float match_rest) {
     if (!std::isfinite(weight) || weight <= 0 || !std::isfinite(seconds) ||
         seconds < animation.start || (animation.end >= 0 && seconds > animation.end)) return;
     weight = std::min(weight, 1.0f);
+    // The whole body to the studio's pose first; the keys then go on top of it.
+    if (match_rest > 0 && studio.size() >= skeleton_joints && native.size() >= skeleton_joints) {
+        const float rest = std::min(match_rest, 1.0f) * weight;
+        for (std::uint16_t j = 0; j < skeleton_joints; ++j) {
+            if (!gameplay_body_joint(j) || !editable(j)) continue;
+            const float share = limbs ? rest * std::clamp(limbs->of(j), 0.0f, 1.0f) : rest;
+            if (share <= 0) continue;
+            native[j].rotation = slerp(native[j].rotation, studio[j].rotation, share);
+            // Where each joint sits too - the hips above all, which carry how high and how far forward
+            // he is over the board; the rest are bone lengths and match already.
+            for (std::size_t k = 0; k < 3; ++k) native[j].position[k] += (studio[j].position[k] - native[j].position[k]) * share;
+        }
+    }
     for (const auto& track : animation.tracks) {
         if (track.hidden || track.keys.empty() || track.joint >= skeleton_joints ||
             track.joint >= native.size() || !editable(track.joint)) continue;
+        const float share = limbs ? weight * std::clamp(limbs->of(track.joint), 0.0f, 1.0f) : weight;
+        if (share <= 0) continue; // this limb has been given back to the game
         const auto edit = evaluate(track, seconds);
         auto& current = native[track.joint];
         if (edit.rotation[0] != 0 || edit.rotation[1] != 0 || edit.rotation[2] != 0) {
-            const auto wanted = normalised(multiply(current.rotation, edit.rotation));
-            current.rotation = weight >= 1 ? wanted : slerp(current.rotation, wanted, weight);
+            auto wanted = normalised(multiply(current.rotation, edit.rotation));
+            // Matching the studio: the bend laid on the pose it was made on, as far as the joint is really
+            // bent - nothing up to 3 degrees (a key that only holds the pose), all of it from 15.
+            if (match > 0 && track.joint < studio.size()) {
+                const float bend = 2 * std::acos(std::clamp(std::abs(normalised(edit.rotation)[3]), 0.0f, 1.0f));
+                const float x = std::clamp((bend - 0.052f) / 0.21f, 0.0f, 1.0f);
+                const float how_far = std::min(match, 1.0f) * x * x * (3 - 2 * x);
+                if (how_far > 0) {
+                    const auto as_made = normalised(multiply(studio[track.joint].rotation, edit.rotation));
+                    wanted = slerp(wanted, as_made, how_far);
+                }
+            }
+            current.rotation = share >= 1 ? wanted : slerp(current.rotation, wanted, share);
         }
-        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * weight;
+        for (std::size_t k = 0; k < 3; ++k) current.position[k] += edit.offset[k] * share;
+    }
+}
+std::vector<Joint> studio_pose(const Clip& clip, float seconds, bool mirrored) {
+    std::vector<Joint> pose(clip.joints);
+    if (clip.empty()) return pose;
+    clip.sample(std::clamp(seconds, 0.0f, clip.duration()), pose);
+    if (!mirrored || pose.size() < skeleton_joints) return pose;
+    std::vector<Joint> out(pose.size());
+    for (std::size_t j = 0; j < skeleton_joints; ++j) out[mirror_joint[j]] = mirror_pose(pose[j]);
+    for (std::size_t j = skeleton_joints; j < pose.size(); ++j) out[j] = pose[j];
+    return out;
+}
+std::uint32_t crc32_of(const std::string& data) noexcept {
+    static const auto table = [] {
+        std::array<std::uint32_t, 256> t{};
+        for (std::uint32_t i = 0; i < 256; ++i) {
+            std::uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+        return t;
+    }();
+    std::uint32_t c = 0xFFFFFFFFu;
+    for (const unsigned char b : data) c = table[(c ^ b) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+// A zip with every file stored as it is (no compression): any unzip program, and Import, read it.
+std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& files) {
+    std::string out, central;
+    const auto u16 = [](std::string& s, std::uint16_t v) { s.push_back(static_cast<char>(v & 0xFF)); s.push_back(static_cast<char>(v >> 8)); };
+    const auto u32 = [&](std::string& s, std::uint32_t v) { u16(s, static_cast<std::uint16_t>(v & 0xFFFF)); u16(s, static_cast<std::uint16_t>(v >> 16)); };
+    for (const auto& [name, data] : files) {
+        const auto offset = static_cast<std::uint32_t>(out.size());
+        const auto crc = crc32_of(data);
+        const auto size = static_cast<std::uint32_t>(data.size());
+        u32(out, 0x04034b50u); u16(out, 20); u16(out, 0x0800); u16(out, 0); u16(out, 0); u16(out, 0x21);
+        u32(out, crc); u32(out, size); u32(out, size); u16(out, static_cast<std::uint16_t>(name.size())); u16(out, 0);
+        out += name;
+        out += data;
+        u32(central, 0x02014b50u); u16(central, 20); u16(central, 20); u16(central, 0x0800); u16(central, 0); u16(central, 0); u16(central, 0x21);
+        u32(central, crc); u32(central, size); u32(central, size); u16(central, static_cast<std::uint16_t>(name.size())); u16(central, 0); u16(central, 0);
+        u16(central, 0); u16(central, 0); u32(central, 0); u32(central, offset);
+        central += name;
+    }
+    const auto at = static_cast<std::uint32_t>(out.size());
+    out += central;
+    u32(out, 0x06054b50u); u16(out, 0); u16(out, 0); u16(out, static_cast<std::uint16_t>(files.size())); u16(out, static_cast<std::uint16_t>(files.size()));
+    u32(out, static_cast<std::uint32_t>(central.size())); u32(out, at); u16(out, 0);
+    return out;
+}
+std::optional<bool> clip_leads_right(const Clip& clip) {
+    if (clip.empty() || clip.joints < skeleton_joints) return std::nullopt;
+    const float before_pop = clip.takeoff > 0.25f ? clip.takeoff - 0.2f : 0.0f;
+    std::vector<Joint> pose(clip.joints);
+    clip.sample(before_pop, pose);
+    const auto placed = world(pose, placement_joint);
+    const auto side = [&](std::uint16_t foot) {
+        const auto w = world(pose, foot).position;
+        return rotate(conjugate(placed.rotation), Vec3{w[0] - placed.position[0], w[1] - placed.position[1], w[2] - placed.position[2]})[0];
+    };
+    const float apart = side(10) - side(343); // right foot's x less the left foot's
+    if (!std::isfinite(apart) || std::abs(apart) < 0.1f) return std::nullopt;
+    return apart > 0;
+}
+bool place_native_marks(Clip& clip) noexcept {
+    const auto n = clip.times.size();
+    if (!(clip.takeoff >= 0) || n < 8 || clip.board.size() != n) return false;
+    constexpr float tipped = 6.0f;     // degrees the board turns from how it starts: the tail is down
+    constexpr float leaves = 0.05f;    // and the board leaves the ground this long after
+    constexpr float tolerance = 0.04f; // the library's good pops are within a frame of it
+    bool moved = false;
+    const auto& rest = clip.board.front().rotation;
+    for (std::size_t i = 1; i < n; ++i) {
+        const auto& q = clip.board[i].rotation;
+        const float d = std::abs(rest[0] * q[0] + rest[1] * q[1] + rest[2] * q[2] + rest[3] * q[3]);
+        if (!std::isfinite(d) || 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f <= tipped) continue;
+        const float pop = clip.times[i] + leaves;
+        // Only ever earlier: a late pop is the library's mistake.
+        if (pop < clip.takeoff - tolerance && pop < clip.duration() - 0.3f) {
+            clip.takeoff = pop;
+            moved = true;
+        }
+        break;
+    }
+    // The landing: the board's height under the placement, over five frames, at its deepest low.
+    std::vector<float> smooth(n, 0.0f);
+    for (std::size_t i = 2; i + 2 < n; ++i) {
+        float sum = 0;
+        for (std::size_t j = i - 2; j <= i + 2; ++j) sum += clip.board[j].position[1];
+        smooth[i] = sum / 5;
+    }
+    std::optional<std::size_t> deepest;
+    for (std::size_t i = 3; i + 3 < n; ++i) {
+        if (clip.times[i] < clip.takeoff + 0.25f - 1e-3f || clip.times[i] > clip.takeoff + 0.85f + 1e-3f) continue;
+        if (!(smooth[i] <= smooth[i - 1] && smooth[i] < smooth[i + 1])) continue;
+        if (!deepest || smooth[i] < smooth[*deepest]) deepest = i;
+    }
+    if (deepest && std::isfinite(smooth[*deepest]) && (clip.landing < 0 || std::abs(clip.times[*deepest] - clip.landing) > 0.05f)) {
+        clip.landing = clip.times[*deepest];
+        moved = true;
+    }
+    return moved;
+}
+namespace {
+const JointLimit* limit_of(std::uint16_t joint) noexcept {
+    for (const auto& l : joint_limits)
+        if (l.joint == joint) return &l;
+    return nullptr;
+}
+float dot3(const Vec3& a, const Vec3& b) noexcept { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+} // namespace
+bool has_joint_limit(std::uint16_t joint) noexcept { return limit_of(joint) != nullptr; }
+Quat limit_rotation(std::uint16_t joint, const Quat& local) noexcept {
+    const auto* l = limit_of(joint);
+    if (!l) return local;
+    const Quat ref{l->reference[0], l->reference[1], l->reference[2], l->reference[3]};
+    const Vec3 axis{l->axis[0], l->axis[1], l->axis[2]}, across{l->across[0], l->across[1], l->across[2]}, up{l->up[0], l->up[1], l->up[2]};
+    // The turn from the average pose, split into twist about the bone and the bone's swing away from it.
+    auto d = normalised(multiply(conjugate(ref), local));
+    if (d[3] < 0) d = {-d[0], -d[1], -d[2], -d[3]};
+    const float along = dot3({d[0], d[1], d[2]}, axis);
+    float twist = 2 * std::atan2(along, d[3]);
+    if (twist > 3.14159265f) twist -= 6.2831853f;
+    if (twist < -3.14159265f) twist += 6.2831853f;
+    const auto twist_q = normalised(Quat{axis[0] * along, axis[1] * along, axis[2] * along, d[3]});
+    auto swing = normalised(multiply(d, conjugate(twist_q)));
+    if (swing[3] < 0) swing = {-swing[0], -swing[1], -swing[2], -swing[3]};
+    const Vec3 sv{swing[0], swing[1], swing[2]};
+    const float n = std::sqrt(dot3(sv, sv));
+    float angle = 2 * std::atan2(n, swing[3]);
+    // How far it may swing this way: between the two measured directions either side of it.
+    bool changed = false;
+    Vec3 dir{1, 0, 0};
+    if (n > 1e-6f) {
+        dir = {sv[0] / n, sv[1] / n, sv[2] / n};
+        const float phi = std::atan2(dot3(dir, up), dot3(dir, across));
+        const float at = (phi + 3.14159265f) / 6.2831853f * static_cast<float>(l->swing.size()) - 0.5f;
+        const float below = std::floor(at);
+        const auto count = static_cast<int>(l->swing.size());
+        const auto i0 = ((static_cast<int>(below) % count) + count) % count, i1 = (i0 + 1) % count;
+        const float f = at - below;
+        const float most = l->swing[static_cast<std::size_t>(i0)] * (1 - f) + l->swing[static_cast<std::size_t>(i1)] * f;
+        if (angle > most) {
+            angle = most;
+            changed = true;
+        }
+    }
+    if (twist < l->twist_min || twist > l->twist_max) {
+        twist = std::clamp(twist, l->twist_min, l->twist_max);
+        changed = true;
+    }
+    if (!changed) return local;
+    const auto limited = multiply(axis_angle(dir, angle), axis_angle(axis, twist));
+    return normalised(multiply(ref, limited));
+}
+void limit_keyed_joints(const Animation& animation, float seconds, std::span<Joint> pose) noexcept {
+    if (!std::isfinite(seconds)) return;
+    for (const auto& track : animation.tracks) {
+        if (track.hidden || track.keys.empty() || track.joint >= pose.size() || !has_joint_limit(track.joint)) continue;
+        const auto edit = evaluate(track, seconds);
+        if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0) continue; // only holds the pose
+        pose[track.joint].rotation = limit_rotation(track.joint, pose[track.joint].rotation);
     }
 }
 void apply_native_edit_layer(const Animation& animation, float seconds, std::span<const Joint> source,
@@ -401,7 +633,7 @@ Joint board_edited(const Joint& board, const Animation& edits, float seconds, co
     if (!track || track->hidden || track->keys.empty()) return board;
     auto edit = evaluate(*track, seconds);
     if (edit.rotation[0] == 0 && edit.rotation[1] == 0 && edit.rotation[2] == 0 && edit.offset == Vec3{}) return board;
-    if (mirror) { edit.rotation = mirror_rotation(edit.rotation); edit.offset = mirror_vector(edit.offset); }
+    if (mirror) { edit.rotation = mirror_board_rotation(edit.rotation); edit.offset = mirror_board_vector(edit.offset); }
     auto out = board;
     const auto moved = rotate(ground, edit.offset);
     for (std::size_t i = 0; i < 3; ++i) out.position[i] += moved[i];
@@ -430,7 +662,8 @@ void shift_keys(Animation& animation, float delta, float duration) noexcept {
         }
         track.keys.resize(kept);
     }
-    animation.start = std::max(0.0f, animation.start + delta);
+    animation.start = std::clamp(animation.start + delta, 0.0f, duration);
+    if (animation.end >= 0) animation.end = std::clamp(animation.end, animation.start, duration);
 }
 float on_a_frame(float seconds) noexcept { return std::round(seconds * key_fps) / key_fps; }
 bool move_window_edge(Animation& animation, int which, float to, float duration) noexcept {
@@ -439,7 +672,9 @@ bool move_window_edge(Animation& animation, int which, float to, float duration)
     if (!std::isfinite(old_start) || !std::isfinite(old_end) || old_end < old_start) return false;
     const float from = which == 1 ? old_start : which == 2 ? old_end : -1;
     if (from < 0) return false;
-    const float at = on_a_frame(to);
+    // On a frame, but never past the clip: its length is seldom a whole number of frames, and a bracket rounded past
+    // its end made a file that could not be read back ("bad animation window") - the trick reset.
+    const float at = std::clamp(on_a_frame(to), 0.0f, duration);
     const float gap = 1.0f / key_fps;
     if (which == 1 && at > old_end - gap) return false;
     if (which == 2 && at < old_start + gap) return false;
@@ -492,6 +727,14 @@ float turn_apart(const Quat& a, const Quat& b) noexcept {
     const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
     return 2 * std::acos(std::clamp(d, 0.0f, 1.0f));
 }
+// How far a smoothed key is drawn towards the line between its neighbours.
+constexpr float smooth_pull = 0.35f;
+void pull_towards_neighbours(Key& key, const Key& before, const Key& here, const Key& after) noexcept {
+    const float span = after.time - before.time;
+    const float u = span > 1e-6f ? (here.time - before.time) / span : 0.5f;
+    key.offset = lerp(here.offset, lerp(before.offset, after.offset, u), smooth_pull);
+    key.rotation = slerp(here.rotation, slerp(before.rotation, after.rotation, u), smooth_pull);
+}
 } // namespace
 
 std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcept {
@@ -530,12 +773,7 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
         const auto was = keys;
         for (std::size_t i = 1; i + 1 < keys.size(); ++i) {
             if (pinned(keys[i])) continue;
-            const Key &before = was[i - 1], &after = was[i + 1];
-            const float span = after.time - before.time;
-            const float u = span > 1e-6f ? (was[i].time - before.time) / span : 0.5f;
-            constexpr float pull = 0.35f;
-            keys[i].offset = lerp(was[i].offset, lerp(before.offset, after.offset, u), pull);
-            keys[i].rotation = slerp(was[i].rotation, slerp(before.rotation, after.rotation, u), pull);
+            pull_towards_neighbours(keys[i], was[i - 1], was[i], was[i + 1]);
             ++changed;
         }
     }
@@ -558,6 +796,27 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
         } else ++i;
     }
     for (auto& k : keys) k.smooth = true;
+    return changed;
+}
+std::size_t smooth_keys_at(Track& track, std::span<const float> times, float keep_start, float keep_end) noexcept {
+    auto& keys = track.keys;
+    const auto chosen = [&](float t) { return std::any_of(times.begin(), times.end(), [&](float c) { return std::abs(c - t) < 1e-3f; }); };
+    const auto pinned = [&](const Key& k) {
+        return std::abs(k.time - keep_start) < 1.0f / 60 || std::abs(k.time - keep_end) < 1.0f / 60;
+    };
+    const auto was = keys; // neighbours as they were, so smoothing two keys side by side does not compound
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (!chosen(keys[i].time)) continue;
+        if (keys[i].ease != Ease::smooth || !keys[i].smooth) {
+            keys[i].ease = Ease::smooth;
+            keys[i].smooth = true;
+            ++changed;
+        }
+        if (i == 0 || i + 1 >= keys.size() || pinned(keys[i])) continue;
+        pull_towards_neighbours(keys[i], was[i - 1], was[i], was[i + 1]);
+        ++changed;
+    }
     return changed;
 }
 
@@ -601,6 +860,8 @@ std::string to_json(const Animation& animation) {
     root["version"] = 1;
     root["name"] = animation.name;
     root["trick"] = animation.trick;
+    if (!animation.author.empty()) root["author"] = animation.author;
+    if (!animation.label.empty()) root["label"] = animation.label;
     root["speed"] = animation.speed;
     root["loop"] = animation.loop;
     root["pop"] = animation.pop;
@@ -610,6 +871,13 @@ std::string to_json(const Animation& animation) {
                           {"rig", animation.source.rig}, {"board_frame", animation.source.board_frame},
                           {"position_codec", animation.source.position_codec}};
     root["entry"] = animation.entry;
+    if (animation.fakie) root["fakie"] = *animation.fakie;
+    if (animation.board_backwards) root["board_backwards"] = *animation.board_backwards;
+    if (animation.keep_leads_right) root["leads"] = *animation.keep_leads_right ? "right" : "left";
+    if (!animation.maker_key.empty()) root["maker_key"] = animation.maker_key;
+    if (animation.editable) root["editable"] = true;
+    if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
+    if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     root["start"] = animation.start;
     root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
@@ -647,11 +915,21 @@ Animation from_json(std::string_view text) {
     Animation result;
     result.name = root.value("name", "");
     result.trick = root.value("trick", "");
+    result.author = root.value("author", "");
+    result.maker_key = root.value("maker_key", "").substr(0, 64);
+    result.editable = root.value("editable", false);
+    result.label = utf8_prefix(root.value("label", ""), 48);
     result.speed = root.contains("speed") ? std::clamp(number(root.at("speed"), "bad speed"), 0.1f, 4.0f) : 1.0f;
     result.loop = root.contains("loop") && root.at("loop").is_boolean() ? root.at("loop").get<bool>() : true;
     result.pop = root.value("pop", "");
     result.stance = root.value("stance", "");
     result.entry = root.value("entry", "ground");
+    if (root.contains("fakie") && root.at("fakie").is_boolean()) result.fakie = root.at("fakie").get<bool>();
+    if (root.contains("board_backwards") && root.at("board_backwards").is_boolean()) result.board_backwards = root.at("board_backwards").get<bool>();
+    if (const auto leads = root.value("leads", ""); leads == "right" || leads == "left") result.keep_leads_right = leads == "right";
+    result.upgraded = root.value("upgraded", "");
+    require(result.upgraded.size() < 64, "bad upgrade mark");
+    result.board_nose_forward = root.value("board_keys", "") == "nose-forward";
     require(result.entry == "ground" || result.entry == "rail" || result.entry == "unknown", "bad trick entry");
     if (root.contains("source")) {
         const auto& source = root.at("source");
@@ -672,8 +950,13 @@ Animation from_json(std::string_view text) {
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
     require(duration >= 0 && duration < 120, "bad duration");
-    require(result.start >= 0 && result.start <= duration && (result.end == -1 ||
-            (result.end >= result.start && result.end <= duration + 0.01f)), "bad animation window");
+    // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
+    // is put back on it rather than refusing the whole trick; anything else wrong is refused.
+    constexpr float frame = 1.0f / key_fps + 0.01f;
+    require(result.start >= 0 && result.start <= duration + frame && (result.end == -1 ||
+            (result.end >= result.start && result.end <= duration + frame)), "bad animation window");
+    result.start = std::min(result.start, duration);
+    if (result.end != -1) result.end = std::clamp(result.end, result.start, duration);
     std::size_t total = 0;
     if (root.contains("tracks")) {
         const auto& tracks = root.at("tracks");
@@ -689,6 +972,7 @@ Animation from_json(std::string_view text) {
                         t.contains("locked") && t.at("locked").is_boolean() && t.at("locked").get<bool>()};
             require(t.contains("keys") && t.at("keys").is_array(), "a track has no keys");
             const auto& keys = t.at("keys");
+            bool put_back = false; // a key past the clip's end, put back on it
             total += keys.size();
             require(total <= 20000, "too many keys");
             for (std::size_t k = 0; k < keys.size(); ++k) {
@@ -696,7 +980,13 @@ Animation from_json(std::string_view text) {
                 require(key.is_object() && key.contains("t") && key.contains("r") && key.contains("p"), "a key is incomplete");
                 Key value;
                 value.time = number(key.at("t"), "bad key time");
-                require(value.time >= 0 && value.time <= duration + 0.01f, "a key lies past the clip");
+                // Up to a frame past the clip, as the window above: the old builds' end bracket put a key on every joint
+                // there. Put back on the clip's end.
+                require(value.time >= 0 && value.time <= duration + frame, "a key lies past the clip");
+                if (value.time > duration) {
+                    value.time = duration;
+                    put_back = true;
+                }
                 value.rotation = normalised(numbers<4>(key.at("r"), "bad key rotation"));
                 value.offset = numbers<3>(key.at("p"), "bad key offset");
                 for (const float v : value.offset) require(std::abs(v) < 10, "a key moves a joint more than 10 m");
@@ -706,9 +996,16 @@ Animation from_json(std::string_view text) {
                 track.keys.push_back(value);
             }
             std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
+            // A key put back on the clip's end gives way to one already there.
+            if (put_back)
+                track.keys.erase(std::unique(track.keys.begin(), track.keys.end(), [&](const Key& a, const Key& b) { return a.time == b.time && b.time == duration; }),
+                                 track.keys.end());
             result.tracks.push_back(std::move(track));
         }
     }
+    // A piece of the game's own animation (a grind's loop, a grab's hold) is known by the clip it came from: one
+    // saved before pieces were given that name gets it here, so it plays in game like one saved since.
+    if (result.trick.empty() && result.source.kind == "native_asset" && !result.source.asset.empty()) result.trick = "native:" + result.source.asset;
     return result;
 }
 
@@ -843,22 +1140,310 @@ std::string file_safe(std::string_view name) {
 } // namespace dingosdk::anim_studio
 
 namespace dingosdk::anim_studio {
-Quat mirror_rotation(const Quat& q) noexcept { return {q[0], -q[1], -q[2], q[3]}; }
-Vec3 mirror_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
+// The game's mirror, measured 2026-10-22: a heelflip recorded riding normal (mirrored) matches the library's
+// heelflip reflected across the skater's Z = 0 plane exactly (median distance 0.0018), and nothing like it
+// reflected across X = 0 (0.275), which is what this used to do. Z = 0 holds the board's long axis (the
+// AITrajectory's X), so the feet keep their ends of the board, swap left for right, and he faces the other
+// side of it - regular from goofy, as the game draws it. Applied to every joint's own rotation it comes to
+// the same as reflecting the whole skeleton, as the left/right table keeps the hierarchy.
+Quat mirror_rotation(const Quat& q) noexcept { return {-q[0], -q[1], q[2], q[3]}; }
+Vec3 mirror_vector(const Vec3& v) noexcept { return {v[0], v[1], -v[2]}; }
 Joint mirror_pose(const Joint& joint) noexcept {
     Joint out = joint;
     out.rotation = mirror_rotation(joint.rotation);
     out.position = mirror_vector(joint.position);
     return out;
 }
+// The board under the same mirror. The plane holds its long axis, so the board is not turned end for end:
+// reflected as a shape it is the same board, only its offset across is reflected. As a rotation that is
+// the reflected frame turned half a turn about its own up (the board is symmetrical across its middle).
+Joint mirror_board_pose(const Joint& board) noexcept {
+    Joint out = board;
+    out.rotation = normalised(multiply(mirror_rotation(board.rotation), Quat{0, 1, 0, 0}));
+    out.position = mirror_vector(board.position);
+    return out;
+}
+// A board key, which works in the board's own frame (x across, y up, z along it): the game's mirror plane is
+// the one through the board's middle along its length, so across is what reflects.
+Quat mirror_board_rotation(const Quat& q) noexcept { return {q[0], -q[1], -q[2], q[3]}; }
+Vec3 mirror_board_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
 Clip mirror_clip(const Clip& clip) {
     if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
     Clip out = clip;
     for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
         for (std::uint32_t joint = 0; joint < clip.joints; ++joint)
             out.frames[frame * clip.joints + mirror_joint[joint]] = mirror_pose(clip.frames[frame * clip.joints + joint]);
-    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_pose(clip.board[frame]);
+    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_board_pose(clip.board[frame]);
     return out;
+}
+// Mirroring a pose, done where a mirror is actually a mirror. mirror_rotation and mirror_vector reflect
+// across X = 0, which is only the right thing to do in the frame that plane is defined in: the skater's
+// own, from the root down. Applied straight to a parent-local pose, as they were, every bone is reflected
+// in its own tilted frame and the error compounds along the chain - which is what tore the skater up.
+//
+// So: take the pose out to that frame, reflect it there, swap each joint for its opposite number, and put
+// it back as parent-local against the mirrored parents. Bones keep their lengths and the body stays whole
+// whatever the rest pose does, because nothing assumes the rest pose is symmetrical.
+namespace {
+Joint local_against(const Joint& parent, const Joint& world_joint) noexcept {
+    Joint out;
+    out.scale = world_joint.scale;
+    const float scale = parent.scale[0] > 1e-6f ? parent.scale[0] : 1.0f;
+    out.rotation = normalised(multiply(conjugate(parent.rotation), world_joint.rotation));
+    const Vec3 apart{world_joint.position[0] - parent.position[0], world_joint.position[1] - parent.position[1],
+                     world_joint.position[2] - parent.position[2]};
+    const auto turned = rotate(conjugate(parent.rotation), apart);
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = turned[i] / scale;
+    return out;
+}
+Joint placed_in(const Joint& frame, const Joint& local) noexcept {
+    Joint out = local;
+    const float scale = frame.scale[0] > 1e-6f ? frame.scale[0] : 1.0f;
+    const auto moved = rotate(frame.rotation, {local.position[0] * scale, local.position[1] * scale, local.position[2] * scale});
+    for (std::size_t i = 0; i < 3; ++i) out.position[i] = frame.position[i] + moved[i];
+    out.rotation = normalised(multiply(frame.rotation, local.rotation));
+    return out;
+}
+// One frame of a pose, mirrored. `body_only` leaves everything that is not the skinned body as it was.
+// The whole skeleton is reflected in the root's frame. The body alone is reflected in the placement's:
+// that is where he stands on his board (and where the board's own mirror is done), whereas the root can
+// be anywhere in the world - reflecting across the root's middle line threw him off the board and into
+// the air whenever the root was not right under him, which in the game it never is.
+void mirror_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only) {
+    const auto count = std::min(pose.size(), out.size());
+    std::vector<Joint> in_world(count), mirrored(count);
+    for (std::size_t j = 0; j < count; ++j) in_world[j] = world(pose, static_cast<std::uint16_t>(j));
+    mirrored = in_world;
+    const bool about_placement = body_only && placement_joint < count;
+    const Joint about = about_placement ? in_world[placement_joint] : Joint{};
+    for (std::size_t j = 0; j < count; ++j) {
+        const auto other = mirror_joint[j];
+        if (other >= count) continue;
+        if (body_only && (!gameplay_body_joint(static_cast<std::uint16_t>(j)) || !gameplay_body_joint(other))) continue;
+        Joint turned = about_placement ? local_against(about, in_world[j]) : in_world[j];
+        turned.rotation = mirror_rotation(turned.rotation);
+        turned.position = mirror_vector(turned.position);
+        mirrored[other] = about_placement ? placed_in(about, turned) : turned;
+    }
+    for (std::size_t j = 0; j < count; ++j) {
+        const auto up = parent(static_cast<std::uint16_t>(j));
+        out[j] = up >= 0 && static_cast<std::size_t>(up) < count ? local_against(mirrored[static_cast<std::size_t>(up)], mirrored[j])
+                                                                 : mirrored[j];
+    }
+}
+} // namespace
+void mirror_pose_frame(std::span<const Joint> pose, std::span<Joint> out, bool body_only) { mirror_frame(pose, out, body_only); }
+Clip mirror_body_clip(const Clip& clip) {
+    if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
+    Clip out = clip;
+    for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
+        mirror_frame({clip.frames.data() + frame * clip.joints, clip.joints},
+                     {out.frames.data() + frame * clip.joints, clip.joints}, true);
+    // The board is one transform under the placement, so it reflects where it stands.
+    for (std::size_t frame = 0; frame < clip.board.size(); ++frame) out.board[frame] = mirror_board_pose(clip.board[frame]);
+    return out;
+}
+// ---- which of the game's own clips is playing -----------------------------------------------------
+namespace {
+constexpr std::uint16_t piece_body_joints = 375; // the body: everything below Ground
+constexpr float piece_window = 0.25f;            // seconds of the live pose compared at once
+constexpr float piece_enter = 0.03f, piece_leave = 0.045f, piece_margin = 0.004f, piece_moving = 0.008f;
+float pose_distance(const Quat& a, const Quat& b) noexcept {
+    return 1 - std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+}
+} // namespace
+std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose, bool with_arms) {
+    // The spine and the legs: what says which grind it is (the arms move with the game's balance); a grab, with the arms.
+    static constexpr std::array<std::uint16_t, 18> joints_all{42, 44, 8, 9, 10, 11, 341, 342, 343, 344, 46, 47, 48, 49, 275, 276, 277, 278};
+    const std::span<const std::uint16_t> telling(joints_all.data(), with_arms ? joints_all.size() : 10);
+    std::vector<HeldPose> out;
+    if (pose.size() < skeleton_joints) return out;
+    for (std::size_t c = 0; c < clips.size(); ++c) {
+        const auto* clip = clips[c];
+        if (!clip || clip->empty() || clip->joints < skeleton_joints) continue;
+        HeldPose best;
+        best.piece = c;
+        for (const bool mirrored : {false, true})
+            for (std::size_t f = 0; f < clip->times.size(); ++f) {
+                const auto frame = clip->frame(f);
+                float sum = 0;
+                for (const auto j : telling) {
+                    const auto& live = pose[mirrored ? mirror_joint[j] : j].rotation;
+                    sum += pose_distance(live, mirrored ? mirror_rotation(frame[j].rotation) : frame[j].rotation);
+                }
+                const float score = sum / static_cast<float>(telling.size());
+                if (score < best.score) {
+                    best.score = score;
+                    best.mirrored = mirrored;
+                    best.time = clip->times[f];
+                }
+            }
+        out.push_back(best);
+    }
+    std::sort(out.begin(), out.end(), [](const HeldPose& a, const HeldPose& b) { return a.score < b.score; });
+    return out;
+}
+void PieceTracker::set_pieces(const std::vector<const Clip*>& clips) {
+    models_.clear();
+    reset();
+    for (std::size_t piece = 0; piece < clips.size(); ++piece) {
+        const auto* clip = clips[piece];
+        if (!clip || clip->empty() || clip->joints < piece_body_joints || clip->times.size() < 4) continue;
+        // The joints that say most about this piece: the twenty that move most over it.
+        const auto& mid = clip->frame(clip->times.size() / 2);
+        std::vector<std::pair<float, std::uint16_t>> moved;
+        for (std::uint16_t j = 2; j < piece_body_joints; ++j) {
+            float sum = 0;
+            for (std::size_t f = 0; f < clip->times.size(); ++f) sum += pose_distance(clip->frame(f)[j].rotation, mid[j].rotation);
+            moved.push_back({sum / static_cast<float>(clip->times.size()), j});
+        }
+        std::sort(moved.begin(), moved.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<std::uint16_t> picked;
+        for (const auto& [amount, j] : moved)
+            if (picked.size() < 20 && amount > 0.0005f) picked.push_back(j);
+        if (picked.size() < 6) continue;
+        for (const bool mirrored : {false, true}) {
+            Model model;
+            model.piece = piece;
+            model.mirrored = mirrored;
+            model.times = clip->times;
+            for (const auto j : picked) model.joints.push_back(mirrored ? mirror_joint[j] : j);
+            if (std::any_of(model.joints.begin(), model.joints.end(), [](std::uint16_t j) { return j >= piece_body_joints; })) continue;
+            model.frames.reserve(clip->times.size() * picked.size());
+            for (std::size_t f = 0; f < clip->times.size(); ++f)
+                for (const auto j : picked) {
+                    const auto& q = clip->frame(f)[j].rotation;
+                    model.frames.push_back(mirrored ? mirror_rotation(q) : q);
+                }
+            models_.push_back(std::move(model));
+        }
+    }
+}
+void PieceTracker::reset() noexcept {
+    history_.clear();
+    last_at_ = -1;
+    locked_ = candidate_ = -1;
+    streak_ = 0;
+}
+PieceTracker::Fit PieceTracker::fit(const Model& m, const std::array<const Sample*, 8>& window, const std::array<float, 8>& ages) const {
+    Fit out;
+    const auto frames = m.times.size(), picked = m.joints.size();
+    // How far each sample of the window is from each frame of the piece.
+    std::vector<float> d(window.size() * frames);
+    for (std::size_t h = 0; h < window.size(); ++h)
+        for (std::size_t f = 0; f < frames; ++f) {
+            float sum = 0;
+            for (std::size_t j = 0; j < picked; ++j) sum += pose_distance(window[h]->rotation[m.joints[j]], m.frames[f * picked + j]);
+            d[h * frames + f] = sum / static_cast<float>(picked);
+        }
+    // Holding one frame still: what standing in a similar pose scores.
+    for (std::size_t f = 0; f < frames; ++f) {
+        float sum = 0;
+        for (std::size_t h = 0; h < window.size(); ++h) sum += d[h * frames + f];
+        out.still = std::min(out.still, sum / static_cast<float>(window.size()));
+    }
+    // Moving through it in step, at the game's speed or a little either side of it.
+    const auto at_time = [&](float t) {
+        const auto it = std::lower_bound(m.times.begin(), m.times.end(), t);
+        if (it == m.times.end()) return frames - 1;
+        const auto i = static_cast<std::size_t>(it - m.times.begin());
+        return i > 0 && t - m.times[i - 1] < *it - t ? i - 1 : i;
+    };
+    for (const float speed : {0.85f, 1.0f, 1.15f})
+        for (std::size_t k = 0; k < frames; ++k) {
+            const float end = m.times[k];
+            if (end - speed * ages.back() < m.times.front()) continue;
+            float sum = 0;
+            for (std::size_t h = 0; h < window.size(); ++h) sum += d[h * frames + at_time(end - speed * ages[h])];
+            const float score = sum / static_cast<float>(window.size());
+            if (score < out.score) {
+                out.score = score;
+                out.time = end;
+            }
+        }
+    if (out.time >= 0) {
+        // The stretch of the piece the window covered has to be one where it moves.
+        const auto first = at_time(out.time - ages.back()), last = at_time(out.time);
+        float sum = 0;
+        for (std::size_t j = 0; j < picked; ++j) sum += pose_distance(m.frames[first * picked + j], m.frames[last * picked + j]);
+        out.moving = sum / static_cast<float>(picked) > piece_moving;
+    }
+    return out;
+}
+std::optional<PieceMatch> PieceTracker::update(double at, std::span<const Joint> pose) {
+    if (models_.empty() || pose.size() < piece_body_joints) return std::nullopt;
+    if (last_at_ >= 0 && (at - last_at_ > 0.2 || at < last_at_)) reset();
+    const double step = last_at_ >= 0 ? at - last_at_ : 0;
+    last_at_ = at;
+    Sample sample;
+    sample.at = at;
+    sample.rotation.resize(piece_body_joints);
+    for (std::uint16_t j = 0; j < piece_body_joints; ++j) sample.rotation[j] = pose[j].rotation;
+    history_.push_back(std::move(sample));
+    while (history_.size() > 2 && at - history_.front().at > piece_window + 0.15) history_.pop_front();
+    if (at - history_.front().at < piece_window) return std::nullopt;
+    // Eight samples spread over the window, oldest first.
+    std::array<const Sample*, 8> window{};
+    std::array<float, 8> ages{};
+    for (std::size_t i = 0; i < window.size(); ++i) {
+        const double want = at - piece_window * (1.0 - static_cast<double>(i) / 7.0);
+        const Sample* best = &history_.back();
+        for (const auto& s : history_)
+            if (std::abs(s.at - want) < std::abs(best->at - want)) best = &s;
+        window[i] = best;
+    }
+    // `fit` takes them newest first, each with how long ago it was.
+    std::array<const Sample*, 8> newest_first{};
+    for (std::size_t i = 0; i < window.size(); ++i) {
+        newest_first[i] = window[window.size() - 1 - i];
+        ages[i] = static_cast<float>(at - newest_first[i]->at);
+    }
+    const auto good = [](const Fit& f) { return f.time >= 0 && f.score < piece_enter && f.score < f.still - piece_margin && f.moving; };
+    if (locked_ >= 0) {
+        const auto& m = models_[static_cast<std::size_t>(locked_)];
+        const auto f = fit(m, newest_first, ages);
+        if (f.time > last_fit_time_ + 0.005f) {
+            advanced_at_ = at;
+            last_fit_time_ = f.time;
+        }
+        // Let go when it stops fitting, or stops moving on through the piece.
+        if (f.time < 0 || f.score > piece_leave || at - advanced_at_ > 0.15) {
+            locked_ = -1;
+            candidate_ = -1;
+            streak_ = 0;
+            return std::nullopt;
+        }
+        const float predicted = play_time_ + static_cast<float>(step);
+        play_time_ = std::abs(f.time - predicted) < 0.12f ? predicted + 0.3f * (f.time - predicted) : f.time;
+        play_time_ = std::clamp(play_time_, m.times.front(), m.times.back());
+        return PieceMatch{m.piece, m.mirrored, play_time_, f.score};
+    }
+    int best = -1;
+    Fit best_fit;
+    for (std::size_t i = 0; i < models_.size(); ++i) {
+        const auto f = fit(models_[i], newest_first, ages);
+        if (good(f) && f.score < best_fit.score) {
+            best = static_cast<int>(i);
+            best_fit = f;
+        }
+    }
+    // Taken up after three frames in a row on the same piece, moving forward through it.
+    if (best >= 0 && best == candidate_ && best_fit.time >= candidate_last_ && best_fit.time - candidate_last_ < 0.12f) {
+        ++streak_;
+        candidate_last_ = best_fit.time;
+    } else {
+        candidate_ = best;
+        streak_ = best >= 0 ? 1 : 0;
+        candidate_from_ = candidate_last_ = best_fit.time;
+    }
+    if (candidate_ >= 0 && streak_ >= 3 && candidate_last_ - candidate_from_ >= 0.03f) {
+        locked_ = candidate_;
+        play_time_ = last_fit_time_ = candidate_last_;
+        advanced_at_ = at;
+        const auto& m = models_[static_cast<std::size_t>(locked_)];
+        return PieceMatch{m.piece, m.mirrored, play_time_, best_fit.score};
+    }
+    return std::nullopt;
 }
 Animation mirror_animation(const Animation& animation) {
     Animation out = animation;
@@ -866,9 +1451,10 @@ Animation mirror_animation(const Animation& animation) {
     if (animation.clip.joints) out.clip = mirror_clip(animation.clip); // the profile alone has no clip
     for (auto& track : out.tracks) {
         if (track.joint < skeleton_joints) track.joint = mirror_joint[track.joint];
+        const bool board = track.joint == board_joint;
         for (auto& key : track.keys) {
-            key.rotation = mirror_rotation(key.rotation);
-            key.offset = mirror_vector(key.offset);
+            key.rotation = board ? mirror_board_rotation(key.rotation) : mirror_rotation(key.rotation);
+            key.offset = board ? mirror_board_vector(key.offset) : mirror_vector(key.offset);
         }
     }
     return out;
@@ -969,5 +1555,220 @@ bool gameplay_body_joint(std::uint16_t joint) noexcept {
         if (at == hips_joint) return true;
     }
     return false;
+}
+// ---- the game's own clip, and how far into it it is ------------------------------------------------
+namespace {
+constexpr std::uint16_t native_body_joints = 375; // the body: everything below Ground
+float degrees_between(const Quat& a, const Quat& b) noexcept {
+    const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+    return 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f;
+}
+} // namespace
+float NativeModels::edit_time(const Model& model, float seconds) const noexcept {
+    if (model.own || !std::isfinite(seconds)) return seconds;
+    if (!(model.up >= 0) || !(model.down > model.up) || !(edit_up >= 0) || !(edit_down > edit_up)) return seconds;
+    if (seconds <= model.up) return std::max(0.0f, edit_up - (model.up - seconds));
+    if (seconds >= model.down) return edit_down + (seconds - model.down);
+    return edit_up + (seconds - model.up) * (edit_down - edit_up) / (model.down - model.up);
+}
+float NativeModels::model_time(const Model& model, float seconds) const noexcept {
+    if (model.own || !std::isfinite(seconds)) return seconds;
+    if (!(model.up >= 0) || !(model.down > model.up) || !(edit_up >= 0) || !(edit_down > edit_up)) return seconds;
+    if (seconds <= edit_up) return std::max(0.0f, model.up - (edit_up - seconds));
+    if (seconds >= edit_down) return model.down + (seconds - edit_down);
+    return model.up + (seconds - edit_up) * (model.down - model.up) / (edit_down - edit_up);
+}
+std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
+    auto out = std::make_shared<NativeModels>();
+    if (own < clips.size() && clips[own]) {
+        out->edit_up = clips[own]->takeoff;
+        out->edit_down = clips[own]->landing;
+    }
+    // The body joints a trick is edited by: the ones that say most about the pose, the same for every clip.
+    std::vector<std::uint16_t> body;
+    for (const auto& e : editable_joints())
+        if (e.index < native_body_joints && e.index < skeleton_joints && gameplay_body_joint(e.index) &&
+            mirror_joint[e.index] < native_body_joints)
+            body.push_back(e.index);
+    for (std::size_t c = 0; c < clips.size(); ++c) {
+        const auto& clip = clips[c];
+        if (!clip || clip->empty() || clip->joints < native_body_joints || clip->times.size() < 4 || body.size() < 6) continue;
+        for (const bool mirrored : {false, true}) {
+            NativeModels::Model model;
+            model.clip = c;
+            model.own = c == own;
+            model.mirrored = mirrored;
+            model.up = clip->takeoff;
+            model.down = clip->landing;
+            model.duration = clip->duration();
+            model.times = clip->times;
+            // Mirrored, the live joint on the other side is compared with this one reflected (as PieceTracker).
+            for (const auto j : body) model.joints.push_back(mirrored ? mirror_joint[j] : j);
+            model.frames.reserve(clip->times.size() * body.size());
+            for (std::size_t f = 0; f < clip->times.size(); ++f)
+                for (const auto j : body) {
+                    const auto& q = clip->frame(f)[j].rotation;
+                    model.frames.push_back(mirrored ? mirror_rotation(q) : q);
+                }
+            out->models.push_back(std::move(model));
+        }
+    }
+    return out;
+}
+void NativeClock::start(std::shared_ptr<const NativeModels> models) noexcept {
+    reset();
+    models_ = std::move(models);
+}
+void NativeClock::reset() noexcept {
+    models_.reset();
+    locked_ = -1;
+    time_ = error_ = baseline_ = -1;
+    confidence_ = 0;
+    bad_ = updates_ = 0;
+    candidate_ = -1;
+    streak_ = 0;
+    lost_ = false;
+}
+float NativeClock::error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept {
+    const auto n = model.joints.size();
+    if (!n || frame >= model.times.size()) return 180;
+    float sum = 0;
+    for (std::size_t k = 0; k < n; ++k) sum += degrees_between(pose[model.joints[k]].rotation, model.frames[frame * n + k]);
+    return sum / static_cast<float>(n);
+}
+NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step) noexcept {
+    Reading out;
+    if (!models_ || models_->models.empty() || pose.size() < native_body_joints) return out;
+    if (!std::isfinite(step) || step < 0) step = 0;
+    step = std::min(step, 0.1f);
+    const auto& models = models_->models;
+    // A frame's error and the time between it and its neighbours, refined to between frames.
+    const auto refine = [&](const NativeModels::Model& m, std::size_t f, float e) {
+        if (f == 0 || f + 1 >= m.times.size()) return m.times[f];
+        const float before = error_at(m, f - 1, pose), after = error_at(m, f + 1, pose);
+        const float curve = before - 2 * e + after;
+        if (!(curve > 1e-4f)) return m.times[f];
+        const float shift = std::clamp(0.5f * (before - after) / curve, -0.5f, 0.5f);
+        return shift < 0 ? m.times[f] + shift * (m.times[f] - m.times[f - 1]) : m.times[f] + shift * (m.times[f + 1] - m.times[f]);
+    };
+    if (locked_ < 0) {
+        // Looking for it: every clip, both ways round, from the crouch before its pop to just after its landing.
+        // (Not its roll away: riding looks like the end of every trick.)
+        // The edit's own clip wins a near tie: it can be the very clip the game plays (a library pop).
+        int best_model = -1;
+        std::size_t best_frame = 0;
+        float best = 180, best_ranked = 180;
+        for (std::size_t i = 0; i < models.size(); ++i) {
+            const auto& m = models[i];
+            const float from = m.up >= 0 ? m.up - 0.3f : 0.0f;
+            const float to = m.down > m.up ? m.down + 0.05f : m.duration * 0.6f;
+            for (std::size_t f = 0; f < m.times.size(); ++f) {
+                if (m.times[f] < from || m.times[f] > to) continue;
+                const float e = error_at(m, f, pose), ranked = m.own ? e - 0.5f : e;
+                if (ranked < best_ranked) { best_ranked = ranked; best = e; best_model = static_cast<int>(i); best_frame = f; }
+            }
+        }
+        out.error = best;
+        if (best_model < 0 || best >= lock_degrees) return out;
+        locked_ = best_model;
+        time_ = refine(models[static_cast<std::size_t>(locked_)], best_frame, best);
+        error_ = baseline_ = best;
+        confidence_ = 0;
+        updates_ = 0;
+    } else if (!lost_) {
+        // Following it: where the game should be now, and where its pose says it is, near that.
+        const auto& m = models[static_cast<std::size_t>(locked_)];
+        const float predicted = time_ + step;
+        std::size_t best_frame = 0;
+        float best = 180;
+        bool any = false;
+        for (std::size_t f = 0; f < m.times.size(); ++f) {
+            if (m.times[f] < predicted - 0.1f || m.times[f] > predicted + 0.1f) continue;
+            const float e = error_at(m, f, pose);
+            if (e < best) { best = e; best_frame = f; any = true; }
+        }
+        if (any) {
+            const float matched = refine(m, best_frame, best);
+            // Pulled towards what the pose says, never back: a pose that is held looks like any time it is held at.
+            time_ = std::max(time_, predicted + 0.35f * (matched - predicted));
+            error_ = best;
+        } else {
+            time_ = predicted;
+            error_ = 180;
+        }
+        // How near this clip comes at best, from its first updates: a recording of the trick (the game's pose
+        // after its own corrections) never comes as near as the game's own clip does.
+        if (++updates_ <= 8) baseline_ = std::min(baseline_, error_);
+        // Another of the clips fitting the game better (the game's own clip rather than a recording of it, as a
+        // recording drifts off it towards the landing): moved onto, at the same moment of the trick.
+        out.switched = false;
+        {
+            const float edit_now = models_->edit_time(m, time_);
+            int alternative = -1;
+            float alternative_error = error_ - 1.0f, alternative_time = -1;
+            for (std::size_t i = 0; i < models.size(); ++i) {
+                const auto& b = models[i];
+                if (static_cast<int>(i) == locked_ || b.mirrored != m.mirrored) continue;
+                const float there = models_->model_time(b, edit_now);
+                std::size_t frame = 0;
+                float e_best = 180;
+                bool found = false;
+                for (std::size_t f = 0; f < b.times.size(); ++f) {
+                    if (b.times[f] < there - 0.08f || b.times[f] > there + 0.08f) continue;
+                    const float e = error_at(b, f, pose);
+                    if (e < e_best) { e_best = e; frame = f; found = true; }
+                }
+                if (found && e_best < alternative_error) {
+                    alternative_error = e_best;
+                    alternative = static_cast<int>(i);
+                    alternative_time = refine(b, frame, e_best);
+                }
+            }
+            if (alternative >= 0) {
+                streak_ = alternative == candidate_ ? streak_ + 1 : 1;
+                candidate_ = alternative;
+                if (streak_ >= 3) {
+                    locked_ = alternative;
+                    time_ = alternative_time;
+                    error_ = alternative_error;
+                    baseline_ = std::min(baseline_, alternative_error);
+                    candidate_ = -1;
+                    streak_ = 0;
+                    bad_ = 0;
+                    out.switched = true;
+                }
+            } else {
+                candidate_ = -1;
+                streak_ = 0;
+            }
+        }
+        const auto& now_on = models[static_cast<std::size_t>(locked_)];
+        bad_ = error_ > std::max(lose_degrees, baseline_ + 4.0f) ? bad_ + 1 : 0;
+        if (bad_ >= 3 || time_ >= now_on.duration - 0.5f / 60) lost_ = true;
+    } else {
+        // Lost: on at the clip's own pace, and still measured against it (the caller tells the game's own
+        // landing from its next animation by how far the game's pose goes from it).
+        time_ += step;
+        const auto& m = models[static_cast<std::size_t>(locked_)];
+        if (!m.times.empty()) {
+            const auto it = std::lower_bound(m.times.begin(), m.times.end(), time_);
+            const auto f = it == m.times.end() ? m.times.size() - 1 : static_cast<std::size_t>(it - m.times.begin());
+            error_ = error_at(m, f, pose);
+        }
+    }
+    const auto& m = models[static_cast<std::size_t>(locked_)];
+    // On the clip in full; less as the game blends away from it, smoothed so a single odd pose does not flicker.
+    const float on = lost_ ? 0.0f : std::clamp((lose_degrees - error_) / (lose_degrees - good_degrees), 0.0f, 1.0f);
+    confidence_ += (on - confidence_) * (confidence_ <= 0 ? 1.0f : 0.35f);
+    out.locked = true;
+    out.lost = lost_;
+    // Past its clip's end only once lost (a clip the trick's own is read across onto can be shorter).
+    out.time = std::clamp(models_->edit_time(m, lost_ ? time_ : std::min(time_, m.duration)), 0.0f, std::numeric_limits<float>::max());
+    out.error = error_;
+    out.baseline = baseline_;
+    out.clip = static_cast<int>(m.clip);
+    out.mirrored = m.mirrored;
+    out.confidence = confidence_;
+    return out;
 }
 } // namespace dingosdk::anim_studio

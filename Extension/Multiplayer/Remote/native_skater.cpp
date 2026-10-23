@@ -549,6 +549,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 frame.pose.board.push_back(from_matrix(root_matrix(board.entity)));
                 const auto bones = capture_skeleton(base, board.holder, max_board_bones - 1);
                 frame.pose.board.insert(frame.pose.board.end(), bones.begin(), bones.end());
+                if (const auto filter = shared().board_filter.load(std::memory_order_acquire))
+                    filter(frame.pose.board);
             }
         } catch (const std::exception &e) {
             frame.board_entity = 0;
@@ -616,6 +618,9 @@ void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
 }
 void set_local_pose_filter(LocalPoseFilter filter) noexcept {
     shared().pose_filter.store(filter, std::memory_order_release);
+}
+void set_local_board_filter(LocalBoardFilter filter) noexcept {
+    shared().board_filter.store(filter, std::memory_order_release);
 }
 void set_animation_studio_listener(AnimationEvaluated listener) noexcept {
     shared().studio_listener.store(listener, std::memory_order_release);

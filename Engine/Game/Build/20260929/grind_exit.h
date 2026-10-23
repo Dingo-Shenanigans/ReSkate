@@ -34,9 +34,8 @@ inline constexpr float measured_side_speed = 1.8f;
 // Which foot leads (for toe/heel): context + 0x13c4, bit 5 (mask 0x20). A goofy skater: 0 riding
 // normal or fakie, 1 riding switch; it changed exactly at each change of stance in a scan of the
 // skater's state memory, never in a grind, a pop or a 180 (which lands fakie), and
-// +0x13cf bit 2 and +0x1807 bit 7 follow it. Whether it means "switch" or "left foot leads" is
-// the same thing for a goofy skater; a regular skater's scan would tell them apart. The grind exit
-// control takes it as "switch" and the player's stance as a setting.
+// +0x13cf bit 2 and +0x1807 bit 7 follow it.
+// A regular skater (2026-10-20, in game): 1 riding normal, 0 riding switch.
 inline constexpr std::uintptr_t stance_flags_offset = 0x13c4; // context
-inline constexpr std::uint8_t stance_switch_mask = 0x20;
+inline constexpr std::uint8_t left_foot_leads_mask = 0x20;
 }

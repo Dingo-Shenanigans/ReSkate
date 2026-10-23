@@ -48,21 +48,22 @@ TRICKS = [
     ("o_impossible", "bsimpossible", "BF Impossible", "Flip tricks"),
     ("o_frontfoot_impossible", "fsimpossible", "FF Impossible", "Flip tricks"),
     ("n_nollie", "nollie", "Nollie", "Nollie tricks"),
-    ("n_kickflip", "nolliekickflip", "Nollie Kickflip", "Nollie tricks"),
-    ("n_heelflip", "nollieheelflip", "Nollie Heelflip", "Nollie tricks"),
+    ("n_kickflip", "n_kickflip", "Nollie Kickflip", "Nollie tricks"),
+    ("n_heelflip", "n_heelflip", "Nollie Heelflip", "Nollie tricks"),
     ("n_popshuv_bs", "n_popshuvit", "Nollie Pop Shuv-it", "Nollie tricks"),
     ("n_popshuv_fs", "n_fspopshuvit", "Nollie FS Pop Shuv-it", "Nollie tricks"),
     ("n_360popshuv_bs", "n_360popshuvit", "Nollie 360 Pop Shuv-it", "Nollie tricks"),
     ("n_360popshuv_fs", "n_fs360popshuvit", "Nollie FS 360 Pop Shuv-it", "Nollie tricks"),
-    ("n_varialflip", "nollievarialkickflip", "Nollie Varial Kickflip", "Nollie tricks"),
-    ("n_varialheel", "nollievarialheelflip", "Nollie Varial Heelflip", "Nollie tricks"),
-    ("n_360flip", "nollie360flip", "Nollie 360 Flip", "Nollie tricks"),
-    ("n_hardflip", "nolliehardflip", "Nollie Hardflip", "Nollie tricks"),
-    ("n_inwardheel", "nollieinwardheelflip", "Nollie Inward Heelflip", "Nollie tricks"),
-    ("n_360inwardheel", "nollie360inwardheelflip", "Nollie 360 Inward Heelflip", "Nollie tricks"),
-    ("n_360hardflip", "nollie360hardflip", "Nollie 360 Hardflip", "Nollie tricks"),
-    ("n_laserflip", "nollielaserflip", "Nollie Laser Flip", "Nollie tricks"),
-    ("n_impossible", "nolliebsimpossible", "Nollie BF Impossible", "Nollie tricks"),
+    ("n_varialflip", "n_varialkickflip", "Nollie Varial Kickflip", "Nollie tricks"),
+    ("n_varialheel", "n_varialheelflip", "Nollie Varial Heelflip", "Nollie tricks"),
+    ("n_360flip", "n_360flip", "Nollie 360 Flip", "Nollie tricks"),
+    ("n_hardflip", "n_hardflip", "Nollie Hardflip", "Nollie tricks"),
+    ("n_inwardheel", "n_inwardheelflip", "Nollie Inward Heelflip", "Nollie tricks"),
+    ("n_360inwardheel", "n_360inwardheelflip", "Nollie 360 Inward Heelflip", "Nollie tricks"),
+    ("n_360hardflip", "n_360hardflip", "Nollie 360 Hardflip", "Nollie tricks"),
+    ("n_laserflip", "n_laserflip", "Nollie Laser Flip", "Nollie tricks"),
+    ("n_impossible", "n_fsimpossible", "Nollie FF Impossible", "Nollie tricks"),
+    ("n_backfoot_impossible", "n_bsimpossible", "Nollie BF Impossible", "Nollie tricks"),
 ]
 POPS = ("low", "mid", "high")
 
@@ -139,6 +140,15 @@ def convert(fbx_path, hashes, native_vectors):
     smooth = np.convolve(y, np.ones(5) / 5, mode="same")
     lows = [i for i in range(2, len(y) - 2) if smooth[i] <= smooth[i - 1] and smooth[i] < smooth[i + 1]]
     takeoff = lows[0] if lows else 0
+    # On many low pops that first low is a later dip (up to 0.3 s after the pop), and the trick then started
+    # halfway through its flip in game. The game leaves the ground about 0.05 s (3 frames) after its board
+    # starts to tip, in its own clips and in game alike: the studio puts a later pop there when it loads a
+    # clip (place_native_marks), and so does this.
+    rest = np.array(board[0][1])
+    tipped = next((i for i in range(1, len(board))
+                   if 2 * math.degrees(math.acos(min(1.0, abs(float(np.dot(rest, board[i][1])))))) > 6), None)
+    if tipped is not None and tipped + 3 < takeoff - 2:
+        takeoff = tipped + 3
     # A flip trick's air is between a quarter and about 0.85 s (the game stretches it to the real one):
     # the landing is the board's deepest low point in that window.
     first, last = takeoff + 15, min(len(y) - 1, takeoff + 51)  # 60 fps

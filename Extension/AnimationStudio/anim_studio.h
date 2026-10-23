@@ -29,6 +29,8 @@ struct KeyView {
     float time{};
     Ease ease{};
     bool smooth{}; // smoothed: the timeline draws it round
+    Quat rotation{0, 0, 0, 1}; // the key's edit, for the timeline's channel rows and curves
+    Vec3 offset{};
 };
 struct TrackView {
     std::uint16_t joint{};
@@ -48,19 +50,37 @@ struct View {
     std::array<float, 16> camera{};
     float fov{};
     bool camera_valid{};
+    float base_yaw{}; // the yaw the orbit's own is added to (the skater's facing when the studio opened)
     // The animation being edited.
-    std::string name, trick;
-    std::string source_kind, source_asset, entry;
+    std::string name, trick, author;
+    std::string source_kind, entry;
     std::string source_position_codec;
     std::size_t source_pose_count{};
     float source_max_sample_gap{};
     bool has_clip{}, dirty{}, playing{}, loop{true}, play_in_game{};
+    bool previewing{}; // a saved trick open to watch only (preview_saved): nothing is keyed or saved
+    // The trick that was open when the preview started, put back when it ends (end_preview): its changes not saved yet,
+    // and its name. Opening another trick to edit drops it, so ask first.
+    bool kept_dirty{};
+    std::string kept_name;
     bool room{true}; // the studio opens in its room (studio_room.h)
     bool solo{};     // a turn moves one joint alone (set_solo)
+    // Which way round the skater stands in the studio: 0 as the game has him, 1 regular, 2 goofy, and
+    // which that works out to right now.
+    int stance_choice{};
+    bool own_lead_right{}; // the skater's own stance leads with the right foot (goofy): stance versions are told apart by it
+    bool showing_goofy{};
+    bool grab_board{};   // a hand near the deck closes its fingers on it
+    bool front_foot{true}; // a trick is bound to the front foot, not to the left and right
+    bool limits{true};     // Joint limits: keyed joints stay inside the range the game's own animation uses
+    float crossfade{0.3f}; // seconds a trick takes to hand back to the game's next move in game (Crossfade)
     // The turn from the axes a hand's or a foot's POSITION fields are measured in, into the axes the
     // joints are shown in. The gizmo's arrows point along it, so pulling one moves the field it names.
     Quat field_axes{0, 0, 0, 1};
     bool field_axes_valid{};
+    // The ground he stands or rides on. Nothing that is moved is allowed under it.
+    float floor{};
+    bool floor_valid{};
     float duration{}, takeoff{-1}, landing{-1}, time{}, speed{1};
     std::vector<JointView> joints; // the editable joints, now
     // The board without its keys, now, from where it starts: 0, 0, 0 is the board at the trick's start,
@@ -70,9 +90,31 @@ struct View {
     std::vector<TrackView> tracks;
     std::vector<std::string> library; // saved animations, by name
     std::vector<Preset> presets;
-    std::vector<std::string> packs;
-    std::string active_pack;
-    bool alternate_variants{};
+    struct PackView {
+        std::string name, made_by;
+        bool on{}, alternate{};
+        std::vector<std::string> members;
+        PresetPack pack; // its slots, which are Fixed or Alternate, and what is left out of a cycle
+        std::string thumbnail;        // its picture (presets/<pack>.png, thumbnail_side square), "" none
+        std::int64_t thumbnail_stamp{}; // when that was last written: a new one is read again
+        bool favorite{};                // starred: shown first in PACKS
+        bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
+    };
+    std::vector<PackConflict> conflicts; // tricks more than one pack that is on has, and what plays them
+    // Where packs are exported to and imported from: as set (SETTINGS > Packs), or "" for ReSkate.Tricks\exports and \import.
+    std::string export_folder, import_folder;
+    std::string export_path, import_path; // and where that is, in full (UTF-8)
+    std::string library_path;             // ReSkate.Tricks itself (UTF-8)
+    std::string test_trick;    // Test in game: the trick played in game until the studio opens again
+    std::string test_returned; // back from testing it: the studio says something about it (clear_test_returned)
+    std::vector<PackView> packs;
+    std::string open_pack; // the pack open in PACKS
+    // The playlist (PACKS > SETTINGS): when on, what plays in game instead of the packs that are on.
+    bool playlist_on{};
+    PlaylistMode playlist_mode{PlaylistMode::fixed};
+    std::vector<PlaylistEntry> playlist;
+    bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
+    std::string your_name; // MADE BY, remembered for new recordings and packs
     Recording recording{};
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
     bool can_undo{}, can_redo{};
@@ -85,6 +127,13 @@ struct View {
     std::uint64_t clip_serial{};
 };
 View view();
+Recording recording_state(); // the one value the overlay checks every frame while the studio is closed
+// Arms a one-off search of the running game for where it keeps the clip it is playing. It is taken riding,
+// at the pop and in the air of the next trick, and written to ReSkate.Tricks/research/live-graph-probe.txt.
+// Read only. Returns what it said.
+std::string arm_live_probe();
+// Turns the stance readout on or off (ReSkate.Tricks/research/stance-readout.txt). Returns what it said.
+std::string toggle_stance_readout();
 // Opt-in 60-second read-only trace; exported under ReSkate.Tricks/research.
 std::string research_trace(const std::string& action);
 // Cheap, any thread: whether the studio has the screen.
@@ -113,14 +162,11 @@ void request_open(bool open);         // asks the client tick to open or close t
 void request_close();                 // closes, or asks first when there are unsaved changes
 enum class CloseAnswer { save, discard, cancel };
 void answer_close(CloseAnswer answer);
-void set_pop(const std::string& pop); // which pop this animation is for ("" any)
-bool copy_to_pops(std::string& message); // saves a low, a mid and a high copy of it
 void advance(float seconds);          // playback, by the render frame's time
 void set_time(float seconds);
 void set_playing(bool playing);
 void set_loop(bool loop);
 void set_speed(float speed);
-void record_next_trick();             // closes the studio until the next trick has been landed
 // A recording starts from a clean level: take_clean_start() once per request, so the client tick loads the
 // level again (behind the loading screen); clean_start_done() when that load is in. Nothing is recorded
 // until then.
@@ -147,6 +193,25 @@ void set_play_in_game(bool on);
 // so the limb below keeps the way it faces instead of swinging with its parent. Bones are rigid, so
 // those joints still travel with the one being turned: it is the way they face that is held.
 void set_solo(bool on);
+// Which way round the skater stands in the studio: 0 follows the game's own setting, 1 regular, 2 goofy.
+// A clip authored the other way round is mirrored to show it, the keys staying anatomical (a left-hand key
+// is still the left hand), which is how gameplay lays them over the native pose.
+void set_stance(int choice);
+// A hand brought near the board closes its fingers round the deck, by how near it is. The fingers are not
+// keyed and not saved: this is the studio showing what the hand is doing, not an edit.
+void set_grab(bool on);
+// How many times the Studio room setting was switched: the client opens the studio in the room, or leaves it, at once.
+std::uint64_t room_changes() noexcept;
+// In game: how long a trick takes to fade out into the game's next move (a manual, the next trick), 0.1 to 0.8 s;
+// one trick's keys blend into the next's over half of it. Saved with the studio's settings.
+void set_crossfade(float seconds);
+// Joint limits: on, every joint you key stays inside the range the game's own animation uses (knees and
+// elbows bend one way, nothing twists round), while you pose and in game. Off, joints go where you push them.
+void set_joint_limits(bool on);
+// How a saved trick is matched to the skater doing it. On, a trick belongs to the front foot and the back
+// foot: it plays for any stance, mirrored when the other foot leads. Off, it plays only for the stance and
+// switch it was recorded in, which is what it did before.
+void set_front_foot(bool on);
 void set_room(bool on);               // the studio opens in its room, or where the skater is
 // Keyframes. `begin_change` saves the state for undo once per gesture (a drag is one change).
 void begin_change();
@@ -171,9 +236,10 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);
 void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);
-// Smooths the keys of one joint, or of every joint when `joint` is `all_joints`. Call begin_change first.
+// Smooths the given keys (joint, time): each eases into its neighbours and shows round. Call begin_change first.
+bool smooth_chosen_keys(std::span<const std::pair<std::uint16_t, float>> chosen, std::string& message);
+// Every joint at once (set_focus: the camera on the whole skater).
 inline constexpr std::uint16_t all_joints = 0xffff;
-void smooth_keys(std::uint16_t joint);
 void reset_joint(std::uint16_t joint); // takes all its keys off
 void set_track_flags(std::uint16_t joint, bool hidden, bool locked);
 void copy_pose();  // every joint's edit at the current time
@@ -181,20 +247,107 @@ void paste_pose(); // keys them all at the current time
 void undo();
 void redo();
 // Library.
-void new_animation();
 bool save(std::string& message);
-bool save_preset_copy(std::string& message);
-bool activate_preset(const std::string& name, std::string& message);
-bool create_preset_pack(std::string& message, const std::string& name = {});
-bool use_preset_pack(const std::string& name, std::string& message);
-bool set_pack_alternation(bool alternate, std::string& message);
-bool include_preset(const std::string& name, bool included, std::string& message);
+// Packs. Any number can be on at once (a trick more than one has is chosen between: View::conflicts); with none
+// on, every saved animation plays. Every change to a pack is saved at once and plays at once.
+bool create_preset_pack(std::string& message, const std::string& name = {}); // empty, off, and opened
+void open_pack(const std::string& name); // the pack open in PACKS; "" for the list of packs
+bool set_pack_on(const std::string& name, bool on, std::string& message);
+bool set_pack_member(const std::string& pack, const std::string& animation, bool in, std::string& message);
+// Where the pack has more than one of a trick and pop (`slot`, preset_slot): Fixed plays its first one,
+// Alternate one of the ones linked into its cycle each attempt, at random (never the same twice running).
+bool set_pack_mode(const std::string& pack, const std::string& slot, bool alternate, std::string& message);
+bool set_pack_fixed(const std::string& pack, const std::string& animation, std::string& message); // the one that plays
+bool set_pack_linked(const std::string& pack, const std::string& animation, bool linked, std::string& message);
+// Packs' pictures: a square this many pixels a side, saved as presets/<pack>.png beside the pack.
+inline constexpr unsigned thumbnail_side = 512;
+// A picture for a pack: PNG bytes of a thumbnail_side square (empty takes it off). It is exported with the pack.
+bool set_pack_thumbnail(const std::string& pack, const std::string& png, std::string& message);
+// How the pack's cover was made in the cover designer (its JSON), kept with the pack so the designer opens on it again.
+bool set_pack_cover_design(const std::string& pack, const std::string& design, std::string& message);
+// The pack's name changed (its file, its picture, and wherever it is on or chosen with it).
+bool rename_pack(const std::string& from, const std::string& to, std::string& message);
+// Pack rules: the pop every trick in the pack plays on: "" each its own, "any", or "low", "mid" or "high" only.
+bool set_pack_pop_rule(const std::string& pack, const std::string& rule, std::string& message);
+// A trick more than one pack that is on has (its slot): "*" play them at random, the name of the pack whose plays it, or
+// "" not decided (they play at random, and the studio asks).
+bool set_conflict_choice(const std::string& slot, const std::string& pack, std::string& message);
+// Where packs are exported to and imported from ("" the defaults); open_folder shows it in Explorer.
+void set_pack_folder(bool exporting, const std::string& path);
+void open_pack_folder(bool exporting);
+// Test in game: the studio closes and this saved trick plays in game, on any pop and over any pack, until the
+// studio is opened again; then View::test_returned names it, until clear_test_returned.
+bool test_in_game(const std::string& animation, std::string& message);
+void clear_test_returned();
+// The name a saved animation is shown by in MY TRICKS and the packs; empty takes it off. Its file keeps its
+// name, so the packs it is in keep it.
+bool set_label(const std::string& animation, const std::string& label, std::string& message);
+// A saved trick's pop: "" any (it plays on every pop the game does that has no trick of its own for that pop),
+// or only "low", "mid" or "high". The packs it is in file it under its new pop.
+bool set_saved_pop(const std::string& animation, const std::string& pop, std::string& message);
+// A low, a mid and a high copy of a saved trick, put in every pack it is in.
+bool copy_saved_to_pops(const std::string& animation, std::string& message);
+// A stance version of a saved trick, put in every pack it is in: 0 your own stance, 1 fakie, 2 switch, 3 switch fakie.
+// Switch is the other foot leading (the trick and its keys mirrored), fakie rolling backwards (the same trick; in game
+// the one made fakie plays when he rolls fakie). It keeps its foot when it is edited and saved. `made` is its name.
+bool make_stance_version(const std::string& animation, int version, std::string& made, std::string& message);
+bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
+// What its maker says of a pack (up to 2000 characters), shown wherever it is shared.
+bool set_pack_description(const std::string& pack, const std::string& description, std::string& message);
+// A pack as it is shared (EXPORT, the MARKET): its files - its pack file and picture, and its tricks with this PC's key -
+// with what it is called, what is in it (a line a trick) and its picture's PNG ("" none). False, with why, when it cannot
+// be: a trick in it made by someone else, or nothing saved in it.
+struct SharedPack {
+    std::string name, made_by, description, version, published;
+    std::string published_as; // the Thunderstore package it went up as (Team-Name), "" none
+    std::vector<std::pair<std::string, std::string>> files; // path in the zip, bytes
+    std::vector<std::string> tricks;
+    std::string picture;
+};
+bool share_pack(const std::string& pack, SharedPack& out, std::string& message);
+// It went up on Thunderstore as this version of this package (Team-Name): its next update goes to the same package.
+void pack_published(const std::string& pack, const std::string& version, const std::string& published_as);
+// One zip of packs put in the library (as IMPORT does, for the zip named): the MARKET's installs. `made`, when given,
+// gets the names the packs in it have in the library (a name already taken gets a number). `replace`: the pack an
+// earlier version of this package became (an UPDATE or a REINSTALL): it is replaced in place, under its name, staying
+// on or off as it was, and its tricks made elsewhere that no other pack has go first, so none is left as a copy.
+bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made = nullptr,
+                     const std::string& replace = {});
+std::filesystem::path studio_folder();       // ReSkate.Tricks
+std::filesystem::path pack_export_folder();  // where exports go
+// A trick in a pack switched off (it stays in the pack, but does not play) or on again.
+bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
+// PLAY (MY TRICKS): on, the trick plays in game on its own, whichever packs are on; off, it does not play at all - from
+// its packs neither (it is switched off in each). A trick saved or put in a pack starts switched off.
+bool set_trick_play(const std::string& animation, bool on, std::string& message);
+void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in PACKS
+// Whether others may open the pack's tricks to edit and copy them once it is shared (its maker's choice; locked unless
+// set). It goes with the pack when it is exported.
+bool set_pack_editable(const std::string& pack, bool editable, std::string& message);
+// The playlist: on (it decides what plays) or off (the packs that are on do), how its tricks take turns, and what is in it.
+void set_playlist_on(bool on, std::string& message);
+void set_playlist_mode(PlaylistMode mode, std::string& message);
+bool playlist_add(const PlaylistEntry& entry, std::string& message);
+void playlist_remove(std::size_t index);
+void playlist_move(std::size_t index, int by); // up (-1) or down (1)
+void set_hover_preview(bool on);
+// A pack (saved first if it has changes), or every saved animation for "", as
+// ReSkate.Tricks/exports/<name>.zip, laid out like the tricks folder so it can be unzipped straight into it.
+bool export_pack(const std::string& pack_name, std::string& message);
+// Takes in every .zip in ReSkate.Tricks/import: checked first, names already taken are given the next
+// variation, older animations upgraded, and the zip moved to import/imported.
+bool import_packs(std::string& message);
 bool load(const std::string& name, std::string& message);
-// The game's own tricks, made into studio clips by contrib/animator-studio/make_trick_library.py:
-// <folder>/library/catalog.json and its .clip files.
+// A saved trick open to watch only, a pack's or anyone's (one locked to its maker too): it plays, the camera moves, but
+// nothing is keyed or saved. end_preview closes it.
+bool preview_saved(const std::string& name, std::string& message);
+void end_preview();
+// The game's own tricks as studio clips, <folder>/library/catalog.json and its .clip files: built in game from the
+// player's own copy (library_build below), or by contrib/animator-studio/make_trick_library.py.
 struct NativeAsset {
     std::string category, asset, kind;
     std::string root_type, decode_state, detail, partition;
+    std::string toc, bundle; // where in the game it was found (a library built in game)
     std::string label, context, search;
 };
 struct NativeField { std::string label, path, value, reference; bool expandable{}; };
@@ -203,12 +356,41 @@ NativeDocumentPage native_asset_fields(const std::string& asset, const std::stri
 std::shared_ptr<const std::vector<NativeAsset>> native_assets();
 std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // cached until explicit refresh
 void refresh_game_tricks(std::string& message);
+// The trick library, built on this PC from the player's own copy of the game (native_library.h) into
+// ReSkate.Tricks/library: whether there is one, and a build running in the background and how far it has got.
+// A build goes into a folder of its own and only takes the old library's place once it is whole.
+struct LibraryBuild {
+    bool exists{};   // there is a library
+    bool outdated{}; // it was built from another version of the game
+    bool running{}, failed{};
+    std::string built;   // when the library there was built ("" for one built before the studio could)
+    std::string step;    // what the build is doing
+    std::string message; // how the last build went
+    std::size_t done{}, total{};
+    float fraction{}; // the whole build, 0 to 1
+};
+LibraryBuild library_build();
+void start_library_build(); // nothing when one is running
+void stop_library_build();  // the build stops soon after; the library stays as it was
+// Asked every frame: with no trick library yet (a fresh install) or one built from another version of the game, the build
+// starts by itself, once a session: `now` when the studio is open, else a little after the game has started. A build
+// that failed waits for TRY AGAIN.
+void build_library_when_needed(bool now);
 bool export_diagnostics(std::string& message);
-bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);
+// A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:
+// it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's
+// stance on a thread of its own (a library clip is hundreds of KB: read on the frame, it stuttered the game), and the
+// last few are kept, so one looked at again starts at once. `play`: it starts as soon as it is ready; without, it is
+// only made ready (the mouse is settling on its card). False when it cannot be asked for.
+bool peek_game_trick(const GameTrick& trick, bool play = true);
+bool peek_saved(const std::string& animation, bool play = true);
+bool peek_playing();   // the trick asked to play is playing
+void end_peek();       // and one asked for that is not ready yet does not start
+float peek_duration(); // the trick being looked at, in seconds (0 none)
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
-void set_trick(const std::string& trick);
+void set_your_name(const std::string& name); // MADE BY for new recordings and packs, without touching the one open
 // Camera.
 void set_orbit(const Orbit& orbit);
 void focus_joint(std::uint16_t joint); // the orbit centres on it, or comes off it when it is on it already
@@ -219,6 +401,9 @@ void set_camera_follow(bool on);
 // How far above and right of the screen's middle the free area beside the menu has its middle, both
 // as shares of the screen's height: the camera aims so the skater sits there.
 void set_view_shift(float share, float right_share);
+// The camera's field of view the studio wants (FILMER's fisheye), in degrees; 0 leaves the game's own. Any thread.
+void set_wanted_fov(float degrees) noexcept;
+float wanted_fov() noexcept;
 
 // ---- the game side -------------------------------------------------------------------------------
 // Engine thread, every client tick with the local skater's animation component (0 when there is

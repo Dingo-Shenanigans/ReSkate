@@ -13,7 +13,7 @@ struct ResearchSample {
     std::string trick;
     std::optional<float> board_up_speed;
     bool studio_open{}, custom_enabled{}, goofy{}, recording_armed{};
-    std::optional<bool> switch_stance;
+    std::optional<bool> switch_stance, left_foot_leads;
     std::uint64_t animation_updates{}, skater_publications{}, board_publications{};
     double skater_age{-1}, board_age{-1};
 };
@@ -30,7 +30,7 @@ public:
             if (last.physics == sample.physics && last.trick == sample.trick &&
                 last.studio_open == sample.studio_open && last.custom_enabled == sample.custom_enabled &&
                 last.goofy == sample.goofy && last.recording_armed == sample.recording_armed &&
-                last.switch_stance == sample.switch_stance &&
+                last.switch_stance == sample.switch_stance && last.left_foot_leads == sample.left_foot_leads &&
                 sample.seconds - last.seconds < 0.05) return true;
         }
         samples.push_back(std::move(sample));

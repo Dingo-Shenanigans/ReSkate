@@ -28,6 +28,35 @@ inline const char* phase_name(PlaybackPhase value) noexcept {
            value == PlaybackPhase::rail_release ? "rail_release" : "idle";
 }
 struct PlaybackSample { float time{-1}, weight{}; bool finished{}; };
+// A trick fitted to the game's air, never slower than it was recorded. Seconds into the recording's air for
+// `in_air` seconds into the game's, when the game's air is expected to last `target` seconds (the recorded one
+// lasted `recorded_air`). A shorter expected air plays it a little faster (at most 1.3 times: the expectation
+// is often wrong both ways). A longer one is not slowed down to fit (a tester's varial kickflip: 0.71 s
+// expected, 0.46 s real, and a trick slowed for it was still in the air when the board landed). It never
+// reaches its landing while the game is still in the air, and it never stands still waiting for it either
+// (a low-pop shuv-it on a bigger pop stood frozen for six frames): over its last `ease` seconds it slows,
+// feet reaching for the ground, closer and closer to the landing however long the air runs.
+inline float fitted_air_time(float in_air, float recorded_air, float target) noexcept {
+    if (!std::isfinite(in_air)) return 0;
+    in_air = std::max(0.0f, in_air);
+    if (!(recorded_air > 1.0f / 30) || !std::isfinite(recorded_air)) return in_air;
+    float t = in_air;
+    if (target > 0.05f && std::isfinite(target) && target < recorded_air) t = in_air * std::min(recorded_air / target, 1.3f);
+    const float land = recorded_air - 1.0f / 60, ease = std::min(0.06f, land * 0.3f), knee = land - ease;
+    if (t > knee) t = knee + ease * (1 - std::exp(-(t - knee) / ease));
+    return t;
+}
+// After the game's touchdown, `since` seconds ago: the recording from its own landing (`down`) on, at its own
+// pace, so the landing bend happens on the ground. It was at `from` at touchdown; if that was short of its
+// landing it catches up rather than jumping, over a time that grows with how far behind it was (80 to 200 ms),
+// so it never runs at more than about 2.25 times its pace.
+inline float landed_time(float since, float down, float from) noexcept {
+    since = std::isfinite(since) ? std::max(0.0f, since) : 0.0f;
+    const float behind = std::isfinite(from) ? std::max(0.0f, down - from) : 0.0f;
+    const float window = std::clamp(behind * 0.8f, 0.08f, 0.2f);
+    const float u = std::clamp(since / window, 0.0f, 1.0f);
+    return down + since - behind * (1 - u);
+}
 struct PlaybackEpisode {
     MotionState previous{MotionState::unknown};
     PlaybackPhase phase{PlaybackPhase::idle};
@@ -35,6 +64,8 @@ struct PlaybackEpisode {
     std::uint64_t id{};
     double takeoff{}, landing{-1}, release_at{}, selected_at{-1}, last_observed{-1};
     float release_weight{}, last_weight{};
+    float last_time{-1};   // the recording's time last sampled
+    float landed_from{-1}; // where the recording was when the game touched down (-1 while in the air)
     ContactWindow contact;
     GameplayClipClock clock;
     void reset() noexcept { const auto next_id = id; *this = {}; id = next_id; }
@@ -48,7 +79,7 @@ struct PlaybackEpisode {
         bool started = false;
         if (motion == MotionState::air && phase != PlaybackPhase::air) {
             const auto from = previous;
-            ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1;
+            ++id; phase = PlaybackPhase::air; takeoff = now; landing = -1; selected_at = -1; landed_from = -1; last_time = -1;
             entry = from == MotionState::rail ? EntryKind::rail : from == MotionState::riding ? EntryKind::ground : EntryKind::unknown;
             clock.reset(); contact.since.reset(); last_weight = 0; started = true;
         } else if (motion == MotionState::rail && (phase == PlaybackPhase::air || phase == PlaybackPhase::landing)) {
@@ -63,8 +94,10 @@ struct PlaybackEpisode {
     }
     bool selection_open(double now) const noexcept { return phase == PlaybackPhase::air && now >= takeoff && now - takeoff < 0.35; }
     void select(double now) noexcept { if (std::isfinite(now)) { selected_at = now; clock.reset(); } }
+    // `fit_air`: the trick is fitted to the air actually happening (fitted_air_time, landed_time) instead of
+    // running at the seconds it was recorded at. The studio always plays with it on.
     PlaybackSample sample(double now, float up, float down, float duration, float speed, float predicted_air,
-                          bool source_timing = false) noexcept {
+                          bool source_timing = false, bool fit_air = false) noexcept {
         PlaybackSample out;
         if (selected_at < 0 || up < 0 || duration <= 0 || up > duration || down > duration ||
             !std::isfinite(now) || !std::isfinite(up) || !std::isfinite(down) ||
@@ -76,7 +109,26 @@ struct PlaybackEpisode {
             // Speed is a studio preview control. Slowing only this additive
             // layer while the native trick runs at 1x desynchronizes limbs and
             // board; source-bound gameplay keys always follow source seconds.
-            out.time = static_cast<float>(std::min(static_cast<double>(duration), up + std::max(0.0, now - takeoff)));
+            // Fitted to the air (fitted_air_time, landed_time): takeoff on the game's takeoff, the flip at its
+            // own pace, the recording's landing on the game's touchdown.
+            float time = up + static_cast<float>(std::max(0.0, now - takeoff));
+            if (fit_air && down > up) {
+                if (phase == PlaybackPhase::air && contact.since) {
+                    // The board is down and the game is making sure (ContactWindow): the landing starts at
+                    // the touch, not frames later with a jump - the pose in the air with the board on the
+                    // ground was it going into the ground.
+                    if (landed_from < 0) landed_from = std::clamp(last_time >= 0 ? last_time : down, up, down);
+                    time = landed_time(static_cast<float>(now - *contact.since), down, landed_from);
+                } else if (phase == PlaybackPhase::air) {
+                    time = up + fitted_air_time(static_cast<float>(now - takeoff), down - up, predicted_air);
+                    if (last_time >= 0) time = std::max(time, last_time); // a touch that was a bounce never turns it back
+                    landed_from = -1;
+                } else {
+                    if (landed_from < 0) landed_from = std::clamp(last_time >= 0 ? last_time : down, up, down);
+                    time = landed_time(static_cast<float>(now - landing), down, landed_from);
+                }
+            }
+            out.time = std::min(duration, time);
             clock.observe_air(now, out.time, 1);
             const auto enter = std::clamp(static_cast<float>(now - selected_at) / 0.08f, 0.0f, 1.0f);
             const auto leave = std::clamp((duration - out.time) / 0.08f, 0.0f, 1.0f);
@@ -99,6 +151,7 @@ struct PlaybackEpisode {
             out.time = clock.time; out.weight = release_weight * (1 - u*u*(3 - 2*u));
         }
         last_weight = out.weight;
+        if (out.time >= 0) last_time = out.time;
         if (phase != PlaybackPhase::air && out.weight <= 0) { phase = PlaybackPhase::idle; out.finished = true; }
         return out;
     }
@@ -143,7 +196,7 @@ struct EditTransition {
     std::vector<Offset> from, current;
     void reset() { *this = {}; }
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
-                                     std::uintptr_t selected, std::span<const Offset> desired) {
+                                     std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
         if (!std::isfinite(now)) { reset(); return current; }
         if (generation != gen || current.size() != desired.size() || now < observed) {
             generation = gen; current.assign(desired.size(), Offset{}); started = -1;
@@ -152,7 +205,9 @@ struct EditTransition {
             from = current; started = now; episode = attempt; source = selected;
         }
         observed = now;
-        float u = std::clamp(static_cast<float>(now - started) / 0.08f, 0.0f, 1.0f);
+        // `seconds` (0.15 unless the Crossfade setting says): one trick's keys into the next, or out when a trick is
+        // cut short (a new air, a bail), without a snap.
+        float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
         for (std::size_t i = 0; i < desired.size(); ++i) {
             current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);

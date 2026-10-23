@@ -51,7 +51,7 @@ struct InputCaptureHooks {
     std::map<OVERLAPPED*, HidRead> hid_reads;
     Hook register_raw;
     Hook async_key, key, keyboard, raw_data, raw_buffer, capture, release_capture, cursor, show_cursor, physical_cursor, cursor_position;
-    std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke;
+    std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke, xinput_capabilities;
     // Hooks other programs put in front of those, hooked in turn (keep_xinput_capture_first).
     static constexpr std::size_t front_slots = 8;
     std::array<Hook, front_slots> xinput_front;
@@ -650,6 +650,7 @@ BOOL WINAPI captured_cursor_position(LPPOINT output) {
     if (result && output && !overlay_input_access) { last = *output; sampled = true; }
     return result;
 }
+bool test_pad_connected() noexcept;
 template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
@@ -663,6 +664,10 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     }
     // Only the game gets the script: ReSkate's own reads (a stop button) get the real pad.
     if (outer && output && scripted_pad(user, *output, _ReturnAddress())) return ERROR_SUCCESS;
+    if (result != ERROR_SUCCESS && user == 0 && output && test_pad_connected()) {
+        *output = {};
+        return ERROR_SUCCESS;
+    }
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
@@ -670,6 +675,30 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         output->dwPacketNumber ^= 0x80000000u;
     } else if (result == ERROR_SUCCESS) {
         filter_pad(outer, user, output);
+    }
+    return result;
+}
+// TEST ONLY: with RESKATE_TEST_PAD=1 the virtual pad is a connected controller in slot 0, whether a real one
+// is plugged in or not - a game that only reads the controllers it has seen connected reads it too.
+bool test_pad_connected() noexcept {
+    static const bool on = [] {
+        wchar_t flag[4]{};
+        return GetEnvironmentVariableW(L"RESKATE_TEST_PAD", flag, 4) == 1 && flag[0] == L'1';
+    }();
+    return on;
+}
+template<std::size_t I>
+DWORD WINAPI captured_capabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* output) {
+    const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, XINPUT_CAPABILITIES*)>(input_hooks().xinput_capabilities[I])(user, flags, output);
+    if (result != ERROR_SUCCESS && user == 0 && output && test_pad_connected()) {
+        *output = {};
+        output->Type = XINPUT_DEVTYPE_GAMEPAD;
+        output->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+        output->Gamepad.wButtons = 0xF3FF;
+        output->Gamepad.bLeftTrigger = output->Gamepad.bRightTrigger = 0xFF;
+        output->Gamepad.sThumbLX = output->Gamepad.sThumbLY = output->Gamepad.sThumbRX = output->Gamepad.sThumbRY = static_cast<SHORT>(0xFFC0);
+        output->Vibration.wLeftMotorSpeed = output->Vibration.wRightMotorSpeed = 0xFF;
+        return ERROR_SUCCESS;
     }
     return result;
 }
@@ -933,6 +962,8 @@ bool install_input_capture() {
         reinterpret_cast<void*>(captured_xinput<2, true>), reinterpret_cast<void*>(captured_xinput<3, true>), reinterpret_cast<void*>(captured_xinput<4, true>)};
     const std::array<void*, 5> strokes{reinterpret_cast<void*>(captured_keystroke<0>), reinterpret_cast<void*>(captured_keystroke<1>),
         reinterpret_cast<void*>(captured_keystroke<2>), reinterpret_cast<void*>(captured_keystroke<3>), reinterpret_cast<void*>(captured_keystroke<4>)};
+    const std::array<void*, 5> capabilities{reinterpret_cast<void*>(captured_capabilities<0>), reinterpret_cast<void*>(captured_capabilities<1>),
+        reinterpret_cast<void*>(captured_capabilities<2>), reinterpret_cast<void*>(captured_capabilities<3>), reinterpret_cast<void*>(captured_capabilities<4>)};
     const std::array names{L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll", L"xinput1_2.dll", L"xinput1_1.dll"};
     std::vector<void*> seen;
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -946,7 +977,8 @@ bool install_input_capture() {
         };
         if (!hook_export(h.xinput_state[i], "XInputGetState", states[i]) ||
             !hook_export(h.xinput_extended[i], MAKEINTRESOURCEA(100), extended[i]) ||
-            !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i])) return false;
+            !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i]) ||
+            (test_pad_connected() && !hook_export(h.xinput_capabilities[i], "XInputGetCapabilities", capabilities[i]))) return false;
     }
     const auto direct = LoadLibraryExW(L"dinput8.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (direct) {
@@ -991,6 +1023,12 @@ extern "C" bool DingoSDKOverlayTestPad(const char* script) {
     steps.push_back({static_cast<std::uint32_t>(at * 60), XINPUT_GAMEPAD{}});
     dingosdk::overlay::play_pad(std::move(steps));
     return true;
+}
+// TEST ONLY: how many pad reads the script has answered, and how many came from the game's own code.
+extern "C" void DingoSDKOverlayTestPadReads(unsigned* all, unsigned* by_game) {
+    const auto reads = dingosdk::overlay::pad_reads_answered();
+    if (all) *all = reads.all;
+    if (by_game) *by_game = reads.by_game_code;
 }
 extern "C" void DingoSDKOverlaySetGamepadFilter(dingosdk::overlay::GamepadFilter filter) {
     dingosdk::overlay::detail::gamepad_filter().store(filter, std::memory_order_release);

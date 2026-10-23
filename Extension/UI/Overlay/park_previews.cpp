@@ -88,7 +88,7 @@ std::size_t load_park_previews(ImFontAtlas &atlas, std::span<const vfs::ItemThum
         // Use the existing, fenced ImGui upload/lifetime. No native game GPU
         // descriptors, resource states or streamed texture pointers are borrowed.
         auto &state = previews();
-        atlas.TexDesiredWidth = 2048;
+        atlas.TexDesiredWidth = std::max(atlas.TexDesiredWidth, 2048); // wider when the fonts asked for it (load_skate_fonts)
         atlas.Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
         for (const auto &thumbnail : thumbnails)
             state.rectangles.emplace(thumbnail.item, atlas.AddCustomRectRegular(side, side));

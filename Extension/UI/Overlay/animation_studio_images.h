@@ -18,12 +18,11 @@ void prepare_animation_studio_images() noexcept;
 void reserve_animation_studio_images(ImFontAtlas& atlas, std::chrono::milliseconds wait) noexcept;
 void fill_animation_studio_images(ImFontAtlas& atlas) noexcept;
 
-enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right };
+// The icons of SETTINGS' tiles (studio, skater, tricks, packs): white, grungy, on clear (assets/animator_studio/icon_*.png,
+// or icons/<name>.png in the folder above the tricks in their place).
+enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right, icon_studio, icon_skater, icon_tricks, icon_packs };
 // Stretched onto the box. False when the picture is not there.
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
-// Filled over the box with its own shape kept: what does not fit is cropped off, evenly on both sides (a 21:9
-// backdrop on a 16:9 screen loses its sides rather than being squeezed). False when the picture is not there.
-bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
 // The loading screen's picture, filled over the box with its own shape kept: a 21:9 artwork on a 16:9
 // screen loses its sides rather than being squeezed. It is carried in two halves, because one of them
 // is as wide as the overlay's atlas can take, and they are drawn back together here. False when there

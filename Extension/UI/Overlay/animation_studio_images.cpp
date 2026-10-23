@@ -45,7 +45,9 @@ constexpr std::array<Place, 3> kickflip_places{{
     {ui::bam_toc, ui::bam_bundle},
 }};
 
-constexpr std::size_t picture_count = 6, backdrop_index = 4, backdrop_right_index = 5;
+constexpr std::size_t picture_count = 10, backdrop_index = 4, backdrop_right_index = 5, first_icon = 6;
+constexpr std::array<const wchar_t*, 4> icon_names{L"studio", L"skater", L"tricks", L"packs"};
+constexpr std::array<const wchar_t*, 4> icon_resources{L"STUDIO_ICON_STUDIO", L"STUDIO_ICON_SKATER", L"STUDIO_ICON_TRICKS", L"STUDIO_ICON_PACKS"};
 struct Source {
     const ui::Texture* texture; // the kickflip's is found in kickflip_places
     std::uint32_t side;
@@ -53,6 +55,7 @@ struct Source {
 };
 constexpr std::array<Source, picture_count> sources{{
     {&ui::scratches, 1024, true}, {&ui::rough_tile, 256}, {&ui::brush_bar, 692}, {nullptr, 1152}, {nullptr, 0}, {nullptr, 0},
+    {nullptr, 0}, {nullptr, 0}, {nullptr, 0}, {nullptr, 0},
 }};
 using Images = std::array<std::optional<frostbite::Image>, picture_count>;
 
@@ -91,18 +94,19 @@ std::filesystem::path backdrop_path() {
         return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path() / L"backdrop.png";
     return {};
 }
-// The picture baked into the DLL.
-std::vector<unsigned char> built_in_backdrop() {
+// A picture baked into the DLL.
+std::vector<unsigned char> built_in(const wchar_t* name) {
     HMODULE module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            reinterpret_cast<LPCWSTR>(&built_in_backdrop), &module))
+                            reinterpret_cast<LPCWSTR>(&built_in), &module))
         return {};
-    const auto found = FindResourceW(module, L"STUDIO_LOADING", MAKEINTRESOURCEW(10) /* RT_RCDATA */);
+    const auto found = FindResourceW(module, name, MAKEINTRESOURCEW(10) /* RT_RCDATA */);
     const auto handle = found ? LoadResource(module, found) : nullptr;
     const auto* bytes = handle ? static_cast<const unsigned char*>(LockResource(handle)) : nullptr;
     const auto size = found ? SizeofResource(module, found) : 0;
     return bytes && size ? std::vector<unsigned char>(bytes, bytes + size) : std::vector<unsigned char>{};
 }
+std::optional<frostbite::Image> decode_bytes(const std::vector<unsigned char>& bytes, float most_wide, float most_high);
 std::optional<frostbite::Image> read_backdrop() {
     const auto path = backdrop_path();
     std::error_code error;
@@ -111,7 +115,27 @@ std::optional<frostbite::Image> read_backdrop() {
     if (own) {
         std::ifstream in(path, std::ios::binary);
         bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    } else bytes = built_in_backdrop();
+    } else bytes = built_in(L"STUDIO_LOADING");
+    auto out = decode_bytes(bytes, 3072.0f, 1728.0f);
+    if (out) logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: the loading picture is {} x {}, from {}.",
+                         out->width, out->height, own ? path.string() : std::string("the one built in"));
+    else logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: no loading picture was read.");
+    return out;
+}
+// One of SETTINGS' icons: icons/<name>.png beside the tricks' folder when there is one, else the one built in.
+std::optional<frostbite::Image> read_icon(std::size_t which) {
+    std::vector<unsigned char> bytes;
+    const auto folder = backdrop_path().parent_path();
+    std::error_code error;
+    if (const auto own = folder / L"icons" / (std::wstring(icon_names[which]) + L".png"); !folder.empty() && std::filesystem::is_regular_file(own, error)) {
+        std::ifstream in(own, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (bytes.empty()) bytes = built_in(icon_resources[which]);
+    return decode_bytes(bytes, 512.0f, 512.0f);
+}
+// Any picture Windows can read, as RGBA, made smaller to fit when it is bigger.
+std::optional<frostbite::Image> decode_bytes(const std::vector<unsigned char>& bytes, float most_wide, float most_high) {
     if (bytes.empty() || bytes.size() > (64u << 20)) return std::nullopt;
     const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
     std::optional<frostbite::Image> out;
@@ -130,7 +154,7 @@ std::optional<frostbite::Image> read_backdrop() {
             SUCCEEDED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) {
             frostbite::Image image{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 4)};
             if (SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(image.rgba.size()), image.rgba.data()))) {
-                const float scale = std::min({1.0f, 3072.0f / static_cast<float>(width), 1728.0f / static_cast<float>(height)});
+                const float scale = std::min({1.0f, most_wide / static_cast<float>(width), most_high / static_cast<float>(height)});
                 out = scale < 1.0f ? frostbite::resize(image, std::max(1u, static_cast<std::uint32_t>(width * scale)), std::max(1u, static_cast<std::uint32_t>(height * scale)))
                                    : std::move(image);
             }
@@ -139,9 +163,6 @@ std::optional<frostbite::Image> read_backdrop() {
         out.reset();
     }
     if (com) CoUninitialize();
-    if (out) logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: the loading picture is {} x {}, from {}.",
-                         out->width, out->height, own ? path.string() : std::string("the one built in"));
-    else logging::log(logging::Level::info, logging::Channel::graphics, "Animator Studio: no loading picture was read.");
     return out;
 }
 // One half of the picture. The overlay's atlas is 2048 across, so a wide picture goes in as two rects and
@@ -170,6 +191,10 @@ Images decode() {
                 continue;
             }
             if (index == backdrop_right_index) continue; // filled with its left half
+            if (index >= first_icon) {
+                result[index] = read_icon(index - first_icon);
+                continue;
+            }
             const auto& source = sources[index];
             if (!source.texture) {
                 for (const auto& place : kickflip_places) {
@@ -297,28 +322,11 @@ void fill_animation_studio_images(ImFontAtlas& atlas) noexcept {
     }
 }
 
-bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {
-    Found found;
-    if (!find(picture, found)) return false;
-    const auto& size = loaded().sizes[static_cast<std::size_t>(picture)];
-    const float box_w = max.x - min.x, box_h = max.y - min.y;
-    if (!(size.first && size.second && box_w > 0 && box_h > 0)) return false;
-    const float picture_shape = static_cast<float>(size.first) / static_cast<float>(size.second);
-    const float box_shape = box_w / box_h;
-    // The part of the picture that is shown: the rest is cropped, half off each side.
-    float u = 1.0f, v = 1.0f;
-    if (picture_shape > box_shape) u = box_shape / picture_shape;
-    else v = picture_shape / box_shape;
-    const ImVec2 a(found.uv0.x + (found.uv1.x - found.uv0.x) * (1 - u) * 0.5f, found.uv0.y + (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
-    const ImVec2 b(found.uv1.x - (found.uv1.x - found.uv0.x) * (1 - u) * 0.5f, found.uv1.y - (found.uv1.y - found.uv0.y) * (1 - v) * 0.5f);
-    draw->AddImage(loaded().atlas->TexID, min, max, a, b, tint);
-    return true;
-}
-bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+static bool draw_halves_cover(ImDrawList* draw, StudioPicture left_picture, StudioPicture right_picture, ImVec2 min, ImVec2 max, ImU32 tint) {
     Found left, right;
-    if (!find(StudioPicture::backdrop, left) || !find(StudioPicture::backdrop_right, right)) return false;
-    const auto& left_size = loaded().sizes[static_cast<std::size_t>(StudioPicture::backdrop)];
-    const auto& right_size = loaded().sizes[static_cast<std::size_t>(StudioPicture::backdrop_right)];
+    if (!find(left_picture, left) || !find(right_picture, right)) return false;
+    const auto& left_size = loaded().sizes[static_cast<std::size_t>(left_picture)];
+    const auto& right_size = loaded().sizes[static_cast<std::size_t>(right_picture)];
     const float whole_w = static_cast<float>(left_size.first + right_size.first), whole_h = static_cast<float>(left_size.second);
     const float box_w = max.x - min.x, box_h = max.y - min.y;
     if (!(whole_w > 0 && whole_h > 0 && box_w > 0 && box_h > 0)) return false;
@@ -348,6 +356,10 @@ bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 
     piece(right, static_cast<float>(left_size.first), whole_w, texel, 0);
     return true;
 }
+bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint) {
+    return draw_halves_cover(draw, StudioPicture::backdrop, StudioPicture::backdrop_right, min, max, tint);
+}
+
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint) {
     Found found;
     if (!find(picture, found)) return false;
