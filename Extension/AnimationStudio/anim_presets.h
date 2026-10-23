@@ -107,6 +107,12 @@ inline int stance_version(const std::string& stance, std::optional<bool> switch_
     const bool lead_right = (stance == "goofy") != switch_stance.value_or(false);
     return (lead_right == own_lead_right ? 0 : 2) + (fakie.value_or(false) ? 1 : 0);
 }
+// A saved trick's stance version by the foot it really leads with (preset_leads_right): an edit of one of the game's
+// own clips is labelled regular but stands goofy, and read from its labels alone it was filed under the wrong stance
+// for a goofy rider (OWN STANCE then made another copy each press).
+inline int stance_version(const Preset& p, bool own_lead_right) {
+    return (preset_leads_right(p) == own_lead_right ? 0 : 2) + (p.fakie.value_or(false) ? 1 : 0);
+}
 inline std::string preset_slot(std::string trick, const std::string& pop) {
     for (char& c : trick) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     return trick + "|" + pop;

@@ -877,6 +877,13 @@ void review_fixes_hold() {
     check(pack_conflicts(kicks, ab2).size() == 1, "Two packs with a regular kickflip each are a duplicate");
     select_presets(kicks, ab2, &pick);
     check(kicks[0].active && kicks[1].active && !kicks[2].active, "Chosen A: B's regular kickflip stands down, its goofy one plays");
+    // The stance ticks go by the foot a trick really leads with: an edit of a game clip, labelled regular, stands goofy.
+    Preset game_edit{"Kickflip mid", "kickflip", "mid", false, false, "regular", false};
+    game_edit.leads_right = true;
+    check(stance_version(game_edit, true) == 0 && stance_version(game_edit, false) == 2,
+          "A game trick edited by a goofy rider is their own stance, and switch for a regular one");
+    game_edit.fakie = true;
+    check(stance_version(game_edit, true) == 1 && stance_version(game_edit, false) == 3, "and its fakie copies are fakie and switch fakie");
     // A key on the end bracket a frame past the clip (old builds) is put back on the end, not refused.
     const auto past = from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"end":1.03,"tracks":[{"joint":7,"keys":[{"t":0.5,"r":[0,0,0,1],"p":[0,0,0]},{"t":1.03,"r":[0,0,0,1],"p":[0,0,0]}]}]})");
     check(past.tracks.size() == 1 && past.tracks[0].keys.size() == 2 && past.tracks[0].keys[1].time == 1.0f && past.end == 1.0f,

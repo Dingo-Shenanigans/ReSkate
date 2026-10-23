@@ -1166,9 +1166,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
     // played mirrored instead of the switch version made for it.)
     if (!test_trick.empty())
         if (const auto t = std::find_if(requested.begin(), requested.end(), [&](const Preset& p) { return p.name == test_trick; }); t != requested.end()) {
-            const auto stance_of = [](const Preset& p) {
-                return std::pair<bool, bool>{(p.stance == "goofy") != p.switch_stance.value_or(false), p.fakie.value_or(false)};
-            };
+            const auto stance_of = [](const Preset& p) { return std::pair<bool, bool>{preset_leads_right(p), p.fakie.value_or(false)}; };
             std::map<std::pair<bool, bool>, Preset*> others;
             for (auto& p : requested) {
                 if (p.trick != t->trick) continue;
@@ -5923,7 +5921,7 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
                 static constexpr std::array<const char*, 4> stances{"", ", fakie", ", switch", ", switch fakie"};
                 const auto pop = pack_name.empty() ? p->pop : effective_pop(out.pack, p->pop);
                 std::string line = shown_name(s, name) + " (" + (pop.empty() ? std::string("any pop") : pop + " pop") +
-                                   stances[static_cast<std::size_t>(stance_version(p->stance, p->switch_stance, p->fakie, studio_goofy(s.stance_choice)))] + ")";
+                                   stances[static_cast<std::size_t>(stance_version(*p, studio_goofy(s.stance_choice)))] + ")";
                 out.tricks.push_back(std::move(line));
             }
         }

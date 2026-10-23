@@ -2751,7 +2751,7 @@ std::vector<std::pair<std::string, ImU32>> tags_of(const studio::Preset& p, cons
     tags.emplace_back(pop.empty() ? "ANY POP" : upper(pop) + " POP", blue);
     // Its stance as you ride: nothing for your own, else fakie, switch or switch fakie.
     static constexpr std::array<const char*, 4> stances{"", "FAKIE", "SWITCH", "SWITCH FAKIE"};
-    if (const auto version = studio::stance_version(p.stance, p.switch_stance, p.fakie, ui().own_lead_right); version > 0)
+    if (const auto version = studio::stance_version(p, ui().own_lead_right); version > 0)
         tags.emplace_back(stances[static_cast<std::size_t>(version)], IM_COL32(196, 104, 0, 255));
     if (p.entry == "rail") tags.emplace_back("OFF A RAIL", IM_COL32(36, 150, 76, 255));
     return tags;
@@ -3030,7 +3030,7 @@ float stance_versions(ImDrawList* d, const Fonts& f, const studio::View& v, cons
     for (const auto& q : v.presets) {
         if (q.trick != p->trick || q.pop != p->pop) continue;
         if (!among.empty() && std::find(among.begin(), among.end(), q.name) == among.end()) continue;
-        const auto version = static_cast<std::size_t>(studio::stance_version(q.stance, q.switch_stance, q.fakie, v.own_lead_right));
+        const auto version = static_cast<std::size_t>(studio::stance_version(q, v.own_lead_right));
         if (have[version].empty() || q.name == name) have[version] = q.name;
     }
     static constexpr std::array<const char*, 4> labels{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
