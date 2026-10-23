@@ -5768,16 +5768,24 @@ const char* share_readme =
     "Animations made in older builds are brought up to date when they are first read.\r\n";
 } // namespace
 
-bool export_pack(const std::string& pack_name, std::string& message) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    try {
-        if (!s.library_read) read_library_locked(s);
-        const auto folder = library_folder();
-        std::vector<std::pair<std::string, std::string>> files;
-        std::vector<std::string> names;
-        std::string title, saved_first;
-        bool editable = false; // whether the pack lets others edit its tricks
+namespace {
+// A pack's files as they are shared (export_pack, share_pack): `pack_name` "" for every saved animation.
+struct Shared {
+    std::vector<std::pair<std::string, std::string>> files;
+    std::vector<std::string> tricks; // a line each: "Kickflip (mid pop, switch)"
+    std::string title, saved_first;
+    PresetPack pack;
+    std::size_t animations{};
+};
+Shared shared_files_locked(State& s, const std::string& pack_name) {
+    if (!s.library_read) read_library_locked(s);
+    Shared out;
+    std::vector<std::string> names;
+    bool editable = false; // whether the pack lets others edit its tricks
+    auto& files = out.files;
+    auto& title = out.title;
+    auto& saved_first = out.saved_first;
+    {
         if (!pack_name.empty()) {
             if (pack_name != file_safe(pack_name)) throw std::runtime_error("There is no pack called " + pack_name + ".");
             // What is shared is what you see: changes not saved yet are saved first.
@@ -5788,6 +5796,7 @@ bool export_pack(const std::string& pack_name, std::string& message) {
                 saved_first = "Saved and exported ";
             }
             auto pack = read_pack_file(pack_name);
+            out.pack = pack;
             title = pack.name;
             // The pack goes with its maker's key, and every trick in it on (what is switched off here is this PC's choice).
             auto shared = pack;
@@ -5831,8 +5840,80 @@ bool export_pack(const std::string& pack_name, std::string& message) {
             files.emplace_back(name + "/" + name + ".json", std::move(text));
             files.emplace_back(name + "/" + name + ".clip", read_whole(clip));
             ++animations;
+            // What it is, for whoever looks at the pack: its trick, its pop, its stance.
+            if (const auto p = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& x) { return x.name == name; }); p != s.presets.end()) {
+                static constexpr std::array<const char*, 4> stances{"", ", fakie", ", switch", ", switch fakie"};
+                const auto pop = pack_name.empty() ? p->pop : effective_pop(out.pack, p->pop);
+                std::string line = shown_name(s, name) + " (" + (pop.empty() ? std::string("any pop") : pop + " pop") +
+                                   stances[static_cast<std::size_t>(stance_version(p->stance, p->switch_stance, p->fakie, studio_goofy(s.stance_choice)))] + ")";
+                out.tricks.push_back(std::move(line));
+            }
         }
+        out.animations = animations;
         if (!animations) throw std::runtime_error(skipped ? "Everything here was made by someone else: it is theirs to share." : "There is nothing saved in this pack to export.");
+    }
+    return out;
+}
+} // namespace
+bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message); // below
+bool share_pack(const std::string& pack_name, SharedPack& out, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (pack_name.empty()) throw std::runtime_error("Choose a pack to share.");
+        auto shared = shared_files_locked(s, pack_name);
+        out.name = shared.title;
+        out.made_by = shared.pack.made_by.empty() ? s.your_name : shared.pack.made_by;
+        out.description = shared.pack.description;
+        out.version = shared.pack.version;
+        out.published = shared.pack.published;
+        out.files = std::move(shared.files);
+        out.tricks = std::move(shared.tricks);
+        std::error_code error;
+        if (std::filesystem::is_regular_file(pack_thumbnail_file(out.name), error)) out.picture = read_whole(pack_thumbnail_file(out.name));
+        if (!shared.saved_first.empty()) read_library_locked(s);
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) {
+        message = e.what();
+        return false;
+    }
+}
+void pack_published(const std::string& pack_name, const std::string& version) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    std::string message = pack_name + " " + version + " is on Thunderstore.";
+    (void)change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
+        pack.version = version;
+        pack.published = version;
+    });
+}
+bool set_pack_description(const std::string& pack_name, const std::string& description, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = "Description saved.";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) { pack.description = description.substr(0, 2000); });
+}
+bool import_pack_zip(const std::filesystem::path& zip, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return import_zips_locked(s, {zip}, false, message);
+}
+std::filesystem::path studio_folder() { return library_folder(); }
+std::filesystem::path pack_export_folder() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return pack_export_folder(s);
+}
+bool export_pack(const std::string& pack_name, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        auto shared = shared_files_locked(s, pack_name);
+        auto& files = shared.files;
+        const auto& title = shared.title;
+        const auto& saved_first = shared.saved_first;
+        const auto animations = shared.animations;
         files.emplace_back("README.txt", share_readme);
         const auto out_folder = pack_export_folder(s);
         const auto zip = out_folder / (file_safe(title) + ".zip");
@@ -5853,6 +5934,7 @@ bool export_pack(const std::string& pack_name, std::string& message) {
     }
 }
 
+bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message);
 bool import_packs(std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -5869,6 +5951,15 @@ bool import_packs(std::string& message) {
         publish_locked(s);
         return false;
     }
+    return import_zips_locked(s, zips, true, message);
+}
+// Takes in `zips` (moved into the inbox's imported folder after, with `move_done`): every animation, pack and picture in
+// them checked first, names already taken given the next variation. A Thunderstore package's own files (manifest.json,
+// reskate-animations.json, icon.png, README.md) are passed over.
+bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message) {
+    const auto folder = library_folder();
+    const auto inbox = pack_import_folder(s);
+    std::error_code error;
     std::size_t animations = 0, packs = 0, renamed = 0;
     std::vector<std::string> problems;
     for (const auto& path : zips) {
@@ -5898,6 +5989,7 @@ bool import_packs(std::string& message) {
                 if (dot == std::string::npos || stat.m_uncomp_size > 64ull * 1024 * 1024) continue;
                 const std::string stem = file.substr(0, dot), ext = file.substr(dot);
                 if (ext != ".json" && ext != ".clip" && ext != ".png") continue;
+                if (dir.empty() && (stem == "manifest" || stem == "reskate-animations")) continue; // a Thunderstore package's own
                 if (ext == ".png" && stat.m_uncomp_size > 4ull * 1024 * 1024) continue;
                 if (stem != file_safe(stem)) continue; // only the names the studio itself makes
                 size_t size = 0;
@@ -5969,6 +6061,7 @@ bool import_packs(std::string& message) {
             remember_locked_clips(made_elsewhere);
             for (auto& [pack_name, text] : pack_files) {
                 auto pack = read_pack_json(Json::parse(text));
+                pack.published.clear(); // its maker's, not this PC's
                 for (auto& [slot, list] : pack.slots)
                     for (auto& name : list)
                         if (const auto r = rename.find(name); r != rename.end()) name = r->second;
@@ -5984,9 +6077,11 @@ bool import_packs(std::string& message) {
                 ++packs;
             }
             // Out of the way, so the next Import does not take it in again.
-            std::filesystem::create_directories(inbox / L"imported", error);
-            std::filesystem::rename(path, inbox / L"imported" / path.filename(), error);
-            if (error) std::filesystem::remove(path, error);
+            if (move_done) {
+                std::filesystem::create_directories(inbox / L"imported", error);
+                std::filesystem::rename(path, inbox / L"imported" / path.filename(), error);
+                if (error) std::filesystem::remove(path, error);
+            }
         } catch (const std::exception& e) {
             problems.push_back(path.filename().string() + ": " + e.what());
         }

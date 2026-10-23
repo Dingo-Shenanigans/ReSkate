@@ -23,8 +23,9 @@ namespace fs = std::filesystem;
 namespace dingosdk::launcher_mods {
 namespace {
 
-// What the game loads from a mod, and the files that only describe one.
-constexpr std::array<std::string_view, 2> content_markers{"layout.toc", "reskate-levels.json"};
+// What the game loads from a mod, and the files that only describe one. reskate-animations.json marks an Animator
+// Studio pack: its tricks, which the studio takes in from the Mods folder.
+constexpr std::array<std::string_view, 3> content_markers{"layout.toc", "reskate-levels.json", "reskate-animations.json"};
 constexpr std::array<std::string_view, 2> info_markers{"manifest.json", "reskate-mod.json"};
 // Thunderstore requires these at the top of a package (lower case here); they
 // follow the mod in when it is packed one folder deeper.

@@ -56,6 +56,9 @@ struct PresetPack {
     std::set<std::string> off; // members switched off: kept in the pack, but they do not play
     // Its maker lets others open its tricks to edit and copy them. Off (the default), they play for others, but are locked.
     bool editable{};
+    std::string description;       // what its maker says of it, shown wherever it is shared (MARKET, an import)
+    std::string version{"1.0.0"};  // its version on Thunderstore: the next published is this, or one past it
+    std::string published;         // the version last published from this PC, "" never
     bool alternates(const std::string& slot) const {
         const auto found = slot_alternate.find(slot);
         return found != slot_alternate.end() ? found->second : alternate;
@@ -293,6 +296,9 @@ inline Json pack_json(const PresetPack& pack) {
     if (!pack.maker_key.empty()) out["maker_key"] = pack.maker_key;
     if (!pack.off.empty()) out["off"] = Json(std::vector<std::string>(pack.off.begin(), pack.off.end()));
     if (pack.editable) out["editable"] = true;
+    if (!pack.description.empty()) out["description"] = pack.description;
+    if (pack.version != "1.0.0") out["release"] = pack.version; // "version" is the file format
+    if (!pack.published.empty()) out["published"] = pack.published;
     return out;
 }
 inline PresetPack read_pack_json(const Json& root) {
@@ -321,6 +327,9 @@ inline PresetPack read_pack_json(const Json& root) {
     if (const auto rule = root.value("pop_rule", ""); rule == "any" || rule == "low" || rule == "mid" || rule == "high") out.pop_rule = rule;
     out.maker_key = root.value("maker_key", "").substr(0, 64);
     out.editable = root.value("editable", false);
+    out.description = root.value("description", "").substr(0, 2000);
+    out.version = root.value("release", "1.0.0").substr(0, 32);
+    out.published = root.value("published", "").substr(0, 32);
     if (root.contains("off") && root.at("off").is_array() && root.at("off").size() <= 4000)
         for (const auto& name : root.at("off"))
             if (name.is_string() && !name.string().empty()) out.off.insert(name.string());

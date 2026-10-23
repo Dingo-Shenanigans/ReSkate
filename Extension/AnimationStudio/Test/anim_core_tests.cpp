@@ -12,6 +12,7 @@
 #include "Extension/AnimationStudio/anim_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
+#include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/recording_rules.h"
 #include <limits>
 #include <filesystem>
@@ -29,6 +30,26 @@ bool near(float a, float b, float within = 1e-3f) { return std::abs(a - b) < wit
 bool same_turn(const Quat& a, const Quat& b) {
     const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
     return d > 0.9999f;
+}
+
+// The MARKET's packages: their names on Thunderstore, their versions, and the README written and read back.
+void market_package_words() {
+    using namespace market;
+    check(package_name("Steezy Tre's Pack!") == "Steezy_Tre_s_Pack" && package_name("***") == "Animation_Pack", "Package names are letters, digits and _");
+    check(next_version("1.0.0", "") == "1.0.0" && next_version("1.0.0", "1.0.0") == "1.0.1" && next_version("2.3.4", "1.0.0") == "2.3.4" &&
+              next_version("bad", "") == "1.0.0",
+          "A published version is gone past, any other is kept");
+    std::string about;
+    std::vector<std::string> tricks;
+    read_readme(readme("Street", "Line one.\nLine two.", {"Kickflip (mid pop)", "Heelflip (any pop, switch)"}, "Fourth"), about, tricks);
+    check(about == "Line one.\nLine two." && tricks.size() == 2 && tricks[1] == "Heelflip (any pop, switch)", "The README's description and tricks read back");
+    // A pack's file version and its release on Thunderstore are kept apart.
+    PresetPack pack;
+    pack.name = "Street";
+    pack.version = "1.2.0";
+    pack.description = "About it";
+    const auto back = read_pack_json(pack_json(pack));
+    check(back.version == "1.2.0" && back.description == "About it", "A pack keeps its release and description beside its file version");
 }
 
 // Packs: tricks switched off, a maker's lock, the playlist, and a trick's stance versions.
@@ -1711,6 +1732,7 @@ int main(int argc, char** argv) {
         native_trick_cards();
         trick_names_match();
         packs_and_playlist();
+        market_package_words();
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();

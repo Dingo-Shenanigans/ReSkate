@@ -306,6 +306,23 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message);
 // the one made fakie plays when he rolls fakie). It keeps its foot when it is edited and saved. `made` is its name.
 bool make_stance_version(const std::string& animation, int version, std::string& made, std::string& message);
 bool delete_pack(const std::string& name, std::string& message); // the pack, not the tricks in it
+// What its maker says of a pack (up to 2000 characters), shown wherever it is shared.
+bool set_pack_description(const std::string& pack, const std::string& description, std::string& message);
+// A pack as it is shared (EXPORT, the MARKET): its files - its pack file and picture, and its tricks with this PC's key -
+// with what it is called, what is in it (a line a trick) and its picture's PNG ("" none). False, with why, when it cannot
+// be: a trick in it made by someone else, or nothing saved in it.
+struct SharedPack {
+    std::string name, made_by, description, version, published;
+    std::vector<std::pair<std::string, std::string>> files; // path in the zip, bytes
+    std::vector<std::string> tricks;
+    std::string picture;
+};
+bool share_pack(const std::string& pack, SharedPack& out, std::string& message);
+void pack_published(const std::string& pack, const std::string& version); // it went up on Thunderstore as this version
+// One zip of packs put in the library (as IMPORT does, for the zip named): the MARKET's installs.
+bool import_pack_zip(const std::filesystem::path& zip, std::string& message);
+std::filesystem::path studio_folder();       // ReSkate.Tricks
+std::filesystem::path pack_export_folder();  // where exports go
 // A trick in a pack switched off (it stays in the pack, but does not play) or on again.
 bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
 void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in PACKS
