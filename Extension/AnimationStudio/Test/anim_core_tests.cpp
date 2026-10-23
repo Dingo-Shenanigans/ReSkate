@@ -977,6 +977,14 @@ void timing_and_stance_edge_cases() {
         try { (void)from_json(text); } catch (const std::exception&) { refused = true; }
         check(refused, "Malformed timeline and stance metadata is rejected before reaching playback");
     }
+    {
+        // A clip 1.9167 s long (115 frames at 60): its end bracket used to round onto 1.9333 (58 frames at 30), past it.
+        const auto rounded = from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1.9167,"start":0.5,"end":1.9333})");
+        check(near(rounded.end, 1.9167f), "A bracket rounded a frame past the clip is put back on it, not refused");
+        Animation edge;
+        edge.start = 0.5f;
+        check(move_window_edge(edge, 2, 1.9167f, 1.9167f) && edge.end <= 1.9167f, "The end bracket never goes past the clip");
+    }
 }
 void retargeted_edits_preserve_native_rig_and_convert_joint_frames() {
     std::vector<Joint> source(skeleton_joints), native(skeleton_joints);

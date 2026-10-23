@@ -962,13 +962,13 @@ Animation from_json(std::string_view text) {
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
     require(duration >= 0 && duration < 120, "bad duration");
-    require(std::isfinite(result.start) && std::isfinite(result.end), "bad animation window");
-    // A window a little off the clip (a bracket rounded onto a frame past its end, by builds before 2026-10-23) is put
-    // back on it rather than refusing the whole trick.
-    if (duration > 0) {
-        result.start = std::clamp(result.start, 0.0f, duration);
-        if (result.end != -1) result.end = std::clamp(result.end, result.start, duration);
-    }
+    // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
+    // is put back on it rather than refusing the whole trick; anything else wrong is refused.
+    constexpr float frame = 1.0f / key_fps + 0.01f;
+    require(result.start >= 0 && result.start <= duration + frame && (result.end == -1 ||
+            (result.end >= result.start && result.end <= duration + frame)), "bad animation window");
+    result.start = std::min(result.start, duration);
+    if (result.end != -1) result.end = std::clamp(result.end, result.start, duration);
     std::size_t total = 0;
     if (root.contains("tracks")) {
         const auto& tracks = root.at("tracks");
