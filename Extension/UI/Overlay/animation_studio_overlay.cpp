@@ -158,7 +158,6 @@ struct Ui {
     std::string label_for;            // the trick it was filled for
     std::array<char, 64> your_name{}; // SETTINGS > Tricks: MADE BY
     bool your_name_filled{};
-    std::uint64_t names_for{};
     std::string message;
     double message_until{};
     std::string status_said;  // the studio's last line, and when it has been up long enough to have been read
@@ -282,7 +281,6 @@ struct Ui {
     bool unsaved{};
     bool zoom_to_playhead{};
     // The game's animation tree (TRICKS > GAME ANIMATIONS).
-    bool browse_assets{};
     bool asset_ready_only{}, asset_inspect{};
     std::array<char, 64> asset_query{}; // the search box over TRICKS
     std::array<char, 64> pack_query{};  // the search box over MY PACKS
@@ -315,7 +313,6 @@ struct Ui {
     std::string asset_filter;
     std::string asset_document, asset_json_path;
     std::vector<std::pair<std::string, std::string>> asset_history;
-    std::size_t asset_return_page{};
     std::string asset_category;
     std::size_t asset_page{};
     ImVec2 last_mouse{};
@@ -2188,7 +2185,6 @@ std::vector<Row> asset_rows(const studio::View& v) {
                             : asset.decode_state == "pending" ? "Queued" : "Indexed",
                             description, [name = asset.asset] {
                                 auto& s = ui();
-                                s.asset_return_page = s.asset_page;
                                 s.asset_document = name;
                                 s.asset_json_path.clear();
                                 s.asset_history.clear();
@@ -2983,20 +2979,17 @@ void open_game_trick(const studio::GameTrick& t) {
     std::string m;
     studio::load_game_trick(t, m);
     say(m);
-    ui().names_for = 0;
 }
 void open_saved(const std::string& name) {
     // EDIT on the trick that is open, with its changes: it stays open as it is.
     if (ui().unsaved && !ui().open_name.empty() && _stricmp(name.c_str(), ui().open_name.c_str()) == 0) {
         say(name + " is open, with your changes.");
-        ui().names_for = 0;
         return;
     }
     if (ask_before_open([name] { open_saved(name); }, name)) return;
     std::string m;
     studio::load(name, m);
     say(m);
-    ui().names_for = 0;
 }
 // Watching a saved trick (preview mode): the studio plays it with nothing else on screen but a card about it and the
 // buttons to watch it by. `pack`: the pack it was opened from, shown on the card ("" none).
@@ -3011,7 +3004,6 @@ void preview_trick(const std::string& pack, const std::string& name, bool from_p
     u.preview_name = name;
     u.preview_from_pack = from_pack;
     u.menu = false;
-    u.names_for = 0;
 }
 // Opens a saved trick to edit, or - one locked to its maker - to watch.
 void open_or_preview(const studio::View& v, const std::string& name, const std::string& pack = {}) {
@@ -3767,7 +3759,6 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
             u.trick_group = g.key;
             u.trick_page.clear();
             u.cards_scroll = 0;
-            u.browse_assets = g.key == "*assets";
         }
         ImGui::PopID();
         const bool chosen = u.trick_group == g.key;

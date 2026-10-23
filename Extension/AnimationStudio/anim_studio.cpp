@@ -209,7 +209,6 @@ struct State {
     bool idle_read{};
     // Record all tricks (trick_batch.h): the next landed trick is saved to the recorded tricks and the studio stays closed.
     bool batch{};
-    bool manual_recording{};
     std::string batch_trick, batch_pop;
     std::optional<BatchTake> batch_take;
     bool record_all_requested{};
@@ -1337,7 +1336,7 @@ void publish_locked(State& s, bool edits_changed = true) {
     snap->peek_edits = s.peek_edits;
     snap->peek_since = s.peek_since;
     snap->open = s.open;
-    snap->play_in_game = s.play_in_game && !s.manual_recording;
+    snap->play_in_game = s.play_in_game;
     // The stance the studio is set to. Standing him the other way round is done by turning him about on
     // the board, not by mirroring the clip: mirroring was tried twice, over all 395 joints and over the
     // body alone, and both tore the skater up on screen. Turning the placement cannot do that - it is one
@@ -1492,17 +1491,14 @@ void finish_recording(Live& l) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     if (s.recording == Recording::off) return; // canceled while the clip was assembled
-    if (s.batch || s.manual_recording) {
-        // Save recognized takes without opening the studio or driving the skater.
-        const bool scripted = s.batch;
+    if (s.batch) {
+        // Record all tricks: the take is saved without opening the studio or driving the skater.
         s.batch = false;
-        s.recording = s.manual_recording ? Recording::waiting : Recording::off;
+        s.recording = Recording::off;
         const float air = clip->landing - clip->takeoff;
         // Its pop is the one the take asked for, as the game itself grades it (EnumGS.PopHeight, pop_grades.h).
-        const auto grade = scripted ? pop_grades::take_pop_height() :
-            grade_is_ours.load(std::memory_order_acquire) ?
-                pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), now_seconds() - l.takeoff_at)) : 0;
-        const auto decision = evaluate_recorded_take(scripted, l.recorded_trick, s.batch_trick, s.batch_pop, grade, !clip->board.empty(), air);
+        const auto grade = pop_grades::take_pop_height();
+        const auto decision = evaluate_recorded_take(true, l.recorded_trick, s.batch_trick, s.batch_pop, grade, !clip->board.empty(), air);
         BatchTake take{false, l.recorded_trick, decision.pop, {}, air};
         if (decision.rejection == TakeRejection::missing_trick) take.message = "the game did not name the trick";
         // Another trick than asked (a varial heelflip that came out a heelflip) would be saved over that trick's clip.
@@ -1541,10 +1537,7 @@ void finish_recording(Live& l) {
         }
         logging::log(Level::info, Channel::skater, "Animation Studio: recorded {} ({} pop, {:.2f} s in the air){}{}", take.trick.empty() ? "a trick" : take.trick,
                      take.pop, air, take.ok ? "" : ": not kept, ", take.message);
-        if (s.manual_recording) {
-            s.status = take.ok ? std::format("Saved {} ({} pop). Skate the next trick; F8 stops recording.", take.trick, take.pop)
-                               : "Not kept: " + take.message + ". Waiting for the next trick.";
-        } else s.batch_take = std::move(take);
+        s.batch_take = std::move(take);
         publish_locked(s);
         return;
     }
@@ -1686,19 +1679,6 @@ void record(Live& l, double at, bool air, const std::string& trick, MotionState 
         return;
     }
     if (at - l.landing_at >= after_landing) {
-        {
-            std::lock_guard lock(s.mutex);
-            if (s.manual_recording) {
-                const auto landed = physics_state(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
-                if (!landed || (*landed != 100 && *landed != 101)) {
-                    l.landing_at = -1;
-                    l.ring.clear();
-                    s.recording = Recording::waiting;
-                    s.status = "The landing did not hold. Waiting for the next trick.";
-                    return;
-                }
-            }
-        }
         finish_recording(l);
         l.landing_at = -1;
         l.ring.clear();
@@ -4202,12 +4182,6 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
     {
         std::lock_guard lock(s.mutex);
         if (!s.snapshot) publish_locked(s);
-        if (s.manual_recording && multiplayer_session_active()) {
-            s.manual_recording = false;
-            s.recording = Recording::off;
-            s.status = "Manual recording stopped: solo play only.";
-            publish_locked(s);
-        }
         open_flag.store(open, std::memory_order_release);
         const bool room_now = open && in_room_flag.load(std::memory_order_acquire);
         if (room_flag.exchange(room_now, std::memory_order_acq_rel) && !room_now)
@@ -4216,11 +4190,6 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             if (open && !s.test_trick.empty()) {
                 s.test_returned = std::exchange(s.test_trick, {});
                 s.tricks_read = false;
-            }
-            if (open && s.manual_recording) {
-                s.manual_recording = false;
-                s.recording = Recording::off;
-                s.status = "Manual recording stopped. Your saved takes are in TRICKS.";
             }
             s.open = open;
             s.base_yaw_valid = false;
