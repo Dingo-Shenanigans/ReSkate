@@ -28,17 +28,20 @@ inline constexpr char category[] = "misc";
 inline constexpr char studio_url[] = "https://github.com/FourthStudio/ReSkate-Animator-Studio";
 inline constexpr char description_tag[] = "Animator Studio pack: ";
 
-// THE CREW: the testers who shaped the Animator Studio, by their Thunderstore team. Their packs are marked CREW, come
-// first in the shop's own picks, and each of them has a page of their own in the MARKET. Kept here, with the studio:
-// a new tester comes in with a new build.
+// THE CREW: the testers who shaped the Animator Studio, by their Thunderstore team. Their packs are marked CREW
+// CERTIFIED, come first in the shop's own picks, and each of them has a page of their own in the MARKET. Kept here, in
+// the build and not in a file, so nobody can make themselves crew: a pack's team is the one Thunderstore published it
+// under, which only that team's members can publish to. A new tester comes in with a new build. (Each team was read
+// off the tester's own service key with Thunderstore's current-user call; the keys themselves are not kept anywhere.)
 struct CrewMember {
     std::string_view team, name, role, about;
 };
 inline constexpr std::array crew_members{
-    CrewMember{"Fourth_Studio", "Fourth", "Studio lead", "Made the Animator Studio, Board Break and Road Rash. Keys every flip by hand, twice."},
-    CrewMember{"22SH", "22SH", "Animator", "Lives in the graph editor. If a catch looks floaty, 22SH has already fixed it."},
-    CrewMember{"Norms", "Norms", "Stance & rigs", "Worked out how the game mirrors a skater. Regular, goofy, switch: Norms checked them all."},
-    CrewMember{"Steez", "Steez", "Tester", "Broke the studio more times than anyone, on purpose, so you never have to."},
+    CrewMember{"leafbro", "leaf.bro", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"Myawsometeam", "Setsu", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"smonky", "smonk", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
+    CrewMember{"reskate_animation_editor", "philsteezy", "Tester", "Tested the Animator Studio before it went out, so your tricks land the way you keyed them."},
 };
 // Sample packs, so the shop can be seen full before it is: shown after the real ones, with covers made by the cover
 // designer, and nothing to GET. Switched off for release.

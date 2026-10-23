@@ -5383,13 +5383,23 @@ float crew_section(ImDrawList* d, const Fonts& f, const PackList& all, const Sho
         u.market_crew.clear();
         u.market_scroll = 0;
     }
-    // The crew, a card each.
+    // The crew, a card each: as many as fit, those with the newest packs first (MEET THE CREW has them all).
     const float mx = (col.x0 + 700) * k, mw = (col.x0 + col.width - 48) * k - mx, gap = 22 * k;
-    const auto count = static_cast<float>(studio::market::crew_members.size());
+    std::vector<std::pair<const studio::market::CrewMember*, std::string>> crew;
+    for (const auto& member : studio::market::crew_members) {
+        std::string newest;
+        for (const auto* p : all)
+            if (same_team(p->owner, member.team)) newest = std::max(newest, p->created.empty() ? p->updated : p->created);
+        crew.emplace_back(&member, std::move(newest));
+    }
+    std::stable_sort(crew.begin(), crew.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    const std::size_t fit = static_cast<std::size_t>(std::max(1.0f, std::floor((mw + gap) / (250 * k + gap))));
+    if (crew.size() > fit) crew.resize(fit);
+    const auto count = static_cast<float>(std::max<std::size_t>(crew.size(), 1));
     const float w = (mw - gap * (count - 1)) / count;
     float x = mx;
-    for (const auto& member : studio::market::crew_members) {
-        member_card(d, f, member, all, ImVec2(x, y + 110 * k), w, covers);
+    for (const auto& [member, newest] : crew) {
+        member_card(d, f, *member, all, ImVec2(x, y + 110 * k), w, covers);
         x += w + gap;
     }
     return h;
@@ -5608,7 +5618,12 @@ void crew_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     PackList theirs;
     for (const auto* p : all)
         if (chosen ? same_team(p->owner, chosen->team) : p->crew) theirs.push_back(p);
-    y += shop_grid(d, f, v, m, sorted(std::move(theirs), "new"), ImVec2(ix, y), iw, top, bottom, covers);
+    if (theirs.empty())
+        y += paragraph(d, body(f, 17 * k), 17 * k, ImVec2(ix, y), std::min(iw, 820 * k), soft,
+                       chosen ? "No packs out yet. Their first one lands here, and all over the shop, with the CREW CERTIFIED stamp on it."
+                              : "No crew packs out yet. Their first ones land here, and all over the shop, with the CREW CERTIFIED stamp on them.") +
+             40 * k;
+    else y += shop_grid(d, f, v, m, sorted(std::move(theirs), "new"), ImVec2(ix, y), iw, top, bottom, covers);
     end_region(d, ImVec2(0, top), ImVec2(display.x, bottom), y + u.market_scroll - top + 20 * k, u.market_scroll, k);
 }
 
@@ -5978,7 +5993,7 @@ void about_page(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2
         const auto head = paper_label(d, f, anton(f, 40 * k), 40 * k, ImVec2(ix, y), title, kind, seed, -1.2f, kind == PaperKind::white ? shop_ink : IM_COL32_WHITE,
                                       ImVec2(26 * k, 13 * k), 1 * k);
         y += head.y + 30 * k;
-        const float gap = 22 * k, count = static_cast<float>(std::max<std::size_t>(names.size(), 4));
+        const float gap = 22 * k, count = static_cast<float>(std::clamp<std::size_t>(names.size(), 4, 5)); // 4 or 5 a row, then the next row
         const float w = (iw - gap * (count - 1)) / count, h = 150 * k;
         float x = ix;
         std::uint32_t s = seed;

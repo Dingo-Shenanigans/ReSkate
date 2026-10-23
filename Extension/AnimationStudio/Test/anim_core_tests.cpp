@@ -89,7 +89,9 @@ void market_package_words() {
               day_number("1970-01-01") == 0 && day_number("2026-10-23T09:56:44Z") == day_number("2026-10-23") && day_number("") == -1 &&
               day_number("2026-13-01") == -1,
           "Dates count in days");
-    check(crew_member("fourth_studio") != nullptr && crew_member("Someone") == nullptr, "THE CREW is found by team, in any case");
+    check(crew_member("fiendskateboards") != nullptr && crew_member("LeafBro") != nullptr && crew_member("Someone") == nullptr &&
+              crew_member("leaf.bro") == nullptr,
+          "THE CREW is found by team (not by name), in any case");
     pack.published = "1.0.0";
     pack.published_as = "Fourth_Studio-Street";
     check(read_pack_json(pack_json(pack)).published_as == "Fourth_Studio-Street", "A pack keeps the package it went up as");
