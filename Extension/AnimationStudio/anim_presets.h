@@ -28,6 +28,9 @@ struct Preset {
     bool locked{};
     // Where it stands in the playlist when the playlist plays (select_playlist): the order it takes its turn in.
     int order{-1};
+    // Switched to PLAY on its own (MY TRICKS): it plays in game whichever packs are on (where none of theirs has its
+    // trick, pop and stance). A trick saved or put in a pack starts switched off.
+    bool playing{};
 };
 // What to do with a trick and pop that more than one pack that is on has: "*" (or nothing) play any of them at random,
 // attempt by attempt; a pack's name: that pack's plays it. By slot (preset_slot).
@@ -148,7 +151,10 @@ inline std::vector<PackConflict> pack_conflicts(std::span<const Preset> presets,
     }
     return out;
 }
-inline void select_presets(std::span<Preset> presets, std::span<const PresetPack> packs, const ConflictChoices* choices = nullptr) {
+// `playing`: the tricks switched to PLAY on their own (MY TRICKS); with it, only those play when no pack is on, and they
+// play beside the packs that are on. Without it, every saved trick plays when no pack is on (as before PLAY).
+inline void select_presets(std::span<Preset> presets, std::span<const PresetPack> packs, const ConflictChoices* choices = nullptr,
+                           const std::set<std::string>* playing = nullptr) {
     std::map<std::string, std::pair<Preset*, std::size_t>> selected; // pack and stance slot -> the pick, its place
     std::set<std::string> cycling; // pack and stance slots with at least one variant in their cycle
     // Pack and trick slots with anything linked into their cycle: an unlinked variant of one never plays, in
@@ -170,6 +176,7 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
         const auto slot = preset_slot(p.trick, p.pop);
         const auto compatible_slot = compatible(p, p.pop);
         if (packs.empty()) {
+            if (playing && !playing->contains(p.name)) continue; // not switched to PLAY
             p.included = true;
             auto& [picked, place] = selected[compatible_slot];
             if (!picked || p.saved_at > picked->saved_at || (p.saved_at == picked->saved_at && p.name < picked->name)) picked = &p;
@@ -213,6 +220,22 @@ inline void select_presets(std::span<Preset> presets, std::span<const PresetPack
                 }
             }
         }
+    // Switched to PLAY on their own: they play beside the packs, where none of the packs' plays that trick, pop and stance
+    // (the newest of them, where there is more than one).
+    if (playing && !packs.empty()) {
+        std::set<std::string> taken;
+        for (const auto& p : presets)
+            if (p.active) taken.insert(compatible(p, p.pack_pop ? *p.pack_pop : p.pop));
+        std::map<std::string, Preset*> loose;
+        for (auto& p : presets) {
+            if (p.active || !playing->contains(p.name)) continue;
+            const auto key = compatible(p, p.pop);
+            if (taken.contains(key)) continue;
+            auto& pick = loose[key];
+            if (!pick || p.saved_at > pick->saved_at || (p.saved_at == pick->saved_at && p.name < pick->name)) pick = &p;
+        }
+        for (auto& [key, pick] : loose) pick->active = pick->included = true;
+    }
 }
 // ---- the playlist ----------------------------------------------------------------------------------
 // What plays in game when the playlist is on, instead of the packs that are on: whole packs and single tricks, in the

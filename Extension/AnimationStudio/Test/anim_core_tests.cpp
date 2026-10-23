@@ -1557,6 +1557,24 @@ void native_playback_contracts() {
                                 {"Rail", "ollie", "", false, false, "regular", false, "rail"}};
     select_presets(presets, std::nullopt);
     check(presets[0].active && presets[1].active, "Fixed selection preserves separate ground and rail-exit presets");
+    {
+        // PLAY: with no pack on only the tricks switched to PLAY play; beside packs that are on they play where no pack's
+        // trick of that trick, pop and stance does.
+        std::vector<Preset> mine{{"Flip A", "kickflip", "mid", false, false, "regular", false, "ground"},
+                                 {"Flip B", "kickflip", "mid", false, false, "regular", false, "ground"},
+                                 {"Heel", "heelflip", "mid", false, false, "regular", false, "ground"}};
+        const std::set<std::string> playing{"Flip A", "Heel"};
+        select_presets(mine, std::span<const PresetPack>{}, nullptr, &playing);
+        check(mine[0].active && !mine[1].active && mine[2].active, "With no pack on, only the tricks switched to PLAY play");
+        PresetPack pack;
+        pack.name = "Pack";
+        pack.slots[preset_slot("kickflip", "mid")] = {"Flip B"};
+        select_presets(mine, std::span<const PresetPack>(&pack, 1), nullptr, &playing);
+        check(!mine[0].active && mine[1].active && mine[2].active, "Beside a pack that is on, a trick on PLAY plays where the pack has none of it");
+        pack.off.insert("Flip B");
+        select_presets(mine, std::span<const PresetPack>(&pack, 1), nullptr, &playing);
+        check(mine[0].active && !mine[1].active, "and a trick switched off in its pack does not play from it");
+    }
 }
 // The game's own clips are recognised by the pose: a piece is found when the body moves through it in
 // step, at the right time, the other way round too - and not when he only stands in a pose like it.

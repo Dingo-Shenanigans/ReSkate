@@ -330,6 +330,9 @@ std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
 // A trick in a pack switched off (it stays in the pack, but does not play) or on again.
 bool set_pack_trick_on(const std::string& pack, const std::string& animation, bool on, std::string& message);
+// PLAY (MY TRICKS): on, the trick plays in game on its own, whichever packs are on; off, it does not play at all - from
+// its packs neither (it is switched off in each). A trick saved or put in a pack starts switched off.
+bool set_trick_play(const std::string& animation, bool on, std::string& message);
 void set_pack_favorite(const std::string& pack, bool favorite); // starred packs come first in PACKS
 // Whether others may open the pack's tricks to edit and copy them once it is shared (its maker's choice; locked unless
 // set). It goes with the pack when it is exported.

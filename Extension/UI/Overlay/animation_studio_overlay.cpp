@@ -1869,6 +1869,26 @@ bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on, f
     if (lit && nav().keys) d->AddRect(ImVec2(at.x - 3 * k, at.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), white, h * 0.5f + 3 * k, 0, 2 * k);
     return clicked;
 }
+// PLAY: whether a trick plays in game. Blue with its play mark when it does; an outline when it does not.
+bool play_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool on) {
+    const float k = f.k;
+    const ImVec2 b(at.x + size.x, at.y + size.y);
+    bool lit = false;
+    const bool pressed = hit(id, at, b, &lit);
+    const ImU32 fill = on ? (lit ? IM_COL32(40, 152, 255, 255) : blue) : lit ? IM_COL32(255, 255, 255, 26) : IM_COL32(5, 6, 8, 110);
+    d->AddRectFilled(at, b, fill);
+    if (!on) d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 200 : 110), 0, 0, 1.4f * k);
+    if (lit && nav().keys) chosen_outline(d, at, b, k);
+    const ImU32 ink = on ? white : soft;
+    const float fs = std::min(12 * k, size.y * 0.4f), s = fs * 0.42f, cy = at.y + size.y * 0.5f;
+    ImFont* font = mont(f, fs);
+    const auto [ct, cf] = caps_of(font, fs);
+    const float tw = spaced_width(font, fs, "PLAY", 1.2f * k), mark = s * 1.7f, gap = 7 * k;
+    const float x = at.x + (size.x - mark - gap - tw) * 0.5f;
+    d->AddTriangleFilled(ImVec2(x, cy - s), ImVec2(x + mark, cy), ImVec2(x, cy + s), ink);
+    text_spaced(d, font, fs, ImVec2(x + mark + gap, cy - (cf - ct) * 0.5f - ct), ink, "PLAY", 1.2f * k);
+    return pressed;
+}
 // A typed field, chosen like anything else; pressing it (A, Enter) puts the keyboard in it. Returns true on Enter.
 bool field(const Fonts& f, const char* id, std::array<char, 64>& buffer, ImVec2 at, float width, const char* hint, bool* edited = nullptr) {
     const float k = f.k;
@@ -3235,7 +3255,8 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         for (const auto& [label, colour] : tags_of(*p)) what += "  /  " + label;
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, what, size.x - 36 * k));
     if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
-    const float bw = (size.x - 28 * k - 8 * k) / 2;
+    // EDIT, TEST IN GAME, and PLAY: on, it plays in game (on its own, or from a pack that is on); off, it does not.
+    const float play_w = 80 * k, bw = (size.x - 28 * k - 16 * k - play_w) / 2;
     if (p && p->locked) {
         if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "PREVIEW", Look::blue)) preview_trick({}, name, false);
     } else if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "EDIT", Look::blue))
@@ -3245,6 +3266,16 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         studio::clear_test_returned();
         studio::test_in_game(name, m);
         say(m);
+    }
+    if (p) {
+        bool play_on = p->playing;
+        for (const auto& pack : v.packs)
+            if (pack.on && std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end() && !pack.pack.off.contains(name)) play_on = true;
+        if (play_toggle(d, f, "##play", ImVec2(b.x - 14 * k - play_w, b.y - strip + 6 * k), ImVec2(play_w, 30 * k), play_on)) {
+            std::string m;
+            studio::set_trick_play(name, !play_on, m);
+            say(m);
+        }
     }
     ImGui::PopID();
 }
@@ -3987,7 +4018,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             say(m);
         }
         const bool on = !pack.pack.off.contains(member);
-        if (toggle(d, f, "##trickon", ImVec2(a.x + width - 136 * k, by + 2 * k), on, 0.8f)) {
+        if (play_toggle(d, f, "##trickon", ImVec2(a.x + width - 140 * k, by), ImVec2(66 * k, 30 * k), on)) {
             std::string m;
             studio::set_pack_trick_on(pack.name, member, !on, m);
             say(m);
@@ -4024,7 +4055,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 const bool member_on = !pack.pack.off.contains(member);
                 if (const auto* p = preset_named(v, member)) trick_tags(d, f, *p, forced, right, y + 13 * k);
                 text(d, f.bold, 17 * k, ImVec2(a.x + 16 * k, y + 12 * k), member_on ? white : faint,
-                     elide(f.bold, 17 * k, shown_name(v, member) + (member_on ? "" : "  (OFF)"), right - a.x - 30 * k));
+                     elide(f.bold, 17 * k, shown_name(v, member), right - a.x - 30 * k));
                 out_button(member, y, row_h);
                 y += row_h + 4 * k;
                 stances_line(s, y);
@@ -4297,7 +4328,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
     page_heading(d, f, a, "MY PACKS",
                  v.packs.empty() ? std::string("Packs group your tricks to switch on together and share. Make one, then put your tricks in it.")
                  : on_count ? std::to_string(on_count) + " on (" + on + "): their tricks play in game. Open a pack to see and change what is in it."
-                            : std::string("None on: every trick you saved plays in game. Open a pack to see and change what is in it."));
+                            : std::string("None on: the tricks switched to PLAY in MY TRICKS play in game. Open a pack to see and change what is in it."));
     {
         float x = b.x;
         const auto button = [&](const char* id, float w, const char* label, Look look) {
@@ -7544,7 +7575,7 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     const auto name = v.name;
-    y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS and plays in game on its trick. Give it a name you will know it by.") + 18 * k;
+    y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Switch it to PLAY there (or in a pack) to have it play in game on its trick. Give it a name you will know it by.") + 18 * k;
     heading(d, f, ImVec2(x, y), w, "Name it");
     y += 32 * k;
     if (u.label_for != name && !ImGui::IsAnyItemActive()) {

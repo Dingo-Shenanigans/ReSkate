@@ -835,6 +835,31 @@ void write_preset_file(const std::filesystem::path& path, const std::string& tex
     if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Could not replace preset selection");
 }
+// The tricks switched to PLAY on their own (MY TRICKS): presets/playing.txt, one name a line.
+void write_playing_names(const std::set<std::string>& names) {
+    std::string text;
+    for (const auto& name : names) text += name + "\n";
+    write_preset_file(library_folder() / L"presets" / L"playing.txt", text);
+}
+// With no file yet (a library from before PLAY), what played goes on playing: with no pack on every saved trick
+// played, so all of `library` is switched on; with packs on the packs decided, so none. The file is written then, so a
+// trick saved from now on starts switched off.
+std::set<std::string> playing_names(const std::vector<std::string>& library, bool any_pack_on) {
+    const auto file = library_folder() / L"presets" / L"playing.txt";
+    std::set<std::string> out;
+    std::error_code error;
+    if (!std::filesystem::exists(file, error)) {
+        if (!any_pack_on) out.insert(library.begin(), library.end());
+        try { write_playing_names(out); } catch (...) {}
+        return out;
+    }
+    std::ifstream in(file, std::ios::binary);
+    for (std::string line; in && std::getline(in, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty() && line == file_safe(line)) out.insert(line);
+    }
+    return out;
+}
 // ---- older animations, brought up to date ----------------------------------------------------------
 // What changed under saved animations on 2026-10-22, and what is done once to each file made before:
 // - its stance label could be wrong (one made with the right foot leading was labelled regular normal);
@@ -1031,6 +1056,7 @@ void read_library_locked(State& s) {
     for (const auto& name : s.library) upgrade_saved(saved_json(name));
     try {
         s.packs_on = packs_on();
+        const auto playing = playing_names(s.library, !s.packs_on.empty());
         const auto locked_clips = read_locked_clips();
         for (const auto& name : s.library) {
             try {
@@ -1044,6 +1070,7 @@ void read_library_locked(State& s) {
                     s.presets.back().saved_at = saved_time(saved_json(name));
                     s.presets.back().locked = (locked_key(animation.maker_key) && !animation.editable) ||
                                               (!locked_clips.empty() && locked_clips.contains(clip_hash(saved_clip(name))));
+                    s.presets.back().playing = playing.contains(name);
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
         }
@@ -1067,7 +1094,7 @@ void read_library_locked(State& s) {
             select_playlist(s.presets, s.packs, playlist.entries, playlist.mode);
             s.conflicts.clear();
         } else {
-            select_presets(s.presets, s.packs_on, &choices);
+            select_presets(s.presets, s.packs_on, &choices, &playing);
             s.conflicts = pack_conflicts(s.presets, s.packs_on, choices);
         }
     } catch (const std::exception& e) { s.status = e.what(); }
@@ -1109,7 +1136,11 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             playlist_turns_mode.store(static_cast<int>(playlist.mode), std::memory_order_release);
         } else {
             const auto choices = read_conflict_choices();
-            select_presets(requested, packs_on(), &choices);
+            const auto on = packs_on();
+            std::vector<std::string> names;
+            for (const auto& r : requested) names.push_back(r.name);
+            const auto playing = playing_names(names, !on.empty());
+            select_presets(requested, on, &choices, &playing);
             playlist_turns_mode.store(static_cast<int>(PlaylistMode::shuffle), std::memory_order_release);
         }
     } catch (const std::exception& e) {
@@ -5338,10 +5369,18 @@ int add_copies_to_packs_locked(State& s, const std::string& original, const std:
             const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == copy; });
             if (found == s.presets.end() || pack.has(copy)) continue;
             pack.slots[preset_slot(found->trick, found->pop)].push_back(copy);
+            if (saved.off.contains(original)) pack.off.insert(copy); // plays there as the one it was made from does
         }
         ++joined;
     }
     if (joined) write_pack_drafts_locked(s);
+    try {
+        auto playing = playing_names(s.library, !s.packs_on.empty());
+        if (playing.contains(original)) {
+            playing.insert(copies.begin(), copies.end());
+            write_playing_names(playing);
+        }
+    } catch (...) {}
     return joined;
 }
 // Caller holds the mutex: `change` is made to the pack and it is saved, and what plays read again.
@@ -5429,11 +5468,15 @@ bool set_pack_member(const std::string& pack_name, const std::string& animation,
         return false;
     }
     const auto slot = found != s.presets.end() ? preset_slot(found->trick, found->pop) : std::string{};
-    message = (in ? "Put " + shown_name(s, animation) + " in " : "Took " + shown_name(s, animation) + " out of ") + pack_name + ".";
+    message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": switch it to PLAY there to have it play in game."
+                 : "Took " + shown_name(s, animation) + " out of " + pack_name + ".";
     return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
         for (auto& [filed, names] : pack.slots) std::erase(names, animation);
         pack.unlinked.erase(animation);
-        if (in) pack.slots[slot].push_back(animation);
+        if (in) {
+            pack.slots[slot].push_back(animation);
+            pack.off.insert(animation); // put in, not playing: PLAY switches it on
+        } else pack.off.erase(animation);
     });
 }
 bool set_pack_mode(const std::string& pack_name, const std::string& slot, bool alternate, std::string& message) {
@@ -5693,6 +5736,39 @@ bool set_pack_trick_on(const std::string& pack_name, const std::string& animatio
         if (on) pack.off.erase(animation);
         else pack.off.insert(animation);
     });
+}
+bool set_trick_play(const std::string& animation, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    try {
+        if (!s.library_read) read_library_locked(s);
+        if (std::find(s.library.begin(), s.library.end(), animation) == s.library.end()) throw std::runtime_error(animation + " is not saved.");
+        auto playing = playing_names(s.library, !s.packs_on.empty());
+        if (on) playing.insert(animation);
+        else playing.erase(animation);
+        write_playing_names(playing);
+        if (!on) {
+            // Off is off: it does not play from its packs either.
+            std::vector<std::string> in_packs;
+            for (const auto& pack : s.packs)
+                if (pack.has(animation) && !pack.off.contains(animation)) in_packs.push_back(pack.name);
+            for (const auto& pack : in_packs) {
+                std::string ignored;
+                change_pack_locked(s, pack, ignored, [&](PresetPack& p) { p.off.insert(animation); });
+            }
+        }
+        read_library_locked(s);
+        s.tricks_read = false;
+        message = shown_name(s, animation) + (on ? " plays in game." : " does not play in game now.");
+        s.status = message;
+        publish_locked(s, false);
+        return true;
+    } catch (const std::exception& e) {
+        message = e.what();
+        s.status = message;
+        publish_locked(s, false);
+        return false;
+    }
 }
 bool set_pack_editable(const std::string& pack_name, bool editable, std::string& message) {
     auto& s = state();
