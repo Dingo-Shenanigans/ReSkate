@@ -3644,9 +3644,52 @@ struct BodyPublicationState {
     double network_at{-1};
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
+// While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
+// under the map, where every player's own menu skater is drawn, so the others found him standing in their character
+// menu - and strikes the poses being edited. They are sent the skater and the board as last sent before it opened (he
+// stands where he was), and nothing of the room; a few seconds more after the room, while the game gives its menu
+// skater back.
+struct Outgoing {
+    std::mutex mutex;
+    std::vector<multiplayer::Transform> skater, board; // as last sent with the studio closed
+};
+Outgoing& outgoing() { static auto* value = new Outgoing; return *value; }
+bool hidden_from_lobby() noexcept {
+    return is_open() || room_flag.load(std::memory_order_acquire) || now_seconds() < room_restore_until.load(std::memory_order_acquire);
+}
+void saved_tricks_to_send(std::uintptr_t component, std::vector<multiplayer::Transform>& skater) noexcept; // below
 void on_send(std::uintptr_t component, std::vector<multiplayer::Transform>& skater) noexcept {
     try {
-        if (component != live().component.load(std::memory_order_acquire) || is_open() || skater.size() < skeleton_joints) return;
+        if (component != live().component.load(std::memory_order_acquire)) return;
+        auto& o = outgoing();
+        if (hidden_from_lobby()) {
+            std::lock_guard lock(o.mutex);
+            if (o.skater.size() == skater.size()) skater = o.skater;
+            else if (skater.size() > placement_joint) skater[placement_joint].scale = {0.001f, 0.001f, 0.001f}; // none sent yet: not shown
+            return;
+        }
+        saved_tricks_to_send(component, skater);
+        std::lock_guard lock(o.mutex);
+        o.skater = skater;
+    } catch (...) {}
+}
+void on_send_board(std::vector<multiplayer::Transform>& board) noexcept {
+    try {
+        auto& o = outgoing();
+        std::lock_guard lock(o.mutex);
+        if (!hidden_from_lobby()) {
+            o.board = board;
+            return;
+        }
+        if (o.board.size() == board.size()) board = o.board;
+        else
+            for (std::size_t i = 1; i < board.size(); ++i) board[i].scale = {0, 0, 0}; // none sent yet: not shown
+    } catch (...) {}
+}
+// A saved trick that plays in game, as drawn here, for the pose other players get.
+void saved_tricks_to_send(std::uintptr_t component, std::vector<multiplayer::Transform>& skater) noexcept {
+    try {
+        if (skater.size() < skeleton_joints) return;
         std::vector<Joint> native(skater.size());
         for (std::size_t i = 0; i < skater.size(); ++i) native[i] = {skater[i].scale, skater[i].rotation, skater[i].position};
         const auto holder = read<std::uintptr_t>(component + 0xa0).value_or(0);
@@ -4277,6 +4320,7 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             multiplayer::set_animation_studio_render_listener(&on_render);
             multiplayer::set_animation_studio_board_listener(&on_board_render);
             multiplayer::set_local_pose_filter(&on_send);
+            multiplayer::set_local_board_filter(&on_send_board);
             installed = true;
             logging::log(Level::info, Channel::skater, "Animation Studio: listening to the skater's animation.");
         } else {

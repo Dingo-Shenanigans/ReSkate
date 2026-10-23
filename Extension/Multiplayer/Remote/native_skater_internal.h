@@ -58,6 +58,7 @@ struct HookState {
     std::atomic<EntityDestroyed> destroyed_listener{};
     std::atomic<AnimationEvaluated> evaluated_listener{};
     std::atomic<LocalPoseFilter> pose_filter{};
+    std::atomic<LocalBoardFilter> board_filter{};
     // Animation Studio (Extension/AnimationStudio), after the one above.
     std::atomic<AnimationEvaluated> studio_listener{};
     std::atomic<RenderPosePublished> studio_render_listener{};

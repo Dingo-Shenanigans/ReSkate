@@ -42,6 +42,9 @@ using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
 // players receive (PR #230).
 using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;
 void set_local_pose_filter(LocalPoseFilter filter) noexcept;
+// The same for the local skateboard: its root, then its bones, as capture_local is about to return them.
+using LocalBoardFilter = void (*)(std::vector<Transform> &board) noexcept;
+void set_local_board_filter(LocalBoardFilter filter) noexcept;
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
 // The same, for Animation Studio: called after the listener above, so it sees (and may change) the
 // pose first person left.
