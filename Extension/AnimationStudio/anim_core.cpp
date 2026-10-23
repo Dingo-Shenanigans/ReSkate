@@ -1259,9 +1259,10 @@ float pose_distance(const Quat& a, const Quat& b) noexcept {
     return 1 - std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
 }
 } // namespace
-std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose) {
-    // The spine and the legs: what says which grind it is. (The arms move with the game's balance.)
-    static constexpr std::array<std::uint16_t, 10> telling{42, 44, 8, 9, 10, 11, 341, 342, 343, 344};
+std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose, bool with_arms) {
+    // The spine and the legs: what says which grind it is (the arms move with the game's balance); a grab, with the arms.
+    static constexpr std::array<std::uint16_t, 18> joints_all{42, 44, 8, 9, 10, 11, 341, 342, 343, 344, 46, 47, 48, 49, 275, 276, 277, 278};
+    const std::span<const std::uint16_t> telling(joints_all.data(), with_arms ? joints_all.size() : 10);
     std::vector<HeldPose> out;
     if (pose.size() < skeleton_joints) return out;
     for (std::size_t c = 0; c < clips.size(); ++c) {

@@ -342,7 +342,8 @@ struct HeldPose {
     float time{};        // its nearest frame, seconds
     float score{1};
 };
-std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose);
+// `with_arms`: the arms are compared too (a grab is in the hands).
+std::vector<HeldPose> held_pose_fits(std::span<const Clip* const> clips, std::span<const Joint> pose, bool with_arms = false);
 class PieceTracker {
 public:
     // The clips to look for, each as it is and mirrored. A clip that barely moves cannot be told from
