@@ -23,6 +23,7 @@ OUT = HERE.parents[2] / "assets" / "animator_studio" / "crew"
 CREW = {
     "bonksz": ("bonksz_portrait.webp", (312, 336, 600), "bonksz_shot.webp"),
     "fiendskateboards": ("renzo_art.png", (270, 285, 440), "renzo_art.png", 1.7),  # renzoh.
+    "reskate_animation_editor": ("phil_portrait.webp", (915, 425, 440), "phil_shot.webp"),  # philsteezy
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "fourth": ("fourth_portrait.webp", (995, 520, 940), "fourth_shot.webp"),
     "steez": ("steez_portrait.png", (110, 124, 220), "steez_shot.webp"),

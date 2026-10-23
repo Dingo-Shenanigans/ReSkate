@@ -44,7 +44,7 @@ inline constexpr std::array crew_members{
     CrewMember{"Myawsometeam", "Setsu", "Ran the same line a hundred times so the studio lands it a hundred and one."},
     CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Pop shuv-it specialist: sent the dump and the video before the board even landed.", 0.5f, 0.42f},
     CrewMember{"smonky", "smonk", "Rolls away from every crash, then sends the log. Smooth as fresh bearings."},
-    CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style."},
+    CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style.", 0.5f, 0.4f},
     CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first."},
     CrewMember{"Bonksz", "Bonksz", "Bonked every rail, ledge and kicker until the bugs gave up.", 0.6f, 0.42f},
 };
