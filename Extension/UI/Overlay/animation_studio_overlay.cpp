@@ -127,6 +127,17 @@ struct Ui {
     float ring_from{};         // the angle round the ring where a ring drag began
     bool drag_moved{};         // the mouse has gone far enough for the drag to count
     bool snap{};               // a foot moved in the air lands on the deck
+    // More joints chosen with the one the gizmo is on (Ctrl + click): they are turned and moved with it (move_group).
+    std::vector<std::uint16_t> also;
+    struct GroupStart {
+        std::uint16_t joint{};
+        studio::Offset offset;
+        studio::Vec3 point{};
+        studio::Quat world{0, 0, 0, 1}, parent{0, 0, 0, 1};
+        float scale{1};
+    };
+    std::vector<GroupStart> group_start; // each of them as it was when the turn began
+    studio::Vec3 board_point{};          // the board's mount then: the feet on it turn about it
 
     std::array<char, 64> name{}, author{};
     std::array<char, 64> pack_name{}; // PACKS: the chosen pack's name as it is typed (RENAME)
@@ -638,11 +649,107 @@ float smooth_stick(float& state, float target, float dt) {
 bool limb_end(std::uint16_t joint) { return studio::limb_chain(joint) != 0; }
 float dot3(const studio::Vec3& a, const studio::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
+// ---- several joints at once ------------------------------------------------------------------------
+// Ctrl + click adds a joint to the chosen ones (or takes it off). A turn or a move of the one the gizmo is on is done
+// to all of them by the same amount in the world, each about its own joint. With the board among them, the feet
+// among them stay where they stand on the deck: they go with the board, the legs bending to keep them there - tweak
+// the board and the feet stay snapped to it.
+bool in_group(std::uint16_t joint) {
+    const auto& u = ui();
+    return joint == u.selected || std::find(u.also.begin(), u.also.end(), joint) != u.also.end();
+}
+void toggle_in_group(std::uint16_t joint) {
+    auto& u = ui();
+    if (joint == u.selected) {
+        // The gizmo's own joint taken off: the next of the others carries the gizmo.
+        if (u.also.empty()) return;
+        u.selected = u.also.front();
+        u.also.erase(u.also.begin());
+        return;
+    }
+    if (const auto at = std::find(u.also.begin(), u.also.end(), joint); at != u.also.end()) u.also.erase(at);
+    else u.also.push_back(joint);
+}
+// The board and both feet, the board carrying the gizmo: turn or move the board and the feet stay on it.
+void choose_feet_on_board(const studio::View& v) {
+    auto& u = ui();
+    if (!joint_view(v, studio::board_joint)) {
+        say("No board in this trick to put the feet on.");
+        return;
+    }
+    u.selected = studio::board_joint;
+    u.also = {343, 10}; // the left and right foot
+    say("Board and feet chosen: turn or move the board and the feet stay on the deck. Esc lets go of the feet.");
+}
+void begin_group(const studio::View& v) {
+    auto& u = ui();
+    u.group_start.clear();
+    if (const auto* board = joint_view(v, studio::board_joint)) u.board_point = board->position;
+    for (const auto joint : u.also) {
+        const auto* view = joint_view(v, joint);
+        if (!view || joint == u.selected) continue;
+        u.group_start.push_back({joint, studio::offset_of(joint), view->position, view->rotation, view->parent_rotation, view->parent_scale});
+    }
+}
+// `turn`: how the chosen joint turned in the world since the turn began; `shift`: how far it moved in the world.
+void move_group(const studio::Quat& turn, const studio::Vec3& shift) {
+    auto& u = ui();
+    if (u.group_start.empty()) return;
+    const bool board = in_group(studio::board_joint);
+    for (const auto& g : u.group_start) {
+        const bool foot = g.joint == 343 || g.joint == 10; // the left and right foot
+        if (foot && board) {
+            // On the deck: carried round the board's mount with it, and the leg bends to reach.
+            studio::Vec3 from{};
+            for (int i = 0; i < 3; ++i) from[i] = g.point[i] - u.board_point[i];
+            const auto turned = studio::rotate(turn, from);
+            studio::Vec3 to{};
+            for (int i = 0; i < 3; ++i) to[i] = u.board_point[i] + turned[i] + shift[i];
+            studio::drag_limb(g.joint, to);
+            continue;
+        }
+        if (limb_end(g.joint) && (shift[0] != 0 || shift[1] != 0 || shift[2] != 0)) {
+            studio::Vec3 to{};
+            for (int i = 0; i < 3; ++i) to[i] = g.point[i] + shift[i];
+            studio::drag_limb(g.joint, to);
+            continue;
+        }
+        studio::Offset next = g.offset;
+        if (g.joint == studio::board_joint)
+            // The board's keys turn it in the ground frame (on the left), about its mount.
+            next.rotation = studio::normalised(studio::multiply(studio::multiply(studio::multiply(studio::conjugate(g.parent), turn), g.parent), g.offset.rotation));
+        else
+            next.rotation = studio::normalised(studio::multiply(g.offset.rotation, studio::multiply(studio::multiply(studio::conjugate(g.world), turn), g.world)));
+        const auto* e = studio::editable(g.joint);
+        if ((e && e->moves) || g.joint == studio::board_joint) {
+            const auto local = studio::rotate(studio::conjugate(g.parent), shift);
+            for (int i = 0; i < 3; ++i) next.offset[i] += local[i] / std::max(g.scale, 0.01f);
+        }
+        studio::set_offset(g.joint, next);
+    }
+}
+// How the chosen joint moved in the world, from its offset now against the one it had when the turn began.
+void move_group_after(const studio::Offset& next) {
+    auto& u = ui();
+    if (u.group_start.empty()) return;
+    studio::Quat turn{0, 0, 0, 1};
+    if (u.selected == studio::board_joint)
+        turn = studio::multiply(studio::multiply(u.drag_parent, studio::multiply(next.rotation, studio::conjugate(u.drag_offset.rotation))),
+                                studio::conjugate(u.drag_parent));
+    else
+        turn = studio::multiply(studio::multiply(u.drag_world, studio::multiply(studio::conjugate(u.drag_offset.rotation), next.rotation)),
+                                studio::conjugate(u.drag_world));
+    studio::Vec3 local{};
+    for (int i = 0; i < 3; ++i) local[i] = (next.offset[i] - u.drag_offset.offset[i]) * std::max(u.drag_parent_scale, 0.01f);
+    move_group(studio::normalised(turn), studio::rotate(u.drag_parent, local));
+}
+
 // ---- turning the chosen joint (mouse drag or left stick) ---------------------------------------------
 void begin_turn(const studio::View& v) {
     auto& u = ui();
     const auto* sel = joint_view(v, u.selected);
     if (!sel) return;
+    begin_group(v);
     u.drag_offset = studio::offset_of(u.selected);
     u.drag_point = sel->position;
     u.drag_field = limb_end(u.selected) ? studio::limb_position(u.selected) : studio::Vec3{};
@@ -1112,6 +1219,11 @@ void apply_axis(const studio::View& v, int a, float amount, bool move) {
             for (int i = 0; i < 3; ++i) field[i] = u.drag_field[i] + back[i];
         }
         studio::set_limb_position(u.selected, field);
+        if (!u.group_start.empty() && v.field_axes_valid) {
+            studio::Vec3 moved{};
+            for (int i = 0; i < 3; ++i) moved[i] = field[i] - u.drag_field[i];
+            move_group({0, 0, 0, 1}, studio::rotate(v.field_axes, moved));
+        }
         return;
     }
     studio::Offset next = u.drag_offset;
@@ -1137,6 +1249,7 @@ void apply_axis(const studio::View& v, int a, float amount, bool move) {
     }
     if (u.selected == studio::board_joint) keep_board_up(v, next);
     studio::set_offset(u.selected, next);
+    move_group_after(next);
 }
 // The mouse against the handle it holds: along an arrow, how far it has gone in metres; round a ring, the
 // angle it has swept in radians.
@@ -1240,6 +1353,7 @@ void apply_turn(const studio::View& v, const Projector& p, float dx, float dy, b
     }
     if (u.selected == studio::board_joint) keep_board_up(v, next);
     studio::set_offset(u.selected, next);
+    move_group_after(next);
 }
 
 // ---- actions shared by keys, buttons and the controller ---------------------------------------------
@@ -2207,6 +2321,7 @@ void keyboard(const studio::View& v) {
         // Esc backs out: the round menu, then the chosen keys, then to the menu.
         if (u.radial) u.radial = false;
         else if (!u.picked.empty()) u.picked.clear();
+        else if (!u.also.empty()) u.also.clear();
         else open_menu();
         return;
     }
@@ -2221,6 +2336,7 @@ void keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_UpArrow, true)) step_joint(-1);
     if (pressed(ImGuiKey_DownArrow, true)) step_joint(1);
     if ((pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter)) && v.has_clip) key_joint();
+    if (pressed(ImGuiKey_B) && v.has_clip) choose_feet_on_board(v);
     if (pressed(ImGuiKey_Home)) studio::set_time(0);
     if (pressed(ImGuiKey_End)) studio::set_time(v.duration);
     if (ctrl && pressed(ImGuiKey_Z, true)) studio::undo();
@@ -4707,6 +4823,12 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
     gap(h + 6 * k);
     if (tool("##snap", "SNAP", "N", u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
     gap(h + 6 * k);
+    if (tool("##feetboard", "FEET+BOARD", "B", in_group(studio::board_joint) && in_group(343) && in_group(10),
+             "Chooses the board and both feet: turn or move the board and the feet stay on the deck. Ctrl + click a joint to add it to what you turn.")) {
+        if (in_group(studio::board_joint) && in_group(343) && in_group(10)) ui().also.clear();
+        else choose_feet_on_board(v);
+    }
+    gap(h + 6 * k);
     if (tool("##limits", "LIMITS", "", v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
         studio::set_joint_limits(!v.limits);
     gap(h + 6 * k);
@@ -5847,6 +5969,11 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             const auto at = project(j.position);
             if (!at || j.joint == u.selected) continue;
             const bool hot = hovered && *hovered == j.joint;
+            if (std::find(u.also.begin(), u.also.end(), j.joint) != u.also.end()) {
+                d->AddCircleFilled(*at, 6.5f * k, blue);
+                d->AddCircle(*at, 11.0f * k, blue_light, 24, 2.0f * k);
+                continue;
+            }
             d->AddCircleFilled(*at, (hot ? 6.0f : 3.5f) * k, hot ? blue_light : IM_COL32(255, 255, 255, 90));
         }
     const auto* sel = joint_view(v, u.selected);
@@ -5886,8 +6013,11 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             u.drag_moved = false;
             u.ring_from = std::atan2(mouse.y - gizmo.centre.y, mouse.x - gizmo.centre.x);
             begin_turn(v);
-        } else if (hovered && *hovered != u.selected) u.selected = *hovered;
-        else if (sel && can_edit) {
+        } else if (hovered && io.KeyCtrl) toggle_in_group(*hovered);
+        else if (hovered && *hovered != u.selected) {
+            u.selected = *hovered;
+            u.also.clear();
+        } else if (sel && can_edit) {
             u.dragging_gizmo = true;
             u.drag_start = mouse;
             u.drag_moved = false;
