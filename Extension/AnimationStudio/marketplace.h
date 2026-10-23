@@ -56,10 +56,10 @@ struct Builder {
     float focus_x{0.5f}, focus_y{0.5f}; // where their shot is cut round, as CrewMember's
 };
 inline constexpr std::array builders{
-    Builder{"22SH", "22sh", "", "Responsible for getting all the animations in the game."},
-    Builder{"Fourth", "fourth", "Fourth_Studio", "Well... do we need to explain this?", 0.5f, 0.45f},
-    Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher.", 0.5f, 0.39f},
-    Builder{"Steez", "steez", "Worthless", "Animation King and back-up scripter.", 0.48f, 0.4f},
+    Builder{"22SH", "22sh", "", "Pulled all 4,004 animations out of the game, one clip at a time. Still lands every one bolts."},
+    Builder{"Fourth", "fourth", "Fourth_Studio", "Well... do we need to explain this? Built it, slammed it, built it again until it rolled away clean.", 0.5f, 0.45f},
+    Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher. Spots a missing semicolon faster than you spot a pebble in your run-up.", 0.5f, 0.39f},
+    Builder{"Steez", "steez", "Worthless", "Animation King and back-up scripter. Keys a tre flip by hand, then fixes the script it runs on.", 0.48f, 0.4f},
 };
 // One of BUILT BY by their Thunderstore team (in any case), or none: their packs are CREW CERTIFIED too.
 inline const Builder* builder_of(std::string_view team) {
