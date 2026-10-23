@@ -1,4 +1,5 @@
 #include "marketplace.h"
+#include "marketplace_listing.h"
 #include "anim_studio.h"
 #include "anim_core.h"
 #include "Engine/Core/Json/json.h"
@@ -63,13 +64,6 @@ void write_file(const std::filesystem::path& path, std::string_view bytes) {
     std::filesystem::rename(temporary, path);
 }
 std::filesystem::path folder() { return studio_folder() / L"market"; }
-// Only thunderstore.io and its hosts are downloaded from (as the launcher does).
-bool thunderstore_url(std::string_view url) {
-    if (!url.starts_with("https://")) return false;
-    auto host = url.substr(8);
-    host = host.substr(0, host.find_first_of("/?#"));
-    return host == "thunderstore.io" || host.ends_with(".thunderstore.io");
-}
 
 // ---- requests the download helper does not make: posts with a token, and the upload's parts ----------
 struct Answer {
@@ -355,6 +349,88 @@ std::vector<Pack> read_listing(const std::string& text) {
     }
     return out;
 }
+// A pack's newest version and its download, asked of the package itself. False when it cannot be had.
+bool fill_version(Pack& p) {
+    try {
+        const auto text = https::get_text(widen(std::string(site) + "/api/experimental/package/" + p.owner + "/" + p.name + "/"), 4 * 1024 * 1024, 30, agent);
+        if (!text) return false;
+        const auto root = Json::parse(*text);
+        const auto& latest = root.at("latest");
+        const auto version = latest.value("version_number", "");
+        const auto download = latest.value("download_url", "");
+        if (!plain_version(version) || !thunderstore_url(download)) return false;
+        p.version = version;
+        p.download_url = download;
+        if (p.icon_url.empty() && thunderstore_url(latest.value("icon", ""))) p.icon_url = latest.value("icon", "");
+        return true;
+    } catch (...) { return false; }
+}
+// The packs as the studio keeps them between runs (packs.json), to show at once while the listing is fetched again.
+std::string packs_json(const std::vector<Pack>& packs) {
+    Json out = Json::array();
+    for (const auto& p : packs)
+        out.push_back(Json{{"full_name", p.full_name}, {"owner", p.owner}, {"name", p.name}, {"version", p.version},
+                           {"description", p.description}, {"icon_url", p.icon_url}, {"download_url", p.download_url},
+                           {"package_url", p.package_url}, {"updated", p.updated}, {"downloads", p.downloads}, {"rating", p.rating}});
+    return out.dump(2);
+}
+std::vector<Pack> read_packs_json(const std::string& text) {
+    std::vector<Pack> out;
+    const auto root = Json::parse(text, JsonLimits{8 * 1024 * 1024, 16, 8 * 1024 * 1024});
+    if (!root.is_array()) return out;
+    for (const auto& j : root) {
+        try {
+            Pack p;
+            p.full_name = j.value("full_name", "");
+            p.owner = j.value("owner", "");
+            p.name = j.value("name", "");
+            p.version = j.value("version", "");
+            if (!plain_name(p.owner) || !plain_name(p.name) || p.full_name != p.owner + "-" + p.name) continue;
+            p.title = p.name;
+            std::replace(p.title.begin(), p.title.end(), '_', ' ');
+            p.description = j.value("description", "");
+            p.icon_url = j.value("icon_url", "");
+            p.download_url = j.value("download_url", "");
+            p.package_url = j.value("package_url", "");
+            p.updated = j.value("updated", "");
+            p.downloads = static_cast<std::uint64_t>(std::max(0.0, j.value("downloads", 0.0)));
+            p.rating = static_cast<int>(j.value("rating", 0.0));
+            if (!thunderstore_url(p.icon_url)) p.icon_url.clear();
+            if (!thunderstore_url(p.download_url) || !plain_version(p.version)) continue;
+            out.push_back(std::move(p));
+        } catch (...) {}
+    }
+    return out;
+}
+// The studio's packs from the search, every page of it. False when the search could not be had (the whole listing is
+// read then, as before).
+bool search_packs(std::vector<Pack>& packs, std::string& error) {
+    std::string url = std::string(site) + "/api/cyberstorm/listing/" + community + "/?q=Animator%20Studio%20pack&ordering=last-updated";
+    const std::string pages = std::string(site) + "/api/cyberstorm/listing/" + community + "/";
+    for (int page = 0; page < 50 && !url.empty(); ++page) {
+        https::Download result{};
+        const auto text = https::get_text(widen(url), 8 * 1024 * 1024, 30, agent, &result);
+        if (!text) {
+            error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
+            return false;
+        }
+        std::string next;
+        try {
+            auto found = read_search(*text, next);
+            for (auto& p : found)
+                if (std::none_of(packs.begin(), packs.end(), [&](const Pack& q) { return q.full_name == p.full_name; })) packs.push_back(std::move(p));
+        } catch (const std::exception& e) {
+            error = std::string("Thunderstore's listing could not be read: ") + e.what();
+            return false;
+        }
+        // Only further pages of the same listing are followed.
+        url = next.starts_with(pages) ? next : std::string{};
+    }
+    for (auto& p : packs)
+        if (p.version.empty()) fill_version(p);
+    std::erase_if(packs, [](const Pack& p) { return p.version.empty() || p.download_url.empty(); });
+    return true;
+}
 std::filesystem::path icon_path(const Pack& p) { return folder() / L"icons" / widen(p.full_name + "-" + p.version + ".png"); }
 void icon_worker() {
     auto& m = market();
@@ -448,26 +524,42 @@ void refresh(bool force) {
             // What was fetched last time, at once, while the new listing comes.
             m.cache_read = true;
             try {
-                if (const auto text = read_file(folder() / L"listing.json"); !text.empty()) m.packs = read_listing(text);
+                if (const auto text = read_file(folder() / L"packs.json"); !text.empty()) m.packs = read_packs_json(text);
+                else if (const auto old = read_file(folder() / L"listing.json"); !old.empty()) m.packs = read_listing(old);
             } catch (...) {}
         }
-        if (m.loading || (!force && m.ever && std::chrono::steady_clock::now() - m.fetched < std::chrono::minutes(5))) return;
+        // Fetched again when the MARKET is opened a minute or more after the last time (Thunderstore's search is up to
+        // date within a minute), or when asked.
+        if (m.loading || (!force && m.ever && std::chrono::steady_clock::now() - m.fetched < std::chrono::minutes(1))) return;
         m.loading = true;
         m.error.clear();
     }
     std::thread([] {
         auto& m = market();
-        https::Download result{};
-        const auto url = std::string(site) + "/c/" + community + "/api/v1/package/";
-        const auto text = https::get_text(widen(url), 96ull * 1024 * 1024, 90, agent, &result);
         std::vector<Pack> packs;
         std::string error;
-        if (!text) error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
-        else
+        // Thunderstore's search first: only the studio's packs, and a new one shows within a minute. Its whole listing
+        // (every package of the community, several MB, rebuilt only now and then) when the search cannot be had.
+        if (!search_packs(packs, error)) {
+            packs.clear();
+            error.clear();
+            https::Download result{};
+            const auto url = std::string(site) + "/c/" + community + "/api/v1/package/";
+            const auto text = https::get_text(widen(url), 96ull * 1024 * 1024, 90, agent, &result);
+            if (!text) error = "Thunderstore could not be reached (" + std::to_string(result.http_status ? result.http_status : result.error) + ").";
+            else
+                try {
+                    packs = read_listing(*text);
+                } catch (const std::exception& e) { error = std::string("Thunderstore's listing could not be read: ") + e.what(); }
+        }
+        if (error.empty()) {
             try {
-                packs = read_listing(*text);
-                write_file(folder() / L"listing.json", *text);
-            } catch (const std::exception& e) { error = std::string("Thunderstore's listing could not be read: ") + e.what(); }
+                write_file(folder() / L"packs.json", packs_json(packs));
+                // The whole listing the studio kept before (several MB) is not read any more.
+                std::error_code gone;
+                std::filesystem::remove(folder() / L"listing.json", gone);
+            } catch (...) {}
+        }
         {
             std::lock_guard lock(m.mutex);
             m.loading = false;
@@ -552,15 +644,26 @@ void install(const std::string& full_name) {
         std::filesystem::remove(zip, error);
         https::Watch watch;
         std::atomic<bool> done{};
-        std::thread([&] {
+        // How far the download is, while it runs. Waited for before going on: it reads `watch` and `done`, which go
+        // when this does.
+        std::thread watcher([&] {
             while (!done.load()) {
                 const auto total = watch.total.load();
                 if (total) progress(0.9f * static_cast<float>(watch.received.load()) / static_cast<float>(total));
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-        }).detach();
+        });
+        struct Join {
+            std::atomic<bool>& done;
+            std::thread& thread;
+            ~Join() {
+                done.store(true);
+                if (thread.joinable()) thread.join();
+            }
+        } join_watcher{done, watcher};
         const auto got = https::get(widen(pack.download_url), zip, 256ull * 1024 * 1024, 300, agent, &watch);
         done.store(true);
+        watcher.join();
         if (!got.ok) throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
         // It has to be one of the studio's: its marker at the top.
         {

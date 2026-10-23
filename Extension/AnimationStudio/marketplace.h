@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // The Animator Studio's MARKET: animation packs made in the studio and shared on Thunderstore (thunderstore.io/c/reskate),
@@ -124,6 +125,31 @@ inline void read_readme(const std::string& markdown, std::string& about, std::ve
     }
     while (!about.empty() && (about.back() == '\n' || about.back() == ' ')) about.pop_back();
     while (!about.empty() && about.front() == '\n') about.erase(about.begin());
+}
+
+// Thunderstore's names and versions as they may go into an address: a team's or a package's name is letters, digits
+// and _, a version digits and dots.
+inline bool plain_name(std::string_view s) {
+    if (s.empty() || s.size() > 128) return false;
+    for (const char c : s)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    return true;
+}
+inline bool plain_version(std::string_view s) {
+    if (s.empty() || s.size() > 32 || s.front() == '.' || s.back() == '.') return false;
+    for (const char c : s)
+        if (!((c >= '0' && c <= '9') || c == '.')) return false;
+    return true;
+}
+// The version a package's icon is of: Thunderstore names it <Team>-<Name>-<version>.png. "" when it is not that.
+inline std::string version_from_icon(std::string_view icon_url, std::string_view full_name) {
+    const auto slash = icon_url.find_last_of('/');
+    if (slash == std::string_view::npos) return {};
+    const auto file = icon_url.substr(slash + 1);
+    const std::string head = std::string(full_name) + "-";
+    if (full_name.empty() || !file.starts_with(head) || !file.ends_with(".png")) return {};
+    const auto version = file.substr(head.size(), file.size() - head.size() - 4);
+    return plain_version(version) ? std::string(version) : std::string{};
 }
 
 // The next version: one past the one published last, else the pack's own.

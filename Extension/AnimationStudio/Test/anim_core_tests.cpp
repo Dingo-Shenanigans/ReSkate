@@ -13,6 +13,7 @@
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
+#include "Extension/AnimationStudio/marketplace_listing.h"
 #include "Extension/AnimationStudio/recording_rules.h"
 #include <limits>
 #include <filesystem>
@@ -50,6 +51,35 @@ void market_package_words() {
     pack.description = "About it";
     const auto back = read_pack_json(pack_json(pack));
     check(back.version == "1.2.0" && back.description == "About it", "A pack keeps its release and description beside its file version");
+    // The search tells a pack's version only by its icon.
+    const std::string icon = "https://ccdn.thunderstore.io/live/repository/icons/Fourth_Studio-Reskate_Animator_Studio_Test-1.0.0.png";
+    check(version_from_icon(icon, "Fourth_Studio-Reskate_Animator_Studio_Test") == "1.0.0", "A pack's version is read off its icon");
+    check(version_from_icon(icon, "Fourth_Studio-Reskate_Animator").empty() && version_from_icon("", "A-B").empty() &&
+              version_from_icon("https://x/A-B-1.0.0/../evil.png", "A-B").empty(),
+          "An icon of another pack, or with no version in it, gives none");
+    check(plain_name("Fourth_Studio") && !plain_name("a/b") && !plain_name("a-b") && !plain_name("") && plain_version("10.2.3") &&
+              !plain_version("1.0.0/x") && !plain_version(".1"),
+          "Only plain names and versions go into an address");
+    // A page of Thunderstore's search as it came (2026-10-23), with one of someone else's and one with nothing in it.
+    const std::string page = R"({"count":3,"next":"https://thunderstore.io/api/cyberstorm/listing/reskate/?page=2&q=Animator","previous":null,"results":[
+        {"categories":[{"id":"2759","name":"Misc","slug":"misc"}],"community_identifier":"reskate",
+         "description":"Animator Studio pack: Reskate. Animator Studio - Animation Pack Test","download_count":1,
+         "icon_url":"https://ccdn.thunderstore.io/live/repository/icons/Fourth_Studio-Reskate_Animator_Studio_Test-1.0.0.png",
+         "is_deprecated":false,"is_nsfw":false,"is_pinned":false,"last_updated":"2026-10-23T09:56:46.428418Z",
+         "name":"Reskate_Animator_Studio_Test","namespace":"Fourth_Studio","rating_count":0,"size":1645622},
+        {"description":"An animator studio pack of mine","download_count":5,"icon_url":null,"is_deprecated":false,"is_nsfw":false,
+         "name":"Other","namespace":"Someone","rating_count":2},
+        {"description":"Animator Studio pack: no icon","download_count":null,"icon_url":null,"is_deprecated":false,"is_nsfw":false,
+         "name":"Bare","namespace":"Someone","rating_count":null,"last_updated":null}]})";
+    std::string next;
+    const auto found = read_search(page, next);
+    check(found.size() == 2 && found[0].full_name == "Fourth_Studio-Reskate_Animator_Studio_Test" && found[0].version == "1.0.0" &&
+              found[0].download_url == "https://thunderstore.io/package/download/Fourth_Studio/Reskate_Animator_Studio_Test/1.0.0/" &&
+              found[0].description == "Reskate. Animator Studio - Animation Pack Test" && found[0].downloads == 1 && found[0].updated == "2026-10-23",
+          "The search's studio packs are read, with their version off the icon");
+    check(found[1].full_name == "Someone-Bare" && found[1].version.empty() && found[1].icon_url.empty(),
+          "A pack with nothing but its name is kept, its version to be asked for");
+    check(next == "https://thunderstore.io/api/cyberstorm/listing/reskate/?page=2&q=Animator", "The next page's address is read");
 }
 
 // Packs: tricks switched off, a maker's lock, the playlist, and a trick's stance versions.
