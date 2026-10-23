@@ -200,6 +200,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Customization/item_browser.cpp
     Extension/AnimationStudio/anim_core.cpp
     Extension/AnimationStudio/anim_studio.cpp
+    Extension/AnimationStudio/native_library.cpp
     Extension/AnimationStudio/anim_commands.cpp
     Extension/AnimationStudio/pop_grades.cpp
     Extension/AnimationStudio/studio_room.cpp

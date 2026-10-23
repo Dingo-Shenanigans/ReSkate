@@ -300,11 +300,12 @@ bool export_pack(const std::string& pack_name, std::string& message);
 // variation, older animations upgraded, and the zip moved to import/imported.
 bool import_packs(std::string& message);
 bool load(const std::string& name, std::string& message);
-// The game's own tricks, made into studio clips by contrib/animator-studio/make_trick_library.py:
-// <folder>/library/catalog.json and its .clip files.
+// The game's own tricks as studio clips, <folder>/library/catalog.json and its .clip files: built in game from the
+// player's own copy (library_build below), or by contrib/animator-studio/make_trick_library.py.
 struct NativeAsset {
     std::string category, asset, kind;
     std::string root_type, decode_state, detail, partition;
+    std::string toc, bundle; // where in the game it was found (a library built in game)
     std::string label, context, search;
 };
 struct NativeField { std::string label, path, value, reference; bool expandable{}; };
@@ -313,6 +314,22 @@ NativeDocumentPage native_asset_fields(const std::string& asset, const std::stri
 std::shared_ptr<const std::vector<NativeAsset>> native_assets();
 std::shared_ptr<const std::vector<GameTrick>> game_tricks(); // cached until explicit refresh
 void refresh_game_tricks(std::string& message);
+// The trick library, built on this PC from the player's own copy of the game (native_library.h) into
+// ReSkate.Tricks/library: whether there is one, and a build running in the background and how far it has got.
+// A build goes into a folder of its own and only takes the old library's place once it is whole.
+struct LibraryBuild {
+    bool exists{};   // there is a library
+    bool outdated{}; // it was built from another version of the game
+    bool running{}, failed{};
+    std::string built;   // when the library there was built ("" for one built before the studio could)
+    std::string step;    // what the build is doing
+    std::string message; // how the last build went
+    std::size_t done{}, total{};
+    float fraction{}; // the whole build, 0 to 1
+};
+LibraryBuild library_build();
+void start_library_build(); // nothing when one is running
+void stop_library_build();  // the build stops soon after; the library stays as it was
 bool export_diagnostics(std::string& message);
 bool recorded_tricks();
 bool load_game_trick(const GameTrick& trick, std::string& message);

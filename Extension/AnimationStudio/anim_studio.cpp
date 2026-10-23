@@ -23,6 +23,8 @@
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/grind_exit_control.h"
 #include "Extension/BoardBreak/board_break_model.h"
+#include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
+#include "native_library.h"
 #include <Windows.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -38,6 +40,7 @@
 #include <unordered_set>
 #include <optional>
 #include <random>
+#include <thread>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -5730,6 +5733,9 @@ std::shared_ptr<const std::vector<NativeAsset>> native_assets() {
                 asset.decode_state = e.value("state", "indexed");
                 asset.detail = e.value("detail", "");
                 asset.partition = e.value("partition", "");
+                asset.toc = e.value("toc", "");
+                asset.bundle = e.value("bundle", "");
+                if (asset.toc.size() > 512 || asset.bundle.size() > 512) continue;
                 if (asset.partition.empty()) asset.partition = std::filesystem::path(e.value("document", "")).stem().string();
                 if (asset.root_type.size() > 128 || asset.decode_state.size() > 32 || asset.detail.size() > 1024 || asset.partition.size() > 36) continue;
                 const auto display = native_asset_name(asset.asset, asset.root_type, asset.category);
@@ -5762,7 +5768,12 @@ NativeDocumentPage native_asset_fields(const std::string& asset, const std::stri
             try {
                 std::string guid = asset;
                 const auto assets = native_assets();
-                if (const auto found = std::find_if(assets->begin(), assets->end(), [&](const NativeAsset& a) { return a.asset == asset; }); found != assets->end()) guid = found->partition;
+                // By name, or by partition when the inspector follows a reference.
+                auto found = std::find_if(assets->begin(), assets->end(), [&](const NativeAsset& a) { return a.asset == asset; });
+                if (found == assets->end())
+                    found = std::find_if(assets->begin(), assets->end(), [&](const NativeAsset& a) { return !a.partition.empty() && a.partition == asset; });
+                const NativeAsset* row = found != assets->end() ? &*found : nullptr;
+                if (row) guid = row->partition;
                 const bool resource = guid.starts_with("res:");
                 const auto resource_id = resource ? guid.substr(4) : "";
                 bool valid = guid.size() == 36;
@@ -5775,10 +5786,15 @@ NativeDocumentPage native_asset_fields(const std::string& asset, const std::stri
                 if (!valid) throw std::runtime_error("No typed document for this indexed name.");
                 const auto file = library_folder() / L"library" / (resource ? L"native-resources" : L"native-documents") / ((resource ? resource_id : guid) + ".json");
                 std::error_code error;
-                if (!std::filesystem::is_regular_file(file, error) || std::filesystem::file_size(file, error) > 16 * 1024 * 1024)
-                    throw std::runtime_error("Typed document missing or too large; regenerate the native inventory.");
-                std::ifstream in(file, std::ios::binary);
-                document = std::make_shared<const Json>(Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), JsonLimits{16 * 1024 * 1024, 64, 2 * 1024 * 1024}));
+                if (std::filesystem::is_regular_file(file, error)) {
+                    if (std::filesystem::file_size(file, error) > 16 * 1024 * 1024) throw std::runtime_error("Typed document too large to show.");
+                    std::ifstream in(file, std::ios::binary);
+                    document = std::make_shared<const Json>(Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), JsonLimits{16 * 1024 * 1024, 64, 2 * 1024 * 1024}));
+                } else if (!resource && row && !row->toc.empty() && !row->bundle.empty()) {
+                    // A library built in game keeps no copies of the documents: they are read from the game itself.
+                    document = std::make_shared<const Json>(native_library::document_from_game(hall_of_meat::game_folder(), row->toc, row->bundle, row->asset));
+                } else
+                    throw std::runtime_error("Typed document missing; rebuild the trick library in SETTINGS.");
             } catch (const std::exception& e) { cached_error = e.what(); }
         }
         if (!document) throw std::runtime_error(cached_error);
@@ -5833,6 +5849,148 @@ void refresh_game_tricks(std::string& message) {
     tricks_revision.fetch_add(1, std::memory_order_acq_rel);
     message = "Library refreshed: " + std::to_string(game_tricks()->size()) + " clips (recorded takes preferred per trick/pop).";
 }
+namespace {
+// The trick library's build on this PC (native_library), one at a time, in the background.
+struct LibraryBuilder {
+    std::mutex mutex;
+    LibraryBuild state;
+    std::uint64_t revision{}; // tricks_revision the library on disk was last looked at for
+    std::atomic<bool> stop{};
+};
+LibraryBuilder& library_builder() {
+    static auto* builder = new LibraryBuilder;
+    return *builder;
+}
+// What is on disk now: a library there, when it was built and for which game.
+void look_at_library_locked(LibraryBuilder& b) {
+    const auto folder = library_folder() / L"library";
+    std::error_code error;
+    b.state.exists = std::filesystem::is_regular_file(folder / L"catalog.json", error);
+    b.state.built.clear();
+    b.state.outdated = false;
+    try {
+        std::ifstream in(folder / L"build-info.json", std::ios::binary);
+        if (in) {
+            const auto info = Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}));
+            b.state.built = info.value("built", "");
+            const auto stamp = info.value("stamp", "");
+            b.state.outdated = !stamp.empty() && stamp != supported_build::game_sha256;
+        }
+    } catch (...) {}
+}
+// Where a step's `done` of `total` puts the whole build (decoding the clips takes most of it).
+float build_fraction(std::string_view step, std::size_t done, std::size_t total) {
+    const float part = total ? std::clamp(static_cast<float>(done) / static_cast<float>(total), 0.0f, 1.0f) : 0.0f;
+    if (step.starts_with("Reading")) return 0.15f * part;
+    if (step.starts_with("Finding")) return 0.15f + 0.1f * part;
+    if (step.starts_with("Decoding")) return 0.25f + 0.72f * part;
+    return 0.97f + 0.03f * part;
+}
+void finish_library_build(bool failed, std::string message) {
+    auto& b = library_builder();
+    std::lock_guard lock(b.mutex);
+    b.state.running = false;
+    b.state.failed = failed;
+    b.state.message = std::move(message);
+    look_at_library_locked(b);
+    b.revision = tricks_revision.load(std::memory_order_acquire);
+}
+// Renames a folder, trying again a few times: a file in it may be open for a moment (a clip being read).
+void rename_folder(const std::filesystem::path& from, const std::filesystem::path& to) {
+    for (int attempt = 0;; ++attempt) {
+        std::error_code error;
+        std::filesystem::rename(from, to, error);
+        if (!error) return;
+        if (attempt >= 20) throw std::runtime_error("could not move " + utf8_path(from) + ": " + error.message());
+        Sleep(100);
+    }
+}
+void run_library_build() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    const auto folder = library_folder();
+    const auto staging = folder / L"library.building", target = folder / L"library", old = folder / L"library.old";
+    auto& b = library_builder();
+    std::error_code error;
+    try {
+        if (folder.empty()) throw std::runtime_error("the studio's folder is unknown");
+        std::filesystem::create_directories(folder, error);
+        std::filesystem::remove_all(staging, error); // what a build stopped halfway left
+        std::filesystem::remove_all(old, error);
+        if (const auto space = std::filesystem::space(folder, error); !error && space.available < 2'500'000'000ull)
+            throw std::runtime_error("the trick library needs about 2 GB free on the drive the game is on");
+        const auto report = native_library::build(hall_of_meat::game_folder(), staging, [&](std::string_view step, std::size_t done, std::size_t total) {
+            std::lock_guard lock(b.mutex);
+            b.state.step = std::string(step);
+            b.state.done = done;
+            b.state.total = total;
+            b.state.fraction = std::max(b.state.fraction, build_fraction(step, done, total));
+            return !b.stop.load(std::memory_order_acquire);
+        }, std::string(supported_build::game_sha256));
+        if (!report.tricks) throw std::runtime_error("no tricks were found in the game's files" + (report.first_error.empty() ? std::string{} : ": " + report.first_error));
+        {
+            std::lock_guard lock(b.mutex);
+            b.state.step = "Putting it in place";
+            b.state.fraction = 1;
+        }
+        const bool had = std::filesystem::exists(target, error);
+        if (had) rename_folder(target, old);
+        try {
+            rename_folder(staging, target);
+        } catch (...) {
+            if (had) rename_folder(old, target);
+            throw;
+        }
+        tricks_revision.fetch_add(1, std::memory_order_acq_rel);
+        {
+            auto& s = state();
+            std::lock_guard lock(s.mutex);
+            s.tricks_read = false;
+            s.idle_read = false;
+        }
+        logging::log(Level::info, Channel::skater, "Animation Studio: trick library built: {} clips, {} tricks, {} not taken, {} errors.", report.clips,
+                     report.tricks, report.unsupported, report.errors);
+        finish_library_build(false, "Trick library built: " + std::to_string(report.tricks) + " tricks and " +
+                                        std::to_string(report.clips - report.tricks) + " other animations from your game.");
+        std::filesystem::remove_all(old, error);
+    } catch (const native_library::Stopped&) {
+        std::filesystem::remove_all(staging, error);
+        finish_library_build(false, "Stopped. Your trick library is as it was.");
+    } catch (const std::exception& e) {
+        std::filesystem::remove_all(staging, error);
+        logging::log(Level::warning, Channel::skater, "Animation Studio: the trick library could not be built: {}", e.what());
+        finish_library_build(true, std::string("The trick library could not be built: ") + e.what() + ".");
+    }
+}
+} // namespace
+LibraryBuild library_build() {
+    auto& b = library_builder();
+    std::lock_guard lock(b.mutex);
+    if (const auto revision = tricks_revision.load(std::memory_order_acquire); !b.state.running && b.revision != revision) {
+        look_at_library_locked(b);
+        b.revision = revision;
+    }
+    return b.state;
+}
+void start_library_build() {
+    auto& b = library_builder();
+    {
+        std::lock_guard lock(b.mutex);
+        if (b.state.running) return;
+        b.state.running = true;
+        b.state.failed = false;
+        b.state.step = "Starting";
+        b.state.message.clear();
+        b.state.done = b.state.total = 0;
+        b.state.fraction = 0;
+        b.stop.store(false, std::memory_order_release);
+    }
+    try {
+        std::thread(run_library_build).detach();
+    } catch (const std::exception& e) {
+        finish_library_build(true, std::string("The trick library could not be built: ") + e.what() + ".");
+    }
+}
+void stop_library_build() { library_builder().stop.store(true, std::memory_order_release); }
 bool recorded_tricks() {
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(library_folder() / L"recorded", error))
@@ -5864,7 +6022,8 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.edits = {};
-        s.edits.trick = trick.preview_only ? "" : trick.trick;
+        // A piece of the game's animation is known by its clip ("native:<asset>"), which is how it is found playing in game.
+        s.edits.trick = trick.preview_only ? "native:" + trick.asset : trick.trick;
         s.edits.pop = trick.pop;
         s.edits.name = trick.label + " " + trick.pop;
         // Native clips are canonical regular; batch recordings keep their takeoff metadata.

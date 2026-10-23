@@ -3,6 +3,7 @@
 #include "animation_studio_images.h"
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
+#include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/trick_batch.h"
 #include <shlobj.h>
 #include <algorithm>
@@ -167,6 +168,7 @@ struct Ui {
     // whose card is open beside the grid.
     std::string trick_group{"*mine"};
     std::string trick_page;
+    std::string piece_card; // a card of the game's pieces (a grind, a grab) open beside the grid, by its key
     float groups_scroll{}, cards_scroll{}, drawer_scroll{}, list_scroll{};
     int row{};        // the game's animation tree: the row last chosen
     // PACKS
@@ -1824,8 +1826,8 @@ std::vector<Row> asset_rows(const studio::View& v) {
                                 s.asset_page = 0;
                             }});
     }
-    rows.push_back({"Reload native library", std::to_string(list.size()) + " clips",
-                    "Refresh converted native clips after importing or extracting more animations.", [] {
+    rows.push_back({"Reload the trick library", std::to_string(list.size()) + " clips",
+                    "Reads the trick library from disk again. To make it again from the game, use SETTINGS > TRICKS > Trick library.", [] {
                         std::string m;
                         studio::refresh_game_tricks(m);
                         say(m);
@@ -1938,6 +1940,10 @@ void menu_back(const studio::View& v) {
     if (u.menu_tab == 0) {
         if (!u.trick_page.empty()) {
             u.trick_page.clear();
+            return;
+        }
+        if (!u.piece_card.empty()) {
+            u.piece_card.clear();
             return;
         }
         if (u.trick_group == "*assets" && go_back_in_assets()) return;
@@ -2350,8 +2356,17 @@ void trick_tags(ImDrawList* d, const Fonts& f, const studio::Preset& p, const st
         right -= 6 * f.k;
     }
 }
+// A piece of the game's animation ("native:<asset>") by the trick card it is on: "Boardslide (FS LOOP)".
+std::string piece_label(const std::string& trick) {
+    if (!trick.starts_with("native:")) return {};
+    const auto parts = studio::native_trick_parts(std::string_view(trick).substr(7));
+    if (parts.empty()) return {};
+    const auto& p = parts.front();
+    return p.trick + " (" + (p.side.empty() ? p.part : p.side + " " + p.part) + ")";
+}
 // The game's name for a trick (Kickflip for kickflip), from its catalog.
 std::string trick_label(const std::string& trick) {
+    if (auto piece = piece_label(trick); !piece.empty()) return piece;
     const auto tricks = studio::game_tricks();
     for (const auto& t : *tricks)
         if (t.trick == trick && !t.label.empty()) return t.label;
@@ -2362,6 +2377,8 @@ std::string trick_label(const std::string& trick) {
 }
 // The kind of trick it is, for sorting a pack: the catalog's own kind, or a good guess from its name.
 std::string kind_of(const std::string& trick) {
+    if (trick.starts_with("native:"))
+        if (const auto parts = studio::native_trick_parts(std::string_view(trick).substr(7)); !parts.empty()) return parts.front().kind;
     const auto tricks = studio::game_tricks();
     for (const auto& t : *tricks)
         if (t.trick == trick && !t.category.empty() && !t.preview_only) return t.category;
@@ -2480,11 +2497,37 @@ void page_heading(ImDrawList* d, const Fonts& f, ImVec2 at, const std::string& t
 struct TrickCard {
     std::string trick, label, category;
     std::array<const studio::GameTrick*, 4> pops{}; // low, mid, high, and the one that is any pop
+    // A card of the game's pieces - a grind, a grab, a manual (native_trick_parts.h): every piece of it, way by way.
+    struct Piece {
+        std::string side, part;
+        int order{};
+        const studio::GameTrick* clip{};
+    };
+    std::vector<Piece> pieces;
+    std::vector<std::string> sides; // the ways it is done, in order ("" when there is one way)
+    std::string search;             // its name, kind, ways and pieces, for SEARCH
 };
-std::vector<TrickCard> trick_cards(const std::vector<studio::GameTrick>& list) {
-    std::vector<TrickCard> out;
+// The ways a trick is done in a sensible order: one way, FS, BS, straight, then the same fakie and nollie, then grabs.
+int side_rank(std::string_view side) {
+    if (side.empty()) return 0;
+    if (side == "FS") return 1;
+    if (side == "BS") return 2;
+    if (side == "STRAIGHT") return 3;
+    if (side.starts_with("FAKIE")) return 10 + side_rank(side.substr(std::min<std::size_t>(side.size(), 6)));
+    if (side.starts_with("NOLLIE")) return 20 + side_rank(side.substr(std::min<std::size_t>(side.size(), 7)));
+    return 50;
+}
+// The game's tricks as cards: its whole tricks by their pops, then its pieces gathered into the tricks they are part
+// of. Made once for each list (kept alive with it), not every frame: the pieces' names are read here.
+const std::vector<TrickCard>& trick_cards(const std::shared_ptr<const std::vector<studio::GameTrick>>& tricks) {
+    static std::shared_ptr<const std::vector<studio::GameTrick>> made_for;
+    static std::vector<TrickCard> out;
+    if (made_for == tricks) return out;
+    made_for = tricks;
+    out.clear();
+    if (!tricks) return out;
     std::unordered_map<std::string, std::size_t> at;
-    for (const auto& t : list) {
+    for (const auto& t : *tricks) {
         if (t.preview_only) continue;
         const auto [it, fresh] = at.emplace(t.trick, out.size());
         if (fresh) out.push_back({t.trick, t.label, t.category, {}});
@@ -2492,8 +2535,51 @@ std::vector<TrickCard> trick_cards(const std::vector<studio::GameTrick>& list) {
         const std::size_t slot = t.pop == "low" ? 0 : t.pop == "mid" ? 1 : t.pop == "high" ? 2 : 3;
         if (!c.pops[slot]) c.pops[slot] = &t;
     }
+    for (auto& c : out) c.search = studio::native_search_key(c.label + " " + c.trick + " " + c.category);
+    struct Made {
+        TrickCard card;
+        int kind_order{}, trick_order{};
+    };
+    std::vector<Made> pieces;
+    std::unordered_map<std::string, std::size_t> piece_at;
+    for (const auto& t : *tricks) {
+        if (!t.preview_only || t.recorded || t.asset.empty()) continue;
+        for (auto& part : studio::native_trick_parts(t.asset)) {
+            const auto key = "*piece:" + part.kind + "/" + part.trick;
+            const auto [it, fresh] = piece_at.emplace(key, pieces.size());
+            if (fresh) {
+                Made made;
+                made.card.trick = key;
+                made.card.label = part.trick;
+                made.card.category = part.kind;
+                made.kind_order = part.kind_order;
+                made.trick_order = part.trick_order;
+                pieces.push_back(std::move(made));
+            }
+            pieces[it->second].card.pieces.push_back({std::move(part.side), std::move(part.part), part.part_order, &t});
+        }
+    }
+    std::stable_sort(pieces.begin(), pieces.end(), [](const Made& a, const Made& b) {
+        return std::tie(a.kind_order, a.trick_order, a.card.label) < std::tie(b.kind_order, b.trick_order, b.card.label);
+    });
+    for (auto& made : pieces) {
+        auto& c = made.card;
+        std::stable_sort(c.pieces.begin(), c.pieces.end(), [](const TrickCard::Piece& a, const TrickCard::Piece& b) {
+            const int ra = side_rank(a.side), rb = side_rank(b.side);
+            return std::tie(ra, a.side, a.order, a.part) < std::tie(rb, b.side, b.order, b.part);
+        });
+        std::string words = c.label + " " + c.category;
+        for (const auto& piece : c.pieces) {
+            if (c.sides.empty() || c.sides.back() != piece.side) c.sides.push_back(piece.side), words += " " + piece.side;
+            words += " " + piece.part;
+        }
+        c.search = studio::native_search_key(words);
+        out.push_back(std::move(c));
+    }
     return out;
 }
+// The clip a piece is, as the studio names it once it is open ("native:<asset>").
+std::string piece_trick(const TrickCard::Piece& piece) { return "native:" + piece.clip->asset; }
 void open_game_trick(const studio::GameTrick& t) {
     std::string m;
     studio::load_game_trick(t, m);
@@ -2550,6 +2636,121 @@ void game_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const
     }
     ImGui::PopID();
 }
+// The piece of a way of doing it that a card's chip opens: its loop or hold if it has one, else its first.
+const TrickCard::Piece* main_piece(const TrickCard& c, const std::string& side) {
+    const TrickCard::Piece* first = nullptr;
+    for (const auto& piece : c.pieces) {
+        if (piece.side != side) continue;
+        if (!first) first = &piece;
+        if (piece.part == "LOOP" || piece.part == "HOLD" || piece.part == "WHOLE" || piece.part == "POP" || piece.part == "TRICK") return &piece;
+    }
+    return first;
+}
+// A card of the game's pieces (a grind, a grab): its name and kind, how many pieces, and a chip for each way it is
+// done that opens its loop. The card itself opens its side panel, with every piece.
+void piece_card(ImDrawList* d, const Fonts& f, const studio::View& v, const TrickCard& c, ImVec2 a, ImVec2 size, int saved) {
+    auto& u = ui();
+    const float k = f.k, strip = 46 * k;
+    const ImVec2 b(a.x + size.x, a.y + size.y);
+    ImGui::PushID(c.trick.c_str());
+    bool lit = false;
+    if (hit("##card", a, ImVec2(b.x, b.y - strip), &lit)) {
+        u.piece_card = u.piece_card == c.trick ? std::string{} : c.trick;
+        u.trick_page.clear();
+        u.drawer_scroll = 0;
+    }
+    const TrickCard::Piece* open = nullptr;
+    if (v.has_clip)
+        for (const auto& piece : c.pieces)
+            if (v.trick == piece_trick(piece)) open = &piece;
+    const bool panel = u.piece_card == c.trick;
+    skate_theme::rough_rect(d, a, b, panel ? IM_COL32(30, 52, 86, 250) : lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    theme::halftone(d, ImVec2(b.x - 52 * k, a.y + 10 * k), 6, 3, IM_COL32(255, 255, 255, 18));
+    if (open) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
+    float right_edge = b.x - 14 * k;
+    if (saved) {
+        const auto label = std::to_string(saved) + " OF YOURS";
+        right_edge -= tag_width(f, label);
+        tag(d, f, ImVec2(right_edge, a.y + 14 * k), label, blue);
+        right_edge -= 6 * k;
+    }
+    if (open) {
+        right_edge -= tag_width(f, "OPEN");
+        tag(d, f, ImVec2(right_edge, a.y + 14 * k), "OPEN", IM_COL32(255, 255, 255, 40));
+    }
+    text(d, f.bold, 21 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), white, elide(f.bold, 21 * k, c.label, right_edge - a.x - 26 * k));
+    const auto about = upper(c.category) + "  /  " + std::to_string(c.pieces.size()) + (c.pieces.size() == 1 ? " PIECE" : " PIECES");
+    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, about, size.x - 36 * k));
+    if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
+    // A chip for each way, as many as fit; the rest are in the side panel.
+    float x = a.x + 14 * k;
+    const float more_w = chip_width(f, "+99");
+    for (std::size_t i = 0; i < c.sides.size(); ++i) {
+        const auto& side = c.sides[i];
+        const auto label = side.empty() ? std::string("OPEN") : side;
+        const float w = chip_width(f, label);
+        const bool last = i + 1 == c.sides.size();
+        if (x + w + (last ? 0 : more_w + 6 * k) > b.x - 14 * k) {
+            const auto more = "+" + std::to_string(c.sides.size() - i);
+            if (chip(d, f, "##more", ImVec2(x, b.y - strip + 6 * k), more, false, nullptr, 30 * k)) {
+                u.piece_card = c.trick;
+                u.trick_page.clear();
+                u.drawer_scroll = 0;
+            }
+            break;
+        }
+        ImGui::PushID(static_cast<int>(i));
+        float used = 0;
+        if (chip(d, f, "##side", ImVec2(x, b.y - strip + 6 * k), label, open && open->side == side, &used, 30 * k))
+            if (const auto* piece = main_piece(c, side)) open_game_trick(*piece->clip);
+        ImGui::PopID();
+        x += used + 6 * k;
+    }
+    ImGui::PopID();
+}
+// Beside the grid: every piece of a card of the game's pieces, way by way, each to open in the editor.
+void piece_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, const TrickCard& c, ImVec2 a, ImVec2 b) {
+    auto& u = ui();
+    const float k = f.k;
+    skate_theme::rough_rect(d, a, b, IM_COL32(18, 19, 22, 250), seed_of(a), k);
+    if (action(d, f, "##piececlose", ImVec2(b.x - 52 * k, a.y + 14 * k), ImVec2(38 * k, 34 * k), "X", Look::ghost)) {
+        u.piece_card.clear();
+        return;
+    }
+    const float x = a.x + 26 * k, w = b.x - a.x - 52 * k;
+    float y = a.y + 18 * k;
+    text(d, f.title, 34 * k, ImVec2(x, y), white, elide(f.title, 34 * k, upper(c.label), w - 50 * k));
+    y += 42 * k;
+    text(d, f.bold, 14 * k, ImVec2(x, y), soft, c.category + ", " + std::to_string(c.pieces.size()) + " pieces of the game's own animation");
+    y += 24 * k;
+    y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint,
+                   "Open a piece, change it and save it. In game your version plays whenever the game plays that piece: the studio "
+                   "knows it by the skater's pose.");
+    y += 14 * k;
+    begin_region(32, ImVec2(a.x, y), ImVec2(b.x, b.y - 10 * k), u.drawer_scroll, k);
+    const float top = y;
+    y -= u.drawer_scroll;
+    std::size_t i = 0;
+    while (i < c.pieces.size()) {
+        const auto& side = c.pieces[i].side;
+        std::size_t end = i;
+        while (end < c.pieces.size() && c.pieces[end].side == side) ++end;
+        heading(d, f, ImVec2(x, y), w, side.empty() ? std::string("Pieces") : side, std::to_string(end - i));
+        y += 34 * k;
+        float cx = x;
+        for (; i < end; ++i) {
+            const auto& piece = c.pieces[i];
+            const float cw = chip_width(f, piece.part);
+            if (cx + cw > x + w) cx = x, y += 36 * k;
+            ImGui::PushID(static_cast<int>(i));
+            if (chip(d, f, "##piece", ImVec2(cx, y), piece.part, v.has_clip && v.trick == piece_trick(piece))) open_game_trick(*piece.clip);
+            ImGui::PopID();
+            cx += cw + 8 * k;
+        }
+        y += 48 * k;
+    }
+    end_region(d, ImVec2(a.x, top), ImVec2(b.x, b.y - 10 * k), y + u.drawer_scroll - top, u.drawer_scroll, k);
+}
 // One of your saved tricks: the name you gave it, what it is, whether it plays, and EDIT / TEST.
 void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 a, ImVec2 size) {
     auto& u = ui();
@@ -2560,6 +2761,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     bool lit = false;
     if (hit("##mine", a, ImVec2(b.x, b.y - strip), &lit)) {
         u.trick_page = name;
+        u.piece_card.clear();
         u.label_for.clear();
         u.confirm_delete.clear();
     }
@@ -2642,7 +2844,13 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     y += 50 * k;
     heading(d, f, ImVec2(x, y), w, "Plays on");
     y += 32 * k;
-    {
+    if (p && p->trick.starts_with("native:")) {
+        // A piece of the game's animation (a grind's loop, a grab's hold) is not popped: it plays when the game plays it.
+        y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft,
+                       "Whenever the game plays this piece, " + piece_label(p->trick) + ": the studio knows it by the skater's pose. "
+                       "Pieces have no pop, so there is nothing to copy to low, mid and high.");
+        y += 18 * k;
+    } else {
         const std::string pop = p ? p->pop : std::string{};
         const int chosen = pop.empty() ? 0 : pop == "low" ? 1 : pop == "mid" ? 2 : 3;
         const int picked = segmented(d, f, "##poprule", ImVec2(x, y), w, 36 * k, {"ANY POP", "LOW", "MID", "HIGH"}, chosen, p != nullptr);
@@ -2774,12 +2982,85 @@ void asset_list(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
         text(d, f.bold, 14 * k, ImVec2(ha.x + 18 * k, ha.y + 14 * k), faint,
              "The game's whole animation tree: clips, graph states, transitions, grind phases. Indexed does not mean editable.");
 }
+// ---- the trick library, built on this PC ---------------------------------------------------------
+// The game's tricks come from the player's own copy of the game: nothing of the game's ships with the studio. With no
+// library yet, a panel to build one and how far the build has got; with one being rebuilt, or built from another
+// version of the game, a strip saying so. Returns how much room it took at the top of `a`..`b`.
+float library_panel(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
+    const float k = f.k, w = b.x - a.x;
+    const auto build = studio::library_build();
+    const auto bar = [&](ImVec2 at, float width, float h) {
+        d->AddRectFilled(at, ImVec2(at.x + width, at.y + h), IM_COL32(255, 255, 255, 34), h * 0.5f);
+        d->AddRectFilled(at, ImVec2(at.x + std::max(h, width * std::clamp(build.fraction, 0.0f, 1.0f)), at.y + h), blue, h * 0.5f);
+    };
+    const auto percent = std::to_string(static_cast<int>(std::clamp(build.fraction, 0.0f, 1.0f) * 100)) + "%";
+    if (!build.exists) {
+        const float h = 288 * k;
+        const ImVec2 pa = a, pb(b.x, a.y + h);
+        skate_theme::rough_rect(d, pa, pb, IM_COL32(20, 21, 24, 246), seed_of(pa), k);
+        draw_studio_picture(d, StudioPicture::grain, pa, pb, IM_COL32(255, 255, 255, 34));
+        // A strip of blue tape across the corner, as on the loading screen.
+        d->AddQuadFilled(ImVec2(pb.x - 250 * k, pa.y), ImVec2(pb.x - 150 * k, pa.y), ImVec2(pb.x, pa.y + 120 * k), ImVec2(pb.x, pa.y + 210 * k), blue);
+        theme::halftone(d, ImVec2(pb.x - 120 * k, pa.y + 24 * k), 8, 5, IM_COL32(255, 255, 255, 50));
+        const float x = pa.x + 32 * k, text_w = std::min(w - 300 * k, 820 * k);
+        text(d, f.title, 42 * k, ImVec2(x, pa.y + 26 * k), white, "BUILD YOUR TRICK LIBRARY");
+        float y = pa.y + 84 * k;
+        y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), text_w, IM_COL32(222, 222, 226, 255),
+                       "The studio makes its tricks from your own copy of skate.: every flip trick, grind, grab and manual the game "
+                       "has, ready to open and change. It only reads the game's files, never changes them. Takes about a minute and "
+                       "1.6 GB on this PC; do it once, and again after a game update.");
+        y += 24 * k;
+        if (build.running) {
+            text(d, f.heading, 14 * k, ImVec2(x, y), blue_light, upper(build.step));
+            const float bar_w = std::min(w - 260 * k, 820 * k);
+            const auto t = text_size(f.bold, 15 * k, percent.c_str());
+            text(d, f.bold, 15 * k, ImVec2(x + bar_w - t.x, y - 2 * k), white, percent);
+            bar(ImVec2(x, y + 26 * k), bar_w, 12 * k);
+            if (action(d, f, "##stop_library", ImVec2(x + bar_w + 28 * k, y + 6 * k), ImVec2(140 * k, 44 * k), "STOP", Look::ghost))
+                studio::stop_library_build();
+        } else {
+            if (action(d, f, "##build_library", ImVec2(x, y), ImVec2(280 * k, 52 * k), build.failed ? "TRY AGAIN" : "BUILD THE LIBRARY", Look::blue))
+                studio::start_library_build();
+            if (!build.message.empty())
+                paragraph(d, f.bold, 14 * k, ImVec2(x + 304 * k, y + 6 * k), std::max(100 * k, text_w - 304 * k),
+                          build.failed ? skate_theme::warning : soft, build.message);
+        }
+        return h + 24 * k;
+    }
+    if (!build.running && !build.outdated) return 0;
+    const float h = 62 * k;
+    const ImVec2 pa = a, pb(b.x, a.y + h);
+    skate_theme::rough_rect(d, pa, pb, IM_COL32(20, 21, 24, 246), seed_of(pa), k);
+    d->AddRectFilled(pa, ImVec2(pa.x + 6 * k, pb.y), build.running ? blue : skate_theme::warning);
+    const float x = pa.x + 24 * k;
+    if (build.running) {
+        text(d, f.heading, 14 * k, ImVec2(x, pa.y + 10 * k), blue_light, "REBUILDING THE TRICK LIBRARY");
+        text(d, f.bold, 13 * k, ImVec2(x, pa.y + 34 * k), soft, build.step + "   " + percent);
+        const float bar_x = x + 420 * k, bar_w = std::max(60 * k, pb.x - bar_x - 170 * k);
+        bar(ImVec2(bar_x, pa.y + h * 0.5f - 5 * k), bar_w, 10 * k);
+        if (action(d, f, "##stop_library", ImVec2(pb.x - 140 * k, pa.y + 11 * k), ImVec2(120 * k, 40 * k), "STOP", Look::ghost))
+            studio::stop_library_build();
+    } else {
+        text(d, f.heading, 14 * k, ImVec2(x, pa.y + 10 * k), skate_theme::warning, "YOUR GAME WAS UPDATED");
+        text(d, f.bold, 13 * k, ImVec2(x, pa.y + 34 * k), soft,
+             elide(f.bold, 13 * k, "The trick library was built from an older version: rebuild it so the tricks match the game.", pb.x - x - 200 * k));
+        if (action(d, f, "##rebuild_library", ImVec2(pb.x - 170 * k, pa.y + 11 * k), ImVec2(150 * k, 40 * k), "REBUILD", Look::blue))
+            studio::start_library_build();
+    }
+    return h + 16 * k;
+}
+// Once a build ends, what came of it is said, whichever page is open.
+void library_news() {
+    static bool was_running = false;
+    const auto build = studio::library_build();
+    if (was_running && !build.running && !build.message.empty()) say(build.message);
+    was_running = build.running;
+}
 void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
     const auto tricks = studio::game_tricks();
-    const auto& list = *tricks;
-    const auto cards = trick_cards(list);
+    const auto& cards = trick_cards(tricks);
     const auto assets = studio::native_assets();
     // The kinds, in the catalog's order, each with how many tricks are in it.
     std::vector<std::pair<std::string, int>> kinds;
@@ -2848,7 +3129,8 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     else if (u.trick_group == "*assets") title = "GAME ANIMATIONS", about = "Every piece of the game's animation: setups, loops, exits, grind phases.";
     else title = upper(u.trick_group), about = "Pick a pop to open it in the editor. The card opens its mid pop.";
     page_heading(d, f, ra, title, about);
-    const ImVec2 area_a(ra.x, ra.y + 84 * k);
+    ImVec2 area_a(ra.x, ra.y + 84 * k);
+    area_a.y += library_panel(d, f, area_a, rb);
     if (u.trick_group == "*assets" && !searching) {
         asset_list(d, f, v, area_a, rb);
         return;
@@ -2868,11 +3150,16 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     if (u.trick_group != "*mine" || searching)
         for (const auto& c : cards) {
             if (searching) {
-                if (!studio::native_search_matches(studio::native_search_key(c.label + " " + c.trick + " " + c.category), terms)) continue;
+                if (!studio::native_search_matches(c.search, terms)) continue;
             } else if (c.category != u.trick_group) continue;
             game.push_back(&c);
         }
-    const bool drawer = !u.trick_page.empty() && (u.trick_group == "*mine" || searching);
+    // The side panel: one of your tricks, or every piece of one of the game's grinds, grabs...
+    const TrickCard* pieces_open = nullptr;
+    if (!u.piece_card.empty() && u.trick_group != "*mine")
+        for (const auto* c : game)
+            if (c->trick == u.piece_card) pieces_open = c;
+    const bool drawer = (!u.trick_page.empty() && (u.trick_group == "*mine" || searching)) || pieces_open;
     const float drawer_w = 470 * k;
     const ImVec2 grid_a = area_a, grid_b(drawer ? rb.x - drawer_w - 24 * k : rb.x, rb.y);
     const float gap = 16 * k, min_w = 300 * k, card_h = 132 * k;
@@ -2898,13 +3185,24 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         heading(d, f, ImVec2(grid_a.x, top), grid_w, "The game's", std::to_string(game.size()));
         top += 34 * k;
     }
-    for (const auto* c : game) game_trick_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved_of.contains(c->trick) ? saved_of[c->trick] : 0);
+    for (const auto* c : game) {
+        if (c->pieces.empty()) {
+            game_trick_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved_of.contains(c->trick) ? saved_of[c->trick] : 0);
+            continue;
+        }
+        int saved = 0;
+        for (const auto& piece : c->pieces)
+            if (const auto found = saved_of.find(piece_trick(piece)); found != saved_of.end()) saved += found->second;
+        piece_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved);
+    }
     top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap);
     if (mine.empty() && game.empty())
         text(d, f.bold, 17 * k, ImVec2(grid_a.x, grid_a.y + 10 * k), soft,
              searching ? "Nothing of that name. Try fewer letters, or another word for it." : "Nothing here yet.");
     end_region(d, grid_a, grid_b, top + u.cards_scroll - grid_a.y, u.cards_scroll, k);
-    if (drawer) trick_drawer(d, f, v, ImVec2(rb.x - drawer_w, area_a.y), rb);
+    if (pieces_open && (u.trick_page.empty() || !(u.trick_group == "*mine" || searching)))
+        piece_drawer(d, f, v, *pieces_open, ImVec2(rb.x - drawer_w, area_a.y), rb);
+    else if (drawer) trick_drawer(d, f, v, ImVec2(rb.x - drawer_w, area_a.y), rb);
 }
 
 // ---- PACKS ----------------------------------------------------------------------------------------
@@ -3566,6 +3864,20 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               "does. Exact stance: only the one made on the foot that leads now; the game's own otherwise.",
                               [on = v.front_foot](int) { studio::set_front_foot(!on); }));
         {
+            const auto build = studio::library_build();
+            Setting s = button_row("Trick library",
+                                   "The game's tricks, made on this PC from your own copy of skate. (nothing of the game's comes with the "
+                                   "studio). Rebuild it after a game update. It takes about a minute; your saved tricks and packs are not "
+                                   "touched, and the old library stays until the new one is whole.",
+                                   [running = build.running] { running ? studio::stop_library_build() : studio::start_library_build(); });
+            s.value = build.running    ? "BUILDING " + std::to_string(static_cast<int>(build.fraction * 100)) + "%  -  STOP"
+                      : !build.exists  ? std::string("NOT BUILT  -  BUILD")
+                      : build.outdated ? std::string("OUT OF DATE  -  REBUILD")
+                      : build.built.empty() ? std::string("REBUILD")
+                                            : "BUILT " + build.built + "  -  REBUILD";
+            rows.push_back(std::move(s));
+        }
+        {
             Setting s;
             s.kind = Setting::Kind::name;
             s.label = "Made by";
@@ -3784,6 +4096,11 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
             if (pressed && row.act) row.act();
             const auto t = text_size(f.heading, 20 * k, ">");
             text(d, f.heading, 20 * k, ImVec2(b1.x - 26 * k - t.x, mid_y - 12 * k), lit ? white : soft, ">");
+            if (!row.value.empty()) {
+                const auto shown = elide(f.bold, 15 * k, row.value, 400 * k);
+                const auto vw = text_size(f.bold, 15 * k, shown.c_str());
+                text(d, f.bold, 15 * k, ImVec2(b1.x - 46 * k - t.x - vw.x, mid_y - 9 * k), lit ? white : soft, shown);
+            }
             break;
         }
         case Setting::Kind::info: {
@@ -6015,6 +6332,7 @@ void draw_animation_studio() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNav);
     auto* d = ImGui::GetWindowDrawList();
+    library_news();
     if (u.menu) {
         u.menu_fade = std::min(1.0f, u.menu_fade + ImGui::GetIO().DeltaTime * 8);
         menu_backdrop(d, f, display, 0.6f + 0.4f * u.menu_fade);

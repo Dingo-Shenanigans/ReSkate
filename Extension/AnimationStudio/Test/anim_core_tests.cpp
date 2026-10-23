@@ -11,6 +11,7 @@
 #include "Extension/AnimationStudio/anim_library.h"
 #include "Extension/AnimationStudio/anim_playback.h"
 #include "Extension/AnimationStudio/native_asset_names.h"
+#include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/recording_rules.h"
 #include <limits>
 #include <filesystem>
@@ -28,6 +29,38 @@ bool near(float a, float b, float within = 1e-3f) { return std::abs(a - b) < wit
 bool same_turn(const Quat& a, const Quat& b) {
     const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
     return d > 0.9999f;
+}
+
+// The game's pieces read as the tricks they are part of (TRICKS' grind, grab and manual cards).
+void native_trick_cards() {
+    const auto parts = [](const char* name) { return native_trick_parts(std::string("animation/dingo/") + name); };
+    const auto shared = parts("c_proto_onb_grind_fs_boardslide_bs_lipslide_rail_loop");
+    check(shared.size() == 2 && shared[0].trick == "Boardslide" && shared[0].side == "FS" && shared[1].trick == "Lipslide" && shared[1].side == "BS" &&
+              shared[0].part == "LOOP" && shared[0].kind == "Slides",
+          "A clip that is two slides goes on both cards, each the way it is done");
+    const auto fakie = parts("c_proto_onb_grind_bf_fs_bs_5_0_rail_into");
+    check(fakie.size() == 2 && fakie[0].trick == "5-0" && fakie[0].side == "FAKIE FS" && fakie[1].side == "FAKIE BS" && fakie[0].part == "INTO",
+          "bf grinds are the fakie ones, and 5_0 is the 5-0");
+    const auto out = parts("c_proto_onb_grind_fakie_fs_lipslide_bs_boardslide_rail_dark_popout_bs_inair");
+    check(out.size() == 2 && out[0].part == "DARK OUT BS AIR" && out[0].side == "FAKIE FS", "Pop-outs keep their way out, air and darkslide");
+    const auto melon = parts("c_proto_onb_inair_bs_grab_melon_mid_loop");
+    check(melon.size() == 1 && melon[0].trick == "Melon" && melon[0].side == "BS GRAB" && melon[0].part == "HOLD MID" && melon[0].kind == "Grabs",
+          "A grab's tweak is a card of its own, on the grab it is done from");
+    const auto flip = parts("c_proto_inair_grab_stale_kick_fingerflip_to_inair");
+    check(flip.size() == 1 && flip[0].trick == "Kick fingerflip" && flip[0].side == "STALEFISH" && flip[0].part == "TO AIR", "Fingerflips by style and grab");
+    const auto manual = parts("c_proto_onb_manual_n_fakie_med_turn_bs");
+    check(manual.size() == 1 && manual[0].trick == "Nose manual" && manual[0].side == "FAKIE" && manual[0].part == "TURN BS MID", "Manual poses and turns");
+    const auto plant = parts("c_proto_onb_invert_fakie_bs_judoplant");
+    check(plant.size() == 1 && plant[0].trick == "Judo plant" && plant[0].side == "FAKIE BS" && plant[0].kind == "Inverts", "Inverts");
+    const auto dark = parts("c_proto_onb_trick_n_360flip_high_dark");
+    check(dark.size() == 1 && dark[0].trick == "360 flip" && dark[0].side == "NOLLIE" && dark[0].part == "DARK CATCH HIGH", "Flip variations");
+    check(parts("c_proto_onb_grind_darkslide_feet_addi").empty() && parts("c_proto_onb_idle_rolling_loop").empty() &&
+              parts("c_proto_ofb_grind_5050_feet_rail_loop").empty() && parts("c_proto_onb_grind_fs_mystery_rail_loop").empty(),
+          "Additive layers, off-board clips and names that do not read cleanly are left out");
+    // A piece saved before pieces were named by their clip gets that name, so it plays in game.
+    Animation piece;
+    piece.source = {"native_asset", "animation/dingo/c_proto_onb_grind_5050_rail_loop", "", ""};
+    check(from_json(to_json(piece)).trick == "native:animation/dingo/c_proto_onb_grind_5050_rail_loop", "A saved piece is known by its clip");
 }
 
 void native_names_and_search() {
@@ -1617,6 +1650,7 @@ int main(int argc, char** argv) {
         research_keeps_short_transitions_and_is_bounded();
         euler_numbers_read_back();
         native_names_and_search();
+        native_trick_cards();
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();

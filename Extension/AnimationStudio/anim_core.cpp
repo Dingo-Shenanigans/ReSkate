@@ -996,6 +996,9 @@ Animation from_json(std::string_view text) {
             result.tracks.push_back(std::move(track));
         }
     }
+    // A piece of the game's own animation (a grind's loop, a grab's hold) is known by the clip it came from: one
+    // saved before pieces were given that name gets it here, so it plays in game like one saved since.
+    if (result.trick.empty() && result.source.kind == "native_asset" && !result.source.asset.empty()) result.trick = "native:" + result.source.asset;
     return result;
 }
 
