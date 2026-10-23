@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,7 +35,36 @@ struct CrewMember {
     std::string_view team, name, role, about;
 };
 inline constexpr std::array crew_members{
-    CrewMember{"Fourth_Studio", "Fourth", "Made the studio", "Fourth Studio: the Animator Studio, Board Break, Road Rash and a pile of cosmetics."},
+    CrewMember{"Fourth_Studio", "Fourth", "Studio lead", "Made the Animator Studio, Board Break and Road Rash. Keys every flip by hand, twice."},
+    CrewMember{"22SH", "22SH", "Animator", "Lives in the graph editor. If a catch looks floaty, 22SH has already fixed it."},
+    CrewMember{"Norms", "Norms", "Stance & rigs", "Worked out how the game mirrors a skater. Regular, goofy, switch: Norms checked them all."},
+    CrewMember{"Steez", "Steez", "Tester", "Broke the studio more times than anyone, on purpose, so you never have to."},
+};
+// Sample packs, so the shop can be seen full before it is: shown after the real ones, with covers made by the cover
+// designer, and nothing to GET. Switched off for release.
+inline constexpr bool show_samples = true;
+struct SamplePack {
+    std::string_view title, owner;
+    int tricks;
+    std::string_view stance;
+    int downloads, likes, days;
+    std::string_view base, banner, font, place; // its cover (studio_cover_maker.h)
+};
+inline constexpr std::array samples{
+    SamplePack{"Street Essentials", "Fourth_Studio", 24, "ALL STANCES", 2410, 312, 3, "skater", "blue", "anton", "bottom"},
+    SamplePack{"Heavy Hitters", "22SH", 28, "ALL STANCES", 1480, 204, 6, "grip", "white", "dirt", "middle"},
+    SamplePack{"Smooth Operator", "Norms", 20, "REGULAR", 1120, 160, 19, "concrete", "grip", "knewave", "bottom"},
+    SamplePack{"Tech Deck", "Steez", 32, "GOOFY", 940, 131, 44, "blue", "white", "sedgwick", "middle"},
+    SamplePack{"After Hours", "Fourth_Studio", 26, "ALL STANCES", 1390, 188, 2, "print", "blue", "bebas", "top"},
+    SamplePack{"Ledge Lords", "kurt_ollie", 18, "REGULAR", 2010, 266, 5, "grip", "blue", "anton", "middle"},
+    SamplePack{"Night Session", "dannyb", 14, "SWITCH", 1660, 221, 1, "print", "none", "knewave", "bottom"},
+    SamplePack{"Manual Labor", "pushmob", 22, "FAKIE", 860, 97, 12, "paper", "grip", "anton", "middle"},
+    SamplePack{"Flip Theory", "tre_flip_tom", 30, "ALL STANCES", 4890, 640, 71, "concrete", "tape", "bebas", "top"},
+    SamplePack{"Gap Season", "saltwater_sk8", 12, "NOLLIE", 610, 64, 9, "blue", "grip", "dirt", "bottom"},
+    SamplePack{"Curb Appeal", "mrs_grind", 16, "GOOFY", 3720, 512, 103, "skater", "white", "sedgwick", "top"},
+    SamplePack{"Stair Masters", "bigspin_bee", 20, "ALL STANCES", 3180, 455, 58, "grip", "tape", "knewave", "middle"},
+    SamplePack{"Backyard Bowl", "pool_boy", 9, "REGULAR", 230, 31, 0, "paper", "blue", "sedgwick", "middle"},
+    SamplePack{"Late Flips Only", "lateflip_lou", 11, "SWITCH", 150, 22, 0, "concrete", "white", "anton", "top"},
 };
 // Packs the shop puts up front (FEATURED), by Team-Name, in this order. With none, or none of them out, it picks: the
 // crew's newest, then the most liked.
@@ -69,6 +99,9 @@ struct Pack {
     std::string about;
     std::vector<std::string> tricks;
     int readme{};
+    // One of the samples (show_samples): `sample` is its place in the list + 1, `sample_days` how old it is.
+    int sample{}, sample_days{};
+    std::string stance; // what its tag says (ALL STANCES, GOOFY...), "" not known
 };
 struct Detail {
     std::string full_name, version;
@@ -102,6 +135,8 @@ void want_icons(const std::vector<std::string>& full_names);
 void load_detail(const std::string& full_name);
 // The packs' READMEs read in the background (kept on disk by version): a pack's `about` and `tricks` once read.
 void want_readmes(const std::vector<std::string>& full_names);
+// Where a sample's cover is kept (made by the overlay's cover designer the first time the shop is opened).
+std::filesystem::path sample_cover(std::size_t index);
 void set_favorite(const std::string& full_name, bool on); // the heart: liked here
 // Whether a like asks to like the pack on Thunderstore too. (Thunderstore takes likes only from a person signed in on
 // its site, never from an app's token, so the studio opens the pack's page there for it.)

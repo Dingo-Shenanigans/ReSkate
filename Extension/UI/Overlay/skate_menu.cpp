@@ -869,6 +869,17 @@ void load_skate_fonts(SkateMenu& menu) {
     // The loading screen's wordmark: lowercase, the full stop and the space only, at one big size.
     static const ImWchar logo[]{0x0020, 0x0020, 0x002E, 0x002E, 0x0061, 0x007A, 0};
     menu.logo = font(L"FONT_HEADING", "arialbd.ttf", 160, logo);
+    // The MARKET's headline font at two sizes (a font scaled up blurs, scaled far down it flickers), and the cover fonts for
+    // their buttons: plain Latin only.
+    static const ImWchar plain[]{0x0020, 0x007E, 0};
+    menu.display = font(L"FONT_ANTON", "impact.ttf", 48, plain);
+    menu.display_big = font(L"FONT_ANTON", "impact.ttf", 176, plain);
+    menu.display_small = font(L"FONT_ANTON", "impact.ttf", 24, plain);
+    menu.marker_small = font(L"FONT_BRUSH", "arialbi.ttf", 24, plain);
+    menu.cover_bebas = font(L"FONT_BEBAS", "impact.ttf", 34, plain);
+    menu.cover_dirt = font(L"FONT_DIRT", "impact.ttf", 34, plain);
+    menu.cover_sedgwick = font(L"FONT_SEDGWICK", "impact.ttf", 34, plain);
+    menu.cover_knewave = font(L"FONT_KNEWAVE", "impact.ttf", 34, plain);
 }
 
 namespace menu {

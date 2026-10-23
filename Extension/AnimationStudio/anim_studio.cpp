@@ -5898,6 +5898,12 @@ void pack_published(const std::string& pack_name, const std::string& version, co
         if (!published_as.empty()) pack.published_as = published_as;
     });
 }
+bool set_pack_cover_design(const std::string& pack_name, const std::string& design, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    message = "Cover saved.";
+    return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) { pack.cover = design.substr(0, 4000); });
+}
 bool set_pack_description(const std::string& pack_name, const std::string& description, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

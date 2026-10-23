@@ -29,6 +29,8 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/skate_menu_addons.cpp
     Extension/UI/Overlay/menu_map_pictures.cpp
     Extension/UI/Overlay/studio_pack_pictures.cpp
+    Extension/UI/Overlay/studio_market_art.cpp
+    Extension/UI/Overlay/studio_cover_maker.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
     Extension/UI/Overlay/park_editor.cpp

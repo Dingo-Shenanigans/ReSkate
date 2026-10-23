@@ -20,7 +20,7 @@ void fill_animation_studio_images(ImFontAtlas& atlas) noexcept;
 
 // The icons of SETTINGS' tiles (studio, skater, tricks, packs): white, grungy, on clear (assets/animator_studio/icon_*.png,
 // or icons/<name>.png in the folder above the tricks in their place).
-enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right, icon_studio, icon_skater, icon_tricks, icon_packs, market, market_right };
+enum class StudioPicture { grain, tile, brush, kickflip, backdrop, backdrop_right, icon_studio, icon_skater, icon_tricks, icon_packs };
 // Stretched onto the box. False when the picture is not there.
 bool draw_studio_picture(ImDrawList* draw, StudioPicture picture, ImVec2 min, ImVec2 max, ImU32 tint);
 // Filled over the box with its own shape kept: what does not fit is cropped off, evenly on both sides (a 21:9
@@ -31,8 +31,6 @@ bool draw_studio_picture_cover(ImDrawList* draw, StudioPicture picture, ImVec2 m
 // is as wide as the overlay's atlas can take, and they are drawn back together here. False when there
 // is no picture.
 bool draw_studio_backdrop_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint);
-// The MARKET's wallpaper, the same way (carried in two halves, filled over the box). False when there is none.
-bool draw_studio_market_cover(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint);
 // The brush bar's body on the box, its splatter around it.
 bool draw_studio_brush(ImDrawList* draw, ImVec2 min, ImVec2 max, ImU32 tint);
 // The rough tile nine-sliced onto the box, `edge` pixels of rough edge.

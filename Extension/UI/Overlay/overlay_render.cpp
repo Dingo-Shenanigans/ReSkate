@@ -87,6 +87,11 @@ void destroy_graphics() {
     studio_pack_pixels_lost();
     s.studio_frame.Reset();
     studio_frame_lost();
+    s.market_wall_texture.Reset(); s.market_wall_upload.Reset(); s.market_sheet_texture.Reset(); s.market_sheet_upload.Reset();
+    s.cover_preview_texture.Reset(); s.cover_preview_upload.Reset();
+    s.market_upload_fence = 0;
+    s.market_uploaded = false;
+    market_art_lost();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -295,8 +300,9 @@ bool setup_graphics() {
     }
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     // ImGui's atlas, the map download card's icon, the menu's map pictures, an item's mod icon, the studio's pack pictures
-    // (upload_image), and the game's frame for the studio's fisheye (copy_studio_frame)
-    heap.NumDescriptors = 6;
+    // (upload_image), the game's frame for the studio's fisheye (copy_studio_frame), and the studio MARKET's wall, its art
+    // and the cover designer's preview (upload_market_art)
+    heap.NumDescriptors = 9;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     graphics_result = s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&s.srvs));
     if (FAILED(graphics_result)) {
@@ -703,6 +709,34 @@ void upload_studio_pack_image(State& s) {
     if (const auto id = upload_image(s, pixels, 4, s.studio_pack_texture, s.studio_pack_upload)) studio_pack_pixels_uploaded(id, pixels.serial);
 }
 
+// The Animator Studio MARKET's art (studio_market_art.cpp): its wall and its sheet once, when they are read, and the
+// cover designer's preview each time it changes. A texture being replaced waits for the frames still drawing it.
+void upload_market_art(State& s) {
+    if (!s.device || !s.srvs) return;
+    // The big upload buffers are let go once the frame that copied from them is done.
+    if (s.market_upload_fence && completed(s.market_upload_fence, 0)) {
+        s.market_wall_upload.Reset();
+        s.market_sheet_upload.Reset();
+        s.market_upload_fence = 0;
+    }
+    const auto ready_for = [&](const ComPtr<ID3D12Resource>& texture) {
+        return !texture || !s.next_fence || completed(s.next_fence, render_fence_timeout_ms);
+    };
+    CardPixels pixels;
+    if (ready_for(s.market_wall_texture) && take_market_wall_pixels(pixels) && !pixels.rgba.empty())
+        if (const auto id = upload_image(s, pixels, 6, s.market_wall_texture, s.market_wall_upload)) {
+            market_wall_uploaded(id, pixels.serial);
+            s.market_uploaded = true;
+        }
+    if (ready_for(s.market_sheet_texture) && take_market_sheet_pixels(pixels) && !pixels.rgba.empty())
+        if (const auto id = upload_image(s, pixels, 7, s.market_sheet_texture, s.market_sheet_upload)) {
+            market_sheet_uploaded(id, pixels.serial);
+            s.market_uploaded = true;
+        }
+    if (ready_for(s.cover_preview_texture) && take_cover_preview_pixels(pixels) && !pixels.rgba.empty())
+        if (const auto id = upload_image(s, pixels, 8, s.cover_preview_texture, s.cover_preview_upload)) cover_preview_uploaded(id, pixels.serial);
+}
+
 // The game's finished frame for the Animator Studio's fisheye: wanted (asked for each frame it is drawn) and where it is.
 std::atomic<bool> studio_frame_asked{};
 std::atomic<ImTextureID> studio_frame_id{};
@@ -949,6 +983,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     upload_menu_map_image(s);
     upload_mod_icon(s);
     upload_studio_pack_image(s);
+    upload_market_art(s);
     if (studio_frame_asked.exchange(false)) copy_studio_frame(s, frame);
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -971,6 +1006,10 @@ void render(IDXGISwapChain* presented, UINT flags) {
     if (FAILED(s.queue->Signal(s.fence.Get(), signal))) { s.failed = true; restore_input(true); return; }
     frame.fence = signal;
     s.upload_fences[upload_slot] = signal;
+    if (s.market_uploaded) {
+        s.market_upload_fence = signal;
+        s.market_uploaded = false;
+    }
     ++s.submitted_draws;
     ++s.rendered_frames;
 }

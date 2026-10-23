@@ -279,6 +279,8 @@ bool save_pack(std::string& message);                                           
 inline constexpr unsigned thumbnail_side = 512;
 // A picture for a pack: PNG bytes of a thumbnail_side square (empty takes it off). It is exported with the pack.
 bool set_pack_thumbnail(const std::string& pack, const std::string& png, std::string& message);
+// How the pack's cover was made in the cover designer (its JSON), kept with the pack so the designer opens on it again.
+bool set_pack_cover_design(const std::string& pack, const std::string& design, std::string& message);
 // The pack's name changed (its file, its picture, and wherever it is on or chosen with it).
 bool rename_pack(const std::string& from, const std::string& to, std::string& message);
 // Pack rules: the pop every trick in the pack plays on: "" each its own, "any", or "low", "mid" or "high" only.

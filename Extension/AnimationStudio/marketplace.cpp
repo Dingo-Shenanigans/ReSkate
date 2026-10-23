@@ -578,6 +578,36 @@ View view() {
     v.detail = m.detail;
     v.packs = m.packs;
     std::error_code error;
+    if (show_samples) {
+        // The samples, after the real ones: a few tricks named for their pages, their covers once they are made.
+        static constexpr std::array<std::string_view, 18> names{"Kickflip", "Heelflip", "Tre Flip", "Hardflip", "Varial Flip", "Inward Heel",
+                                                                "Laser Flip", "Impossible", "Nollie Flip", "Nollie Heel", "Late Flip", "Dark Catch",
+                                                                "Pop Shove-it", "Bigspin", "Ollie North", "Casper Flip", "Underflip", "Double Flip"};
+        static constexpr std::array<std::string_view, 4> pops{"low pop", "mid pop", "high pop", "any pop"};
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            const auto& s = samples[i];
+            Pack p;
+            p.sample = static_cast<int>(i) + 1;
+            p.sample_days = s.days;
+            p.owner = std::string(s.owner);
+            p.title = std::string(s.title);
+            p.name = p.title;
+            std::replace(p.name.begin(), p.name.end(), ' ', '_');
+            p.full_name = "Sample-" + p.name;
+            p.version = "1.0.0";
+            p.stance = std::string(s.stance);
+            p.description = std::to_string(s.tricks) + " tricks keyed in the Animator Studio. A sample: the shop's real packs take its place.";
+            p.about = p.title + ": " + std::to_string(s.tricks) + " tricks keyed in the Animator Studio, every catch done by hand and checked in game. "
+                      "This is a sample pack, shown so the shop can be seen full: it cannot be got.";
+            for (int t = 0; t < std::min<int>(s.tricks, static_cast<int>(names.size())); ++t)
+                p.tricks.push_back(std::string(names[static_cast<std::size_t>(t)]) + " (" + std::string(pops[static_cast<std::size_t>(t) % 4]) + ")");
+            p.readme = 2;
+            p.downloads = static_cast<std::uint64_t>(s.downloads);
+            p.rating = s.likes;
+            if (const auto file = sample_cover(i); std::filesystem::is_regular_file(file, error)) p.icon_file = utf8(file);
+            v.packs.push_back(std::move(p));
+        }
+    }
     for (auto& p : v.packs) {
         p.favorite = m.favorites.contains(p.full_name);
         p.mine = !m.team.empty() && _stricmp(p.owner.c_str(), m.team.c_str()) == 0;
@@ -685,6 +715,7 @@ void want_icons(const std::vector<std::string>& full_names) {
         std::thread(icon_worker).detach();
     }
 }
+std::filesystem::path sample_cover(std::size_t index) { return folder() / L"samples" / (std::to_wstring(index + 1) + L"-v1.png"); }
 void want_readmes(const std::vector<std::string>& full_names) {
     auto& m = market();
     std::lock_guard lock(m.mutex);

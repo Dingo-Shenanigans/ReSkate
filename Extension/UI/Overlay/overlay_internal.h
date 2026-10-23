@@ -189,6 +189,13 @@ struct State {
     ComPtr<ID3D12Resource> studio_pack_texture, studio_pack_upload;
     // The game's finished frame, copied for the Animator Studio's fisheye (copy_studio_frame), in the sixth.
     ComPtr<ID3D12Resource> studio_frame;
+    // The Animator Studio MARKET's art (studio_market_art.cpp): its wall in the seventh slot, the sheet of the rest in the
+    // eighth, the cover designer's preview in the ninth. The art's upload buffers go once the frame that copied them is
+    // done (market_upload_fence).
+    ComPtr<ID3D12Resource> market_wall_texture, market_wall_upload, market_sheet_texture, market_sheet_upload, cover_preview_texture,
+        cover_preview_upload;
+    UINT64 market_upload_fence{};
+    bool market_uploaded{};
     UINT64 studio_frame_width{};
     UINT studio_frame_height{};
     DXGI_FORMAT studio_frame_format{};
@@ -338,6 +345,14 @@ bool studio_pack_picture_making();
 bool take_studio_pack_pixels(CardPixels& pixels);
 void studio_pack_pixels_uploaded(ImTextureID texture, unsigned serial);
 void studio_pack_pixels_lost();
+// The MARKET's art and the cover designer's preview (studio_market_art.cpp), the same way, in the seventh to ninth slots.
+bool take_market_wall_pixels(CardPixels& pixels);
+void market_wall_uploaded(ImTextureID texture, unsigned serial);
+bool take_market_sheet_pixels(CardPixels& pixels);
+void market_sheet_uploaded(ImTextureID texture, unsigned serial);
+bool take_cover_preview_pixels(CardPixels& pixels);
+void cover_preview_uploaded(ImTextureID texture, unsigned serial);
+void market_art_lost();
 // The game's finished frame as a texture, for the Animator Studio's fisheye (overlay_render.cpp): asked for every frame
 // it is wanted, copied before the overlay draws, and drawable the frame after it was first asked for (0 until then).
 void want_studio_frame() noexcept;

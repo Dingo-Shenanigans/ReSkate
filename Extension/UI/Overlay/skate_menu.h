@@ -117,6 +117,16 @@ struct SkateMenu {
     ImFont* heading_large = nullptr;
     ImFont* title_large = nullptr;
     ImFont* logo = nullptr;     // the Animator Studio's loading screen: big lowercase, as the reskate. wordmark
+    // The Animator Studio MARKET's headlines (Anton): a size for headings and a big one for its biggest words; and the cover
+    // designer's fonts, each drawn as itself on its button (Bebas Neue, Rubik Dirt, Sedgwick Ave Display, Knewave).
+    ImFont* display = nullptr;
+    ImFont* display_big = nullptr;
+    ImFont* display_small = nullptr; // and small: a font shrunk far is jagged
+    ImFont* marker_small = nullptr;  // the brush face small, for the shop's stamps
+    ImFont* cover_bebas = nullptr;
+    ImFont* cover_dirt = nullptr;
+    ImFont* cover_sedgwick = nullptr;
+    ImFont* cover_knewave = nullptr;
     // Full screen: the page's section rail (its first row of tabs, drawn down the left), indenting
     // what follows it until the page is done.
     float rail_indent = 0;

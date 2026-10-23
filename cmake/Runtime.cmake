@@ -308,7 +308,13 @@ set(dingosdk_menu_fonts "${PROJECT_SOURCE_DIR}/External/fonts")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc"
     "FONT_HEADING RCDATA \"${dingosdk_menu_fonts}/Montserrat-ExtraBold.ttf\"\n"
     "FONT_BODY RCDATA \"${dingosdk_menu_fonts}/Montserrat-SemiBold.ttf\"\n"
-    "FONT_BRUSH RCDATA \"${dingosdk_menu_fonts}/PermanentMarker-Regular.ttf\"\n")
+    "FONT_BRUSH RCDATA \"${dingosdk_menu_fonts}/PermanentMarker-Regular.ttf\"\n"
+    # The Animator Studio MARKET's headlines (Anton) and the cover designer's fonts, all SIL OFL.
+    "FONT_ANTON RCDATA \"${dingosdk_menu_fonts}/Anton-Regular.ttf\"\n"
+    "FONT_BEBAS RCDATA \"${dingosdk_menu_fonts}/BebasNeue-Regular.ttf\"\n"
+    "FONT_DIRT RCDATA \"${dingosdk_menu_fonts}/RubikDirt-Regular.ttf\"\n"
+    "FONT_SEDGWICK RCDATA \"${dingosdk_menu_fonts}/SedgwickAveDisplay-Regular.ttf\"\n"
+    "FONT_KNEWAVE RCDATA \"${dingosdk_menu_fonts}/Knewave-Regular.ttf\"\n")
 target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc")
 
 # The startup window's picture (PNG or JPEG), built into ReSkate.dll when the
@@ -344,14 +350,22 @@ if(EXISTS "${dingosdk_studio_loading}")
     file(TO_NATIVE_PATH "${dingosdk_studio_loading}" dingosdk_studio_loading_native)
     string(REPLACE "\\" "\\\\" dingosdk_studio_loading_native "${dingosdk_studio_loading_native}")
     set(dingosdk_studio_resources "STUDIO_LOADING RCDATA \"${dingosdk_studio_loading_native}\"\n")
-    # The MARKET's wallpaper (contrib/animator-studio/make_market_wallpaper.py).
-    set(dingosdk_studio_market "${PROJECT_SOURCE_DIR}/assets/animator_studio/market.jpg")
-    if(EXISTS "${dingosdk_studio_market}")
-        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_studio_market}")
-        file(TO_NATIVE_PATH "${dingosdk_studio_market}" dingosdk_studio_market_native)
-        string(REPLACE "\\" "\\\\" dingosdk_studio_market_native "${dingosdk_studio_market_native}")
-        string(APPEND dingosdk_studio_resources "STUDIO_MARKET RCDATA \"${dingosdk_studio_market_native}\"\n")
-    endif()
+    # The MARKET's art (contrib/animator-studio/market_art/make_market_art.py): its wall, the tiling grip tape, concrete and
+    # papers, the skater's two prints, the splatters and the halftone (studio_market_art.h, studio_cover_maker.h).
+    foreach(dingosdk_art wallpaper:wallpaper.jpg grip:grip.jpg concrete:concrete.jpg paper_white:paper_white.jpg paper_blue:paper_blue.jpg
+            skater:skater_duotone.jpg print:skater_halftone.jpg splatter_a:splatter_a.png splatter_b:splatter_b.png halftone:halftone_blue.png)
+        string(REPLACE ":" ";" dingosdk_art_pair "${dingosdk_art}")
+        list(GET dingosdk_art_pair 0 dingosdk_art_name)
+        list(GET dingosdk_art_pair 1 dingosdk_art_file)
+        set(dingosdk_art_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/market/${dingosdk_art_file}")
+        if(EXISTS "${dingosdk_art_path}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_art_path}")
+            file(TO_NATIVE_PATH "${dingosdk_art_path}" dingosdk_art_native)
+            string(REPLACE "\\" "\\\\" dingosdk_art_native "${dingosdk_art_native}")
+            string(TOUPPER "${dingosdk_art_name}" dingosdk_art_upper)
+            string(APPEND dingosdk_studio_resources "STUDIO_ART_${dingosdk_art_upper} RCDATA \"${dingosdk_art_native}\"\n")
+        endif()
+    endforeach()
     # The settings tiles' icons (contrib/animator-studio/make_studio_icons.py), in skate.'s own grungy white style.
     foreach(dingosdk_studio_icon studio skater tricks packs)
         set(dingosdk_studio_icon_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/icon_${dingosdk_studio_icon}.png")
