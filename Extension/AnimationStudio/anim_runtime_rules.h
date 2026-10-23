@@ -8,6 +8,32 @@
 #include <vector>
 
 namespace dingosdk::anim_studio {
+// One name for a trick, however the game spelled it. The game names its tricks in more than one way: what it says in
+// the air (current_trick) is "n_kickflip", "fsimpossible"; its scoring data, where the studio's first trick list came
+// from, says "nolliekickflip", "nolliebsimpossible"; its flick list says "N_Kickflip", "FrontFoot_Impossible". A saved
+// trick and the game's trick are matched by this key, so every spelling of a trick is the same trick and a trick
+// saved under an older name still plays. Pieces of the game's animation ("native:...") are left as they are.
+inline std::string trick_key(std::string_view name) {
+    if (name.starts_with("native:")) return std::string(name);
+    std::string s;
+    for (const unsigned char c : name) {
+        const char l = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        if ((l >= 'a' && l <= 'z') || (l >= '0' && l <= '9') || l == '_') s += l;
+    }
+    bool nollie = false;
+    std::string_view rest = s;
+    if (rest.starts_with("nollie") && rest.size() > 6) nollie = true, rest.remove_prefix(6);
+    else if (rest.starts_with("n_")) nollie = true, rest.remove_prefix(2);
+    std::string word;
+    for (const char c : rest)
+        if (c != '_') word += c;
+    if (word == "frontfootimpossible" || word == "ffimpossible") word = "fsimpossible";
+    else if (word == "backfootimpossible" || word == "bfimpossible") word = "bsimpossible";
+    else if (word == "bspopshuvit") word = "popshuvit";
+    else if (word == "bs360popshuvit") word = "360popshuvit";
+    if (!nollie) return word;
+    return word.empty() ? std::string("nollie") : "n_" + word;
+}
 struct ContactWindow {
     std::optional<double> since;
     bool observe(double now, bool contact) noexcept {

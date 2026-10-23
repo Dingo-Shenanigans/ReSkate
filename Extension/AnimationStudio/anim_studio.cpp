@@ -864,7 +864,7 @@ void read_library_locked(State& s) {
                 std::ifstream in(saved_json(name), std::ios::binary);
                 auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
                 if (!animation.trick.empty()) {
-                    s.presets.push_back({name, animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
+                    s.presets.push_back({name, trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                     s.presets.back().fakie = animation.fakie;
                     s.presets.back().made_by = animation.author;
                     s.presets.back().label = animation.label;
@@ -908,7 +908,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             auto clip_path = entry;
             clip_path.replace_extension(L".clip");
             if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error)) {
-                requested.push_back({entry.stem().string(), animation.trick, animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
+                requested.push_back({entry.stem().string(), trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
                 requested.back().fakie = animation.fakie;
                 requested.back().saved_at = saved_time(entry);
             }
@@ -956,8 +956,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             // pop of its own: it is found by its pose while it plays, not by a takeoff.
             const bool piece = animation->trick.starts_with("native:");
             if (clip->joints != skeleton_joints || (clip->takeoff < 0 && !piece)) continue;
-            std::string trick;
-            for (const char c : animation->trick) trick += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            const auto trick = trick_key(animation->trick); // a trick saved under an older spelling still plays
             const bool goofy = authored_goofy(*animation);
             // Its lead foot from the clip, its label only when the clip cannot tell: labels have been wrong
             // (one made with the right foot leading was labelled regular normal and played on the wrong leg).
@@ -971,12 +970,8 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             // pop of it (a saved trick plays on whichever the game picks, following that clip's time).
             std::vector<std::shared_ptr<const Clip>> references{clip};
             try {
-                if (const auto library = game_tricks())
-                    for (const auto& g : *library) {
-                        if (g.preview_only || g.recorded || g.file.empty()) continue;
-                        std::string name;
-                        for (const char c : g.trick) name += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                        if (name != trick) continue;
+                if (const auto library = game_tricks()) {
+                    const auto add = [&](const GameTrick& g) {
                         auto found = library_clips.find(g.file);
                         if (found == library_clips.end()) {
                             std::shared_ptr<const Clip> loaded;
@@ -984,7 +979,32 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
                             found = library_clips.emplace(g.file, std::move(loaded)).first;
                         }
                         if (found->second) references.push_back(found->second);
+                    };
+                    // The game's clips of the trick's family ("animation/dingo/c_proto_onb_trick_o_kickflip_").
+                    std::vector<std::string> families;
+                    for (const auto& g : *library) {
+                        if (g.preview_only || g.recorded || g.file.empty()) continue;
+                        if (trick_key(g.trick) != trick) continue;
+                        add(g);
+                        const auto cut = g.asset.rfind('_');
+                        if (g.asset.starts_with("animation/dingo/c_proto_onb_trick_") && cut != std::string::npos)
+                            families.push_back(g.asset.substr(0, cut + 1));
                     }
+                    // Under the same trick name the game also plays its dark and light catches, underflips, held and late
+                    // flips: they are followed too, or a trick caught dark played on its own clock, out of step.
+                    for (const auto& g : *library) {
+                        if (!g.preview_only || g.recorded || g.file.empty()) continue;
+                        for (const auto& family : families) {
+                            if (!g.asset.starts_with(family)) continue;
+                            const std::string_view style(g.asset.c_str() + family.size());
+                            if (style.find("dark") != std::string_view::npos || style.find("light") != std::string_view::npos ||
+                                style.find("uflip") != std::string_view::npos || style.find("held") != std::string_view::npos ||
+                                style.find("lateflip") != std::string_view::npos)
+                                add(g);
+                            break;
+                        }
+                    }
+                }
             } catch (const std::exception& e) {
                 logging::log(Level::warning, Channel::skater, "Animation Studio: the library's pops of {} are not looked for: {}", trick, e.what());
             }
@@ -1450,7 +1470,7 @@ std::string current_trick(std::uintptr_t component) noexcept {
         if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == ' ' || ch == '-')) return {};
         name += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
-    return name.size() >= 2 ? name : std::string{};
+    return name.size() >= 2 ? trick_key(name) : std::string{}; // one name however the game spells it
 }
 void publish_joints(std::span<const Joint> pose, const Joint& placement, const std::optional<Joint>& board, const Quat& board_frame) {
     std::vector<JointView> views;
@@ -2842,7 +2862,7 @@ void on_animation(std::uintptr_t component) noexcept {
             // frame and the old trick dropped at once, so the stand-back was never seen. It is taken up when
             // the stand-back is over (gave_way_at goes back to -1 and the old trick is let go).
             const bool let_go = l.finished_episode == l.episode.id && !name.empty() && name == l.finished_trick;
-            if (!let_go && l.gave_way_at < 0 && l.episode.entry != EntryKind::unknown && l.game_tricks &&
+            if (!let_go && l.gave_way_at < 0 && l.game_tricks &&
                 episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
                                           l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop)) {
                 const CustomTrick* found = nullptr;
@@ -2857,11 +2877,17 @@ void on_animation(std::uintptr_t component) noexcept {
                 const LiveStance live{leads_right(l.playback_goofy, l.playback_switch.value_or(false)), l.playback_fakie};
                 std::vector<const CustomTrick*> candidates;
                 std::vector<StanceCandidate> described;
+                // Its takeoff: the ones made off the same kind of takeoff (flat ground, or out of a grind) first; when there
+                // are none, any of them - a trick edited from the flat still plays off a ledge, out of a manual or a grind,
+                // or off a ramp, where the takeoff is not known. The edits ride on the game's own pose either way.
                 if (l.playback_switch.has_value())
-                    for (const auto& t : *l.game_tricks) {
-                        if (t.trick != name || t.edits->entry != entry_name(l.episode.entry)) continue;
-                        candidates.push_back(&t);
-                        described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop)});
+                    for (const bool exact : {true, false}) {
+                        for (const auto& t : *l.game_tricks) {
+                            if (t.trick != name || (exact && t.edits->entry != entry_name(l.episode.entry))) continue;
+                            candidates.push_back(&t);
+                            described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop)});
+                        }
+                        if (!candidates.empty()) break;
                     }
                 for (const auto i : choose_stance_variants(described, live, l.playback_front_foot)) variants.push_back(candidates[i]);
                 if (!variants.empty()) {
@@ -5653,6 +5679,7 @@ std::vector<GameTrick> read_catalog() {
             GameTrick t{e.value("category", ""), e.value("label", ""), e.value("trick", ""), e.value("pop", ""), e.value("file", ""), e.value("asset", ""), e.value("preview_only", false)};
             t.position_codec = e.value("position_codec", "");
             t.looping = e.value("native_looping", false);
+            if (!t.preview_only) t.trick = trick_key(t.trick); // a library built with the older names matches the game
             if (t.preview_only && t.asset.starts_with("animation/dingo/")) {
                 const auto found = named.find(t.asset);
                 t.label = found != named.end() ? found->second->label : native_asset_name(t.asset).label;
@@ -5677,7 +5704,7 @@ std::vector<GameTrick> read_recorded() {
         const auto identity = recorded_clip_identity(entry.path().filename().string());
         if (!identity) continue;
         GameTrick take;
-        take.trick = identity->first; take.pop = identity->second;
+        take.trick = trick_key(identity->first); take.pop = identity->second;
         take.file = entry.path().filename().string(); take.recorded = true;
         // Old batch clips had no stance sidecar. Preserve their legacy regular assumption.
         take.switch_stance.reset();
@@ -5688,7 +5715,7 @@ std::vector<GameTrick> read_recorded() {
                 const auto metadata = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
                 take.looping = metadata.loop;
                 if (metadata.trick.empty() || metadata.pop != take.pop) throw std::runtime_error("recorded take metadata does not match its slot");
-                take.trick = metadata.trick; take.stance = metadata.stance; take.switch_stance = metadata.switch_stance;
+                take.trick = trick_key(metadata.trick); take.stance = metadata.stance; take.switch_stance = metadata.switch_stance;
                 take.source = metadata.source; take.entry = metadata.entry;
             } catch (const std::exception& e) {
                 logging::log(Level::warning, Channel::skater, "Recorded take not loaded: {}: {}", take.file, e.what());

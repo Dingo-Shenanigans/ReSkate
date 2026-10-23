@@ -531,7 +531,10 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
 struct TrickFamily {
     const char *family, *trick, *label, *category;
 };
-constexpr std::array<TrickFamily, 33> trick_families{{
+// The game's name for each trick is the one it says in the air (current_trick), seen in recordings made in game:
+// "n_kickflip", not the scoring data's "nolliekickflip". Nollie impossibles: the nollie clip is the front foot one
+// (n_impossible), the back foot one has its own clips (n_backfoot_impossible). trick_key matches every spelling.
+constexpr std::array<TrickFamily, 34> trick_families{{
     {"o_ollie", "ollie", "Ollie", "Flip tricks"},
     {"o_kickflip", "kickflip", "Kickflip", "Flip tricks"},
     {"o_heelflip", "heelflip", "Heelflip", "Flip tricks"},
@@ -550,21 +553,22 @@ constexpr std::array<TrickFamily, 33> trick_families{{
     {"o_impossible", "bsimpossible", "BF Impossible", "Flip tricks"},
     {"o_frontfoot_impossible", "fsimpossible", "FF Impossible", "Flip tricks"},
     {"n_nollie", "nollie", "Nollie", "Nollie tricks"},
-    {"n_kickflip", "nolliekickflip", "Nollie Kickflip", "Nollie tricks"},
-    {"n_heelflip", "nollieheelflip", "Nollie Heelflip", "Nollie tricks"},
+    {"n_kickflip", "n_kickflip", "Nollie Kickflip", "Nollie tricks"},
+    {"n_heelflip", "n_heelflip", "Nollie Heelflip", "Nollie tricks"},
     {"n_popshuv_bs", "n_popshuvit", "Nollie Pop Shuv-it", "Nollie tricks"},
     {"n_popshuv_fs", "n_fspopshuvit", "Nollie FS Pop Shuv-it", "Nollie tricks"},
     {"n_360popshuv_bs", "n_360popshuvit", "Nollie 360 Pop Shuv-it", "Nollie tricks"},
     {"n_360popshuv_fs", "n_fs360popshuvit", "Nollie FS 360 Pop Shuv-it", "Nollie tricks"},
-    {"n_varialflip", "nollievarialkickflip", "Nollie Varial Kickflip", "Nollie tricks"},
-    {"n_varialheel", "nollievarialheelflip", "Nollie Varial Heelflip", "Nollie tricks"},
-    {"n_360flip", "nollie360flip", "Nollie 360 Flip", "Nollie tricks"},
-    {"n_hardflip", "nolliehardflip", "Nollie Hardflip", "Nollie tricks"},
-    {"n_inwardheel", "nollieinwardheelflip", "Nollie Inward Heelflip", "Nollie tricks"},
-    {"n_360inwardheel", "nollie360inwardheelflip", "Nollie 360 Inward Heelflip", "Nollie tricks"},
-    {"n_360hardflip", "nollie360hardflip", "Nollie 360 Hardflip", "Nollie tricks"},
-    {"n_laserflip", "nollielaserflip", "Nollie Laser Flip", "Nollie tricks"},
-    {"n_impossible", "nolliebsimpossible", "Nollie BF Impossible", "Nollie tricks"},
+    {"n_varialflip", "n_varialkickflip", "Nollie Varial Kickflip", "Nollie tricks"},
+    {"n_varialheel", "n_varialheelflip", "Nollie Varial Heelflip", "Nollie tricks"},
+    {"n_360flip", "n_360flip", "Nollie 360 Flip", "Nollie tricks"},
+    {"n_hardflip", "n_hardflip", "Nollie Hardflip", "Nollie tricks"},
+    {"n_inwardheel", "n_inwardheelflip", "Nollie Inward Heelflip", "Nollie tricks"},
+    {"n_360inwardheel", "n_360inwardheelflip", "Nollie 360 Inward Heelflip", "Nollie tricks"},
+    {"n_360hardflip", "n_360hardflip", "Nollie 360 Hardflip", "Nollie tricks"},
+    {"n_laserflip", "n_laserflip", "Nollie Laser Flip", "Nollie tricks"},
+    {"n_impossible", "n_fsimpossible", "Nollie FF Impossible", "Nollie tricks"},
+    {"n_backfoot_impossible", "n_bsimpossible", "Nollie BF Impossible", "Nollie tricks"},
 }};
 
 // One asset of the inventory: where it is and what it is.

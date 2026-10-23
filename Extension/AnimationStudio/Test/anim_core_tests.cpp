@@ -31,6 +31,20 @@ bool same_turn(const Quat& a, const Quat& b) {
     return d > 0.9999f;
 }
 
+// Every spelling the game has for a trick is one trick: what it says in the air, its scoring data, its flick list.
+void trick_names_match() {
+    check(trick_key("nolliekickflip") == "n_kickflip" && trick_key("n_kickflip") == "n_kickflip" && trick_key("N_Kickflip") == "n_kickflip",
+          "Nollie flips: scoring data, the air and the flick list agree");
+    check(trick_key("nollie360inwardheelflip") == "n_360inwardheelflip" && trick_key("N_360InwardHeelflip") == "n_360inwardheelflip", "and the long ones");
+    check(trick_key("nollie") == "nollie" && trick_key("Nollie") == "nollie" && trick_key("ollie") == "ollie", "Ollie and nollie stay themselves");
+    check(trick_key("FrontFoot_Impossible") == "fsimpossible" && trick_key("ffimpossible") == "fsimpossible" && trick_key("bfimpossible") == "bsimpossible",
+          "Impossibles by either name");
+    check(trick_key("nolliebsimpossible") == "n_bsimpossible" && trick_key("N_BackFoot_Impossible") == "n_bsimpossible", "Nollie back foot impossible");
+    check(trick_key("n_fspopshuvit") == "n_fspopshuvit" && trick_key("BSPopShuvit") == "popshuvit" && trick_key("KickFlip") == "kickflip", "Shove-its and case");
+    check(trick_key("native:animation/dingo/c_proto_onb_grind_5050_rail_loop") == "native:animation/dingo/c_proto_onb_grind_5050_rail_loop",
+          "Pieces keep their clip name");
+}
+
 // The game's pieces read as the tricks they are part of (TRICKS' grind, grab and manual cards).
 void native_trick_cards() {
     const auto parts = [](const char* name) { return native_trick_parts(std::string("animation/dingo/") + name); };
@@ -1651,6 +1665,7 @@ int main(int argc, char** argv) {
         euler_numbers_read_back();
         native_names_and_search();
         native_trick_cards();
+        trick_names_match();
         manual_and_scripted_recording_keep_distinct_rules();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
