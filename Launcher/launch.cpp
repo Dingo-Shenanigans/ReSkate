@@ -862,6 +862,7 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     std::wstring commands = options.map.empty() ? asked : L"load " + options.map + (asked.empty() ? L"" : L";" + asked);
     set_environment(L"RESKATE_STARTUP_COMMANDS", commands.empty() ? nullptr : commands.c_str());
     set_environment(L"RESKATE_DISCORD", options.discord ? L"1" : L"0");
+    set_environment(L"RESKATE_STEAM_CARD_PICTURES", options.steam_card_pictures ? L"1" : L"0");
     if (options.menu_key == options.console_key)
         throw std::runtime_error("The menu and console need different keys. Change one in Settings.");
     set_environment(L"RESKATE_MENU_KEY", std::to_wstring(options.menu_key).c_str());

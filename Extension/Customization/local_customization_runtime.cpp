@@ -1,4 +1,5 @@
 #include "Engine/Core/Platform/memory.h"
+#include "Extension/Customization/steam_avatar_cards.h"
 #include "Engine/Core/Log/logging.h"
 #include "local_customization_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
@@ -83,6 +84,8 @@ bool reserved_cosmetic_hash(std::uint32_t hash) {
 }
 bool installed_item_owned(const profile::Snapshot& snapshot, std::string_view key, std::uint32_t hash, bool build_kit) {
     if (cosmetic_runtime().ownership_unavailable || reserved_cosmetic_hash(hash)) return false;
+    // Everyone has the "Steam picture" card icon while the feature is on (steam_avatar_cards.h).
+    if (!build_kit && key == steam_avatar_cards::icon_key && steam_avatar_cards::enabled()) return true;
     const auto option = snapshot.bool_options.find(build_kit ? profile::unlock_objects_option : profile::unlock_cosmetics_option);
     if (option != snapshot.bool_options.end() && option->second) return true;
     const dingosdk::Json* section = &snapshot.customization;

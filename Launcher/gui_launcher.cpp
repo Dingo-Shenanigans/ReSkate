@@ -52,6 +52,7 @@ Settings load_settings(const fs::path& path) {
         settings.loose_files = json.value("loose_files", settings.loose_files);
         settings.gpu_diagnostics = json.value("gpu_diagnostics", settings.gpu_diagnostics);
         settings.discord_status = json.value("discord_status", settings.discord_status);
+        settings.steam_card_pictures = json.value("steam_card_pictures", settings.steam_card_pictures);
         settings.offline = json.value("offline", settings.offline);
         settings.start_map = json.value("start_map", std::string());
         settings.menu_key = json.value("menu_key", settings.menu_key);
@@ -106,6 +107,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["loose_files"] = settings.loose_files;
     json["gpu_diagnostics"] = settings.gpu_diagnostics;
     json["discord_status"] = settings.discord_status;
+    json["steam_card_pictures"] = settings.steam_card_pictures;
     json["offline"] = settings.offline;
     json["start_map"] = settings.start_map;
     json["menu_key"] = settings.menu_key;
@@ -143,6 +145,7 @@ launcher::LaunchOptions launch_options(const Settings& settings) {
     if (!settings.loose_files) arguments.emplace_back(L"--no-loose-files");
     if (settings.gpu_diagnostics) arguments.emplace_back(L"--gpu-diagnostics");
     if (!settings.discord_status) arguments.emplace_back(L"--no-discord");
+    if (!settings.steam_card_pictures) arguments.emplace_back(L"--no-steam-card-pictures");
     if (settings.offline) arguments.emplace_back(L"-offline");
     arguments.push_back(std::format(L"--menu-key={}", settings.menu_key));
     arguments.push_back(std::format(L"--console-key={}", settings.console_key));
